@@ -2403,10 +2403,12 @@ class StudioController extends _$StudioController {
     if (thread == null || thread.projectId != projectId) {
       return const _AttachmentTargetMissing();
     }
-    if (thread.status
-        case ThreadStatusView.closing ||
-            ThreadStatusView.closed ||
-            ThreadStatusView.faulted) {
+    // faulted 可能只是模型或工具输入驱动失败，后端续接会重新启用驱动并创建新的执行轮次；
+    // 只有类型化存储事实明确阻塞准入时，才沿用存储恢复闸门。
+    if (thread.status == ThreadStatusView.closing ||
+        thread.status == ThreadStatusView.closed ||
+        (thread.status == ThreadStatusView.faulted &&
+            workspace?.storage?.blocksContinuation == true)) {
       return _AttachmentTargetTerminated(thread.status);
     }
     return _AttachmentTargetReady(_workspaceUi(current, threadId).composer);
