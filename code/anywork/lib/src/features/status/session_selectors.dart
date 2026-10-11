@@ -367,13 +367,7 @@ class ReasoningEffortSelector extends StatelessWidget {
             value: effort,
             selected: effort == selectedEffort,
             itemKey: StudioDriverKeys.reasoningEffortOption(effort),
-            child: Row(
-              children: [
-                const Icon(Icons.schedule_outlined, size: 18),
-                const SizedBox(width: 10),
-                Text(effort),
-              ],
-            ),
+            child: Text(effort),
           ),
       ],
       child: _ControlItem(label: label, enabled: enabled),
