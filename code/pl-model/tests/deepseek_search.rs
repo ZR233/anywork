@@ -855,6 +855,10 @@ fn deepseek_search_capability_gating_follows_canonical_preset_and_explicit_opt_i
         capabilities.web_search.standalone,
         Some(StandaloneWebSearchDialect::OpenAiSearchApi)
     );
+    assert_eq!(
+        capabilities.prompt_cache.dialect,
+        pl_model::provider::PromptCacheDialect::None
+    );
 }
 
 /// canonical DeepSeek preset 必须声明 DeepSeek 原生 standalone 能力，并在临时 HTTP 环境上

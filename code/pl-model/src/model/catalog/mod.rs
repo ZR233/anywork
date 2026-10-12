@@ -1,4 +1,4 @@
-//! 默认目录编排与可复用媒体/wire 规则；OpenAI/DeepSeek 读取 embedded JSON，
+//! 默认目录编排与可复用媒体/wire 规则；OpenAI/DeepSeek/xAI 读取 embedded JSON，
 //! MiMo/Zhipu 保留家族预设。见 design/06-model.md 6.7–6.9。
 
 mod mimo;
@@ -17,10 +17,11 @@ pub use zhipu::{zhipu_default_model_slugs, zhipu_responses_default_model_slugs};
 
 pub(crate) use zhipu::responses_models as zhipu_responses_models;
 
-/// 内建默认模型目录；顺序固定为 DeepSeek → OpenAI → MiMo → Zhipu。
+/// 内建默认模型目录；顺序固定为 DeepSeek → OpenAI → xAI → MiMo → Zhipu。
 pub fn default_models() -> Result<Vec<ModelInfo>, super::ModelDefinitionError> {
     let mut models = super::bundled_model_definition("deepseek")?.models;
     models.extend(super::bundled_model_definition("openai")?.models);
+    models.extend(super::bundled_model_definition("xai")?.models);
     models.extend(mimo::models());
     models.extend(zhipu::models());
     Ok(models)

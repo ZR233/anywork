@@ -55,6 +55,7 @@ impl ProviderCatalogRegistry {
     pub fn builtin() -> Result<Self> {
         let openai = bundled_model_definition("openai")?;
         let deepseek = bundled_model_definition("deepseek")?;
+        let xai = bundled_model_definition("xai")?;
         let model_catalogs = [
             ModelCatalog {
                 id: ModelCatalogId::new("openai")?,
@@ -63,6 +64,10 @@ impl ProviderCatalogRegistry {
             ModelCatalog {
                 id: ModelCatalogId::new("deepseek")?,
                 models: deepseek.models,
+            },
+            ModelCatalog {
+                id: ModelCatalogId::new("xai")?,
+                models: xai.models,
             },
             model_catalog("zhipu", zhipu_default_model_slugs())?,
             zhipu_responses_catalog(),
@@ -91,6 +96,15 @@ impl ProviderCatalogRegistry {
                 "DEEPSEEK_API_KEY",
                 "DeepSeek reasoning and coding models.",
                 "deepseek",
+            ),
+            preset(
+                "xai",
+                ProviderEndpoint::xai(None),
+                &xai.suggested_model,
+                "xai",
+                "XAI_API_KEY",
+                "xAI Grok models served through the Responses API.",
+                "xai",
             ),
             preset(
                 "zhipu",

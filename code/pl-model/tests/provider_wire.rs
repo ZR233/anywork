@@ -1769,6 +1769,75 @@ async fn responses_custom_call_preserves_raw_input_and_programmatic_caller() {
 }
 
 #[tokio::test]
+async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_search() {
+    let preset = builtin_provider_catalog()
+        .unwrap()
+        .presets
+        .into_iter()
+        .find(|item| item.id.as_str() == "xai")
+        .unwrap();
+    let model = preset
+        .provider
+        .effective_models()
+        .unwrap()
+        .into_iter()
+        .find(|model| model.slug == "grok-4.7")
+        .unwrap();
+    assert_eq!(
+        model.binding.transport,
+        ModelTransportProfile::responses_http()
+    );
+    assert!(!model.capabilities.web_search);
+    assert!(!model.capabilities.supports_custom_tools());
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "review the change",
+        0,
+        Reply::Sse(responses_text("reviewed", "grok-1", "grok-4.7")),
+    )])
+    .await
+    .unwrap();
+    let runtime =
+        ModelRuntime::new(ProviderEndpoint::xai(Some(fixture.base_url())), model).unwrap();
+    assert!(matches!(runtime.provider(), ProviderClient::Xai(_)));
+    let reply = runtime
+        .complete(
+            CompletionRequest::builder()
+                .messages(vec![user("review the change")])
+                .tools(vec![
+                    ToolSpec::function(
+                        "lookup",
+                        "Look up a symbol",
+                        json!({"type":"object","properties":{"name":{"type":"string"}}}),
+                    ),
+                    ToolSpec::custom_grammar("apply_patch", "Apply patch", "lark", "start: WORD"),
+                ])
+                .reasoning(Some(ReasoningConfig {
+                    effort: Some("high".into()),
+                    summary: None,
+                }))
+                .build(),
+            ModelInvocationContext::default().with_prompt_cache_key(Some("grok-session".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.content.as_deref(), Some("reviewed"));
+    let PricingOutcome::Estimated { cost, .. } = reply.accounting.pricing else {
+        panic!("known Grok price must account reported usage");
+    };
+    assert_eq!(cost.currency, "USD");
+    let records = fixture.finish().await.unwrap();
+    assert_eq!(records[0].path, "/v1/responses");
+    assert_eq!(records[0].body["model"], "grok-4.7");
+    assert_eq!(records[0].body["reasoning"]["effort"], "high");
+    assert_eq!(records[0].body["prompt_cache_key"], "grok-session");
+    assert!(records[0].body.get("store") == Some(&json!(false)));
+    let tools = records[0].body["tools"].as_array().unwrap();
+    assert!(tools.iter().all(|tool| tool["type"] == "function"));
+    assert!(tools.iter().all(|tool| tool["type"] != "web_search"));
+}
+
+#[tokio::test]
 async fn native_openai_client_applies_typed_cache_options_to_the_shared_transport() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,

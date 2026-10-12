@@ -79,6 +79,7 @@ pub fn bundled_model_definition(
     let json = match catalog {
         "openai" => include_str!("../../assets/models/openai/model.json"),
         "deepseek" => include_str!("../../assets/models/deepseek/model.json"),
+        "xai" => include_str!("../../assets/models/xai/model.json"),
         _ => return Err(ModelDefinitionError::Unsupported),
     };
     BundledModelDefinition::parse(json, catalog)

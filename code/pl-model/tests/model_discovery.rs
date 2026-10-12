@@ -78,6 +78,7 @@ fn provider(url: &str, adapter: ProviderAdapterKind) -> ProviderConfig {
     let (endpoint, id) = match adapter {
         ProviderAdapterKind::OpenAi => (ProviderEndpoint::openai(Some(url.into())), "openai"),
         ProviderAdapterKind::DeepSeek => (ProviderEndpoint::deepseek(Some(url.into())), "deepseek"),
+        ProviderAdapterKind::Xai => (ProviderEndpoint::xai(Some(url.into())), "xai"),
         _ => unreachable!(),
     };
     ProviderConfig::from_bundled_catalog(endpoint, ModelCatalogId::new(id).unwrap(), Vec::new())
@@ -236,6 +237,11 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             json!({"models":[{"slug":"future-model","display_name":"Future","description":"independent metadata","context_window":64000,"max_context_window":128000,"auto_compact_token_limit":12000,"supported_reasoning_levels":[{"effort":"gentle","description":"less"},{"effort":"new-ultra","description":"more"}],"default_reasoning_level":"new-ultra","base_instructions":"DO NOT IMPORT","shell_type":"powershell","supports_temperature":false}]}),
             "reasoning",
         ),
+        (
+            ProviderAdapterKind::Xai,
+            json!({"data":[{"id":"future-model","context_window":64000,"supported_reasoning_levels":[{"effort":"gentle"},{"effort":"new-ultra"}],"default_reasoning_level":"new-ultra"}]}),
+            "reasoning",
+        ),
     ] {
         let models = discover(body, adapter).await;
         let mut model = models[0].clone();
@@ -278,6 +284,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         .unwrap();
         let endpoint = match adapter {
             ProviderAdapterKind::OpenAi => ProviderEndpoint::openai(Some(fixture.base_url())),
+            ProviderAdapterKind::Xai => ProviderEndpoint::xai(Some(fixture.base_url())),
             _ => ProviderEndpoint::deepseek(Some(fixture.base_url())),
         };
         model.binding.transport.default_connection_mode =

@@ -222,10 +222,12 @@ DeepSeekResponses 方言），模型能力仍表示当前模型能否使用 nati
 tools；核心编排必须同时检查 endpoint 服务能力、模型能力与模型 request profile。官方
 OpenAI endpoint 默认开启 Responses hosted tools；覆盖自定义 `base_url` 后默认关闭，只有
 显式配置才能重新开启。产品 UI 从 catalog 的无密钥 descriptor 渲染预设和模型选项，不识别
-具体厂商 id。OpenAI、MiMo API、MiMo Token Plan、DeepSeek、Zhipu 与 Zhipu Coding Plan 都
+具体厂商 id。OpenAI、MiMo API、MiMo Token Plan、DeepSeek、xAI、Zhipu 与 Zhipu Coding Plan 都
 只是 catalog preset；显式 adapter 身份装配具体供应商客户端，两个 MiMo preset 共享同一
 catalog，而 Zhipu（通用 Chat API）与 Zhipu Coding Plan（官方 OpenAI Response 协议端点）
-各引用与端点形态匹配的目录。当前不保留 Anthropic 占位：只有实现第二种协议族的
+各引用与端点形态匹配的目录。xAI 引用独立的 Responses/HTTP 目录，canonical endpoint 继承
+`prompt_cache_key`；覆盖非 canonical `base_url` 时由 PresetDefaults 撤销该缓存方言。xAI
+不声明 hosted search。当前不保留 Anthropic 占位：只有实现第二种协议族的
 typed codec、能力模型与测试后，才可写入配置或 catalog。
 
 canonical catalog 与自定义/附加模型使用同一个模型信息结构：slug、display_name、
@@ -411,8 +413,9 @@ configured/effective/availability、provider_id/model 与原配置开关（`mode
 不再有 `selected` 字段，也不存在互斥的 exclusive 路线。canonical DeepSeek preset 声明
 DeepSeek 原生 standalone 能力；preset 实例覆盖非 canonical base_url 时由 PresetDefaults 仅撤销
 该 DeepSeek 原生方言（连同其它 hosted/Responses 能力），非 canonical DeepSeek endpoint 必须显式
-声明该方言。此撤销不改变既有 OpenAI `OpenAiSearchApi` 继承语义：覆盖非 canonical base_url 的
-OpenAI endpoint 仍保留 `/alpha/search` standalone。显式 capability 仍可重新声明。
+声明该方言。此撤销同时关闭继承的 prompt cache dialect，不改变既有 OpenAI `OpenAiSearchApi`
+继承语义：覆盖非 canonical base_url 的 OpenAI endpoint 仍保留 `/alpha/search` standalone。
+显式 capability 仍可重新声明。
 
 设置页运行独立的 service planner，不依赖会话、route 或当前模型：每条后端只按 provider
 capability 与凭据解析 configured/effective/availability、provider_id 与 model。OpenAI

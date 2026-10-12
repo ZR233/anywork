@@ -100,8 +100,8 @@ SSE transport 按完整行向事件解析器交付数据，增量扫描只处理
 本次迁移以本地 Codex 的 endpoint/transport/session 分层为参照，不依赖其产品专属上传协议。
 握手 426 允许在统一预算内切换 HTTP，普通 400 保留为请求错误，不以扩大重试掩盖协议错误。
 
-模型执行采用窄接口与具体供应商客户端组合：统一入口只负责推理；OpenAI、DeepSeek、智谱、MiMo 与
-OpenAI-compatible 拥有各自的类型化原生选项，动态路由返回借用共享执行器的封闭客户端视图。
+模型执行采用窄接口与具体供应商客户端组合：统一入口只负责推理；OpenAI、DeepSeek、智谱、MiMo、
+xAI 与 OpenAI-compatible 拥有各自的类型化客户端，动态路由返回借用共享执行器的封闭客户端视图。
 单模型运行时与辅助请求客户端显式开放类型化供应商访问入口，不使用 `Any`、向下转型或包含所有
 可选操作的大 trait。
 
@@ -126,7 +126,10 @@ ChatCompletions + HTTP；Responses 模型可以声明 Responses + HTTP，或同�
 Plan 是 catalog preset，默认指向官方 Coding Plan 的 OpenAI Response 协议 endpoint
 （`https://open.bigmodel.cn/api/v1`）并引用独立的智谱 Responses 目录（GLM-5.3 与
 GLM-5.3-Flash），不新增 runtime 变体；通用 Zhipu preset 保持通用 API 的 Chat Completions
-endpoint 与目录。MiMo API 与 Token Plan 同为两个 preset，共同引用一个 MiMo catalog。
+endpoint 与目录。MiMo API 与 Token Plan 同为两个 preset，共同引用一个 MiMo catalog。xAI
+是一个 catalog preset，默认指向 `https://api.x.ai/v1` 并引用独立的 xAI Responses 目录；
+canonical endpoint 声明 Responses `prompt_cache_key`，自定义 `base_url` 后该继承关闭。
+xAI 不声明 hosted search、Files、远程压缩或 WebSocket。
 
 ## 6.5 协议与 Transport
 
@@ -147,7 +150,7 @@ profile 错误（携带 slug 与涉事模态/wire 上下文）；媒体契约校
 OpenAI 的可复用绑定使用 Responses，支持 WS/HTTP 且默认 WS——选择 HTTP 时仍调用
 `/responses` 并消费 SSE，绝不切换到 Chat Completions；DeepSeek 的可复用绑定使用
 Responses/HTTP；通用 GLM 目录和全部 MiMo 使用 Chat Completions/HTTP，Coding Plan 的 GLM
-Responses 目录使用 Responses/HTTP。runtime 按当前模型选择对应
+Responses 目录使用 Responses/HTTP。xAI 的可复用绑定使用 Responses/HTTP。runtime 按当前模型选择对应
 endpoint path，同一 provider 实例可以路由不同协议的模型。
 
 Responses WebSocket 使用 `/responses` 握手和 `response.create` 帧，并固定 `store: false`。连接
@@ -336,7 +339,7 @@ Bundled catalog 只读，配置只能通过 `additional_models` 追加不冲突 
 
 ### 在线目录与默认定义
 
-OpenAI 与 DeepSeek 的默认模型目录由各自版本化 `model.json` 定义随二进制发布，复用完整
+OpenAI、DeepSeek 与 xAI 的默认模型目录由各自版本化 `model.json` 定义随二进制发布，复用完整
 ModelInfo 声明与既有模型字段序列化契约，统一提供模型集合、推荐模型/effort 与已记录价格。
 默认定义不在 Rust 名单或 preset 中重复维护；装配失败属于程序内部定义错误，不是用户配置损坏。
 其他未声明在线探测能力的目录保持既有静态或显式语义。
@@ -577,7 +580,8 @@ Provider 服务能力同时包含 `hosted_responses`、`hosted_dialect` 与独�
 该 DeepSeek 原生 standalone 能力（与其它 hosted/Responses 能力一并撤销），非 canonical 的
 DeepSeek endpoint 必须显式声明该方言。此撤销不改变既有 OpenAI `OpenAiSearchApi` 的继承语义：
 覆盖非 canonical `base_url` 的 OpenAI endpoint 仍保留 `/alpha/search` standalone；显式
-capability 仍可由用户重新声明。provider catalog schema 暴露 dialect，产品层不得从 provider id
+capability 仍可由用户重新声明。同一非 canonical 覆盖同时撤销继承的 prompt cache dialect。
+provider catalog schema 暴露 dialect，产品层不得从 provider id
 或 URL 猜测。
 
 Responses hosted 搜索统一通过携带 hosted dialect 的 WebSearch 工具规格表达。OpenAI dialect 可
