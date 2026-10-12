@@ -14,6 +14,7 @@ import 'session_costs_store.dart';
 import 'settings_store.dart';
 import 'skills_store.dart';
 import 'thread_directory_store.dart';
+import 'thread_session_store.dart';
 import 'updater_store.dart';
 
 /// 把 `readStudioState` 的聚合快照拆进各领域 merge path。
@@ -76,6 +77,11 @@ void reconcileSelectedProject(Ref ref) {
 }
 
 void reconcileRemovedThreads(Ref ref, Set<String> removed) {
+  // 目录增量有意不回绑 threadSession.workspace.thread，也不清理其 workspace。
+  // keepAlive 族不会因目录项消失自动释放，因此对每个 removed id 显式释放。
+  for (final threadId in removed) {
+    releaseThreadSession(ref, threadId);
+  }
   final selected = ref.read(selectionStoreProvider).selectedThreadId;
   if (selected == null || !removed.contains(selected)) return;
   final projectId = ref.read(selectionStoreProvider).selectedProjectId;
@@ -85,4 +91,11 @@ void reconcileRemovedThreads(Ref ref, Set<String> removed) {
       .firstOrNull
       ?.id;
   ref.read(selectionStoreProvider.notifier).replaceRemovedThread(next);
+}
+
+/// 释放一个 keepAlive 会话族实例。未创建过的 provider invalidate 是 no-op。
+///
+/// 目录元数据只走 [ThreadDirectoryStore]；这里不读取、不回写会话 workspace。
+void releaseThreadSession(Ref ref, String threadId) {
+  ref.invalidate(threadSessionStoreProvider(threadId));
 }

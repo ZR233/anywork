@@ -171,6 +171,9 @@ class ThreadCommands extends _$ThreadCommands {
       try {
         final result = await _api.archiveThread(threadId);
         if (!ref.mounted) return;
+        for (final id in result.removedThreadIds) {
+          releaseThreadSession(ref, id);
+        }
         await _reloadProduct();
         final selected = ref.read(selectionStoreProvider).selectedThreadId;
         if (selected != null && result.removedThreadIds.contains(selected)) {

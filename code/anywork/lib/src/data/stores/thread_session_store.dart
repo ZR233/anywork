@@ -78,8 +78,15 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     state = next;
   }
 
-  void applyChatSnapshot(StudioChatSnapshot snapshot) {
-    final next = applyChatSnapshotState(state, snapshot);
+  void applyChatSnapshot(
+    StudioChatSnapshot snapshot, {
+    ChatHistoryCompletion? historyCompletion,
+  }) {
+    final next = applyChatSnapshotState(
+      state,
+      snapshot,
+      historyCompletion: historyCompletion,
+    );
     if (next == state) return;
     state = next;
   }
@@ -191,6 +198,10 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   }
 
   StudioThread? _directoryThread(String id) {
+    // 仅在 Thread 快照落地时读取一次目录条目，不是目录增量订阅。
+    // 目录元数据属于 ThreadDirectoryStore；本族只消费 Thread 有序流，
+    // 不回绑 workspace.thread，也不因目录移除就地清空 workspace。
+    // keepAlive 不会随目录项消失自动释放，移除须调用 releaseThreadSession。
     final window = ref.read(threadDirectoryStoreProvider).window;
     for (final thread in window.threads) {
       if (thread.id == id) return thread;

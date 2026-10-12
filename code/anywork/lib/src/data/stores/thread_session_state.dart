@@ -229,6 +229,8 @@ ThreadSessionState applyTimelinePageState(
     );
   }
   final items = merged.values.toList()..sort(_compareItems);
+  // 裁剪判断必须用合并后的整窗长度，不能用有界窗口与本页长度比较。
+  final trimmed = items.length > threadTimelineWindowLimit;
   var latestTurn = workspace.latestTurn;
   for (final entry in page.turns) {
     latestTurn = newestSessionTurn(latestTurn, entry.turn);
@@ -249,6 +251,7 @@ ThreadSessionState applyTimelinePageState(
     followBottom: followBottom,
     droppedOlder: droppedOlder,
     droppedNewer: droppedNewer,
+    trimmed: trimmed,
   );
   return current.copyWith(
     workspace: bounded,
@@ -256,10 +259,16 @@ ThreadSessionState applyTimelinePageState(
   );
 }
 
+/// Chat 窗口一次交付对应的历史命令完成方向。
+///
+/// 与旧 reducer 的完成分类同义，定义在新骨架内，避免交叉引用。
+enum ChatHistoryCompletion { focus, older, newer }
+
 ThreadSessionState applyChatSnapshotState(
   ThreadSessionState current,
-  StudioChatSnapshot snapshot,
-) {
+  StudioChatSnapshot snapshot, {
+  ChatHistoryCompletion? historyCompletion,
+}) {
   final workspace = current.workspace;
   if (workspace == null) return current;
   if (current.hasChatWindow &&
@@ -269,19 +278,42 @@ ThreadSessionState applyChatSnapshotState(
   }
   final items = [for (final entry in snapshot.items) entry.item];
   final next = workspace.copyWith(items: items);
+  final savedAnchor = current.history.anchor;
+  final inspectionAnchor =
+      savedAnchor != null &&
+          savedAnchor.readingIntent == TimelineReadingIntent.inspectItem &&
+          items.any((item) => item.id == savedAnchor.itemId)
+      ? savedAnchor
+      : null;
+  final history = current.history.copyWith(
+    hasOlder: snapshot.hasOlder,
+    hasNewer: snapshot.hasNewer,
+    canExtendLatest: snapshot.canExtendLatest,
+    olderCursor: items.firstOrNull?.id,
+    newerCursor: items.lastOrNull?.id,
+    isLoading: historyCompletion == null ? current.history.isLoading : false,
+    errorMessage: switch (historyCompletion) {
+      ChatHistoryCompletion.focus || ChatHistoryCompletion.older => null,
+      ChatHistoryCompletion.newer || null => current.history.errorMessage,
+    },
+    newerError: switch (historyCompletion) {
+      ChatHistoryCompletion.focus || ChatHistoryCompletion.newer => null,
+      ChatHistoryCompletion.older || null => current.history.newerError,
+    },
+    detached: snapshot.focusedItemId != null,
+    anchor: snapshot.focusedItemId == null
+        ? inspectionAnchor
+        : TimelineAnchor(
+            snapshot.focusedItemId!,
+            current.history.anchor?.offset ?? 0,
+            readingIntent: TimelineReadingIntent.browseHistory,
+          ),
+  );
   return current.copyWith(
     workspace: next,
     chatVersion: snapshot.version,
     hasChatWindow: true,
-    history: _syncItemBody(
-      current.history.copyWith(
-        hasOlder: snapshot.hasOlder,
-        hasNewer: snapshot.hasNewer,
-        canExtendLatest: snapshot.canExtendLatest,
-        isLoading: false,
-      ),
-      next,
-    ),
+    history: _syncItemBody(history, next),
   );
 }
 
@@ -469,6 +501,7 @@ ThreadHistoryWindow _historyAfterPage(
   required bool followBottom,
   required bool droppedOlder,
   required bool droppedNewer,
+  required bool trimmed,
 }) {
   final databaseId = page.databaseId.isEmpty
       ? history.databaseId
@@ -515,8 +548,7 @@ ThreadHistoryWindow _historyAfterPage(
         ? false
         : replaceWindow ||
               history.detached ||
-              (bounded.items.length < page.items.length &&
-                  direction == TimelineDirection.older),
+              (trimmed && direction == TimelineDirection.older),
     isLoading: false,
     errorMessage:
         followBottom || replaceWindow || direction == TimelineDirection.older

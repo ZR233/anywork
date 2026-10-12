@@ -56,7 +56,7 @@ final class DirectoryCommandsProvider
   }
 }
 
-String _$directoryCommandsHash() => r'0d11c4248b06e7bd991210f996ef64b03732a6e9';
+String _$directoryCommandsHash() => r'ba02e40c9eb5bbf05353ecca88f2bb3aa7c5bc89';
 
 /// 目录、选择与领域刷新命令。
 ///

@@ -291,6 +291,8 @@ class StudioBridge {
               upserted: upserted,
               removed: removed,
             );
+        // 目录增量只更新 threadDirectoryStore。removed 会话由 reconcile 释放，
+        // 不把目录线程元数据回绑到 threadSession，也不在这里清空其 workspace。
         if (applied) reconcileRemovedThreads(_ref, removed.toSet());
       case AgentDirectoryChangedPayload(:final state):
         _ref.read(projectStoreProvider.notifier).applyAgentDirectory(state);

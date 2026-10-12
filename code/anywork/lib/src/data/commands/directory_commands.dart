@@ -129,9 +129,27 @@ class DirectoryCommands extends _$DirectoryCommands {
   Future<void> archiveProject(String projectId) {
     return _lane.enqueue(() async {
       if (_selectedProjectBusy(projectId)) return;
+      // 只记录当前已加载窗口中的该项目会话。分页窗口之外的 id 不能当成已删除。
+      final loadedIds = ref
+          .read(threadDirectoryStoreProvider)
+          .window
+          .threads
+          .where((thread) => thread.projectId == projectId)
+          .map((thread) => thread.id)
+          .toSet();
       await _api.archiveProject(projectId);
       if (!ref.mounted) return;
       await _reloadProduct();
+      if (!ref.mounted) return;
+      final remaining = ref
+          .read(threadDirectoryStoreProvider)
+          .window
+          .threads
+          .map((thread) => thread.id)
+          .toSet();
+      for (final id in loadedIds) {
+        if (!remaining.contains(id)) releaseThreadSession(ref, id);
+      }
     });
   }
 
