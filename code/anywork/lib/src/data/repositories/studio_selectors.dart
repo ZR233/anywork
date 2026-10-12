@@ -58,8 +58,6 @@ class TimelinePaneView {
   );
 }
 
-typedef StartPageView = StudioStartPageProjection;
-
 /// Fine-grained projections all read the same AsyncNotifier state. None of
 /// these providers opens a second event stream or keeps a durable copy.
 final runtimeProjectionProvider = Provider<AsyncValue<StudioRuntimeProjection>>(
@@ -174,15 +172,6 @@ final class StartSessionViewModel {
   final ComposerTargetDiagnostic? targetDiagnostic;
 }
 
-final settingsProjectionProvider =
-    Provider<AsyncValue<StudioSettingsProjection>>((ref) {
-      return ref.watch(
-        studioControllerProvider.select(
-          (state) => state.whenData(StudioSettingsProjection.fromState),
-        ),
-      );
-    });
-
 final providerUsageProjectionProvider =
     Provider<AsyncValue<StudioProviderUsageProjection>>((ref) {
       return ref.watch(
@@ -212,25 +201,6 @@ final composerProjectionProvider =
         ),
       );
     });
-
-final interactionProjectionProvider =
-    Provider<AsyncValue<StudioInteractionProjection>>((ref) {
-      return ref.watch(
-        studioControllerProvider.select(
-          (state) => state.whenData(StudioInteractionProjection.fromState),
-        ),
-      );
-    });
-
-final storageProjectionProvider = Provider<AsyncValue<StudioStorageProjection>>(
-  (ref) {
-    return ref.watch(
-      studioControllerProvider.select(
-        (state) => state.whenData(StudioStorageProjection.fromState),
-      ),
-    );
-  },
-);
 
 final activityProjectionProvider =
     Provider.family<AsyncValue<StudioActivityProjection?>, String>((
@@ -311,15 +281,6 @@ TimelinePaneView? _timelinePaneForState(
 }
 
 @riverpod
-AsyncValue<AgentWorkspaceView?> selectedAgentWorkspace(Ref ref) {
-  return ref.watch(
-    studioControllerProvider.select(
-      (state) => state.whenData((state) => state.selectedAgentWorkspace),
-    ),
-  );
-}
-
-@riverpod
 AsyncValue<ShellChromeView> shellChrome(Ref ref) {
   return ref.watch(
     studioControllerProvider.select(
@@ -342,15 +303,6 @@ AsyncValue<HeaderView> studioHeader(Ref ref) {
   return ref.watch(
     studioControllerProvider.select(
       (state) => state.whenData(HeaderView.fromState),
-    ),
-  );
-}
-
-@riverpod
-AsyncValue<SettingsPageView> settingsPage(Ref ref) {
-  return ref.watch(
-    settingsProjectionProvider.select(
-      (state) => state.whenData((projection) => projection.view),
     ),
   );
 }

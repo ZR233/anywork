@@ -9,7 +9,6 @@ import 'provider_models.dart';
 import 'runtime_models.dart';
 import 'settings_models.dart';
 import 'studio_enums.dart';
-import 'studio_projection_models.dart';
 import 'studio_state.dart';
 import 'thread_activity_models.dart';
 import 'thread_directory_models.dart';
@@ -307,74 +306,6 @@ class StudioStatusProjection {
   );
 }
 
-/// Start page projection with deep equality for provider/model-route lists.
-/// `StudioState.providers` derives a fresh metadata list on each read, so a
-/// record containing that list would rebuild the start page on unrelated state
-/// updates even when every provider field is unchanged.
-class StudioStartPageProjection {
-  const StudioStartPageProjection({
-    required this.isStartPage,
-    required this.project,
-    required this.composer,
-    required this.permissionMode,
-    required this.canSubmit,
-    required this.mode,
-    required this.workspaceMode,
-    required this.targetDiagnostic,
-    required this.providers,
-    required this.modeModelRoutes,
-    required this.modelRouteMutationPending,
-  });
-
-  final bool isStartPage;
-  final StudioProject? project;
-  final ComposerThreadState composer;
-  final PermissionMode permissionMode;
-  final bool canSubmit;
-  final ThreadModeId mode;
-  final ThreadWorkspaceMode workspaceMode;
-  final ComposerTargetDiagnostic? targetDiagnostic;
-  final List<ProviderSettingsView> providers;
-  final List<ModeModelRouteView> modeModelRoutes;
-  final bool modelRouteMutationPending;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioStartPageProjection &&
-            isStartPage == other.isStartPage &&
-            _projectEquals(project, other.project) &&
-            composer == other.composer &&
-            permissionMode == other.permissionMode &&
-            canSubmit == other.canSubmit &&
-            mode == other.mode &&
-            workspaceMode == other.workspaceMode &&
-            targetDiagnostic == other.targetDiagnostic &&
-            _listEqualsBy(providers, other.providers, _providerEquals) &&
-            _listEqualsBy(
-              modeModelRoutes,
-              other.modeModelRoutes,
-              _modeRouteEquals,
-            ) &&
-            modelRouteMutationPending == other.modelRouteMutationPending;
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    isStartPage,
-    _projectHash(project),
-    composer,
-    permissionMode,
-    canSubmit,
-    mode,
-    workspaceMode,
-    targetDiagnostic,
-    Object.hashAll(providers.map(_providerHash)),
-    Object.hashAll(modeModelRoutes.map(_modeRouteHash)),
-    modelRouteMutationPending,
-  );
-}
-
 /// Target diagnostics remain observable after a thread/workspace target is
 /// terminated or removed from the directory. This projection is deliberately
 /// independent from any selected workspace composer.
@@ -406,92 +337,6 @@ class StudioComposerDiagnosticsProjection {
 
   @override
   int get hashCode => Object.hashAll(diagnostics);
-}
-
-/// Settings page projection keyed by settings/resource revisions and value
-/// fields. The legacy SettingsPageView is retained for its existing callers,
-/// while this wrapper prevents a live Thread runtime update from recreating the
-/// settings page when none of its inputs changed.
-class StudioSettingsProjection {
-  const StudioSettingsProjection({
-    required this.view,
-    required this.settingsRevision,
-    required this.modelCatalogRevision,
-    required this.providerCatalogRevision,
-    required this.providerCatalogSchemaVersion,
-    required this.mcpRevision,
-    required this.lspRevision,
-    required this.skillsRevision,
-    required this.skillsCatalogRevision,
-    required this.selectedProjectId,
-    required this.activeSkills,
-    required this.runtimeBusy,
-  });
-
-  factory StudioSettingsProjection.fromState(StudioState state) {
-    final projectId = state.selectedProjectId;
-    final skills = projectId == null ? null : state.skillsByProject[projectId];
-    return StudioSettingsProjection(
-      view: SettingsPageView.fromState(state),
-      settingsRevision: state.settingsRevision,
-      modelCatalogRevision: state.settingsState.modelCatalogRevision,
-      providerCatalogRevision: state.providerCatalog.revision,
-      providerCatalogSchemaVersion: state.providerCatalog.schemaVersion,
-      mcpRevision: state.mcpState.revision,
-      lspRevision: state.lspState.revision,
-      skillsRevision: skills?.revision ?? 0,
-      skillsCatalogRevision: skills?.catalogRevision ?? 0,
-      selectedProjectId: projectId,
-      activeSkills: state.runtime.activeSkills,
-      runtimeBusy: state.isBusy || state.runtime.hasActiveWorkflow,
-    );
-  }
-
-  final SettingsPageView view;
-  final int settingsRevision;
-  final int modelCatalogRevision;
-  final String providerCatalogRevision;
-  final int providerCatalogSchemaVersion;
-  final int mcpRevision;
-  final int lspRevision;
-  final int skillsRevision;
-  final int skillsCatalogRevision;
-  final String? selectedProjectId;
-  final List<String> activeSkills;
-  final bool runtimeBusy;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioSettingsProjection &&
-            settingsRevision == other.settingsRevision &&
-            modelCatalogRevision == other.modelCatalogRevision &&
-            providerCatalogRevision == other.providerCatalogRevision &&
-            providerCatalogSchemaVersion ==
-                other.providerCatalogSchemaVersion &&
-            mcpRevision == other.mcpRevision &&
-            lspRevision == other.lspRevision &&
-            skillsRevision == other.skillsRevision &&
-            skillsCatalogRevision == other.skillsCatalogRevision &&
-            selectedProjectId == other.selectedProjectId &&
-            listEquals(activeSkills, other.activeSkills) &&
-            runtimeBusy == other.runtimeBusy;
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    settingsRevision,
-    modelCatalogRevision,
-    providerCatalogRevision,
-    providerCatalogSchemaVersion,
-    mcpRevision,
-    lspRevision,
-    skillsRevision,
-    skillsCatalogRevision,
-    selectedProjectId,
-    Object.hashAll(activeSkills),
-    runtimeBusy,
-  );
 }
 
 /// Provider usage has its own topic/revision. It must not be invalidated by a
@@ -705,67 +550,6 @@ class StudioComposerProjection {
   );
 }
 
-class StudioInteractionProjection {
-  const StudioInteractionProjection({
-    required this.threadId,
-    required this.interaction,
-    required this.isBusy,
-  });
-
-  factory StudioInteractionProjection.fromState(StudioState state) {
-    return StudioInteractionProjection(
-      threadId: state.selectedThreadId,
-      interaction: state.activeInteraction,
-      isBusy: state.isBusy,
-    );
-  }
-
-  final String? threadId;
-  final PendingInteraction? interaction;
-  final bool isBusy;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioInteractionProjection &&
-            threadId == other.threadId &&
-            _interactionEquals(interaction, other.interaction) &&
-            isBusy == other.isBusy;
-  }
-
-  @override
-  int get hashCode =>
-      Object.hash(threadId, _interactionHash(interaction), isBusy);
-}
-
-class StudioStorageProjection {
-  const StudioStorageProjection({
-    required this.threadId,
-    required this.storage,
-  });
-
-  factory StudioStorageProjection.fromState(StudioState state) {
-    return StudioStorageProjection(
-      threadId: state.selectedThreadId,
-      storage: state.selectedWorkspace?.storage,
-    );
-  }
-
-  final String? threadId;
-  final ThreadStorageStateView? storage;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioStorageProjection &&
-            threadId == other.threadId &&
-            _storageEquals(storage, other.storage);
-  }
-
-  @override
-  int get hashCode => Object.hash(threadId, _storageHash(storage));
-}
-
 class StudioActivityProjection {
   const StudioActivityProjection({required this.threadId, required this.view});
 
@@ -814,20 +598,6 @@ bool _threadEquals(StudioThread? left, StudioThread? right) {
       left.archived == right.archived &&
       left.workspaceMode == right.workspaceMode &&
       left.workspacePath == right.workspacePath;
-}
-
-bool _projectEquals(StudioProject? left, StudioProject? right) {
-  if (identical(left, right)) return true;
-  if (left == null || right == null) return false;
-  return left.id == right.id &&
-      left.name == right.name &&
-      left.path == right.path &&
-      left.sshAlias == right.sshAlias;
-}
-
-int? _projectHash(StudioProject? project) {
-  if (project == null) return null;
-  return Object.hash(project.id, project.name, project.path, project.sshAlias);
 }
 
 int? _threadHash(StudioThread? thread) {

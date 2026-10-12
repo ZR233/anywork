@@ -116,6 +116,12 @@ root Thread 非空闲或存在活动 workflow 时不打开模型或思考强度�
 等待结束后恢复选择。提示不阻止编辑草稿，
 切换资格与路由可用性均来自当前 Thread 快照，不在 Flutter 侧推断新的路由或放宽准入。
 
+选择器的触发器文案与菜单行的选中态必须来自同一个 canonical 事实，并且只随该事实变化：
+模式切换、思考强度切换或模型切换完成后，主界面无需退出或重新进入任何页面即可显示新值。
+页面跳转、菜单开关或浮层重建都不是刷新条件，也不得成为"新值可见"的前提；任一选择器若必须
+靠一次设置页往返才显示新值，即视为数据层缺陷（见 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源)），
+不得用页面级刷新掩盖。
+
 起始页 composer 另外提供会话工作区选择：`local`（默认，使用 Project 目录）或 `worktree`
 （从 Project 的 Git 仓库 `HEAD` 新建独立工作树）。该选择属于所在项目的输入草稿，按项目隔离
 保存，并随首个 prompt 提交给创建命令。本地与 SSH 项目都提供 `worktree`：非 Git 项目、
@@ -674,7 +680,7 @@ Model、Mode 和 reasoning selector 不保存完整 settings，也不捕获可�
 projection 分为 canonical、pending、resolved、unavailable；pending 只提供即时展示，失败
 回滚到 canonical 并保留可重试错误。模型目录刷新按 provider 去重并使用独立 catalog 水位，
 不得触发设置页整棵重建或覆盖 route。
-新会话页面消费 `StartSessionViewModel`，设置页消费按领域的 `SettingsViewModel`/selector；
+新会话页面消费 `StartSessionViewModel`，设置页按 tab 直接消费按领域的最窄 selector；
 两者都只读 immutable projection。`StudioMenu` 的异步命令在关闭菜单后继续由 app 级 lane
 完成，快速 A→B→C 选择只保留目标键的最新意图。
 
@@ -686,8 +692,9 @@ projection 分为 canonical、pending、resolved、unavailable；pending 只提�
 
 UI 的 canonical state 由单一 reducer/store 更新，Widget 只订阅职责内不可变、值相等的
 projection。状态栏、上下文和 throughput 只消费 runtime/context/throughput projection；
-composer 只消费 composer projection；timeline、interaction、activity、storage、settings、
-usage、statistics 与 costs 分别消费对应 projection。高频 runtime 更新不得使完整
+composer 只消费 composer projection；timeline、activity、provider usage、模型统计与
+costs 分别消费对应 projection；设置页按 tab 直接 `select` 它需要的设置字段。已无消费者的
+重复 projection（settings/interaction/storage 包装层与 StartPageView）不再保留。高频 runtime 更新不得使完整
 `AgentWorkspaceView` 驱动 timeline、composer、表单或滚动状态重建；弹层打开期间也必须随
 canonical 更新，隐藏页面释放 lease，重新进入先恢复最新基线。
 

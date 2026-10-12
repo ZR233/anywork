@@ -87,8 +87,9 @@ controller 变化不得导致 lease 重建。收到 `lagged` 时只使对应 top
 
 设置领域保持真实职责边界：MCP、LSP、项目 Skills、Provider usage、模型性能、持久化队列、
 Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
-topic；Skills 作用域始终携带当前 project identity。会话可见性变化使用单调生命周期代次，
-快速离开、重新进入或再次离开不得由旧异步收尾清除新窗口、费用或草稿锚点。
+topic；Skills 作用域始终携带当前 project identity。会话可见性变化按电平收敛阅读面资源：
+每次变化都重新推导应有的订阅与租约，快速离开、重新进入或再次离开都不得留下与事实不符的
+订阅状态，也不得清除新窗口、费用或草稿锚点。
 
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
 持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls
@@ -610,26 +611,6 @@ SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提�
 这些用户主动启动的外部应用拥有独立生命周期，不随 Studio 退出终止，也不复用 helper
 非交互通道或改变其资源回收契约。
 
-## 18.6 Settings 与 Model Catalog 的独立时钟
-
-Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
-`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
-对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider
-的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
-frame 和 baseline 进入同一 reducer merge path，页面不得按到达顺序直接替换整棵 `StudioState`。
-
-Flutter 的新会话 draft、Thread route 和 Settings canonical state 是三种不同事实。draft
-只按 project 保存在 `SessionDraftStore` 投影中，canonical snapshot 到达时不得清除或复制
-draft map。Settings 读取与写入由 app 级 operation coordinator 串行化；页面离开只释放观察者，不取消
-在途 command。设置路由返回由导航协调器把有界的 `readSettingsState` 排入同一 settings
-operation lane，确保它排在已接受的写入之后，并通过同一 canonical merge path 合并；因此
-设置页重新进入或重建不能成为刷新事实的前提。页面只发起导航，不等待 Bridge；等待超时立即
-结束协调操作并保留后台 command/read，完成后仍会发布结果。
-Flutter 数据层按 `StudioBridgeDataSource`、`StudioSettingsRepository`、
-`StudioThreadRepository` 和 `SessionDraftStore` 分界：FRB 只传输 typed 数据，设置与线程
-reducer 不共享 owner。`StudioNavigationCoordinator` 只维护路由可见性和有界收束，不从
-widget 的 `dispose` 推断业务状态。
-
 ## 18.10 Canonical freshness invariant
 
 每个用户可见字段都必须能追溯回答七项问题：生产 owner；事件或快照来源；Dart reducer/store；
@@ -644,3 +625,53 @@ persistence、updater 与 recovery 等独立职责继续使用各自 typed topic
 storage 则继续共用带 `epoch/baseRevision/revision` 的单一有序流；Dart 可以细分 selector，
 但不得建立绕过同一水位的旁路流。gap、lagged、旧 generation 和关闭都必须走该领域既定的
 resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
+
+违背该不变量的典型形态是"数据看起来需要一次路由往返才新鲜"：把导航、页面重建或浮层开关
+当作刷新条件，等于承认某个字段的事实源缺了一条事件或响应路径。修正必须落在那条路径上，
+不得用页面级刷新、扩展订阅生命周期或重读整棵状态来掩盖。
+
+## 18.11 Settings 与 Model Catalog 的独立时钟
+
+Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
+`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
+对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider
+的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
+frame 和 baseline 进入同一 reducer merge path，页面不得按到达顺序直接替换整棵 `StudioState`。
+
+这两个资源的合并只有**一份实现**（一个纯函数），repository、topic reducer 与 FRB 转换器
+共用它；app 级 repository 只保存"最后采用的 canonical 投影"这一份时钟事实，不再各自维护
+第二套 config/catalog 时钟或第二份合并算法。诊断结论只描述该实现给出的结果，不参与判定。
+
+Flutter 的新会话 draft、Thread route 和 Settings canonical state 是三种不同事实。draft
+只按 project 保存在 `SessionDraftStore` 投影中，canonical snapshot 到达时不得清除或复制
+draft map。Settings 读取与写入由 app 级 operation coordinator 串行化；页面离开只释放观察者，不取消
+在途 command。Settings 与 Thread 目录的 freshness 由 app 级 topic 租约在启动时就建立，因此
+**导航不参与数据同步**：设置路由的出栈、入栈或页面重建都不触发任何 canonical 读取，也不作为
+任何字段可见的前提。页面只发起导航，不等待 Bridge。
+Flutter 数据层按 `StudioBridgeDataSource`、`StudioSettingsRepository`、
+`StudioThreadRepository` 和 `SessionDraftStore` 分界：FRB 只传输 typed 数据，设置与线程
+reducer 不共享 owner。`StudioNavigationCoordinator` 只把"设置路由是否仍在栈上"翻译成阅读面
+可见性，并从 widget 的 `dispose` 推断业务状态。
+
+会话可见性对阅读面资源的收敛是电平触发的：每次调用都按当前可见性与当前已打开选择重新推导
+应有的 Thread 状态流订阅，并在每次 `await` 之后重新推导，直到实际订阅与应有订阅一致。被后续
+调用取代的那一步不得留下"账实不符"的订阅状态（旧实现用单调代次做边沿触发，并在取消订阅之后、
+清账之前提前返回，使客户端认为仍订阅着某个会话而上游订阅已经取消——此后该会话的 mode、route
+与轮次事实都不再更新，直到下一次可见性调用恰好重置它）。可见性只优化资源持有，**不得影响
+事实的新鲜度**：恢复可见必须重新建立订阅，且不依赖用户再走一次导航。
+
+## 18.11.1 Thread 身份的单一来源
+
+Thread 身份事实（mode、title、status、workspace）同时出现在会话自身的状态流快照与
+Thread 目录窗口行中。两者是同一 Rust 事实的两个视图，因此 Dart 侧按"会话自身快照为准、
+目录增量次之"的顺序做**单调单行合并**：快照携带的 thread 先经目录窗口的单行替换并入窗口
+（窗口未包含该会话时保持窗口不变，分页窗口不是完整目录），workspace 再从合并后的行读取。
+更旧的载荷（`updatedAt` 落后于窗口行）不改写窗口里更新的事实；排序键变化时按 canonical
+目录序重排。**旧实现固定取目录行，使会话自身的状态流永远无法修正 mode**：mode 只能靠目录
+事件或一次目录基线页到达，而基线页是严格 `revision >` 门，任何不推进目录水位的 mode 变更
+都会永久停留在旧值，并让 mode selector 的文案与选中态一起陈旧。
+
+Thread route 的命令响应由 backend 的 canonical thread snapshot 组装，因此与状态流表达同一
+事实，只是缺少流的有序信封。响应携带的 `modelRoute` 按 route revision 单调采纳（更新的流事实
+永不被更旧响应覆盖），响应的其余运行时计数不在这里写入——它们只由有序 Thread reducer 收敛。
+丢弃这份 canonical route 会让选择器在乐观投影清除后回落到旧值，表现为"改完又变回去"。

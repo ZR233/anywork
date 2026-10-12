@@ -68,15 +68,25 @@ StudioState applySessionCostsState(
 /// Thread snapshot 只替换当前状态：thread 身份、revision、activeTurn、pending
 /// Interaction、runtime、Todo、typed 活动与 typed 存储状态。有界消息窗口属于阅读面，
 /// 只由 ChatView 维护；snapshot 不携带条目，也不与旧条目混合。
+///
+/// 快照里的 thread 是该会话身份的 canonical 事实（mode、title、status 与
+/// workspace），因此先按 [ThreadDirectoryWindow.replaceIdentity] 合并进目录窗口，
+/// 再按合并后的目录行构造 workspace。旧实现固定取目录行，使会话自身的状态流永远
+/// 无法修正 mode：mode 只能靠目录事件或一次目录基线页到达，而基线页是严格
+/// `revision >` 门，任何不推进目录水位的 mode 变更都会永久停留在旧值。
 StudioState applyThreadSnapshot(StudioState current, ThreadWorkspace snapshot) {
   final threadId = snapshot.thread.id;
   if (threadId.isEmpty) return current;
-  final previous = current.workspacesByThread[threadId];
+  final window = current.threadDirectory.replaceIdentity(snapshot.thread);
+  final merged = identical(window, current.threadDirectory)
+      ? current
+      : current.copyWith(threadDirectory: window);
+  final previous = merged.workspacesByThread[threadId];
   // Each accepted snapshot begins a new subscription generation. Its revision may be lower
   // than the old generation's live-notification revision; only that generation's frames may
   // advance it.
   final base = previous ?? snapshot.copyWith(items: const []);
-  final directory = current.threads
+  final directory = merged.threads
       .where((thread) => thread.id == threadId)
       .firstOrNull;
   final next = base.copyWith(
@@ -90,11 +100,11 @@ StudioState applyThreadSnapshot(StudioState current, ThreadWorkspace snapshot) {
     storage: snapshot.storage,
     latestTurn: _newestTurn(base.latestTurn, snapshot.activeTurn),
   );
-  final ui = current.workspaceUiByThread[threadId] ?? const WorkspaceUiState();
-  return current.copyWith(
-    workspacesByThread: {...current.workspacesByThread, threadId: next},
+  final ui = merged.workspaceUiByThread[threadId] ?? const WorkspaceUiState();
+  return merged.copyWith(
+    workspacesByThread: {...merged.workspacesByThread, threadId: next},
     workspaceUiByThread: {
-      ...current.workspaceUiByThread,
+      ...merged.workspaceUiByThread,
       threadId: ui.copyWith(syncState: AgentWorkspaceSyncState.ready),
     },
   );
@@ -697,26 +707,6 @@ StudioState releaseThreadHistoryPayload(StudioState current, String threadId) {
               ),
             ),
           },
-  );
-}
-
-StudioState applySettingsState(
-  StudioState current,
-  SettingsStateSnapshot next,
-) {
-  final previous = current.settingsState;
-  // Direct responses can carry both resources. Merge them through the same
-  // independent-clock path used by the two topic reducers.
-  if (next.state.value != null && previous.state.value != null) {
-    final merged = mergeCanonicalSettingsSnapshots(previous, next);
-    if (merged == null) return current;
-    return current.copyWith(settingsState: merged);
-  }
-  return _applyObservedSnapshot(
-    current,
-    current.settingsState,
-    next,
-    (snapshot) => current.copyWith(settingsState: snapshot),
   );
 }
 

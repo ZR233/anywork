@@ -33,23 +33,6 @@ final class SettingsOperationCoordinator {
   }
 }
 
-/// The canonical configuration clock.  It contains only settings owned by
-/// the configuration transaction lane; model discovery has its own clock.
-final class SettingsConfigState {
-  const SettingsConfigState({required this.revision, required this.data});
-
-  final int revision;
-  final SettingsStateData data;
-}
-
-/// The canonical provider/model directory clock.
-final class ModelCatalogState {
-  const ModelCatalogState({required this.revision, required this.providers});
-
-  final int revision;
-  final List<ProviderSettingsView> providers;
-}
-
 /// Structured merge telemetry exposed to the driver and debug logs.  It does
 /// not contain credentials, prompts, or model content.
 final class SettingsMergeDiagnostic {
@@ -62,7 +45,6 @@ final class SettingsMergeDiagnostic {
     required this.reason,
     this.operationId,
     this.pendingCount = 0,
-    this.topicEpoch,
   });
 
   final String domain;
@@ -73,7 +55,6 @@ final class SettingsMergeDiagnostic {
   final String reason;
   final String? operationId;
   final int pendingCount;
-  final int? topicEpoch;
 
   Map<String, Object?> toJson() => {
     'domain': domain,
@@ -84,224 +65,17 @@ final class SettingsMergeDiagnostic {
     'reason': reason,
     if (operationId != null) 'operationId': operationId,
     'pendingCount': pendingCount,
-    if (topicEpoch != null) 'topicEpoch': topicEpoch,
   };
 }
 
-/// App-level owner for the split settings resources.
+/// 唯一一份 settings 合并实现：配置资源与模型目录资源各自按自己的水位前进。
 ///
-/// The controller exposes immutable projections, while this repository keeps
-/// the last canonical config/catalog clocks across route disposal.  Direct
-/// responses and topic frames use the same merge path; a lower revision from
-/// either domain is ignored without touching the other domain.
-final class StudioSettingsRepository {
-  SettingsStateSnapshot? _canonical;
-  SettingsConfigState? _config;
-  ModelCatalogState? _catalog;
-  String? _lastSource;
-  SettingsMergeDiagnostic? _lastMerge;
-  int? _topicEpoch;
-
-  SettingsStateSnapshot? get canonical => _canonical;
-  SettingsConfigState? get configState => _config;
-  ModelCatalogState? get modelCatalogState => _catalog;
-  String? get lastSource => _lastSource;
-  SettingsMergeDiagnostic? get lastMerge => _lastMerge;
-  int? get topicEpoch => _topicEpoch;
-
-  void seed(
-    SettingsStateSnapshot snapshot, {
-    String source = 'baseline',
-    int? topicEpoch,
-  }) {
-    _canonical = snapshot;
-    final data = snapshot.state.value;
-    if (data != null) {
-      _config = SettingsConfigState(revision: snapshot.revision, data: data);
-      _catalog = ModelCatalogState(
-        revision: snapshot.modelCatalogRevision,
-        providers: List.unmodifiable(data.providers),
-      );
-    }
-    _lastSource = source;
-    _topicEpoch = topicEpoch ?? _topicEpoch;
-  }
-
-  SettingsStateSnapshot? merge(
-    SettingsStateSnapshot incoming, {
-    required String source,
-    String? operationId,
-    int pendingCount = 0,
-    int? topicEpoch,
-  }) {
-    final previous = _canonical;
-    if (previous == null) {
-      seed(incoming, source: source, topicEpoch: topicEpoch);
-      _recordMerge(
-        SettingsMergeDiagnostic(
-          domain: 'config/catalog',
-          source: source,
-          currentRevision: 0,
-          incomingRevision: incoming.revision,
-          applied: true,
-          reason: 'baseline',
-          operationId: operationId,
-          pendingCount: pendingCount,
-          topicEpoch: topicEpoch,
-        ),
-      );
-      return incoming;
-    }
-
-    final previousConfigRevision = _config?.revision ?? previous.revision;
-    final previousCatalogRevision =
-        _catalog?.revision ?? previous.modelCatalogRevision;
-    final configIsNewer = incoming.revision > previousConfigRevision;
-    final catalogIsNewer =
-        incoming.modelCatalogRevision > previousCatalogRevision;
-    if (!configIsNewer && !catalogIsNewer) {
-      _recordMerge(
-        SettingsMergeDiagnostic(
-          domain: 'config/catalog',
-          source: source,
-          currentRevision: previousConfigRevision,
-          incomingRevision: incoming.revision,
-          applied: false,
-          reason: 'stale-or-idempotent',
-          operationId: operationId,
-          pendingCount: pendingCount,
-          topicEpoch: topicEpoch,
-        ),
-      );
-      return null;
-    }
-
-    final previousData = previous.state.value;
-    final incomingData = incoming.state.value;
-    if (previousData == null || incomingData == null) {
-      _recordMerge(
-        SettingsMergeDiagnostic(
-          domain: 'config/catalog',
-          source: source,
-          currentRevision: previousConfigRevision,
-          incomingRevision: incoming.revision,
-          applied: false,
-          reason: 'missing-state-data',
-          operationId: operationId,
-          pendingCount: pendingCount,
-          topicEpoch: topicEpoch,
-        ),
-      );
-      return null;
-    }
-
-    if (configIsNewer) {
-      _config = SettingsConfigState(
-        revision: incoming.revision,
-        data: incomingData,
-      );
-    }
-    if (catalogIsNewer) {
-      _catalog = ModelCatalogState(
-        revision: incoming.modelCatalogRevision,
-        providers: List.unmodifiable(incomingData.providers),
-      );
-    }
-    _canonical = _project(previous, config: _config, catalog: _catalog);
-    _lastSource = source;
-    _topicEpoch = topicEpoch ?? _topicEpoch;
-    _recordMerge(
-      SettingsMergeDiagnostic(
-        domain: configIsNewer && catalogIsNewer
-            ? 'config/catalog'
-            : configIsNewer
-            ? 'config'
-            : 'catalog',
-        source: source,
-        currentRevision: configIsNewer
-            ? previousConfigRevision
-            : previousCatalogRevision,
-        incomingRevision: configIsNewer
-            ? incoming.revision
-            : incoming.modelCatalogRevision,
-        applied: true,
-        reason: 'advanced',
-        operationId: operationId,
-        pendingCount: pendingCount,
-        topicEpoch: topicEpoch,
-      ),
-    );
-    return _canonical;
-  }
-
-  SettingsStateSnapshot? applyTo(
-    SettingsStateSnapshot current,
-    SettingsStateSnapshot incoming, {
-    required String source,
-    String? operationId,
-    int pendingCount = 0,
-    int? topicEpoch,
-  }) {
-    if (_canonical == null) seed(current, source: 'state');
-    final merged = merge(
-      incoming,
-      source: source,
-      operationId: operationId,
-      pendingCount: pendingCount,
-      topicEpoch: topicEpoch,
-    );
-    return merged ?? current;
-  }
-
-  void _recordMerge(SettingsMergeDiagnostic diagnostic) {
-    _lastMerge = diagnostic;
-    debugPrint('studio_settings_merge ${jsonEncode(diagnostic.toJson())}');
-  }
-
-  SettingsStateSnapshot _project(
-    SettingsStateSnapshot previous, {
-    required SettingsConfigState? config,
-    required ModelCatalogState? catalog,
-  }) {
-    final configData = config?.data ?? previous.state.value!;
-    final catalogProviders = catalog?.providers ?? configData.providers;
-    final catalogByProvider = {
-      for (final provider in catalogProviders) provider.id: provider,
-    };
-    final providers = [
-      for (final provider in configData.providers)
-        if (catalogByProvider[provider.id] case final catalogProvider?)
-          provider.copyWith(
-            models: catalogProvider.models,
-            modelCatalog: catalogProvider.modelCatalog,
-          )
-        else
-          provider,
-    ];
-    return SettingsStateSnapshot(
-      providers: providers,
-      defaultProviderId: configData.defaultProviderId,
-      modeModelRoutes: configData.modeModelRoutes,
-      roles: configData.roles,
-      mcpServers: configData.mcpServers,
-      instructions: configData.instructions,
-      skills: configData.skills,
-      general: configData.general,
-      webSearch: configData.webSearch,
-      deepSeekWebSearch: configData.deepSeekWebSearch,
-      permissionMode: configData.permissionMode,
-      revision: config?.revision ?? previous.revision,
-      modelCatalogRevision: catalog?.revision ?? previous.modelCatalogRevision,
-    );
-  }
-}
-
-/// Merges the direct Bridge response into the two logical settings resources.
+/// Bridge 的直接响应会同时返回两个资源，topic 事件分别只携带一个资源；因此消费者必须
+/// 分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider 的模型与目录
+/// 状态。同一水位幂等丢弃，较低水位不得覆盖较新事实，任一资源缺失时不做半份合并。
 ///
-/// The UI keeps one immutable projection for convenience, but the config and
-/// catalog clocks are merged independently. A response or topic frame can
-/// advance either resource without replacing the other resource with an older
-/// page snapshot.
+/// repository（直接响应/全量 snapshot）、topic reducer 与 FRB 转换器都调用这一个函数，
+/// 不存在第二套合并算法或第二份时钟。
 SettingsStateSnapshot? mergeCanonicalSettingsSnapshots(
   SettingsStateSnapshot previous,
   SettingsStateSnapshot next, {
@@ -356,4 +130,107 @@ SettingsStateSnapshot? mergeCanonicalSettingsSnapshots(
         ? next.modelCatalogRevision
         : previous.modelCatalogRevision,
   );
+}
+
+/// App-level owner for the adopted settings projection.
+///
+/// It keeps exactly one clock fact — the last adopted canonical projection — and
+/// delegates every merge decision to [mergeCanonicalSettingsSnapshots]. Direct
+/// responses, topic frames and full snapshots all enter that same path, so a
+/// lower revision from any transport is ignored without touching the other
+/// resource, and no transport owns a second copy of the algorithm.
+final class StudioSettingsRepository {
+  SettingsStateSnapshot? _canonical;
+  SettingsMergeDiagnostic? _lastMerge;
+
+  SettingsMergeDiagnostic? get lastMerge => _lastMerge;
+
+  void seed(SettingsStateSnapshot snapshot) {
+    _canonical = snapshot;
+  }
+
+  SettingsStateSnapshot? merge(
+    SettingsStateSnapshot incoming, {
+    required String source,
+    String? operationId,
+    int pendingCount = 0,
+  }) {
+    final previous = _canonical;
+    if (previous == null) {
+      _canonical = incoming;
+      _recordMerge(
+        SettingsMergeDiagnostic(
+          domain: 'config/catalog',
+          source: source,
+          currentRevision: 0,
+          incomingRevision: incoming.revision,
+          applied: true,
+          reason: 'baseline',
+          operationId: operationId,
+          pendingCount: pendingCount,
+        ),
+      );
+      return incoming;
+    }
+
+    final previousConfigRevision = previous.revision;
+    final previousCatalogRevision = previous.modelCatalogRevision;
+    final configIsNewer = incoming.revision > previousConfigRevision;
+    final catalogIsNewer =
+        incoming.modelCatalogRevision > previousCatalogRevision;
+    // 合并是否发生只由这一份实现决定；下面的诊断只是在描述它的结论。
+    final merged = mergeCanonicalSettingsSnapshots(previous, incoming);
+    _canonical = merged ?? previous;
+    _recordMerge(
+      SettingsMergeDiagnostic(
+        domain: configIsNewer && catalogIsNewer
+            ? 'config/catalog'
+            : configIsNewer
+            ? 'config'
+            : catalogIsNewer
+            ? 'catalog'
+            : 'config/catalog',
+        source: source,
+        currentRevision: configIsNewer
+            ? previousConfigRevision
+            : previousCatalogRevision,
+        incomingRevision: configIsNewer
+            ? incoming.revision
+            : catalogIsNewer
+            ? incoming.modelCatalogRevision
+            : incoming.revision,
+        applied: merged != null,
+        reason: merged != null
+            ? 'advanced'
+            : incoming.state.value == null || previous.state.value == null
+            ? 'missing-state-data'
+            : 'stale-or-idempotent',
+        operationId: operationId,
+        pendingCount: pendingCount,
+      ),
+    );
+    return merged;
+  }
+
+  SettingsStateSnapshot? applyTo(
+    SettingsStateSnapshot current,
+    SettingsStateSnapshot incoming, {
+    required String source,
+    String? operationId,
+    int pendingCount = 0,
+  }) {
+    if (_canonical == null) seed(current);
+    final merged = merge(
+      incoming,
+      source: source,
+      operationId: operationId,
+      pendingCount: pendingCount,
+    );
+    return merged ?? current;
+  }
+
+  void _recordMerge(SettingsMergeDiagnostic diagnostic) {
+    _lastMerge = diagnostic;
+    debugPrint('studio_settings_merge ${jsonEncode(diagnostic.toJson())}');
+  }
 }

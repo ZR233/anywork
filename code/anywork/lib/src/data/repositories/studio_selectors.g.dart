@@ -9,56 +9,6 @@ part of 'studio_selectors.dart';
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
 
-@ProviderFor(selectedAgentWorkspace)
-final selectedAgentWorkspaceProvider = SelectedAgentWorkspaceProvider._();
-
-final class SelectedAgentWorkspaceProvider
-    extends
-        $FunctionalProvider<
-          AsyncValue<AgentWorkspaceView?>,
-          AsyncValue<AgentWorkspaceView?>,
-          AsyncValue<AgentWorkspaceView?>
-        >
-    with $Provider<AsyncValue<AgentWorkspaceView?>> {
-  SelectedAgentWorkspaceProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'selectedAgentWorkspaceProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$selectedAgentWorkspaceHash();
-
-  @$internal
-  @override
-  $ProviderElement<AsyncValue<AgentWorkspaceView?>> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  AsyncValue<AgentWorkspaceView?> create(Ref ref) {
-    return selectedAgentWorkspace(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(AsyncValue<AgentWorkspaceView?> value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<AsyncValue<AgentWorkspaceView?>>(
-        value,
-      ),
-    );
-  }
-}
-
-String _$selectedAgentWorkspaceHash() =>
-    r'3ca65ae265162bccb86596d18493661b9bda1e31';
-
 @ProviderFor(shellChrome)
 final shellChromeProvider = ShellChromeProvider._();
 
@@ -199,53 +149,6 @@ final class StudioHeaderProvider
 }
 
 String _$studioHeaderHash() => r'8b726c8fce95c93dbb23f265869ba39ea61f7d13';
-
-@ProviderFor(settingsPage)
-final settingsPageProvider = SettingsPageProvider._();
-
-final class SettingsPageProvider
-    extends
-        $FunctionalProvider<
-          AsyncValue<SettingsPageView>,
-          AsyncValue<SettingsPageView>,
-          AsyncValue<SettingsPageView>
-        >
-    with $Provider<AsyncValue<SettingsPageView>> {
-  SettingsPageProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'settingsPageProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$settingsPageHash();
-
-  @$internal
-  @override
-  $ProviderElement<AsyncValue<SettingsPageView>> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  AsyncValue<SettingsPageView> create(Ref ref) {
-    return settingsPage(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(AsyncValue<SettingsPageView> value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<AsyncValue<SettingsPageView>>(value),
-    );
-  }
-}
-
-String _$settingsPageHash() => r'f132d212f9cd3a3dd6b5d1208ed661dc38321705';
 
 @ProviderFor(selectedWorkspaceLayout)
 final selectedWorkspaceLayoutProvider = SelectedWorkspaceLayoutProvider._();

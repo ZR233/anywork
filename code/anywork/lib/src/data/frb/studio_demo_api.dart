@@ -1675,9 +1675,12 @@ class DemoStudioBridgeDataSource
         available: true,
       ),
     );
-    _workspaces[threadId] = workspace.copyWith(
-      revision: workspace.revision + 1,
-      runtime: runtime,
+    _workspaces[threadId] = workspace.copyWith(runtime: runtime);
+    // 与生产一致：route 变更作为 Thread 运行时状态流事实交付（revision 单调）。
+    // 只写内存 workspace 会让选择器在乐观值被清除后回落到旧 canonical route。
+    _emitThreadUpdate(
+      threadId,
+      ThreadRuntimeUpdate(runtime: runtime, todo: workspace.todo),
     );
     final settings = await readStudioState();
     return (
@@ -1724,7 +1727,7 @@ class DemoStudioBridgeDataSource
               .where((candidate) => candidate.modeId == ThreadModeId.simple)
               .firstOrNull;
       final thread = workspace.thread;
-      _workspaces[threadId] = workspace.copyWith(
+      final updated = workspace.copyWith(
         revision: workspace.revision + 1,
         thread: thread.copyWith(
           mode: mode,
@@ -1742,6 +1745,11 @@ class DemoStudioBridgeDataSource
                 ),
               ),
       );
+      _workspaces[threadId] = updated;
+      // 与生产一致：mode 变更由目录增量交付（目录 revision 前进）。只改内存
+      // workspace 而不推进目录水位，会让客户端的目录基线门与目录事件都看不到这次
+      // 变更，demo 因此与真实 bridge 语义分叉。
+      _emitThreadDirectoryUpdate(updated.thread);
     }
   }
 

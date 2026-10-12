@@ -4,7 +4,6 @@ export 'studio_selectors.dart';
 export 'studio_state_reducer.dart';
 export 'studio_settings_repository.dart';
 export 'studio_thread_repository.dart';
-export 'settings_view_model.dart';
 export 'studio_product_topics.dart';
 export 'studio_topic_providers.dart';
 export 'studio_topic_reducer.dart';

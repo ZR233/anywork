@@ -124,14 +124,17 @@ class StudioController extends _$StudioController {
   /// 会话阅读面可见性：不可见时不持有 Thread 状态流/ChatView 窗口/费用租约。
   bool _conversationVisible = true;
 
-  /// 会话阅读面可见性的单调生命周期代次：快速离开/重入/再离开时，旧异步收尾
-  /// （旧 false continuation）不得清除后来 true 建立的窗口/费用租约。
+  /// 阅读面代次：每次可见性调用前进一次，使切换之前发起的在途活动详情读取不能再
+  /// 写进新的阅读面。订阅本身由 [_convergeConversationResources] 按电平收敛，
+  /// 不再依赖代次，因此"被取代的一步"不会留下账实不符的订阅状态。
   int _visibilityGeneration = 0;
 
   /// 串行化可见性切换与订阅建立的 barrier。
   Future<void> _visibilityBarrier = Future<void>.value();
 
-  /// 当前已建立状态流订阅的会话；可见时等于选中会话，不可见时为 null。
+  /// 当前实际建立状态流订阅的会话；由 [_subscribeThread] 与
+  /// [_convergeConversationResources] 共同维护，可见时等于选中且已打开的会话，
+  /// 否则为 null。
   String? _subscribedThreadId;
   final Set<String> _historyRequests = {};
   final Map<String, int> _windowLoadGeneration = {};
@@ -213,6 +216,32 @@ class StudioController extends _$StudioController {
     return identical(merged, current.settingsState)
         ? current
         : current.copyWith(settingsState: merged);
+  }
+
+  /// 采纳一次线程路由命令响应里的 canonical route。
+  ///
+  /// 响应由 backend 的 thread snapshot 组装，因此它与线程状态流表达同一事实；唯一
+  /// 的排序依据是 route revision。更新的流事实永远不会被更旧的响应覆盖，而响应的
+  /// 其余运行时计数（用量、工作流、轮次）不在这里写入——它们只由有序 Thread reducer
+  /// 收敛，命令响应不得成为第二个未定序的状态源。
+  StudioState _adoptThreadModelRoute(
+    StudioState current,
+    String threadId,
+    ThreadModelRouteView? route,
+  ) {
+    final workspace = current.workspacesByThread[threadId];
+    if (workspace == null || route == null) return current;
+    final existing = workspace.runtime.modelRoute;
+    if (existing != null && route.revision < existing.revision) return current;
+    if (existing == route) return current;
+    return current.copyWith(
+      workspacesByThread: {
+        ...current.workspacesByThread,
+        threadId: workspace.copyWith(
+          runtime: workspace.runtime.copyWith(modelRoute: route),
+        ),
+      },
+    );
   }
 
   bool _isInitialized(StudioState? current) => current != null;
@@ -337,8 +366,12 @@ class StudioController extends _$StudioController {
 
   /// 会话阅读面可见性合同（Shell 进入设置/离开会话页时调用）。
   ///
-  /// 使用单调生命周期代次 + 串行 barrier，覆盖 `false→true→false`（即使布尔值重复）：
-  /// 被后续调用取代的旧 continuation 不得清除新建立的窗口/费用租约。
+  /// 收敛是**电平触发**的：每次调用都按"当前可见性 + 当前已打开选择"重新推导应有
+  /// 的 Thread 状态流订阅，并在每次 await 之后重新推导，直到实际订阅与应有订阅
+  /// 一致。旧实现用单调代次做边沿触发，并在取消订阅之后、清账之前提前返回，使
+  /// [_subscribedThreadId] 可能停留在"已订阅"而上游订阅其实已经取消；此后该会话的
+  /// 一切线程事实（运行状态、轮次、模型路由）都不再更新，直到下一次可见性调用恰好
+  /// 把它重置——这正是"离开设置页后主界面不再刷新、再往返一次才恢复"的来源。
   ///
   /// `visible = false`：取消 Thread 状态订阅（barrier 等待旧流真正取消）、关闭
   /// ChatView 窗口并释放所属 root 的 SessionCosts 租约；迟到帧按 generation 拒绝。
@@ -347,30 +380,53 @@ class StudioController extends _$StudioController {
   /// 保留的锚点恢复阅读窗口。
   Future<void> setConversationVisible(bool visible) {
     _conversationVisible = visible;
-    final generation = ++_visibilityGeneration;
-    final operation = _visibilityBarrier.then((_) async {
-      if (generation != _visibilityGeneration) return;
-      if (!visible) {
-        _threadCoordinator.switchThread(null);
-        await _threadCoordinator.switchBarrier;
-        if (generation != _visibilityGeneration) return;
-        _closeChatWindow();
-        _releaseSessionCostsLease();
-        _subscribedThreadId = null;
-        return;
-      }
-      final current = state.value;
-      final threadId = current?.selectedThreadId;
-      if (current == null || threadId == null) return;
-      if (!current.openedThreadIds.contains(threadId)) return;
-      if (_subscribedThreadId == threadId) return;
-      await _subscribeThread(threadId);
-    });
+    // 阅读面代次：可见性切换后，旧在途活动详情读取不得写进新窗口。
+    _visibilityGeneration++;
+    final operation = _visibilityBarrier.then(
+      (_) => _convergeConversationResources(),
+    );
     _visibilityBarrier = operation.then(
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
     return operation;
+  }
+
+  /// 把实际 Thread 订阅收敛到应有订阅：电平触发、幂等、可重复调用。
+  ///
+  /// 每次 await 之后都重新推导目标，因此被更新调用取代的那一步不会留下"账实不符"；
+  /// 最后完成的一步总是把订阅与 [_subscribedThreadId] 一起收敛到当前事实。循环上界
+  /// 只是防御性的：可见性或选择在上界内仍在变化时，触发变化的那次调用自己也会入队
+  /// 一步收敛。
+  Future<void> _convergeConversationResources() async {
+    for (var attempt = 0; attempt < 4; attempt += 1) {
+      final current = state.value;
+      final selectedThreadId = current?.selectedThreadId;
+      final desired =
+          !_conversationVisible ||
+              current == null ||
+              selectedThreadId == null ||
+              !current.openedThreadIds.contains(selectedThreadId)
+          ? null
+          : selectedThreadId;
+      if (desired == _subscribedThreadId) {
+        if (desired == null) {
+          // 不可见或未打开：即使订阅早已为空，也必须释放阅读面资源（幂等）。
+          _closeChatWindow();
+          _releaseSessionCostsLease();
+        }
+        return;
+      }
+      if (desired == null) {
+        _threadCoordinator.switchThread(null);
+        await _threadCoordinator.switchBarrier;
+        _closeChatWindow();
+        _releaseSessionCostsLease();
+        _subscribedThreadId = null;
+        continue;
+      }
+      await _subscribeThread(desired);
+    }
   }
 
   /// 按设置页可见 tab 获取 topics 租约；隐藏 tab 应 release，不持有订阅。
@@ -3255,50 +3311,8 @@ class StudioController extends _$StudioController {
     }
   }
 
-  /// Reconcile the settings owner after the Settings route has been popped.
-  ///
-  /// A completed mutation response normally updates the canonical projection
-  /// directly. The read here is the lifecycle boundary for responses that were
-  /// still in flight, topic frames that crossed the route transition, or a
-  /// command callback that outlived the Settings page. The read is queued on
-  /// the same operation lane, so a command accepted between the route pop and
-  /// this call cannot overtake it. It uses the same repository merge path as
-  /// every other settings source, so a stale read cannot overwrite a newer
-  /// config or catalog clock.
-  Future<bool> reconcileSettingsAfterNavigation({
-    Duration timeout = const Duration(seconds: 5),
-  }) async {
-    final task = _enqueueSettingsOperation(() async {
-      try {
-        final snapshot = await _api.readSettingsState();
-        if (!ref.mounted) return false;
-        final latest = state.value;
-        if (latest == null) return false;
-        final updated = _applySettingsCanonical(
-          latest,
-          snapshot,
-          source: 'navigation-reconcile',
-        );
-        if (!identical(updated, latest)) state = AsyncData(updated);
-        return true;
-      } catch (error, stackTrace) {
-        debugPrint(
-          'settings_navigation_reconcile_failed error=$error\n$stackTrace',
-        );
-        return false;
-      }
-    });
-    try {
-      return await task.timeout(timeout);
-    } on TimeoutException {
-      debugPrint(
-        'settings_navigation_reconcile_timeout '
-        'timeout_ms=${timeout.inMilliseconds}',
-      );
-      return false;
-    }
-  }
-
+  /// 线程路由命令：写入 canonical route 并由响应单调采纳（见
+  /// [_adoptThreadModelRoute]）；不依赖任何页面生命周期或导航事件。
   Future<void> setThreadModelRoute({
     String? threadId,
     required String providerId,
@@ -3422,10 +3436,16 @@ class StudioController extends _$StudioController {
         source: 'thread-route-response',
         operationId: operationId,
       );
-      // The command response does not carry the Thread stream's epoch,
-      // baseRevision, and ordered revision envelope. Runtime/modelRoute must
-      // therefore converge only through the existing ordered Thread reducer;
-      // never apply response.runtime as a second, unsequenced state source.
+      // 命令响应携带的 route 来自 backend 的 canonical thread snapshot，与线程
+      // 状态流是同一事实，只是缺少流的有序信封；因此按 route revision 单调采纳，
+      // 而不是丢弃。丢弃会让 route 只能等一个并不保证到达的流通知（或下一次重订阅）
+      // 才能收敛：在它到达之前，选择器会从乐观值回落到旧 canonical，表现为
+      // "改完又变回去"。
+      next = _adoptThreadModelRoute(
+        next,
+        threadId,
+        response.runtime.modelRoute,
+      );
       if (response.warning case final warning?) {
         next = _withWorkspaceUi(
           next,
@@ -4464,7 +4484,7 @@ class StudioController extends _$StudioController {
     final current = state.value;
     final previousThreadId = current?.selectedThreadId;
     if (current == null) {
-      _settingsRepository.seed(incoming.settingsState, source: 'snapshot');
+      _settingsRepository.seed(incoming.settingsState);
     } else {
       incoming = incoming.copyWith(
         settingsState: _settingsRepository.applyTo(
