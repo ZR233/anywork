@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,37 +20,11 @@ import 'settings_skills_tab.dart';
 import 'settings_ssh_tab.dart';
 import 'settings_statistics_tab.dart';
 
-class SettingsPage extends ConsumerStatefulWidget {
+class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
   @override
-  ConsumerState<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends ConsumerState<SettingsPage> {
-  bool _popping = false;
-
-  Future<void> _popAfterFlush() async {
-    if (_popping) return;
-    _popping = true;
-    try {
-      await ref.read(studioControllerProvider.notifier).flushPending();
-      if (mounted && context.canPop()) context.pop();
-    } finally {
-      _popping = false;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) unawaited(_popAfterFlush());
-      },
-      child: const _SettingsPageShell(),
-    );
-  }
+  Widget build(BuildContext context) => const _SettingsPageShell();
 }
 
 /// Owns the tab controller independently from the reactive settings projection.
@@ -429,13 +401,13 @@ class _SettingsNav extends StatelessWidget {
   }
 }
 
-class _SettingsBackTile extends ConsumerWidget {
+class _SettingsBackTile extends StatelessWidget {
   const _SettingsBackTile({required this.compact});
 
   final bool compact;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final content = Row(
       mainAxisSize: compact ? MainAxisSize.min : MainAxisSize.max,
       children: [
@@ -468,7 +440,7 @@ class _SettingsBackTile extends ConsumerWidget {
         child: InkWell(
           key: StudioDriverKeys.settingsBack,
           borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: () => unawaited(_popAfterFlush(context, ref)),
+          onTap: () => context.pop(),
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 10 : 10,
@@ -479,14 +451,6 @@ class _SettingsBackTile extends ConsumerWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _popAfterFlush(BuildContext context, WidgetRef ref) async {
-    // Settings is a pushed child of the session shell. Reconcile in-flight
-    // writes first, with a bounded deadline, then pop the existing shell so
-    // its selectors observe the repository's canonical state immediately.
-    await ref.read(studioControllerProvider.notifier).flushPending();
-    if (context.mounted) context.pop();
   }
 }
 

@@ -620,8 +620,11 @@ frame 和 baseline 进入同一 reducer merge path，页面不得按到达顺序
 
 Flutter 的新会话 draft、Thread route 和 Settings canonical state 是三种不同事实。draft
 只按 project 保存在 `SessionDraftStore` 投影中，canonical snapshot 到达时不得清除或复制
-draft map。配置写入由 app 级 mutation coordinator 串行化；页面离开只释放观察者，不取消
-在途 command。返回路由可调用有界 `flushPending`，超时立即返回，后台继续完成并发布结果。
+draft map。Settings 读取与写入由 app 级 operation coordinator 串行化；页面离开只释放观察者，不取消
+在途 command。设置路由返回由导航协调器把有界的 `readSettingsState` 排入同一 settings
+operation lane，确保它排在已接受的写入之后，并通过同一 canonical merge path 合并；因此
+设置页重新进入或重建不能成为刷新事实的前提。页面只发起导航，不等待 Bridge；等待超时立即
+结束协调操作并保留后台 command/read，完成后仍会发布结果。
 Flutter 数据层按 `StudioBridgeDataSource`、`StudioSettingsRepository`、
 `StudioThreadRepository` 和 `SessionDraftStore` 分界：FRB 只传输 typed 数据，设置与线程
 reducer 不共享 owner。`StudioNavigationCoordinator` 只维护路由可见性和有界收束，不从

@@ -5,13 +5,12 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../domain/models/studio_models.dart';
 
-/// The settings command lane is owned by the app-level repository, rather than
-/// by a page. A route can be popped while a command is in flight and the lane
-/// still reconciles its canonical response.
-/// App-level coordinator for every settings mutation.  It is intentionally
-/// independent from route/widget lifetime so a popped Settings page cannot
-/// cancel or reorder a write that was already accepted by the UI.
-final class SettingsMutationCoordinator {
+/// App-level ordering for settings reads and writes.
+///
+/// A route can be popped while an operation is in flight. The lane is owned by
+/// the controller, so route disposal cannot cancel or reorder a write accepted
+/// by the UI, and a canonical read can be placed after all accepted writes.
+final class SettingsOperationCoordinator {
   Future<void> _tail = Future<void>.value();
 
   Future<T> enqueue<T>(Future<T> Function() operation) {
@@ -22,7 +21,9 @@ final class SettingsMutationCoordinator {
     return task;
   }
 
-  Future<bool> flush({Duration timeout = const Duration(seconds: 5)}) async {
+  Future<bool> waitForIdle({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
     try {
       await _tail.timeout(timeout);
       return true;

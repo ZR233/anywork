@@ -141,11 +141,12 @@ class StudioController extends _$StudioController {
   int _chatWindowOperation = 0;
   Future<void>? _openingChatWindow;
 
-  /// All settings mutations share one write barrier.  This keeps the in-memory
-  /// snapshot and the backend CAS revision ordered across independent Settings
-  /// tabs, instead of letting a late save overwrite a newer one.
-  final SettingsMutationCoordinator _settingsMutations =
-      SettingsMutationCoordinator();
+  /// All settings reads and writes share one operation lane. This keeps the
+  /// in-memory snapshot and backend CAS revision ordered across independent
+  /// Settings tabs, and lets navigation enqueue a canonical read after all
+  /// accepted writes instead of coordinating with page lifetimes.
+  final SettingsOperationCoordinator _settingsOperations =
+      SettingsOperationCoordinator();
   final StudioSettingsRepository _settingsRepository =
       StudioSettingsRepository();
   final StudioThreadRepository _threadRepository =
@@ -164,8 +165,8 @@ class StudioController extends _$StudioController {
   final Map<String, int> _settingsIntentGenerations = {};
 
   /// Model discovery has its own revision clock and command lane. Duplicate
-  /// refreshes for one provider share a future, while configuration writes keep
-  /// flowing through the app-level settings mutation coordinator.
+  /// refreshes for one provider share a future, while configuration operations
+  /// keep flowing through the app-level settings operation coordinator.
   final Map<String, Future<void>> _catalogRefreshes = {};
   final Map<String, Future<void>> _attachmentRemovalInFlight = {};
   int _attachmentLifecycleToken = 0;
@@ -2690,7 +2691,7 @@ class StudioController extends _$StudioController {
     // Settings mutations are owned by the app-level coordinator. Wait for the
     // canonical response before creating a root; never submit from the local
     // optimistic route projection.
-    if (!await flushPending(timeout: const Duration(seconds: 5))) {
+    if (!await awaitSettingsSettled(timeout: const Duration(seconds: 5))) {
       await _failNewThreadSubmission(
         projectId,
         submissionRevision,
@@ -3227,25 +3228,73 @@ class StudioController extends _$StudioController {
     }
   }
 
-  /// Wait for settings and route mutations with an absolute bound before a
-  /// navigation pop. The caller can leave immediately on timeout; the
+  /// Wait for accepted settings operations with an absolute bound before a
+  /// workflow consumes their result. A timeout never cancels the lane; the
   /// keep-alive controller continues reconciling the canonical response.
-  Future<bool> flushPending({
+  Future<bool> awaitSettingsSettled({
     Duration timeout = const Duration(seconds: 5),
   }) async {
     try {
-      final settingsFlushed = await _settingsMutations.flush(timeout: timeout);
-      if (!settingsFlushed) {
+      final settingsSettled = await _settingsOperations.waitForIdle(
+        timeout: timeout,
+      );
+      if (!settingsSettled) {
         debugPrint(
-          'settings_flush_timeout timeout_ms=${timeout.inMilliseconds}',
+          'settings_settle_timeout timeout_ms=${timeout.inMilliseconds}',
         );
         _markPendingMutationsTimeout();
         return false;
       }
       return true;
     } on TimeoutException {
-      debugPrint('settings_flush_timeout timeout_ms=${timeout.inMilliseconds}');
+      debugPrint(
+        'settings_settle_timeout timeout_ms=${timeout.inMilliseconds}',
+      );
       _markPendingMutationsTimeout();
+      return false;
+    }
+  }
+
+  /// Reconcile the settings owner after the Settings route has been popped.
+  ///
+  /// A completed mutation response normally updates the canonical projection
+  /// directly. The read here is the lifecycle boundary for responses that were
+  /// still in flight, topic frames that crossed the route transition, or a
+  /// command callback that outlived the Settings page. The read is queued on
+  /// the same operation lane, so a command accepted between the route pop and
+  /// this call cannot overtake it. It uses the same repository merge path as
+  /// every other settings source, so a stale read cannot overwrite a newer
+  /// config or catalog clock.
+  Future<bool> reconcileSettingsAfterNavigation({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final task = _enqueueSettingsOperation(() async {
+      try {
+        final snapshot = await _api.readSettingsState();
+        if (!ref.mounted) return false;
+        final latest = state.value;
+        if (latest == null) return false;
+        final updated = _applySettingsCanonical(
+          latest,
+          snapshot,
+          source: 'navigation-reconcile',
+        );
+        if (!identical(updated, latest)) state = AsyncData(updated);
+        return true;
+      } catch (error, stackTrace) {
+        debugPrint(
+          'settings_navigation_reconcile_failed error=$error\n$stackTrace',
+        );
+        return false;
+      }
+    });
+    try {
+      return await task.timeout(timeout);
+    } on TimeoutException {
+      debugPrint(
+        'settings_navigation_reconcile_timeout '
+        'timeout_ms=${timeout.inMilliseconds}',
+      );
       return false;
     }
   }
@@ -3267,7 +3316,7 @@ class StudioController extends _$StudioController {
       model: model,
       effort: effort,
     );
-    return _enqueueSettingsMutation(
+    return _enqueueSettingsOperation(
       () => _runSetThreadModelRoute(
         threadId: targetThreadId,
         providerId: providerId,
@@ -3367,7 +3416,12 @@ class StudioController extends _$StudioController {
       }
       final latest = state.value;
       if (latest == null) return;
-      var next = applySettingsState(latest, response.settings);
+      var next = _applySettingsCanonical(
+        latest,
+        response.settings,
+        source: 'thread-route-response',
+        operationId: operationId,
+      );
       // The command response does not carry the Thread stream's epoch,
       // baseRevision, and ordered revision envelope. Runtime/modelRoute must
       // therefore converge only through the existing ordered Thread reducer;
@@ -3570,7 +3624,7 @@ class StudioController extends _$StudioController {
       model: _settingsFieldModel(command),
       effort: _settingsFieldEffort(command),
     );
-    return _enqueueSettingsMutation(() async {
+    return _enqueueSettingsOperation(() async {
       final current = state.value;
       if (current == null) {
         final error = _settingsNotReady();
@@ -3731,7 +3785,7 @@ class StudioController extends _$StudioController {
         ? null
         : _beginMutation(mutationKey);
     try {
-      final operation = _enqueueSettingsMutation(() async {
+      final operation = _enqueueSettingsOperation(() async {
         final current = state.value;
         if (current == null) throw _settingsNotReady();
         if (mutationKey != null &&
@@ -3789,7 +3843,7 @@ class StudioController extends _$StudioController {
     }
   }
 
-  /// Put every settings-affecting command behind the same async lane.
+  /// Put every settings-affecting read or command behind the same async lane.
   ///
   /// The lane is deliberately independent from widget lifetime: a route pop
   /// can dispose the Settings page while this operation is still waiting, but
@@ -3878,8 +3932,8 @@ class StudioController extends _$StudioController {
     state = AsyncData(current.copyWith(mutations: mutations));
   }
 
-  Future<T> _enqueueSettingsMutation<T>(Future<T> Function() operation) {
-    return _settingsMutations.enqueue(operation);
+  Future<T> _enqueueSettingsOperation<T>(Future<T> Function() operation) {
+    return _settingsOperations.enqueue(operation);
   }
 
   /// 执行保存请求；revision/CAS 冲突时重新读取 canonical 并基于同一 typed
@@ -4459,7 +4513,11 @@ StudioState _mergeProductSnapshots(StudioState current, StudioState incoming) {
     selectedThreadId: incoming.selectedThreadId,
   );
   next = applyAgentDirectory(next, incoming.agentDirectory);
-  next = applySettingsState(next, incoming.settingsState);
+  // `incoming.settingsState` was already merged through
+  // `_settingsRepository` by `_adoptProductState`. Keeping that canonical
+  // value here prevents a second, raw reducer path from reintroducing an old
+  // mode route while the Settings page is being left.
+  next = next.copyWith(settingsState: incoming.settingsState);
   next = applyRecoveryState(next, incoming.recoveryState);
   next = applyMcpState(next, incoming.mcpState);
   next = applyLspState(next, incoming.lspState);
