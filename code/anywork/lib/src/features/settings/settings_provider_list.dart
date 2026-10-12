@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../shared/provider_brand.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_menu.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -166,7 +167,11 @@ class ProviderListRow extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _ProviderLogo(provider: provider, active: isDefault),
+              ProviderBrandMark(
+                iconKey: provider.iconKey,
+                fallbackName: provider.name,
+                active: isDefault,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -238,39 +243,6 @@ class ProviderListRow extends StatelessWidget {
                 onDelete: onDelete,
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ProviderLogo extends StatelessWidget {
-  const _ProviderLogo({required this.provider, required this.active});
-
-  final ProviderSettingsView provider;
-  final bool active;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return SizedBox.square(
-      dimension: 40,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: active
-              ? context.colors.primary
-              : context.colors.surfaceContainer,
-          borderRadius: BorderRadius.circular(StudioRadii.sm),
-          border: Border.all(color: colors.outlineVariant),
-        ),
-        child: Center(
-          child: Text(
-            providerInitials(provider.name),
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: active ? colors.onPrimary : context.colors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
           ),
         ),
       ),

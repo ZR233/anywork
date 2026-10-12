@@ -25,6 +25,7 @@ dependencies:
   riverpod_annotation: ^4.0.6
   desktop_drop: ^0.8.2
   pasteboard: ^0.5.0
+  flutter_svg: ^2.3.0
 dev_dependencies:
   ffi: ^2.2.0
   win32: ^6.4.0
@@ -45,6 +46,7 @@ flutter:
     - assets/branding/anywork-app-icon.png
     - assets/branding/anywork-startup-cat.webp
     - assets/branding/anywork-startup-cat.png
+    - assets/provider-logos/
 
 flutter_rust_bridge:
   rust_root: rust/

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../shared/provider_brand.dart';
 import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
@@ -72,6 +73,7 @@ class ProviderEditor extends StatelessWidget {
                         StudioFormSelectField<String>(
                           key: StudioDriverKeys.providerPreset,
                           initialValue: provider.templateKind,
+                          isExpanded: true,
                           decoration: InputDecoration(
                             labelText: context.l10n.settingsTemplate,
                           ),
@@ -97,7 +99,23 @@ class ProviderEditor extends StatelessWidget {
                             for (final template in presets)
                               StudioFormSelectItem<String>(
                                 value: template.id,
-                                child: Text(template.displayName),
+                                child: Row(
+                                  children: [
+                                    ProviderBrandMark(
+                                      iconKey: template.iconKey,
+                                      fallbackName: template.displayName,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Flexible(
+                                      child: Text(
+                                        template.displayName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                           ],
                           onChanged: saving

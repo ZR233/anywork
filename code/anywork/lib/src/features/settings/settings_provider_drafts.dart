@@ -112,22 +112,6 @@ abstract final class ProviderDraftFactory {
   }
 }
 
-String providerInitials(String value) {
-  final words = value.trim().split(RegExp(r'\s+'));
-  if (words.isEmpty || words.first.isEmpty) {
-    return '?';
-  }
-  if (words.length == 1) {
-    final word = words.first;
-    return word.substring(0, word.length < 2 ? word.length : 2).toUpperCase();
-  }
-  return words
-      .take(2)
-      .map((word) => word.isEmpty ? '' : word.substring(0, 1))
-      .join()
-      .toUpperCase();
-}
-
 String providerModelPriceLabel(ProviderModelView model) {
   final first = model.priceTiers.firstOrNull;
   if (model.currency.isEmpty || first == null) return '';

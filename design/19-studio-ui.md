@@ -331,6 +331,14 @@ SSH 服务器行常驻"重新连接"入口，无需先测试连接；说明重�
 
 ## 19.8 设置页组织与 Dart 展示边界
 
+供应商品牌标识只以 catalog 下发的 `iconKey` 字符串为跨层契约：Rust preset catalog
+声明品牌身份，Flutter 侧 `provider_brand.dart` 的资产注册表负责呈现（SVG 路径与品牌
+着色），不向协议扩展颜色等展示字段。`ProviderBrandMark` 在供应商列表、供应商详情头、
+编辑器模板下拉与模型选择器分组头统一渲染：已知品牌为白底圆角框内着色 glyph，未知或
+缺失 `iconKey` 回退名称首字母，因此 `openai-compatible` 等自定义供应商不携带任何品牌
+标。SVG 资产（`assets/provider-logos/`）取自 cc-switch（MIT），商标归各供应商所有，
+仅作识别用途。
+
 供应商编辑页对内置与自定义模型提供独立的上下文压缩阈值输入框、滑块和恢复默认操作。
 输入使用精确的正整数 tokens，滑块与输入双向同步；展示模型默认、用户覆盖与实际生效值，
 解释上下文安全上限。编辑跟随页面草稿保存语义，成功后以服务端 canonical snapshot 替换，
