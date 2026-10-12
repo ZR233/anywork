@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
+import 'settings_views.dart';
 
 class McpTab extends ConsumerStatefulWidget {
   const McpTab({super.key, required this.tabIndex});
@@ -34,28 +34,20 @@ class _McpTabState extends ConsumerState<McpTab> {
   }
 
   List<McpServerSettingsView> _configServers() =>
-      ref.read(studioControllerProvider).value?.mcpServers ??
-      const <McpServerSettingsView>[];
+      ref.read(settingsMcpViewProvider).configServers;
 
   @override
   Widget build(BuildContext context) {
     // 只在 MCP tab 可见时租用 MCP topic；隐藏页不因 keep-alive 持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
-    if (visible) {
-      ref.watch(settingsMcpScopeProvider);
-    }
-    final configServers = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.mcpServers ?? const <McpServerSettingsView>[],
-      ),
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.mcp,
     );
-    final servers =
-        ref
-            .watch(
-              studioControllerProvider.select((state) => state.value?.mcpState),
-            )
-            ?.servers ??
-        const <McpServerSettingsView>[];
+    final mcp = ref.watch(settingsMcpViewProvider);
+    final configServers = mcp.configServers;
+    final servers = mcp.runtimeServers;
     // 保留本地编辑器草稿：只清理已与 canonical 相等或已消失的覆盖。
     final configById = {for (final server in configServers) server.id: server};
     _enabledByServer.removeWhere(
@@ -107,9 +99,8 @@ class _McpTabState extends ConsumerState<McpTab> {
                   enabled: _enabledByServer[server.id] ?? server.enabled,
                   onReconnect: () => unawaited(
                     _run(
-                      () => ref
-                          .read(studioControllerProvider.notifier)
-                          .resetMcpServer(server.id),
+                      () =>
+                          readDirectoryCommands(ref).resetMcpServer(server.id),
                     ),
                   ),
                   onEnabledChanged: (value) {
@@ -137,7 +128,7 @@ class _McpTabState extends ConsumerState<McpTab> {
   }
 
   Future<void> _refresh() {
-    return ref.read(studioControllerProvider.notifier).refreshMcpState();
+    return readDirectoryCommands(ref).refreshMcpState();
   }
 
   Future<void> _run(Future<void> Function() operation) async {
@@ -169,9 +160,7 @@ class _McpTabState extends ConsumerState<McpTab> {
       ),
     );
     if (confirmed == true && mounted) {
-      await _run(
-        () => ref.read(studioControllerProvider.notifier).resetAllMcp(),
-      );
+      await _run(() => readDirectoryCommands(ref).resetAllMcp());
     }
   }
 
@@ -186,7 +175,7 @@ class _McpTabState extends ConsumerState<McpTab> {
     try {
       setState(() => _error = null);
       final configServers = _configServers();
-      final controller = ref.read(studioControllerProvider.notifier);
+      final commands = readSettingsCommands(ref);
       for (final server in configServers) {
         final enabled = _enabledByServer[server.id] ?? server.enabled;
         final endpoint = server.hasLockedIdentity
@@ -196,13 +185,13 @@ class _McpTabState extends ConsumerState<McpTab> {
           continue;
         }
         if (enabled != server.enabled) {
-          await controller.applySettingsField(
+          await commands.applySettingsField(
             McpServerEnabledCommand(id: server.id, value: enabled),
             mutationKey: 'mcp:${server.id}:enabled',
           );
         }
         if (endpoint != server.endpoint) {
-          await controller.applySettingsField(
+          await commands.applySettingsField(
             McpServerEndpointCommand(id: server.id, value: endpoint),
             mutationKey: 'mcp:${server.id}:endpoint',
           );

@@ -9,12 +9,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/frb/studio_api.dart' show FrbStudioBridgeDataSource;
+import '../../data/bridge/studio_bridge.dart';
+import '../../data/commands/directory_commands.dart';
+import '../../data/commands/settings_commands.dart';
+import '../../data/commands/thread_commands.dart';
+import '../../data/repositories/studio_api_provider.dart';
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
 import '../../app/theme/material3_theme.dart';
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
+import '../../data/stores/selection_store.dart';
+import '../../data/stores/thread_session_store.dart';
+import '../../data/stores/domain_sync.dart';
 import '../../l10n/app_localizations.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/studio_platform.dart';
@@ -31,10 +38,15 @@ import '../update/studio_update_controller.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';
 import '../interaction/composer_dock.dart';
+import '../interaction/composer_view.dart';
+import '../interaction/start_session_controller.dart';
 import '../status/thread_status_bar.dart';
+import '../status/status_view.dart';
 import '../timeline/conversation_activity_bar.dart';
 import '../timeline/timeline_view.dart';
+import '../timeline/timeline_session_view.dart';
 import '../todo/todo_panel.dart';
+import 'shell_view.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
@@ -80,6 +92,8 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   bool _reportedReady = false;
   double? _sidebarWidth;
   bool _sidebarHidden = false;
+  String? _selectedProjectId;
+  GeneralSettingsView _general = const GeneralSettingsView();
 
   void _focusSearch() {
     if (_sidebarKey.currentState == null) {
@@ -91,16 +105,20 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   }
 
   void _newSession() {
-    if (ref.read(studioControllerProvider).value?.selectedProjectId == null) {
+    if (_selectedProjectId == null) {
       unawaited(showAddProjectDialog(context));
     } else {
-      unawaited(ref.read(studioControllerProvider.notifier).beginNewThread());
+      unawaited(ref.read(directoryCommandsProvider.notifier).beginNewThread());
     }
   }
 
   Future<void> _persistWidth() async {
     try {
-      await _saveSidebarPreferences(ref, width: _sidebarWidth?.round());
+      await _saveSidebarPreferences(
+        ref,
+        general: _general,
+        width: _sidebarWidth?.round(),
+      );
       if (mounted) setState(() => _sidebarWidth = null);
     } catch (error) {
       if (mounted) {
@@ -113,17 +131,19 @@ class _StudioShellState extends ConsumerState<StudioShell> {
 
   @override
   Widget build(BuildContext context) {
-    final savedWidth =
-        ref.watch(
-          studioControllerProvider.select(
-            (state) => state.value?.general.sidebarWidth,
-          ),
-        ) ??
-        336;
+    final startup = ref.watch(shellStartupViewProvider);
+    _general = ref.watch(shellGeneralProvider);
+    _selectedProjectId = ref.watch(shellSelectionProvider).selectedProjectId;
+    ref.listen(shellHistoryOpenRequestProvider, (previous, next) {
+      if (next == null || next == previous) return;
+      unawaited(
+        ref
+            .read(threadCommandsProvider.notifier)
+            .loadLatestHistory(next.threadId),
+      );
+    });
+    final savedWidth = _general.sidebarWidth;
     final desiredWidth = _sidebarWidth ?? savedWidth.toDouble();
-    final asyncChrome = ref.watch(shellChromeProvider);
-    final asyncSidebar = ref.watch(sidebarProvider);
-    final asyncHeader = ref.watch(studioHeaderProvider);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyK, control: true):
@@ -137,18 +157,14 @@ class _StudioShellState extends ConsumerState<StudioShell> {
       child: Builder(
         builder: (context) {
           // 初次无数据才使用启动页；已有 chrome 时后续刷新/重连不整页替换已显示内容。
-          final chrome = asyncChrome.value;
-          if (chrome == null) {
-            return asyncChrome.hasError
-                ? _StudioFatalError(error: asyncChrome.error!)
+          if (!startup.ready) {
+            return startup.error != null
+                ? _StudioFatalError(error: startup.error!)
                 : const _StudioStartup();
           }
-          final sidebar = asyncSidebar.value;
-          final header = asyncHeader.value;
-          StudioDriverState.publishProject(header?.selectedProject);
-          if (sidebar == null || header == null) {
-            return const _StudioStartup();
-          }
+          final chrome = ref.watch(shellChromeViewProvider);
+          final sidebar = ref.watch(sidebarViewProvider);
+          final header = ref.watch(headerViewProvider);
           if (!_reportedReady) {
             _reportedReady = true;
             WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -158,7 +174,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                 );
                 unawaited(
                   ref
-                      .read(studioControllerProvider.notifier)
+                      .read(directoryCommandsProvider.notifier)
                       .openSelectedThread(),
                 );
               }

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 class WorktreeRecoverySection extends ConsumerStatefulWidget {
   const WorktreeRecoverySection({super.key, required this.issue});
@@ -79,9 +79,7 @@ class _WorktreeRecoverySectionState
   Future<void> _cleanup(WorktreeRecoveryPreview worktree) async {
     setState(() => _cleaning = true);
     try {
-      await ref
-          .read(studioControllerProvider.notifier)
-          .cleanupPreservedWorktree(worktree);
+      await readDirectoryCommands(ref).cleanupPreservedWorktree(worktree);
     } finally {
       if (mounted) setState(() => _cleaning = false);
     }

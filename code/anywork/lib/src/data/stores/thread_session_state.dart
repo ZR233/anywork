@@ -614,3 +614,63 @@ bool _historyTouched(ThreadHistoryWindow window) {
       window.itemBodyErrors.isNotEmpty ||
       window.unavailableItemIds.isNotEmpty;
 }
+
+/// 写入阅读锚点：浏览历史意图标记脱离底部（对齐旧 updateTimelineAnchor 语义）。
+ThreadSessionState setTimelineAnchorState(
+  ThreadSessionState state,
+  TimelineAnchor anchor,
+) {
+  final history = state.history.copyWith(
+    anchor: anchor,
+    detached: anchor.readingIntent == TimelineReadingIntent.browseHistory,
+  );
+  if (history == state.history) return state;
+  return state.copyWith(history: history);
+}
+
+/// 一条按身份的正文补齐开始：清旧错误与不可回源标记。
+ThreadSessionState beginItemBodyLoadState(
+  ThreadSessionState state,
+  String itemId,
+) {
+  final history = state.history;
+  if (!history.previewedItemIds.contains(itemId) ||
+      history.loadingItemIds.contains(itemId)) {
+    return state;
+  }
+  final next = history.copyWith(
+    loadingItemIds: {...history.loadingItemIds, itemId},
+    itemBodyErrors: Map<String, String>.from(history.itemBodyErrors)
+      ..remove(itemId),
+    unavailableItemIds: {...history.unavailableItemIds}..remove(itemId),
+  );
+  return state.copyWith(history: next);
+}
+
+/// 补齐已发出但此刻取不到完整正文：保留预览与重试入口，不下不可回源结论。
+ThreadSessionState markItemBodyPendingState(
+  ThreadSessionState state,
+  String itemId,
+) {
+  final current = state.history;
+  final history = current.copyWith(
+    loadingItemIds: {...current.loadingItemIds}..remove(itemId),
+    pendingItemBodyIds: {...current.pendingItemBodyIds, itemId},
+  );
+  return state.copyWith(history: history);
+}
+
+/// 补齐失败：保留预览并记录 typed 错误，等待下一次可见触发或显式重试。
+ThreadSessionState failItemBodyLoadState(
+  ThreadSessionState state,
+  String itemId,
+  String message,
+) {
+  final current = state.history;
+  final history = current.copyWith(
+    loadingItemIds: {...current.loadingItemIds}..remove(itemId),
+    itemBodyErrors: {...current.itemBodyErrors, itemId: message},
+    pendingItemBodyIds: {...current.pendingItemBodyIds}..remove(itemId),
+  );
+  return state.copyWith(history: history);
+}

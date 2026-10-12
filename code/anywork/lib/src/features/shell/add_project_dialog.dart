@@ -50,7 +50,7 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
       final path = await ref.read(projectDirectoryPickerProvider)(context);
       if (mounted) setState(() => _picking = false);
       if (!mounted || path == null || path.isEmpty) return;
-      await ref.read(studioControllerProvider.notifier).openProject(path);
+      await ref.read(directoryCommandsProvider.notifier).openProject(path);
       if (mounted) Navigator.of(context).pop();
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -66,8 +66,9 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
       _error = null;
     });
     try {
+      // SSH 列表没有命令 lane。直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .listSshServers();
       if (!mounted) return;
       setState(() => _servers = servers);
@@ -79,8 +80,9 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
   }
 
   Future<void> _connect(SshServer server) async {
+    // SSH 测试没有命令 lane。直接读 data source，不往 data/ 补方法。
     final connection = await ref
-        .read(studioControllerProvider.notifier)
+        .read(studioBridgeDataSourceProvider)
         .testSshConnection(server.alias);
     if (connection.state != 'ready') {
       throw StateError(connection.errorMessage ?? connection.state);
@@ -110,8 +112,9 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
   }
 
   Future<void> _save(SaveSshServerCommand command) async {
+    // SSH 保存没有命令 lane。直接读 data source，不往 data/ 补方法。
     final saved = await ref
-        .read(studioControllerProvider.notifier)
+        .read(studioBridgeDataSourceProvider)
         .saveSshServer(
           SaveSshServerCommand(
             alias: _saved?.alias ?? command.alias,

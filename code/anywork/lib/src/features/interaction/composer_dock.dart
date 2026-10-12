@@ -7,7 +7,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
+import '../../data/commands/settings_commands.dart';
+import '../../data/commands/thread_commands.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/clipboard_image_reader.dart';
@@ -16,7 +17,11 @@ import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
+import 'attachment_drafts.dart';
+import 'composer_draft_controller.dart';
+import 'composer_view.dart';
 import 'interaction_payload.dart';
+import 'start_session_controller.dart';
 import 'plan_confirmation_dock.dart';
 import 'tool_approval_dock.dart';
 import 'user_input_dock.dart';
@@ -37,21 +42,17 @@ class ComposerDock extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final projection = ref.watch(composerProjectionProvider).value;
-    final current =
-        projection ?? StudioComposerProjection.fromWorkspace(workspace);
-    final interaction = current.activeInteraction;
-    final additionalDiagnostics =
-        ref
-            .watch(composerDiagnosticsProjectionProvider)
-            .value
-            ?.diagnostics
-            .where(
-              (diagnostic) => diagnostic.projectId == current.thread.projectId,
-            )
-            .where((diagnostic) => diagnostic != current.targetDiagnostic)
-            .toList(growable: false) ??
-        const <ComposerTargetDiagnostic>[];
+    final view = ref.watch(composerDockViewProvider(workspace.thread.id));
+    // 快照到达前只借用传入 workspace 的会话身份做加载回退，不读旧 composer。
+    final thread = view.hasSnapshot
+        ? view.thread
+        : (view.thread ?? workspace.thread);
+    if (thread == null) return const SizedBox.shrink();
+    final interaction = view.activeInteraction;
+    final additionalDiagnostics = [
+      for (final diagnostic in view.additionalDiagnostics)
+        if (diagnostic != view.targetDiagnostic) diagnostic,
+    ];
     return SafeArea(
       top: false,
       child: Padding(
@@ -70,22 +71,27 @@ class ComposerDock extends ConsumerWidget {
               children: [
                 for (final diagnostic in additionalDiagnostics)
                   _ComposerTargetDiagnosticView(diagnostic: diagnostic),
-                current.thread.isRetiredAgent
+                thread.isRetiredAgent
                     ? Text(
                         context.l10n.agentRoleRetired,
                         key: const ValueKey('retired-agent-notice'),
                       )
                     : interaction == null
-                    ? current.composerMode == AgentComposerMode.runtimeDriven
-                          ? _RuntimeDrivenAgentDock(workspace: current)
+                    ? thread.isAgent
+                          ? _RuntimeDrivenAgentDock(
+                              threadId: thread.id,
+                              isBusy: view.isBusy,
+                            )
                           : _PromptComposer(
-                              workspace: current,
+                              thread: thread,
+                              view: view,
                               enabled: true,
                               compact: compact,
                             )
                     : _InteractionDock(
-                        workspace: current,
+                        threadId: thread.id,
                         interaction: interaction,
+                        isBusy: view.isBusy,
                         // 活动交互与消息提交仅依赖内存会话。
                         enabled: true,
                       ),
@@ -99,57 +105,77 @@ class ComposerDock extends ConsumerWidget {
 }
 
 class StartPageComposerDock extends ConsumerWidget {
-  const StartPageComposerDock({required this.view, super.key});
-
-  final StartSessionViewModel view;
+  const StartPageComposerDock({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ref.read(studioControllerProvider.notifier);
-    final diagnostics = ref
-        .watch(composerDiagnosticsProjectionProvider)
-        .value
-        ?.diagnostics
-        .where((diagnostic) => diagnostic.projectId == view.project?.id)
-        .where((diagnostic) => diagnostic != view.targetDiagnostic)
-        .toList(growable: false);
-    final canonicalRoute = modeRouteFor(view.modeModelRoutes, view.mode);
-    final modelMutation = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.mutation('new-thread-route:model:${view.mode.id}'),
+    // 只按项目重建正文状态；键击不重建外层，避免切项目时把上一个正文带过去。
+    final projectId = ref.watch(
+      startPageComposerViewProvider.select(
+        (projection) => projection.project?.id,
       ),
     );
-    final effortMutation = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.mutation('new-thread-route:effort:${view.mode.id}'),
-      ),
+    return _StartPageComposerBody(
+      key: ValueKey<String>(projectId ?? ''),
+      projectId: projectId,
     );
-    final route =
-        modelMutation != null &&
-            modelMutation.isPending &&
-            modelMutation.providerId != null &&
-            modelMutation.model != null
-        ? ModeModelRouteView(
-            modeId: view.mode,
-            providerId: modelMutation.providerId!,
-            model: modelMutation.model!,
-            effort: modelMutation.effort ?? canonicalRoute?.effort ?? '',
-          )
-        : effortMutation != null &&
-              effortMutation.isPending &&
-              canonicalRoute != null
-        ? ModeModelRouteView(
-            modeId: view.mode,
-            providerId: canonicalRoute.providerId,
-            model: canonicalRoute.model,
-            effort: effortMutation.effort ?? canonicalRoute.effort,
-          )
-        : canonicalRoute;
+  }
+}
+
+class _StartPageComposerBody extends ConsumerStatefulWidget {
+  const _StartPageComposerBody({required this.projectId, super.key});
+
+  final String? projectId;
+
+  @override
+  ConsumerState<_StartPageComposerBody> createState() =>
+      _StartPageComposerBodyState();
+}
+
+class _StartPageComposerBodyState
+    extends ConsumerState<_StartPageComposerBody> {
+  late final TextEditingController _draft;
+
+  @override
+  void initState() {
+    super.initState();
+    final projectId = widget.projectId;
+    final text = projectId == null
+        ? ''
+        : ref.read(startSessionControllerProvider).forProject(projectId).text;
+    _draft = TextEditingController(text: text);
+  }
+
+  @override
+  void dispose() {
+    _draft.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final projection = ref.watch(startPageComposerViewProvider);
+    final projectId = projection.project?.id;
+    final mode = projection.mode;
+    final route = projection.displayRoute(mode);
+    final pending = projection.routePending(mode) || projection.submitting;
     final model = route == null
         ? null
-        : modelForRoute(view.providers, route.providerId, route.model);
+        : modelForRoute(projection.providers, route.providerId, route.model);
+    final composer = projectId == widget.projectId
+        ? projection.composer
+        : const ComposerThreadState.idle();
+    final target = projectId == widget.projectId
+        ? projection.targetDiagnostic
+        : null;
+    final additional = [
+      for (final diagnostic in projection.diagnostics)
+        if (diagnostic != target) diagnostic,
+    ];
+    final failure = projection.routeFailure(mode);
+    final unavailableReason = failure != null && failure.isNotEmpty
+        ? failure
+        : context.l10n.statusModelRouteUnavailableFallback;
     return SafeArea(
       top: false,
       child: Padding(
@@ -161,11 +187,12 @@ class StartPageComposerDock extends ConsumerWidget {
               maxWidth: StudioLayout.conversationWidth,
             ),
             child: _PromptComposerPanel(
-              composer: view.composer,
-              targetDiagnostic: view.targetDiagnostic,
-              additionalDiagnostics: diagnostics ?? const [],
-              permissionMode: view.permissionMode,
-              enabled: view.canSubmit,
+              composer: composer,
+              textController: _draft,
+              targetDiagnostic: target,
+              additionalDiagnostics: additional,
+              permissionMode: projection.permissionMode,
+              enabled: projection.canSubmit,
               isBusy: false,
               clipboard: ref.read(clipboardImageReaderProvider),
               selectorBar: Wrap(
@@ -174,63 +201,148 @@ class StartPageComposerDock extends ConsumerWidget {
                 runSpacing: 4,
                 children: [
                   SessionModeSelector(
-                    mode: view.mode,
-                    onSelected: controller.setNewThreadMode,
+                    mode: mode,
+                    onSelected: (next) => _setMode(next),
                   ),
                   SessionWorkspaceModeSelector(
-                    mode: view.workspaceMode,
-                    onSelected: controller.setNewThreadWorkspaceMode,
+                    mode: projection.workspaceMode,
+                    onSelected: _setWorkspaceMode,
                   ),
-                  if (route != null) ...[
-                    ModelRoleSelector(
-                      providers: view.providers,
-                      providerId: route.providerId,
-                      model: route.model,
-                      effort: route.effort,
-                      requiresFunctionCalling: view.modeRequiresFunctionCalling,
-                      pending: view.modelRouteMutationPending,
-                      onModelSelected: (providerId, model) =>
-                          controller.setModeModelField(
-                            mode: view.mode,
-                            providerId: providerId,
-                            model: model,
-                          ),
+                  ..._modelRouteSelectorChildren(
+                    providers: projection.providers,
+                    providerId: route?.providerId,
+                    model: route?.model,
+                    effort: route?.effort,
+                    requiresFunctionCalling: projection.requiresFunctionCalling(
+                      mode,
                     ),
-                    ReasoningEffortSelector(
-                      providers: view.providers,
-                      providerId: route.providerId,
-                      model: route.model,
-                      effort: route.effort,
-                      pending: view.modelRouteMutationPending,
-                      onEffortSelected: (effort) =>
-                          controller.setModeReasoningEffortField(
-                            mode: view.mode,
-                            effort: effort,
-                          ),
-                    ),
-                  ],
+                    pending: pending,
+                    unavailableReason: unavailableReason,
+                    onModelSelected: (providerId, model) {
+                      ref
+                          .read(startSessionControllerProvider.notifier)
+                          .setModelIntent(mode, providerId, model);
+                    },
+                    onEffortSelected: (effort) {
+                      ref
+                          .read(startSessionControllerProvider.notifier)
+                          .setEffortIntent(mode, effort);
+                    },
+                  ),
                 ],
               ),
-              onChanged: controller.updateNewThreadComposer,
-              onSubmit: () => unawaited(controller.submitNewThreadComposer()),
+              submissionLocked: projection.submitting,
+              onChanged: _updateDraft,
+              onSubmit: () => unawaited(_submit()),
               inputCapabilities: model?.inputCapabilities ?? const [],
-              onPasteImage: controller.addClipboardImage,
-              onReportFailure: controller.reportComposerFailure,
-              onAddLocal: (paths) => controller.addLocalAttachments(paths),
-              onAddUrl: (url) => controller.addRemoteAttachment(url),
-              onRemoveAttachment: (id) => controller.removeAttachmentDraft(id),
+              onPasteImage: _pasteImage,
+              onReportFailure: _reportFailure,
+              onAddLocal: _addLocal,
+              onAddUrl: _addUrl,
+              onRemoveAttachment: _removeAttachment,
             ),
           ),
         ),
       ),
     );
   }
+
+  void _updateDraft(String value) {
+    final projectId = widget.projectId;
+    if (projectId == null) return;
+    ref
+        .read(startSessionControllerProvider.notifier)
+        .updateDraft(projectId, value);
+  }
+
+  void _setMode(ThreadModeId mode) {
+    final projectId = widget.projectId;
+    if (projectId == null) return;
+    ref.read(startSessionControllerProvider.notifier).setMode(projectId, mode);
+  }
+
+  void _setWorkspaceMode(ThreadWorkspaceMode mode) {
+    final projectId = widget.projectId;
+    if (projectId == null) return;
+    ref
+        .read(startSessionControllerProvider.notifier)
+        .setWorkspaceMode(projectId, mode);
+  }
+
+  Future<void> _submit() async {
+    final projectId = widget.projectId;
+    if (projectId == null) return;
+    final controller = ref.read(startSessionControllerProvider.notifier);
+    controller.updateDraft(projectId, _draft.text);
+    final accepted = await controller.submit(projectId);
+    if (!mounted || !accepted) return;
+    _draft.clear();
+  }
+
+  String? get _projectId => widget.projectId;
+
+  ThreadModeId get _mode {
+    final projectId = widget.projectId;
+    if (projectId == null) return ThreadModeId.simple;
+    return ref.read(startSessionControllerProvider).forProject(projectId).mode;
+  }
+
+  Future<void> _pasteImage(Uint8List bytes) {
+    final projectId = _projectId;
+    if (projectId == null) return Future<void>.value();
+    return ref
+        .read(attachmentDraftsProvider.notifier)
+        .addNewThreadClipboard(
+          projectId: projectId,
+          mode: _mode,
+          pngBytes: bytes,
+        );
+  }
+
+  void _reportFailure(Object error) {
+    final projectId = _projectId;
+    if (projectId == null) return;
+    ref
+        .read(attachmentDraftsProvider.notifier)
+        .reportNewThreadFailure(projectId, error);
+  }
+
+  Future<void> _addLocal(List<String> paths) {
+    final projectId = _projectId;
+    if (projectId == null || paths.isEmpty) return Future<void>.value();
+    return ref
+        .read(attachmentDraftsProvider.notifier)
+        .admitNewThread(
+          projectId: projectId,
+          mode: _mode,
+          sources: [
+            for (final path in paths) AttachmentDraftSource.localFile(path),
+          ],
+        );
+  }
+
+  Future<void> _addUrl(String url) {
+    final projectId = _projectId;
+    if (projectId == null) return Future<void>.value();
+    return ref
+        .read(attachmentDraftsProvider.notifier)
+        .addNewThreadRemote(projectId: projectId, mode: _mode, url: url);
+  }
+
+  Future<void> _removeAttachment(String draftId) {
+    final projectId = _projectId;
+    if (projectId == null) return Future<void>.value();
+    return ref
+        .read(attachmentDraftsProvider.notifier)
+        .removeNewThreadDraft(projectId, draftId);
+  }
 }
 
 class _RuntimeDrivenAgentDock extends StatelessWidget {
-  const _RuntimeDrivenAgentDock({required this.workspace});
+  const _RuntimeDrivenAgentDock({required this.threadId, required this.isBusy});
 
-  final StudioComposerProjection workspace;
+  final String threadId;
+  final bool isBusy;
 
   @override
   Widget build(BuildContext context) {
@@ -254,7 +366,7 @@ class _RuntimeDrivenAgentDock extends StatelessWidget {
                   ?.copyWith(color: context.colors.onSurfaceVariant),
             ),
           ),
-          if (workspace.isBusy) _StopButton(threadId: workspace.threadId),
+          if (isBusy) _StopButton(threadId: threadId),
         ],
       ),
     );
@@ -263,12 +375,14 @@ class _RuntimeDrivenAgentDock extends StatelessWidget {
 
 class _PromptComposer extends ConsumerStatefulWidget {
   const _PromptComposer({
-    required this.workspace,
+    required this.thread,
+    required this.view,
     required this.enabled,
     this.compact = false,
   });
 
-  final StudioComposerProjection workspace;
+  final StudioThread thread;
+  final ComposerDockView view;
   final bool enabled;
   final bool compact;
 
@@ -282,66 +396,25 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
   @override
   void didUpdateWidget(covariant _PromptComposer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.workspace.threadId != widget.workspace.threadId ||
-        oldWidget.workspace.thread.status != widget.workspace.thread.status ||
-        oldWidget.workspace.hasActiveWorkflow !=
-            widget.workspace.hasActiveWorkflow ||
-        oldWidget.workspace.modelRoute != widget.workspace.modelRoute) {
+    if (oldWidget.thread.id != widget.thread.id ||
+        oldWidget.thread.status != widget.thread.status ||
+        oldWidget.view.hasActiveWorkflow != widget.view.hasActiveWorkflow ||
+        oldWidget.view.modelRoute != widget.view.modelRoute) {
       _modelNotice = null;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final workspace = widget.workspace;
-    final controller = ref.read(studioControllerProvider.notifier);
-    final threadRoutePending = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.mutationPending(
-              'thread-route:${workspace.threadId}',
-            ) ??
-            false,
-      ),
-    );
-    final canonicalRoute = workspace.modelRoute;
-    final requiresFunctionCalling = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.threadModeCatalog.modes
-                .where((mode) => mode.id == workspace.thread.mode.id)
-                .firstOrNull
-                ?.hasWorkflow ??
-            false,
-      ),
-    );
-    final pendingMutation = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.mutation('thread-route:${workspace.threadId}'),
-      ),
-    );
-    final route =
-        pendingMutation != null &&
-            pendingMutation.isPending &&
-            pendingMutation.providerId != null &&
-            pendingMutation.model != null
-        ? canonicalRoute == null
-              ? null
-              : ThreadModelRouteView(
-                  providerId: pendingMutation.providerId!,
-                  model: pendingMutation.model!,
-                  effort: pendingMutation.effort ?? canonicalRoute.effort,
-                  revision: canonicalRoute.revision,
-                  available: canonicalRoute.available,
-                  unavailableReason: canonicalRoute.unavailableReason,
-                )
-        : canonicalRoute;
+    final thread = widget.thread;
+    final view = widget.view;
+    final route = view.modelRoute;
     final model = route == null
         ? null
-        : modelForRoute(workspace.providers, route.providerId, route.model);
-    final blockedReason = switch (workspace.thread.status) {
+        : modelForRoute(view.providers, route.providerId, route.model);
+    final blockedReason = switch (thread.status) {
       ThreadStatusView.idle =>
-        workspace.hasActiveWorkflow
+        view.hasActiveWorkflow
             ? context.l10n.statusModelSwitchWhileWorkflowActive
             : null,
       ThreadStatusView.closing ||
@@ -349,6 +422,13 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
       ThreadStatusView.faulted => context.l10n.statusModelSwitchWhileInactive,
       _ => context.l10n.statusModelSwitchWhileRunning,
     };
+    final failure = view.routeFailure;
+    final unavailableReason = failure != null && failure.isNotEmpty
+        ? failure
+        : context.l10n.statusModelRouteUnavailableFallback;
+    final draftController = ref.read(
+      composerDraftControllerProvider(thread.id).notifier,
+    );
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -386,91 +466,71 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
             ),
           ),
         _PromptComposerPanel(
-          composer: workspace.composer,
-          targetDiagnostic: workspace.targetDiagnostic,
-          permissionMode: workspace.permissionMode,
+          composer: view.composer,
+          targetDiagnostic: view.targetDiagnostic,
+          permissionMode: view.permissionMode,
           enabled: widget.enabled,
-          isBusy: workspace.isBusy,
+          isBusy: view.isBusy,
           compact: widget.compact,
           clipboard: ref.read(clipboardImageReaderProvider),
-          selectorBar: workspace.thread.isRoot
+          selectorBar: thread.isRoot
               ? Wrap(
                   crossAxisAlignment: WrapCrossAlignment.center,
                   spacing: 2,
                   runSpacing: 4,
                   children: [
                     SessionModeSelector(
-                      mode: workspace.thread.mode,
+                      mode: thread.mode,
                       enabled:
-                          !workspace.hasActiveWorkflow &&
-                          workspace.thread.status == ThreadStatusView.idle &&
-                          workspace.activeInteraction == null,
-                      onSelected: controller.setThreadMode,
+                          !view.hasActiveWorkflow &&
+                          thread.status == ThreadStatusView.idle &&
+                          view.activeInteraction == null,
+                      onSelected: (mode) => unawaited(
+                        ref
+                            .read(threadCommandsProvider.notifier)
+                            .setThreadMode(mode),
+                      ),
                     ),
-                    if (route != null) ...[
-                      ModelRoleSelector(
-                        providers: workspace.providers,
-                        providerId: route.providerId,
-                        model: route.model,
-                        effort: route.effort,
-                        requiresFunctionCalling: requiresFunctionCalling,
-                        pending: threadRoutePending,
-                        available: route.available,
-                        unavailableReason: route.unavailableReason,
-                        blockedReason: blockedReason,
-                        onExplain: (message) =>
-                            setState(() => _modelNotice = message),
-                        onSelected: (providerId, model, effort) =>
-                            controller.setThreadModelRoute(
-                              threadId: workspace.threadId,
-                              providerId: providerId,
-                              model: model,
-                              effort: effort,
-                            ),
-                      ),
-                      ReasoningEffortSelector(
-                        providers: workspace.providers,
-                        providerId: route.providerId,
-                        model: route.model,
-                        effort: route.effort,
-                        pending: threadRoutePending,
-                        blockedReason: blockedReason,
-                        onExplain: (message) =>
-                            setState(() => _modelNotice = message),
-                        onSelected: (providerId, model, effort) =>
-                            controller.setThreadModelRoute(
-                              threadId: workspace.threadId,
-                              providerId: providerId,
-                              model: model,
-                              effort: effort,
-                            ),
-                      ),
-                    ],
+                    ..._modelRouteSelectorChildren(
+                      providers: view.providers,
+                      providerId: route?.providerId,
+                      model: route?.model,
+                      effort: route?.effort,
+                      requiresFunctionCalling: view.requiresFunctionCalling,
+                      pending: view.routePending,
+                      available: route?.available ?? false,
+                      routeUnavailableReason: route?.unavailableReason,
+                      unavailableReason: unavailableReason,
+                      blockedReason: blockedReason,
+                      onExplain: (message) =>
+                          setState(() => _modelNotice = message),
+                      onSelected: (providerId, model, effort) {
+                        unawaited(
+                          ref
+                              .read(threadCommandsProvider.notifier)
+                              .setThreadModelRoute(
+                                threadId: thread.id,
+                                providerId: providerId,
+                                model: model,
+                                effort: effort,
+                              ),
+                        );
+                      },
+                    ),
                   ],
                 )
               : null,
-          onChanged: (value) =>
-              controller.updateComposer(workspace.threadId, value),
-          onSubmit: () =>
-              unawaited(controller.submitComposer(workspace.threadId)),
-          onStop: () => unawaited(controller.stop(workspace.threadId)),
+          onChanged: draftController.updateDraft,
+          onSubmit: () => unawaited(draftController.submit()),
+          onStop: () => unawaited(
+            ref.read(threadCommandsProvider.notifier).stop(thread.id),
+          ),
           inputCapabilities: model?.inputCapabilities ?? const [],
-          onPasteImage: (bytes) =>
-              controller.addClipboardImage(bytes, threadId: workspace.threadId),
-          onReportFailure: (error) => controller.reportComposerFailure(
-            error,
-            threadId: workspace.threadId,
-          ),
-          onAddLocal: (paths) => controller.addLocalAttachments(
-            paths,
-            threadId: workspace.threadId,
-          ),
-          onAddUrl: (url) =>
-              controller.addRemoteAttachment(url, threadId: workspace.threadId),
-          onRemoveAttachment: (id) => controller.removeAttachmentDraft(
-            id,
-            threadId: workspace.threadId,
-          ),
+          onPasteImage: draftController.addClipboardImage,
+          onReportFailure: draftController.reportFailure,
+          onAddLocal: draftController.addLocalAttachments,
+          onAddUrl: draftController.addRemoteAttachment,
+          onRemoveAttachment: draftController.removeAttachment,
         ),
       ],
     );
@@ -496,7 +556,9 @@ class _PromptComposerPanel extends StatefulWidget {
     required this.onRemoveAttachment,
     this.onStop,
     this.selectorBar,
+    this.textController,
     this.compact = false,
+    this.submissionLocked = false,
   });
 
   final ComposerThreadState composer;
@@ -517,8 +579,14 @@ class _PromptComposerPanel extends StatefulWidget {
   final VoidCallback? onStop;
   final Widget? selectorBar;
 
+  /// 起始页正文由调用方持有。传入后不再用 [composer.draft] 覆盖输入框。
+  final TextEditingController? textController;
+
   /// 矮窗口紧凑布局：收起面板留白与输入最小行数，操作按钮保持不变。
   final bool compact;
+
+  /// 起始页在设置 lane 排空前就置位的提交哨兵。线程路径保持 false。
+  final bool submissionLocked;
 
   @override
   State<_PromptComposerPanel> createState() => _PromptComposerPanelState();
@@ -578,44 +646,67 @@ class _ComposerTargetDiagnosticView extends StatelessWidget {
 }
 
 class _PromptComposerPanelState extends State<_PromptComposerPanel> {
-  late final TextEditingController _controller;
+  TextEditingController? _ownedController;
   late final FocusNode _inputFocusNode;
   bool _dragging = false;
   bool _pasteInFlight = false;
+  bool _syncingDraft = false;
+
+  TextEditingController get _controller =>
+      widget.textController ?? _ownedController!;
 
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.composer.draft);
+    if (widget.textController == null) {
+      _ownedController = TextEditingController(text: widget.composer.draft);
+    }
     _inputFocusNode = FocusNode(debugLabel: 'composer-input');
+    _controller.addListener(_onDraftChanged);
+  }
+
+  void _onDraftChanged() {
+    if (!mounted || _syncingDraft) return;
+    setState(() {});
   }
 
   @override
   void didUpdateWidget(covariant _PromptComposerPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.textController != widget.textController) {
+      oldWidget.textController?.removeListener(_onDraftChanged);
+      widget.textController?.addListener(_onDraftChanged);
+    }
+    if (widget.textController != null) return;
     final nextText = widget.composer.draft;
     if (nextText != _controller.text) {
+      _syncingDraft = true;
       _controller.value = TextEditingValue(
         text: nextText,
         selection: TextSelection.collapsed(offset: nextText.length),
       );
+      _syncingDraft = false;
     }
   }
 
   @override
   void dispose() {
+    widget.textController?.removeListener(_onDraftChanged);
+    _ownedController?.removeListener(_onDraftChanged);
     _inputFocusNode.dispose();
-    _controller.dispose();
+    _ownedController?.dispose();
     super.dispose();
   }
 
   /// 主按钮与回车提交共享同一前置条件：启用、有内容且不在提交中。
   bool get _hasContent =>
-      widget.composer.draft.trim().isNotEmpty ||
+      _controller.text.trim().isNotEmpty ||
       widget.composer.attachments.isNotEmpty;
 
-  bool get _canSubmit =>
-      widget.enabled && _hasContent && !widget.composer.isSubmissionPending;
+  bool get _submissionPending =>
+      widget.submissionLocked || widget.composer.isSubmissionPending;
+
+  bool get _canSubmit => widget.enabled && _hasContent && !_submissionPending;
 
   bool get _supportsPastedImages => widget.inputCapabilities.any(
     (capability) =>
@@ -631,9 +722,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
     if (_isPasteShortcut(key)) {
-      if (!_inputFocusNode.hasFocus ||
-          !widget.enabled ||
-          widget.composer.isSubmissionPending) {
+      if (!_inputFocusNode.hasFocus || !widget.enabled || _submissionPending) {
         return KeyEventResult.ignored;
       }
       if (!_pasteInFlight) unawaited(_pasteClipboard());
@@ -705,8 +794,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final composer = widget.composer;
-    final showStop =
-        widget.isBusy && !_hasContent && !composer.isSubmissionPending;
+    final showStop = widget.isBusy && !_hasContent && !_submissionPending;
     final localCapabilities = widget.inputCapabilities
         .where(
           (capability) =>
@@ -721,7 +809,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               capability.supportsSource(ModelInputSourceView.remoteUrl),
         )
         .toList();
-    final attachmentEnabled = widget.enabled && !composer.isSubmissionPending;
+    final attachmentEnabled = widget.enabled && !_submissionPending;
     final panel = StudioPanel(
       backgroundColor: colors.surfaceContainerLowest,
       borderColor: _dragging
@@ -749,7 +837,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               key: StudioDriverKeys.composerInput,
               controller: _controller,
               focusNode: _inputFocusNode,
-              enabled: widget.enabled && !composer.isSubmissionPending,
+              enabled: widget.enabled && !_submissionPending,
               minLines: widget.compact ? 2 : 3,
               maxLines: 8,
               decoration: InputDecoration(
@@ -835,7 +923,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                     alpha: 0.32,
                   ),
                 ),
-                icon: composer.isSubmissionPending
+                icon: _submissionPending
                     ? const SizedBox.square(
                         key: StudioDriverKeys.composerPending,
                         dimension: 18,
@@ -859,9 +947,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     );
     return CallbackShortcuts(
       bindings: {
-        if (widget.isBusy &&
-            !composer.isSubmissionPending &&
-            widget.onStop != null)
+        if (widget.isBusy && !_submissionPending && widget.onStop != null)
           const SingleActivator(LogicalKeyboardKey.escape): widget.onStop!,
       },
       child: DropTarget(
@@ -964,7 +1050,9 @@ class _PermissionSelector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return StudioMenu<PermissionMode>(
       tooltip: context.l10n.permissionModeTooltip,
-      onSelected: ref.read(studioControllerProvider.notifier).setPermissionMode,
+      onSelected: (mode) => unawaited(
+        ref.read(settingsCommandsProvider.notifier).setPermissionMode(mode),
+      ),
       itemBuilder: (context) => [
         for (final option in PermissionMode.values)
           StudioMenuItem<PermissionMode>(
@@ -1003,24 +1091,24 @@ class _PermissionSelector extends ConsumerWidget {
 
 class _InteractionDock extends StatelessWidget {
   const _InteractionDock({
-    required this.workspace,
+    required this.threadId,
     required this.interaction,
+    required this.isBusy,
     required this.enabled,
   });
 
-  final StudioComposerProjection workspace;
+  final String threadId;
   final PendingInteraction interaction;
+  final bool isBusy;
   final bool enabled;
 
   @override
   Widget build(BuildContext context) {
-    final trailing = workspace.isBusy
-        ? _StopButton(threadId: workspace.threadId)
-        : null;
+    final trailing = isBusy ? _StopButton(threadId: threadId) : null;
     final plan = interaction.planConfirmation;
     if (plan != null) {
       return PlanConfirmationDock(
-        threadId: workspace.threadId,
+        threadId: threadId,
         plan: plan,
         enabled: enabled,
         trailing: trailing,
@@ -1029,14 +1117,14 @@ class _InteractionDock extends StatelessWidget {
     final payload = InteractionPayloadSnapshot.from(interaction);
     return switch (interaction.kind) {
       InteractionKind.toolApproval => ToolApprovalDock(
-        threadId: workspace.threadId,
+        threadId: threadId,
         interactionId: interaction.id,
         payload: payload,
         enabled: enabled,
         trailing: trailing,
       ),
       InteractionKind.userInput => UserInputDock(
-        threadId: workspace.threadId,
+        threadId: threadId,
         interactionId: interaction.id,
         payload: payload,
         enabled: enabled,
@@ -1057,7 +1145,126 @@ class _StopButton extends ConsumerWidget {
       tooltip: context.l10n.composerStop,
       icon: const Icon(Icons.stop),
       onPressed: () =>
-          ref.read(studioControllerProvider.notifier).stop(threadId),
+          unawaited(ref.read(threadCommandsProvider.notifier).stop(threadId)),
+    );
+  }
+}
+
+/// route 为空时仍保留模型选择器，并显示不可用原因，避免静默隐藏。
+List<Widget> _modelRouteSelectorChildren({
+  required List<ProviderSettingsView> providers,
+  required bool requiresFunctionCalling,
+  required bool pending,
+  required String unavailableReason,
+  String? providerId,
+  String? model,
+  String? effort,
+  bool available = true,
+  String? routeUnavailableReason,
+  String? blockedReason,
+  ValueChanged<String>? onExplain,
+  ModelRouteChanged? onSelected,
+  ModelSelectionChanged? onModelSelected,
+  EffortSelectionChanged? onEffortSelected,
+}) {
+  final hasRoute =
+      providerId != null &&
+      model != null &&
+      providerId.isNotEmpty &&
+      model.isNotEmpty;
+  if (!hasRoute) {
+    return [
+      _RouteUnavailableNotice(reason: unavailableReason),
+      ModelRoleSelector(
+        providers: providers,
+        providerId: providerId ?? '',
+        model: model ?? '',
+        effort: effort,
+        requiresFunctionCalling: requiresFunctionCalling,
+        pending: pending,
+        available: false,
+        unavailableReason: unavailableReason,
+        blockedReason: blockedReason,
+        onExplain: onExplain,
+        onSelected: onSelected,
+        onModelSelected: onModelSelected,
+      ),
+      _UnavailableEffortSelector(reason: unavailableReason),
+    ];
+  }
+  return [
+    ModelRoleSelector(
+      providers: providers,
+      providerId: providerId,
+      model: model,
+      effort: effort,
+      requiresFunctionCalling: requiresFunctionCalling,
+      pending: pending,
+      available: available,
+      unavailableReason: routeUnavailableReason,
+      blockedReason: blockedReason,
+      onExplain: onExplain,
+      onSelected: onSelected,
+      onModelSelected: onModelSelected,
+    ),
+    ReasoningEffortSelector(
+      providers: providers,
+      providerId: providerId,
+      model: model,
+      effort: effort,
+      pending: pending,
+      blockedReason: blockedReason,
+      onExplain: onExplain,
+      onSelected: onSelected,
+      onEffortSelected: onEffortSelected,
+    ),
+  ];
+}
+
+class _RouteUnavailableNotice extends StatelessWidget {
+  const _RouteUnavailableNotice({required this.reason});
+
+  final String reason;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.warning_amber_outlined, size: 15, color: colors.error),
+        const SizedBox(width: 4),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 220),
+          child: Text(
+            reason,
+            key: const ValueKey('model-route-unavailable'),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: colors.error),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _UnavailableEffortSelector extends StatelessWidget {
+  const _UnavailableEffortSelector({required this.reason});
+
+  final String reason;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: reason,
+      child: StudioMenuLabel(
+        key: const ValueKey('effort-route-unavailable'),
+        label: reason,
+        enabled: false,
+        maxWidth: 160,
+      ),
     );
   }
 }

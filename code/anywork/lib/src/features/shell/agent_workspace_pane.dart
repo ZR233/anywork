@@ -32,254 +32,238 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   @override
   Widget build(BuildContext context) {
-    final asyncLayout = ref.watch(selectedWorkspaceLayoutProvider);
-    final asyncStartPage = ref.watch(startPageProvider);
-    return asyncLayout.when(
-      loading: () => const StudioWorkspaceLoading(),
-      error: (error, stackTrace) => Center(child: Text(error.toString())),
-      data: (layout) {
-        if (layout == null) {
-          return asyncStartPage.when(
-            loading: () => const StudioWorkspaceLoading(),
-            error: (error, stackTrace) => Center(child: Text(error.toString())),
-            data: (startPage) => startPage.isStartPage
-                ? _StudioStartPage(view: startPage)
-                : const StudioWorkspaceLoading(),
-          );
+    final selection = ref.watch(shellSelectionProvider);
+    final workspace = ref.watch(shellComposerWorkspaceProvider);
+    final timeline = ref.watch(timelineSessionWindowProvider);
+    final threadId = selection.selectedThreadId;
+    // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
+    if (threadId == null) return const _StudioStartPage();
+    if (workspace == null || workspace.threadId != threadId) {
+      return const StudioWorkspaceLoading();
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final todo = workspace.todo;
+        final plan = workspace.activeInteraction?.planConfirmation;
+        if (plan == null) {
+          _expandedPlanByThread.remove(threadId);
         }
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final todo = layout.todo;
-            final threadId = layout.threadId;
-            final plan = layout.planConfirmation;
-            if (plan == null) {
-              _expandedPlanByThread.remove(threadId);
+        // 覆盖与否只取决于窗口能否并排放置默认宽度面板与最小对话区，
+        // 不受用户当前目标宽度影响，避免拖拽跨阈值时布局跳变打断手势。
+        final planOverlaysTimeline =
+            constraints.maxWidth <
+            _defaultPlanPanelWidth + _minimumPlanTimelineWidth;
+        final planExpanded =
+            plan != null &&
+            _expandedPlanByThread[threadId] == plan.interactionId;
+        // 并排保留对话区最小可用宽度；窄窗覆盖时面板可占满可用宽度。
+        final planMaximumWidth = planOverlaysTimeline
+            ? constraints.maxWidth
+            : constraints.maxWidth - _minimumPlanTimelineWidth;
+        final planPanelWidth = _clampPlanPanelWidth(
+          _planPanelWidth ?? _defaultPlanPanelWidth,
+          planMaximumWidth,
+        );
+        final todoInDrawer =
+            constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
+        final todoExpanded = _todoExpandedByThread[threadId] ?? false;
+        final footerMaxHeight = constraints.hasBoundedHeight
+            ? _footerMaxHeight(constraints.maxHeight)
+            : null;
+        if (plan != null &&
+            _autoOpenedPlanByThread[threadId] != plan.interactionId) {
+          _autoOpenedPlanByThread[threadId] = plan.interactionId;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            final current = ref.read(shellComposerWorkspaceProvider);
+            if (current?.threadId != threadId ||
+                current?.activeInteraction?.planConfirmation?.interactionId !=
+                    plan.interactionId) {
+              return;
             }
-            // 覆盖与否只取决于窗口能否并排放置默认宽度面板与最小对话区，
-            // 不受用户当前目标宽度影响，避免拖拽跨阈值时布局跳变打断手势。
-            final planOverlaysTimeline =
-                constraints.maxWidth <
-                _defaultPlanPanelWidth + _minimumPlanTimelineWidth;
-            final planExpanded =
-                plan != null &&
-                _expandedPlanByThread[threadId] == plan.interactionId;
-            // 并排保留对话区最小可用宽度；窄窗覆盖时面板可占满可用宽度。
-            final planMaximumWidth = planOverlaysTimeline
-                ? constraints.maxWidth
-                : constraints.maxWidth - _minimumPlanTimelineWidth;
-            final planPanelWidth = _clampPlanPanelWidth(
-              _planPanelWidth ?? _defaultPlanPanelWidth,
-              planMaximumWidth,
+            setState(
+              () => _expandedPlanByThread[threadId] = plan.interactionId,
             );
-            final todoInDrawer =
-                constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
-            final todoExpanded = _todoExpandedByThread[threadId] ?? false;
-            final footerMaxHeight = constraints.hasBoundedHeight
-                ? _footerMaxHeight(constraints.maxHeight)
-                : null;
-            if (plan != null &&
-                _autoOpenedPlanByThread[threadId] != plan.interactionId) {
-              _autoOpenedPlanByThread[threadId] = plan.interactionId;
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (!mounted) return;
-                final current = ref.read(selectedWorkspaceLayoutProvider).value;
-                if (current?.threadId != threadId ||
-                    current?.planConfirmation?.interactionId !=
-                        plan.interactionId) {
-                  return;
-                }
-                setState(
-                  () => _expandedPlanByThread[threadId] = plan.interactionId,
-                );
-              });
-            }
-            return Scaffold(
-              key: _scaffoldKey,
-              backgroundColor: context.colors.surface,
-              endDrawerEnableOpenDragGesture: false,
-              endDrawer: !planExpanded && todoInDrawer && todo != null
-                  ? Drawer(
-                      width: 328,
-                      backgroundColor: context.colors.surfaceContainer,
-                      child: TodoPanel(
-                        key: const ValueKey('todo-drawer-panel'),
-                        todo: todo,
-                        inDrawer: true,
-                        onClose: () =>
-                            _scaffoldKey.currentState?.closeEndDrawer(),
-                      ),
-                    )
-                  : null,
-              body: Column(
-                children: [
-                  // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
-                  // 便于用户直接开始交互或在失败后重试。
-                  if (layout.needsOpen) _OpenThreadBanner(threadId: threadId),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  children: [
-                                    Expanded(
-                                      child: Stack(
-                                        children: [
-                                          Positioned.fill(
-                                            child: _AgentTimelineHost(
-                                              threadId: threadId,
-                                              planConfirmation: plan,
-                                              planExpanded: planExpanded,
-                                              onPlanToggle: plan == null
-                                                  ? null
-                                                  : () => _togglePlan(
-                                                      threadId,
-                                                      plan.interactionId,
+          });
+        }
+        return Scaffold(
+          key: _scaffoldKey,
+          backgroundColor: context.colors.surface,
+          endDrawerEnableOpenDragGesture: false,
+          endDrawer: !planExpanded && todoInDrawer && todo != null
+              ? Drawer(
+                  width: 328,
+                  backgroundColor: context.colors.surfaceContainer,
+                  child: TodoPanel(
+                    key: const ValueKey('todo-drawer-panel'),
+                    todo: todo,
+                    inDrawer: true,
+                    onClose: () => _scaffoldKey.currentState?.closeEndDrawer(),
+                  ),
+                )
+              : null,
+          body: Column(
+            children: [
+              // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
+              // 便于用户直接开始交互或在失败后重试。
+              if (selection.needsOpen) _OpenThreadBanner(threadId: threadId),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              children: [
+                                Expanded(
+                                  child: Stack(
+                                    children: [
+                                      Positioned.fill(
+                                        child: _AgentTimelineHost(
+                                          threadId: threadId,
+                                          planConfirmation: plan,
+                                          planExpanded: planExpanded,
+                                          onPlanToggle: plan == null
+                                              ? null
+                                              : () => _togglePlan(
+                                                  threadId,
+                                                  plan.interactionId,
+                                                ),
+                                        ),
+                                      ),
+                                      if (workspace.loadError case final error?)
+                                        Positioned(
+                                          top: 0,
+                                          left: 0,
+                                          right: 0,
+                                          child: Material(
+                                            color:
+                                                context.colors.errorContainer,
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(16),
+                                              child: Row(
+                                                children: [
+                                                  Expanded(child: Text(error)),
+                                                  TextButton(
+                                                    onPressed: () =>
+                                                        _retryThreadLoad(
+                                                          threadId,
+                                                        ),
+                                                    child: Text(
+                                                      context
+                                                          .l10n
+                                                          .runtimeFatalRetry,
                                                     ),
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           ),
-                                          if (layout.loadError
-                                              case final error?)
-                                            Positioned(
-                                              top: 0,
-                                              left: 0,
-                                              right: 0,
-                                              child: Material(
-                                                color: context
-                                                    .colors
-                                                    .errorContainer,
-                                                child: Padding(
-                                                  padding: const EdgeInsets.all(
-                                                    16,
-                                                  ),
-                                                  child: Row(
-                                                    children: [
-                                                      Expanded(
-                                                        child: Text(error),
-                                                      ),
-                                                      TextButton(
-                                                        onPressed: () => ref
-                                                            .read(
-                                                              studioControllerProvider
-                                                                  .notifier,
-                                                            )
-                                                            .retryThreadLoad(
-                                                              threadId,
-                                                            ),
-                                                        child: Text(
-                                                          context
-                                                              .l10n
-                                                              .runtimeFatalRetry,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ),
+                                        ),
+                                      if (workspace.isLoading)
+                                        Positioned.fill(
+                                          child: StudioWorkspaceLoading(
+                                            key: const ValueKey(
+                                              'agent-workspace-loading',
                                             ),
-                                          if (layout.isLoading)
-                                            Positioned.fill(
-                                              child: StudioWorkspaceLoading(
-                                                key: const ValueKey(
-                                                  'agent-workspace-loading',
-                                                ),
-                                                hasContent:
-                                                    ref
-                                                        .watch(
-                                                          agentTimelineProvider(
-                                                            threadId,
-                                                          ),
-                                                        )
-                                                        .value
-                                                        ?.rows
-                                                        .isNotEmpty ??
-                                                    false,
-                                              ),
-                                            ),
-                                          if (planOverlaysTimeline &&
-                                              plan != null &&
-                                              planExpanded)
-                                            Positioned(
-                                              top: 0,
-                                              right: 0,
-                                              bottom: 0,
-                                              width: planPanelWidth,
-                                              child: _buildPlanPanel(
-                                                plan: plan,
-                                                threadId: threadId,
-                                                maximumWidth: planMaximumWidth,
-                                                overlay: true,
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    _AdaptiveFooter(
-                                      threadId: threadId,
-                                      maxHeight: footerMaxHeight,
-                                      showTodo: !planExpanded && todo != null,
-                                      todoExpanded:
-                                          !planExpanded && todoExpanded,
-                                      onToggleTodo: planExpanded || todo == null
-                                          ? null
-                                          : () {
-                                              if (todoInDrawer) {
-                                                _scaffoldKey.currentState
-                                                    ?.openEndDrawer();
-                                              } else {
-                                                setState(
-                                                  () =>
-                                                      _todoExpandedByThread[threadId] =
-                                                          !todoExpanded,
-                                                );
-                                              }
-                                            },
-                                    ),
-                                  ],
+                                            hasContent:
+                                                (timeline != null &&
+                                                    timeline.threadId ==
+                                                        threadId &&
+                                                    timeline.rows.isNotEmpty) ||
+                                                workspace
+                                                    .timelineRows
+                                                    .isNotEmpty,
+                                          ),
+                                        ),
+                                      if (planOverlaysTimeline &&
+                                          plan != null &&
+                                          planExpanded)
+                                        Positioned(
+                                          top: 0,
+                                          right: 0,
+                                          bottom: 0,
+                                          width: planPanelWidth,
+                                          child: _buildPlanPanel(
+                                            plan: plan,
+                                            threadId: threadId,
+                                            maximumWidth: planMaximumWidth,
+                                            overlay: true,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                _AdaptiveFooter(
+                                  threadId: threadId,
+                                  maxHeight: footerMaxHeight,
+                                  showTodo: !planExpanded && todo != null,
+                                  todoExpanded: !planExpanded && todoExpanded,
+                                  onToggleTodo: planExpanded || todo == null
+                                      ? null
+                                      : () {
+                                          if (todoInDrawer) {
+                                            _scaffoldKey.currentState
+                                                ?.openEndDrawer();
+                                          } else {
+                                            setState(
+                                              () =>
+                                                  _todoExpandedByThread[threadId] =
+                                                      !todoExpanded,
+                                            );
+                                          }
+                                        },
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!planOverlaysTimeline &&
+                              plan != null &&
+                              planExpanded)
+                            SizedBox(
+                              width: planPanelWidth,
+                              child: _buildPlanPanel(
+                                plan: plan,
+                                threadId: threadId,
+                                maximumWidth: planMaximumWidth,
+                                overlay: false,
+                              ),
+                            ),
+                          if (!planExpanded &&
+                              !todoInDrawer &&
+                              todo != null &&
+                              todoExpanded)
+                            SizedBox(
+                              width: _todoPanelWidth,
+                              child: TodoPanel(
+                                key: const ValueKey('todo-side-panel'),
+                                todo: todo,
+                                onClose: () => setState(
+                                  () => _todoExpandedByThread[threadId] = false,
                                 ),
                               ),
-                              if (!planOverlaysTimeline &&
-                                  plan != null &&
-                                  planExpanded)
-                                SizedBox(
-                                  width: planPanelWidth,
-                                  child: _buildPlanPanel(
-                                    plan: plan,
-                                    threadId: threadId,
-                                    maximumWidth: planMaximumWidth,
-                                    overlay: false,
-                                  ),
-                                ),
-                              if (!planExpanded &&
-                                  !todoInDrawer &&
-                                  todo != null &&
-                                  todoExpanded)
-                                SizedBox(
-                                  width: _todoPanelWidth,
-                                  child: TodoPanel(
-                                    key: const ValueKey('todo-side-panel'),
-                                    todo: todo,
-                                    onClose: () => setState(
-                                      () => _todoExpandedByThread[threadId] =
-                                          false,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            );
-          },
+            ],
+          ),
         );
       },
     );
+  }
+
+  /// 会话流失败重试。没有 thread 级 load 命令：重订阅当前 attachment，
+  /// 并先标 reconnecting，避免失败条在新帧到达前一直盖住时间线。
+  /// `selectThread` 对已选中会话只 `markOpened`，不能重开已关闭的流。
+  void _retryThreadLoad(String threadId) {
+    final session = ref.read(threadSessionStoreProvider(threadId).notifier);
+    session.markResync(null);
+    session.retry();
   }
 
   void _togglePlan(String threadId, String interactionId) {
@@ -541,8 +525,8 @@ class _OpenThreadBanner extends ConsumerWidget {
                 key: StudioDriverKeys.openThread(threadId),
                 onPressed: () => unawaited(
                   ref
-                      .read(studioControllerProvider.notifier)
-                      .openThread(threadId),
+                      .read(directoryCommandsProvider.notifier)
+                      .selectThread(threadId),
                 ),
                 child: Text(context.l10n.threadOpenAction),
               ),
@@ -554,14 +538,12 @@ class _OpenThreadBanner extends ConsumerWidget {
   }
 }
 
-class _StudioStartPage extends StatelessWidget {
-  const _StudioStartPage({required this.view});
-
-  final StartSessionViewModel view;
+class _StudioStartPage extends ConsumerWidget {
+  const _StudioStartPage();
 
   @override
-  Widget build(BuildContext context) {
-    final project = view.project;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final project = ref.watch(startPageComposerViewProvider).project;
     return Scaffold(
       key: StudioDriverKeys.startPage,
       backgroundColor: context.colors.surface,
@@ -606,7 +588,7 @@ class _StudioStartPage extends StatelessWidget {
                               ),
                         ),
                         const SizedBox(height: 28),
-                        StartPageComposerDock(view: view),
+                        const StartPageComposerDock(),
                       ],
                     ),
                   ),
@@ -635,44 +617,47 @@ class _AgentTimelineHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final asyncTimeline = ref.watch(agentTimelineProvider(threadId));
-    return asyncTimeline.when(
-      loading: () => const SizedBox.shrink(),
-      error: (error, stackTrace) => Center(child: Text(error.toString())),
-      data: (timeline) {
-        if (timeline == null) {
-          return const SizedBox.shrink();
-        }
-        return TimelineView(
-          threadId: threadId,
-          rows: timeline.rows,
-          turn: timeline.turn,
-          planConfirmation: planConfirmation,
-          planExpanded: planExpanded,
-          onPlanToggle: onPlanToggle,
-          isLoadingOlder: timeline.isLoadingOlderHistory,
-          isLoadingNewer:
-              timeline.history.isLoading &&
-              timeline.history.direction == TimelineDirection.newer,
-          olderError: timeline.history.errorMessage,
-          newerError: timeline.history.newerError,
-          anchor: timeline.history.anchor,
-          hasNewer: timeline.history.hasNewer,
-          olderCursor: timeline.history.olderCursor,
-          newerCursor: timeline.history.newerCursor,
-          windowEpoch: timeline.history.epoch,
-          previewedItemIds: timeline.history.previewedItemIds,
-          loadingItemIds: timeline.history.loadingItemIds,
-          itemBodyErrors: timeline.history.itemBodyErrors,
-          pendingItemBodyIds: timeline.history.pendingItemBodyIds,
-          unavailableItemIds: timeline.history.unavailableItemIds,
-          onCommand: (command) => unawaited(
-            ref
-                .read(studioControllerProvider.notifier)
-                .dispatchTimelineCommand(threadId, command),
-          ),
-        );
-      },
+    final window = ref.watch(timelineSessionWindowProvider);
+    final matched = window != null && window.threadId == threadId
+        ? window
+        : null;
+    final fallback = ref.watch(shellComposerWorkspaceProvider);
+    final rows = matched != null
+        ? matched.rows
+        : fallback?.threadId == threadId
+        ? fallback!.timelineRows
+        : const <TimelineRow>[];
+    // 未打开或还没有窗口时，预览仍可用 workspace 行；两者都空则不铺空时间线。
+    if (matched == null && rows.isEmpty) return const SizedBox.shrink();
+    final history = matched?.history ?? const ThreadHistoryWindow();
+    return TimelineView(
+      threadId: threadId,
+      rows: rows,
+      turn: matched?.turn ?? fallback?.turn,
+      planConfirmation: planConfirmation,
+      planExpanded: planExpanded,
+      onPlanToggle: onPlanToggle,
+      isLoadingOlder: matched?.isLoadingOlder ?? false,
+      isLoadingNewer: matched?.isLoadingNewer ?? false,
+      olderError: history.errorMessage,
+      newerError: history.newerError,
+      anchor: history.anchor,
+      hasNewer: history.hasNewer,
+      olderCursor: history.olderCursor,
+      newerCursor: history.newerCursor,
+      windowEpoch: history.epoch,
+      previewedItemIds: history.previewedItemIds,
+      loadingItemIds: history.loadingItemIds,
+      itemBodyErrors: history.itemBodyErrors,
+      pendingItemBodyIds: history.pendingItemBodyIds,
+      unavailableItemIds: history.unavailableItemIds,
+      onCommand: (command) => unawaited(
+        dispatchTimelineSessionCommand(
+          ref.read(threadCommandsProvider.notifier),
+          threadId,
+          command,
+        ),
+      ),
     );
   }
 }

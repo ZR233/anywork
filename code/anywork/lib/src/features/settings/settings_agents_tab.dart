@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../shared/recovery_check_status.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'agent_workspace_mode_label.dart';
@@ -11,6 +10,7 @@ import 'settings_agent_profile_dialog.dart';
 import 'settings_agent_routes.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
+import 'settings_views.dart';
 import 'settings_worktree_recovery.dart';
 
 /// Agent Profile 设置页。系统 Profile 只读；用户 Profile 由各自 TOML 文件管理。
@@ -31,8 +31,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
   AgentProfilesStateView? _lastProfiles;
 
   Future<void> _setSystemEnabled(AgentProfileView profile, bool enabled) async {
-    await ref
-        .read(studioControllerProvider.notifier)
+    await readSettingsCommands(ref)
         .setSystemAgentEnabled(profileId: profile.id, enabled: enabled);
   }
 
@@ -43,40 +42,31 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
           AgentProfileDialog(profile: profile, providers: _routeProviders()),
     );
     if (draft == null || !mounted) return;
-    await ref
-        .read(studioControllerProvider.notifier)
-        .saveUserAgentProfile(draft);
+    await readSettingsCommands(ref).saveUserAgentProfile(draft);
   }
 
   List<ProviderSettingsView> _routeProviders() =>
-      ref.read(studioControllerProvider).value?.providers ??
-      const <ProviderSettingsView>[];
+      ref.read(settingsAgentsViewProvider).providers;
 
   @override
   Widget build(BuildContext context) {
     // 只在 Agents tab 可见时租用 Agent Profiles topic；隐藏页不因 keep-alive 持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     if (visible) {
-      ref.watch(settingsAgentsScopeProvider);
+      watchSettingsScope(
+        ref,
+        visible: true,
+        kind: BridgeSettingsScopeKind.agents,
+      );
     }
-    final profilesAsync = ref.watch(settingsAgentProfilesProvider);
-    final latest = profilesAsync.value;
+    final agents = ref.watch(settingsAgentsViewProvider);
+    final latest = agents.profiles;
     if (latest != null) _lastProfiles = latest;
     final profilesState = latest ?? _lastProfiles;
     final profiles = profilesState?.data.profiles ?? const <AgentProfileView>[];
-    final providers = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.providers ?? const <ProviderSettingsView>[],
-      ),
-    );
-    final roles = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.roles ?? const <RoleSettingsView>[],
-      ),
-    );
-    final recoveryState = ref.watch(
-      studioControllerProvider.select((state) => state.value?.recoveryState),
-    );
+    final providers = agents.providers;
+    final roles = agents.roles;
+    final recoveryState = agents.recovery;
     final worktreeIssues =
         recoveryState?.values
             .where((issue) => issue.worktree != null)
@@ -105,11 +95,13 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
               label: Text(context.l10n.settingsAgentsAddUserProfile),
             ),
           ),
-          if (visible && profilesAsync.hasError)
+          if (visible && agents.profilesFailed)
             Padding(
               padding: const EdgeInsets.only(top: 12),
               child: SettingsInlineError(
-                message: profilesAsync.error.toString(),
+                message: agents.profilesErrorMessage?.trim().isNotEmpty == true
+                    ? agents.profilesErrorMessage!
+                    : context.l10n.settingsSshStateFailed,
               ),
             ),
           if (visible) SettingsTopicStatus(topic: const AgentProfilesTopic()),
@@ -124,7 +116,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
         key: const ValueKey('settings-pane-scroll'),
         children: [
           const RecoveryCheckStatus(),
-          if (profilesAsync.isLoading && profilesState == null)
+          if (agents.profilesLoading && profilesState == null)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
               child: Center(child: CircularProgressIndicator()),

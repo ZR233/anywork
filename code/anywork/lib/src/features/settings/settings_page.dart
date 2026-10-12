@@ -1,12 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
-import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_badges.dart';
@@ -21,38 +17,13 @@ import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
 import 'settings_ssh_tab.dart';
 import 'settings_statistics_tab.dart';
+import 'settings_views.dart';
 
-class SettingsPage extends ConsumerStatefulWidget {
+class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
   @override
-  ConsumerState<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends ConsumerState<SettingsPage> {
-  bool _popping = false;
-
-  Future<void> _popAfterFlush() async {
-    if (_popping) return;
-    _popping = true;
-    try {
-      await ref.read(studioControllerProvider.notifier).flushPending();
-      if (mounted && context.canPop()) context.pop();
-    } finally {
-      _popping = false;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) unawaited(_popAfterFlush());
-      },
-      child: const _SettingsPageShell(),
-    );
-  }
+  Widget build(BuildContext context) => const _SettingsPageShell();
 }
 
 /// Owns the tab controller independently from the reactive settings projection.
@@ -70,31 +41,21 @@ class _SettingsPageShell extends StatelessWidget {
   }
 }
 
-class _SettingsPageBody extends ConsumerStatefulWidget {
+class _SettingsPageBody extends ConsumerWidget {
   const _SettingsPageBody();
 
   @override
-  ConsumerState<_SettingsPageBody> createState() => _SettingsPageBodyState();
-}
-
-class _SettingsPageBodyState extends ConsumerState<_SettingsPageBody> {
-  @override
-  Widget build(BuildContext context) {
-    // Only the readiness edge belongs to the page shell.  Once the app-level
-    // repository has a canonical snapshot, field updates must rebuild their
-    // own tab projection instead of replacing the retained TabBarView.
-    final readiness = ref.watch(
-      studioControllerProvider.select(
-        (state) => (ready: state.value != null, error: state.error),
-      ),
-    );
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 页面生命周期持有公共 topic。配置 canonical 到达前只占位，不重建已保留的 tab。
+    ref.watch(settingsPageTopicsLeaseProvider);
+    final readiness = ref.watch(settingsPageReadinessProvider);
     if (!readiness.ready) {
       // 仅在首帧尚无任何 canonical 设置视图时占位。
       return Scaffold(
         body: Center(
           child: readiness.error == null
               ? const CircularProgressIndicator()
-              : Text(readiness.error.toString()),
+              : Text(readiness.error!),
         ),
       );
     }
@@ -165,26 +126,11 @@ class _ProvidersSettingsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final providers = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.providers ?? const <ProviderSettingsView>[],
-      ),
-    );
-    final catalog = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.providerCatalog ?? const ProviderCatalogView.empty(),
-      ),
-    );
-    final defaultProviderId = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.defaultProviderId,
-      ),
-    );
+    final view = ref.watch(settingsProvidersViewProvider);
     return ProvidersTab(
-      providers: providers,
-      providerCatalog: catalog,
-      defaultProviderId: defaultProviderId,
+      providers: view.providers,
+      providerCatalog: view.providerCatalog,
+      defaultProviderId: view.defaultProviderId,
       tabIndex: _SettingsTab.providers.index,
     );
   }
@@ -195,13 +141,8 @@ class _InstructionsSettingsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final settings = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.instructions ?? const InstructionsSettingsView(),
-      ),
-    );
-    return InstructionsTab(settings: settings);
+    final view = ref.watch(settingsInstructionsViewProvider);
+    return InstructionsTab(settings: view.settings);
   }
 }
 
@@ -210,13 +151,8 @@ class _SecuritySettingsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final mode = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.permissionMode ?? PermissionMode.requestApproval,
-      ),
-    );
-    return SecurityTab(mode: mode);
+    final view = ref.watch(settingsSecurityViewProvider);
+    return SecurityTab(mode: view.mode);
   }
 }
 
@@ -225,35 +161,12 @@ class _GeneralSettingsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final settings = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.general ?? const GeneralSettingsView(),
-      ),
-    );
-    final webSearch = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.webSearch ?? const WebSearchSettingsView(),
-      ),
-    );
-    final deepSeekWebSearch = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.deepSeekWebSearch ??
-            const DeepSeekWebSearchSettingsView(),
-      ),
-    );
-    final runtimeBusy = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.isBusy == true ||
-            state.value?.runtime.hasActiveWorkflow == true,
-      ),
-    );
+    final view = ref.watch(settingsGeneralViewProvider);
     return GeneralTab(
-      settings: settings,
-      webSearch: webSearch,
-      deepSeekWebSearch: deepSeekWebSearch,
-      runtimeBusy: runtimeBusy,
+      settings: view.settings,
+      webSearch: view.webSearch,
+      deepSeekWebSearch: view.deepSeekWebSearch,
+      runtimeBusy: view.runtimeBusy,
     );
   }
 }
@@ -429,13 +342,13 @@ class _SettingsNav extends StatelessWidget {
   }
 }
 
-class _SettingsBackTile extends ConsumerWidget {
+class _SettingsBackTile extends StatelessWidget {
   const _SettingsBackTile({required this.compact});
 
   final bool compact;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final content = Row(
       mainAxisSize: compact ? MainAxisSize.min : MainAxisSize.max,
       children: [
@@ -468,7 +381,9 @@ class _SettingsBackTile extends ConsumerWidget {
         child: InkWell(
           key: StudioDriverKeys.settingsBack,
           borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: () => unawaited(_popAfterFlush(context, ref)),
+          onTap: () {
+            if (context.canPop()) context.pop();
+          },
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 10 : 10,
@@ -479,14 +394,6 @@ class _SettingsBackTile extends ConsumerWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _popAfterFlush(BuildContext context, WidgetRef ref) async {
-    // Settings is a pushed child of the session shell. Reconcile in-flight
-    // writes first, with a bounded deadline, then pop the existing shell so
-    // its selectors observe the repository's canonical state immediately.
-    await ref.read(studioControllerProvider.notifier).flushPending();
-    if (context.mounted) context.pop();
   }
 }
 

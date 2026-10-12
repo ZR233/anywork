@@ -1,5 +1,4 @@
-// 租约与重连语义复制自 data/repositories/studio_product_topics.dart。
-// 旧文件继续服务 StudioController；T6 删除旧实现后只保留这一份。
+// 产品 topic 租约与重连的唯一实现。引用计数归零后取消订阅，重建先等旧句柄关闭。
 
 import 'dart:async';
 

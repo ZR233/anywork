@@ -357,6 +357,70 @@ McpServerSettingsView _mcpServerFromFrb(frb.BridgeMcpServerDto server) {
   );
 }
 
+/// 直接响应里的配置与目录按各自水位合并。任一资源没有值、或两边都不更新时返回 null。
+///
+/// 这是旧 `mergeCanonicalSettingsSnapshots` 的原样内联：保留 stale debugPrint
+/// 和双时钟比较，不改走 settings store 的加载哨兵语义。
+///
+/// 分层例外（design/25 §25.10）：本函数与 settings store 的 canonical 投影语义
+/// 一致但实现独立——store 依赖数据源层，反向复用会形成 import 环。修改任一侧
+/// 的双时钟合并语义必须同步另一侧。
+SettingsStateSnapshot? _mergeCanonicalSettingsSnapshots(
+  SettingsStateSnapshot previous,
+  SettingsStateSnapshot next, {
+  bool mergeConfig = true,
+  bool mergeCatalog = true,
+}) {
+  if (next.state.value == null || previous.state.value == null) return null;
+  final nextConfigIsNewer = mergeConfig && next.revision > previous.revision;
+  final nextCatalogIsNewer =
+      mergeCatalog && next.modelCatalogRevision > previous.modelCatalogRevision;
+  if (!nextConfigIsNewer && !nextCatalogIsNewer) {
+    debugPrint(
+      'settings_merge_dropped reason=stale-or-idempotent '
+      'config=${next.revision}/${previous.revision} '
+      'catalog=${next.modelCatalogRevision}/${previous.modelCatalogRevision}',
+    );
+    return null;
+  }
+
+  final previousData = previous.state.value!;
+  final nextData = next.state.value!;
+  final configData = nextConfigIsNewer ? nextData : previousData;
+  final catalogData = nextCatalogIsNewer ? nextData : previousData;
+  final catalogByProvider = {
+    for (final provider in catalogData.providers) provider.id: provider,
+  };
+  final providers = [
+    for (final provider in configData.providers)
+      if (catalogByProvider[provider.id] case final catalogProvider?)
+        provider.copyWith(
+          models: catalogProvider.models,
+          modelCatalog: catalogProvider.modelCatalog,
+        )
+      else
+        provider,
+  ];
+
+  return SettingsStateSnapshot(
+    providers: providers,
+    defaultProviderId: configData.defaultProviderId,
+    modeModelRoutes: configData.modeModelRoutes,
+    roles: configData.roles,
+    mcpServers: configData.mcpServers,
+    instructions: configData.instructions,
+    skills: configData.skills,
+    general: configData.general,
+    webSearch: configData.webSearch,
+    deepSeekWebSearch: configData.deepSeekWebSearch,
+    permissionMode: configData.permissionMode,
+    revision: nextConfigIsNewer ? next.revision : previous.revision,
+    modelCatalogRevision: nextCatalogIsNewer
+        ? next.modelCatalogRevision
+        : previous.modelCatalogRevision,
+  );
+}
+
 StudioState studioStateFromFrbSnapshot(frb.BridgeStudioStateSnapshot value) {
   final projectDirectory = _projectDirectoryFromFrb(value.projectDirectory);
   final threadPage = _threadDirectoryPageFromFrb(value.threadDirectory);
@@ -370,7 +434,7 @@ StudioState studioStateFromFrbSnapshot(frb.BridgeStudioStateSnapshot value) {
     ),
     agentDirectory: _agentDirectoryFromFrb(value.agentDirectory),
     settingsState:
-        mergeCanonicalSettingsSnapshots(
+        _mergeCanonicalSettingsSnapshots(
           _settingsConfigStateFromFrb(value.settingsConfig),
           _modelCatalogStateFromFrb(value.modelCatalog),
         ) ??

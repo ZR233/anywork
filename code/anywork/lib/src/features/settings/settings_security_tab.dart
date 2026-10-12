@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 class SecurityTab extends ConsumerWidget {
   const SecurityTab({super.key, required this.mode});
@@ -16,11 +16,7 @@ class SecurityTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pending = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.mutationPending('permission-mode') ?? false,
-      ),
-    );
+    final pending = ref.watch(settingsSecurityViewProvider).pending;
     return SettingsPane(
       header: SettingsHeader(
         title: context.l10n.settingsSecurityTitle,
@@ -86,7 +82,7 @@ Future<void> _savePermissionMode(
   PermissionMode mode,
 ) async {
   try {
-    await ref.read(studioControllerProvider.notifier).setPermissionMode(mode);
+    await readSettingsCommands(ref).setPermissionMode(mode);
   } catch (error) {
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);

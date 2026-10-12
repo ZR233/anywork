@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
-import 'provider_usage_controller.dart';
 import 'settings_provider_details.dart';
 import 'settings_provider_drafts.dart';
 import 'settings_provider_editor.dart';
 import 'settings_provider_list.dart';
 import 'settings_scope.dart';
+import 'settings_usage_refresh.dart';
+import 'settings_views.dart';
 
 class ProvidersTab extends ConsumerStatefulWidget {
   const ProvidersTab({
@@ -40,13 +40,12 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   bool _saving = false;
   String? _draftError;
   String? _refreshingCatalog;
+  final SettingsUsageRefresh _usageRefresh = SettingsUsageRefresh();
 
   Future<void> _refreshCatalog(String providerId) async {
     setState(() => _refreshingCatalog = providerId);
     try {
-      await ref
-          .read(studioControllerProvider.notifier)
-          .refreshModelCatalog(providerId);
+      await readDirectoryCommands(ref).refreshModelCatalog(providerId);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -73,9 +72,11 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   Widget build(BuildContext context) {
     // 只在 Providers tab 可见时租用 Provider usage topic；隐藏页不因 keep-alive 持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
-    if (visible) {
-      ref.watch(settingsUsageScopeProvider);
-    }
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.usage,
+    );
     final catalog = widget.providerCatalog;
     final defaultProviderId =
         widget.defaultProviderId ?? widget.providers.firstOrNull?.id;
@@ -87,23 +88,18 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         .where((provider) => provider.id == selectedId)
         .firstOrNull;
     final filtered = _filteredProviders();
-    final usageState = ref.watch(providerUsageControllerProvider);
-    // Provider usage is a separate canonical topic. The controller only owns
-    // refresh/loading/error UI state; its one-shot read must not become a
-    // second usage fact source that hides later topic events.
-    final canonicalUsages = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.providerUsages ?? const <ProviderUsageView>[],
-      ),
-    );
+    final usageView = ref.watch(settingsUsageViewProvider);
+    final canonicalUsages = usageView.usages;
     final usageByProvider = {
       for (final usage in canonicalUsages) usage.providerId: usage,
     };
-    final usageErrorsByProviderId = usageState.visibleErrorsByProviderId(
-      providerIds: widget.providers.map((provider) => provider.id),
-      canonicalUsages: canonicalUsages,
-    );
-    final loadingProviderIds = usageState.loadingProviderIds;
+    final usageErrorsByProviderId = _usageRefresh.state
+        .visibleErrorsByProviderId(
+          providerIds: widget.providers.map((provider) => provider.id),
+          canonicalUsages: canonicalUsages,
+          storeRevision: usageView.revision,
+        );
+    final loadingProviderIds = _usageRefresh.state.loadingProviderIds;
     if (_draft != null) {
       return Padding(
         padding: const EdgeInsets.all(20),
@@ -224,13 +220,9 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }
 
   void _startAdd() {
-    final catalog = ref
-        .read(studioControllerProvider)
-        .asData
-        ?.value
-        .providerCatalog;
-    final template = catalog?.presets.firstOrNull;
-    if (catalog == null || template == null) {
+    final catalog = ref.read(settingsProvidersViewProvider).providerCatalog;
+    final template = catalog.presets.firstOrNull;
+    if (template == null) {
       setState(
         () => _draftError = context.l10n.settingsProviderCatalogUnavailable,
       );
@@ -268,15 +260,9 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }
 
   void _changeDraftTemplate(String templateId) {
-    final catalog = ref
-        .read(studioControllerProvider)
-        .asData
-        ?.value
-        .providerCatalog;
+    final catalog = ref.read(settingsProvidersViewProvider).providerCatalog;
     final current = _draft;
-    if (catalog == null ||
-        current == null ||
-        current.provider.templateKind == templateId) {
+    if (current == null || current.provider.templateKind == templateId) {
       return;
     }
     final id = current.mode == ProviderDraftMode.create && templateId.isNotEmpty
@@ -425,27 +411,23 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       );
       final makeDefault =
           current.mode == ProviderDraftMode.create ||
-          ref.read(studioControllerProvider).asData?.value.defaultProviderId ==
+          ref.read(settingsProvidersViewProvider).defaultProviderId ==
               current.originalId;
-      final saved = await ref
-          .read(studioControllerProvider.notifier)
-          .saveProvider(
-            ProviderCommandBuilder.buildProvider(
-              provider,
-              originalId: current.mode == ProviderDraftMode.edit
-                  ? current.originalId
-                  : null,
-            ),
-          );
+      final saved = await readSettingsCommands(ref).saveProvider(
+        ProviderCommandBuilder.buildProvider(
+          provider,
+          originalId: current.mode == ProviderDraftMode.edit
+              ? current.originalId
+              : null,
+        ),
+      );
       if (!saved.providers.any((candidate) => candidate.id == provider.id)) {
         throw StateError(
           'Provider save returned a canonical snapshot without ${provider.id}.',
         );
       }
       if (makeDefault) {
-        await ref
-            .read(studioControllerProvider.notifier)
-            .setDefaultProvider(provider.id);
+        await readSettingsCommands(ref).setDefaultProvider(provider.id);
       }
       await _waitForProviderList(provider.id);
       if (mounted) {
@@ -475,15 +457,12 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         .where((candidate) => candidate.id != provider.id)
         .toList();
     final currentDefaultId = ref
-        .read(studioControllerProvider)
-        .asData
-        ?.value
+        .read(settingsProvidersViewProvider)
         .defaultProviderId;
     final selectedProviderId = currentDefaultId == provider.id
         ? providers.firstOrNull?.id
         : currentDefaultId;
-    final saved = await ref
-        .read(studioControllerProvider.notifier)
+    final saved = await readSettingsCommands(ref)
         .removeProvider(provider.id, replacementProviderId: selectedProviderId);
     if (saved.providers.any((candidate) => candidate.id == provider.id)) {
       throw StateError(
@@ -506,17 +485,11 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   Future<void> _setDefaultProvider(ProviderSettingsView provider) async {
     setState(() => _selectedProviderId = provider.id);
-    await ref
-        .read(studioControllerProvider.notifier)
-        .setDefaultProvider(provider.id);
-    final saved = ref
-        .read(studioControllerProvider)
-        .asData
-        ?.value
-        .settingsState;
-    if (saved == null || saved.defaultProviderId != provider.id) {
+    await readSettingsCommands(ref).setDefaultProvider(provider.id);
+    final saved = ref.read(settingsProvidersViewProvider);
+    if (saved.canonical == null || saved.defaultProviderId != provider.id) {
       throw StateError(
-        'Provider default save returned ${saved?.defaultProviderId}, '
+        'Provider default save returned ${saved.defaultProviderId}, '
         'expected ${provider.id}.',
       );
     }
@@ -524,14 +497,38 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }
 
   Future<void> _refreshUsages({String? providerId}) async {
-    await ref
-        .read(providerUsageControllerProvider.notifier)
-        .refresh(providerId: providerId);
+    final providers = ref.read(settingsProvidersViewProvider).providers;
+    final providerIds = providerId == null
+        ? providers.map((provider) => provider.id).toSet()
+        : {providerId};
+    await _usageRefresh.refresh(
+      providerId: providerId,
+      providerIds: providerIds,
+      readStoreRevision: () => ref.read(settingsUsageViewProvider).revision,
+      readUsageRevisions: () {
+        final usages = ref.read(settingsUsageViewProvider).usages;
+        return {
+          for (final id in providerIds)
+            id:
+                usages
+                    .where((usage) => usage.providerId == id)
+                    .firstOrNull
+                    ?.revision ??
+                -1,
+        };
+      },
+      refreshCanonical: () =>
+          readDirectoryCommands(ref).refreshProviderUsages(),
+      onChanged: () {
+        if (mounted) setState(() {});
+      },
+    );
   }
 
-  List<ProviderSettingsView> get _canonicalProviders =>
-      ref.read(studioControllerProvider).asData?.value.providers ??
-      widget.providers;
+  List<ProviderSettingsView> get _canonicalProviders {
+    final providers = ref.read(settingsProvidersViewProvider).providers;
+    return providers.isEmpty ? widget.providers : providers;
+  }
 
   /// Keep the editor open until the parent Settings projection has observed the
   /// canonical save. This prevents a successful backend response from briefly
@@ -542,14 +539,8 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }) async {
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (DateTime.now().isBefore(deadline)) {
-      final providers = ref
-          .read(studioControllerProvider)
-          .asData
-          ?.value
-          .providers;
-      final exists = (providers ?? widget.providers).any(
-        (provider) => provider.id == providerId,
-      );
+      final providers = ref.read(settingsProvidersViewProvider).providers;
+      final exists = providers.any((provider) => provider.id == providerId);
       if (exists == shouldExist) return;
       await WidgetsBinding.instance.endOfFrame;
     }

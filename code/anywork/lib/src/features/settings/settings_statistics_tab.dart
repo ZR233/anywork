@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
+import 'settings_views.dart';
 
 class StatisticsTab extends ConsumerStatefulWidget {
   const StatisticsTab({required this.tabIndex, super.key});
@@ -31,11 +31,13 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
   Widget build(BuildContext context) {
     // 只在「统计」tab 可见时租用模型性能 topic；隐藏页不因 keep-alive 持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
-    if (visible) {
-      ref.watch(settingsStatisticsScopeProvider);
-    }
-    final asyncSnapshot = ref.watch(settingsStatisticsProvider);
-    final latest = asyncSnapshot.value;
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.statistics,
+    );
+    final statistics = ref.watch(settingsStatisticsViewProvider);
+    final latest = statistics.snapshot;
     if (latest != null) _lastSnapshot = latest;
     final snapshot =
         latest ?? _lastSnapshot ?? const ModelPerformanceSnapshotView();

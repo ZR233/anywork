@@ -216,7 +216,7 @@ class SettingsStoreState {
 
 /// 配置水位前进只替换配置字段，目录水位前进只替换 provider 模型目录。
 ///
-/// 语义来自 `studio_settings_repository.dart` 的双时钟合并；这里不引用旧仓库。
+/// 配置水位与目录水位独立比较。未加载的一路不会被另一路快照夹带的水位标记为已消费。
 SettingsStoreState mergeSettingsState(
   SettingsStoreState current,
   SettingsStateSnapshot incoming, {

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
+import '../../data/repositories/studio_api_provider.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -35,7 +35,7 @@ class _SshTabState extends ConsumerState<SshTab> {
   Future<void> _reload() async {
     try {
       final servers = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .listSshServers();
       if (mounted) setState(() => _servers = servers);
     } catch (error) {
@@ -120,7 +120,7 @@ class _SshTabState extends ConsumerState<SshTab> {
       _runServerOperation(server, SshServerOperation.test, () async {
         setState(() => _connections.remove(server.alias));
         final snapshot = await ref
-            .read(studioControllerProvider.notifier)
+            .read(studioBridgeDataSourceProvider)
             .testSshConnection(server.alias);
         if (mounted) setState(() => _connections[server.alias] = snapshot);
       });
@@ -129,7 +129,7 @@ class _SshTabState extends ConsumerState<SshTab> {
       _runServerOperation(server, SshServerOperation.reconnect, () async {
         setState(() => _connections.remove(server.alias));
         final snapshot = await ref
-            .read(studioControllerProvider.notifier)
+            .read(studioBridgeDataSourceProvider)
             .reconnectSshServer(server.alias);
         if (mounted) setState(() => _connections[server.alias] = snapshot);
       });
@@ -142,7 +142,7 @@ class _SshTabState extends ConsumerState<SshTab> {
     if (command == null || !mounted) return;
     setState(() => _error = null);
     try {
-      await ref.read(studioControllerProvider.notifier).saveSshServer(command);
+      await ref.read(studioBridgeDataSourceProvider).saveSshServer(command);
       if (server != null && mounted) {
         setState(() => _connections.remove(server.alias));
       }
@@ -173,7 +173,7 @@ class _SshTabState extends ConsumerState<SshTab> {
         );
         if (confirmed != true || !mounted) return;
         await ref
-            .read(studioControllerProvider.notifier)
+            .read(studioBridgeDataSourceProvider)
             .deleteSshServer(server.alias);
         if (mounted) setState(() => _connections.remove(server.alias));
         await _reload();

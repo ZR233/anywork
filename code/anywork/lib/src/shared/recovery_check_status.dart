@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme/studio_tokens.dart';
-import '../data/repositories/studio_repository.dart';
+import '../data/commands/directory_commands.dart';
+import '../data/stores/recovery_store.dart';
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
 
@@ -14,9 +15,7 @@ class RecoveryCheckStatus extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final resource = ref.watch(
-      studioControllerProvider.select(
-        (value) => value.value?.recoveryState.state,
-      ),
+      recoveryStoreProvider.select((clock) => clock.value?.state),
     );
     final checking =
         resource is LoadingObservedResource ||
@@ -63,7 +62,7 @@ class RecoveryCheckStatus extends ConsumerWidget {
                 onPressed: () async {
                   try {
                     await ref
-                        .read(studioControllerProvider.notifier)
+                        .read(directoryCommandsProvider.notifier)
                         .retryRecovery();
                   } catch (error) {
                     if (context.mounted) {

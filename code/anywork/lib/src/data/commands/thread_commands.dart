@@ -10,6 +10,7 @@ import '../stores/settings_store.dart';
 import '../stores/snapshot_fanout.dart';
 import '../stores/thread_directory_store.dart';
 import '../stores/thread_session_store.dart';
+import '../stores/thread_session_state.dart';
 import 'command_lane.dart';
 import 'settings_commands.dart';
 
@@ -81,6 +82,51 @@ class ThreadCommands extends _$ThreadCommands {
       _begin(key, label: threadId);
       try {
         await _api.submitPrompt(threadId, input);
+        _clear(key);
+      } catch (error) {
+        _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+  }
+
+  /// 解析当前会话的 pending interaction。
+  ///
+  /// 响应只确认命令；canonical interaction 帧仅由 Thread 有序流写入，
+  /// 不在本地删除或改写 interaction（design/25 §25.5）。
+  Future<void> resolveActiveInteraction(
+    String threadId,
+    String interactionId,
+    InteractionResolutionCommand resolution,
+  ) {
+    return _lane.enqueue(() async {
+      final selectedThreadId = ref
+          .read(selectionStoreProvider)
+          .selectedThreadId;
+      final interactions = ref
+          .read(threadSessionStoreProvider(threadId))
+          .interactions;
+      final active = [...interactions]
+        ..sort(
+          (left, right) =>
+              interactionPriority(left.kind)
+                  .compareTo(interactionPriority(right.kind)),
+        );
+      if (selectedThreadId != threadId ||
+          active.firstOrNull?.id != interactionId) {
+        final conflict = const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'The displayed interaction is no longer current',
+          retryable: false,
+          correlationId: 'client-interaction-conflict',
+        );
+        _fail('interaction:$threadId', threadId, conflict);
+        throw conflict;
+      }
+      final key = 'interaction:$threadId';
+      _begin(key, label: threadId);
+      try {
+        await _api.respondInteraction(interactionId, resolution);
         _clear(key);
       } catch (error) {
         _fail(key, threadId, error);
@@ -198,6 +244,141 @@ class ThreadCommands extends _$ThreadCommands {
   /// 打开会话后的首窗。等价于旧控制器的 latest/reset，不把页当成目录事实。
   Future<void> loadLatestHistory(String threadId) =>
       _loadHistory(threadId, TimelineDirection.newer, replaceWindow: true);
+
+  /// 运行中窗口追新：由权威 ChatView 窗口扩展并交回快照。
+  ///
+  /// 追新是向旧扩充操作：加载/失败/完成状态一律落在 older 边，与
+  /// timeline 上边缘的重试指示对齐（旧控制器 `_loadChatWindow` 同语义）。
+  Future<void> extendLatestHistory(String threadId) async {
+    final store = ref.read(threadSessionStoreProvider(threadId).notifier);
+    final window = await store.chatView();
+    if (window == null || !ref.mounted) return;
+    final epoch = ref.read(threadSessionStoreProvider(threadId)).streamEpoch;
+    store.setHistoryLoading(TimelineDirection.older);
+    try {
+      final snapshot = await window.extendLatest();
+      if (!ref.mounted ||
+          ref.read(threadSessionStoreProvider(threadId)).streamEpoch != epoch) {
+        if (ref.mounted) store.finishHistoryLoad();
+        return;
+      }
+      store.applyChatSnapshot(
+        snapshot,
+        historyCompletion: ChatHistoryCompletion.older,
+      );
+      // 快照因低 version 被 merge path 早退时 loading 可能残留，防御性收尾。
+      if (ref.read(threadSessionStoreProvider(threadId)).history.isLoading) {
+        store.finishHistoryLoad();
+      }
+    } catch (error) {
+      if (ref.mounted) {
+        store.setHistoryError(TimelineDirection.older, error.toString());
+      }
+    }
+  }
+
+  /// 跳回实时底部：清锚点后聚焦权威窗口的 Latest。
+  Future<void> jumpToLatest(String threadId) async {
+    final store = ref.read(threadSessionStoreProvider(threadId).notifier);
+    store.jumpToLatest();
+    final window = await store.chatView();
+    if (window == null || !ref.mounted) return;
+    final epoch = ref.read(threadSessionStoreProvider(threadId)).streamEpoch;
+    try {
+      final snapshot = await window.focus(null);
+      if (!ref.mounted ||
+          ref.read(threadSessionStoreProvider(threadId)).streamEpoch != epoch) {
+        return;
+      }
+      store.applyChatSnapshot(
+        snapshot,
+        historyCompletion: ChatHistoryCompletion.focus,
+      );
+    } catch (error) {
+      if (ref.mounted) {
+        store.setHistoryError(TimelineDirection.newer, error.toString());
+      }
+    }
+  }
+
+  /// 写入阅读锚点；浏览历史意图时同步聚焦权威窗口的历史条目。
+  Future<void> updateTimelineAnchor(
+    String threadId,
+    TimelineAnchor anchor,
+  ) async {
+    final store = ref.read(threadSessionStoreProvider(threadId).notifier);
+    store.setTimelineAnchor(anchor);
+    if (anchor.readingIntent != TimelineReadingIntent.browseHistory) return;
+    final window = await store.chatView();
+    if (window == null || !ref.mounted) return;
+    final epoch = ref.read(threadSessionStoreProvider(threadId)).streamEpoch;
+    try {
+      final snapshot = await window.focus(anchor.itemId);
+      if (!ref.mounted ||
+          ref.read(threadSessionStoreProvider(threadId)).streamEpoch != epoch) {
+        return;
+      }
+      store.applyChatSnapshot(snapshot);
+    } catch (_) {
+      // 聚焦失败保留当前窗口与锚点；下一次滚动或翻页会重试。
+    }
+  }
+
+  /// 可见条目正文补齐：对窗口内仍是预览的身份按 identity 展开。
+  Future<void> ensureItemBodies(
+    String threadId,
+    Iterable<String> itemIds,
+  ) async {
+    for (final itemId in itemIds) {
+      await _completeItemBody(threadId, itemId);
+    }
+  }
+
+  /// 显式重试一次按身份的正文补齐（只对窗口内仍是预览的身份生效）。
+  Future<void> loadItemBody(String threadId, String itemId) =>
+      _completeItemBody(threadId, itemId, retry: true);
+
+  Future<void> _completeItemBody(
+    String threadId,
+    String itemId, {
+    bool retry = false,
+  }) async {
+    final session = ref.read(threadSessionStoreProvider(threadId));
+    final history = session.history;
+    if (!history.previewedItemIds.contains(itemId) ||
+        history.loadingItemIds.contains(itemId)) {
+      return;
+    }
+    if (!retry && history.itemBodyErrors.containsKey(itemId)) return;
+    final store = ref.read(threadSessionStoreProvider(threadId).notifier);
+    final window = await store.chatView();
+    if (window == null || !ref.mounted) return;
+    final latest = ref.read(threadSessionStoreProvider(threadId));
+    if (!latest.history.previewedItemIds.contains(itemId) ||
+        latest.history.loadingItemIds.contains(itemId)) {
+      return;
+    }
+    final epoch = latest.streamEpoch;
+    store.beginItemBodyLoad(itemId);
+    try {
+      final snapshot = await window.expandItem(itemId);
+      if (!ref.mounted ||
+          ref.read(threadSessionStoreProvider(threadId)).streamEpoch != epoch) {
+        return;
+      }
+      if (snapshot == null) {
+        // 身份仍在窗口、正文此刻取不到：保留预览与重试入口，不编造正文。
+        store.markItemBodyPending(itemId);
+        return;
+      }
+      store.applyChatSnapshot(snapshot);
+    } catch (error) {
+      if (ref.mounted &&
+          ref.read(threadSessionStoreProvider(threadId)).streamEpoch == epoch) {
+        store.failItemBodyLoad(itemId, error.toString());
+      }
+    }
+  }
 
   Future<void> _applyThreadModelRoute({
     required String threadId,
@@ -371,8 +552,11 @@ class ThreadCommands extends _$ThreadCommands {
   }
 
   StudioThread? _directoryThread(String threadId) {
-    for (final thread
-        in ref.read(threadDirectoryStoreProvider).window.threads) {
+    final directory = ref.read(threadDirectoryStoreProvider);
+    for (final thread in directory.window.threads) {
+      if (thread.id == threadId) return thread;
+    }
+    for (final thread in directory.overlayThreads) {
       if (thread.id == threadId) return thread;
     }
     return null;

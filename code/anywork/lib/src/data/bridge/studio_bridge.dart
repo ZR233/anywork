@@ -87,6 +87,10 @@ class StudioBridge {
 
   void retryTopic(ProductTopic topic) => _topics.retry(topic);
 
+  /// 当前活动 topic 的引用计数。只读委托，不改变租约或订阅语义。
+  Map<String, int> activeTopicRefCountViews() =>
+      _topics.activeTopicRefCountViews();
+
   /// 按 threadId 建立有序流。调用方（threadSession store）在无观察者时 release。
   BridgeThreadAttachment attachThread(
     String threadId, {

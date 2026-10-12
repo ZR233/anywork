@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
+import '../../data/commands/thread_commands.dart';
+import '../../data/stores/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -47,6 +50,12 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
   Widget build(BuildContext context) {
     final payload = widget.payload;
     final arguments = payload.formattedArguments;
+    final enabled =
+        widget.enabled &&
+        pendingInteractionIsActive(
+          ref.watch(threadSessionStoreProvider(widget.threadId)).interactions,
+          widget.interactionId,
+        );
     return InteractionDockShell(
       kind: InteractionDockKind.permission,
       trailing: widget.trailing,
@@ -59,7 +68,7 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
             key: StudioDriverKeys.toolDeny,
             icon: const Icon(Icons.close),
             label: Text(context.l10n.interactionReject),
-            onPressed: widget.enabled
+            onPressed: enabled
                 ? () => _resolve(ToolApprovalDecision.denied)
                 : null,
           ),
@@ -67,7 +76,7 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
             key: StudioDriverKeys.toolApprove,
             icon: const Icon(Icons.check),
             label: Text(context.l10n.interactionApprove),
-            onPressed: widget.enabled
+            onPressed: enabled
                 ? () => _resolve(ToolApprovalDecision.approved)
                 : null,
           ),
@@ -95,7 +104,7 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
           ],
           const SizedBox(height: 10),
           TextField(
-            enabled: widget.enabled,
+            enabled: enabled,
             controller: _reasonController,
             minLines: 1,
             maxLines: 3,
@@ -111,15 +120,17 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
 
   void _resolve(ToolApprovalDecision decision) {
     final reason = _reasonController.text.trim();
-    ref
-        .read(studioControllerProvider.notifier)
-        .resolveActiveInteraction(
-          widget.threadId,
-          widget.interactionId,
-          ToolApprovalResolutionCommand(
-            decision: decision,
-            reason: reason.isEmpty ? null : reason,
+    unawaited(
+      ref
+          .read(threadCommandsProvider.notifier)
+          .resolveActiveInteraction(
+            widget.threadId,
+            widget.interactionId,
+            ToolApprovalResolutionCommand(
+              decision: decision,
+              reason: reason.isEmpty ? null : reason,
+            ),
           ),
-        );
+    );
   }
 }

@@ -65,3 +65,25 @@ String _formatJson(Object? value) {
     return value.toString();
   }
 }
+
+/// 与命令层一致：priority 最小的 pending interaction 是当前可解析目标。
+PendingInteraction? activePendingInteraction(
+  List<PendingInteraction> interactions,
+) {
+  if (interactions.isEmpty) return null;
+  final ranked = [...interactions]
+    ..sort(
+      (left, right) =>
+          interactionPriority(left.kind)
+              .compareTo(interactionPriority(right.kind)),
+    );
+  return ranked.first;
+}
+
+/// 当前可解析目标是否仍是界面正在展示的 interaction。
+bool pendingInteractionIsActive(
+  List<PendingInteraction> interactions,
+  String interactionId,
+) {
+  return activePendingInteraction(interactions)?.id == interactionId;
+}

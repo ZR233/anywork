@@ -43,8 +43,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
       _filter != DirectoryFilter.all ||
       _archived;
 
-  /// 当前 canonical live 根会话（按 id）。唯一事实源仍是 controller 投影，
-  /// 不引入第二份 canonical 缓存，也不比较时间戳。
+  /// 当前目录窗口里的根会话（按 id）。查询分页不写回 store。
   Map<String, StudioThread> get _liveById => {
     for (final thread in widget.state.rootThreads) thread.id: thread,
   };
@@ -204,7 +203,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     });
     try {
       final page = await ref
-          .read(studioControllerProvider.notifier)
+          .read(directoryCommandsProvider.notifier)
           .queryThreads(
             DirectoryQuery(
               projectId: projectId,
@@ -216,9 +215,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
             limit: more ? 20 : 8,
           );
       if (!mounted || generation != _queryGeneration) return;
-      ref
-          .read(studioControllerProvider.notifier)
-          .includeDirectoryThreads(page.threads);
       // 查询结果是查询时的快照，可能早于已到达的 canonical 事件；按身份把
       // 最新 live 元数据投影到查询行上，避免迟到结果把最新 canonical 元数据
       // 遮回旧值（成员资格与顺序仍来自查询本身，不改变分页窗口）。
@@ -259,11 +255,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
 
   @override
   Widget build(BuildContext context) {
-    final general =
-        ref.watch(
-          studioControllerProvider.select((state) => state.value?.general),
-        ) ??
-        const GeneralSettingsView();
+    final general = ref.watch(shellGeneralProvider);
     final projects =
         [
           ...widget.state.projects.where((project) {
@@ -505,7 +497,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                         onPressed: () async {
                           try {
                             await ref
-                                .read(studioControllerProvider.notifier)
+                                .read(directoryCommandsProvider.notifier)
                                 .restoreThread(thread.id);
                             if (mounted) _refreshNow();
                           } catch (error) {
@@ -580,25 +572,23 @@ class _SidebarState extends ConsumerState<_Sidebar> {
 
 Future<void> _saveSidebarPreferences(
   WidgetRef ref, {
+  required GeneralSettingsView general,
   int? width,
   String? threadId,
   String? projectId,
 }) async {
-  final general = ref.read(studioControllerProvider).requireValue.general;
   final threads = [...general.pinnedThreadIds];
   final projects = [...general.pinnedProjectIds];
   if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
   if (projectId != null && !projects.remove(projectId)) projects.add(projectId);
-  final controller = ref.read(studioControllerProvider.notifier);
+  final commands = ref.read(settingsCommandsProvider.notifier);
   if (width != null && width != general.sidebarWidth) {
-    await controller.applySettingsField(GeneralSidebarWidthCommand(width));
+    await commands.applySettingsField(GeneralSidebarWidthCommand(width));
   }
   if (threadId != null) {
-    await controller.applySettingsField(GeneralPinnedThreadIdsCommand(threads));
+    await commands.applySettingsField(GeneralPinnedThreadIdsCommand(threads));
   }
   if (projectId != null) {
-    await controller.applySettingsField(
-      GeneralPinnedProjectIdsCommand(projects),
-    );
+    await commands.applySettingsField(GeneralPinnedProjectIdsCommand(projects));
   }
 }

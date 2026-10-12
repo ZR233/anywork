@@ -8,10 +8,23 @@ import 'dart:io';
 import 'package:anywork/main.dart' as studio;
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
+import 'package:anywork/src/data/bridge/studio_bridge.dart';
+import 'package:anywork/src/data/commands/thread_commands.dart';
 import 'package:anywork/src/data/frb/studio_api.dart';
-import 'package:anywork/src/data/repositories/studio_repository.dart';
+import 'package:anywork/src/data/repositories/studio_api_provider.dart';
+import 'package:anywork/src/data/stores/mcp_store.dart';
+import 'package:anywork/src/data/stores/model_performance_store.dart';
+import 'package:anywork/src/data/stores/persistence_store.dart';
+import 'package:anywork/src/data/stores/selection_store.dart';
+import 'package:anywork/src/data/stores/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
+import 'package:anywork/src/features/interaction/attachment_drafts.dart';
+import 'package:anywork/src/features/interaction/composer_draft_controller.dart';
+import 'package:anywork/src/features/interaction/start_session_controller.dart';
+import 'package:anywork/src/features/settings/settings_scope.dart';
+import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/platform/error_log.dart';
+import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -43,6 +56,7 @@ void main() {
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
   _container = ProviderContainer();
+  bindStudioDriver(_container);
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
   // 与窗口关闭共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
@@ -75,8 +89,8 @@ void _applyShutdownFaultOverride() {
 late final ProviderContainer _container;
 Future<StudioShutdownReport>? _shutdownTask;
 Future<void>? _driverFixtureClipboardImageTask;
-ProviderSubscription<ProductTopicLeaseBundle?>? _driverStatisticsScope;
-ProviderSubscription<ProductTopicLease?>? _driverQueueScope;
+ProviderSubscription<BridgeTopicLeaseBundle>? _driverStatisticsScope;
+ProviderSubscription<BridgeTopicLease>? _driverQueueScope;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
@@ -85,16 +99,18 @@ int _maxFrameMicros = 0;
 final List<Map<String, num>> _frameSamples = [];
 
 void _ensureDriverStatisticsScope() {
-  _driverStatisticsScope ??= _container.listen<ProductTopicLeaseBundle?>(
-    settingsStatisticsScopeProvider,
+  _driverStatisticsScope ??= _container.listen(
+    settingsScopeLeaseProvider(
+      const SettingsScopeRequest(BridgeSettingsScopeKind.statistics),
+    ),
     (_, _) {},
     fireImmediately: true,
   );
 }
 
 void _ensureDriverQueueScope() {
-  _driverQueueScope ??= _container.listen<ProductTopicLease?>(
-    persistenceQueueTopicProvider,
+  _driverQueueScope ??= _container.listen(
+    persistenceQueueLeaseProvider,
     (_, _) {},
     fireImmediately: true,
   );
@@ -140,18 +156,9 @@ Future<String> _handleDriverData(String? message) async {
         'samples': _frameSamples,
       });
     case 'snapshot':
-      final state = switch (_container.read(studioControllerProvider)) {
-        AsyncData(:final value) => value,
-        _ => null,
-      };
-      if (state != null) StudioDriverState.publishState(state);
-      return _driverSnapshotJson(state);
+      return _driverSnapshotJson();
     case 'driver-diagnostics':
-      final state = switch (_container.read(studioControllerProvider)) {
-        AsyncData(:final value) => value,
-        _ => null,
-      };
-      return jsonEncode(_driverDiagnostics(state));
+      return jsonEncode(_driverDiagnostics());
     case 'driver-fixture-clipboard-image':
       // This is deliberately not a system clipboard operation. There is no
       // Driver-only ClipboardImageReader override in the current app, so the
@@ -170,11 +177,7 @@ Future<String> _handleDriverData(String? message) async {
     case 'statistics':
       // Driver 是显式观察者；产品会话不会因一次请求偷偷常驻全局统计租约。
       _ensureDriverStatisticsScope();
-      final state = switch (_container.read(studioControllerProvider)) {
-        AsyncData(:final value) => value,
-        _ => null,
-      };
-      final performance = state?.modelPerformance;
+      final performance = _container.read(modelPerformanceStoreProvider).value;
       return jsonEncode({
         'revision': performance?.revision,
         'statisticsPending': performance?.statisticsPending,
@@ -206,11 +209,7 @@ Future<String> _handleDriverData(String? message) async {
         ],
       });
     case 'thread-current':
-      final state = switch (_container.read(studioControllerProvider)) {
-        AsyncData(:final value) => value,
-        _ => null,
-      };
-      final threadId = state?.selectedThreadId;
+      final threadId = _container.read(selectionStoreProvider).selectedThreadId;
       if (threadId == null) return jsonEncode({'outputTokens': null});
       final snapshot = await _container
           .read(studioBridgeDataSourceProvider)
@@ -222,10 +221,7 @@ Future<String> _handleDriverData(String? message) async {
     case 'persistence-queue':
       // Driver 通过显式 topic lease 读取事件缓存，避免恢复已删除的 GUI 周期查询。
       _ensureDriverQueueScope();
-      final queue = switch (_container.read(persistenceQueueStateProvider)) {
-        AsyncData(:final value) => value?.queue,
-        _ => null,
-      };
+      final queue = _container.read(persistenceStoreProvider).queue?.queue;
       return jsonEncode({
         'pendingOperations': queue?.pendingOperations,
         'threads': [
@@ -243,14 +239,10 @@ Future<String> _handleDriverData(String? message) async {
         ],
       });
     case 'load-older':
-      final state = switch (_container.read(studioControllerProvider)) {
-        AsyncData(:final value) => value,
-        _ => null,
-      };
-      final threadId = state?.selectedThreadId;
+      final threadId = _container.read(selectionStoreProvider).selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
       await _container
-          .read(studioControllerProvider.notifier)
+          .read(threadCommandsProvider.notifier)
           .loadOlderHistory(threadId);
       return jsonEncode({'loaded': true});
     case 'selection-body':
@@ -385,18 +377,19 @@ Map<String, Object?> _shutdownReportJson(StudioShutdownReport report) {
 /// acceptance-only surface and exposes only typed, de-identified fields; it is
 /// assembled in this Driver entrypoint rather than in the production snapshot
 /// owner and is not part of the production protocol.
-String _driverSnapshotJson(StudioState? state) {
+String _driverSnapshotJson() {
   final decoded = jsonDecode(StudioDriverState.snapshotJson());
   if (decoded is! Map) {
     throw const FormatException('driver snapshot must be a JSON object');
   }
   final snapshot = decoded.cast<String, dynamic>();
-  snapshot['driverDiagnostics'] = _driverDiagnostics(state);
+  snapshot['driverDiagnostics'] = _driverDiagnostics();
   return jsonEncode(snapshot);
 }
 
-Map<String, Object?> _driverDiagnostics(StudioState? state) {
-  final workspace = state?.selectedWorkspace;
+Map<String, Object?> _driverDiagnostics() {
+  StudioDriverState.refreshBound();
+  final workspace = StudioDriverState.observedWorkspace;
   final runtime = workspace?.runtime;
   final liveUsage = runtime?.liveUsage;
   final observedUsage =
@@ -454,7 +447,7 @@ Map<String, Object?> _driverDiagnostics(StudioState? state) {
       'observationSequence': metricsAvailable
           ? observedUsage.observationSequence
           : null,
-      'revision': workspace?.revision,
+      'revision': StudioDriverState.observedThreadRevision,
       'contextTokens': contextTokens,
       'contextWindow': contextWindow,
       'totalTokens': totalTokens,
@@ -476,11 +469,15 @@ Map<String, Object?> _driverDiagnostics(StudioState? state) {
             },
     },
     'composer': <String, Object?>{
-      'newThread': _driverComposerDiagnostics(state?.newThreadComposer),
-      'thread': _driverComposerDiagnostics(state?.composer),
+      'newThread': _driverComposerDiagnostics(
+        StudioDriverState.observedNewThreadComposer,
+      ),
+      'thread': _driverComposerDiagnostics(
+        StudioDriverState.observedThreadComposer,
+      ),
     },
-    'providers': _driverProviderDiagnostics(state),
-    'topics': _driverTopicDiagnostics(state),
+    'providers': _driverProviderDiagnostics(),
+    'topics': studioDriverTopicDiagnostics(_container),
     'seams': <String, Object?>{
       // No production ClipboardImageReader override/fixture is present in this
       // Driver entrypoint. The fixture request below therefore does not claim
@@ -529,8 +526,8 @@ Map<String, Object?>? _driverComposerDiagnostics(
   };
 }
 
-Map<String, Object?> _driverProviderDiagnostics(StudioState? state) {
-  final settingsAvailable = state?.settingsState.state.value != null;
+Map<String, Object?> _driverProviderDiagnostics() {
+  final settingsAvailable = StudioDriverState.observedSettingsReady;
   if (!settingsAvailable) {
     return <String, Object?>{
       'availability': 'unavailable',
@@ -538,7 +535,7 @@ Map<String, Object?> _driverProviderDiagnostics(StudioState? state) {
       'details': null,
     };
   }
-  final providers = state!.providers;
+  final providers = StudioDriverState.observedProviders;
   return <String, Object?>{
     'availability': 'available',
     // The list projection deliberately contains count/status metadata only.
@@ -575,116 +572,6 @@ Map<String, Object?> _driverProviderDiagnostics(StudioState? state) {
   };
 }
 
-Map<String, Object?> _driverTopicDiagnostics(StudioState? state) {
-  if (state == null) {
-    return <String, Object?>{
-      'availability': 'unavailable',
-      'registryAvailability': 'unavailable',
-      'leaseRefs': null,
-      'connections': null,
-      'projectionRevisions': null,
-    };
-  }
-
-  Map<String, int>? leaseRefs;
-  try {
-    leaseRefs = _container
-        .read(studioControllerProvider.notifier)
-        .activeTopicRefCountViews();
-  } on Object {
-    // During startup the controller can expose a canonical state before its
-    // topic registry is ready. Keep it explicitly unavailable rather than
-    // inventing zero refs for every topic.
-  }
-  final registryAvailable = leaseRefs != null;
-
-  return <String, Object?>{
-    'availability': registryAvailable ? 'available' : 'unavailable',
-    'registryAvailability': registryAvailable ? 'available' : 'unavailable',
-    'leaseRefs': registryAvailable ? _aggregateLeaseRefs(leaseRefs) : null,
-    'connections': registryAvailable
-        ? _aggregateTopicConnections(state.topicConnections)
-        : null,
-    'projectionRevisions': registryAvailable
-        ? <String, Object?>{
-            'settings': state.settingsState.revision,
-            'modelCatalog': state.settingsState.modelCatalogRevision,
-            'recovery': state.recoveryState.revision,
-            'mcp': state.mcpState.revision,
-            'lsp': state.lspState.revision,
-            'threadModeCatalog': state.threadModeCatalog.revision,
-            'providerUsage': state.providerUsageState.revision,
-            'modelPerformance': state.modelPerformance.revision,
-            'persistence': state.persistenceState.revision,
-            'persistenceQueue': state.persistenceQueueState?.revision,
-            'agentProfiles': state.agentProfilesState?.revision,
-            'threadDirectory': state.threadDirectory.revision,
-            'selectedThread': state.selectedWorkspace?.revision,
-            // New diagnostics must not expose project/root/path identifiers.
-            // Keep only aggregate scope facts; the legacy snapshot's
-            // compatibility exception does not apply to this surface.
-            'skills': {
-              'scopeCount': state.skillsByProject.length,
-              'maxRevision': _maxRevision(
-                state.skillsByProject.values.map((value) => value.revision),
-              ),
-            },
-            'sessionCosts': {
-              'scopeCount': state.sessionCostsByRoot.length,
-              'maxRevision': _maxRevision(
-                state.sessionCostsByRoot.values.map((value) => value.revision),
-              ),
-            },
-          }
-        : null,
-  };
-}
-
-Map<String, int> _aggregateLeaseRefs(Map<String, int> leaseRefs) {
-  var totalRefs = 0;
-  for (final refs in leaseRefs.values) {
-    totalRefs += refs;
-  }
-  return <String, int>{'topicCount': leaseRefs.length, 'totalRefs': totalRefs};
-}
-
-Map<String, int> _aggregateTopicConnections(
-  Map<ProductTopic, ProductTopicConnectionStateView> connections,
-) {
-  var connectedCount = 0;
-  var reconnectingCount = 0;
-  var failedCount = 0;
-  var errorCount = 0;
-  for (final connection in connections.values) {
-    switch (connection.phase) {
-      case ProductTopicConnectionPhase.connecting:
-        break;
-      case ProductTopicConnectionPhase.connected:
-        connectedCount++;
-      case ProductTopicConnectionPhase.reconnecting:
-        reconnectingCount++;
-      case ProductTopicConnectionPhase.failed:
-        failedCount++;
-    }
-    if (connection.errorMessage != null) errorCount++;
-  }
-  return <String, int>{
-    'topicCount': connections.length,
-    'connectedCount': connectedCount,
-    'reconnectingCount': reconnectingCount,
-    'failedCount': failedCount,
-    'errorCount': errorCount,
-  };
-}
-
-int? _maxRevision(Iterable<int> revisions) {
-  int? maximum;
-  for (final revision in revisions) {
-    if (maximum == null || revision > maximum) maximum = revision;
-  }
-  return maximum;
-}
-
 Future<String> _startDriverFixtureClipboardImage() async {
   final fixtureCandidates = [
     File('test_driver/fixtures/tool-image.png'),
@@ -707,8 +594,9 @@ Future<String> _startDriverFixtureClipboardImage() async {
     });
   }
 
-  final state = _readyStudioState();
-  if (state == null || state.selectedProjectId == null) {
+  final selection = _container.read(selectionStoreProvider);
+  final projectId = selection.selectedProjectId;
+  if (projectId == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
       'hook': 'driver-fixture-clipboard-image',
@@ -717,9 +605,28 @@ Future<String> _startDriverFixtureClipboardImage() async {
       'reason': 'composer-not-ready',
     });
   }
-  final task = _container
-      .read(studioControllerProvider.notifier)
-      .addClipboardImage(await fixture.readAsBytes());
+  final bytes = await fixture.readAsBytes();
+  final threadId = selection.selectedThreadId;
+  final Future<void> task;
+  if (threadId != null) {
+    task = _container
+        .read(composerDraftControllerProvider(threadId).notifier)
+        .addClipboardImage(bytes);
+  } else {
+    final mode = _container.exists(startSessionControllerProvider)
+        ? _container
+              .read(startSessionControllerProvider)
+              .forProject(projectId)
+              .mode
+        : ThreadModeId.simple;
+    task = _container
+        .read(attachmentDraftsProvider.notifier)
+        .addNewThreadClipboard(
+          projectId: projectId,
+          mode: mode,
+          pngBytes: bytes,
+        );
+  }
   _driverFixtureClipboardImageTask = task;
   // The admission hook is intentionally fire-and-observe: it does not await
   // the controller's preview Future.wait. The journey observes the admitted
@@ -779,25 +686,19 @@ Future<String> _finishDriverFixtureClipboardImage() async {
 // Nothing here mutates product state and no credential is read: the endpoint is
 // reduced to scheme/host/path.
 
-StudioState? _readyStudioState() =>
-    switch (_container.read(studioControllerProvider)) {
-      AsyncData(:final value) => value,
-      _ => null,
-    };
-
 Future<String> _handleSearchSettings() async {
-  final state = _readyStudioState();
-  if (state == null) {
+  final settings = _container.read(settingsStoreProvider).canonical;
+  if (settings == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
       'reason': 'studio state not ready',
     });
   }
-  final web = state.settingsState.webSearch;
-  final deep = state.settingsState.deepSeekWebSearch;
+  final web = settings.webSearch;
+  final deep = settings.deepSeekWebSearch;
   return jsonEncode(<String, Object?>{
     'ok': true,
-    'revision': state.settingsState.revision,
+    'revision': settings.revision,
     'webSearch': <String, Object?>{
       'configuredMode': web.configuredMode,
       'effectiveMode': web.effectiveMode,
@@ -822,7 +723,7 @@ Future<String> _handleSearchSettings() async {
 }
 
 Future<String> _handleSearchMcpState() async {
-  final mcp = _readyStudioState()?.mcpState;
+  final mcp = _container.read(mcpStoreProvider).value;
   if (mcp == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,

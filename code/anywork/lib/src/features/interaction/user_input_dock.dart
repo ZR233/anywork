@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
+import '../../data/commands/thread_commands.dart';
+import '../../data/stores/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -67,6 +70,12 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
 
   @override
   Widget build(BuildContext context) {
+    final enabled =
+        widget.enabled &&
+        pendingInteractionIsActive(
+          ref.watch(threadSessionStoreProvider(widget.threadId)).interactions,
+          widget.interactionId,
+        );
     final questions = widget.payload.questions;
     if (questions.isEmpty) {
       return FallbackQuestionDock(
@@ -74,7 +83,7 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
         controller: _fallbackController,
         trailing: widget.trailing,
         onChanged: () => setState(() {}),
-        onSubmit: !widget.enabled || _fallbackController.text.trim().isEmpty
+        onSubmit: !enabled || _fallbackController.text.trim().isEmpty
             ? null
             : _submitFallbackAnswer,
       );
@@ -123,7 +132,7 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
                     ? context.l10n.interactionSubmitAnswers
                     : context.l10n.interactionNextQuestion,
               ),
-              onPressed: widget.enabled
+              onPressed: enabled
                   ? () {
                       if (isLast) {
                         _submitAnswers();
@@ -150,7 +159,7 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
           ),
           const SizedBox(height: 12),
           QuestionStep(
-            enabled: widget.enabled,
+            enabled: enabled,
             isFirstQuestion: index == 0,
             firstOptionKey: _firstOptionKey,
             question: question,
@@ -269,27 +278,31 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
     if (text.isEmpty) {
       return;
     }
-    ref
-        .read(studioControllerProvider.notifier)
-        .resolveActiveInteraction(
-          widget.threadId,
-          widget.interactionId,
-          UserInputResolutionCommand(
-            answers: [
-              UserInputAnswerCommand(questionId: 'answer', answers: [text]),
-            ],
+    unawaited(
+      ref
+          .read(threadCommandsProvider.notifier)
+          .resolveActiveInteraction(
+            widget.threadId,
+            widget.interactionId,
+            UserInputResolutionCommand(
+              answers: [
+                UserInputAnswerCommand(questionId: 'answer', answers: [text]),
+              ],
+            ),
           ),
-        );
+    );
   }
 
   void _submitAnswers() {
-    ref
-        .read(studioControllerProvider.notifier)
-        .resolveActiveInteraction(
-          widget.threadId,
-          widget.interactionId,
-          UserInputResolutionCommand(answers: _answers()),
-        );
+    unawaited(
+      ref
+          .read(threadCommandsProvider.notifier)
+          .resolveActiveInteraction(
+            widget.threadId,
+            widget.interactionId,
+            UserInputResolutionCommand(answers: _answers()),
+          ),
+    );
   }
 }
 

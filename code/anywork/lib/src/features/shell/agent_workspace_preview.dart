@@ -61,9 +61,43 @@ class _AgentWorkspacePreviewScopeState
     super.initState();
     _container = ProviderContainer(
       overrides: [
-        studioControllerProvider.overrideWith(
-          () => _AgentWorkspacePreviewController(widget.previewState),
+        shellComposerWorkspaceProvider.overrideWith(
+          (ref) => widget.previewState.selectedAgentWorkspace,
         ),
+        shellSelectionProvider.overrideWith(
+          (ref) => SelectionStoreState(
+            selectedProjectId: widget.previewState.selectedProjectId,
+            selectedThreadId: widget.previewState.selectedThreadId,
+          ),
+        ),
+        timelineSessionWindowProvider.overrideWith(
+          (ref) => _previewTimelineWindow(widget.previewState),
+        ),
+        startPageComposerViewProvider.overrideWith(
+          (ref) => _previewStartPage(widget.previewState),
+        ),
+        composerDockViewProvider.overrideWith(
+          (ref, threadId) =>
+              _previewComposerDock(widget.previewState, threadId),
+        ),
+        threadCommandsProvider.overrideWith(_PreviewThreadCommands.new),
+        statusBarViewProvider.overrideWith((ref) {
+          final workspace = widget.previewState.selectedAgentWorkspace;
+          if (workspace == null) return null;
+          return StatusBarView.fromWorkspace(workspace);
+        }),
+        conversationActivityInputProvider.overrideWith((ref, threadId) {
+          final workspace = widget.previewState.workspacesByThread[threadId];
+          if (workspace == null) return null;
+          final interaction = widget.previewState.activeInteraction;
+          return ConversationActivityInput(
+            activity: workspace.activity,
+            storage: workspace.storage,
+            interaction: interaction != null && interaction.threadId == threadId
+                ? interaction
+                : null,
+          );
+        }),
       ],
     );
   }
@@ -88,15 +122,6 @@ class _AgentWorkspacePreviewScopeState
       ),
     );
   }
-}
-
-class _AgentWorkspacePreviewController extends StudioController {
-  _AgentWorkspacePreviewController(this.previewState);
-
-  final StudioState previewState;
-
-  @override
-  Future<StudioState> build() async => previewState;
 }
 
 StudioState _agentWorkspacePreviewState({
@@ -294,5 +319,102 @@ StudioState _agentWorkspacePreviewState({
     },
     selectedProjectId: project.id,
     selectedThreadId: selected.id,
+  );
+}
+
+/// 预览只喂静态窗口，避免 timelineSessionWindow 按真实选择建流。
+TimelineSessionWindow? _previewTimelineWindow(StudioState state) {
+  final workspace = state.selectedAgentWorkspace;
+  if (workspace == null) return null;
+  return TimelineSessionWindow(
+    threadId: workspace.threadId,
+    rows: workspace.timelineRows,
+    turn: workspace.turn,
+    history: const ThreadHistoryWindow(),
+    isLoadingOlder: false,
+    isLoadingNewer: false,
+  );
+}
+
+StartPageComposerProjection _previewStartPage(StudioState state) {
+  final project = state.projects
+      .where((item) => item.id == state.selectedProjectId)
+      .firstOrNull;
+  return StartPageComposerProjection(
+    project: project,
+    providers: state.providers,
+    modeModelRoutes: state.modeModelRoutes,
+    permissionMode: state.permissionMode,
+    settingsLoaded: true,
+    canSubmit: false,
+    commands: const <String, CommandStatus>{},
+    diagnostics: const [],
+    modeCatalog: null,
+    sessionDraft: const StartSessionDraft(),
+    composer: const ComposerThreadState.idle(),
+    targetDiagnostic: null,
+  );
+}
+
+/// 时间线首帧会派发锚点与正文补齐。覆盖命令 lane，避免预览因此附着会话流。
+class _PreviewThreadCommands extends ThreadCommands {
+  @override
+  ThreadCommandBoard build() => const ThreadCommandBoard();
+
+  @override
+  Future<void> loadOlderHistory(String threadId) async {}
+
+  @override
+  Future<void> loadNewerHistory(String threadId) async {}
+
+  @override
+  Future<void> loadLatestHistory(String threadId) async {}
+
+  @override
+  Future<void> extendLatestHistory(String threadId) async {}
+
+  @override
+  Future<void> jumpToLatest(String threadId) async {}
+
+  @override
+  Future<void> updateTimelineAnchor(
+    String threadId,
+    TimelineAnchor anchor,
+  ) async {}
+
+  @override
+  Future<void> ensureItemBodies(
+    String threadId,
+    Iterable<String> itemIds,
+  ) async {}
+
+  @override
+  Future<void> loadItemBody(String threadId, String itemId) async {}
+}
+
+/// ComposerDock 会 watch 这个 family；不覆盖就会附着 threadSessionStore 并拉起 Bridge。
+ComposerDockView _previewComposerDock(StudioState state, String threadId) {
+  final selected = state.selectedAgentWorkspace;
+  final workspace = selected?.threadId == threadId ? selected : null;
+  final thread =
+      workspace?.thread ??
+      state.threads.where((item) => item.id == threadId).firstOrNull;
+  return ComposerDockView(
+    thread: thread,
+    hasSnapshot: state.workspacesByThread.containsKey(threadId),
+    revision: state.workspacesByThread[threadId]?.revision ?? 0,
+    composer: workspace?.composer ?? const ComposerThreadState.idle(),
+    activeInteraction: workspace?.activeInteraction,
+    turn: workspace?.turn,
+    modelRoute: workspace?.runtime.modelRoute,
+    routePending: false,
+    routeFailure: null,
+    workflow: null,
+    permissionMode: workspace?.permissionMode ?? state.permissionMode,
+    providers: workspace?.providers ?? state.providers,
+    settingsLoaded: true,
+    requiresFunctionCalling: false,
+    targetDiagnostic: null,
+    additionalDiagnostics: const [],
   );
 }

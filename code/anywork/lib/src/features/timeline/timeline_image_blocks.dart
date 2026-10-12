@@ -86,9 +86,11 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
     return _ThreadImageCacheScope.of(context).load(
       widget.threadId,
       widget.attachment.id,
-      () => ref
-          .read(studioControllerProvider.notifier)
-          .readThreadAttachment(widget.threadId, widget.attachment.id),
+      () => readTimelineAttachment(
+        ref.read(studioBridgeDataSourceProvider),
+        widget.threadId,
+        widget.attachment.id,
+      ),
     );
   }
 
@@ -399,9 +401,11 @@ class _ThreadToolImageThumbnailState
   Future<Uint8List> _loadImage() => _ThreadImageCacheScope.of(context).load(
     widget.threadId,
     widget.entry.attachment.id,
-    () => ref
-        .read(studioControllerProvider.notifier)
-        .readThreadAttachment(widget.threadId, widget.entry.attachment.id),
+    () => readTimelineAttachment(
+      ref.read(studioBridgeDataSourceProvider),
+      widget.threadId,
+      widget.entry.attachment.id,
+    ),
   );
   @override
   Widget build(BuildContext context) {

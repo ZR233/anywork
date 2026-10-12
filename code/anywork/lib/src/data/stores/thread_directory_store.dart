@@ -58,8 +58,41 @@ class ThreadDirectoryStore extends _$ThreadDirectoryStore {
       upserted: upserted,
       removed: removed,
     );
-    if (identical(next, state.window)) return false;
-    state = state.copyWith(window: next, sync: state.sync.connected());
+    var overlay = state.overlayThreads;
+    if (overlay.isNotEmpty && removed.isNotEmpty) {
+      final removedIds = removed.toSet();
+      final pruned = overlay
+          .where((thread) => !removedIds.contains(thread.id))
+          .toList(growable: false);
+      if (pruned.length != overlay.length) overlay = pruned;
+    }
+    if (identical(next, state.window) &&
+        identical(overlay, state.overlayThreads)) {
+      return false;
+    }
+    state = state.copyWith(
+      window: next,
+      overlayThreads: overlay,
+      sync: state.sync.connected(),
+    );
+    return true;
+  }
+
+  /// 搜索命中且当前窗口未包含的线程并入 overlay，不推进 window revision。
+  ///
+  /// overlay 仅由命令响应补充、由 [applyDelta] 的 removed 清理；线程会话的
+  /// 定位查找会同时检索窗口与 overlay，避免搜索命中的线程无法进入会话。
+  bool mergeOverlayThreads(List<StudioThread> threads) {
+    if (threads.isEmpty) return false;
+    final windowIds = state.window.threads.map((t) => t.id).toSet();
+    final overlayIds = state.overlayThreads.map((t) => t.id).toSet();
+    final additions = threads
+        .where((t) => !windowIds.contains(t.id) && !overlayIds.contains(t.id))
+        .toList(growable: false);
+    if (additions.isEmpty) return false;
+    state = state.copyWith(
+      overlayThreads: [...state.overlayThreads, ...additions],
+    );
     return true;
   }
 
@@ -83,11 +116,13 @@ class ThreadDirectoryStore extends _$ThreadDirectoryStore {
 class ThreadDirectoryStoreState {
   const ThreadDirectoryStoreState({
     this.window = const ThreadDirectoryWindow(),
+    this.overlayThreads = const [],
     this.loaded = false,
     this.sync = const DomainSyncStatus(),
   });
 
   final ThreadDirectoryWindow window;
+  final List<StudioThread> overlayThreads;
   final bool loaded;
   final DomainSyncStatus sync;
 
@@ -97,11 +132,13 @@ class ThreadDirectoryStoreState {
 
   ThreadDirectoryStoreState copyWith({
     ThreadDirectoryWindow? window,
+    List<StudioThread>? overlayThreads,
     bool? loaded,
     DomainSyncStatus? sync,
   }) {
     return ThreadDirectoryStoreState(
       window: window ?? this.window,
+      overlayThreads: overlayThreads ?? this.overlayThreads,
       loaded: loaded ?? this.loaded,
       sync: sync ?? this.sync,
     );
@@ -117,6 +154,7 @@ class ThreadDirectoryStoreState {
           window.hasMore == other.window.hasMore &&
           window.isLoading == other.window.isLoading &&
           sync == other.sync &&
+          identical(overlayThreads, other.overlayThreads) &&
           identical(window, other.window);
 
   @override
@@ -127,6 +165,7 @@ class ThreadDirectoryStoreState {
     window.hasMore,
     window.isLoading,
     sync,
+    identityHashCode(overlayThreads),
     identityHashCode(window),
   );
 }

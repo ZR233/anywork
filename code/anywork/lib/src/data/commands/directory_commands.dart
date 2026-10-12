@@ -107,6 +107,20 @@ class DirectoryCommands extends _$DirectoryCommands {
     });
   }
 
+  /// 启动恢复的待打开会话：清除 [SelectionStoreState.needsOpen]，让
+  /// timeline/会话订阅按当前选择建流并请求首个历史窗口。
+  ///
+  /// recovery 阻塞访问时保持待打开状态，由用户解除阻塞后再次触发。
+  Future<void> openSelectedThread() {
+    return _lane.enqueue(() async {
+      final selection = ref.read(selectionStoreProvider);
+      final threadId = selection.selectedThreadId;
+      if (threadId == null || !selection.needsOpen) return;
+      if (_blocksThread(threadId)) return;
+      ref.read(selectionStoreProvider.notifier).markOpened();
+    });
+  }
+
   Future<void> beginNewThread() {
     return _lane.enqueue(() async {
       final projectId = ref.read(selectionStoreProvider).selectedProjectId;
@@ -157,8 +171,15 @@ class DirectoryCommands extends _$DirectoryCommands {
     DirectoryQuery query, {
     String? cursor,
     int limit = 50,
-  }) {
-    return _api.queryThreads(query, cursor: cursor, limit: limit);
+  }) async {
+    final page = await _api.queryThreads(query, cursor: cursor, limit: limit);
+    if (ref.mounted) {
+      // 搜索命中但不在当前窗口的线程并入 overlay，保证 selectThread 可定位。
+      ref
+          .read(threadDirectoryStoreProvider.notifier)
+          .mergeOverlayThreads(page.threads);
+    }
+    return page;
   }
 
   Future<void> loadMoreThreads() {
@@ -344,8 +365,11 @@ class DirectoryCommands extends _$DirectoryCommands {
   }
 
   StudioThread? _directoryThread(String threadId) {
-    for (final thread
-        in ref.read(threadDirectoryStoreProvider).window.threads) {
+    final directory = ref.read(threadDirectoryStoreProvider);
+    for (final thread in directory.window.threads) {
+      if (thread.id == threadId) return thread;
+    }
+    for (final thread in directory.overlayThreads) {
       if (thread.id == threadId) return thread;
     }
     return null;

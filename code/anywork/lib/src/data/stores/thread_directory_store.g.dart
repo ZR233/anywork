@@ -54,7 +54,7 @@ final class ThreadDirectoryStoreProvider
 }
 
 String _$threadDirectoryStoreHash() =>
-    r'978a94ffb0971c16d69402c2008950690276d977';
+    r'0b0e98144ac0fe89769e836612f414353e5abdcf';
 
 /// 会话目录分页窗口。revision 与 cursor 都参与相等。
 ///

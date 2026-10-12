@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
+import '../../data/repositories/studio_api_provider.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 class RemoteDirectoryDialog extends ConsumerStatefulWidget {
   const RemoteDirectoryDialog({
@@ -87,7 +88,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
     });
     try {
       final listing = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .browseRemoteDirectories(widget.server.alias, path: path);
       if (!mounted) return;
       if (!listing.path.startsWith('/')) {
@@ -129,13 +130,11 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
     });
     var opened = false;
     try {
-      opened = await ref
-          .read(studioControllerProvider.notifier)
-          .openRemoteProject(
-            widget.server.alias,
-            path,
-            name: widget.onBack == null ? null : _projectName.text.trim(),
-          );
+      opened = await readDirectoryCommands(ref).openRemoteProject(
+        widget.server.alias,
+        path,
+        name: widget.onBack == null ? null : _projectName.text.trim(),
+      );
     } on Object {
       // Controller failures are normally converted to false; retain the same
       // retryable dialog state if provider access or another boundary fails.

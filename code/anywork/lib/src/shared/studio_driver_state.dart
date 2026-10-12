@@ -1,10 +1,11 @@
 import 'dart:convert';
 
 import '../domain/models/studio_models.dart';
-import '../data/repositories/studio_settings_repository.dart';
+import '../data/stores/domain_sync.dart';
 
 /// Read-only state exported through Flutter Driver in local acceptance builds.
 abstract final class StudioDriverState {
+  static void Function()? _beforeSnapshot;
   static StudioProject? _project;
   static AgentWorkspaceView? _workspace;
   static ThreadWorkspace? _timelineWorkspace;
@@ -27,19 +28,88 @@ abstract final class StudioDriverState {
       ThreadWorkspaceMode.local;
   static ComposerThreadState _newThreadComposer =
       const ComposerThreadState.idle();
+  static ComposerThreadState _threadComposer = const ComposerThreadState.idle();
   static int _settingsRevision = 0;
   static int _modelCatalogRevision = 0;
   static List<ModeModelRouteView> _modeModelRoutes = const [];
   static List<RoleSettingsView> _roles = const [];
   static List<ProviderSettingsView> _providers = const [];
-  static Map<String, StudioMutationView> _mutations = const {};
-  static SettingsMergeDiagnostic? _settingsMerge;
+  static List<CommandStatus> _commands = const [];
+  static bool _settingsReady = false;
   static PersistenceStateSnapshot _persistenceState =
       const PersistenceStateSnapshot.ready();
   static List<StudioRecoveryIssue> _recoveryIssues = const [];
   static ConversationActivityView? _conversationActivity;
   static bool _activityExpanded = false;
   static TimelineScrollDiagnostic? _timelineScroll;
+
+  /// Driver 启动时注册快照刷新。刷新实现放在独立库，避免本文件反向依赖 feature 草稿。
+  static void bindSnapshotRefresh(void Function() refresh) {
+    _beforeSnapshot = refresh;
+  }
+
+  static void refreshBound() => _beforeSnapshot?.call();
+
+  static AgentWorkspaceView? get observedWorkspace => _workspace;
+  static ComposerThreadState get observedNewThreadComposer =>
+      _newThreadComposer;
+  static ComposerThreadState get observedThreadComposer => _threadComposer;
+  static List<ProviderSettingsView> get observedProviders => _providers;
+  static bool get observedSettingsReady => _settingsReady;
+  static String? get observedSelectedThreadId => _selectedThreadId;
+  static int? get observedThreadRevision => _timelineWorkspace?.revision;
+
+  /// 用 store / 已存在草稿的投影替换业务字段。诊断发布字段不在这里覆盖。
+  static void replaceCanonicalFacts({
+    required ThreadWorkspace? timelineWorkspace,
+    required ThreadHistoryWindow history,
+    required Map<String, ThreadWorkspace> workspacesByThread,
+    required List<StudioThread> rootThreads,
+    required bool directoryHasMore,
+    required String? selectedProjectId,
+    required String? selectedThreadId,
+    required ThreadModeId newThreadMode,
+    required ThreadWorkspaceMode newThreadWorkspaceMode,
+    required ComposerThreadState newThreadComposer,
+    required ComposerThreadState threadComposer,
+    required int settingsRevision,
+    required int modelCatalogRevision,
+    required List<ModeModelRouteView> modeModelRoutes,
+    required List<RoleSettingsView> roles,
+    required List<ProviderSettingsView> providers,
+    required List<CommandStatus> commands,
+    required bool settingsReady,
+    required PersistenceStateSnapshot persistence,
+    required List<StudioRecoveryIssue> recoveryIssues,
+    required StudioProject? project,
+    required AgentWorkspaceView? workspace,
+  }) {
+    _timelineWorkspace = timelineWorkspace;
+    _history = history;
+    _workspacesByThread = workspacesByThread;
+    _currentRootThreads = List.unmodifiable(rootThreads);
+    _sidebarDirectoryIds = List.unmodifiable([
+      for (final thread in rootThreads) thread.id,
+    ]);
+    _sidebarDirectoryHasMore = directoryHasMore;
+    _selectedProjectId = selectedProjectId;
+    _selectedThreadId = selectedThreadId;
+    _newThreadMode = newThreadMode;
+    _newThreadWorkspaceMode = newThreadWorkspaceMode;
+    _newThreadComposer = newThreadComposer;
+    _threadComposer = threadComposer;
+    _settingsRevision = settingsRevision;
+    _modelCatalogRevision = modelCatalogRevision;
+    _modeModelRoutes = List.unmodifiable(modeModelRoutes);
+    _roles = List.unmodifiable(roles);
+    _providers = List.unmodifiable(providers);
+    _commands = List.unmodifiable(commands);
+    _settingsReady = settingsReady;
+    _persistenceState = persistence;
+    _recoveryIssues = List.unmodifiable(recoveryIssues);
+    _project = project;
+    _workspace = workspace;
+  }
 
   /// 内容交付计数是否启用。
   ///
@@ -125,60 +195,6 @@ abstract final class StudioDriverState {
     return bytes;
   }
 
-  static void publishState(StudioState state) {
-    _timelineWorkspace = state.selectedWorkspace;
-    _history = state.selectedWorkspaceUi.history;
-    _workspacesByThread = state.workspacesByThread;
-    _selectedProjectId = state.selectedProjectId;
-    _selectedThreadId = state.selectedThreadId;
-    _currentRootThreads = List.unmodifiable(state.rootThreads);
-    _newThreadMode = state.newThreadMode;
-    _newThreadWorkspaceMode = state.newThreadWorkspaceMode;
-    _newThreadComposer = state.newThreadComposer;
-    _settingsRevision = state.settingsRevision;
-    _modelCatalogRevision = state.settingsState.modelCatalogRevision;
-    _modeModelRoutes = List.unmodifiable(state.modeModelRoutes);
-    _providers = List.unmodifiable(state.providers);
-    _mutations = Map.unmodifiable(state.mutations);
-    _roles = List.unmodifiable([
-      for (final role in state.roles)
-        RoleSettingsView(
-          key: role.key,
-          providerId: role.providerId,
-          model: role.model,
-          effort: role.effort,
-        ),
-    ]);
-    _persistenceState = state.persistenceState;
-    _recoveryIssues = List.unmodifiable(state.recoveryIssues);
-    _project = state.projects
-        .where((project) => project.id == state.selectedProjectId)
-        .firstOrNull;
-    final workspace = state.selectedAgentWorkspace;
-    if (workspace == null) {
-      _workspace = null;
-    } else {
-      publishWorkspace(workspace);
-    }
-    publishSidebarDirectory([
-      for (final thread in state.rootThreads) thread.id,
-    ], state.threadDirectory.hasMore);
-  }
-
-  /// Last settings/catalog merge decision.  This is diagnostic projection only;
-  /// canonical values remain owned by the controller/repository.
-  static void publishSettingsMerge(SettingsMergeDiagnostic? diagnostic) {
-    _settingsMerge = diagnostic;
-  }
-
-  static void publishProject(StudioProject? project) {
-    _project = project;
-  }
-
-  static void publishWorkspace(AgentWorkspaceView workspace) {
-    _workspace = workspace;
-  }
-
   /// 固定活动条的当前投影；驱动据此断言阶段/摘要/详情而无需从渲染文本猜测。
   static void publishConversationActivity(ConversationActivityView? view) {
     _conversationActivity = view;
@@ -195,11 +211,6 @@ abstract final class StudioDriverState {
   /// Timeline 滚动几何诊断；只读投影，不是第二份业务状态。
   static void publishTimelineScroll(TimelineScrollDiagnostic? diagnostic) {
     _timelineScroll = diagnostic;
-  }
-
-  static void publishSidebarDirectory(List<String> threadIds, bool hasMore) {
-    _sidebarDirectoryIds = List.unmodifiable(threadIds);
-    _sidebarDirectoryHasMore = hasMore;
   }
 
   static void publishShutdownProgress(StudioShutdownProgress progress) {
@@ -287,6 +298,7 @@ abstract final class StudioDriverState {
   }
 
   static String snapshotJson() {
+    refreshBound();
     final workspace = _workspace;
     final lastTurn = workspace?.lastTurn;
     return jsonEncode({
@@ -463,19 +475,21 @@ abstract final class StudioDriverState {
             },
         ],
         'mutations': [
-          for (final mutation in _mutations.values)
+          for (final command in _commands)
             {
-              'key': mutation.key,
-              'operationId': mutation.operationId,
-              'phase': mutation.phase.name,
-              'startedAt': mutation.startedAt,
-              'providerId': mutation.providerId,
-              'model': mutation.model,
-              'effort': mutation.effort,
-              'error': mutation.error,
+              'key': command.key,
+              // 新命令 lane 没有 operation id 或开始时间。保留 key，不发明第二事实源。
+              'operationId': null,
+              'phase': command.phase.name,
+              'startedAt': null,
+              'providerId': command.target.providerId,
+              'model': command.target.model,
+              'effort': command.target.effort,
+              'error': command.error?.message,
             },
         ],
-        'lastMerge': _settingsMerge?.toJson(),
+        // 双时钟合并诊断没有新的事实源。保留 key，值固定为 null。
+        'lastMerge': null,
       },
       'persistence': {
         'revision': _persistenceState.revision,

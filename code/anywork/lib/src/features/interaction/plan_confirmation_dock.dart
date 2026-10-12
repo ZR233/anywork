@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
+import '../../data/commands/thread_commands.dart';
+import '../../data/stores/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
+import 'interaction_payload.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'interaction_widgets.dart';
@@ -52,6 +56,12 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
   @override
   Widget build(BuildContext context) {
     final feedback = _feedbackController.text.trim();
+    final enabled =
+        widget.enabled &&
+        pendingInteractionIsActive(
+          ref.watch(threadSessionStoreProvider(widget.threadId)).interactions,
+          widget.plan.interactionId,
+        );
     return InteractionDockShell(
       kind: InteractionDockKind.plan,
       trailing: widget.trailing,
@@ -64,22 +74,20 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
             key: StudioDriverKeys.planSubmitRevision,
             icon: const Icon(Icons.send_outlined),
             label: Text(context.l10n.interactionPlanAdjustSubmit),
-            onPressed: widget.enabled && feedback.isNotEmpty
-                ? _submitRevision
-                : null,
+            onPressed: enabled && feedback.isNotEmpty ? _submitRevision : null,
           ),
           FilledButton.icon(
             key: StudioDriverKeys.planApprove,
             icon: const Icon(Icons.check),
             label: Text(context.l10n.interactionPlanConfirmAction),
-            onPressed: widget.enabled ? _approve : null,
+            onPressed: enabled ? _approve : null,
           ),
         ],
       ),
       child: TextField(
         key: StudioDriverKeys.planFeedbackInput,
         controller: _feedbackController,
-        enabled: widget.enabled,
+        enabled: enabled,
         minLines: 1,
         maxLines: 4,
         decoration: InputDecoration(
@@ -102,19 +110,21 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
   }
 
   void _resolve(List<String> answers) {
-    ref
-        .read(studioControllerProvider.notifier)
-        .resolveActiveInteraction(
-          widget.threadId,
-          widget.plan.interactionId,
-          UserInputResolutionCommand(
-            answers: [
-              UserInputAnswerCommand(
-                questionId: widget.plan.questionId,
-                answers: answers,
-              ),
-            ],
+    unawaited(
+      ref
+          .read(threadCommandsProvider.notifier)
+          .resolveActiveInteraction(
+            widget.threadId,
+            widget.plan.interactionId,
+            UserInputResolutionCommand(
+              answers: [
+                UserInputAnswerCommand(
+                  questionId: widget.plan.questionId,
+                  answers: answers,
+                ),
+              ],
+            ),
           ),
-        );
+    );
   }
 }

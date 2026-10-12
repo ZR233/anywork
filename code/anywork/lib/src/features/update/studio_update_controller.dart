@@ -8,7 +8,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../data/frb/studio_api.dart'
     show FrbStudioBridgeDataSource, updaterStateFromFrb;
 import '../../app/studio_shutdown.dart';
-import '../../data/repositories/studio_repository.dart';
+import '../../data/stores/selection_store.dart';
+import '../../data/stores/thread_session_store.dart';
+import '../../data/stores/updater_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../platform/studio_platform.dart';
 import '../../platform/error_log.dart';
@@ -35,9 +37,16 @@ final studioUpdateEnabledProvider = Provider<bool>(
 
 final studioVersionProvider = Provider<String>((ref) => _compiledStudioVersion);
 
-final studioRuntimeBusyProvider = Provider<bool>((ref) {
-  final studio = ref.watch(studioControllerProvider).value;
-  return studio?.isBusy == true || studio?.runtime.hasActiveWorkflow == true;
+/// 安装前的忙闲检查。只读取已经存在的会话，避免为了判断而创建会话流。
+final studioRuntimeBusyProvider = Provider.autoDispose<bool>((ref) {
+  final selection = ref.watch(selectionStoreProvider);
+  final threadId = selection.selectedThreadId;
+  if (threadId == null || selection.needsOpen) return false;
+  final sessionProvider = threadSessionStoreProvider(threadId);
+  if (!ref.exists(sessionProvider)) return false;
+  final session = ref.watch(sessionProvider);
+  return session.activeTurn?.state.isBusy == true ||
+      session.runtime?.hasActiveWorkflow == true;
 });
 
 abstract class StudioUpdateApi {
@@ -161,8 +170,8 @@ class StudioUpdateController extends _$StudioUpdateController {
       }
     });
     final enabled = ref.watch(studioUpdateEnabledProvider);
-    final observedProvider = studioControllerProvider.select(
-      (value) => value.value?.updaterState,
+    final observedProvider = updaterStoreProvider.select(
+      (clock) => clock.value,
     );
     // Listening preserves the operation owner when product progress arrives.
     ref.listen(observedProvider, (_, observed) {

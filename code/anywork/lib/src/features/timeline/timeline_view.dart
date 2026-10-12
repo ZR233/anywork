@@ -11,7 +11,9 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../domain/models/timeline_commands.dart';
-import '../../data/repositories/studio_repository.dart';
+import '../../data/commands/thread_commands.dart';
+import '../../data/repositories/studio_api_provider.dart';
+import 'timeline_session_view.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
 import '../../shared/studio_chrome.dart';
@@ -35,8 +37,122 @@ typedef TimelineRemoteImageProviderFactory = ImageProvider Function(String url);
 final timelineRemoteImageProviderFactoryProvider =
     Provider<TimelineRemoteImageProviderFactory>((ref) => NetworkImage.new);
 
-class TimelineView extends StatefulWidget {
+class TimelineView extends ConsumerWidget {
   const TimelineView({
+    required this.threadId,
+    required this.rows,
+    required this.turn,
+    this.planConfirmation,
+    this.planExpanded = false,
+    this.onPlanToggle,
+    this.onCommand,
+    this.isLoadingOlder = false,
+    this.isLoadingNewer = false,
+    this.anchor,
+    this.olderError,
+    this.newerError,
+    this.hasNewer = false,
+    this.olderCursor,
+    this.newerCursor,
+    this.windowEpoch = 0,
+    this.previewedItemIds = const {},
+    this.loadingItemIds = const {},
+    this.itemBodyErrors = const {},
+    this.pendingItemBodyIds = const {},
+    this.unavailableItemIds = const {},
+    super.key,
+  });
+
+  final String? threadId;
+  final List<TimelineRow> rows;
+  final StudioTurnView? turn;
+  final PlanConfirmationView? planConfirmation;
+  final bool planExpanded;
+  final VoidCallback? onPlanToggle;
+  final ValueChanged<TimelineCommand>? onCommand;
+  final bool isLoadingOlder;
+  final bool isLoadingNewer;
+  final TimelineAnchor? anchor;
+  final String? olderError;
+  final String? newerError;
+  final bool hasNewer;
+  final String? olderCursor;
+  final String? newerCursor;
+  final int windowEpoch;
+  final Set<String> previewedItemIds;
+  final Set<String> loadingItemIds;
+  final Map<String, String> itemBodyErrors;
+  final Set<String> pendingItemBodyIds;
+  final Set<String> unavailableItemIds;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final window = ref.watch(timelineSessionWindowProvider);
+    final threadId = this.threadId;
+    final useStore =
+        window != null && threadId != null && window.threadId == threadId;
+    if (!useStore) {
+      return _TimelineSurface(
+        key: key,
+        threadId: threadId,
+        rows: rows,
+        turn: turn,
+        planConfirmation: planConfirmation,
+        planExpanded: planExpanded,
+        onPlanToggle: onPlanToggle,
+        onCommand: onCommand,
+        isLoadingOlder: isLoadingOlder,
+        isLoadingNewer: isLoadingNewer,
+        anchor: anchor,
+        olderError: olderError,
+        newerError: newerError,
+        hasNewer: hasNewer,
+        olderCursor: olderCursor,
+        newerCursor: newerCursor,
+        windowEpoch: windowEpoch,
+        previewedItemIds: previewedItemIds,
+        loadingItemIds: loadingItemIds,
+        itemBodyErrors: itemBodyErrors,
+        pendingItemBodyIds: pendingItemBodyIds,
+        unavailableItemIds: unavailableItemIds,
+      );
+    }
+    final history = window.history;
+    return _TimelineSurface(
+      key: key,
+      threadId: window.threadId,
+      rows: window.rows,
+      turn: window.turn,
+      planConfirmation: planConfirmation,
+      planExpanded: planExpanded,
+      onPlanToggle: onPlanToggle,
+      onCommand: (command) => unawaited(
+        dispatchTimelineSessionCommand(
+          ref.read(threadCommandsProvider.notifier),
+          window.threadId,
+          command,
+        ),
+      ),
+      isLoadingOlder: window.isLoadingOlder,
+      isLoadingNewer: window.isLoadingNewer,
+      anchor: history.anchor,
+      olderError: history.errorMessage,
+      newerError: history.newerError,
+      hasNewer: history.hasNewer,
+      olderCursor: history.olderCursor,
+      newerCursor: history.newerCursor,
+      windowEpoch: history.epoch,
+      previewedItemIds: history.previewedItemIds,
+      loadingItemIds: history.loadingItemIds,
+      itemBodyErrors: history.itemBodyErrors,
+      pendingItemBodyIds: history.pendingItemBodyIds,
+      unavailableItemIds: history.unavailableItemIds,
+    );
+  }
+}
+
+class _TimelineSurface extends StatefulWidget {
+  const _TimelineSurface({
     required this.threadId,
     required this.rows,
     required this.turn,
@@ -96,10 +212,10 @@ class TimelineView extends StatefulWidget {
   final Set<String> unavailableItemIds;
 
   @override
-  State<TimelineView> createState() => _TimelineViewState();
+  State<_TimelineSurface> createState() => _TimelineViewState();
 }
 
-class _TimelineViewState extends State<TimelineView> {
+class _TimelineViewState extends State<_TimelineSurface> {
   static const _bottomThreshold = 80.0;
 
   late final ScrollController _controller = ScrollController(
@@ -242,7 +358,7 @@ class _TimelineViewState extends State<TimelineView> {
   }
 
   @override
-  void didUpdateWidget(covariant TimelineView oldWidget) {
+  void didUpdateWidget(covariant _TimelineSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
     final threadChanged = widget.threadId != oldWidget.threadId;
     if (threadChanged) {
@@ -1126,7 +1242,10 @@ class _ItemBodyState {
   final VoidCallback? onLoad;
 }
 
-bool _hasNewTimelineEvent(TimelineView oldWidget, TimelineView newWidget) {
+bool _hasNewTimelineEvent(
+  _TimelineSurface oldWidget,
+  _TimelineSurface newWidget,
+) {
   if (newWidget.planConfirmation?.interactionId != null &&
       newWidget.planConfirmation?.interactionId !=
           oldWidget.planConfirmation?.interactionId) {

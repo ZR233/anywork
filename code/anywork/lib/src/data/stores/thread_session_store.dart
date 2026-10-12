@@ -6,6 +6,7 @@ import '../../domain/models/studio_models.dart';
 import '../bridge/studio_bridge.dart';
 import '../bridge/thread_stream_gate.dart';
 import '../frb/studio_api.dart';
+import '../repositories/studio_api_provider.dart';
 import 'domain_sync.dart';
 import 'thread_directory_store.dart';
 import 'thread_session_state.dart';
@@ -20,6 +21,8 @@ part 'thread_session_store.g.dart';
 class ThreadSessionStore extends _$ThreadSessionStore {
   BridgeThreadAttachment? _attachment;
   var _closed = false;
+  StudioChatWindow? _chatView;
+  Future<StudioChatWindow?>? _chatViewOpening;
 
   @override
   ThreadSessionState build(String threadId) {
@@ -36,6 +39,8 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     ref.onDispose(() {
       _closed = true;
       unawaited(_releaseSubscription(clearHistory: false));
+      unawaited(_chatView?.close());
+      _chatView = null;
     });
     scheduleMicrotask(() {
       if (_closed || !ref.mounted) return;
@@ -101,6 +106,62 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final next = jumpTimelineToLatestState(state);
     if (next == state) return;
     state = next;
+  }
+
+  /// 写入阅读锚点（浏览历史意图标记脱离底部）。
+  void setTimelineAnchor(TimelineAnchor anchor) {
+    final next = setTimelineAnchorState(state, anchor);
+    if (next == state) return;
+    state = next;
+  }
+
+  void beginItemBodyLoad(String itemId) {
+    final next = beginItemBodyLoadState(state, itemId);
+    if (next == state) return;
+    state = next;
+  }
+
+  void markItemBodyPending(String itemId) {
+    final next = markItemBodyPendingState(state, itemId);
+    if (next == state) return;
+    state = next;
+  }
+
+  void failItemBodyLoad(String itemId, String message) {
+    final next = failItemBodyLoadState(state, itemId, message);
+    if (next == state) return;
+    state = next;
+  }
+
+  /// 惰性打开该会话的权威 ChatView 窗口句柄。
+  ///
+  /// 句柄生命周期与 store 实例一致：store 释放（invalidate/销毁）时关闭；
+  /// 未建立权威快照前不打开；打开结果被换代/关闭取代时立即关闭。
+  Future<StudioChatWindow?> chatView() {
+    if (_closed || !ref.mounted || !state.hasSnapshot) {
+      return Future<void>.value().then((_) => null);
+    }
+    final existing = _chatView;
+    if (existing != null) return Future.value(existing);
+    return _chatViewOpening ??= () async {
+      try {
+        final source = ref.read(studioBridgeDataSourceProvider);
+        if (source is! ChatWindowReader) return null;
+        final window = await (source as ChatWindowReader).openChatWindow(
+          threadId,
+        );
+        if (!ref.mounted || _closed || !state.hasSnapshot) {
+          await window.close();
+          return null;
+        }
+        _chatView = window;
+        return window;
+      } catch (_) {
+        return null;
+      } finally {
+        _chatViewOpening = null;
+      }
+    }();
   }
 
   void setHistoryLoading(TimelineDirection direction) {

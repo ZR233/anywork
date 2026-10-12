@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
+import 'settings_views.dart';
 
 class LspTab extends ConsumerStatefulWidget {
   const LspTab({super.key, required this.tabIndex});
@@ -28,21 +28,14 @@ class _LspTabState extends ConsumerState<LspTab> {
   Widget build(BuildContext context) {
     // 只在 LSP tab 可见时租用 LSP topic；隐藏页不因 keep-alive 持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
-    if (visible) {
-      ref.watch(settingsLspScopeProvider);
-    }
-    final projectId = ref.watch(
-      studioControllerProvider.select(
-        (state) => state.value?.selectedProjectId,
-      ),
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.lsp,
     );
-    final servers =
-        ref
-            .watch(
-              studioControllerProvider.select((state) => state.value?.lspState),
-            )
-            ?.servers ??
-        const <LspServerStateView>[];
+    final lsp = ref.watch(settingsLspViewProvider);
+    final projectId = lsp.projectId;
+    final servers = lsp.servers;
     return SettingsPane(
       header: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -119,25 +112,23 @@ class _LspTabState extends ConsumerState<LspTab> {
   }
 
   Future<void> _refresh() {
-    return ref.read(studioControllerProvider.notifier).refreshLspState();
+    return readDirectoryCommands(ref).refreshLspState();
   }
 
   Future<void> _probe() {
-    return ref.read(studioControllerProvider.notifier).probeLspServer();
+    return readDirectoryCommands(ref).probeLspServer();
   }
 
   Future<void> _repair(String serverId) {
-    return ref
-        .read(studioControllerProvider.notifier)
-        .repairLspServer(serverId);
+    return readDirectoryCommands(ref).repairLspServer(serverId);
   }
 
   Future<void> _resetServer(String serverId) {
-    return ref.read(studioControllerProvider.notifier).resetLspServer(serverId);
+    return readDirectoryCommands(ref).resetLspServer(serverId);
   }
 
   Future<void> _resetWorkspace() {
-    return ref.read(studioControllerProvider.notifier).resetLspWorkspace();
+    return readDirectoryCommands(ref).resetLspWorkspace();
   }
 
   Future<void> _run(Future<void> Function() operation) async {

@@ -48,9 +48,11 @@ class _StudioFatalError extends ConsumerWidget {
                   const SizedBox(height: 20),
                   FilledButton.icon(
                     key: const ValueKey('runtime-fatal-retry'),
-                    onPressed: () => ref
-                        .read(studioControllerProvider.notifier)
-                        .retryInitialization(),
+                    onPressed: () {
+                      // 只清启动失败的 init future，不能重启仍在运行的旧 controller。
+                      FrbStudioBridgeDataSource.retryInitialization();
+                      ref.invalidate(studioBridgeProvider);
+                    },
                     icon: const Icon(Icons.refresh),
                     label: Text(context.l10n.runtimeFatalRetry),
                   ),
@@ -216,37 +218,23 @@ class _PersistenceStatusPanelState
 
   @override
   Widget build(BuildContext context) {
-    final snapshot =
-        ref.watch(shellChromeProvider).value?.persistenceState ??
-        const PersistenceStateSnapshot.ready();
-    final studio = ref.watch(studioControllerProvider).value;
-    final workspaces =
-        studio?.workspacesByThread ?? const <String, ThreadWorkspace>{};
-    // 会话级阻塞只认 canonical typed storage：是“执行已暂停”还是“已保存待继续”，以及
-    // 允许哪个动作，全部取自 [ThreadStorageStateView]，不从全局文案或错误字符串推断。
-    // 并且**优先当前选中会话**：其他会话的存储状态只能作为“其他会话”的次要提示，不能
-    // 掩盖、也不能冒充当前会话自己的阻塞事实。
-    final block = _storageBlock(workspaces, studio?.selectedThreadId);
+    final panel = ref.watch(persistencePanelViewProvider);
+    final snapshot = panel.snapshot;
+    final selectedStorage = panel.selectedStorage;
+    // 会话级阻塞只认当前被观察会话的 canonical typed storage。其他会话的
+    // storage 不在全局 map，不能在这里冒充当前会话的阻塞事实。
+    final block = _storageBlock(selectedStorage);
     final state = snapshot.state;
     final attention = state.needsAttention;
-    // 面板持有持久化队列作用域租约（替代周期轮询）：队列压力与逐 Thread
-    // 故障同样决定横幅是否出现，因此先取得 canonical 队列帧再统一判定，
-    // 不因队列侧事实而在解析前提前隐藏。帧由 controller 单 owner 进入
-    // canonical state，这里只读取 selector 与局部传输状态。
-    ref.watch(persistenceQueueTopicProvider);
-    final queueView = ref.watch(persistenceQueueStateProvider).value;
-    final connection = ref.watch(
-      productTopicConnectionProvider(const PersistenceQueueTopic()),
-    );
+    // 队列租约由 persistencePanelView 持有。这里只读 canonical 队列与局部传输。
+    final queueView = panel.queue;
+    final connection = panel.connection;
     final queue = queueView?.queue;
     final historyFault =
         queue?.threads.any((thread) => thread.fault != null) ?? false;
     // 存储压力（自动恢复的短背压）：暂停的是新推理准入，不是“执行已经失败”。
-    final pressurePaused =
-        queue?.pressurePaused == true ||
-        workspaces.values.any(
-          (workspace) => workspace.storage?.pressurePaused == true,
-        );
+    // 只含队列与当前被观察会话；其他会话的压力不在这份视图里。
+    final pressurePaused = panel.pressurePaused;
     // 正常持久化排队与写入不显示诊断横条：只有保存降级、恢复中、阻塞、
     // 存储压力暂停新推理，或队列报告真实故障时才显示。
     if (!attention && !historyFault && block == null && !pressurePaused) {
@@ -317,7 +305,7 @@ class _PersistenceStatusPanelState
             if (expanded)
               _diagnostics(
                 context,
-                workspaces,
+                selectedStorage,
                 primaryThreadId: block?.threadId,
                 queue: queue,
                 updatedAt: queueView?.updatedAt,
@@ -336,7 +324,7 @@ class _PersistenceStatusPanelState
   /// 已经给过动作的那个会话重复按钮。年龄以事件通知时间基线本地推算，不请求接口。
   Widget _diagnostics(
     BuildContext context,
-    Map<String, ThreadWorkspace> workspaces, {
+    ShellStorageFact? selectedStorage, {
     required String? primaryThreadId,
     required PersistenceQueueSnapshot? queue,
     required DateTime? updatedAt,
@@ -349,7 +337,7 @@ class _PersistenceStatusPanelState
     final children = <Widget>[];
     if (queue == null) {
       children.addAll(
-        _resumeRows(context, workspaces, primaryThreadId: primaryThreadId),
+        _resumeRows(context, selectedStorage, primaryThreadId: primaryThreadId),
       );
     } else {
       final lines = <String>[
@@ -406,7 +394,7 @@ class _PersistenceStatusPanelState
         );
       }
       children.addAll(
-        _resumeRows(context, workspaces, primaryThreadId: primaryThreadId),
+        _resumeRows(context, selectedStorage, primaryThreadId: primaryThreadId),
       );
     }
     if (transportError != null) {
@@ -424,9 +412,8 @@ class _PersistenceStatusPanelState
               // 刷新图标保留 StudioDriverKeys.persistenceQueueRefresh，
               // 明细展开时两者同时可见也不会让 Driver 唯一 finder 失效。
               key: const ValueKey('persistence-diagnostics-refresh'),
-              onPressed: () => ref.read(productTopicRetryProvider)(
-                const PersistenceQueueTopic(),
-              ),
+              onPressed: () =>
+                  retryShellPersistenceQueue(ref.read(studioBridgeProvider)),
               icon: const Icon(Icons.refresh, size: 16),
               label: Text(context.l10n.persistenceQueueRefresh),
             ),
@@ -468,100 +455,55 @@ class _PersistenceStatusPanelState
   /// 原因文本，避免同一个会话出现两个「重试保存/继续执行」入口。
   List<Widget> _resumeRows(
     BuildContext context,
-    Map<String, ThreadWorkspace> workspaces, {
+    ShellStorageFact? selected, {
     required String? primaryThreadId,
   }) {
+    if (selected == null || !selected.storage.resumeRequired) return const [];
+    final storage = selected.storage;
+    final busy =
+        _retryingThreads.contains(selected.threadId) ||
+        _resumingThreads.contains(selected.threadId);
     final colors = Theme.of(context).colorScheme;
-    final rows = <Widget>[];
-    for (final entry in workspaces.entries) {
-      final storage = entry.value.storage;
-      if (storage == null || !storage.resumeRequired) continue;
-      final title = entry.value.thread.title.trim();
-      final label = title.isEmpty ? entry.key : title;
-      final busy =
-          _retryingThreads.contains(entry.key) ||
-          _resumingThreads.contains(entry.key);
-      rows.add(
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '$label · ${_storageReasonLabel(context, storage)}',
-                style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(color: colors.onSurfaceVariant),
-              ),
+    return [
+      Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${selected.label} · ${_storageReasonLabel(context, storage)}',
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: colors.onSurfaceVariant),
             ),
-            if (entry.key != primaryThreadId)
-              TextButton.icon(
-                key: ValueKey('history-resume-${entry.key}'),
-                onPressed: storage.canResume && !busy
-                    ? () => unawaited(
-                        _resumeThread(entry.key, storage.faultGeneration),
-                      )
-                    : null,
-                icon: const Icon(Icons.play_arrow, size: 16),
-                label: Text(context.l10n.persistenceHistoryResume),
-              ),
-          ],
-        ),
-      );
-    }
-    return rows;
+          ),
+          if (selected.threadId != primaryThreadId)
+            TextButton.icon(
+              key: ValueKey('history-resume-${selected.threadId}'),
+              onPressed: storage.canResume && !busy
+                  ? () => unawaited(
+                      _resumeThread(selected.threadId, storage.faultGeneration),
+                    )
+                  : null,
+              icon: const Icon(Icons.play_arrow, size: 16),
+              label: Text(context.l10n.persistenceHistoryResume),
+            ),
+        ],
+      ),
+    ];
   }
 
-  /// 主流程要表达的那一条**会话级**存储阻塞；全部取自 canonical typed storage 状态。
+  /// 主流程要表达的那一条**当前会话**存储阻塞；全部取自 canonical typed storage。
   ///
-  /// 先看**当前选中会话**：它自己「已保存待继续 / 执行已暂停 / 新工作收束」的事实必须在主
-  /// 流程第一行，不能被其他会话的状态掩盖。只有当前选中会话没有存储阻塞时，才退到其他会话，
-  /// 并带上可辨认的来源名字——此时摘要必须说清是**其他会话**，绝不暗示当前会话保存失败或可以继续。
-  _StorageBlock? _storageBlock(
-    Map<String, ThreadWorkspace> workspaces,
-    String? selectedThreadId,
-  ) {
-    if (selectedThreadId != null) {
-      final selected = workspaces[selectedThreadId];
-      final storage = selected?.storage;
-      if (selected != null && storage != null) {
-        final stage = _storageStage(storage);
-        if (stage != _StorageStage.none) {
-          return _StorageBlock(
-            threadId: selectedThreadId,
-            storage: storage,
-            stage: stage,
-            isSelected: true,
-            label: _workspaceLabel(selected, selectedThreadId),
-          );
-        }
-      }
-    }
-    _StorageBlock? ready;
-    _StorageBlock? paused;
-    for (final entry in workspaces.entries) {
-      if (entry.key == selectedThreadId) continue;
-      final storage = entry.value.storage;
-      if (storage == null) continue;
-      final stage = _storageStage(storage);
-      if (stage == _StorageStage.none) continue;
-      final block = _StorageBlock(
-        threadId: entry.key,
-        storage: storage,
-        stage: stage,
-        isSelected: false,
-        label: _workspaceLabel(entry.value, entry.key),
-      );
-      if (stage == _StorageStage.ready) {
-        ready ??= block;
-      } else {
-        paused ??= block;
-      }
-    }
-    return ready ?? paused;
-  }
-
-  /// 会话可辨认的显示名：标题优先，缺失时退回 threadId，避免诊断指向匿名会话。
-  String _workspaceLabel(ThreadWorkspace workspace, String threadId) {
-    final title = workspace.thread.title.trim();
-    return title.isEmpty ? threadId : title;
+  /// 非选中会话的 storage 不在全局 map，这里不再退到“其他会话”。
+  _StorageBlock? _storageBlock(ShellStorageFact? selected) {
+    if (selected == null) return null;
+    final stage = _storageStage(selected.storage);
+    if (stage == _StorageStage.none) return null;
+    return _StorageBlock(
+      threadId: selected.threadId,
+      storage: selected.storage,
+      stage: stage,
+      isSelected: true,
+      label: selected.label,
+    );
   }
 
   /// 由 canonical typed 存储事实判定会话级阶段；不解析错误文本、不用前端计时猜测。
@@ -695,7 +637,7 @@ class _PersistenceStatusPanelState
         key: StudioDriverKeys.persistenceQueueRefresh,
         tooltip: context.l10n.persistenceQueueRefresh,
         onPressed: () =>
-            ref.read(productTopicRetryProvider)(const PersistenceQueueTopic()),
+            retryShellPersistenceQueue(ref.read(studioBridgeProvider)),
         icon: const Icon(Icons.refresh, size: 17),
       ),
     ];
@@ -751,7 +693,7 @@ class _PersistenceStatusPanelState
   Future<void> _retry() async {
     setState(() => _retrying = true);
     try {
-      await ref.read(studioControllerProvider.notifier).retryPersistence();
+      await ref.read(directoryCommandsProvider.notifier).retryPersistence();
     } finally {
       if (mounted) setState(() => _retrying = false);
     }
@@ -764,7 +706,7 @@ class _PersistenceStatusPanelState
     setState(() => _retryingThreads.add(threadId));
     try {
       await ref
-          .read(studioControllerProvider.notifier)
+          .read(directoryCommandsProvider.notifier)
           .retryThreadHistory(threadId, faultGeneration);
       // 命令返回值不作为 wrapper snapshot：队列内容由 canonical 事件更新。
     } on Object catch (error) {
@@ -786,7 +728,7 @@ class _PersistenceStatusPanelState
     setState(() => _resumingThreads.add(threadId));
     try {
       await ref
-          .read(studioControllerProvider.notifier)
+          .read(directoryCommandsProvider.notifier)
           .resumeThreadHistory(threadId, faultGeneration);
     } on Object catch (error) {
       if (mounted) {

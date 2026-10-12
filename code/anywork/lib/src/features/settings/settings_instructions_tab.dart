@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 class InstructionsTab extends ConsumerStatefulWidget {
   const InstructionsTab({super.key, required this.settings});
@@ -141,19 +141,19 @@ class _InstructionsTabState extends ConsumerState<InstructionsTab> {
       _error = null;
     });
     try {
-      final controller = ref.read(studioControllerProvider.notifier);
+      final commands = readSettingsCommands(ref);
       if (_baseController.text != widget.settings.baseOverride) {
-        await controller.applySettingsField(
+        await commands.applySettingsField(
           InstructionBaseOverrideCommand(_baseController.text),
         );
       }
       if (_developerController.text != widget.settings.developer) {
-        await controller.applySettingsField(
+        await commands.applySettingsField(
           InstructionDeveloperCommand(_developerController.text),
         );
       }
       if (_userController.text != widget.settings.user) {
-        await controller.applySettingsField(
+        await commands.applySettingsField(
           InstructionUserCommand(_userController.text),
         );
       }

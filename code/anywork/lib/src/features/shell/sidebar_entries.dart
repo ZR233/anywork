@@ -26,11 +26,10 @@ class _ProjectTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ref.read(studioControllerProvider.notifier);
     final issue = recoveryIssue;
     if (issue != null) {
       // 诊断提示优先：存在 recovery issue 时只保留名称区 Tooltip，不展示详情卡。
-      return _buildRow(context, ref, controller, nameTooltip: issue.detail);
+      return _buildRow(context, ref, nameTooltip: issue.detail);
     }
     // 详情宿主锚定**整行**：卡片贴在完整项目行边界外侧，不再覆盖同项目的
     // 新建/更多按钮和相邻会话行的状态/操作槽；名称 InkWell 复用宿主传入的
@@ -41,7 +40,6 @@ class _ProjectTile extends ConsumerWidget {
           _buildRow(
             context,
             ref,
-            controller,
             nameFocus: nameFocus,
             onMenuOpenChanged: onMenuOpenChanged,
             onMenuBeforeOpen: onMenuBeforeOpen,
@@ -54,18 +52,14 @@ class _ProjectTile extends ConsumerWidget {
   /// `projectRow` 键，保持全部行内语义不变。
   Widget _buildRow(
     BuildContext context,
-    WidgetRef ref,
-    StudioController controller, {
+    WidgetRef ref, {
     FocusNode? nameFocus,
     ValueChanged<bool>? onMenuOpenChanged,
     VoidCallback? onMenuBeforeOpen,
     String? nameTooltip,
   }) {
-    final nameArea = _buildProjectNameArea(
-      context,
-      controller,
-      focusNode: nameFocus,
-    );
+    final general = ref.watch(shellGeneralProvider);
+    final nameArea = _buildProjectNameArea(context, ref, focusNode: nameFocus);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.arrowRight): () {
@@ -104,9 +98,12 @@ class _ProjectTile extends ConsumerWidget {
                 minTarget: touchMode ? 44 : 32,
                 onPressed: recoveryIssue == null
                     ? () async {
-                        await controller.selectProject(project.id);
+                        final commands = ref.read(
+                          directoryCommandsProvider.notifier,
+                        );
+                        await commands.selectProject(project.id);
                         if (!context.mounted) return;
-                        await controller.beginNewThread();
+                        await commands.beginNewThread();
                         onNavigate?.call();
                       }
                     : null,
@@ -126,7 +123,11 @@ class _ProjectTile extends ConsumerWidget {
                   onClose: () => onMenuOpenChanged?.call(false),
                   onSelected: (action) async {
                     if (action == 'pin') {
-                      await _saveSidebarPreferences(ref, projectId: project.id);
+                      await _saveSidebarPreferences(
+                        ref,
+                        general: general,
+                        projectId: project.id,
+                      );
                     }
                     if (action == 'copy') {
                       await Clipboard.setData(
@@ -134,20 +135,16 @@ class _ProjectTile extends ConsumerWidget {
                       );
                     }
                     if (action == 'close') {
-                      await controller.archiveProject(project.id);
+                      await ref
+                          .read(directoryCommandsProvider.notifier)
+                          .archiveProject(project.id);
                     }
                   },
                   itemBuilder: (_) => [
                     StudioMenuItem<String>(
                       value: 'pin',
                       child: Text(
-                        ref
-                                    .watch(studioControllerProvider)
-                                    .value
-                                    ?.general
-                                    .pinnedProjectIds
-                                    .contains(project.id) ==
-                                true
+                        general.pinnedProjectIds.contains(project.id)
                             ? context.l10n.sidebarUnpin
                             : context.l10n.sidebarPin,
                       ),
@@ -173,7 +170,7 @@ class _ProjectTile extends ConsumerWidget {
 
   Widget _buildProjectNameArea(
     BuildContext context,
-    StudioController controller, {
+    WidgetRef ref, {
     FocusNode? focusNode,
   }) {
     final issue = recoveryIssue;
@@ -181,7 +178,9 @@ class _ProjectTile extends ConsumerWidget {
       focusNode: focusNode,
       onTap: issue == null
           ? () async {
-              await controller.selectProject(project.id);
+              await ref
+                  .read(directoryCommandsProvider.notifier)
+                  .selectProject(project.id);
               onNavigate?.call();
             }
           : null,
@@ -287,12 +286,8 @@ class _ThreadTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final issue = recoveryIssue;
     final blocked = issue?.blocksAccess ?? false;
-    final pinned = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.general.pinnedThreadIds.contains(thread.id) ?? false,
-      ),
-    );
+    final general = ref.watch(shellGeneralProvider);
+    final pinned = general.pinnedThreadIds.contains(thread.id);
     final vsCodeAvailable =
         ref.watch(vsCodeAvailabilityProvider).value ?? false;
     final zedAvailable = ref.watch(zedAvailabilityProvider).value ?? false;
@@ -341,7 +336,7 @@ class _ThreadTile extends ConsumerWidget {
       onTap: !blocked
           ? () async {
               await ref
-                  .read(studioControllerProvider.notifier)
+                  .read(directoryCommandsProvider.notifier)
                   .selectThread(thread.id);
               onNavigate?.call();
             }
@@ -361,7 +356,11 @@ class _ThreadTile extends ConsumerWidget {
             iconSize: 18,
             minTarget: actionTarget,
             onPressed: () async {
-              await _saveSidebarPreferences(ref, threadId: thread.id);
+              await _saveSidebarPreferences(
+                ref,
+                general: general,
+                threadId: thread.id,
+              );
             },
           ),
           _tileIconButton(
@@ -378,6 +377,7 @@ class _ThreadTile extends ConsumerWidget {
             context,
             ref,
             issue,
+            general: general,
             pinned: pinned,
             blocked: blocked,
             vsCodeAvailable: vsCodeAvailable,
@@ -416,6 +416,7 @@ class _ThreadTile extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     StudioRecoveryIssue? issue, {
+    required GeneralSettingsView general,
     required bool pinned,
     required bool blocked,
     required bool vsCodeAvailable,
@@ -441,10 +442,14 @@ class _ThreadTile extends ConsumerWidget {
         onClose: () => onOpenChanged?.call(false),
         onSelected: (action) async {
           if (action == 'retry') {
-            await ref.read(studioControllerProvider.notifier).retryRecovery();
+            await ref.read(directoryCommandsProvider.notifier).retryRecovery();
           }
           if (action == 'pin') {
-            await _saveSidebarPreferences(ref, threadId: thread.id);
+            await _saveSidebarPreferences(
+              ref,
+              general: general,
+              threadId: thread.id,
+            );
           }
           if (action == 'rename' && context.mounted) {
             await _renameThreadFromSidebar(context, ref, thread);
@@ -725,7 +730,7 @@ Future<void> _archiveThreadFromSidebar(
   );
   if (confirmed != true || !context.mounted) return;
   try {
-    await ref.read(studioControllerProvider.notifier).archiveThread(threadId);
+    await ref.read(threadCommandsProvider.notifier).archiveThread(threadId);
   } on Object catch (error) {
     if (!context.mounted) return;
     final message = switch (error) {
@@ -752,7 +757,7 @@ Future<void> _renameThreadFromSidebar(
   if (title == null || !context.mounted) return;
   try {
     await ref
-        .read(studioControllerProvider.notifier)
+        .read(threadCommandsProvider.notifier)
         .renameThread(thread.id, title);
   } on Object {
     if (!context.mounted) return;

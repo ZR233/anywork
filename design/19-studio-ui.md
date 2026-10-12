@@ -22,8 +22,8 @@ anywork 是 Flutter 桌面应用，使用 Material 3、Riverpod、go_router 与 
 bridge 访问 Studio 运行时，不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo
 integration 验收，不能伪造原生 provider、文件系统或进程能力。
 
-data 层负责 FRB DTO 到 domain 的一次转换；reducer 接收小型 canonical state snapshot、历史 page
-和增量 notification；
+Dart 侧状态与数据流遵循 [25](./25-frontend-state.md)：Bridge 层唯一消费 FRB 流并按领域分发
+到 store，命令经 typed command lane 以响应 canonical 收敛，页面只消费职责内 ViewProvider；
 Widget 只负责展示与发命令。窗口关闭必须等待 typed shutdown 完成并回收 Flutter、DTD、
 MCP/LSP 和本地 child process tree；远端 helper 在 GUI 退出或 SSH 失联后由心跳租约
 自行清理，窗口不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首次 close
@@ -105,8 +105,10 @@ idle、无 pending interaction 时可用；旧活动 run 由 runtime 归档，�
 snapshot 恢复 UI。Thread Mode 不出现在普通 Skills 设置和按需调用列表；两个内置模式不可
 删除或覆盖（Mode 体系见 [11](./11-thread-mode.md)）。
 
-起始页的模型与思考强度 selector 读取当前草稿 Mode 的 `modeModelRoutes` 默认值；切换 Mode
-立即展示该 Mode 最后保存的选择。已有 root Thread 的 selector 只读取 Thread runtime 中的
+起始页的模型与思考强度 selector 显示 route 作用域草稿的当前意图，未显式选择时读取当前
+草稿 Mode 的 `modeModelRoutes` 默认值；切换 Mode 立即展示该 Mode 最后保存的选择，草稿与
+canonical 的组合显示规则见 [25](./25-frontend-state.md) §25.6。已有 root Thread 的
+selector 只读取 Thread runtime 中的
 `modelRoute`，修改时同时更新该 Thread 与其当前 Mode 默认值，不改变其他 Thread。child Thread
 继续只读展示创建时冻结的 Profile route。路由 unavailable 时保留原 selector 并显示错误，
 不得在 Flutter 侧选择另一个 provider 或 model。模型旁的警告表示当前路由不可用，独立于
@@ -351,11 +353,12 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 保留隐藏标签的 UI 状态不保留其后台订阅。可见会话组合自己的状态流、内容窗口与根会话费用，
 离开/切换后释放旧观察者；草稿与阅读锚点保持原生命周期。
 
-每个 topic 的事件由 data/domain 的单一接线进入 canonical state，页面只读取 selector；
+每个 topic 的事件由 Bridge 层的单一分发点进入对应领域 store，页面只读取职责内 ViewProvider；
 `lagged`、失败或关闭只影响对应可见区域，并在重同步期间保留最后有效内容。设置中的 MCP、
 LSP、Skills、Provider usage、模型性能、持久化队列与 Profiles 是独立职责，不合并为隐藏的
 “services”订阅；只有当前可见标签页或明确的 Driver/诊断观察者才持有相应 lease。会话窗口、
-费用与可见性以生命周期代次拒绝旧异步收尾，保证快速切换不清除新窗口、滚动锚点或草稿。
+费用的订阅随其观察者建立与释放；导航不产生业务写入，快速切换不清除新窗口、滚动锚点或
+草稿（见 [25](./25-frontend-state.md) §25.8）。
 
 共享同一 topic 的观察者复用一个订阅，最后一个释放时取消；重新进入先取得最新基线。
 初次无数据才使用骨架/整页等待；后续刷新、重连及失败保留已有内容、滚动、选择、过滤与
@@ -674,9 +677,9 @@ Model、Mode 和 reasoning selector 不保存完整 settings，也不捕获可�
 projection 分为 canonical、pending、resolved、unavailable；pending 只提供即时展示，失败
 回滚到 canonical 并保留可重试错误。模型目录刷新按 provider 去重并使用独立 catalog 水位，
 不得触发设置页整棵重建或覆盖 route。
-新会话页面消费 `StartSessionViewModel`，设置页消费按领域的 `SettingsViewModel`/selector；
-两者都只读 immutable projection。`StudioMenu` 的异步命令在关闭菜单后继续由 app 级 lane
-完成，快速 A→B→C 选择只保留目标键的最新意图。
+新会话页面消费 route 作用域草稿控制器与起始页 ViewProvider，设置页消费按领域的
+ViewProvider；两者都只读 immutable projection。`StudioMenu` 的异步命令在关闭菜单后继续由
+命令 lane 完成，快速 A→B→C 选择按 lane 串行语义收敛。
 
 模型选择器的可用性来自活动 Thread 的实时会话状态；持久化检查点不包含模型资源，不能用其默认
 不可用值覆盖实时路由。runtime 通知由同一投影 owner 从最新快照生成，仅状态变化时发布；
@@ -684,8 +687,9 @@ projection 分为 canonical、pending、resolved、unavailable；pending 只提�
 
 ## 19.13 实时 projection 与同页更新
 
-UI 的 canonical state 由单一 reducer/store 更新，Widget 只订阅职责内不可变、值相等的
-projection。状态栏、上下文和 throughput 只消费 runtime/context/throughput projection；
+UI 的 canonical state 由各领域 store 更新（[25](./25-frontend-state.md) §25.4），Widget 只订阅
+职责内不可变、值相等的 ViewProvider。状态栏、上下文和 throughput 只消费
+runtime/context/throughput projection；
 composer 只消费 composer projection；timeline、interaction、activity、storage、settings、
 usage、statistics 与 costs 分别消费对应 projection。高频 runtime 更新不得使完整
 `AgentWorkspaceView` 驱动 timeline、composer、表单或滚动状态重建；弹层打开期间也必须随

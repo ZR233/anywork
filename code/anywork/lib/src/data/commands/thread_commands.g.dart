@@ -56,7 +56,7 @@ final class ThreadCommandsProvider
   }
 }
 
-String _$threadCommandsHash() => r'a86470d72dbebc03e59d7428c0d134e726a4905d';
+String _$threadCommandsHash() => r'1f9939157506565d8148a84e7f75a9f927a6c141';
 
 /// 会话命令 lane。
 ///

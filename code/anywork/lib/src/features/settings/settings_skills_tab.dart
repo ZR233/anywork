@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
+import 'settings_views.dart';
 
 class SkillsTab extends ConsumerStatefulWidget {
   const SkillsTab({super.key, required this.tabIndex});
@@ -46,14 +46,10 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     if (visible) unawaited(_refreshSkillsState());
   }
 
-  String? _currentProjectId() =>
-      ref.read(studioControllerProvider).value?.selectedProjectId;
+  String? _currentProjectId() => ref.read(settingsSkillsViewProvider).projectId;
 
   int _currentCatalogRevision() {
-    final value = ref.read(studioControllerProvider).value;
-    final projectId = value?.selectedProjectId;
-    if (projectId == null) return 0;
-    return value?.skillsByProject[projectId]?.catalogRevision ?? 0;
+    return ref.read(settingsSkillsViewProvider).catalogRevision;
   }
 
   @override
@@ -61,21 +57,12 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     // 只在 Skills tab 可见时租用当前 project 的 Skills topic；隐藏页不持租约。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     _syncVisibility(visible);
-    if (visible) {
-      ref.watch(settingsSkillsScopeProvider);
-    }
-    // 只 watch 选中项目 identity 与 canonical 快照身份；无关领域更新不重建本页。
-    final selection = ref.watch(
-      studioControllerProvider.select((state) {
-        final value = state.value;
-        final projectId = value?.selectedProjectId;
-        return (
-          projectId: projectId,
-          catalog: projectId == null ? null : value?.skillsByProject[projectId],
-          settings: value?.skills,
-          activeSkills: value?.runtime.activeSkills,
-        );
-      }),
+    final selection = ref.watch(settingsSkillsViewProvider);
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.skills,
+      projectId: selection.projectId,
     );
     final projectId = selection.projectId;
     final catalog = selection.catalog;
@@ -93,7 +80,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       if (_query.isNotEmpty) _scheduleSearch(_query);
     }
     final fallbackNames = <String>{
-      ...?selection.activeSkills,
+      ...selection.activeSkills,
       ...?catalog?.skills,
       ...?settings?.disabled,
     }.toList();
@@ -264,9 +251,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
 
   Future<void> _searchSkills(String query, int request) async {
     try {
-      final result = await ref
-          .read(studioControllerProvider.notifier)
-          .searchSkills(query);
+      final result = await readDirectoryCommands(ref).searchSkills(query);
       if (!mounted || request != _searchRequest || result == null) {
         return;
       }
@@ -285,10 +270,9 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
   Future<void> _saveDisabled(Set<String> disabled) async {
     try {
       setState(() => _saveError = null);
-      final settings = ref.read(studioControllerProvider).value?.skills;
+      final settings = ref.read(settingsSkillsViewProvider).settings;
       if (settings == null) return;
-      await ref
-          .read(studioControllerProvider.notifier)
+      await readSettingsCommands(ref)
           .applySettingsField(SkillsDisabledCommand(disabled.toList()..sort()));
     } catch (error) {
       if (mounted) {
@@ -299,7 +283,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
 
   Future<void> _refreshSkillsState() async {
     try {
-      await ref.read(studioControllerProvider.notifier).refreshSkillsState();
+      await readDirectoryCommands(ref).refreshSkillsState();
     } catch (error) {
       if (mounted) {
         setState(() => _discoverError = error.toString());
@@ -313,7 +297,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       _discoverError = null;
     });
     try {
-      await ref.read(studioControllerProvider.notifier).discoverSkills();
+      await readDirectoryCommands(ref).discoverSkills();
     } catch (error) {
       if (mounted) {
         setState(() => _discoverError = error.toString());

@@ -1,28 +1,31 @@
-import 'package:riverpod_annotation/riverpod_annotation.dart';
-
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 
-part 'provider_usage_controller.g.dart';
-
-class ProviderUsageError {
-  const ProviderUsageError({
+/// 用量刷新按钮的 widget 临时态。
+///
+/// canonical 用量只来自 [ProviderUsageView]；这里只记本次刷新的 loading / error。
+/// store revision 或单条 Ready 用量 revision 前进后，旧 error 不再显示。
+class SettingsUsageRefreshError {
+  const SettingsUsageRefreshError({
     required this.message,
     required this.requestGeneration,
+    required this.baselineRevision,
     required this.baselineRevisions,
   });
 
   final String message;
   final int requestGeneration;
-
-  /// The canonical per-provider usage revisions observed when this refresh
-  /// started. An error without a baseline must never hide a Ready projection.
+  final int baselineRevision;
   final Map<String, int> baselineRevisions;
 
   bool appliesTo(String providerId) =>
       baselineRevisions.containsKey(providerId);
 
-  bool isObsoleteFor(String providerId, ProviderUsageView? usage) {
+  bool isObsoleteFor(
+    String providerId,
+    ProviderUsageView? usage,
+    int storeRevision,
+  ) {
+    if (storeRevision > baselineRevision) return true;
     if (usage == null || usage.state is! ReadyProviderUsageView) {
       return false;
     }
@@ -31,8 +34,8 @@ class ProviderUsageError {
   }
 }
 
-class ProviderUsageState {
-  const ProviderUsageState({
+class SettingsUsageRefreshState {
+  const SettingsUsageRefreshState({
     this.loadingGenerationByProviderId = const {},
     this.latestRequestGenerationByProviderId = const {},
     this.errorsByProviderId = const {},
@@ -40,7 +43,7 @@ class ProviderUsageState {
 
   final Map<String, int> loadingGenerationByProviderId;
   final Map<String, int> latestRequestGenerationByProviderId;
-  final Map<String, ProviderUsageError> errorsByProviderId;
+  final Map<String, SettingsUsageRefreshError> errorsByProviderId;
 
   Set<String> get loadingProviderIds =>
       loadingGenerationByProviderId.keys.toSet();
@@ -48,6 +51,7 @@ class ProviderUsageState {
   Map<String, String> visibleErrorsByProviderId({
     required Iterable<String> providerIds,
     required Iterable<ProviderUsageView> canonicalUsages,
+    required int storeRevision,
   }) {
     final usageByProviderId = {
       for (final usage in canonicalUsages) usage.providerId: usage,
@@ -57,13 +61,13 @@ class ProviderUsageState {
       final latestRequest = latestRequestGenerationByProviderId[providerId];
       final candidate =
           [errorsByProviderId[providerId], errorsByProviderId['*']]
-              .whereType<ProviderUsageError>()
+              .whereType<SettingsUsageRefreshError>()
               .where((error) {
                 return error.appliesTo(providerId) &&
                     (latestRequest == null ||
                         error.requestGeneration >= latestRequest);
               })
-              .fold<ProviderUsageError?>(null, (current, error) {
+              .fold<SettingsUsageRefreshError?>(null, (current, error) {
                 if (current == null ||
                     error.requestGeneration > current.requestGeneration) {
                   return error;
@@ -71,7 +75,11 @@ class ProviderUsageState {
                 return current;
               });
       if (candidate != null &&
-          !candidate.isObsoleteFor(providerId, usageByProviderId[providerId])) {
+          !candidate.isObsoleteFor(
+            providerId,
+            usageByProviderId[providerId],
+            storeRevision,
+          )) {
         visible[providerId] = candidate.message;
       }
     }
@@ -79,62 +87,39 @@ class ProviderUsageState {
   }
 }
 
-@riverpod
-class ProviderUsageController extends _$ProviderUsageController {
+class SettingsUsageRefresh {
   Future<void> _refreshTail = Future<void>.value();
   int _nextRequestGeneration = 0;
+  SettingsUsageRefreshState state = const SettingsUsageRefreshState();
 
-  @override
-  ProviderUsageState build() => const ProviderUsageState();
-
-  Future<void> refresh({String? providerId}) {
+  Future<void> refresh({
+    String? providerId,
+    required Set<String> providerIds,
+    required int Function() readStoreRevision,
+    required Map<String, int> Function() readUsageRevisions,
+    required Future<void> Function() refreshCanonical,
+    required void Function() onChanged,
+  }) {
     final requestGeneration = ++_nextRequestGeneration;
-    final providerIds = _targetProviderIds(providerId);
     _markRefreshStarted(
       providerId: providerId,
       providerIds: providerIds,
       requestGeneration: requestGeneration,
     );
-
+    onChanged();
     final operation = _refreshTail.then<void>(
       (_) => _runRefresh(
         providerId: providerId,
         providerIds: providerIds,
         requestGeneration: requestGeneration,
+        readStoreRevision: readStoreRevision,
+        readUsageRevisions: readUsageRevisions,
+        refreshCanonical: refreshCanonical,
+        onChanged: onChanged,
       ),
     );
-    // _runRefresh converts bridge failures into local error state, so the
-    // tail remains failure-free even when one refresh fails.
     _refreshTail = operation.catchError((Object _, StackTrace _) {});
     return operation;
-  }
-
-  Set<String> _targetProviderIds(String? providerId) {
-    if (providerId != null) {
-      return {providerId};
-    }
-    return ref
-            .read(studioControllerProvider)
-            .value
-            ?.providers
-            .map((provider) => provider.id)
-            .toSet() ??
-        const <String>{};
-  }
-
-  Map<String, int> _canonicalUsageRevisions(Set<String> providerIds) {
-    final usages =
-        ref.read(studioControllerProvider).value?.providerUsages ??
-        const <ProviderUsageView>[];
-    return {
-      for (final providerId in providerIds)
-        providerId:
-            usages
-                .where((usage) => usage.providerId == providerId)
-                .firstOrNull
-                ?.revision ??
-            -1,
-    };
   }
 
   void _markRefreshStarted({
@@ -151,7 +136,7 @@ class ProviderUsageController extends _$ProviderUsageController {
     }
     final errors = {...current.errorsByProviderId};
     errors.remove(providerId ?? '*');
-    state = ProviderUsageState(
+    state = SettingsUsageRefreshState(
       loadingGenerationByProviderId: loading,
       latestRequestGenerationByProviderId: latestRequests,
       errorsByProviderId: errors,
@@ -162,13 +147,15 @@ class ProviderUsageController extends _$ProviderUsageController {
     required String? providerId,
     required Set<String> providerIds,
     required int requestGeneration,
+    required int Function() readStoreRevision,
+    required Map<String, int> Function() readUsageRevisions,
+    required Future<void> Function() refreshCanonical,
+    required void Function() onChanged,
   }) async {
-    // The tail may have waited for an earlier refresh to update the
-    // canonical topic, so capture this request's baseline immediately before
-    // its bridge call rather than when it was queued.
-    final baselineRevisions = _canonicalUsageRevisions(providerIds);
+    final baselineRevision = readStoreRevision();
+    final baselineRevisions = readUsageRevisions();
     try {
-      await _refreshCanonicalUsages();
+      await refreshCanonical();
       _finishRefresh(
         providerId: providerId,
         providerIds: providerIds,
@@ -178,11 +165,13 @@ class ProviderUsageController extends _$ProviderUsageController {
       _recordRefreshFailure(
         providerId: providerId,
         providerIds: providerIds,
+        baselineRevision: baselineRevision,
         baselineRevisions: baselineRevisions,
         requestGeneration: requestGeneration,
         message: error.toString(),
       );
     }
+    onChanged();
   }
 
   void _finishRefresh({
@@ -193,16 +182,14 @@ class ProviderUsageController extends _$ProviderUsageController {
     final current = state;
     final loading = {...current.loadingGenerationByProviderId};
     for (final id in providerIds) {
-      if (loading[id] == requestGeneration) {
-        loading.remove(id);
-      }
+      if (loading[id] == requestGeneration) loading.remove(id);
     }
     final errors = {...current.errorsByProviderId};
     final errorKey = providerId ?? '*';
     if (errors[errorKey]?.requestGeneration == requestGeneration) {
       errors.remove(errorKey);
     }
-    state = ProviderUsageState(
+    state = SettingsUsageRefreshState(
       loadingGenerationByProviderId: loading,
       latestRequestGenerationByProviderId:
           current.latestRequestGenerationByProviderId,
@@ -213,6 +200,7 @@ class ProviderUsageController extends _$ProviderUsageController {
   void _recordRefreshFailure({
     required String? providerId,
     required Set<String> providerIds,
+    required int baselineRevision,
     required Map<String, int> baselineRevisions,
     required int requestGeneration,
     required String message,
@@ -227,9 +215,7 @@ class ProviderUsageController extends _$ProviderUsageController {
         .toSet();
     final loading = {...current.loadingGenerationByProviderId};
     for (final id in providerIds) {
-      if (loading[id] == requestGeneration) {
-        loading.remove(id);
-      }
+      if (loading[id] == requestGeneration) loading.remove(id);
     }
     final errors = {...current.errorsByProviderId};
     final errorKey = providerId ?? '*';
@@ -238,23 +224,20 @@ class ProviderUsageController extends _$ProviderUsageController {
         errors.remove(errorKey);
       }
     } else {
-      errors[errorKey] = ProviderUsageError(
+      errors[errorKey] = SettingsUsageRefreshError(
         message: message,
         requestGeneration: requestGeneration,
+        baselineRevision: baselineRevision,
         baselineRevisions: {
           for (final id in reportableProviderIds) id: baselineRevisions[id]!,
         },
       );
     }
-    state = ProviderUsageState(
+    state = SettingsUsageRefreshState(
       loadingGenerationByProviderId: loading,
       latestRequestGenerationByProviderId:
           current.latestRequestGenerationByProviderId,
       errorsByProviderId: errors,
     );
-  }
-
-  Future<void> _refreshCanonicalUsages() async {
-    await ref.read(studioControllerProvider.notifier).refreshProviderUsages();
   }
 }

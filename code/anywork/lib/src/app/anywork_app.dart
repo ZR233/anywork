@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/frb/studio_api.dart';
-import '../data/repositories/studio_repository.dart';
+import '../data/repositories/studio_api_provider.dart';
 import '../features/settings/settings.dart';
 import '../features/shell/studio_shell.dart';
 import '../features/update/studio_update_controller.dart';
@@ -14,8 +14,8 @@ import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
 import 'studio_host_lifecycle.dart';
-import 'studio_navigation_coordinator.dart';
 import 'studio_shutdown.dart';
+import 'startup_facts.dart';
 import 'theme/material3_theme.dart';
 
 class AnyworkApp extends ConsumerStatefulWidget {
@@ -33,16 +33,11 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
     super.initState();
     _router = GoRouter(
       restorationScopeId: 'anywork-router',
-      observers: [
-        StudioNavigationCoordinator(
-          ref.read(studioControllerProvider.notifier),
-        ),
-      ],
       routes: [
         GoRoute(
           path: '/',
           name: 'studio',
-          builder: (context, state) => const StudioShell(),
+          builder: (context, state) => const _StudioStartupGate(),
           routes: [
             GoRoute(
               path: 'settings',
@@ -82,6 +77,45 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
         ),
       ),
     );
+  }
+}
+
+/// 启动所有者：静态目录与上次选择恢复完成前不挂载 shell。
+///
+/// [ensureSettingsStaticFacts] 幂等。它先于 shell 首帧的 `openSelectedThread`，
+/// 因此 `restoreStartup` 置位的 `needsOpen` 能被那次幂等打开清掉并建流。
+/// 导航本身不写业务状态。
+class _StudioStartupGate extends ConsumerStatefulWidget {
+  const _StudioStartupGate();
+
+  @override
+  ConsumerState<_StudioStartupGate> createState() => _StudioStartupGateState();
+}
+
+class _StudioStartupGateState extends ConsumerState<_StudioStartupGate> {
+  var _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_restoreStartupFacts());
+    });
+  }
+
+  Future<void> _restoreStartupFacts() async {
+    await ensureSettingsStaticFacts(ref);
+    if (!mounted) return;
+    setState(() => _ready = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return const StudioShell();
   }
 }
 

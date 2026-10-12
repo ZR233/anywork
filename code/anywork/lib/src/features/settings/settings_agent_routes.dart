@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 class _AgentRouteConfiguration {
   const _AgentRouteConfiguration({
@@ -71,11 +71,7 @@ class _AgentRouteConfiguration {
         : option.reasoningEfforts.firstOrNull;
     final selectedEffort = hasConfiguredRoute ? canonicalEffort : defaultEffort;
     final pending = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.mutationPending('agent-role:model:$role') == true ||
-            state.value?.mutationPending('agent-role:effort:$role') == true,
-      ),
+      settingsRoleCommandPendingProvider(role).select((state) => state.pending),
     );
 
     Future<void> saveRoleModel({
@@ -83,13 +79,11 @@ class _AgentRouteConfiguration {
       required String model,
     }) async {
       try {
-        await ref
-            .read(studioControllerProvider.notifier)
-            .setRoleModelField(
-              roleKey: role,
-              providerId: providerId,
-              model: model,
-            );
+        await readSettingsCommands(ref).setRoleModelField(
+          roleKey: role,
+          providerId: providerId,
+          model: model,
+        );
       } catch (error) {
         if (!context.mounted) return;
         final messenger = ScaffoldMessenger.of(context);
@@ -100,8 +94,7 @@ class _AgentRouteConfiguration {
 
     Future<void> saveRoleEffort(String? effort) async {
       try {
-        await ref
-            .read(studioControllerProvider.notifier)
+        await readSettingsCommands(ref)
             .setRoleReasoningEffortField(roleKey: role, effort: effort);
       } catch (error) {
         if (!context.mounted) return;

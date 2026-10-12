@@ -312,8 +312,9 @@ Future<void> _openThreadWorkspaceInVsCode(
   String? failure;
   if (project.sshAlias case final alias?) {
     try {
+      // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -365,8 +366,9 @@ Future<void> _openThreadWorkspaceInZed(
   String? failure;
   if (project.sshAlias case final alias?) {
     try {
+      // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -418,8 +420,9 @@ Future<void> _openThreadWorkspaceInTerminal(
   String? failure;
   if (project.sshAlias case final alias?) {
     try {
+      // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioControllerProvider.notifier)
+          .read(studioBridgeDataSourceProvider)
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -510,9 +513,11 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
         maxHeight: menuHeight,
       ),
       childFocusNode: _triggerFocusNode,
-      onSelected: (threadId) => ref
-          .read(studioControllerProvider.notifier)
-          .selectAgentThread(threadId),
+      onSelected: (threadId) => unawaited(
+        ref
+            .read(directoryCommandsProvider.notifier)
+            .selectAgentThread(threadId),
+      ),
       itemBuilder: (context) => [
         for (final thread in threads)
           StudioMenuItem<String>(
@@ -896,19 +901,161 @@ class _Footer extends StatelessWidget {
 
 /// 固定活动条的接线点。
 ///
-/// 事实来源是后端 typed 活动投影（`conversationActivityProvider`）：
-/// - 阶段/摘要/并行工具：`ThreadWorkspace.activity`（快照与 `ActivityChanged` 通知）；
-/// - 等待审批/输入：当前选中会话的待处理交互；
-/// - 保存故障/暂停：`ThreadWorkspace.storage`（typed，不从错误字符串解析）；
-/// - 详情：用户展开时由 controller 按活动身份**按需**读取，独立于消息窗口。
-class _ConversationActivityHost extends ConsumerWidget {
+/// 阶段/摘要/存储/交互来自当前已打开会话。展开详情是 host 的 ephemeral 状态：
+/// 按活动身份按需读取，不写入 store，也不成为第二份 canonical。
+class _ConversationActivityHost extends ConsumerStatefulWidget {
   const _ConversationActivityHost({required this.threadId});
 
   final String threadId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final view = ref.watch(conversationActivityProvider(threadId)).value;
+  ConsumerState<_ConversationActivityHost> createState() =>
+      _ConversationActivityHostState();
+}
+
+class _ConversationActivityHostState
+    extends ConsumerState<_ConversationActivityHost> {
+  var _expanded = false;
+  var _detail = const ThreadActivityDetailState();
+  Future<void>? _inFlight;
+  String? _inFlightIdentity;
+  var _refreshQueued = false;
+  var _loadScheduled = false;
+  var _generation = 0;
+
+  @override
+  void didUpdateWidget(covariant _ConversationActivityHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId == widget.threadId) return;
+    _generation++;
+    _expanded = false;
+    _refreshQueued = false;
+    _detail = const ThreadActivityDetailState();
+    _inFlight = null;
+    _inFlightIdentity = null;
+  }
+
+  void _expand() {
+    if (_expanded) {
+      _requestLoad();
+      return;
+    }
+    setState(() => _expanded = true);
+  }
+
+  void _collapse() {
+    if (!_expanded && !_refreshQueued) return;
+    setState(() {
+      _expanded = false;
+      _refreshQueued = false;
+    });
+  }
+
+  void _requestLoad() {
+    if (_loadScheduled) return;
+    _loadScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadScheduled = false;
+      if (mounted) unawaited(_load());
+    });
+  }
+
+  bool _covers(ThreadActivityView activity) {
+    return _detail.covers(activity.identity, activity.revision) &&
+        _detail.revision >= activity.revision;
+  }
+
+  Future<void> _load() async {
+    if (!_expanded || !mounted) return;
+    final activity = ref
+        .read(conversationActivityInputProvider(widget.threadId))
+        ?.activity;
+    if (activity == null) return;
+    if (_covers(activity)) return;
+    if (_inFlight != null && _inFlightIdentity == activity.identity) {
+      _refreshQueued = true;
+      return;
+    }
+    final generation = _generation;
+    final threadId = widget.threadId;
+    _inFlightIdentity = activity.identity;
+    setState(() {
+      _detail = _detail.copyWith(
+        identity: activity.identity,
+        revision: activity.revision,
+        loading: true,
+        error: null,
+      );
+    });
+    final request = _perform(threadId, activity, generation);
+    _inFlight = request;
+    await request;
+    if (identical(_inFlight, request)) {
+      _inFlight = null;
+      _inFlightIdentity = null;
+    }
+    if (_refreshQueued && mounted && _expanded && generation == _generation) {
+      _refreshQueued = false;
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _perform(
+    String threadId,
+    ThreadActivityView activity,
+    int generation,
+  ) async {
+    try {
+      // 活动详情没有命令 lane。展开时直接读 data source，不写入 store。
+      final detail = await ref
+          .read(studioBridgeDataSourceProvider)
+          .readThreadActivityDetail(threadId, activity.identity);
+      if (!mounted || generation != _generation || !_expanded) return;
+      final latest = ref
+          .read(conversationActivityInputProvider(threadId))
+          ?.activity;
+      if (latest != null && latest.identity != activity.identity) return;
+      setState(() {
+        _detail = ThreadActivityDetailState(
+          identity: activity.identity,
+          revision: activity.revision,
+          detail: detail,
+        );
+      });
+    } on Object catch (error) {
+      if (!mounted || generation != _generation || !_expanded) return;
+      final latest = ref
+          .read(conversationActivityInputProvider(threadId))
+          ?.activity;
+      if (latest != null && latest.identity != activity.identity) return;
+      setState(() {
+        _detail = ThreadActivityDetailState(
+          identity: activity.identity,
+          revision: activity.revision,
+          error: error.toString(),
+        );
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final input = ref.watch(conversationActivityInputProvider(widget.threadId));
+    final activity = input?.activity;
+    if (_expanded && activity != null && !_covers(activity)) {
+      _requestLoad();
+    }
+    final matches = activity != null && _detail.matches(activity.identity);
+    final view = input == null
+        ? null
+        : projectConversationActivity(
+            activity: activity,
+            storage: input.storage,
+            interaction: input.interaction,
+            detail: matches ? _detail.detail : null,
+            detailsLoading: matches && _detail.loading,
+            detailsError: matches ? _detail.error : null,
+          );
     if (view == null) {
       StudioDriverState.publishConversationActivity(null);
       return const SizedBox.shrink();
@@ -916,12 +1063,8 @@ class _ConversationActivityHost extends ConsumerWidget {
     StudioDriverState.publishConversationActivity(view);
     return ConversationActivityBar(
       view: view,
-      onExpand: () => ref
-          .read(studioControllerProvider.notifier)
-          .expandActivityDetail(threadId),
-      onCollapse: () => ref
-          .read(studioControllerProvider.notifier)
-          .collapseActivityDetail(threadId),
+      onExpand: _expand,
+      onCollapse: _collapse,
       // Driver 可观察的是“实际展开态”，不是 `expandable` 的“可展开能力”。
       onExpandedChanged: StudioDriverState.publishActivityExpanded,
     );
@@ -941,21 +1084,13 @@ class _StatusBarHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final asyncStatus = ref.watch(statusBarProvider);
-    return asyncStatus.when(
-      loading: () => const SizedBox.shrink(),
-      error: (error, stackTrace) => const SizedBox.shrink(),
-      data: (status) {
-        if (status == null) {
-          return const SizedBox.shrink();
-        }
-        return ThreadStatusBar(
-          view: status,
-          showTodo: showTodo,
-          todoExpanded: todoExpanded,
-          onToggleTodo: onToggleTodo,
-        );
-      },
+    final status = ref.watch(statusBarViewProvider);
+    if (status == null) return const SizedBox.shrink();
+    return ThreadStatusBar(
+      view: status,
+      showTodo: showTodo,
+      todoExpanded: todoExpanded,
+      onToggleTodo: onToggleTodo,
     );
   }
 }
@@ -967,16 +1102,8 @@ class _ComposerHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final asyncWorkspace = ref.watch(selectedWorkspaceControlsProvider);
-    return asyncWorkspace.when(
-      loading: () => const SizedBox.shrink(),
-      error: (error, stackTrace) => const SizedBox.shrink(),
-      data: (workspace) {
-        if (workspace == null) {
-          return const SizedBox.shrink();
-        }
-        return ComposerDock(workspace: workspace, compact: compact);
-      },
-    );
+    final workspace = ref.watch(shellComposerWorkspaceProvider);
+    if (workspace == null) return const SizedBox.shrink();
+    return ComposerDock(workspace: workspace, compact: compact);
   }
 }

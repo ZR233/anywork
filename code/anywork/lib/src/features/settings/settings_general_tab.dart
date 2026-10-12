@@ -3,12 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
 import 'settings_update_row.dart';
 import 'settings_web_search.dart';
+import 'settings_views.dart';
 
 class GeneralTab extends ConsumerStatefulWidget {
   const GeneralTab({
@@ -87,14 +87,14 @@ class _GeneralTabState extends ConsumerState<GeneralTab> {
   Future<void> _save(GeneralSettingsView settings) async {
     try {
       setState(() => _error = null);
-      final controller = ref.read(studioControllerProvider.notifier);
+      final commands = readSettingsCommands(ref);
       if (settings.followActiveTurn != widget.settings.followActiveTurn) {
-        await controller.applySettingsField(
+        await commands.applySettingsField(
           GeneralFollowActiveTurnCommand(settings.followActiveTurn),
         );
       }
       if (settings.compactTimeline != widget.settings.compactTimeline) {
-        await controller.applySettingsField(
+        await commands.applySettingsField(
           GeneralCompactTimelineCommand(settings.compactTimeline),
         );
       }

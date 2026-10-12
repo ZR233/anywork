@@ -77,18 +77,20 @@ MCP、LSP、Mode catalog、Provider usage、模型统计、Updater、持久化�
 冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable
 replay。重同步只读取受影响领域，不触发 activation、扫描或 mutation。
 
-Dart 侧以 topic/作用域为身份复用一个可释放的 lease；lease 的帧必须在统一的 data/domain
-接线处一次进入 canonical reducer，再由各页面 selector 读取，页面不得各自复制 reducer 或
-直接消费底层 stream。最后一个观察者释放 lease 后取消该领域订阅；ready 状态以外的
-controller 变化不得导致 lease 重建。收到 `lagged` 时只使对应 topic/作用域进入局部重同步，
-取消旧句柄并重新建立“先接收后基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效
-内容并暴露局部错误，不以静默空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在
-关闭与新 lease 建立期间继续生效，迟到帧不得写入新观察者。
+Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域的 lease 由 Bridge 层统一持有
+与释放，帧在 Bridge 的单一分发点进入对应领域 store 的 reduce 入口，再由各 feature 的
+ViewProvider 派生读取；页面不得各自复制 reducer 或直接消费底层 stream。最后一个观察者
+释放 lease 后取消该领域订阅；ready 状态以外的 controller 变化不得导致 lease 重建。
+收到 `lagged` 时只使对应 topic/作用域进入局部重同步，取消旧句柄并重新建立“先接收后
+基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默
+空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在关闭与新 lease 建立期间继续生效，
+迟到帧不得写入新观察者。
 
 设置领域保持真实职责边界：MCP、LSP、项目 Skills、Provider usage、模型性能、持久化队列、
 Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
-topic；Skills 作用域始终携带当前 project identity。会话可见性变化使用单调生命周期代次，
-快速离开、重新进入或再次离开不得由旧异步收尾清除新窗口、费用或草稿锚点。
+topic；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循
+[25](./25-frontend-state.md) §25.8：导航不产生业务写入，会话窗口、费用与草稿锚点不因
+页面往返被清除或重建。
 
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
 持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls
@@ -602,34 +604,32 @@ SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提�
 这些用户主动启动的外部应用拥有独立生命周期，不随 Studio 退出终止，也不复用 helper
 非交互通道或改变其资源回收契约。
 
-## 18.6 Settings 与 Model Catalog 的独立时钟
-
-Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
-`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
-对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider
-的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
-frame 和 baseline 进入同一 reducer merge path，页面不得按到达顺序直接替换整棵 `StudioState`。
-
-Flutter 的新会话 draft、Thread route 和 Settings canonical state 是三种不同事实。draft
-只按 project 保存在 `SessionDraftStore` 投影中，canonical snapshot 到达时不得清除或复制
-draft map。配置写入由 app 级 mutation coordinator 串行化；页面离开只释放观察者，不取消
-在途 command。返回路由可调用有界 `flushPending`，超时立即返回，后台继续完成并发布结果。
-Flutter 数据层按 `StudioBridgeDataSource`、`StudioSettingsRepository`、
-`StudioThreadRepository` 和 `SessionDraftStore` 分界：FRB 只传输 typed 数据，设置与线程
-reducer 不共享 owner。`StudioNavigationCoordinator` 只维护路由可见性和有界收束，不从
-widget 的 `dispose` 推断业务状态。
-
 ## 18.10 Canonical freshness invariant
 
-每个用户可见字段都必须能追溯回答七项问题：生产 owner；事件或快照来源；Dart reducer/store；
-revision 或 watermark；职责内 selector/projection；可见页面持有的 topic lease；以及失败、
-重连、隐藏和退出时的恢复与清理。Widget 不得通过一次性 `read`、切页重建或轮询取得本应由
-事件提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream。
+每个用户可见字段都必须能沿唯一链路追溯：生产 owner → 事件/快照来源 → Bridge 唯一分发点
+→ 领域 store reducer → revision/watermark → 职责内 ViewProvider → Widget 订阅，以及
+失败、重连和退出时的局部重同步与清理。Widget 不得通过一次性 `read`、切页重建或轮询取得
+本应由订阅提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream（Dart 侧分层
+契约见 [25](./25-frontend-state.md) §25.7）。
 
 Settings、provider usage、model performance、session costs、MCP、LSP、Skills、Profiles、
 persistence、updater 与 recovery 等独立职责继续使用各自 typed topic/lease；无关领域不得进入
 彼此缓冲。订阅按“先登记接收者、再基线、后事件”建立，最后一个观察者释放时取消，重新进入
 先采用最新基线再接收事件。Thread 的 runtime、turn、interaction、workflow、activity 与
-storage 则继续共用带 `epoch/baseRevision/revision` 的单一有序流；Dart 可以细分 selector，
+storage 则继续共用带 `epoch/baseRevision/revision` 的单一有序流；Dart 可以细分 ViewProvider，
 但不得建立绕过同一水位的旁路流。gap、lagged、旧 generation 和关闭都必须走该领域既定的
 resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
+
+## 18.11 Settings 与 Model Catalog 的独立时钟
+
+Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
+`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
+对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider
+的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
+frame 和 baseline 进入 settings store 的同一条 merge path，调用方不得按到达顺序整体替换
+（Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
+
+Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种不同事实，所有权与
+组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由 route 作用域
+控制器持有，canonical 永不覆盖；配置写入由 settings 命令 lane 串行化并以响应 canonical
+收敛；页面离开只释放观察者租约，不取消在途命令，也不存在返回前的等待或刷新步骤。

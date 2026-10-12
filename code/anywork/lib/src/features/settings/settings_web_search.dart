@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_form_select.dart';
 import 'settings_common.dart';
+import 'settings_views.dart';
 
 /// Canonical web-search modes the settings card can edit. Any other runtime
 /// value is shown raw and never silently coerced into a known mode.
@@ -374,11 +374,11 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
       _error = null;
     });
     try {
-      final controller = ref.read(studioControllerProvider.notifier);
-      var snapshot = ref
-          .read(studioControllerProvider)
-          .requireValue
-          .settingsState;
+      final commands = readSettingsCommands(ref);
+      if (!ref.read(settingsPageReadinessProvider).ready) {
+        throw StateError('Settings are not loaded.');
+      }
+      WebSearchSettingsView? published;
       final domains = _domainsController.text
           .split(RegExp(r'[,\n]'))
           .map((value) => value.trim())
@@ -386,48 +386,50 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
           .toSet()
           .toList();
       if (_mode != widget.settings.configuredMode) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchModeCommand(_mode),
-        );
+        )).webSearch;
       }
       if (_contextSize != widget.settings.contextSize) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchContextSizeCommand(_contextSize),
-        );
+        )).webSearch;
       }
       if (!_sameStrings(domains, widget.settings.allowedDomains)) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchAllowedDomainsCommand(domains),
-        );
+        )).webSearch;
       }
       final country = _nullableText(_countryController);
       final region = _nullableText(_regionController);
       final city = _nullableText(_cityController);
       final timezone = _nullableText(_timezoneController);
       if (country != widget.settings.country) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchCountryCommand(country),
-        );
+        )).webSearch;
       }
       if (region != widget.settings.region) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchRegionCommand(region),
-        );
+        )).webSearch;
       }
       if (city != widget.settings.city) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchCityCommand(city),
-        );
+        )).webSearch;
       }
       if (timezone != widget.settings.timezone) {
-        snapshot = await controller.applySettingsField(
+        published = (await commands.applySettingsField(
           WebSearchTimezoneCommand(timezone),
-        );
+        )).webSearch;
       }
       if (!mounted) return;
       // 成功后显式采用已发布的 canonical 快照，清除 dirty，草稿与已保存值回到同一事实源。
+      final publishedSettings =
+          published ?? ref.read(settingsGeneralViewProvider).webSearch;
       setState(() {
-        _syncFrom(snapshot.webSearch);
+        _syncFrom(publishedSettings);
         _dirty = false;
       });
     } catch (error) {
@@ -608,8 +610,7 @@ class _DeepSeekWebSearchSettingsCardState
       _error = null;
     });
     try {
-      await ref
-          .read(studioControllerProvider.notifier)
+      await readSettingsCommands(ref)
           .applySettingsField(DeepSeekWebSearchEnabledCommand(enabled));
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());

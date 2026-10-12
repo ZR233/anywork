@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_menu.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
+import 'status_view.dart';
 
 /// 根会话的模式选择器；起始页传新会话草稿，状态栏传当前 Thread 的 mode。
 class SessionModeSelector extends ConsumerWidget {
@@ -27,13 +27,7 @@ class SessionModeSelector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // 只订阅 Mode catalog 本身；无关领域事件不重建该选择器。
-    final discovered = ref.watch(
-      studioControllerProvider.select(
-        (state) =>
-            state.value?.threadModeCatalog.modes ??
-            const <ThreadModeDescriptorView>[],
-      ),
-    );
+    final discovered = ref.watch(statusModeCatalogProvider);
     final options = discovered.isEmpty
         ? ThreadModeId.values
         : discovered.map((descriptor) => descriptor.mode).toList();

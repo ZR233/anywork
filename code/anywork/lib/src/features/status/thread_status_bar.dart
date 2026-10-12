@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/repositories/studio_repository.dart';
 import '../../domain/models/studio_models.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
@@ -11,6 +10,7 @@ import 'context_usage_readout.dart';
 import 'session_selectors.dart';
 import 'status_bar_item.dart';
 import 'status_detail_popover.dart';
+import 'status_view.dart';
 
 class ThreadStatusBar extends ConsumerWidget {
   const ThreadStatusBar({
@@ -31,9 +31,9 @@ class ThreadStatusBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final workspace = view ?? StatusBarView.fromWorkspace(this.workspace!);
-    final runtimeProjection = ref.watch(runtimeProjectionProvider).value;
-    final contextProjection = ref.watch(contextUsageProjectionProvider).value;
-    final throughputProjection = ref.watch(throughputProjectionProvider).value;
+    final runtimeProjection = ref.watch(statusRuntimeProjectionProvider);
+    final contextProjection = ref.watch(statusContextProjectionProvider);
+    final throughputProjection = ref.watch(statusThroughputProjectionProvider);
     final runtime = runtimeProjection?.runtime ?? workspace.runtime;
     final contextUsage =
         contextProjection ??
@@ -44,15 +44,7 @@ class ThreadStatusBar extends ConsumerWidget {
     final thread = workspace.thread;
     final capabilityLabel = _runtimeCapabilityLabel(context, runtime);
     final lspActiveServers = [
-      for (final server
-          in ref
-                  .watch(
-                    studioControllerProvider.select(
-                      (state) => state.value?.lspState,
-                    ),
-                  )
-                  ?.servers ??
-              const <LspServerStateView>[])
+      for (final server in ref.watch(statusLspServersProvider))
         if (_lspActiveActivity(server) != null) server,
     ];
     return DecoratedBox(
