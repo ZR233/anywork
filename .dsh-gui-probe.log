@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running `target/xtask\debug\pl-xtask.exe flutter --version`
+==> (C:\Users\zrufo\Documents\opensource\pure-lang\code\anywork) flutter --version

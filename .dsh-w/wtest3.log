@@ -1,0 +1,40 @@
+Formatted 1 file (0 changed) in 0.01 seconds.
+00:00 +0: loading C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/session_selector_sync_test.dart
+00:00 +0: 切换会话模式后触发器与菜单选中态立即更新，无需页面往返
+startup_stage=controller_ready elapsed_ms=17
+00:00 +1: 修改思考强度后选择器立即显示 canonical 新值，无需页面往返
+startup_stage=controller_ready elapsed_ms=0
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: 'eco'
+  Actual: 'balanced'
+   Which: is different.
+          Expected: eco
+            Actual: balanced
+                    ^
+           Differ at offset 0
+canonical route 必须在没有任何页面跳转的情况下收敛
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure> (file:///C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/session_selector_sync_test.dart:135:5)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1953:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/session_selector_sync_test.dart line 135
+The test description was:
+  修改思考强度后选择器立即显示 canonical 新值，无需页面往返
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:00 +1 -1: 修改思考强度后选择器立即显示 canonical 新值，无需页面往返 [E]
+  Test failed. See exception logs above.
+  The test description was: 修改思考强度后选择器立即显示 canonical 新值，无需页面往返
+  
+00:00 +1 -1: Some tests failed.
+
+Failing tests:
+  C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/session_selector_sync_test.dart: 修改思考强度后选择器立即显示 canonical 新值，无需页面往返

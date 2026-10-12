@@ -1,0 +1,7 @@
+00:00 +0: loading C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/_probe_effort_test.dart
+00:00 +0: probe: mode default effort write converges
+startup_stage=controller_ready elapsed_ms=17
+before=balanced revision=1
+studio_settings_merge {"domain":"config","source":"field-response","currentRevision":1,"incomingRevision":2,"applied":true,"reason":"advanced","operationId":"studio-mutation-1","pendingCount":0}
+after=eco revision=2
+00:00 +1: All tests passed!

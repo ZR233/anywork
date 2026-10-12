@@ -1,0 +1,7 @@
+00:00 +0: loading C:/Users/zrufo/Documents/opensource/pure-lang/code/anywork/test/features/session_selector_sync_test.dart
+00:00 +0: 修改思考强度后选择器立即显示 canonical 新值，无需页面往返
+startup_stage=controller_ready elapsed_ms=16
+diag after tap: effort=balanced mutations=[new-thread-route:effort:mode.simple]
+studio_settings_merge {"domain":"config","source":"field-response","currentRevision":1,"incomingRevision":2,"applied":true,"reason":"advanced","operationId":"studio-mutation-1","pendingCount":0}
+diag after runAsync: effort=eco
+00:00 +1: All tests passed!
