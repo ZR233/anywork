@@ -434,7 +434,15 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
 
 模型性能历史以冻结账单中的实际发送模型作为统计身份，并投影配置模型、Provider 返回模型和
 `matched`、`mismatched`、`unreported`、`legacyUnknown` 四态结果。返回模型不参与费用或速度
-汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。
+汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。速度汇总只使用同一成功 inference
+同时报告输出词元和有效单调计时的样本：decode 窗口从首个非空模型输出事件到该 inference
+的终止事件，分子为该 inference 的输出词元数，不能使用输入/总词元或把其它重试、调用步骤
+的计时拼入本样本。实时状态栏与历史汇总遵守同一口径；缺失、零值、溢出或不一致的计时与
+用量不产生速度，不能以零时长或展示层封顶伪造可用速度。live usage 的输出词元与 decode
+时长是两个可独立未知的字段，消费者只有在二者同一观察代次同时存在时才计算实时速度；
+没有 live 观察时才可成对使用 authoritative 的同一组计数；live 观察已存在但任一字段
+缺失时保持未知，直到该 attempt 的成对 usage 与计时都成立。禁止把 live 与 authoritative
+的分子、分母交叉配对，也不以旧 attempt 的速度替代当前 pending 样本。
 
 工具附件投影：Studio 从持久化工具媒体通过格式所有者的 typed 解码生成工具输出附件，
 实时与历史恢复共用同一投影。附件身份沿用归档引用，MIME、字节数与可用尺寸必须对应

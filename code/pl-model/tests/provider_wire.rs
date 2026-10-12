@@ -1340,6 +1340,103 @@ async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
 }
 
 #[tokio::test]
+async fn paced_body_reports_timing_for_throughput_diagnostics() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "paced throughput diagnostic",
+        0,
+        Reply::PacedBody {
+            events: 25,
+            tokens_per_second: 25,
+            initial_delay_ms: 150,
+            pad: 0,
+        },
+    )])
+    .await
+    .unwrap();
+    let result = complete(
+        &fixture,
+        model("fixture-model", ModelTransportProfile::responses_http()),
+        request("paced throughput diagnostic"),
+        ModelSession::default(),
+    )
+    .await;
+    let timing = result.timing.expect("paced stream has timing");
+    let output_tokens = result
+        .accounting
+        .usage
+        .output_tokens
+        .expect("paced stream reports output usage");
+    assert_eq!(output_tokens, 25);
+    assert!(
+        (75..=500).contains(&timing.ttft_millis),
+        "TTFT should include the fixture's first-output delay: {timing:?}"
+    );
+    assert!(
+        (800..=1_300).contains(&timing.decode_millis),
+        "decode window should follow the fixture pacing: {timing:?}"
+    );
+    let tokens_per_second = output_tokens as f64 * 1_000.0 / timing.decode_millis as f64;
+    assert!(
+        (23.5..=26.5).contains(&tokens_per_second),
+        "paced stream throughput should stay near 25 token/s: {timing:?}"
+    );
+    fixture.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn retry_uses_only_the_successful_attempt_for_timing() {
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry timing",
+            0,
+            Reply::Sse(vec![
+                json!({"type":"response.created","response":{"id":"failed-attempt","model":"fixture-model"}}),
+                json!({"type":"response.output_item.added","output_index":0,"item":{"id":"failed-item","type":"message","role":"assistant","content":[]}}),
+                json!({"type":"response.output_text.delta","output_index":0,"item_id":"failed-item","content_index":0,"delta":"failed partial"}),
+            ]),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "retry timing",
+            1,
+            Reply::PacedBody {
+                events: 5,
+                tokens_per_second: 10,
+                initial_delay_ms: 200,
+                pad: 0,
+            },
+        ),
+    ])
+    .await
+    .unwrap();
+    let result = complete(
+        &fixture,
+        model("fixture-model", ModelTransportProfile::responses_http()),
+        request("retry timing"),
+        ModelSession::default(),
+    )
+    .await;
+    let timing = result.timing.expect("successful retry has timing");
+    let output_tokens = result
+        .accounting
+        .usage
+        .output_tokens
+        .expect("successful retry reports output usage");
+    assert_eq!(output_tokens, 5);
+    assert!(
+        (100..=700).contains(&timing.ttft_millis),
+        "TTFT must start at the successful attempt: {timing:?}"
+    );
+    assert!(
+        (250..=700).contains(&timing.decode_millis),
+        "decode must exclude the failed attempt and retry delay: {timing:?}"
+    );
+    assert_eq!(fixture.finish().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn responses_message_parts_retain_distinct_provider_identity_and_trace_rows() {
     let events = vec![
         json!({"type":"response.created","response":{"id":"parts-response","model":"parts-model"}}),

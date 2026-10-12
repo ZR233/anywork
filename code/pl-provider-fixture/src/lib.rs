@@ -939,6 +939,9 @@ pub enum Reply {
     PacedBody {
         events: usize,
         tokens_per_second: u64,
+        /// Delay before the first output delta; subsequent deltas use the
+        /// nominal absolute token cadence.
+        initial_delay_ms: u64,
         /// Extra `W` marker characters per increment; `0` keeps the original
         /// `body-%05d ` shape byte-for-byte.
         pad: usize,
@@ -1723,6 +1726,7 @@ fn gui_stress_body_script_with(prompt: &str, pad: usize, tokens_per_second: u64)
             Reply::PacedBody {
                 events: STRESS_EVENT_COUNT,
                 tokens_per_second,
+                initial_delay_ms: 0,
                 pad,
             },
         ),
@@ -2993,10 +2997,12 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
         Ok(Reply::PacedBody {
             events,
             tokens_per_second,
+            initial_delay_ms,
             pad,
         }) => paced_body_reply(
             events,
             tokens_per_second,
+            initial_delay_ms,
             pad,
             state.stopping.clone(),
             state.stress.clone(),
@@ -3495,6 +3501,7 @@ fn paced_events_reply(
 fn paced_body_reply(
     events: usize,
     tokens_per_second: u64,
+    initial_delay_ms: u64,
     pad: usize,
     stopping: CancellationToken,
     progress: Arc<Mutex<StressProgress>>,
@@ -3521,7 +3528,9 @@ fn paced_body_reply(
             }
             if (2..=events + 1).contains(&index) {
                 let ordinal = index - 2;
-                let offset = Duration::from_secs_f64(ordinal as f64 / tokens_per_second as f64);
+                let offset = Duration::from_millis(initial_delay_ms).saturating_add(
+                    Duration::from_secs_f64(ordinal as f64 / tokens_per_second as f64),
+                );
                 tokio::select! {
                     () = tokio::time::sleep_until((started + offset).into()) => {},
                     () = stopping.cancelled() => return None,

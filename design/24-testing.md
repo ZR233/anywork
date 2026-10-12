@@ -254,10 +254,14 @@ Windows 与 Linux 的验收启动均使用同一平台命令解析规则。窗�
 需要真实供应商时直接使用用户已有配置启动原生 GUI，不覆盖或复制用户凭据。
 
 统计场景复用隔离的本地虚拟供应商与真实 Bridge，通过 Flutter Driver 提交固定的快速
-响应和定速流式响应，并从设置页检查已记录的成功调用与可计算的性能汇总。在隔离的
+响应和定速流式响应，并从设置页检查已记录的成功调用与可计算的性能汇总。定速流的
+输出词元、首个非空输出事件和终止事件必须落在同一 inference 计时样本内；验收同时核对
+实时状态栏与历史汇总采用相同的有效 decode 口径，不把缺失/零计时显示成高速度。在隔离的
 `calls.sqlite` 上短暂持有写锁，检查写入未完成时的状态及释放后的自动刷新；同一隔离
 home 重启后再次读取。取证保存设置页截图、快照、调用库计数和脱敏日志，结论仍由
 人工填写。统计读写缺口不得误判为没有调用；不把模拟服务商验收外推为线上供应商兼容。
+实时 projection 的 live output/decode 两个字段按成对样本判定：只注入其中一个字段时，
+状态栏不得将它与上一份 authoritative 字段混算；应成对采用 authoritative 或保持未知。
 
 压力场景在 Flutter profile/AOT 模式及优化 Rust bridge 下按固定提示词从本地供应商以约 5,000 token/s 返回约 20,000 个混合消息事件；
 采集请求耗时、事件完成数、GUI 帧/操作探针、窗口大小、截图、快照、未处理错误和进程回收；
@@ -366,6 +370,7 @@ topic 弹层保持打开时须更新，隐藏后 lease 归零，重进先取新�
 旧 generation、topic closed、应用退出和 provider/preview 失败都必须验证 last-valid、typed
 failure 或 unknown 及资源释放。
 
-本仓库没有既有 Flutter `test/` widget 门禁，实时 UI 优先扩展现有 `test_driver`、模拟供应商和
-`manual-gui`；不为本次审计擅自建立独立测试体系。真实系统剪贴板 PNG 另在当前宿主人工验收并
-记录截图、snapshot、日志和进程回收，模拟通过不外推真实供应商兼容或跨平台通过。
+本仓库没有 Flutter widget/integration 门禁；本次只为成对吞吐 projection 保留一个不启动 GUI
+的 typed contract test，实时 UI 仍优先扩展现有 `test_driver`、模拟供应商和 `manual-gui`，
+不建立第二套实时状态事实源。真实系统剪贴板 PNG 另在当前宿主人工验收并记录截图、snapshot、
+日志和进程回收，模拟通过不外推真实供应商兼容或跨平台通过。
