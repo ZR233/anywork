@@ -239,9 +239,8 @@ fn system_profile(role: StudioRole, config: &StudioConfig) -> Result<AgentProfil
         system: true,
         enabled: !config.disabled_system_agents.contains(role.key()),
         workspace_mode: match role {
-            StudioRole::Explorer | StudioRole::Planner | StudioRole::Reviewer => {
-                AgentWorkspaceMode::Unrestricted
-            }
+            StudioRole::Explorer | StudioRole::Planner => AgentWorkspaceMode::Unrestricted,
+            StudioRole::Reviewer => AgentWorkspaceMode::Review,
             StudioRole::Executor => AgentWorkspaceMode::Directory,
             StudioRole::WorktreeExecutor => AgentWorkspaceMode::Worktree,
         },

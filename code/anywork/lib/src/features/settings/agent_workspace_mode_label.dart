@@ -11,4 +11,6 @@ String agentWorkspaceModeLabel(BuildContext context, AgentWorkspaceMode mode) =>
         context.l10n.settingsAgentWorkspaceModeDirectory,
       AgentWorkspaceMode.worktree =>
         context.l10n.settingsAgentWorkspaceModeWorktree,
+      AgentWorkspaceMode.review =>
+        context.l10n.settingsAgentWorkspaceModeReview,
     };

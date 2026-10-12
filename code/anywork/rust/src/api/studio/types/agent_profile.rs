@@ -6,6 +6,7 @@ pub enum BridgeAgentWorkspaceMode {
     Unrestricted,
     Directory,
     Worktree,
+    Review,
 }
 
 impl From<pl_protocol::AgentWorkspaceMode> for BridgeAgentWorkspaceMode {
@@ -14,6 +15,7 @@ impl From<pl_protocol::AgentWorkspaceMode> for BridgeAgentWorkspaceMode {
             pl_protocol::AgentWorkspaceMode::Unrestricted => Self::Unrestricted,
             pl_protocol::AgentWorkspaceMode::Directory => Self::Directory,
             pl_protocol::AgentWorkspaceMode::Worktree => Self::Worktree,
+            pl_protocol::AgentWorkspaceMode::Review => Self::Review,
         }
     }
 }

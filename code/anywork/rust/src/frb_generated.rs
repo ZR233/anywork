@@ -4830,6 +4830,7 @@ impl SseDecode for crate::api::studio::types::agent_profile::BridgeAgentWorkspac
             0 => crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Unrestricted,
             1 => crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Directory,
             2 => crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Worktree,
+            3 => crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Review,
             _ => unreachable!("Invalid variant for BridgeAgentWorkspaceMode: {}", inner),
         };
     }
@@ -13994,6 +13995,7 @@ impl flutter_rust_bridge::IntoDart
             Self::Unrestricted => 0.into_dart(),
             Self::Directory => 1.into_dart(),
             Self::Worktree => 2.into_dart(),
+            Self::Review => 3.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -22827,6 +22829,7 @@ impl SseEncode for crate::api::studio::types::agent_profile::BridgeAgentWorkspac
         <i32>::sse_encode(match self {crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Unrestricted => { 0 }
 crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Directory => { 1 }
 crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Worktree => { 2 }
+crate::api::studio::types::agent_profile::BridgeAgentWorkspaceMode::Review => { 3 }
  _ => { unimplemented!(""); }}, serializer);
     }
 }

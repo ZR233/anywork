@@ -22,7 +22,7 @@ workflow_transition，参数为 expectedRunId、expectedRevision、expectedState
 每收到一个执行者本轮完成报告即安排 fresh-context 局部静态审查，不等待整批。审查消息包含完整
 最新批准计划和该任务范围、工作区、版本及验证证据。问题交原执行者修复，再派新 reviewer 复审。
 各任务在 working 内独立循环，依赖满足即发布后续工作；共享接口未定或写范围重叠时不并行实现。
-子代理不可再派生。执行者只做自身范围的定向验证，reviewer 不运行 shell 或测试。
+子代理不可再派生。执行者只做自身范围的定向验证，reviewer 可执行只读命令与必要验证但不修改代码。
 
 本地 directory 任务局部验证和审查通过且依赖满足后直接完成，代码已在当前工作空间，无合入步骤。
 worktree 任务通过后由 root 立即将已批准提交合入当前工作空间，成功后完成，不等其他执行者。
@@ -64,7 +64,7 @@ const STATES: &[StaticWorkflowState] = &[
     StaticWorkflowState {
         id: "working",
         title: "实施与局部审查",
-        instructions: "按容量派发所有权独立的任务。单个执行者交付后立即安排 fresh-context 局部静态审查，提供完整批准计划和对应版本的证据。问题交原执行者修复，各任务独立复审。本地 directory 任务通过后原地完成；worktree 提交通过且依赖满足后串行合入，不等其他执行者。执行者只做局部验证，审查者不运行测试。",
+        instructions: "按容量派发所有权独立的任务。单个执行者交付后立即安排 fresh-context 局部静态审查，提供完整批准计划和对应版本的证据。问题交原执行者修复，各任务独立复审。本地 directory 任务通过后原地完成；worktree 提交通过且依赖满足后串行合入，不等其他执行者。执行者只做局部验证，审查者在被审工作区内执行必要验证但不修改代码。",
         completion_criteria: &[
             "每项计划实施任务都有当前版本的局部审查批准和验证证据，未解决失败不算完成。",
             "directory 任务在当前工作空间直接完成，无合入操作；worktree 成果已获批准、依赖满足且完成合入。",

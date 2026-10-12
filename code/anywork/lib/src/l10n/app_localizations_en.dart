@@ -2070,8 +2070,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAgentWorkspaceModeWorktree => 'Worktree';
 
   @override
+  String get settingsAgentWorkspaceModeReview => 'Review';
+
+  @override
   String get settingsAgentProfileWorkspaceDirectoryHint =>
       'Directory mode limits built-in file writes to the project only; it is not an OS sandbox, and shell, Git, and MCP can still bypass it.';
+
+  @override
+  String get settingsAgentProfileWorkspaceReviewHint =>
+      'Review mode requires the reviewed agent ID at dispatch time and adopts that agent\'s workspace and boundary; system instructions keep it review-only.';
 
   @override
   String get settingsAgentProfileEnabledTitle => 'Enabled';

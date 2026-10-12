@@ -561,6 +561,7 @@ AgentProfileView _agentProfileFromFrb(frb.BridgeAgentProfileDto profile) {
         AgentWorkspaceMode.unrestricted,
       frb.BridgeAgentWorkspaceMode.directory => AgentWorkspaceMode.directory,
       frb.BridgeAgentWorkspaceMode.worktree => AgentWorkspaceMode.worktree,
+      frb.BridgeAgentWorkspaceMode.review => AgentWorkspaceMode.review,
     },
   );
 }

@@ -147,7 +147,8 @@ composer dock 只响应 `UserInput` 与 `ToolApproval`。任务计划由 `plan_s
 Agents 页是唯一 Agent 配置中心。顶部独立展示“主智能体 / Main agent”的用途和模型、
 思考强度配置，不提供启用开关；下方分别展示系统子代理与用户子代理。系统项名称、用途、指令和固定
 workspace mode 只读，无删除入口；系统子代理可配置 enabled、provider/model 与模型声明驱动的 effort。
-用户项按单 TOML 文件原子创建、保存或删除，并可选择三种 workspace mode。无效文件以独立
+用户项按单 TOML 文件原子创建、保存或删除，并可选择四种 workspace mode（`review` 模式表示
+工作区在 spawn 时跟随被审代理，需配合 `reviewTargetAgentId` 使用）。无效文件以独立
 诊断展示，不阻断页面其余项。preserved worktree 显示 revision、branch、base/head、
 dirty/changed-files preview 与显式 cleanup。运行中 Agent 目录与 Profile 设置目录明确分区；
 所有 mutation 使用 settings revision CAS 并以 canonical snapshot 原子刷新（见

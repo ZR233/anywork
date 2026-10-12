@@ -231,6 +231,11 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                       l10n.settingsAgentProfileWorkspaceDirectoryHint,
                     ),
                   ),
+                if (_workspaceMode == AgentWorkspaceMode.review)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, bottom: 10),
+                    child: Text(l10n.settingsAgentProfileWorkspaceReviewHint),
+                  ),
                 SwitchListTile(
                   key: const ValueKey('agent-profile-enabled'),
                   contentPadding: EdgeInsets.zero,

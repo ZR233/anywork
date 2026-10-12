@@ -1971,8 +1971,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsAgentWorkspaceModeWorktree => '工作树';
 
   @override
+  String get settingsAgentWorkspaceModeReview => '跟随被审';
+
+  @override
   String get settingsAgentProfileWorkspaceDirectoryHint =>
       '目录模式只约束项目内由内置工具执行的文件写入，并非操作系统级沙箱；命令行操作、Git 和 MCP 仍可能绕过此限制。';
+
+  @override
+  String get settingsAgentProfileWorkspaceReviewHint =>
+      '跟随被审模式在派发时必须提供被审智能体 ID，工作区与访问边界与被审者保持一致；由系统指令约束只审查、不修改代码。';
 
   @override
   String get settingsAgentProfileEnabledTitle => '启用';

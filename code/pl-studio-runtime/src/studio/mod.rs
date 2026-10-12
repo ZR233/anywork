@@ -20,6 +20,7 @@ pub(crate) mod thread;
 pub(crate) mod thread_factory;
 pub(crate) mod thread_projection;
 mod toml_store;
+pub(crate) mod workspace_receipt;
 
 pub(crate) use ids::{new_id, unix_seconds};
 pub use persistence::*;

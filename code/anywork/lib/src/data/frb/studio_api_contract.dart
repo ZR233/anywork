@@ -1170,6 +1170,7 @@ class FrbStudioBridgeDataSource
               frb.BridgeAgentWorkspaceMode.directory,
             AgentWorkspaceMode.worktree =>
               frb.BridgeAgentWorkspaceMode.worktree,
+            AgentWorkspaceMode.review => frb.BridgeAgentWorkspaceMode.review,
           },
         ),
       ),

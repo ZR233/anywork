@@ -1,4 +1,4 @@
-enum AgentWorkspaceMode { unrestricted, directory, worktree }
+enum AgentWorkspaceMode { unrestricted, directory, worktree, review }
 
 /// Agent Profile 的只读 UI 快照。
 class AgentProfileView {

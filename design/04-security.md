@@ -17,15 +17,18 @@
 
 execution profile 的工具 effect 白名单优先于权限模式。Studio root 与 child policy 允许其普通
 effect，再由权限模式、workspace assignment 与各工具 schema 共同约束实际调用。Task Mode 中
-"root 只亲自修改设计与整合代码"、explorer/reviewer 只读等属于 Mode/Profile 提示词的合作式角色
+"root 只亲自修改设计与整合代码"、explorer 只读、reviewer 只审查等属于 Mode/Profile 提示词的合作式角色
 合同，不是按 workflow 状态动态切换的硬权限，也不能对抗 shell、Git 或 MCP 的命令正文。directory
 child 的 writablePaths 只约束内置 mutation 工具；worktree child 与会话自身 worktree
 （`ThreadWorkspaceMode = worktree`）的 confined 边界始终不能被权限模式放宽，`full-access`
-也不会为该会话放开 worktree 之外的 host 路径或命令 cwd。GUI、工具描述与固定上下文必须
+也不会为该会话放开 worktree 之外的 host 路径或命令 cwd。review child 的边界与被审代理一致：
+被审者为 worktree child 时同样 Confined 于该 worktree 且不被权限模式放宽。GUI、工具描述与固定上下文必须
 如实区分这些边界。
 
-只读 reviewer 通过自然 final 或 `finish_turn({message})` 结束本轮并汇报审查结论；这不修改
-项目 workspace、Git 或外部系统。root 阅读绑定到真实 reviewer、Turn 与终态历史的
+reviewer 可执行任意审查所需命令（含构建与测试），但不得修改源代码、Git 状态或外部系统；
+该纪律由 Profile 提示词承担，运行时不为 reviewer 裁剪 exec、Git 或文件工具。reviewer 通过
+自然 final 或 `finish_turn({message})` 结束本轮并汇报审查结论；命令产生的构建产物不构成
+对被审代码的修改。root 阅读绑定到真实 reviewer、Turn 与终态历史的
 完整报告，结合产物与验证判断是否接受，不从字符串口令推断批准。
 
 ## 4.2 分层边界

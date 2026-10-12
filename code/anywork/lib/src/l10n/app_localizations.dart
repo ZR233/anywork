@@ -3677,11 +3677,23 @@ abstract class AppLocalizations {
   /// **'Worktree'**
   String get settingsAgentWorkspaceModeWorktree;
 
+  /// No description provided for @settingsAgentWorkspaceModeReview.
+  ///
+  /// In en, this message translates to:
+  /// **'Review'**
+  String get settingsAgentWorkspaceModeReview;
+
   /// No description provided for @settingsAgentProfileWorkspaceDirectoryHint.
   ///
   /// In en, this message translates to:
   /// **'Directory mode limits built-in file writes to the project only; it is not an OS sandbox, and shell, Git, and MCP can still bypass it.'**
   String get settingsAgentProfileWorkspaceDirectoryHint;
+
+  /// No description provided for @settingsAgentProfileWorkspaceReviewHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Review mode requires the reviewed agent ID at dispatch time and adopts that agent\'s workspace and boundary; system instructions keep it review-only.'**
+  String get settingsAgentProfileWorkspaceReviewHint;
 
   /// No description provided for @settingsAgentProfileEnabledTitle.
   ///
