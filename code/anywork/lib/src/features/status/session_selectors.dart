@@ -65,6 +65,7 @@ class SessionModeSelector extends ConsumerWidget {
           ),
       ],
       child: StudioMenuLabel(
+        key: StudioDriverKeys.sessionModeLabel,
         label: selectedLabel ?? context.compileModeLabel(mode),
         enabled: enabled,
         maxWidth: 96,
@@ -380,7 +381,12 @@ class _ControlItem extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        StudioMenuLabel(label: label, enabled: enabled, maxWidth: 140),
+        StudioMenuLabel(
+          key: StudioDriverKeys.reasoningEffortLabel,
+          label: label,
+          enabled: enabled,
+          maxWidth: 140,
+        ),
       ],
     );
   }

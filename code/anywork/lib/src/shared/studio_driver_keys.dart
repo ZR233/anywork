@@ -2,9 +2,11 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'studio_driver_key_values.dart';
+
 abstract final class StudioDriverKeys {
-  static const shell = ValueKey<String>('studio-shell');
-  static const startPage = ValueKey<String>('studio-start-page');
+  static const shell = ValueKey<String>(StudioDriverKeyValues.shell);
+  static const startPage = ValueKey<String>(StudioDriverKeyValues.startPage);
 
   /// 已选中但尚未打开的会话占位；首屏恢复的选择不自动打开会话（§6.1）。
   static const unopenedThread = ValueKey<String>('studio-unopened-thread');
@@ -24,21 +26,38 @@ abstract final class StudioDriverKeys {
   static const workspaceFooterScroll = ValueKey<String>(
     'workspace-footer-scrollable',
   );
-  static const newSession = ValueKey<String>('sidebar-new-session');
+  static const newSession = ValueKey<String>(StudioDriverKeyValues.newSession);
   static const openProject = ValueKey<String>('sidebar-open-project');
   static const projectPathDialog = ValueKey<String>('project-path-dialog');
   static const projectPathInput = ValueKey<String>('project-path-input');
   static const projectPathSubmit = ValueKey<String>('project-path-submit');
   static const settingsOpen = ValueKey<String>('settings-open');
   static const settingsPage = ValueKey<String>('settings-page');
-  static const settingsBack = ValueKey<String>('settings-back');
-  static const sessionMode = ValueKey<String>('session-mode-selector');
+  static const settingsBack = ValueKey<String>(
+    StudioDriverKeyValues.settingsBack,
+  );
+  static const sessionMode = ValueKey<String>(
+    StudioDriverKeyValues.sessionMode,
+  );
+
+  /// 触发器自身的展示文案。驱动脚本按此键读取文案，避免把菜单浮层里的行文本误当成
+  /// 触发器值（浮层挂在触发器作用域下）。
+  static const sessionModeLabel = ValueKey<String>(
+    StudioDriverKeyValues.sessionModeLabel,
+  );
   static const sessionWorkspaceMode = ValueKey<String>(
     'session-workspace-mode-selector',
   );
-  static const startPageSelectors = ValueKey<String>('start-page-selectors');
+  static const startPageSelectors = ValueKey<String>(
+    StudioDriverKeyValues.startPageSelectors,
+  );
   static const model = ValueKey<String>('model-selector');
-  static const reasoningEffort = ValueKey<String>('reasoning-effort-selector');
+  static const reasoningEffort = ValueKey<String>(
+    StudioDriverKeyValues.reasoningEffort,
+  );
+  static const reasoningEffortLabel = ValueKey<String>(
+    StudioDriverKeyValues.reasoningEffortLabel,
+  );
   static const providerUsageCheck = ValueKey<String>('provider-usage-check');
   static const modelCatalogRefresh = ValueKey<String>('model-catalog-refresh');
   static const skillsDiscover = ValueKey<String>('skills-discover');
@@ -271,7 +290,7 @@ abstract final class StudioDriverKeys {
       ValueKey<String>('status-active-skill-$name');
 
   static ValueKey<String> sessionModeOption(String mode) =>
-      ValueKey<String>('session-mode-$mode');
+      ValueKey<String>(StudioDriverKeyValues.sessionModeOption(mode));
 
   static ValueKey<String> sessionWorkspaceModeOption(String mode) =>
       ValueKey<String>('session-workspace-mode-$mode');
@@ -360,7 +379,7 @@ abstract final class StudioDriverKeys {
       ValueKey<String>('markdown-image-dialog-$url');
 
   static ValueKey<String> reasoningEffortOption(String effort) =>
-      ValueKey<String>('reasoning-effort-$effort');
+      ValueKey<String>(StudioDriverKeyValues.reasoningEffortOption(effort));
 
   static ValueKey<String> mcpResetServer(String serverId) =>
       ValueKey<String>('mcp-reset-$serverId');

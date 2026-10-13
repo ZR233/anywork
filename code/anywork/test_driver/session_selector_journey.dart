@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
@@ -23,19 +23,33 @@ import 'flutter_driver_session.dart';
 ///
 /// 运行方式（本仓库 canonical 入口）：
 ///   1. `cargo xtask run-gui --demo --driver`（从输出中取 VM service URL）
-///   2. `dart run test_driver/session_selector_journey.dart <vm_url> [output_dir]`
+///   2. `dart run test_driver/session_selector_journey.dart [vm_url] [output_dir]`，
+///      或 `flutter drive --driver=test_driver/session_selector_journey.dart` 搭配
+///      `--use-existing-app=[vm_url] --target=test_driver/driver_main.dart -d windows`。
+///
+/// 该脚本导入 `package:flutter_driver` 与纯 Dart 的键值库，因此可用 `dart run`
+/// 直接执行（Flutter 依赖会因缺少 `dart:ui` 编译失败）；`flutter drive` 会设置
+/// `VM_SERVICE_URL`，脚本据此取得地址。也可直接传位置参数。
 ///
 /// 说明：本 journey 依赖真实 Flutter 引擎与 Driver 扩展，只能在能构建并启动 GUI 的
 /// 环境执行；它不进入 CI 的确定性门禁，但受 `cargo xtask verify-gui` 的格式化与静态
 /// 分析约束。
 Future<void> main(List<String> args) async {
-  if (args.isEmpty) {
-    throw ArgumentError('VM_URL [OUTPUT_DIR] required');
+  final vmServiceUrl = args.isNotEmpty
+      ? args.first
+      : Platform.environment['VM_SERVICE_URL'] ?? '';
+  if (vmServiceUrl.isEmpty) {
+    throw ArgumentError('VM_URL (or flutter drive VM_SERVICE_URL) required');
   }
   final output = Directory(
-    args.length > 1 ? args[1] : Directory.systemTemp.path,
+    args.length > 1
+        ? args[1]
+        : Platform.environment['ANYWORK_JOURNEY_OUT'] ??
+              Directory.systemTemp.path,
   );
-  final session = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
+  final session = await FlutterDriverSession.connect(
+    vmServiceUrl: vmServiceUrl,
+  );
   final checks = <String, Object?>{};
   Object? failure;
   StackTrace? failureStack;
@@ -69,37 +83,46 @@ Future<void> _run(
   FlutterDriverSession session,
   Map<String, Object?> checks,
 ) async {
-  final modeTrigger = find.byValueKey(StudioDriverKeys.sessionMode.value);
-  final effortTrigger = find.byValueKey(StudioDriverKeys.reasoningEffort.value);
-  final settingsBack = find.byValueKey(StudioDriverKeys.settingsBack.value);
+  // 起始页的会话选择器与实时会话 composer 的选择器同名同键、可同时挂载，因此所有
+  // 起始页断言都限定在起始页选择器作用域内，避免读到实时会话的 canonical 文案。
+  final startSelectors = find.byValueKey(
+    StudioDriverKeyValues.startPageSelectors,
+  );
+  SerializableFinder scoped(String key) =>
+      find.descendant(of: startSelectors, matching: find.byValueKey(key));
+  final modeTrigger = scoped(StudioDriverKeyValues.sessionMode);
+  final effortTrigger = scoped(StudioDriverKeyValues.reasoningEffort);
+  final modeLabel = scoped(StudioDriverKeyValues.sessionModeLabel);
+  final effortLabel = scoped(StudioDriverKeyValues.reasoningEffortLabel);
+  final settingsBack = find.byValueKey(StudioDriverKeyValues.settingsBack);
 
   await session.waitFor(
-    find.byValueKey(StudioDriverKeys.shell.value),
+    find.byValueKey(StudioDriverKeyValues.shell),
     timeout: const Duration(seconds: 60),
   );
 
   // 起始页是新会话草稿的唯一入口：模式选择器改的是 draft，投影在
   // `navigation.newThreadMode`（完整 id，如 `mode.simple`）。
   await session.waitFor(
-    find.byValueKey(StudioDriverKeys.newSession.value),
+    find.byValueKey(StudioDriverKeyValues.newSession),
     timeout: const Duration(seconds: 30),
   );
-  await session.tap(find.byValueKey(StudioDriverKeys.newSession.value));
+  await session.tap(find.byValueKey(StudioDriverKeyValues.newSession));
   await session.waitFor(
-    find.byValueKey(StudioDriverKeys.startPage.value),
+    find.byValueKey(StudioDriverKeyValues.startPage),
     timeout: const Duration(seconds: 30),
   );
 
   final before = await session.readSnapshot();
   final beforeMode = _string(_navigation(before)?['newThreadMode']);
   checks['startPageMode'] = beforeMode;
-  final beforeLabel = await _labelOf(session, modeTrigger);
+  final beforeLabel = await _labelOf(session, modeLabel);
   checks['modeLabelBefore'] = beforeLabel;
 
   // --- 任务模式：简洁 -> 任务，随后菜单选中行与触发器都必须跟着新事实 ---
   final targetMode = beforeMode == 'mode.task' ? 'mode.simple' : 'mode.task';
-  final targetModeRow = find.byValueKey(
-    StudioDriverKeys.sessionModeOption(targetMode).value,
+  final targetModeRow = scoped(
+    StudioDriverKeyValues.sessionModeOption(targetMode),
   );
   await session.tap(modeTrigger);
   await session.waitFor(targetModeRow, timeout: const Duration(seconds: 10));
@@ -111,10 +134,14 @@ Future<void> _run(
   );
   checks['modeAfter'] = afterMode;
   checks['modeConverged'] = afterMode == targetMode;
-  final afterLabel = await _labelOf(session, modeTrigger);
+  // 触发器文案必须随同一事实收敛：读起始页选择器自己的标签键；界面可能晚一帧
+  // 才重建，因此轮询到目标文案（有期限），不依赖单次读取的时序。
+  final immediateLabel = await _labelOf(session, modeLabel);
+  final afterLabel = await _waitForLabel(session, modeLabel, targetRowLabel);
+  checks['modeLabelImmediate'] = immediateLabel;
   checks['modeLabelAfter'] = afterLabel;
-  checks['modeLabelUpdated'] = afterLabel != beforeLabel;
   checks['modeLabelMatchesSelectedRow'] = afterLabel == targetRowLabel;
+  checks['modeLabelUpdated'] = afterLabel != beforeLabel;
 
   // 重新打开菜单：选中行必须是新的一行（渲染证据），而不是停在旧行。
   await session.tap(modeTrigger);
@@ -129,7 +156,7 @@ Future<void> _run(
   );
   final effortBefore = _string(modeRouteBefore?['effort']);
   checks['effortBefore'] = effortBefore;
-  final effortLabelBefore = await _labelOf(session, effortTrigger);
+  final effortLabelBefore = await _labelOf(session, effortLabel);
   checks['effortLabelBefore'] = effortLabelBefore;
   final efforts = await _effortOptions(
     session,
@@ -137,9 +164,11 @@ Future<void> _run(
     _string(modeRouteBefore?['model']),
   );
   checks['effortOptions'] = efforts;
+  // 目标强度取自"当前显示文案"而不是 canonical：草稿意图可能已经存在，选同一个值
+  // 不会产生可见变化，也就无法证明界面跟随事实。
   String? targetEffort;
   for (final candidate in efforts) {
-    if (candidate != effortBefore) {
+    if (candidate != effortLabelBefore) {
       targetEffort = candidate;
       break;
     }
@@ -147,8 +176,8 @@ Future<void> _run(
   if (targetEffort == null) {
     throw StateError('当前模型声明的思考强度候选不足两个：$efforts');
   }
-  final targetEffortRow = find.byValueKey(
-    StudioDriverKeys.reasoningEffortOption(targetEffort).value,
+  final targetEffortRow = scoped(
+    StudioDriverKeyValues.reasoningEffortOption(targetEffort),
   );
   await session.tap(effortTrigger);
   await session.waitFor(targetEffortRow, timeout: const Duration(seconds: 10));
@@ -165,10 +194,16 @@ Future<void> _run(
   // （design/25 §25.6）。原来的实现是把 canonical 值记进 checks 但从不比较，
   // 任何字符串都不会让验收失败。
   checks['draftDidNotWriteCanonical'] = effortAfter == effortBefore;
-  final effortLabelAfter = await _labelOf(session, effortTrigger);
+  final immediateEffortLabel = await _labelOf(session, effortLabel);
+  final effortLabelAfter = await _waitForLabel(
+    session,
+    effortLabel,
+    targetEffort,
+  );
+  checks['effortLabelImmediate'] = immediateEffortLabel;
   checks['effortLabelAfter'] = effortLabelAfter;
-  checks['effortLabelUpdated'] = effortLabelAfter != effortLabelBefore;
   checks['effortDisplayed'] = effortLabelAfter == targetEffort;
+  checks['effortLabelUpdated'] = effortLabelAfter != effortLabelBefore;
 
   // --- 反证据：没有发生任何页面跳转，也没有停在 pending 命令上 ---
   final finalSnapshot = await session.readSnapshot();
@@ -177,7 +212,7 @@ Future<void> _run(
   checks['settingsNeverVisited'] = !await _exists(session, settingsBack);
   checks['startPageStillShown'] = await _exists(
     session,
-    find.byValueKey(StudioDriverKeys.startPage.value),
+    find.byValueKey(StudioDriverKeyValues.startPage),
   );
 
   for (final entry in checks.entries) {
@@ -187,15 +222,46 @@ Future<void> _run(
   }
 }
 
-/// 触发器/菜单行内唯一文本：菜单行与触发器都由 `StudioMenuLabel` 或行内容提供一个
-/// `Text`，因此按后代取文本即该控件的展示文案（不写死任何 locale 文案）。
+/// 触发器/菜单行内的展示文本：菜单行与触发器都由 `StudioMenuLabel` 或行内容提供
+/// 一个 `Text`，因此按后代取文本即该控件的展示文案（不写死任何 locale 文案）。
+///
+/// 菜单浮层挂在触发器自身的作用域下（portal），展开时触发器子树会同时包含浮层里的
+/// 行文本；只取首个匹配（触发器自身文案先于浮层构建），并在过渡帧重试。
 Future<String> _labelOf(
   FlutterDriverSession session,
   SerializableFinder finder,
-) {
-  return session.getText(
-    find.descendant(of: finder, matching: find.byType('Text')),
-  );
+) async {
+  Object? failure;
+  for (var attempt = 0; attempt < 30; attempt++) {
+    try {
+      return await session.getText(
+        find.descendant(
+          of: finder,
+          matching: find.byType('Text'),
+          firstMatchOnly: true,
+        ),
+      );
+    } catch (error) {
+      failure = error;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+  throw StateError('label text unavailable: $failure');
+}
+
+/// 轮询标签文案直到等于 [expected]：界面晚一帧重建属正常，超期仍未收敛返回最后读数
+/// （调用方据此判定失败）。
+Future<String> _waitForLabel(
+  FlutterDriverSession session,
+  SerializableFinder finder,
+  String expected,
+) async {
+  var observed = await _labelOf(session, finder);
+  for (var attempt = 0; attempt < 50 && observed != expected; attempt++) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    observed = await _labelOf(session, finder);
+  }
+  return observed;
 }
 
 /// 关掉已打开的菜单：Escape 由菜单自身的触发器快捷键处理。
