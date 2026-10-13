@@ -39,7 +39,11 @@ void main() {
         );
       }
       await tester.pumpWidget(
-        _harness(_timeline([_reasoningRow([label])])),
+        _harness(
+          _timeline([
+            _reasoningRow([label]),
+          ]),
+        ),
       );
     }
 
@@ -85,11 +89,7 @@ void main() {
       find.byKey(StudioDriverKeys.timelineRow(saved.id)),
     );
     expect(_pendingSaveIconCount(saved.id), 0);
-    expect(
-      after,
-      before,
-      reason: '保存确认改变了行几何，会触发额外的滚动补偿',
-    );
+    expect(after, before, reason: '保存确认改变了行几何，会触发额外的滚动补偿');
   });
 }
 

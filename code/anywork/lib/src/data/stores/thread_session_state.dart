@@ -199,12 +199,58 @@ enum ChatFrameOutcome {
   resync,
 }
 
+/// 帧未被应用时的具体判定依据。
+///
+/// 观测记录（[ChatViewEvents]）需要能回答「哪条校验失败」，因此拒绝路径不允许只返回一个
+/// 笼统的 outcome：`irrelevant` 与 `resync` 都必须带上命中的分支。
+enum ChatFrameRejectReason {
+  /// 帧已应用，没有拒绝。
+  none,
+
+  /// store 尚未建立 workspace 快照，无法判定归属。
+  noWorkspace,
+
+  /// Reset 版本早于已交付版本。
+  resetOlderThanDelivered,
+
+  /// 尚未交付任何窗口，Patch 没有可校验的基线。
+  patchWithoutBaseline,
+
+  /// `patch.from` 既不等于本地版本、也不早于本地版本：无法判定是重复还是缺口。
+  patchFromMismatch,
+
+  /// `patch.from` 早于本地版本且 `to` 更小：属于已交付范围。
+  patchAlreadyDelivered,
+
+  /// `patch.from` 早于本地版本但 `to` 更大：中间帧缺失。
+  patchGap,
+
+  /// Patch 版本非递增（`to <= from`）。
+  patchNonIncreasing,
+
+  /// Patch 的 splice 越界或空操作。
+  spliceOutOfRange,
+
+  /// Patch 引用了当前窗口不存在的 item。
+  itemNotInWindow,
+
+  /// item 提交的字段与本地 revision/终态不匹配。
+  itemCommitMismatch,
+}
+
 /// 帧应用的返回：`state` 恒为「应用后的最新状态」（`applied`/`irrelevant` 时可能等于输入）。
 class ChatFrameResult {
-  const ChatFrameResult(this.state, this.outcome);
+  const ChatFrameResult(
+    this.state,
+    this.outcome, [
+    this.reason = ChatFrameRejectReason.none,
+  ]);
 
   final ThreadSessionState state;
   final ChatFrameOutcome outcome;
+
+  /// 拒绝依据；`applied` 时为 [ChatFrameRejectReason.none]。
+  final ChatFrameRejectReason reason;
 }
 
 /// 唯一 chat reducer：接收权威 ChatView 交付的 Reset/Patch 帧。
@@ -218,7 +264,11 @@ ChatFrameResult applyChatFrameState(
 ) {
   final workspace = current.workspace;
   if (workspace == null) {
-    return ChatFrameResult(current, ChatFrameOutcome.irrelevant);
+    return ChatFrameResult(
+      current,
+      ChatFrameOutcome.irrelevant,
+      ChatFrameRejectReason.noWorkspace,
+    );
   }
   return switch (frame) {
     StudioChatReset(:final snapshot) => _applyReset(
@@ -237,7 +287,11 @@ ChatFrameResult _applyReset(
 ) {
   final version = current.chatVersion;
   if (current.hasChatWindow && version != null && snapshot.version < version) {
-    return ChatFrameResult(current, ChatFrameOutcome.irrelevant);
+    return ChatFrameResult(
+      current,
+      ChatFrameOutcome.irrelevant,
+      ChatFrameRejectReason.resetOlderThanDelivered,
+    );
   }
   final items = [for (final entry in snapshot.items) entry.item];
   final next = workspace.copyWith(items: items);
@@ -281,18 +335,32 @@ ChatFrameResult _applyPatch(
 ) {
   final version = current.chatVersion;
   if (version == null || !current.hasChatWindow) {
-    return ChatFrameResult(current, ChatFrameOutcome.resync);
+    return ChatFrameResult(
+      current,
+      ChatFrameOutcome.resync,
+      ChatFrameRejectReason.patchWithoutBaseline,
+    );
   }
   if (patch.from != version) {
+    final reason = patch.to <= version
+        ? ChatFrameRejectReason.patchAlreadyDelivered
+        : patch.from < version
+        ? ChatFrameRejectReason.patchGap
+        : ChatFrameRejectReason.patchFromMismatch;
     return ChatFrameResult(
       current,
       patch.to <= version
           ? ChatFrameOutcome.irrelevant
           : ChatFrameOutcome.resync,
+      reason,
     );
   }
   if (patch.to <= patch.from) {
-    return ChatFrameResult(current, ChatFrameOutcome.resync);
+    return ChatFrameResult(
+      current,
+      ChatFrameOutcome.resync,
+      ChatFrameRejectReason.patchNonIncreasing,
+    );
   }
   var visible = [...workspace.items];
   for (final change in patch.changes) {
@@ -302,7 +370,11 @@ ChatFrameResult _applyPatch(
             remove < 0 ||
             index + remove > visible.length ||
             remove == 0 && items.isEmpty) {
-          return ChatFrameResult(current, ChatFrameOutcome.resync);
+          return ChatFrameResult(
+            current,
+            ChatFrameOutcome.resync,
+            ChatFrameRejectReason.spliceOutOfRange,
+          );
         }
         visible.replaceRange(index, index + remove, [
           for (final entry in items) entry.item,
@@ -322,7 +394,11 @@ ChatFrameResult _applyPatch(
         // 不解析 JSON、不按字符串形状推断。
         final index = visible.indexWhere((item) => item.id == itemId);
         if (index < 0) {
-          return ChatFrameResult(current, ChatFrameOutcome.resync);
+          return ChatFrameResult(
+            current,
+            ChatFrameOutcome.resync,
+            ChatFrameRejectReason.itemNotInWindow,
+          );
         }
         final nextItem = visible[index].applyFieldUpdates(
           fields: [
@@ -336,7 +412,11 @@ ChatFrameResult _applyPatch(
           terminal: visible[index].executionTerminal,
         );
         if (nextItem == null) {
-          return ChatFrameResult(current, ChatFrameOutcome.resync);
+          return ChatFrameResult(
+            current,
+            ChatFrameOutcome.resync,
+            ChatFrameRejectReason.itemCommitMismatch,
+          );
         }
         visible[index] = nextItem;
     }

@@ -16,6 +16,7 @@ import 'timeline_session_view.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
 import '../../shared/studio_chrome.dart';
+import '../../data/stores/chat_view_events.dart';
 import '../../data/stores/chat_view_metrics.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_driver_state.dart';
@@ -255,6 +256,59 @@ class _TimelineViewState extends State<_TimelineSurface> {
     })
   >
   _rowWidgets = {};
+
+  /// 上一帧进入布局的行身份，用于把「视觉异常」对应到具体的 mount/unmount。
+  ///
+  /// 由 [_buildRow] 记录**本帧真正构建**的行（窗口里未被 sliver 构建的行不算），帧末在
+  /// [_syncTimelineGeometry] 里做一次集合差；只有身份集合真正变化才写事件，稳定输出不产生
+  /// 记录（design/25 §25.10）。
+  final Set<String> _builtRowIds = <String>{};
+
+  /// 已结算的上一帧行身份；null 表示还没有可比较的帧。
+  Set<String>? _mountedRowIds;
+
+  /// 滚动事件的公共身份：thread 与窗口 epoch 一起限定一次校正的归属。
+  Map<String, String> get _scrollIdentity => {
+    'thread': widget.threadId ?? '',
+    'epoch': '${widget.windowEpoch}',
+  };
+
+  /// 记录本帧行身份的进入/离开；同一帧内只在集合变化时产生一条事件。
+  void _trackMountedRows() {
+    final next = {..._builtRowIds};
+    _builtRowIds.clear();
+    final previous = _mountedRowIds;
+    _mountedRowIds = next;
+    if (previous == null) {
+      ChatViewEvents.record(
+        ChatViewEventKind.rowsMounted,
+        identity: _scrollIdentity,
+        details: {'reason': 'initialLayout', 'count': next.length},
+      );
+      return;
+    }
+    final mounted = next.difference(previous);
+    final unmounted = previous.difference(next);
+    if (mounted.isEmpty && unmounted.isEmpty) return;
+    ChatViewEvents.record(
+      ChatViewEventKind.rowsMounted,
+      identity: _scrollIdentity,
+      details: {
+        'reason': 'frameLayout',
+        'count': mounted.length,
+        'items': mounted.take(8).join(','),
+      },
+    );
+    ChatViewEvents.record(
+      ChatViewEventKind.rowsUnmounted,
+      identity: _scrollIdentity,
+      details: {
+        'reason': 'frameLayout',
+        'count': unmounted.length,
+        'items': unmounted.take(8).join(','),
+      },
+    );
+  }
 
   /// 最近一次拖动方向是否朝更早的内容（`ScrollDirection.forward`）。
   ///
@@ -794,6 +848,15 @@ class _TimelineViewState extends State<_TimelineSurface> {
       } finally {
         _programmaticScroll = false;
       }
+      ChatViewEvents.record(
+        ChatViewEventKind.scrollCorrection,
+        identity: _scrollIdentity,
+        details: {
+          'reason': 'followLatestBottom',
+          'from': position.pixels,
+          'to': position.maxScrollExtent,
+        },
+      );
     }
     if (!_followingBottom || _detachedByUser || _pendingNewEvents != 0) {
       setState(() {
@@ -888,6 +951,7 @@ class _TimelineViewState extends State<_TimelineSurface> {
   }
 
   void _syncTimelineGeometry() {
+    _trackMountedRows();
     _restoreVisibleAnchor();
     // SliverList may refine the extent of a very tall lazily built row over
     // several layouts. Keep followLatest attached to the real max extent;
@@ -1066,6 +1130,22 @@ class _TimelineViewState extends State<_TimelineSurface> {
         if ((position.pixels - clamped).abs() > 0.5) {
           _controller.jumpTo(clamped);
           moved = true;
+          ChatViewEvents.record(
+            ChatViewEventKind.scrollCorrection,
+            identity: {
+              ..._scrollIdentity,
+              'item': layoutTarget?.itemId ?? anchor?.itemId ?? '',
+            },
+            details: {
+              'reason': layoutTarget == null
+                  ? 'restoreReadingAnchor'
+                  : 'restoreLayoutTarget',
+              'from': position.pixels,
+              'to': clamped,
+              'clamped': (clamped - target).abs() > 0.5,
+              'offset': anchor?.offset,
+            },
+          );
         }
       }
     } finally {

@@ -2994,9 +2994,11 @@ class DemoStudioBridgeDataSource
 /// 内容窗口的内存实现：快照直接来自 demo 的工作区条目，变化由 [_DemoChatWindow.next]
 /// 唤醒；不参与状态流，也没有第二份业务状态。
 ///
-/// demo 没有 typed 差量，每帧都以权威 `Reset` 交付；控制操作同样只返回回执——
-/// 与原生窗口共用同一契约形状（唯一 next 出口、回执不交付窗口），demo 预览因此
-/// 不能证明原生差量链路，只用于界面预览。
+/// 交付形状与原生窗口一致：首帧与控制操作后的窗口移动是权威 `Reset`，条目**原地变化**按
+/// typed 差量交付 `Patch`（`UpdateItem` 的字段身份、`expected_revision`、`omitted`/`saved`
+/// 与 splice 索引都按同一契约）。只交付 `Reset` 会让 Dart 的差量 reducer 在 demo 预览与
+/// 人工验收中完全不被走到——`from/to` 防线、字段原子提交和终态拒绝都只在单元测试里成立。
+/// demo 仍然没有真实字节预览预算，也不证明原生差量的性能表现。
 class _DemoChatWindow implements StudioChatWindow {
   _DemoChatWindow(this._api, this._threadId);
 
@@ -3005,6 +3007,18 @@ class _DemoChatWindow implements StudioChatWindow {
   String? _focusId;
   int _operations = 0;
   bool _closed = false;
+
+  /// 上一次交付给消费者的基线：Reset 或 Patch 之后的窗口文本与版本。
+  ///
+  /// `Patch.from` 必须等于它，与原生窗口「对外交付的 Reset 版本等于之后差量的 from」同一条
+  /// 规则。
+  int? _baselineVersion;
+  List<ThreadItemView> _baselineItems = const [];
+
+  /// 每个推理条目已经交付过的块数，用于把追加块映射回**逻辑** chunk 下标。
+  ///
+  /// 只在有界窗口内的条目上增长；条目离开窗口时随基线一起清理。
+  final Map<String, int> _deliveredChunks = {};
 
   List<ThreadItemView> get _items =>
       _api._workspaces[_threadId]?.items ?? const <ThreadItemView>[];
@@ -3037,15 +3051,283 @@ class _DemoChatWindow implements StudioChatWindow {
     );
   }
 
+  /// 采纳一次已经交给消费者的窗口基线。
+  void _adopt(int version, List<ThreadItemView> items) {
+    _baselineVersion = version;
+    _baselineItems = List.unmodifiable(items);
+    // 离开窗口的条目不再需要块计数：不能让它随会话增长。
+    final live = {for (final item in items) item.id};
+    _deliveredChunks.removeWhere(
+      (key, _) => !live.contains(key.split('|').first),
+    );
+  }
+
   @override
-  Future<StudioChatSnapshot> initial() async => _snapshot();
+  Future<StudioChatSnapshot> initial() async {
+    final snapshot = _snapshot();
+    _adopt(snapshot.version, _items);
+    return snapshot;
+  }
 
   @override
   Future<StudioChatFrame?> next() async {
     final from = _api._chatChangeSeq[_threadId] ?? 0;
     await _api._awaitItemsChanged(_threadId, from);
     if (_closed) return null;
-    return StudioChatReset(_snapshot());
+    final version = _api._workspaces[_threadId]?.revision ?? 0;
+    final baseline = _baselineVersion;
+    // 没有可比较的基线，或版本没有前进：只能重新交付权威整窗。
+    if (baseline == null || version <= baseline) {
+      return _resetFrame();
+    }
+    return _patchFrame(baseline, version) ?? _resetFrame();
+  }
+
+  StudioChatReset _resetFrame() {
+    final snapshot = _snapshot();
+    _adopt(snapshot.version, _items);
+    return StudioChatReset(snapshot);
+  }
+
+  /// 把「基线 -> 当前窗口」表达成 typed 差量；不可表达时返回 null，由调用方回退到 Reset。
+  StudioChatPatch? _patchFrame(int from, int to) {
+    final items = _items;
+    final changes = _windowChanges(_baselineItems, items);
+    if (changes == null) return null;
+    _adopt(to, items);
+    return StudioChatPatch(
+      from: from,
+      to: to,
+      changes: changes,
+      hasNewer: false,
+    );
+  }
+
+  /// 与原生窗口同形的差量：前缀/后缀共同前缀裁剪后的单段 splice，或逐条 typed 字段提交。
+  List<StudioViewChange>? _windowChanges(
+    List<ThreadItemView> delivered,
+    List<ThreadItemView> current,
+  ) {
+    var head = 0;
+    while (head < delivered.length &&
+        head < current.length &&
+        delivered[head].id == current[head].id) {
+      head++;
+    }
+    var tail = 0;
+    while (tail < delivered.length - head &&
+        tail < current.length - head &&
+        delivered[delivered.length - 1 - tail].id ==
+            current[current.length - 1 - tail].id) {
+      tail++;
+    }
+    final removed = delivered.length - head - tail;
+    final inserted = current.sublist(head, current.length - tail);
+    if (removed != 0 || inserted.length != delivered.length - head - tail) {
+      // 窗口移动：用一次 splice 表达插入/删除，不逐条重发正文。
+      return [
+        StudioViewSplice(
+          index: head,
+          remove: removed,
+          items: [for (final item in inserted) _chatItem(item)],
+        ),
+      ];
+    }
+    final changes = <StudioViewChange>[];
+    for (var index = 0; index < inserted.length; index++) {
+      final previous = delivered[head + index];
+      final next = current[head + index];
+      final update = _itemUpdate(previous, next);
+      if (update == null) return null;
+      if (update.fields.isNotEmpty ||
+          update.expectedRevision != update.revision ||
+          previous.saved != next.saved) {
+        changes.add(update);
+      }
+    }
+    return changes;
+  }
+
+  StudioViewItemUpdate? _itemUpdate(
+    ThreadItemView previous,
+    ThreadItemView next,
+  ) {
+    final fields = _fieldUpdates(next.id, previous.state, next.state);
+    if (fields == null) return null;
+    return StudioViewItemUpdate(
+      itemId: next.id,
+      expectedRevision: previous.revision,
+      revision: next.revision,
+      omittedUnits: next.bodyOmittedUnits,
+      saved: next.saved,
+      fields: fields,
+    );
+  }
+
+  /// 两个条目状态之间的 typed 字段变化；出现 demo 无法表达的状态种类时返回 null。
+  List<StudioFieldUpdateView>? _fieldUpdates(
+    String itemId,
+    ThreadItemStateView previous,
+    ThreadItemStateView next,
+  ) {
+    switch (next) {
+      case ThreadTextItemStateView() when previous is ThreadTextItemStateView:
+        return _withoutUnchanged([
+          _textField(const ThreadTextFieldView(), previous.text, next.text),
+        ]);
+      case ThreadThinkingItemStateView()
+          when previous is ThreadThinkingItemStateView:
+        return _chunkFields(itemId, previous, next);
+      case ThreadToolItemStateView() when previous is ThreadToolItemStateView:
+        return _withoutUnchanged([
+          _textField(
+            const ThreadToolArgumentsFieldView(),
+            previous.invocation.arguments,
+            next.invocation.arguments,
+          ),
+          _textField(
+            const ThreadToolResultFieldView(),
+            _toolResultText(previous.lifecycle),
+            _toolResultText(next.lifecycle),
+          ),
+        ]);
+      default:
+        // 字段域与 reducer 不一致的条目种类：宁可用权威 Reset 整窗收束，也不能提交一个
+        // 不带字段的版本——那会让消费者把版本前进当成“内容已同步”。
+        return null;
+    }
+  }
+
+  /// 工具生命周期里的结果正文（与 `TOOL_RESULT_FIELD` 对应）；该状态没有结果字段时为空串。
+  String _toolResultText(ThreadToolLifecycleView lifecycle) {
+    return switch (lifecycle) {
+      RunningThreadToolView(:final streamedOutput) => streamedOutput,
+      CancellingThreadToolView(:final streamedOutput) => streamedOutput,
+      SucceededThreadToolView(:final output) => output.result,
+      FailedThreadToolView(:final output) => output?.result ?? '',
+      _ => '',
+    };
+  }
+
+  List<StudioFieldUpdateView> _withoutUnchanged(
+    List<StudioFieldUpdateView> fields,
+  ) {
+    return [
+      for (final field in fields)
+        if (field.change is! UnchangedThreadFieldChangeView) field,
+    ];
+  }
+
+  StudioFieldUpdateView _textField(
+    ThreadContentFieldView field,
+    String previous,
+    String next,
+  ) {
+    if (previous == next) {
+      return StudioFieldUpdateView(
+        field: field,
+        change: const UnchangedThreadFieldChangeView(),
+      );
+    }
+    if (next.startsWith(previous)) {
+      return StudioFieldUpdateView(
+        field: field,
+        change: AppendThreadFieldChangeView(next.substring(previous.length)),
+      );
+    }
+    return StudioFieldUpdateView(
+      field: field,
+      change: ReplaceThreadFieldChangeView(next),
+    );
+  }
+
+  /// 按 chunk 追加表达 `summary` / `content`：只提交真正新增的块，并保留逻辑块下标。
+  ///
+  /// 生产链路的 `chunkIndex` 是**逻辑**下标（见 `ThreadThinkingItemStateView` 的
+  /// `*ChunkBase`）：本地列表被有界裁剪后下标会整体前移，因此这里用「已交付块数」而不是本地
+  /// 长度推下标；块列表一旦不是前缀追加（裁剪/替换），退回整字段 `Replace`。
+  List<StudioFieldUpdateView> _chunkFields(
+    String itemId,
+    ThreadThinkingItemStateView previous,
+    ThreadThinkingItemStateView next,
+  ) {
+    final fields = <StudioFieldUpdateView>[];
+    final contentField = _chunkField(
+      itemId: itemId,
+      kind: 'content',
+      isSummary: false,
+      base: next.contentChunkBase,
+      previous: previous.content,
+      next: next.content,
+    );
+    if (contentField == null) return const <StudioFieldUpdateView>[];
+    fields.addAll(contentField);
+    final summaryField = _chunkField(
+      itemId: itemId,
+      kind: 'summary',
+      isSummary: true,
+      base: next.summaryChunkBase,
+      previous: previous.summary,
+      next: next.summary,
+    );
+    if (summaryField == null) return const <StudioFieldUpdateView>[];
+    fields.addAll(summaryField);
+    return fields;
+  }
+
+  List<StudioFieldUpdateView>? _chunkField({
+    required String itemId,
+    required String kind,
+    required bool isSummary,
+    required int base,
+    required List<String> previous,
+    required List<String> next,
+  }) {
+    final deliveredKey = '$itemId|$kind';
+    final delivered = _deliveredChunks[deliveredKey] ?? 0;
+    // 本地列表被裁剪过，或内容不是前缀追加：只能用权威整字段替换表达。
+    final growth = next.length - delivered;
+    if (delivered > previous.length || growth <= 0) {
+      final previousText = previous.join();
+      final nextText = next.join();
+      if (previousText == nextText) {
+        return const <StudioFieldUpdateView>[];
+      }
+      _deliveredChunks[deliveredKey] = next.length;
+      return [
+        StudioFieldUpdateView(
+          field: isSummary
+              ? ThreadThinkingSummaryFieldView(base)
+              : ThreadThinkingContentFieldView(base),
+          change: ReplaceThreadFieldChangeView(nextText),
+        ),
+      ];
+    }
+    for (var index = delivered; index < next.length; index++) {
+      if (index < previous.length && previous[index] != next[index]) {
+        return null;
+      }
+    }
+    _deliveredChunks[deliveredKey] = next.length;
+    return [
+      for (var index = delivered; index < next.length; index++)
+        StudioFieldUpdateView(
+          field: isSummary
+              ? ThreadThinkingSummaryFieldView(base + index)
+              : ThreadThinkingContentFieldView(base + index),
+          change: AppendThreadFieldChangeView(next[index]),
+        ),
+    ];
+  }
+
+  StudioChatItem _chatItem(ThreadItemView item) {
+    return StudioChatItem(
+      item,
+      saved: item.saved,
+      lifecycle: item.executionTerminal
+          ? StudioChatLifecycle.terminal
+          : StudioChatLifecycle.streaming,
+    );
   }
 
   @override

@@ -86,6 +86,12 @@ class StudioViewItemUpdate extends StudioViewChange {
 /// 不保存第二份 baseline，也不在此应用差量——应用只属于 read model 的唯一 reducer。
 sealed class StudioChatFrame {
   const StudioChatFrame();
+
+  /// 观测记录用的稳定帧类型名；不参与 reducer 判定。
+  String get kind => switch (this) {
+    StudioChatReset() => 'reset',
+    StudioChatPatch() => 'patch',
+  };
 }
 
 class StudioChatReset extends StudioChatFrame {

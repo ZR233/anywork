@@ -8,6 +8,7 @@ import '../bridge/studio_bridge.dart';
 import '../bridge/thread_stream_gate.dart';
 import '../frb/studio_api.dart';
 import '../repositories/studio_api_provider.dart';
+import 'chat_view_events.dart';
 import 'chat_view_metrics.dart';
 import 'domain_sync.dart';
 import 'thread_directory_store.dart';
@@ -91,22 +92,74 @@ class ThreadSessionStore extends _$ThreadSessionStore {
 
   /// 唯一 chat 写入路径：内容泵把权威帧交给唯一 reducer。
   ///
-  /// `binding` 是帧所属的绑定：已关闭/已换代的绑定迟到帧直接丢弃。
+  /// `binding` 是帧所属的绑定：已关闭/已换代的绑定迟到帧直接丢弃。每次决定都留下带身份
+  /// 与原因的事件（design/25 §25.10），使「哪一帧、哪个绑定、哪条校验」可被事后定位。
   void _applyFrame(_ChatBinding binding, StudioChatFrame frame) {
+    final identity = _bindingIdentity(binding);
     if (!ref.mounted || binding.closed || !identical(binding, _binding)) {
+      ChatViewEvents.record(
+        ChatViewEventKind.frameRejected,
+        identity: identity,
+        details: {
+          'reason': !ref.mounted
+              ? 'storeDisposed'
+              : binding.closed
+              ? 'bindingClosed'
+              : 'bindingSuperseded',
+          'frame': frame.kind,
+        },
+      );
       return;
     }
     final result = applyChatFrameState(state, frame);
     switch (result.outcome) {
       case ChatFrameOutcome.applied:
         ChatViewMetrics.framesApplied += 1;
+        ChatViewEvents.record(
+          frame is StudioChatReset
+              ? ChatViewEventKind.frameReset
+              : ChatViewEventKind.framePatch,
+          identity: identity,
+          details: {'from': state.chatVersion, 'to': result.state.chatVersion},
+        );
         state = result.state;
         _completeHistoryOpIfObserved();
       case ChatFrameOutcome.irrelevant:
+        ChatViewEvents.record(
+          ChatViewEventKind.frameRejected,
+          identity: identity,
+          details: {'reason': result.reason.name, 'frame': frame.kind},
+        );
         return;
       case ChatFrameOutcome.resync:
         ChatViewMetrics.framesResync += 1;
+        ChatViewEvents.record(
+          ChatViewEventKind.frameResync,
+          identity: identity,
+          details: {
+            'reason': result.reason.name,
+            'frame': frame.kind,
+            'current': state.chatVersion,
+          },
+        );
         unawaited(_resyncBinding(binding));
+    }
+  }
+
+  Map<String, String> _bindingIdentity(_ChatBinding binding) => {
+    'thread': _currentThreadId,
+    'binding': '${binding.generation}',
+  };
+
+  /// 观测记录用的当前 thread 身份。
+  ///
+  /// dispose 之后 Riverpod 不再允许读 `state`：那时只保留空身份，绝不为了记一条诊断事件
+  /// 让清理路径抛错。
+  String get _currentThreadId {
+    try {
+      return state.threadId;
+    } catch (_) {
+      return '';
     }
   }
 
@@ -170,9 +223,18 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     return _bindingOpening ??= () async {
       final generation = ++_bindingGeneration;
       ChatViewMetrics.bindingOpens += 1;
+      ChatViewEvents.record(
+        ChatViewEventKind.bindingOpening,
+        identity: {'thread': _currentThreadId, 'binding': '$generation'},
+      );
       try {
         final source = ref.read(studioBridgeDataSourceProvider);
         if (source is! ChatWindowReader) {
+          ChatViewEvents.record(
+            ChatViewEventKind.bindingClosed,
+            identity: {'thread': _currentThreadId, 'binding': '$generation'},
+            details: {'reason': 'chatWindowReaderMissing', 'everOpened': false},
+          );
           markResync(
             StateError('ChatWindowReader is required for chat content'),
             failed: true,
@@ -186,6 +248,20 @@ class ThreadSessionStore extends _$ThreadSessionStore {
             !state.hasSnapshot ||
             generation != _bindingGeneration) {
           await window.close();
+          ChatViewEvents.record(
+            ChatViewEventKind.bindingClosed,
+            identity: {'thread': _currentThreadId, 'binding': '$generation'},
+            details: {
+              'reason': !ref.mounted
+                  ? 'storeDisposed'
+                  : _closed
+                  ? 'closed'
+                  : !state.hasSnapshot
+                  ? 'snapshotLost'
+                  : 'supersededWhileOpening',
+              'everOpened': false,
+            },
+          );
           return null;
         }
         final binding = _ChatBinding(generation, window);
@@ -193,15 +269,40 @@ class ThreadSessionStore extends _$ThreadSessionStore {
         final initial = await window.initial();
         if (binding.closed || !identical(binding, _binding)) {
           await window.close();
+          ChatViewEvents.record(
+            ChatViewEventKind.bindingClosed,
+            identity: {'thread': _currentThreadId, 'binding': '$generation'},
+            details: {
+              'reason': binding.closed ? 'closedDuringInitial' : 'superseded',
+              'everOpened': false,
+            },
+          );
           return null;
         }
         _applyFrame(binding, StudioChatReset(initial));
         if (identical(binding, _binding)) {
           _resyncAttempts = 0;
         }
+        ChatViewEvents.record(
+          ChatViewEventKind.bindingOpened,
+          identity: {'thread': _currentThreadId, 'binding': '$generation'},
+          details: {
+            'version': initial.version,
+            'items': initial.items.length,
+            'hasOlder': initial.hasOlder,
+            'hasNewer': initial.hasNewer,
+            'canExtendLatest': initial.canExtendLatest,
+            'focused': initial.focusedItemId,
+          },
+        );
         unawaited(_pumpFrames(binding));
         return binding;
       } catch (error) {
+        ChatViewEvents.record(
+          ChatViewEventKind.bindingClosed,
+          identity: {'thread': _currentThreadId, 'binding': '$generation'},
+          details: {'reason': 'openFailed', 'error': '$error'},
+        );
         if (generation == _bindingGeneration && ref.mounted && !_closed) {
           markResync(error, failed: true);
         }
@@ -241,6 +342,11 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     if (!identical(binding, _binding)) return;
     _closeBinding();
     final attempts = ++_resyncAttempts;
+    ChatViewEvents.record(
+      ChatViewEventKind.bindingClosed,
+      identity: _bindingIdentity(binding),
+      details: {'reason': 'resync', 'attempt': attempts},
+    );
     if (attempts > 1) {
       await Future<void>.delayed(
         Duration(milliseconds: 50 * (attempts - 1).clamp(0, 10)),
@@ -306,7 +412,7 @@ class ThreadSessionStore extends _$ThreadSessionStore {
 
   /// 回执到达或代次已变时结束加载，不改另一方向的错误。
   void finishHistoryLoad() {
-    _finishHistoryOp(_windowOperation);
+    _finishHistoryOp(_windowOperation, 'localCompletion');
   }
 
   /// 在第一个 await 之前占位：同一 view 同一方向只允许一项在途控制操作。
@@ -319,23 +425,70 @@ class ThreadSessionStore extends _$ThreadSessionStore {
       generation: _bindingGeneration,
       direction: direction,
     );
+    ChatViewEvents.record(
+      ChatViewEventKind.operationBegun,
+      identity: {'thread': _currentThreadId, 'operation': '$token'},
+      details: {
+        'direction': direction.name,
+        'binding': '$_bindingGeneration',
+        'version': state.chatVersion,
+      },
+    );
     setHistoryLoading(direction);
     return token;
   }
 
-  /// 回执已到：有内容变化时等对应帧进入 read model；NoChange 立即结束本轮。
+  /// 回执已到：有内容变化时等对应帧进入 read model；版本已观察时立即结束本轮。
   void observeHistoryOp(int token, StudioChatReceipt receipt) {
     final op = _windowOperation;
-    if (op == null || op.token != token) return;
+    if (op == null || op.token != token) {
+      ChatViewEvents.record(
+        ChatViewEventKind.operationObserved,
+        identity: {'thread': _currentThreadId, 'operation': '$token'},
+        details: {
+          'reason': op == null ? 'noPendingOperation' : 'tokenSuperseded',
+          'receiptVersion': receipt.version,
+        },
+      );
+      return;
+    }
     if (op.generation != _bindingGeneration) {
-      _finishHistoryOp(op);
+      ChatViewEvents.record(
+        ChatViewEventKind.operationObserved,
+        identity: {'thread': _currentThreadId, 'operation': '$token'},
+        details: {
+          'reason': 'bindingChanged',
+          'receiptVersion': receipt.version,
+        },
+      );
+      _finishHistoryOp(op, 'bindingChanged');
       return;
     }
     final current = state.chatVersion;
     if (current != null && receipt.version <= current) {
-      _finishHistoryOp(op);
+      ChatViewEvents.record(
+        ChatViewEventKind.operationObserved,
+        identity: {'thread': _currentThreadId, 'operation': '$token'},
+        details: {
+          'reason': 'versionAlreadyObserved',
+          'receiptVersion': receipt.version,
+          'currentVersion': current,
+          'retained': receipt.retained,
+        },
+      );
+      _finishHistoryOp(op, 'versionAlreadyObserved');
       return;
     }
+    ChatViewEvents.record(
+      ChatViewEventKind.operationObserved,
+      identity: {'thread': _currentThreadId, 'operation': '$token'},
+      details: {
+        'reason': 'awaitingContentVersion',
+        'receiptVersion': receipt.version,
+        'currentVersion': current,
+        'retained': receipt.retained,
+      },
+    );
     _windowOperation = op.waitingFor(receipt.version);
     _completeHistoryOpIfObserved();
   }
@@ -344,6 +497,11 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final op = _windowOperation;
     if (op == null || op.token != token) return;
     _windowOperation = null;
+    ChatViewEvents.record(
+      ChatViewEventKind.operationSettled,
+      identity: {'thread': _currentThreadId, 'operation': '$token'},
+      details: {'result': 'failed', 'error': message},
+    );
     setHistoryError(op.direction, message);
   }
 
@@ -352,17 +510,27 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     if (op == null || op.targetVersion == null) return;
     final current = state.chatVersion;
     if (current != null && current >= op.targetVersion!) {
-      _finishHistoryOp(op);
+      _finishHistoryOp(op, 'contentVersionObserved');
     }
   }
 
-  void _finishHistoryOp(_WindowOperation? op) {
+  void _finishHistoryOp(_WindowOperation? op, String reason) {
     if (op == null) return;
     if (!identical(_windowOperation, op) &&
         _windowOperation?.token != op.token) {
       return;
     }
     _windowOperation = null;
+    ChatViewEvents.record(
+      ChatViewEventKind.operationSettled,
+      identity: {'thread': _currentThreadId, 'operation': '${op.token}'},
+      details: {
+        'result': reason,
+        'direction': op.direction.name,
+        'targetVersion': op.targetVersion,
+        'currentVersion': state.chatVersion,
+      },
+    );
     if (!state.history.isLoading) return;
     state = state.copyWith(history: state.history.copyWith(isLoading: false));
   }

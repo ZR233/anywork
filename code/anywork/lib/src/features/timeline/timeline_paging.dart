@@ -2,6 +2,7 @@ part of 'timeline_view.dart';
 
 extension on _TimelineViewState {
   Widget _buildRow(TimelineRow row) {
+    _builtRowIds.add(row.id);
     final reasoningExpanded = _expandedReasoningGroups.contains(
       row.reasoningGroup?.id,
     );
@@ -17,6 +18,7 @@ extension on _TimelineViewState {
         cached.toolExpanded != toolExpanded ||
         cached.body != bodyState;
     if (needsUpdate) {
+      _trackRowRebuild(row, cached, reasoningExpanded, toolExpanded, bodyState);
       _rowWidgets[row.id] = (
         version: version,
         expanded: reasoningExpanded,
@@ -49,6 +51,47 @@ extension on _TimelineViewState {
           ),
         ),
       ),
+    );
+  }
+
+  /// 记录一次行 Widget 重建及其原因。
+  ///
+  /// 行缓存键包含 `renderVersion`、展开态与正文状态：任何一项变化都会重建该行。把命中的
+  /// 那一项写进事件，才能区分「流式正文更新」「用户展开」与「正文回源状态变化」这几种
+  /// 完全不同的视觉来源。
+  void _trackRowRebuild(
+    TimelineRow row,
+    ({
+      int version,
+      bool expanded,
+      bool toolExpanded,
+      String? body,
+      Widget child,
+    })?
+    cached,
+    bool reasoningExpanded,
+    bool toolExpanded,
+    String? bodyState,
+  ) {
+    final reasons = <String>[
+      if (cached == null) 'firstBuild',
+      if (cached != null && cached.version != row.renderVersion) 'version',
+      if (cached != null && cached.expanded != reasoningExpanded) 'expand',
+      if (cached != null && cached.toolExpanded != toolExpanded) 'toolExpand',
+      if (cached != null && cached.body != bodyState) 'body',
+    ];
+    ChatViewEvents.record(
+      ChatViewEventKind.rowRebuilt,
+      identity: {
+        ..._scrollIdentity,
+        'row': row.id,
+        'item': _anchorItemIdForRow(row),
+      },
+      details: {
+        'reason': reasons.join('+'),
+        'type': row.type.name,
+        'saved': row.saved,
+      },
     );
   }
 
