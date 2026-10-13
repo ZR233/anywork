@@ -112,25 +112,12 @@ struct SpawnReceipt {
 fn assigned_workspace(
     snapshot: &pl_core::thread::ThreadSnapshot,
 ) -> Result<Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>, ThreadAssemblyError> {
-    let Some(record) = snapshot.extensions.get("studio.workspace") else {
-        return Ok(None);
-    };
-    let payload = &record.payload;
-    let decoded = if payload.format() == "pl.studio.workspace" && payload.version() == 1 {
-        serde_json::from_str(payload.content()).map_err(anyhow::Error::new)
-    } else {
-        Err(anyhow::anyhow!(
-            "unsupported child workspace codec {} version {}",
-            payload.format(),
-            payload.version()
-        ))
-    };
-    decoded
-        .map(Some)
-        .map_err(|source| ThreadAssemblyError::Resource {
+    crate::studio::workspace_receipt::from_snapshot(snapshot).map_err(|source| {
+        ThreadAssemblyError::Resource {
             operation: "decode assigned child workspace",
-            source: source.into_boxed_dyn_error(),
-        })
+            source: Box::<dyn std::error::Error + Send + Sync>::from(source),
+        }
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -174,6 +161,7 @@ impl AgentControlHost for AgentHost {
                 profile_id: request.profile_id.clone(),
                 task_summary: request.task_summary,
                 writable_paths: request.writable_paths,
+                review_target_agent_id: request.review_target_agent_id,
                 metadata: OpaquePayload::new(
                     "pl.studio.agent-metadata",
                     1,

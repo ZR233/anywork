@@ -61,7 +61,10 @@ root Turn 在调用 provider 前捕获一个 Mode 快照；本 Turn 的 Prompt�
 继承或推进 root workflow。模式切换要求 root idle 且没有 pending interaction，runtime 负责归档
 旧活动 run。切换同时从配置中的目标 Mode 默认 selector 解析模型，将 `studio.mode`、
 `studio.model-route`、instructions、workflow、context、tools 与下一 Turn 的 pending model update
-作为一次 idle reconfiguration 提交；失败时保持原 Mode 与原路由。
+作为一次 idle reconfiguration 提交；失败时保持原 Mode 与原路由。切换提交后，新的 Mode 作为
+目录事实发布（目录行 upsert 并推进目录水位），同时该会话自身的状态流快照也携带同一 Mode；
+GUI 侧按 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源) 做单调单行合并，因此
+selector 的文案与选中态不依赖任何页面跳转或重订阅即可收敛。
 
 带工作流的 Mode 要求当前 root route 支持 function calling；Turn 准备阶段在 provider 请求前
 显式拒绝不具备该能力的模型，不能为了迁就 hosted Web Search 的 exclusive 路径而静默卸载

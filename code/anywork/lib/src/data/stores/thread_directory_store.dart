@@ -96,6 +96,17 @@ class ThreadDirectoryStore extends _$ThreadDirectoryStore {
     return true;
   }
 
+  /// 会话快照携带的 thread 身份经 [ThreadDirectoryWindow.replaceIdentity]
+  /// 单行并入窗口（design/18 §18.11.1 单调单行合并）。
+  ///
+  /// 会话自身事实为准、`updatedAt` 单调、窗口未含该会话时原样返回；
+  /// 不推进目录 revision——快照不是目录基线。
+  void replaceIdentity(StudioThread thread) {
+    final next = state.window.replaceIdentity(thread);
+    if (identical(next, state.window)) return;
+    state = state.copyWith(window: next);
+  }
+
   void appendPage(ThreadDirectoryPage page) {
     final next = state.window.appendPage(page);
     if (identical(next, state.window)) return;

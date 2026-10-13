@@ -1,0 +1,749 @@
+{
+  "catalog": "xai",
+  "models": [
+    {
+      "auto_compact_token_limit": null,
+      "base_instructions": "",
+      "binding": {
+        "request": {
+          "media": [
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "image",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_image"
+            }
+          ],
+          "protocol": {
+            "api": "responses",
+            "maxTokensField": "omit",
+            "programmaticToolCalling": false
+          }
+        },
+        "transport": {
+          "default_connection_mode": "http",
+          "protocol": "responses",
+          "supported_connection_modes": [
+            "http"
+          ]
+        }
+      },
+      "capabilities": {
+        "input": [
+          {
+            "limits": {},
+            "modality": "text"
+          },
+          {
+            "limits": {
+              "max_bytes": 20971520,
+              "media_types": [
+                "image/jpeg",
+                "image/png"
+              ]
+            },
+            "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          }
+        ],
+        "output": [
+          "text"
+        ],
+        "prompt_cache": {
+          "cache_write_tokens": false
+        },
+        "reasoning": true,
+        "streaming": true,
+        "temperature": false,
+        "tools": {
+          "custom_tools": false,
+          "freeform_tools": false,
+          "function_calling": true,
+          "parallel_tool_calls": true,
+          "programmatic_tool_calling": false
+        },
+        "web_search": false
+      },
+      "context_window": 500000,
+      "default_temperature": null,
+      "description": "xAI flagship model for coding, agentic tool calling and knowledge work.",
+      "display_name": "Grok 4.7",
+      "max_context_window": 500000,
+      "max_output_tokens": null,
+      "parameters": [
+        {
+          "candidates": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "name": "effort",
+          "wire": {
+            "high": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "high"
+                }
+              ]
+            },
+            "low": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "low"
+                }
+              ]
+            },
+            "medium": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "medium"
+                }
+              ]
+            },
+            "xhigh": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "xhigh"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "pricing": {
+        "currency": "USD",
+        "kind": "rates",
+        "source": "https://docs.x.ai/developers/pricing",
+        "tiers": [
+          {
+            "cacheReadPerMtok": 0.5,
+            "cacheWritePerMtok": null,
+            "inputFrom": 0,
+            "inputPerMtok": 2.0,
+            "inputUntil": 200000,
+            "outputFrom": 0,
+            "outputPerMtok": 6.0,
+            "outputUntil": null
+          },
+          {
+            "cacheReadPerMtok": 1.0,
+            "cacheWritePerMtok": null,
+            "inputFrom": 200000,
+            "inputPerMtok": 4.0,
+            "inputUntil": null,
+            "outputFrom": 0,
+            "outputPerMtok": 12.0,
+            "outputUntil": null
+          }
+        ],
+        "verifiedAt": 1760227200,
+        "weeklyAdjustment": null
+      },
+      "slug": "grok-4.7",
+      "truncation_policy": {
+        "limit": 10000,
+        "mode": "tokens"
+      }
+    },
+    {
+      "auto_compact_token_limit": null,
+      "base_instructions": "",
+      "binding": {
+        "request": {
+          "media": [
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "image",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_image"
+            }
+          ],
+          "protocol": {
+            "api": "responses",
+            "maxTokensField": "omit",
+            "programmaticToolCalling": false
+          }
+        },
+        "transport": {
+          "default_connection_mode": "http",
+          "protocol": "responses",
+          "supported_connection_modes": [
+            "http"
+          ]
+        }
+      },
+      "capabilities": {
+        "input": [
+          {
+            "limits": {},
+            "modality": "text"
+          },
+          {
+            "limits": {
+              "max_bytes": 20971520,
+              "media_types": [
+                "image/jpeg",
+                "image/png"
+              ]
+            },
+            "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          }
+        ],
+        "output": [
+          "text"
+        ],
+        "prompt_cache": {
+          "cache_write_tokens": false
+        },
+        "reasoning": true,
+        "streaming": true,
+        "temperature": false,
+        "tools": {
+          "custom_tools": false,
+          "freeform_tools": false,
+          "function_calling": true,
+          "parallel_tool_calls": true,
+          "programmatic_tool_calling": false
+        },
+        "web_search": false
+      },
+      "context_window": 500000,
+      "default_temperature": null,
+      "description": "xAI coding and agentic model with the same context and rates as Grok 4.7.",
+      "display_name": "Grok 4.6",
+      "max_context_window": 500000,
+      "max_output_tokens": null,
+      "parameters": [
+        {
+          "candidates": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "name": "effort",
+          "wire": {
+            "high": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "high"
+                }
+              ]
+            },
+            "low": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "low"
+                }
+              ]
+            },
+            "medium": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "medium"
+                }
+              ]
+            },
+            "xhigh": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "xhigh"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "pricing": {
+        "currency": "USD",
+        "kind": "rates",
+        "source": "https://docs.x.ai/developers/pricing",
+        "tiers": [
+          {
+            "cacheReadPerMtok": 0.5,
+            "cacheWritePerMtok": null,
+            "inputFrom": 0,
+            "inputPerMtok": 2.0,
+            "inputUntil": 200000,
+            "outputFrom": 0,
+            "outputPerMtok": 6.0,
+            "outputUntil": null
+          },
+          {
+            "cacheReadPerMtok": 1.0,
+            "cacheWritePerMtok": null,
+            "inputFrom": 200000,
+            "inputPerMtok": 4.0,
+            "inputUntil": null,
+            "outputFrom": 0,
+            "outputPerMtok": 12.0,
+            "outputUntil": null
+          }
+        ],
+        "verifiedAt": 1760227200,
+        "weeklyAdjustment": null
+      },
+      "slug": "grok-4.6",
+      "truncation_policy": {
+        "limit": 10000,
+        "mode": "tokens"
+      }
+    },
+    {
+      "auto_compact_token_limit": null,
+      "base_instructions": "",
+      "binding": {
+        "request": {
+          "media": [
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "image",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_image"
+            }
+          ],
+          "protocol": {
+            "api": "responses",
+            "maxTokensField": "omit",
+            "programmaticToolCalling": false
+          }
+        },
+        "transport": {
+          "default_connection_mode": "http",
+          "protocol": "responses",
+          "supported_connection_modes": [
+            "http"
+          ]
+        }
+      },
+      "capabilities": {
+        "input": [
+          {
+            "limits": {},
+            "modality": "text"
+          },
+          {
+            "limits": {
+              "max_bytes": 20971520,
+              "media_types": [
+                "image/jpeg",
+                "image/png"
+              ]
+            },
+            "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          }
+        ],
+        "output": [
+          "text"
+        ],
+        "prompt_cache": {
+          "cache_write_tokens": false
+        },
+        "reasoning": true,
+        "streaming": true,
+        "temperature": false,
+        "tools": {
+          "custom_tools": false,
+          "freeform_tools": false,
+          "function_calling": true,
+          "parallel_tool_calls": true,
+          "programmatic_tool_calling": false
+        },
+        "web_search": false
+      },
+      "context_window": 500000,
+      "default_temperature": null,
+      "description": "xAI coding and engineering model. xhigh effort is treated as high by the provider.",
+      "display_name": "Grok 4.5",
+      "max_context_window": 500000,
+      "max_output_tokens": null,
+      "parameters": [
+        {
+          "candidates": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "name": "effort",
+          "wire": {
+            "high": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "high"
+                }
+              ]
+            },
+            "low": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "low"
+                }
+              ]
+            },
+            "medium": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "medium"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "pricing": {
+        "currency": "USD",
+        "kind": "rates",
+        "source": "https://docs.x.ai/developers/pricing",
+        "tiers": [
+          {
+            "cacheReadPerMtok": 0.3,
+            "cacheWritePerMtok": null,
+            "inputFrom": 0,
+            "inputPerMtok": 2.0,
+            "inputUntil": 200000,
+            "outputFrom": 0,
+            "outputPerMtok": 6.0,
+            "outputUntil": null
+          },
+          {
+            "cacheReadPerMtok": 0.6,
+            "cacheWritePerMtok": null,
+            "inputFrom": 200000,
+            "inputPerMtok": 4.0,
+            "inputUntil": null,
+            "outputFrom": 0,
+            "outputPerMtok": 12.0,
+            "outputUntil": null
+          }
+        ],
+        "verifiedAt": 1760227200,
+        "weeklyAdjustment": null
+      },
+      "slug": "grok-4.5",
+      "truncation_policy": {
+        "limit": 10000,
+        "mode": "tokens"
+      }
+    },
+    {
+      "auto_compact_token_limit": null,
+      "base_instructions": "",
+      "binding": {
+        "request": {
+          "media": [
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "image",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_image"
+            }
+          ],
+          "protocol": {
+            "api": "responses",
+            "maxTokensField": "omit",
+            "programmaticToolCalling": false
+          }
+        },
+        "transport": {
+          "default_connection_mode": "http",
+          "protocol": "responses",
+          "supported_connection_modes": [
+            "http"
+          ]
+        }
+      },
+      "capabilities": {
+        "input": [
+          {
+            "limits": {},
+            "modality": "text"
+          },
+          {
+            "limits": {
+              "max_bytes": 20971520,
+              "media_types": [
+                "image/jpeg",
+                "image/png"
+              ]
+            },
+            "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          }
+        ],
+        "output": [
+          "text"
+        ],
+        "prompt_cache": {
+          "cache_write_tokens": false
+        },
+        "reasoning": true,
+        "streaming": true,
+        "temperature": false,
+        "tools": {
+          "custom_tools": false,
+          "freeform_tools": false,
+          "function_calling": true,
+          "parallel_tool_calls": true,
+          "programmatic_tool_calling": false
+        },
+        "web_search": false
+      },
+      "context_window": 1000000,
+      "default_temperature": null,
+      "description": "xAI long-context model with configurable reasoning, including none.",
+      "display_name": "Grok 4.3",
+      "max_context_window": 1000000,
+      "max_output_tokens": null,
+      "parameters": [
+        {
+          "candidates": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "name": "effort",
+          "wire": {
+            "high": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "high"
+                }
+              ]
+            },
+            "low": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "low"
+                }
+              ]
+            },
+            "medium": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "medium"
+                }
+              ]
+            },
+            "none": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "none"
+                }
+              ]
+            },
+            "xhigh": {
+              "set": [
+                {
+                  "path": "reasoning.effort",
+                  "value": "xhigh"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "pricing": {
+        "currency": "USD",
+        "kind": "rates",
+        "source": "https://docs.x.ai/developers/pricing",
+        "tiers": [
+          {
+            "cacheReadPerMtok": 0.2,
+            "cacheWritePerMtok": null,
+            "inputFrom": 0,
+            "inputPerMtok": 1.25,
+            "inputUntil": 200000,
+            "outputFrom": 0,
+            "outputPerMtok": 2.5,
+            "outputUntil": null
+          },
+          {
+            "cacheReadPerMtok": 0.4,
+            "cacheWritePerMtok": null,
+            "inputFrom": 200000,
+            "inputPerMtok": 2.5,
+            "inputUntil": null,
+            "outputFrom": 0,
+            "outputPerMtok": 5.0,
+            "outputUntil": null
+          }
+        ],
+        "verifiedAt": 1760227200,
+        "weeklyAdjustment": null
+      },
+      "slug": "grok-4.3",
+      "truncation_policy": {
+        "limit": 10000,
+        "mode": "tokens"
+      }
+    },
+    {
+      "auto_compact_token_limit": null,
+      "base_instructions": "",
+      "binding": {
+        "request": {
+          "media": [
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "image",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_image"
+            }
+          ],
+          "protocol": {
+            "api": "responses",
+            "maxTokensField": "omit",
+            "programmaticToolCalling": false
+          }
+        },
+        "transport": {
+          "default_connection_mode": "http",
+          "protocol": "responses",
+          "supported_connection_modes": [
+            "http"
+          ]
+        }
+      },
+      "capabilities": {
+        "input": [
+          {
+            "limits": {},
+            "modality": "text"
+          },
+          {
+            "limits": {
+              "max_bytes": 20971520,
+              "media_types": [
+                "image/jpeg",
+                "image/png"
+              ]
+            },
+            "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          }
+        ],
+        "output": [
+          "text"
+        ],
+        "prompt_cache": {
+          "cache_write_tokens": false
+        },
+        "reasoning": false,
+        "streaming": true,
+        "temperature": false,
+        "tools": {
+          "custom_tools": false,
+          "freeform_tools": false,
+          "function_calling": true,
+          "parallel_tool_calls": true,
+          "programmatic_tool_calling": false
+        },
+        "web_search": false
+      },
+      "context_window": 256000,
+      "default_temperature": null,
+      "description": "xAI fast model for agentic coding workflows.",
+      "display_name": "Grok Build 0.1",
+      "max_context_window": 256000,
+      "max_output_tokens": null,
+      "parameters": [],
+      "pricing": {
+        "currency": "USD",
+        "kind": "rates",
+        "source": "https://docs.x.ai/developers/pricing",
+        "tiers": [
+          {
+            "cacheReadPerMtok": 0.2,
+            "cacheWritePerMtok": null,
+            "inputFrom": 0,
+            "inputPerMtok": 1.0,
+            "inputUntil": 200000,
+            "outputFrom": 0,
+            "outputPerMtok": 2.0,
+            "outputUntil": null
+          },
+          {
+            "cacheReadPerMtok": 0.4,
+            "cacheWritePerMtok": null,
+            "inputFrom": 200000,
+            "inputPerMtok": 2.0,
+            "inputUntil": null,
+            "outputFrom": 0,
+            "outputPerMtok": 4.0,
+            "outputUntil": null
+          }
+        ],
+        "verifiedAt": 1760227200,
+        "weeklyAdjustment": null
+      },
+      "slug": "grok-build-0.1",
+      "truncation_policy": {
+        "limit": 10000,
+        "mode": "tokens"
+      }
+    }
+  ],
+  "schemaVersion": 1,
+  "suggestedEffort": "high",
+  "suggestedModel": "grok-4.7"
+}

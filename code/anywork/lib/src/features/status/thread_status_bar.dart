@@ -124,9 +124,12 @@ class ThreadStatusBar extends ConsumerWidget {
                     _StatusReadout(
                       key: StudioDriverKeys.threadThroughput,
                       icon: Icons.speed_outlined,
+                      // A present projection owns the value, including an
+                      // intentional unknown while a live sample is partial.
+                      // Only fall back before that projection is available;
+                      // never pair the current live timing with an old turn.
                       label: context.tokenThroughputLabel(
-                        throughputProjection?.tokensPerSecond ??
-                            runtime.turnTokensPerSecond,
+                        statusBarThroughput(throughputProjection, runtime),
                       ),
                       tooltip: context.l10n.statusCurrentAgentTokenSpeed,
                       maxWidth: 84,

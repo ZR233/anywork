@@ -50,6 +50,12 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   }
 
   void applySnapshot(ThreadWorkspace snapshot) {
+    // design/18 §18.11.1：会话快照的身份事实先经目录窗口单行合并（会话
+    // 自身事实为准、updatedAt 单调、不推进目录水位），workspace 再从
+    // 合并后的行读取——否则不推进目录水位的 mode 变更会永远停留在旧值。
+    ref
+        .read(threadDirectoryStoreProvider.notifier)
+        .replaceIdentity(snapshot.thread);
     final directory = _directoryThread(snapshot.thread.id);
     final next = applyThreadSnapshotState(
       state,

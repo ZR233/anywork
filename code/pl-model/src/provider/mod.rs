@@ -6,6 +6,7 @@ pub mod discovery;
 pub(crate) mod files;
 pub mod mimo;
 pub mod openai;
+pub mod xai;
 pub mod zhipu;
 pub use clients::ProviderClient;
 
@@ -214,6 +215,7 @@ pub enum ProviderAdapterKind {
     DeepSeek,
     Zhipu,
     MiMo,
+    Xai,
     #[default]
     OpenAiCompatible,
 }
@@ -364,6 +366,32 @@ impl ProviderEndpoint {
             tool_wire_policy: ToolWirePolicy::NativeCustomTools,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             service_capabilities,
+        }
+    }
+
+    /// Canonical xAI Responses endpoint. A custom URL drops prompt-cache inheritance.
+    pub fn xai(base_url: Option<String>) -> Self {
+        let canonical = base_url
+            .as_deref()
+            .is_none_or(|url| url.trim_end_matches('/') == "https://api.x.ai/v1");
+        Self {
+            adapter: ProviderAdapterKind::Xai,
+            name: "xAI".into(),
+            base_url: base_url.unwrap_or_else(|| "https://api.x.ai/v1".into()),
+            bearer_token: None,
+            http_headers: None,
+            tool_wire_policy: ToolWirePolicy::FunctionFallback,
+            apply_patch_tool_type: None,
+            service_capabilities: ProviderServiceCapabilities {
+                prompt_cache: PromptCacheProviderCapabilities {
+                    dialect: if canonical {
+                        PromptCacheDialect::OpenAiPromptCacheKey
+                    } else {
+                        PromptCacheDialect::None
+                    },
+                },
+                ..ProviderServiceCapabilities::default()
+            },
         }
     }
 

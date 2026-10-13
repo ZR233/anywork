@@ -398,7 +398,6 @@ impl InvocationRunner {
             &self.provider_instance_id,
             request,
         )?;
-        let inference_timer = InferenceTimer::start();
         let original_trace = context.trace.clone();
         let retry_jitter_key = original_trace
             .as_ref()
@@ -457,14 +456,17 @@ impl InvocationRunner {
                     format!("{original_inference_id}-{transport}-retry-{attempt_number}");
             }
             let request_started_at = self.clock.unix_seconds()?;
-            let (result, retry_allowed) = match preparation {
+            let (result, retry_allowed, inference_timer) = match preparation {
                 Ok(()) => {
                     attachments_prepared = true;
                     transport_attempts += 1;
-                    self.run_stream_attempt(attempt_request, &context, trace, &inference_timer)
-                        .await
+                    let inference_timer = InferenceTimer::start();
+                    let (result, retry_allowed) = self
+                        .run_stream_attempt(attempt_request, &context, trace, &inference_timer)
+                        .await;
+                    (result, retry_allowed, Some(inference_timer))
                 }
-                Err(error) => (Err(error), true),
+                Err(error) => (Err(error), true, None),
             };
             let mut error = match result {
                 Ok(mut response) => {
@@ -480,7 +482,7 @@ impl InvocationRunner {
                         .continuation_invalid
                         .saturating_sub(transport_metrics_before.continuation_invalid);
                     response.orchestration.http_fallbacks = http_fallbacks;
-                    response.timing = inference_timer.finish();
+                    response.timing = inference_timer.and_then(|timer| timer.finish());
                     response.accounting = self.model.pricing.account(
                         response.accounting.usage,
                         self.pricing_mode,

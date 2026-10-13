@@ -112,6 +112,12 @@ pub enum ThreadAssemblyError {
     ChildCapacity(usize),
     #[error("Profile {0} does not accept a directory write scope")]
     WorkspaceScope(String),
+    #[error("Profile {0} does not accept a review target")]
+    ReviewTargetScope(String),
+    #[error("review Profile {0} requires a review target agentId")]
+    ReviewTargetMissing(String),
+    #[error("review target {0} is not a reviewable child workspace")]
+    ReviewTargetInvalid(String),
     #[error("child configuration resolution failed")]
     Configuration(#[from] crate::config::ConfigRuntimeError),
     #[error("child preparation worker failed")]

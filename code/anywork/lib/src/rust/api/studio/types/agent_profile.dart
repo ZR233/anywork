@@ -81,4 +81,4 @@ class BridgeAgentProfileDto {
           workspaceMode == other.workspaceMode;
 }
 
-enum BridgeAgentWorkspaceMode { unrestricted, directory, worktree }
+enum BridgeAgentWorkspaceMode { unrestricted, directory, worktree, review }

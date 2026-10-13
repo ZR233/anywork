@@ -38,11 +38,15 @@ impl StudioThreadFactory {
                     ThreadAssemblyError::Identity(format!("child {id} has no saved checkpoint"))
                 })?;
         let restored = checkpoint.state.clone();
-        let saved = restored.extensions.get("studio.workspace").ok_or_else(|| {
-            ThreadAssemblyError::Identity(format!("child {id} has no workspace receipt"))
-        })?;
+        let saved = restored
+            .extensions
+            .get(crate::studio::workspace_receipt::EXTENSION)
+            .ok_or_else(|| {
+                ThreadAssemblyError::Identity(format!("child {id} has no workspace receipt"))
+            })?;
         let assignment: pl_protocol::AgentWorkspaceAssignmentSnapshot =
-            decode(&saved.payload, "pl.studio.workspace")?;
+            crate::studio::workspace_receipt::from_payload(&saved.payload)
+                .map_err(|error| resource_error("decode saved workspace binding", error))?;
         let saved_profile = crate::studio::model_route::saved_profile(&restored)
             .map_err(|error| resource_error("decode saved child Agent Profile", error))?;
         let bootstrap_profile = saved_profile.is_none();
@@ -139,6 +143,10 @@ impl StudioThreadFactory {
             | pl_protocol::AgentWorkspaceMode::Directory
                 if std::path::Path::new(&assignment.root) == session_root
                     && assignment.worktree.is_none() => {}
+            pl_protocol::AgentWorkspaceMode::Review => {
+                self.ensure_restored_review_workspace(&assignment, &thread, &session_root)
+                    .await?;
+            }
             pl_protocol::AgentWorkspaceMode::Worktree => {
                 let receipt = assignment
                     .worktree
@@ -222,6 +230,85 @@ impl StudioThreadFactory {
             cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
         };
         Ok(prepared.tools.install(spec))
+    }
+
+    /// 校验 review child 的被审目标工作区仍与冻结收据一致；reviewer 不拥有 lease，
+    /// 因此从不代为重建被审者的工作树，目标缺失或已清理时类型化失败。
+    async fn ensure_restored_review_workspace(
+        &self,
+        assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
+        thread: &crate::studio::ThreadRecord,
+        session_root: &std::path::Path,
+    ) -> Result<(), ThreadAssemblyError> {
+        use crate::studio::agent_host::worktree_lease::{
+            WorktreeLeaseOwnerKind, WorktreeLeaseState,
+        };
+        let target_id = &assignment
+            .review_target
+            .as_ref()
+            .ok_or_else(|| {
+                ThreadAssemblyError::Identity(format!(
+                    "child {} review workspace has no review target",
+                    thread.id
+                ))
+            })?
+            .agent_id;
+        let target = self.thread_record(target_id).await?;
+        if target.parent_thread_id != thread.parent_thread_id
+            || target.root_thread_id != thread.root_thread_id
+            || target.project_id != thread.project_id
+        {
+            return Err(ThreadAssemblyError::Identity(format!(
+                "review target {target_id} is not a sibling of child {}",
+                thread.id
+            )));
+        }
+        match &assignment.worktree {
+            Some(expected) => {
+                let lease = self
+                    .services
+                    .worktrees
+                    .get(target_id)
+                    .filter(|lease| {
+                        lease.owner_kind == WorktreeLeaseOwnerKind::Child
+                            && lease.root_thread_id == thread.root_thread_id
+                            && lease.path == expected.path
+                    })
+                    .ok_or_else(|| {
+                        ThreadAssemblyError::Identity(format!(
+                            "review target {target_id} no longer owns the reviewed worktree"
+                        ))
+                    })?;
+                if lease.state == WorktreeLeaseState::Cleaned {
+                    return Err(ThreadAssemblyError::Identity(format!(
+                        "review target {target_id} worktree was already cleaned"
+                    )));
+                }
+                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                    &self.services.ssh_manager,
+                    &lease,
+                )
+                .map_err(|error| resource_error("open reviewed workspace manager", error))?;
+                let handle = crate::agent::worktree::WorktreeHandle {
+                    path: PathBuf::from(&lease.path),
+                    branch: lease.branch.clone(),
+                    base_commit: lease.base_commit.clone(),
+                };
+                if !matches!(manager.preview_existing(&handle).await, Ok(Some(_))) {
+                    return Err(ThreadAssemblyError::Identity(format!(
+                        "review target {target_id} worktree is missing"
+                    )));
+                }
+            }
+            None => {
+                if std::path::Path::new(&assignment.root) != session_root {
+                    return Err(ThreadAssemblyError::Identity(
+                        "review workspace root does not match the session workspace".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 保存的 worktree receipt 对应物理工作树缺失、或 lease 已被归档清理时，在同一确定性

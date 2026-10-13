@@ -46,6 +46,13 @@ impl StudioChildResources for StudioThreadFactory {
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
         // 不会影响会话路径的判定。
         let _creation = self.services.worktrees.creation_guard(&request.id);
+        let review_target = match request.review_target_agent_id.as_deref() {
+            None => None,
+            Some(target_id) => Some(
+                self.resolve_review_target(target_id, &request.caller, &parent, &project)
+                    .await?,
+            ),
+        };
         let (assignment, worktree) =
             crate::studio::agent_host::workspace_preparation::prepare_workspace(
                 &self.services.worktrees,
@@ -57,6 +64,7 @@ impl StudioChildResources for StudioThreadFactory {
                     mode: profile.profile.workspace_mode,
                     writable_paths: request.writable_paths.clone(),
                     session_root,
+                    review_target,
                 },
             )
             .await
@@ -80,8 +88,9 @@ impl StudioChildResources for StudioThreadFactory {
             })
             .await?;
         check_cancelled(request)?;
-        let receipt = serde_json::to_string(&assignment)
+        let workspace_payload = crate::studio::workspace_receipt::to_payload(&assignment)
             .map_err(|error| resource_error("encode child workspace receipt", error))?;
+        let receipt = workspace_payload.content().to_owned();
         let (mut initial_context, instruction_sources) =
             super::thread_seed::capture(super::thread_seed::ThreadInstructionSeed {
                 thread_id: &request.id,
@@ -117,9 +126,8 @@ impl StudioChildResources for StudioThreadFactory {
                 .map_err(|error| resource_error("freeze child project binding", error))?,
             ),
             (
-                "studio.workspace".into(),
-                OpaquePayload::new("pl.studio.workspace", 1, receipt.clone())
-                    .map_err(|error| resource_error("freeze child workspace receipt", error))?,
+                crate::studio::workspace_receipt::EXTENSION.into(),
+                workspace_payload,
             ),
             (
                 crate::studio::model_route::AGENT_PROFILE_EXTENSION.into(),
@@ -275,7 +283,17 @@ pub(super) fn assigned_workspace(
     } else {
         None
     };
-    if session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
+    if assignment.mode == pl_protocol::AgentWorkspaceMode::Review {
+        // 边界与被审代理一致：worktree 被审者 Confined 于其 worktree；共享会话 checkout 的
+        // 被审者在 worktree 会话下同样 Confined，在 local 会话下 host-permitted。
+        if assignment.worktree.is_some()
+            || session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
+        {
+            AgentWorkspace::worktree(&assignment.project_root, &assignment.root)
+        } else {
+            AgentWorkspace::host_permitted(&assignment.project_root, &assignment.root, None)
+        }
+    } else if session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
         || assignment.mode == pl_protocol::AgentWorkspaceMode::Worktree
     {
         AgentWorkspace::worktree(&assignment.project_root, &assignment.root)
@@ -290,5 +308,80 @@ fn check_cancelled(request: &ChildThreadRequest) -> Result<(), ThreadAssemblyErr
         Err(pl_core::thread::ThreadError::Cancelled.into())
     } else {
         Ok(())
+    }
+}
+
+impl StudioThreadFactory {
+    /// Resolves one reviewed agent's workspace facts for a `review` Profile spawn.
+    ///
+    /// 关系校验（调用者的直接 child、同一根会话与 Project）先行；worktree 被审者以 durable
+    /// lease 为 canonical 事实并核对物理工作树仍存在，非 worktree 被审者的工作区即会话工作区
+    /// 根，由 `prepare_workspace` 派生。review child 不获取、不转移被审者的 lease。
+    async fn resolve_review_target(
+        &self,
+        target_id: &str,
+        caller: &str,
+        parent: &crate::studio::ThreadRecord,
+        project: &crate::studio::ProjectRecord,
+    ) -> Result<
+        crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget,
+        ThreadAssemblyError,
+    > {
+        use crate::studio::agent_host::worktree_lease::{
+            WorktreeLeaseOwnerKind, WorktreeLeaseState,
+        };
+        let invalid = || ThreadAssemblyError::ReviewTargetInvalid(target_id.to_owned());
+        let target = self
+            .services
+            .product_events
+            .thread_snapshot(target_id)
+            .map(crate::studio::ThreadRecord::from_directory_thread)
+            .ok_or_else(invalid)?;
+        if target.parent_thread_id.as_deref() != Some(caller)
+            || target.root_thread_id != parent.root_thread_id
+            || target.project_id != project.id
+        {
+            return Err(invalid());
+        }
+        let Some(lease) = self.services.worktrees.get(target_id) else {
+            return Ok(
+                crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
+                    agent_id: target_id.to_owned(),
+                    worktree: None,
+                },
+            );
+        };
+        if lease.owner_kind != WorktreeLeaseOwnerKind::Child
+            || lease.root_thread_id != parent.root_thread_id
+            || lease.state == WorktreeLeaseState::Cleaned
+        {
+            return Err(invalid());
+        }
+        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+            &self.services.ssh_manager,
+            &lease,
+        )
+        .map_err(|error| resource_error("open reviewed workspace manager", error))?;
+        let handle = crate::agent::worktree::WorktreeHandle {
+            path: PathBuf::from(&lease.path),
+            branch: lease.branch.clone(),
+            base_commit: lease.base_commit.clone(),
+        };
+        match manager.preview_existing(&handle).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(invalid()),
+            Err(error) => return Err(resource_error("preview reviewed workspace", error)),
+        }
+        Ok(
+            crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
+                agent_id: target_id.to_owned(),
+                worktree: Some(pl_protocol::AgentWorktreeSnapshot {
+                    repository_root: lease.repository_root.clone(),
+                    path: lease.path.clone(),
+                    branch: lease.branch.clone(),
+                    base_commit: lease.base_commit.clone(),
+                }),
+            },
+        )
     }
 }

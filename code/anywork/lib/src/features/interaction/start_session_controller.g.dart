@@ -57,7 +57,7 @@ final class StartSessionControllerProvider
 }
 
 String _$startSessionControllerHash() =>
-    r'b849a57bb79dd8e5dde5df1b99f97e511d1af884';
+    r'37601da77c86deedfc5adb92206afb62abecdd74';
 
 /// 起始页 route 作用域草稿。不进入全局 store；autoDispose，最后一个观察者离开即销毁。
 ///

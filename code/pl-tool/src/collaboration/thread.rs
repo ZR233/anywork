@@ -27,6 +27,8 @@ pub struct AgentSpawn {
     pub message: String,
     /// Optional workspace-relative write directories, accepted only by directory Profiles.
     pub writable_paths: Option<Vec<String>>,
+    /// Pure agentId of the reviewed direct child; required by review Profiles and rejected otherwise. The host adopts that agent's frozen workspace.
+    pub review_target_agent_id: Option<String>,
     /// Product-owned creation metadata; never interpreted as framework permissions.
     #[serde(default)]
     pub metadata: serde_json::Value,
@@ -159,7 +161,7 @@ impl AgentControlKind {
         match self {
             Self::Spawn => pl_protocol::ToolSpec::function(
                 "spawn_agent",
-                "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters) shown in the child list, and message: the complete self-contained instructions. The host validates permissions and limits.",
+                "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters) shown in the child list, and message: the complete self-contained instructions. writablePaths is accepted only by directory Profiles; reviewTargetAgentId (the reviewed child's agentId) is required by review Profiles and gives the reviewer that agent's workspace. The host validates permissions and limits.",
                 schemars::schema_for!(AgentSpawn).to_value(),
             ),
             Self::Send => pl_protocol::ToolSpec::function(

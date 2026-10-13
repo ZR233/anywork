@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
+import 'provider_brand.dart';
 import 'studio_menu.dart';
 import 'studio_driver_keys.dart';
 import 'studio_menu_label.dart';
@@ -19,10 +20,12 @@ class ModelSelectionOption {
     required this.providerId,
     required this.providerName,
     required this.descriptor,
+    this.providerIconKey,
   });
 
   final String providerId;
   final String providerName;
+  final String? providerIconKey;
   final ProviderModelView descriptor;
 
   String get model => descriptor.slug;
@@ -60,6 +63,7 @@ List<ModelSelectionOption> buildModelSelectionOptions(
         ModelSelectionOption(
           providerId: provider.id,
           providerName: provider.name,
+          providerIconKey: provider.iconKey,
           descriptor: model,
         ),
   ];
@@ -161,7 +165,7 @@ class ModelRouteSelector extends StatelessWidget {
         StudioMenuItem<ModelSelectionOption>.header(
           child: SizedBox(
             width: contentWidth,
-            child: _providerHeading(context, group.name),
+            child: _providerHeading(context, group),
           ),
         ),
       );
@@ -190,10 +194,7 @@ class ModelRouteSelector extends StatelessWidget {
     final groups = <String, _ProviderModelGroup>{};
     for (final option in options) {
       groups
-          .putIfAbsent(
-            option.providerId,
-            () => _ProviderModelGroup(option.providerName),
-          )
+          .putIfAbsent(option.providerId, () => _ProviderModelGroup(option))
           .options
           .add(option);
     }
@@ -224,19 +225,34 @@ class ModelRouteSelector extends StatelessWidget {
     );
   }
 
-  static Widget _providerHeading(BuildContext context, String name) {
+  static Widget _providerHeading(
+    BuildContext context,
+    _ProviderModelGroup group,
+  ) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
       child: Semantics(
         header: true,
-        child: Text(
-          name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.w600,
-          ),
+        child: Row(
+          children: [
+            ProviderBrandMark(
+              iconKey: group.iconKey,
+              fallbackName: group.name,
+              size: 14,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                group.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -314,9 +330,12 @@ class ModelRouteSelector extends StatelessWidget {
 }
 
 class _ProviderModelGroup {
-  _ProviderModelGroup(this.name);
+  _ProviderModelGroup(ModelSelectionOption option)
+    : name = option.providerName,
+      iconKey = option.providerIconKey;
 
   final String name;
+  final String? iconKey;
   final List<ModelSelectionOption> options = [];
 }
 

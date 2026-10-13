@@ -170,6 +170,7 @@ impl ProviderConfig {
                             capabilities.files = Default::default();
                             capabilities.responses_tools = Default::default();
                             capabilities.web_search.hosted_responses = false;
+                            capabilities.prompt_cache = Default::default();
                             // 仅撤销 DeepSeek 原生 standalone 搜索：非 canonical DeepSeek endpoint
                             // 必须显式声明该方言。其余 standalone（如 OpenAI `/alpha/search`）
                             // 保留既有继承语义，不因 base_url 覆盖被禁用。
@@ -309,6 +310,10 @@ impl ProviderConfig {
                 ProviderModelCatalogConfig::Bundled { catalog, .. },
                 crate::provider::ProviderAdapterKind::DeepSeek,
             ) => catalog.as_str() == "deepseek",
+            (
+                ProviderModelCatalogConfig::Bundled { catalog, .. },
+                crate::provider::ProviderAdapterKind::Xai,
+            ) => catalog.as_str() == "xai",
             _ => false,
         }
     }

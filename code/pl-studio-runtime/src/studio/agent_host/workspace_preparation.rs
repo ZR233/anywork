@@ -23,6 +23,18 @@ pub(in crate::studio) struct WorkspacePreparation<'a> {
     /// 根会话的工作区根；`local` 会话等于 canonical Project 路径，`worktree` 会话为
     /// 其自身 worktree。非 worktree child 的工作区根跟随该值。
     pub session_root: PathBuf,
+    /// review Profile 的被审目标；产品层完成关系与可用性校验后传入。
+    pub review_target: Option<ReviewWorkspaceTarget>,
+}
+
+/// review child 采用的被审目标工作区事实。
+///
+/// worktree 被审者的 lease 是 canonical 物理事实；非 worktree 被审者的工作区即会话
+/// 工作区根，由 `prepare_workspace` 从 `session_root` 派生。
+pub(in crate::studio) struct ReviewWorkspaceTarget {
+    pub agent_id: String,
+    /// 被审者的 worktree 收据；非 worktree 被审者为 `None`。
+    pub worktree: Option<AgentWorktreeSnapshot>,
 }
 
 pub(in crate::studio) struct SpawnWorktreeLease {
@@ -56,9 +68,32 @@ pub(in crate::studio) async fn prepare_workspace(
                 root: session_root_text,
                 writable_paths: None,
                 worktree: None,
+                review_target: None,
             },
             None,
         ),
+        AgentWorkspaceMode::Review => {
+            let target = request.review_target.ok_or_else(|| {
+                lifecycle_error("review workspace requires a reviewed agent workspace")
+            })?;
+            let (root, worktree) = match target.worktree {
+                Some(worktree) => (worktree.path.clone(), Some(worktree)),
+                None => (session_root_text.clone(), None),
+            };
+            (
+                AgentWorkspaceAssignmentSnapshot {
+                    mode,
+                    project_root: project_root_text,
+                    root,
+                    writable_paths: None,
+                    worktree,
+                    review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
+                        agent_id: target.agent_id,
+                    }),
+                },
+                None,
+            )
+        }
         AgentWorkspaceMode::Directory => {
             let writable_paths = writable_paths
                 .map(|paths| {
@@ -82,6 +117,7 @@ pub(in crate::studio) async fn prepare_workspace(
                     root: session_root_text,
                     writable_paths,
                     worktree: None,
+                    review_target: None,
                 },
                 None,
             )
@@ -155,6 +191,7 @@ pub(in crate::studio) async fn prepare_workspace(
                         branch: handle.branch.clone(),
                         base_commit,
                     }),
+                    review_target: None,
                 },
                 Some(SpawnWorktreeLease { lease: durable }),
             )

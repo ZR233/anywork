@@ -11,6 +11,8 @@ pub enum AgentWorkspaceMode {
     Directory,
     /// 在独立 Git worktree 中执行。
     Worktree,
+    /// 工作区在 spawn 时采用被审代理的冻结工作区收据。
+    Review,
 }
 
 /// 关闭 worktree Agent 时对物理 workspace 的显式处置。
@@ -28,6 +30,7 @@ impl AgentWorkspaceMode {
             Self::Unrestricted => "unrestricted",
             Self::Directory => "directory",
             Self::Worktree => "worktree",
+            Self::Review => "review",
         }
     }
 }
@@ -42,6 +45,13 @@ pub struct AgentWorktreeSnapshot {
     pub base_commit: String,
 }
 
+/// `review` 模式在 spawn 时冻结的被审代理身份。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentReviewTargetSnapshot {
+    pub agent_id: String,
+}
+
 /// 子 Agent 在创建时冻结的有效工作区边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -54,6 +64,9 @@ pub struct AgentWorkspaceAssignmentSnapshot {
     pub writable_paths: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<AgentWorktreeSnapshot>,
+    /// `review` 模式采用的工作区所属被审代理；其余模式为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_target: Option<AgentReviewTargetSnapshot>,
 }
 
 /// Agent Profile 在子会话创建时冻结的可执行快照。

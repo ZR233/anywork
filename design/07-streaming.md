@@ -323,7 +323,9 @@ Thread 的 runtime、turn、interaction、workflow、activity 与 storage 继续
 `authoritative` 是 attempt 完成回执或持久化事实。适配器不能提供增量 token 时，live
 token 保持未知，宿主不得用字符数、字节数或本地计时冒充 token。live 观察不写入 durable
 `UsageSummary`，attempt 结束时由 authoritative 事实覆盖并清除 live 标识；重订阅首帧必须
-携带当前 live/authoritative 状态。
+携带当前 live/authoritative 状态。吞吐 projection 只接受同一 live 观察内同时存在的
+output token 与 decode 时长；live 观察已建立但任一字段缺失时保持未知，不回退另一 attempt
+的 authoritative 分子或分母。没有 live 观察时才可成对使用 authoritative 计数。
 
 所有用户可见实时字段都必须有可追踪的 owner、事件或快照、Dart reducer、watermark、selector
 和可见 lease。Widget 不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、

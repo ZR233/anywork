@@ -310,7 +310,7 @@ pure-lang/
 | **Agent** | 拥有独立 Thread 的执行身份，root 与 child 共用同一框架 |
 | **Skill** | 带元数据与资源的可复用指令包，由运行时发现与激活 |
 | **Studio** | 管理项目、配置与产品事件，由桌面和 HTTP 宿主共享 |
-| **Provider** | LLM Provider 抽象（OpenAI、DeepSeek、智谱等） |
+| **Provider** | LLM Provider 抽象（OpenAI、DeepSeek、xAI、智谱等） |
 | **ThreadModeId** | root Thread 的 Mode 身份（例如 `mode.simple` / `mode.task`） |
 
 ### 内置工具

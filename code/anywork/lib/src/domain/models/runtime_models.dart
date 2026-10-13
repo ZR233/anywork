@@ -459,7 +459,8 @@ class ThreadRuntimeView {
   bool get hasActiveWorkflow => workflow?.isActive ?? false;
   bool get hasUsage =>
       inferenceCount > 0 || promptTokens > 0 || completionTokens > 0;
-  double? get turnTokensPerSecond => turnDecodeMillis > 0
+  double? get turnTokensPerSecond =>
+      turnCompletionTokens > 0 && turnDecodeMillis > 0
       ? turnCompletionTokens * 1000 / turnDecodeMillis
       : null;
 

@@ -63,6 +63,7 @@ pub async fn save_user_agent_profile(
             BridgeAgentWorkspaceMode::Unrestricted => pl_protocol::AgentWorkspaceMode::Unrestricted,
             BridgeAgentWorkspaceMode::Directory => pl_protocol::AgentWorkspaceMode::Directory,
             BridgeAgentWorkspaceMode::Worktree => pl_protocol::AgentWorkspaceMode::Worktree,
+            BridgeAgentWorkspaceMode::Review => pl_protocol::AgentWorkspaceMode::Review,
         },
     };
     Ok(bridge_settings_snapshot(

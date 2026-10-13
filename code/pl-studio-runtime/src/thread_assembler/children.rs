@@ -15,6 +15,7 @@ pub struct ChildThreadRequest {
     pub profile_id: String,
     pub task_summary: pl_tool::collaboration::thread::AgentTaskSummary,
     pub writable_paths: Option<Vec<String>>,
+    pub review_target_agent_id: Option<String>,
     pub metadata: pl_core::context::OpaquePayload,
 }
 
@@ -135,7 +136,26 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
         if request.writable_paths.is_some()
             && profile.profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Directory
         {
-            return Err(ThreadAssemblyError::WorkspaceScope(request.profile_id));
+            return Err(ThreadAssemblyError::WorkspaceScope(
+                request.profile_id.clone(),
+            ));
+        }
+        match (
+            request.review_target_agent_id.as_ref(),
+            profile.profile.workspace_mode,
+        ) {
+            (Some(_), pl_protocol::AgentWorkspaceMode::Review) => {}
+            (Some(_), _) => {
+                return Err(ThreadAssemblyError::ReviewTargetScope(
+                    request.profile_id.clone(),
+                ));
+            }
+            (None, pl_protocol::AgentWorkspaceMode::Review) => {
+                return Err(ThreadAssemblyError::ReviewTargetMissing(
+                    request.profile_id.clone(),
+                ));
+            }
+            (None, _) => {}
         }
         let mut spec = self.resources.prepare(&request, &profile).await?;
         if spec.id != request.id

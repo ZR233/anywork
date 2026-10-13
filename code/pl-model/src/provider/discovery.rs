@@ -134,7 +134,11 @@ impl ModelCatalogQuery {
         part(catalog.as_str().as_bytes());
         part(match endpoint.adapter {
             ProviderAdapterKind::OpenAi => b"openai",
-            _ => b"deepseek",
+            ProviderAdapterKind::Xai => b"xai",
+            ProviderAdapterKind::DeepSeek => b"deepseek",
+            ProviderAdapterKind::Zhipu
+            | ProviderAdapterKind::MiMo
+            | ProviderAdapterKind::OpenAiCompatible => b"unsupported",
         });
         part(url.as_str().as_bytes());
         let mut sorted = headers.iter().collect::<Vec<_>>();
@@ -265,6 +269,8 @@ pub(crate) fn discovery_transport(
     if adapter == ProviderAdapterKind::OpenAi {
         crate::model::ModelTransportProfile::responses_websocket()
     } else {
+        // DeepSeek and xAI both publish Responses over HTTP. Unsupported adapters
+        // never reach this profile because discovery is rejected earlier.
         crate::model::ModelTransportProfile::responses_http()
     }
 }

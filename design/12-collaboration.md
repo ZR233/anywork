@@ -23,7 +23,7 @@ mode 是两条语义轴：会话模式决定工作区在哪里，Profile 模式�
 durable lease 的职责边界见 12.5，产品投影见 [18](./18-studio-state.md) §18.2，持久化与迁移
 见 [17](./17-studio-storage.md) §17.1。
 
-child Profile 的工作区有三种模式，其中的 root 指该 child 所属根会话的工作区根：
+child Profile 的工作区有四种模式，其中的 root 指该 child 所属根会话的工作区根：
 
 - `unrestricted`：Profile 不增加额外项目隔离，root 就是会话工作区根（根会话为 `worktree`
   时即在该 worktree 内）；项目内外仍遵循会话 Permission Mode。
@@ -33,10 +33,16 @@ child Profile 的工作区有三种模式，其中的 root 指该 child 所属�
 - `worktree`：root 是独立 Git worktree，boundary 为 Confined，worktree 内全可写；base 仍是
   Project 仓库的 `HEAD`，不是父会话 worktree；主工作区未提交内容不复制过去，成果不会自动
   合并。
+- `review`：root、boundary 与 worktree 事实在 spawn 时采用被审代理的冻结工作区收据——被审者
+  为 worktree child 时即 Confined 于该 worktree，为共享会话 checkout 的 child 时即会话工作区
+  根及对应边界。review child 不创建、不拥有任何 worktree lease，也不继承被审者的
+  `writablePaths`；“只审查、不修改代码”由 Profile 提示词承担。
 
 根会话使用 `worktree` 时，共享会话 checkout 的 unrestricted/directory child 同样继承
-该会话的 Confined 路径边界；directory 再叠加目录写策略。创建、冷恢复与工具刷新必须保持
-同一边界，不能因 Profile 不独立创建 worktree 而恢复 host-permitted 访问。
+该会话的 Confined 路径边界；directory 再叠加目录写策略。review child 的边界来自被审代理
+收据而非该继承规则的重新推导；被审者为共享会话 checkout 的 child 时，两者结果一致。创建、
+冷恢复与工具刷新必须保持同一边界，不能因 Profile 不独立创建 worktree 而恢复 host-permitted
+访问。
 
 ## 12.2 用户 Profile 与系统预设
 
@@ -61,7 +67,8 @@ model = "deepseek-flash"
 effort = "high"
 ```
 
-用户 Profile 可选择三种模式。旧文件缺少 `workspace_mode` 时按 `directory` 解释，下一次保存
+用户 Profile 可选择四种模式，`review` 与系统 reviewer 语义一致（spawn 必须提供
+`reviewTargetAgentId`）。旧文件缺少 `workspace_mode` 时按 `directory` 解释，下一次保存
 写回 canonical 字段。文件分别解析、校验和原子保存；无效文件保留原字节、从有效目录排除，
 并以脱敏 warning 暴露。合法但 provider/model 当前不可解析的 Profile 保留在 Settings 中并
 标记 unavailable。
@@ -69,8 +76,8 @@ effort = "high"
 主智能体（Main agent）是 root，负责理解需求、制定计划、协调子代理、整合与验证结果。
 `planner` 只保留为 root 的身份标识；root 的模型 selector 属于各自 Thread，并以当前 Mode 的
 保存值作为新建或切换默认值。主智能体不是可派发 Profile，也不在 Agents 设置页提供独立配置。
-Studio 注册四个系统子代理 Profile：`explorer`、`reviewer` 固定为 unrestricted，
-`executor` 固定为 directory，`worktree_executor` 固定为 worktree。系统 id、名称、用途、指令
+Studio 注册四个系统子代理 Profile：`explorer` 固定为 unrestricted，`reviewer` 固定为
+review，`executor` 固定为 directory，`worktree_executor` 固定为 worktree。系统 id、名称、用途、指令
 和模式不可编辑；Agents 设置页可以配置其启用状态、provider/model 和模型声明的 effort。
 `planner` 是保留标识，用户 Profile 不可占用；目录查询和 spawn 均不接受它。
 历史 planner child 保留身份、消息和执行记录，仅供查看；恢复或续跑在资源创建前拒绝，
@@ -118,6 +125,13 @@ root 与所有 child 共用可见进展合同：非平凡任务首次工具调�
 以及解析后越界或经过不安全 symlink 的路径，规范化和去重后冻结。其他模式传入该字段直接
 返回参数错误，避免形成虚假隔离预期。
 
+`spawn_agent` 接收可选 `reviewTargetAgentId`。只有 review Profile 接受该字段且必须提供：值是
+被审子代理的 Pure agentId（执行者 spawn 回执中的 `agentId`），必须是调用者（root）的直接
+child、属于同一根会话且拥有工作区收据。宿主冻结被审者的工作区收据作为 reviewer 的工作区，
+不由模型提供路径；被审者的 worktree lease 不发生归属转移。worktree 被审者的 lease 已清理或
+物理工作树缺失时拒绝 spawn。其他模式传入该字段、review 模式缺失该字段或目标不合法都直接
+返回参数错误。
+
 canonical Project 路径只标识项目，不充当 directory 写入的路径基准：本地与 SSH 的目标和
 可写目录均以实际 workspace root 判定；本地使用文件工具的安全路径解析统一 Windows
 路径表示及最近存在父目录，不要求被授权的新目录已存在。目录外写入仍拒绝，Project 主
@@ -128,12 +142,13 @@ checkout 和其他会话/child checkout 不因此成为可写目录。
 directory 分支声明可选 `writablePaths`，unrestricted 与 worktree 分支不声明该字段；所有分支
 都使用 `additionalProperties:false`。schema 同时给出 profileId → workspace mode 映射，供模型
 在首次调用前完成选择。用户 Profile 按冻结的 workspace_mode 进入相同分支。运行时保留独立
-硬拒绝，防止绕过 schema 的非法请求；explorer/reviewer 的只读是角色行为合同，不能用
-`writablePaths:[]` 模拟。schema 约束用于降低模型首次调用错误，执行路径仍按 Profile 快照
+硬拒绝，防止绕过 schema 的非法请求；explorer 的只读与 reviewer 的只审查是角色行为合同，
+不能用 `writablePaths:[]` 模拟，也不由工具层裁剪 reviewer 的命令能力。schema 约束用于降低
+模型首次调用错误，执行路径仍按 Profile 快照
 重做同一语义校验，不能把 schema 当作安全边界。
 
 spawn receipt 返回模式、实际 root、canonical 可写目录；worktree 模式额外返回 branch 与
-base commit。Local 与 SSH backend 的所有 Pure 内置文件 mutation（apply patch、
+base commit；review 模式返回被审 agentId 与采用的目标工作区事实。Local 与 SSH backend 的所有 Pure 内置文件 mutation（apply patch、
 write/delete/copy/move、项目 Skill 写入）都调用同一中央路径策略；该策略不因会话使用
 full-access 而关闭。读取不受 `writablePaths` 限制，项目外路径仍只由 Permission Mode 决定。
 
@@ -223,14 +238,17 @@ working 内各实现任务独立推进编码、局部验证、静态审查和修
 不能让 worktree executor 跳过项目规则。
 
 每次审查消息包含当前已批准的完整实施计划及已确认调整、该任务范围与验收要求、执行者
-身份、实际工作区、基线、差异和局部验证证据。reviewer 逐项核对负责范围是否完成计划、
-是否偏离设计以及代码缺陷，只做静态审查，不执行 shell 或测试。未完成的其他独立任务不算
+身份、基线 commit、差异摘要和局部验证证据。reviewer 通过 spawn 的 `reviewTargetAgentId`
+绑定被审执行者，宿主把被审者的工作区收据冻结为 reviewer 工作区；reviewer 直接在该工作区
+内读取文件、运行只读 Git 命令并执行必要的验证命令（含构建与测试），但不修改源代码、Git
+状态或外部状态——这是 Profile 提示词合同，不是工具层裁剪。未完成的其他独立任务不算
 当前任务遗漏，但影响本任务正确性的真实依赖必须明确。缺少完整计划或必要源码证据时补齐
 后才能批准。计划明确留给 root 的最终验收尚未执行，不单独阻塞局部静态审查。
 
-审查结论绑定 worktree commit 或 directory 差异及文件内容身份。reviewer 读取被审执行者
-的实际工作区，不限定为 root 工作区；工具不能访问时，root 提供完整可核对的源码和差异，
-不能凭摘要批准。报告明确批准或阻塞问题并附证据，不得同时批准又要求先补齐审查必要证据。
+审查结论绑定 worktree commit 或 directory 差异及文件内容身份。reviewer 在被审执行者的
+实际工作区内审查，不限定为 root 工作区；被审工作区缺失或已清理时 spawn 与冷激活显式
+失败，由 root 重派新 reviewer 或先恢复现场，不能凭摘要批准。报告明确批准或阻塞问题并附
+证据，不得同时批准又要求先补齐审查必要证据。
 root 消费对应 reviewer 本轮终态报告，不解析字符串 marker，不另读 submission。
 
 - directory 成果已在当前工作空间。审查通过、局部验证和前置条件满足后标记该任务完成，
@@ -275,8 +293,8 @@ root 保存任务读写范围与原执行者 `agentId` 的映射，交付后保�
 汇总。执行身份以成功 spawn 回执中的 Pure agentId 为准；child 无法确认时报告角色/范围，
 由 root 绑定 ID，不使用环境变量、进程或外层宿主 ID。相同命令、相关代码范围与环境未变且
 已有成功证据时复用；修改或依赖变化、冲突、失败诊断、覆盖缺口与强制门禁要求重跑时，报告
-具体原因。执行者只做局部验证，root 承担最终整合验证与项目强制门禁；reviewer 不为
-补测试越过只读工具边界。验证记录使用报告正文，不新增生产协议、持久化字段或
+具体原因。执行者只做局部验证，root 承担最终整合验证与项目强制门禁；reviewer 可执行只读
+检查与必要验证命令，但不修改代码，补测试仍由执行者完成。验证记录使用报告正文，不新增生产协议、持久化字段或
 GUI 接口。复用会话增加上下文及 provider prompt cache 复用机会，缓存命中只按上游实际
 usage 报告，不承诺固定收益。阶段完成标准消费可复用的验证记录，只补缺失或失效的检查，
 不为阶段切换机械重复全量测试。
@@ -294,8 +312,9 @@ credential helper，最长 120 秒。两者都以本次解析出的仓库根作�
 约定。lease 记录归属：child 智能体使用
 `<repo>/.anywork/worktrees/<root-thread-id>/<child-id>` 与 Pure-owned `pure-agent-*` 分支；
 根会话自身工作区使用 `<repo>/.anywork/worktrees/<root-thread-id>/session` 与 Pure-owned
-`pure-session-*` 分支。身份校验按归属校验期望 leaf 与期望分支，仍拒绝任何非 Pure 分支。
-非 Git 项目或无 HEAD 时类型化失败。
+`pure-session-*` 分支。review child 复用被审者的物理工作区但不拥有 lease：归属、清理与
+重建仍由被审执行者的 child 身份决定。身份校验按归属校验期望 leaf 与期望分支，仍拒绝任何非
+Pure 分支。非 Git 项目或无 HEAD 时类型化失败。
 
 远端后端的 `git worktree add`/`remove` 路径参数、workspace 打开参数与 lease 记录使用同一
 POSIX 形式：客户端宿主形态（含 Windows 路径分隔符）不得跨端，否则物理 worktree 会落在与
@@ -357,7 +376,9 @@ lease 覆盖。资源部分缺失或身份不匹配时保留现场并发布 Reco
 分支。
 
 `close_agent` 对 worktree child 接受 `workspaceDisposition = preserve | cleanup`，默认
-preserve。关闭工具等待子孙 Thread、订阅与所选宿主资源处置完成，成功结果包含目标及
+preserve。review child 不持有物理工作区，关闭时不触发任何 worktree 处置；其冷激活要求被审
+目标仍可解析且（worktree 被审者）lease 非 cleaned、物理工作树存在，否则类型化失败并由
+root 重派新 reviewer，不代为重建被审者工作树。关闭工具等待子孙 Thread、订阅与所选宿主资源处置完成，成功结果包含目标及
 `lifecycle.kind = closed`；成功回执同时报告实际 workspaceDisposition。它不通过目录事件报告
 完成；父 inbox 的 core Closed 通知可能早于物理资源清理，不能代替 `close_agent` 成功回执与
 路径/分支复核。若工具执行仍是 pending task acknowledgement，须等待该任务的最终结果。清理

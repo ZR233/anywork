@@ -118,6 +118,12 @@ root Thread 非空闲或存在活动 workflow 时不打开模型或思考强度�
 等待结束后恢复选择。提示不阻止编辑草稿，
 切换资格与路由可用性均来自当前 Thread 快照，不在 Flutter 侧推断新的路由或放宽准入。
 
+选择器的触发器文案与菜单行的选中态必须来自同一个 canonical 事实，并且只随该事实变化：
+模式切换、思考强度切换或模型切换完成后，主界面无需退出或重新进入任何页面即可显示新值。
+页面跳转、菜单开关或浮层重建都不是刷新条件，也不得成为"新值可见"的前提；任一选择器若必须
+靠一次设置页往返才显示新值，即视为数据层缺陷（见 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源)），
+不得用页面级刷新掩盖。
+
 起始页 composer 另外提供会话工作区选择：`local`（默认，使用 Project 目录）或 `worktree`
 （从 Project 的 Git 仓库 `HEAD` 新建独立工作树）。该选择属于所在项目的输入草稿，按项目隔离
 保存，并随首个 prompt 提交给创建命令。本地与 SSH 项目都提供 `worktree`：非 Git 项目、
@@ -143,7 +149,8 @@ composer dock 只响应 `UserInput` 与 `ToolApproval`。任务计划由 `plan_s
 Agents 页是唯一 Agent 配置中心。顶部独立展示“主智能体 / Main agent”的用途和模型、
 思考强度配置，不提供启用开关；下方分别展示系统子代理与用户子代理。系统项名称、用途、指令和固定
 workspace mode 只读，无删除入口；系统子代理可配置 enabled、provider/model 与模型声明驱动的 effort。
-用户项按单 TOML 文件原子创建、保存或删除，并可选择三种 workspace mode。无效文件以独立
+用户项按单 TOML 文件原子创建、保存或删除，并可选择四种 workspace mode（`review` 模式表示
+工作区在 spawn 时跟随被审代理，需配合 `reviewTargetAgentId` 使用）。无效文件以独立
 诊断展示，不阻断页面其余项。preserved worktree 显示 revision、branch、base/head、
 dirty/changed-files preview 与显式 cleanup。运行中 Agent 目录与 Profile 设置目录明确分区；
 所有 mutation 使用 settings revision CAS 并以 canonical snapshot 原子刷新（见
@@ -326,6 +333,14 @@ SSH 服务器行常驻"重新连接"入口，无需先测试连接；说明重�
 保留错误并允许重试。
 
 ## 19.8 设置页组织与 Dart 展示边界
+
+供应商品牌标识只以 catalog 下发的 `iconKey` 字符串为跨层契约：Rust preset catalog
+声明品牌身份，Flutter 侧 `provider_brand.dart` 的资产注册表负责呈现（SVG 路径与品牌
+着色），不向协议扩展颜色等展示字段。`ProviderBrandMark` 在供应商列表、供应商详情头、
+编辑器模板下拉与模型选择器分组头统一渲染：已知品牌为白底圆角框内着色 glyph，未知或
+缺失 `iconKey` 回退名称首字母，因此 `openai-compatible` 等自定义供应商不携带任何品牌
+标。SVG 资产（`assets/provider-logos/`）取自 cc-switch（MIT），商标归各供应商所有，
+仅作识别用途。
 
 供应商编辑页对内置与自定义模型提供独立的上下文压缩阈值输入框、滑块和恢复默认操作。
 输入使用精确的正整数 tokens，滑块与输入双向同步；展示模型默认、用户覆盖与实际生效值，
@@ -668,7 +683,7 @@ Timeline 和状态提示消费 canonical 输入与执行状态，区分已受理
 Provider、默认 provider、单个 Mode route 的 model、单个 Mode route 的 reasoning effort、
 单个 Agent role 的 model、单个 Agent role 的 reasoning effort、permission、general、搜索和
 其他设置使用独立 typed intent；可编辑的复合页在提交时按字段变化拆成最小 command，不把
-同页其它控件的旧值重新写回。它们共享一个 settings command lane 以满足 CAS 顺序，但
+同页其它控件的旧值重新写回。它们共享一个 settings operation lane 以满足 CAS 顺序，但
 payload 不携带其他设置的完整旧副本；provider 编辑只有在重命名或删除确实需要迁移引用时才
 携带明确的 route migration。成功结果必须来自 Bridge canonical snapshot。
 

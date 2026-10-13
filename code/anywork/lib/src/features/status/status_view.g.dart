@@ -257,7 +257,7 @@ final class StatusThroughputProjectionProvider
 }
 
 String _$statusThroughputProjectionHash() =>
-    r'1bd7b3d61241181129ddb3e92e1e069db66fc101';
+    r'48a028c2d03c2a0c7e8d57008c66e07afb1c2528';
 
 @ProviderFor(statusBarView)
 final statusBarViewProvider = StatusBarViewProvider._();

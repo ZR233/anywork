@@ -436,7 +436,15 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
 
 模型性能历史以冻结账单中的实际发送模型作为统计身份，并投影配置模型、Provider 返回模型和
 `matched`、`mismatched`、`unreported`、`legacyUnknown` 四态结果。返回模型不参与费用或速度
-汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。
+汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。速度汇总只使用同一成功 inference
+同时报告输出词元和有效单调计时的样本：decode 窗口从首个非空模型输出事件到该 inference
+的终止事件，分子为该 inference 的输出词元数，不能使用输入/总词元或把其它重试、调用步骤
+的计时拼入本样本。实时状态栏与历史汇总遵守同一口径；缺失、零值、溢出或不一致的计时与
+用量不产生速度，不能以零时长或展示层封顶伪造可用速度。live usage 的输出词元与 decode
+时长是两个可独立未知的字段，消费者只有在二者同一观察代次同时存在时才计算实时速度；
+没有 live 观察时才可成对使用 authoritative 的同一组计数；live 观察已存在但任一字段
+缺失时保持未知，直到该 attempt 的成对 usage 与计时都成立。禁止把 live 与 authoritative
+的分子、分母交叉配对，也不以旧 attempt 的速度替代当前 pending 样本。
 
 工具附件投影：Studio 从持久化工具媒体通过格式所有者的 typed 解码生成工具输出附件，
 实时与历史恢复共用同一投影。附件身份沿用归档引用，MIME、字节数与可用尺寸必须对应
@@ -620,6 +628,10 @@ storage 则继续共用带 `epoch/baseRevision/revision` 的单一有序流；Da
 但不得建立绕过同一水位的旁路流。gap、lagged、旧 generation 和关闭都必须走该领域既定的
 resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
 
+违背该不变量的典型形态是"数据看起来需要一次路由往返才新鲜"：把导航、页面重建或浮层开关
+当作刷新条件，等于承认某个字段的事实源缺了一条事件或响应路径。修正必须落在那条路径上，
+不得用页面级刷新、扩展订阅生命周期或重读整棵状态来掩盖。
+
 ## 18.11 Settings 与 Model Catalog 的独立时钟
 
 Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
@@ -633,3 +645,19 @@ Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种
 组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由 route 作用域
 控制器持有，canonical 永不覆盖；配置写入由 settings 命令 lane 串行化并以响应 canonical
 收敛；页面离开只释放观察者租约，不取消在途命令，也不存在返回前的等待或刷新步骤。
+
+## 18.11.1 Thread 身份的单一来源
+
+Thread 身份事实（mode、title、status、workspace）同时出现在会话自身的状态流快照与
+Thread 目录窗口行中。两者是同一 Rust 事实的两个视图，因此 Dart 侧按"会话自身快照为准、
+目录增量次之"的顺序做**单调单行合并**：快照携带的 thread 先经目录窗口的单行替换并入窗口
+（窗口未包含该会话时保持窗口不变，分页窗口不是完整目录），workspace 再从合并后的行读取。
+更旧的载荷（`updatedAt` 落后于窗口行）不改写窗口里更新的事实；排序键变化时按 canonical
+目录序重排。**旧实现固定取目录行，使会话自身的状态流永远无法修正 mode**：mode 只能靠目录
+事件或一次目录基线页到达，而基线页是严格 `revision >` 门，任何不推进目录水位的 mode 变更
+都会永久停留在旧值，并让 mode selector 的文案与选中态一起陈旧。
+
+Thread route 的命令响应由 backend 的 canonical thread snapshot 组装，因此与状态流表达同一
+事实，只是缺少流的有序信封。响应携带的 `modelRoute` 按 route revision 单调采纳（更新的流事实
+永不被更旧响应覆盖），响应的其余运行时计数不在这里写入——它们只由有序 Thread reducer 收敛。
+丢弃这份 canonical route 会让选择器在乐观投影清除后回落到旧值，表现为"改完又变回去"。

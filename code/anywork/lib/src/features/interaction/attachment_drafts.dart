@@ -119,6 +119,33 @@ class AttachmentDrafts extends _$AttachmentDrafts {
     });
   }
 
+  /// 起始页 route 作用域控制器销毁后释放未提交的新会话附件。
+  ///
+  /// 由 StartSessionController 的 onDispose 延迟到 microtask 调用
+  /// （Riverpod 3 生命周期回调内不能跨 provider 读写）；提交在途的
+  /// 草稿不在释放范围。释放后整个起始页板条目移除（个别释放失败者一并
+  /// 移除并留诊断），避免用户返回起始页时看到已被后端删除的幽灵附件。
+  Future<void> releaseNewThreadOrphans() async {
+    // 整个容器销毁（测试收尾/进程退出）时本板可能先于 microtask 执行被销毁。
+    if (!ref.mounted) return;
+    final projectIds = state.newThreadDrafts.keys.toList(growable: false);
+    for (final projectId in projectIds) {
+      final composer = state.newThread(projectId);
+      if (composer.isSubmissionPending || composer.attachments.isEmpty) {
+        continue;
+      }
+      await releaseOrphans(
+        projectId: projectId,
+        threadId: null,
+        draftIds: [
+          for (final attachment in composer.attachments) attachment.id,
+        ],
+      );
+      if (!ref.mounted) return;
+      _clearNewThread(projectId);
+    }
+  }
+
   void seedNewThreadIfEmpty(String projectId, ComposerThreadState incoming) {
     final current = state.newThread(projectId);
     if (current.attachments.isNotEmpty ||
@@ -663,10 +690,16 @@ class AttachmentDrafts extends _$AttachmentDrafts {
     if (thread == null) {
       return ref.read(threadSessionStoreProvider(threadId)).hasSnapshot;
     }
+    // faulted 可能只是模型或工具输入驱动失败，后端续接会重新启用驱动并创建新的
+    // 执行轮次；只有类型化存储事实明确阻塞准入时，才沿用存储恢复闸门。
     return switch (thread.status) {
-      ThreadStatusView.closing ||
-      ThreadStatusView.closed ||
-      ThreadStatusView.faulted => false,
+      ThreadStatusView.closing || ThreadStatusView.closed => false,
+      ThreadStatusView.faulted =>
+        ref
+                .read(threadSessionStoreProvider(threadId))
+                .storage
+                ?.blocksContinuation !=
+            true,
       _ => true,
     };
   }

@@ -7,11 +7,13 @@ class SettingsHeader extends StatelessWidget {
     super.key,
     required this.title,
     required this.subtitle,
+    this.leading,
     this.trailing,
   });
 
   final String title;
   final String subtitle;
+  final Widget? leading;
   final Widget? trailing;
 
   @override
@@ -45,14 +47,24 @@ class SettingsHeader extends StatelessWidget {
             ],
           ],
         );
+        final titleWithLeading = leading == null
+            ? titleBlock
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  leading!,
+                  const SizedBox(width: 14),
+                  Expanded(child: titleBlock),
+                ],
+              );
         if (trailing == null) {
-          return titleBlock;
+          return titleWithLeading;
         }
         if (compact) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              titleBlock,
+              titleWithLeading,
               const SizedBox(height: 12),
               Align(alignment: Alignment.centerLeft, child: trailing!),
             ],
@@ -61,7 +73,7 @@ class SettingsHeader extends StatelessWidget {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Expanded(child: titleBlock),
+            Expanded(child: titleWithLeading),
             const SizedBox(width: 16),
             trailing!,
           ],

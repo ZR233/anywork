@@ -421,16 +421,30 @@ Map<String, Object?> _driverDiagnostics() {
   final outputTokens = defaultProneCount(runtime?.completionTokens);
   final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
   final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
-  final turnOutputTokens =
-      explicitUsageCount(observedUsage?.completionTokens) ??
-      defaultProneCount(runtime?.turnCompletionTokens);
-  final decodeMillis =
-      explicitUsageCount(observedUsage?.decodeMillis) ??
-      defaultProneCount(runtime?.turnDecodeMillis);
-  // Preserve an explicitly observed decodeMillis == 0 in the source field,
-  // but never derive a non-finite throughput value from it.
+  final liveDecodeMillis = explicitUsageCount(observedUsage?.decodeMillis);
+  final hasCompleteLiveThroughput =
+      liveOutputTokens != null &&
+      liveOutputTokens > 0 &&
+      liveDecodeMillis != null &&
+      liveDecodeMillis > 0;
+  final hasLiveObservation = observedUsage != null;
+  final turnOutputTokens = hasCompleteLiveThroughput
+      ? liveOutputTokens
+      : hasLiveObservation
+      ? null
+      : defaultProneCount(runtime?.turnCompletionTokens);
+  final decodeMillis = hasCompleteLiveThroughput
+      ? liveDecodeMillis
+      : hasLiveObservation
+      ? null
+      : defaultProneCount(runtime?.turnDecodeMillis);
+  // Preserve source counters for diagnostics, but only derive throughput from
+  // a positive output/decode pair from the same observation.
   final tokensPerSecond =
-      turnOutputTokens != null && decodeMillis != null && decodeMillis > 0
+      turnOutputTokens != null &&
+          turnOutputTokens > 0 &&
+          decodeMillis != null &&
+          decodeMillis > 0
       ? turnOutputTokens * 1000 / decodeMillis
       : null;
   return <String, Object?>{

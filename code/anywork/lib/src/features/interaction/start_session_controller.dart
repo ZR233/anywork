@@ -22,7 +22,14 @@ class StartSessionController extends _$StartSessionController {
 
   @override
   StartSessionDraft build() {
-    ref.onDispose(_releaseAttachments);
+    // build 内捕获附件板引用：onDispose 生命周期回调里不能用 ref/state。
+    final drafts = ref.read(attachmentDraftsProvider.notifier);
+    ref.onDispose(() {
+      // Riverpod 3 生命周期内禁止跨 provider 读写：提交在途跳过，其余延迟到
+      // microtask（此时生命周期已结束，keepAlive 附件板仍存活）由附件域释放。
+      if (_submitInFlight) return;
+      scheduleMicrotask(drafts.releaseNewThreadOrphans);
+    });
     return const StartSessionDraft();
   }
 
@@ -203,29 +210,6 @@ class StartSessionController extends _$StartSessionController {
       if (route.modeId == mode) return route;
     }
     return null;
-  }
-
-  void _releaseAttachments() {
-    if (state.submitting || _submitInFlight) return;
-    final board = ref.read(attachmentDraftsProvider);
-    final projectIds = {...state.projects.keys, ...board.newThreadDrafts.keys};
-    for (final projectId in projectIds) {
-      final composer = board.newThread(projectId);
-      if (composer.isSubmissionPending || composer.attachments.isEmpty) {
-        continue;
-      }
-      unawaited(
-        ref
-            .read(attachmentDraftsProvider.notifier)
-            .releaseOrphans(
-              projectId: projectId,
-              threadId: null,
-              draftIds: [
-                for (final attachment in composer.attachments) attachment.id,
-              ],
-            ),
-      );
-    }
   }
 }
 

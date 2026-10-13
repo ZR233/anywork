@@ -283,7 +283,7 @@ fn normalize(
         return Err(ModelCatalogQueryError::Protocol);
     }
     if let Some(parameters) = record.parameters {
-        let effort_path = if adapter == ProviderAdapterKind::OpenAi {
+        let effort_path = if uses_responses_effort(adapter) {
             "reasoning.effort"
         } else {
             "reasoning_effort"
@@ -438,8 +438,15 @@ pub(crate) fn enrich_unknown_model_fallback(
     Some(enriched)
 }
 
+fn uses_responses_effort(adapter: ProviderAdapterKind) -> bool {
+    matches!(
+        adapter,
+        ProviderAdapterKind::OpenAi | ProviderAdapterKind::Xai
+    )
+}
+
 fn effort_parameter(candidates: Vec<String>, adapter: ProviderAdapterKind) -> ModelParameter {
-    let path = if adapter == ProviderAdapterKind::OpenAi {
+    let path = if uses_responses_effort(adapter) {
         "reasoning.effort"
     } else {
         "reasoning_effort"

@@ -10,6 +10,7 @@ pub enum ProviderClient<'a> {
     DeepSeek(super::deepseek::DeepSeekClient<'a>),
     Zhipu(super::zhipu::ZhipuClient<'a>),
     MiMo(super::mimo::MiMoClient<'a>),
+    Xai(super::xai::XaiClient<'a>),
     OpenAiCompatible(super::compatible::CompatibleClient<'a>),
 }
 
@@ -23,6 +24,7 @@ impl<'a> ProviderClient<'a> {
             }
             ProviderAdapterKind::Zhipu => Self::Zhipu(super::zhipu::ZhipuClient { runner }),
             ProviderAdapterKind::MiMo => Self::MiMo(super::mimo::MiMoClient { runner }),
+            ProviderAdapterKind::Xai => Self::Xai(super::xai::XaiClient { runner }),
             ProviderAdapterKind::OpenAiCompatible => {
                 Self::OpenAiCompatible(super::compatible::CompatibleClient { runner })
             }

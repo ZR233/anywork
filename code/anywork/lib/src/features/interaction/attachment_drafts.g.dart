@@ -59,7 +59,7 @@ final class AttachmentDraftsProvider
   }
 }
 
-String _$attachmentDraftsHash() => r'0819208ddbc0b4b009c5b97dfbf3b55be51d4eaf';
+String _$attachmentDraftsHash() => r'138826c2fba5e5f04ed498587ee541ff5ce69232';
 
 /// 附件草稿的 admission / preview / removal。
 ///

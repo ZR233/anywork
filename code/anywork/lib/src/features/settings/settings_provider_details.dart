@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../shared/provider_brand.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_provider_model_readout.dart';
@@ -65,6 +66,10 @@ class ProviderDetails extends StatelessWidget {
         SettingsHeader(
           title: provider.name,
           subtitle: provider.baseUrl,
+          leading: ProviderBrandMark(
+            iconKey: provider.iconKey,
+            fallbackName: provider.name,
+          ),
           trailing: FilledButton.tonalIcon(
             key: StudioDriverKeys.providerEdit,
             icon: const Icon(Icons.edit_outlined),

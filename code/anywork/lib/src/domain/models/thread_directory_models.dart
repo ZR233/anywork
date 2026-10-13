@@ -245,6 +245,25 @@ class ThreadDirectoryWindow {
     return copyWith(threads: [...prependable, ...retained], revision: revision);
   }
 
+  /// 用会话自身的 canonical 事实替换窗口里的同名行。
+  ///
+  /// 目录窗口是分页副本，行身份（mode、title、status、workspace）以该会话自身的事实
+  /// 为准；**窗口未包含该会话时原样返回**——分页窗口不是完整目录，一次会话快照不得
+  /// 插入或剔除条目。更旧的载荷（`updatedAt` 落后于窗口行）不改写窗口里更新的事实；
+  /// 排序键变化时按 canonical 目录序重排，避免原位替换破坏窗口顺序。
+  ThreadDirectoryWindow replaceIdentity(StudioThread thread) {
+    final index = threads.indexWhere((candidate) => candidate.id == thread.id);
+    if (index < 0) return this;
+    final existing = threads[index];
+    if (existing.updatedAt.isAfter(thread.updatedAt)) return this;
+    if (_sameThreadIdentity(existing, thread)) return this;
+    final updated = [...threads]..[index] = thread;
+    if (existing.directorySortTime.compareTo(thread.directorySortTime) != 0) {
+      updated.sort(StudioThread.compareDirectoryOrder);
+    }
+    return copyWith(threads: updated);
+  }
+
   ThreadDirectoryWindow appendPage(ThreadDirectoryPage page) {
     final loaded = {...threads.map((thread) => thread.id)};
     final appended = page.threads
@@ -273,6 +292,27 @@ bool _sortsAfter(StudioThread candidate, StudioThread anchor) {
 }
 
 const Object _sentinel = Object();
+
+/// 同一会话行是否表达同一份身份事实。
+///
+/// [StudioThread] 没有值相等：这里逐字段比较，使"内容未变"的快照不制造新的目录
+/// 窗口实例（否则每个线程快照都会让全量投影看起来发生了变化）。
+bool _sameThreadIdentity(StudioThread left, StudioThread right) =>
+    left.id == right.id &&
+    left.projectId == right.projectId &&
+    left.title == right.title &&
+    left.mode == right.mode &&
+    left.createdAt == right.createdAt &&
+    left.updatedAt == right.updatedAt &&
+    left.lastUserMessageAt == right.lastUserMessageAt &&
+    left.parentThreadId == right.parentThreadId &&
+    left.rootThreadId == right.rootThreadId &&
+    left.agentPath == right.agentPath &&
+    left.role == right.role &&
+    left.status == right.status &&
+    left.archived == right.archived &&
+    left.workspaceMode == right.workspaceMode &&
+    left.workspacePath == right.workspacePath;
 
 /// 关机阶段的只读分类；canonical 状态由 [StudioShutdownProgress] 的 sealed variant 表达。
 enum StudioShutdownPhase {

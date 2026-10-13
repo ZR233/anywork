@@ -69,10 +69,29 @@ StudioThroughputProjection? statusThroughputProjection(Ref ref) {
   if (session == null) return null;
   final runtime = session.runtime ?? statusEmptyRuntime;
   final live = runtime.liveUsage;
+  // Live 输出与解码计数独立出现：一个 provider 可能先报其一。两者必须保持
+  // 同一样本，否则新一次尝试的短解码窗口会与上一次尝试的输出总数交叉配对，
+  // 显示出虚假的数千 tokens/s（design/18 §18.8.1，对齐
+  // `StudioThroughputProjection.fromState` 的配对语义）。
+  final liveOutputTokens = live?.completionTokens;
+  final liveDecodeMillis = live?.decodeMillis;
+  final hasCompleteLiveSample =
+      liveOutputTokens != null &&
+      liveOutputTokens > 0 &&
+      liveDecodeMillis != null &&
+      liveDecodeMillis > 0;
   return StudioThroughputProjection(
     threadId: session.threadId,
-    completionTokens: live?.completionTokens ?? runtime.turnCompletionTokens,
-    decodeMillis: live?.decodeMillis ?? runtime.turnDecodeMillis,
+    completionTokens: hasCompleteLiveSample
+        ? liveOutputTokens
+        : live != null
+        ? 0
+        : runtime.turnCompletionTokens,
+    decodeMillis: hasCompleteLiveSample
+        ? liveDecodeMillis
+        : live != null
+        ? 0
+        : runtime.turnDecodeMillis,
   );
 }
 
