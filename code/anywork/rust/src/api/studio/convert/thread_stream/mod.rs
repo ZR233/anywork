@@ -253,13 +253,6 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
     }
 }
 
-pub(crate) fn bridge_thread_item(value: ThreadItem) -> Result<Option<BridgeThreadItem>> {
-    if matches!(value.state(), ThreadItemState::ContextCompaction(_)) {
-        return Ok(None);
-    }
-    Ok(Some(bridge_chat_thread_item(value)?))
-}
-
 /// ChatView splice indexes include hidden metadata items; preserve their positions
 /// across the FFI boundary and let the widget projection choose what to render.
 pub(crate) fn bridge_chat_thread_item(value: ThreadItem) -> Result<BridgeThreadItem> {
