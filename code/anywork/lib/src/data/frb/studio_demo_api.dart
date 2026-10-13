@@ -2002,7 +2002,25 @@ class DemoStudioBridgeDataSource
     if (!_workspaces.containsKey(threadId)) {
       throw StateError('unknown demo thread $threadId');
     }
-    return _DemoChatWindow(this, threadId);
+    final window = _DemoChatWindow(this, threadId);
+    final factory = _chatWindowFactory;
+    // 工厂拿到的是真实窗口：注入者只包装故障点，不会再次回到 openChatWindow。
+    return factory == null ? window : factory(threadId, window);
+  }
+
+  /// 测试专用：包装内容窗口，用于故障注入（首帧失败、增量失败、EOF、慢打开）。
+  ///
+  /// 收到的是 demo 的真实窗口，只替换故障点；状态流、目录与正文事实仍是 demo 的实现，
+  /// 因此注入的是生命周期交错而不是另一套业务状态。
+  Future<StudioChatWindow> Function(String threadId, StudioChatWindow window)?
+  _chatWindowFactory;
+
+  @visibleForTesting
+  set chatWindowFactory(
+    Future<StudioChatWindow> Function(String threadId, StudioChatWindow window)?
+    factory,
+  ) {
+    _chatWindowFactory = factory;
   }
 
   /// 按活动身份读取完整详情。demo 没有独立的正文投影，活动本身即为可用事实。

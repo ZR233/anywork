@@ -18,7 +18,7 @@
 >
 > **部分实现：**
 > - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
-> - 内容绑定有身份与泵，但尚未收敛为完整 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机；打开成功即复位退避、EOF 与静默 catch 仍不完整。
+> - 内容绑定按候选安装：首帧验证成功之前不进入当前绑定，因此不会把「有句柄、没有泵」的实例当 ready 复用；出口结束（EOF）与传输故障走同一条收束路径并带退避重开，重开在无法推进时停下；退避计数只在首帧真正落地时清零。尚未收敛为显式的 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机。
 > - 阅读位置与窗口焦点已分离（只有定位动作才换焦点）；尚未把「用户正在滚动时自动校正让位」与可见 itemId + 像素偏移的恢复收敛成独立 viewport controller。
 > - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记仍未实施。
 >

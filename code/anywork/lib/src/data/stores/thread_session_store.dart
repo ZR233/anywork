@@ -33,7 +33,9 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   _ChatBinding? _binding;
   Future<_ChatBinding?>? _bindingOpening;
   int _bindingGeneration = 0;
-  int _resyncAttempts = 0;
+
+  /// 连续内容泵失败次数；**首帧真正落地**时清零（见 [_notePumpFailure]），用于有界退避。
+  int _pumpFailures = 0;
   int _windowOperationSeq = 0;
   _WindowOperation? _windowOperation;
   Completer<void>? _subscriptionReleaseHold;
@@ -115,6 +117,8 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     switch (result.outcome) {
       case ChatFrameOutcome.applied:
         ChatViewMetrics.framesApplied += 1;
+        // 首帧（或任何一帧）真正落地才证明这条绑定可用：退避计数在此清零。
+        _pumpFailures = 0;
         ChatViewEvents.record(
           frame is StudioChatReset
               ? ChatViewEventKind.frameReset
@@ -301,24 +305,25 @@ class ThreadSessionStore extends _$ThreadSessionStore {
           return null;
         }
         final binding = _ChatBinding(generation, window);
-        _binding = binding;
+        // 候选安装：首帧验证成功之前不进入 `_binding`。否则并发调用会把一个「有句柄、
+        // 没有泵」的实例当成 ready binding 复用（design/25 §25.4）。
         final initial = await window.initial();
-        if (binding.closed || !identical(binding, _binding)) {
+        if (!_bindingCandidateUsable(binding)) {
           await window.close();
           ChatViewEvents.record(
             ChatViewEventKind.bindingClosed,
             identity: {'thread': _currentThreadId, 'binding': '$generation'},
             details: {
-              'reason': binding.closed ? 'closedDuringInitial' : 'superseded',
+              'reason': binding.closed
+                  ? 'closedDuringInitial'
+                  : 'supersededDuringInitial',
               'everOpened': false,
             },
           );
           return null;
         }
+        _binding = binding;
         _applyFrame(binding, StudioChatReset(initial));
-        if (identical(binding, _binding)) {
-          _resyncAttempts = 0;
-        }
         ChatViewEvents.record(
           ChatViewEventKind.bindingOpened,
           identity: {'thread': _currentThreadId, 'binding': '$generation'},
@@ -334,10 +339,16 @@ class ThreadSessionStore extends _$ThreadSessionStore {
         unawaited(_pumpFrames(binding));
         return binding;
       } catch (error) {
+        // 打开失败不在这里自动重开：重开由显示需求或下一次显式操作触发。否则「打开一直
+        // 失败」会变成紧循环——自动重试必须在无法推进时停下来，而不是无限重放。
         ChatViewEvents.record(
           ChatViewEventKind.bindingClosed,
           identity: {'thread': _currentThreadId, 'binding': '$generation'},
-          details: {'reason': 'openFailed', 'error': '$error'},
+          details: {
+            'reason': 'openFailed',
+            'error': '$error',
+            'attempt': _notePumpFailure(),
+          },
         );
         if (generation == _bindingGeneration && ref.mounted && !_closed) {
           markResync(error, failed: true);
@@ -349,20 +360,49 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     }();
   }
 
+  /// 候选绑定是否仍然可以安装为 ready binding。
+  bool _bindingCandidateUsable(_ChatBinding candidate) {
+    return ref.mounted &&
+        !_closed &&
+        !candidate.closed &&
+        state.hasSnapshot &&
+        candidate.generation == _bindingGeneration &&
+        _binding == null;
+  }
+
+  /// 记录一次内容泵失败并返回累计次数（用于有界退避）。
+  ///
+  /// 计数只在**首帧真正落地**时清零：打开成功即清零会让「initial 每次成功、第一条增量
+  /// 每次失败」的重开循环永远进不了有效退避，退化成紧循环。
+  int _notePumpFailure() {
+    _pumpFailures += 1;
+    return _pumpFailures;
+  }
+
+  /// 连续失败后的有界退避；第一次失败不等待，避免正常重连被无谓延迟。
+  Future<void> _retryDelayIfNeeded() async {
+    final attempt = _pumpFailures;
+    if (attempt <= 1) return;
+    await Future<void>.delayed(
+      Duration(milliseconds: 50 * (attempt - 1).clamp(1, 10)),
+    );
+  }
+
   /// 内容泵：一个绑定同时至多一个未完成的 `next`；reduce 完上一帧后再取下一帧。
   Future<void> _pumpFrames(_ChatBinding binding) async {
     while (!binding.closed) {
       final StudioChatFrame? frame;
       try {
         frame = await binding.window.next();
-      } catch (_) {
+      } catch (error) {
         // 传输故障：废弃当前绑定并重开，保留最后有效内容等下一次权威 Reset。
-        await _resyncBinding(binding);
+        await _failBinding(binding, reason: 'pumpError', error: '$error');
         return;
       }
       if (binding.closed) return;
       if (frame == null) {
-        binding.closed = true;
+        // 出口结束（EOF）：与传输故障同样废弃绑定并收束内容同步状态，不能只把句柄标记关闭。
+        await _failBinding(binding, reason: 'pumpEnded');
         return;
       }
       _applyFrame(binding, frame);
@@ -370,26 +410,36 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     }
   }
 
-  /// 连续性缺口或传输故障：废弃当前绑定，稍作退避后重开同一会话的有界窗口。
+  /// 废弃一个绑定（泵故障、EOF 或重同步）并按退避重开同一会话的有界窗口。
   ///
   /// 恢复只重建受影响资源的观察，不重启业务 owner；期间保留最后有效内容，
   /// 不把数据不可用渲染为空列表（design/25 §25.9）。
-  Future<void> _resyncBinding(_ChatBinding binding) async {
-    if (!identical(binding, _binding)) return;
-    _closeBinding();
-    final attempts = ++_resyncAttempts;
+  Future<void> _failBinding(
+    _ChatBinding binding, {
+    required String reason,
+    String? error,
+  }) async {
+    final wasCurrent = identical(binding, _binding);
+    if (wasCurrent) {
+      _closeBinding();
+    } else {
+      binding.closed = true;
+    }
+    final attempt = _notePumpFailure();
     ChatViewEvents.record(
       ChatViewEventKind.bindingClosed,
       identity: _bindingIdentity(binding),
-      details: {'reason': 'resync', 'attempt': attempts},
+      details: {'reason': reason, 'attempt': attempt, 'error': error},
     );
-    if (attempts > 1) {
-      await Future<void>.delayed(
-        Duration(milliseconds: 50 * (attempts - 1).clamp(0, 10)),
-      );
-    }
+    await _retryDelayIfNeeded();
     if (_closed || !ref.mounted) return;
     unawaited(_openChatBinding());
+  }
+
+  /// 连续性缺口或传输故障：废弃当前绑定，稍作退避后重开同一会话的有界窗口。
+  Future<void> _resyncBinding(_ChatBinding binding) async {
+    if (!identical(binding, _binding)) return;
+    await _failBinding(binding, reason: 'resync');
   }
 
   /// 关闭当前内容绑定：立即让绑定失效（迟到帧拒收），再可靠关闭 native 窗口。
