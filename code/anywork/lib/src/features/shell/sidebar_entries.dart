@@ -110,18 +110,12 @@ class _ProjectTile extends ConsumerWidget {
               ),
               SizedBox.square(
                 dimension: touchMode ? 44 : 32,
-                child: StudioIconMenu<String>(
-                  key: StudioDriverKeys.projectMenu(project.id),
-                  tooltip: context.l10n.sidebarProjects,
-                  icon: const Icon(Icons.more_horiz, size: 18),
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.standard,
-                  // 菜单建立前同步收起详情宿主，避免子菜单被详情卡遮挡；
-                  // onOpen/onClose 只维护暂停重开 flag，不再在 onOpen 里关父面。
+                child: _ProjectMenuButton(
+                  menuKey: StudioDriverKeys.projectMenu(project.id),
+                  pinned: general.pinnedProjectIds.contains(project.id),
                   onBeforeOpen: onMenuBeforeOpen,
-                  onOpen: () => onMenuOpenChanged?.call(true),
-                  onClose: () => onMenuOpenChanged?.call(false),
-                  onSelected: (action) async {
+                  onOpenChanged: onMenuOpenChanged,
+                  onAction: (action) async {
                     if (action == 'pin') {
                       await _saveSidebarPreferences(
                         ref,
@@ -140,25 +134,6 @@ class _ProjectTile extends ConsumerWidget {
                           .archiveProject(project.id);
                     }
                   },
-                  itemBuilder: (_) => [
-                    StudioMenuItem<String>(
-                      value: 'pin',
-                      child: Text(
-                        general.pinnedProjectIds.contains(project.id)
-                            ? context.l10n.sidebarUnpin
-                            : context.l10n.sidebarPin,
-                      ),
-                    ),
-                    StudioMenuItem<String>(
-                      value: 'copy',
-                      child: Text(context.l10n.sidebarCopyPath),
-                    ),
-                    StudioMenuItem<String>(
-                      value: 'close',
-                      itemKey: ValueKey('project-close-${project.id}'),
-                      child: Text(context.l10n.sidebarCloseProject),
-                    ),
-                  ],
                 ),
               ),
             ],
@@ -296,6 +271,11 @@ class _ThreadTile extends ConsumerWidget {
     // 三个会话操作共享同一槽位与图标尺寸：桌面收紧视觉间距，触控仍保留
     // 44px 命中区；菜单触发器也复用同一尺寸，避免第三个图标显得偏大。
     final actionTarget = touchMode ? 44.0 : 30.0;
+    // 会话级打开入口的完整目标：本地用工作区路径，远端带 Host 别名前缀。
+    final alias = project.sshAlias;
+    final targetDescription = alias == null
+        ? thread.workspacePath
+        : '$alias:${thread.workspacePath}';
     // 状态标识与三个操作按钮共用同一网格：没有工作树或空闲状态时不保留
     // 空槽；存在多个标识时按工作树、运行状态的顺序排列，视觉中心始终等距。
     Widget statusSlot(Widget child) => SizedBox.square(
@@ -373,19 +353,63 @@ class _ThreadTile extends ConsumerWidget {
                 ? () => _archiveThreadFromSidebar(context, ref, thread.id)
                 : null,
           ),
-          _threadMenu(
-            context,
-            ref,
-            issue,
-            general: general,
+          _ThreadMenuButton(
+            thread: thread,
+            canRetryRecovery: issue?.canRetry == true,
+            recoveryIssueId: issue?.id,
             pinned: pinned,
             blocked: blocked,
+            targetDescription: targetDescription,
             vsCodeAvailable: vsCodeAvailable,
             zedAvailable: zedAvailable,
             terminalAvailable: terminalAvailable,
             minTarget: actionTarget,
-            onOpenChanged: onMenuOpenChanged,
             onBeforeOpen: onMenuBeforeOpen,
+            onOpenChanged: onMenuOpenChanged,
+            onAction: (action) async {
+              if (action == 'retry') {
+                await ref
+                    .read(directoryCommandsProvider.notifier)
+                    .retryRecovery();
+              }
+              if (action == 'pin') {
+                await _saveSidebarPreferences(
+                  ref,
+                  general: general,
+                  threadId: thread.id,
+                );
+              }
+              if (action == 'rename' && context.mounted) {
+                await _renameThreadFromSidebar(context, ref, thread);
+              }
+              if (action == 'archive' && context.mounted) {
+                await _archiveThreadFromSidebar(context, ref, thread.id);
+              }
+              if (action == 'copy-workspace') {
+                await Clipboard.setData(
+                  ClipboardData(text: thread.workspacePath),
+                );
+              }
+              if (action == 'open-vscode' && context.mounted) {
+                await _openThreadWorkspaceInVsCode(
+                  context,
+                  ref,
+                  project,
+                  thread,
+                );
+              }
+              if (action == 'open-zed' && context.mounted) {
+                await _openThreadWorkspaceInZed(context, ref, project, thread);
+              }
+              if (action == 'open-terminal' && context.mounted) {
+                await _openThreadWorkspaceInTerminal(
+                  context,
+                  ref,
+                  project,
+                  thread,
+                );
+              }
+            },
           ),
         ],
       ),
@@ -405,140 +429,6 @@ class _ThreadTile extends ConsumerWidget {
                       ),
             )
           : Tooltip(message: issue.detail, child: tile()),
-    );
-  }
-
-  /// 会话更多菜单：置顶、重命名、归档、复制会话工作区路径，以及会话级
-  /// 打开入口（VS Code、Zed、终端；不可用时禁用并说明原因），并保留
-  /// recovery issue 的重试入口。复用统一的 [StudioMenu] 锚定与键盘/焦点
-  /// 规则，与页眉菜单共用同一 open 实现，不新增后端能力。
-  Widget _threadMenu(
-    BuildContext context,
-    WidgetRef ref,
-    StudioRecoveryIssue? issue, {
-    required GeneralSettingsView general,
-    required bool pinned,
-    required bool blocked,
-    required bool vsCodeAvailable,
-    required bool zedAvailable,
-    required bool terminalAvailable,
-    required double minTarget,
-    ValueChanged<bool>? onOpenChanged,
-    VoidCallback? onBeforeOpen,
-  }) {
-    final alias = project.sshAlias;
-    final targetDescription = alias == null
-        ? thread.workspacePath
-        : '$alias:${thread.workspacePath}';
-    return SizedBox.square(
-      dimension: minTarget,
-      child: StudioIconMenu<String>(
-        key: StudioDriverKeys.threadMenu(thread.id),
-        icon: const Icon(Icons.more_horiz, size: 18),
-        padding: EdgeInsets.zero,
-        visualDensity: VisualDensity.standard,
-        onBeforeOpen: onBeforeOpen,
-        onOpen: () => onOpenChanged?.call(true),
-        onClose: () => onOpenChanged?.call(false),
-        onSelected: (action) async {
-          if (action == 'retry') {
-            await ref.read(directoryCommandsProvider.notifier).retryRecovery();
-          }
-          if (action == 'pin') {
-            await _saveSidebarPreferences(
-              ref,
-              general: general,
-              threadId: thread.id,
-            );
-          }
-          if (action == 'rename' && context.mounted) {
-            await _renameThreadFromSidebar(context, ref, thread);
-          }
-          if (action == 'archive' && context.mounted) {
-            await _archiveThreadFromSidebar(context, ref, thread.id);
-          }
-          if (action == 'copy-workspace') {
-            await Clipboard.setData(ClipboardData(text: thread.workspacePath));
-          }
-          if (action == 'open-vscode' && context.mounted) {
-            await _openThreadWorkspaceInVsCode(context, ref, project, thread);
-          }
-          if (action == 'open-zed' && context.mounted) {
-            await _openThreadWorkspaceInZed(context, ref, project, thread);
-          }
-          if (action == 'open-terminal' && context.mounted) {
-            await _openThreadWorkspaceInTerminal(context, ref, project, thread);
-          }
-        },
-        itemBuilder: (_) => [
-          if (issue?.canRetry == true)
-            StudioMenuItem<String>(
-              value: 'retry',
-              itemKey: StudioDriverKeys.retryRecoveryIssue(issue!.id),
-              child: Text(context.l10n.runtimeFatalRetry),
-            ),
-          StudioMenuItem<String>(
-            value: 'pin',
-            child: Text(
-              pinned ? context.l10n.sidebarUnpin : context.l10n.sidebarPin,
-            ),
-          ),
-          StudioMenuItem<String>(
-            value: 'rename',
-            itemKey: StudioDriverKeys.renameThread(thread.id),
-            enabled: !blocked,
-            child: Text(context.l10n.sidebarRenameSession),
-          ),
-          StudioMenuItem<String>(
-            value: 'archive',
-            // 菜单内的归档入口使用独立 literal key：行内常驻归档按钮复用
-            // StudioDriverKeys.archiveThread（唯一随行存在的 Driver 标识），
-            // 两者同时可见时不会让 Driver 唯一 finder 失效。
-            itemKey: ValueKey('thread-menu-archive-${thread.id}'),
-            enabled: !blocked,
-            child: Text(context.l10n.sidebarArchiveSession),
-          ),
-          StudioMenuItem<String>(
-            value: 'copy-workspace',
-            itemKey: StudioDriverKeys.copyThreadWorkspace(thread.id),
-            child: Text(context.l10n.sidebarCopyPath),
-          ),
-          StudioMenuItem<String>.header(
-            itemKey: ValueKey('thread-menu-workspace-${thread.id}'),
-            child: const Divider(height: 1),
-          ),
-          _workspaceMenuItem(
-            context,
-            key: StudioDriverKeys.openThreadVsCode(thread.id),
-            value: 'open-vscode',
-            icon: Icons.code,
-            label: context.l10n.sessionOpenInVsCode,
-            targetDescription: targetDescription,
-            available: vsCodeAvailable,
-            unavailableReason: context.l10n.sessionVsCodeUnavailable,
-          ),
-          _workspaceMenuItem(
-            context,
-            key: ValueKey('thread-menu-open-zed-${thread.id}'),
-            value: 'open-zed',
-            icon: Icons.code,
-            label: context.l10n.sessionOpenInZed,
-            targetDescription: targetDescription,
-            available: zedAvailable,
-            unavailableReason: context.l10n.sessionZedUnavailable,
-          ),
-          _workspaceMenuItem(
-            context,
-            key: StudioDriverKeys.openThreadTerminal(thread.id),
-            value: 'open-terminal',
-            icon: Icons.terminal,
-            label: context.l10n.sessionOpenInTerminal,
-            targetDescription: targetDescription,
-            available: terminalAvailable,
-            unavailableReason: _terminalUnavailableReason(context),
-          ),
-        ],
-      ),
     );
   }
 
@@ -655,51 +545,306 @@ Widget _detailCopyButton(BuildContext context, String value, double minTarget) {
   );
 }
 
+/// 侧栏项目行的更多菜单：Material [MenuAnchor] + [IconButton] 触发器，
+/// 锚定与键盘交互为框架行为；打开前先收起行详情宿主，避免浮层互相遮挡。
+class _ProjectMenuButton extends StatefulWidget {
+  const _ProjectMenuButton({
+    required this.menuKey,
+    required this.pinned,
+    required this.onAction,
+    this.onBeforeOpen,
+    this.onOpenChanged,
+  });
+
+  final Key menuKey;
+  final bool pinned;
+  final FutureOr<void> Function(String action) onAction;
+  final VoidCallback? onBeforeOpen;
+  final ValueChanged<bool>? onOpenChanged;
+
+  @override
+  State<_ProjectMenuButton> createState() => _ProjectMenuButtonState();
+}
+
+class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
+  final MenuController _controller = MenuController();
+  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'project-menu');
+
+  @override
+  void dispose() {
+    _triggerFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _open() {
+    widget.onBeforeOpen?.call();
+    if (_controller.isOpen) {
+      _controller.close();
+    } else {
+      _controller.open();
+    }
+  }
+
+  void _select(String action) {
+    _controller.close();
+    _triggerFocusNode.requestFocus();
+    final result = widget.onAction(action);
+    if (result is Future<void>) unawaited(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      key: widget.menuKey,
+      controller: _controller,
+      childFocusNode: _triggerFocusNode,
+      alignmentOffset: const Offset(6, 6),
+      onOpen: () => widget.onOpenChanged?.call(true),
+      onClose: () => widget.onOpenChanged?.call(false),
+      menuChildren: [
+        MenuItemButton(
+          overflowAxis: Axis.vertical,
+          onPressed: () => _select('pin'),
+          child: Text(
+            widget.pinned ? context.l10n.sidebarUnpin : context.l10n.sidebarPin,
+          ),
+        ),
+        MenuItemButton(
+          overflowAxis: Axis.vertical,
+          onPressed: () => _select('copy'),
+          child: Text(context.l10n.sidebarCopyPath),
+        ),
+        MenuItemButton(
+          key: ValueKey('project-close'),
+          overflowAxis: Axis.vertical,
+          onPressed: () => _select('close'),
+          child: Text(context.l10n.sidebarCloseProject),
+        ),
+      ],
+      child: IconButton(
+        tooltip: context.l10n.sidebarProjects,
+        onPressed: _open,
+        focusNode: _triggerFocusNode,
+        visualDensity: VisualDensity.standard,
+        style: const ButtonStyle(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        padding: EdgeInsets.zero,
+        icon: const Icon(Icons.more_horiz, size: 18),
+      ),
+    );
+  }
+}
+
+/// 侧栏会话行的更多菜单：置顶、重命名、归档、复制会话工作区路径，以及
+/// 会话级打开入口（VS Code、Zed、终端；不可用时禁用并说明原因），并保留
+/// recovery issue 的重试入口。Material [MenuAnchor] 承载锚定与键盘交互，
+/// 与页眉菜单共用同一套打开实现，不新增后端能力。
+class _ThreadMenuButton extends StatefulWidget {
+  const _ThreadMenuButton({
+    required this.thread,
+    required this.canRetryRecovery,
+    this.recoveryIssueId,
+    required this.pinned,
+    required this.blocked,
+    required this.targetDescription,
+    required this.vsCodeAvailable,
+    required this.zedAvailable,
+    required this.terminalAvailable,
+    required this.minTarget,
+    required this.onAction,
+    this.onBeforeOpen,
+    this.onOpenChanged,
+  });
+
+  final StudioThread thread;
+  final bool canRetryRecovery;
+  final String? recoveryIssueId;
+  final bool pinned;
+  final bool blocked;
+  final String targetDescription;
+  final bool vsCodeAvailable;
+  final bool zedAvailable;
+  final bool terminalAvailable;
+  final double minTarget;
+  final FutureOr<void> Function(String action) onAction;
+  final VoidCallback? onBeforeOpen;
+  final ValueChanged<bool>? onOpenChanged;
+
+  @override
+  State<_ThreadMenuButton> createState() => _ThreadMenuButtonState();
+}
+
+class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
+  final MenuController _controller = MenuController();
+  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'thread-menu');
+
+  @override
+  void dispose() {
+    _triggerFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _open() {
+    widget.onBeforeOpen?.call();
+    if (_controller.isOpen) {
+      _controller.close();
+    } else {
+      _controller.open();
+    }
+  }
+
+  void _select(String action) {
+    _controller.close();
+    _triggerFocusNode.requestFocus();
+    final result = widget.onAction(action);
+    if (result is Future<void>) unawaited(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final thread = widget.thread;
+    return SizedBox.square(
+      dimension: widget.minTarget,
+      child: MenuAnchor(
+        key: StudioDriverKeys.threadMenu(thread.id),
+        controller: _controller,
+        childFocusNode: _triggerFocusNode,
+        alignmentOffset: const Offset(6, 6),
+        onOpen: () => widget.onOpenChanged?.call(true),
+        onClose: () => widget.onOpenChanged?.call(false),
+        menuChildren: [
+          if (widget.canRetryRecovery && widget.recoveryIssueId != null)
+            MenuItemButton(
+              key: StudioDriverKeys.retryRecoveryIssue(widget.recoveryIssueId!),
+              overflowAxis: Axis.vertical,
+              onPressed: () => _select('retry'),
+              child: Text(context.l10n.runtimeFatalRetry),
+            ),
+          MenuItemButton(
+            overflowAxis: Axis.vertical,
+            onPressed: () => _select('pin'),
+            child: Text(
+              widget.pinned
+                  ? context.l10n.sidebarUnpin
+                  : context.l10n.sidebarPin,
+            ),
+          ),
+          MenuItemButton(
+            key: StudioDriverKeys.renameThread(thread.id),
+            overflowAxis: Axis.vertical,
+            onPressed: widget.blocked ? null : () => _select('rename'),
+            child: Text(context.l10n.sidebarRenameSession),
+          ),
+          MenuItemButton(
+            // 菜单内的归档入口使用独立 literal key：行内常驻归档按钮复用
+            // StudioDriverKeys.archiveThread（唯一随行存在的 Driver 标识），
+            // 两者同时可见时不会让 Driver 唯一 finder 失效。
+            key: ValueKey('thread-menu-archive-${thread.id}'),
+            overflowAxis: Axis.vertical,
+            onPressed: widget.blocked ? null : () => _select('archive'),
+            child: Text(context.l10n.sidebarArchiveSession),
+          ),
+          MenuItemButton(
+            key: StudioDriverKeys.copyThreadWorkspace(thread.id),
+            overflowAxis: Axis.vertical,
+            onPressed: () => _select('copy-workspace'),
+            child: Text(context.l10n.sidebarCopyPath),
+          ),
+          const Divider(key: ValueKey('thread-menu-workspace'), height: 1),
+          _workspaceMenuEntry(
+            context,
+            key: StudioDriverKeys.openThreadVsCode(thread.id),
+            icon: Icons.code,
+            label: context.l10n.sessionOpenInVsCode,
+            targetDescription: widget.targetDescription,
+            available: widget.vsCodeAvailable,
+            unavailableReason: context.l10n.sessionVsCodeUnavailable,
+            onActivated: () => _select('open-vscode'),
+          ),
+          _workspaceMenuEntry(
+            context,
+            key: ValueKey('thread-menu-open-zed-${thread.id}'),
+            icon: Icons.code,
+            label: context.l10n.sessionOpenInZed,
+            targetDescription: widget.targetDescription,
+            available: widget.zedAvailable,
+            unavailableReason: context.l10n.sessionZedUnavailable,
+            onActivated: () => _select('open-zed'),
+          ),
+          _workspaceMenuEntry(
+            context,
+            key: StudioDriverKeys.openThreadTerminal(thread.id),
+            icon: Icons.terminal,
+            label: context.l10n.sessionOpenInTerminal,
+            targetDescription: widget.targetDescription,
+            available: widget.terminalAvailable,
+            unavailableReason: _terminalUnavailableReason(context),
+            onActivated: () => _select('open-terminal'),
+          ),
+        ],
+        child: IconButton(
+          onPressed: _open,
+          focusNode: _triggerFocusNode,
+          visualDensity: VisualDensity.standard,
+          style: const ButtonStyle(
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          padding: EdgeInsets.zero,
+          icon: const Icon(Icons.more_horiz, size: 18),
+        ),
+      ),
+    );
+  }
+}
+
 /// 侧栏会话菜单中的会话级打开条目；不可用时禁用并说明原因，
 /// 悬停与读屏可获取完整打开目标。
-StudioMenuItem<String> _workspaceMenuItem(
+MenuItemButton _workspaceMenuEntry(
   BuildContext context, {
   required Key key,
-  required String value,
   required IconData icon,
   required String label,
   required String targetDescription,
   required bool available,
   required String unavailableReason,
+  required VoidCallback onActivated,
 }) {
   final message = available
       ? '$label\n$targetDescription'
       : '$label\n$targetDescription\n$unavailableReason';
-  return StudioMenuItem<String>(
-    value: value,
-    itemKey: key,
-    enabled: available,
-    tooltip: message,
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 18),
-        const SizedBox(width: 10),
-        Flexible(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-              Text(
-                available ? targetDescription : unavailableReason,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: context.text.labelSmall?.copyWith(
-                  color: available
-                      ? context.colors.onSurfaceVariant
-                      : context.colors.error,
+  return MenuItemButton(
+    key: key,
+    overflowAxis: Axis.vertical,
+    onPressed: available ? onActivated : null,
+    child: Tooltip(
+      message: message,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  available ? targetDescription : unavailableReason,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.text.labelSmall?.copyWith(
+                    color: available
+                        ? context.colors.onSurfaceVariant
+                        : context.colors.error,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }

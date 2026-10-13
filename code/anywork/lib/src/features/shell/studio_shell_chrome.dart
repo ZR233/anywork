@@ -118,9 +118,6 @@ String _purposeLabel(BuildContext context, String? purpose) =>
       String value => value,
     };
 
-/// 工作区菜单的三个外部入口目标。
-enum _WorkspaceTarget { vsCode, zed, terminal }
-
 /// 会话顶栏「打开工作区」菜单：并列 VS Code、Zed 与终端三个外部入口。
 ///
 /// 有当前会话及所属项目即显示入口，不以编辑器安装情况控制整个入口；
@@ -137,6 +134,7 @@ class _SessionOpenWorkspaceMenu extends ConsumerStatefulWidget {
 
 class _SessionOpenWorkspaceMenuState
     extends ConsumerState<_SessionOpenWorkspaceMenu> {
+  final MenuController _controller = MenuController();
   final FocusNode _triggerFocusNode = FocusNode(
     debugLabel: 'session-open-workspace-menu',
   );
@@ -165,8 +163,11 @@ class _SessionOpenWorkspaceMenuState
     final targetDescription = alias == null
         ? thread.workspacePath
         : '$alias:${thread.workspacePath}';
-    return StudioMenu<_WorkspaceTarget>.custom(
-      itemBuilder: (context) => [
+    return MenuAnchor(
+      controller: _controller,
+      childFocusNode: _triggerFocusNode,
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceVsCode,
           icon: _appIcon(HostAppIcon.vsCode, Icons.code),
@@ -174,7 +175,8 @@ class _SessionOpenWorkspaceMenuState
           targetDescription: targetDescription,
           available: vsCodeAvailable,
           unavailableReason: context.l10n.sessionVsCodeUnavailable,
-          value: _WorkspaceTarget.vsCode,
+          onActivated: () =>
+              _openThreadWorkspaceInVsCode(context, ref, project, thread),
         ),
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceZed,
@@ -183,7 +185,8 @@ class _SessionOpenWorkspaceMenuState
           targetDescription: targetDescription,
           available: zedAvailable,
           unavailableReason: context.l10n.sessionZedUnavailable,
-          value: _WorkspaceTarget.zed,
+          onActivated: () =>
+              _openThreadWorkspaceInZed(context, ref, project, thread),
         ),
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceTerminal,
@@ -192,79 +195,81 @@ class _SessionOpenWorkspaceMenuState
           targetDescription: targetDescription,
           available: terminalAvailable,
           unavailableReason: _terminalUnavailableReason(context),
-          value: _WorkspaceTarget.terminal,
+          onActivated: () =>
+              _openThreadWorkspaceInTerminal(context, ref, project, thread),
         ),
       ],
-      onSelected: (target) {
-        switch (target) {
-          case _WorkspaceTarget.vsCode:
-            _openThreadWorkspaceInVsCode(context, ref, project, thread);
-          case _WorkspaceTarget.zed:
-            _openThreadWorkspaceInZed(context, ref, project, thread);
-          case _WorkspaceTarget.terminal:
-            _openThreadWorkspaceInTerminal(context, ref, project, thread);
-        }
-      },
-      childFocusNode: _triggerFocusNode,
-      triggerBuilder: (context, controller, canOpen) {
-        return Tooltip(
-          message: '$label\n$targetDescription',
-          child: TextButton(
-            key: StudioDriverKeys.sessionOpenWorkspaceMenu,
-            onPressed: canOpen ? controller.toggle : null,
-            focusNode: _triggerFocusNode,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.folder_open_outlined,
-                  size: 18,
-                  color: context.colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: 8),
-                Text(label),
-                const SizedBox(width: 4),
-                Icon(
-                  Icons.keyboard_arrow_down,
-                  size: 16,
-                  color: context.colors.onSurfaceVariant,
-                ),
-              ],
-            ),
+      child: Tooltip(
+        message: '$label\n$targetDescription',
+        child: TextButton(
+          key: StudioDriverKeys.sessionOpenWorkspaceMenu,
+          onPressed: () {
+            if (_controller.isOpen) {
+              _controller.close();
+            } else {
+              _controller.open();
+            }
+          },
+          focusNode: _triggerFocusNode,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.folder_open_outlined,
+                size: 18,
+                color: context.colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Text(label),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.keyboard_arrow_down,
+                size: 16,
+                color: context.colors.onSurfaceVariant,
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
   /// 单行条目按内容自然收紧；完整目标与不可用原因由提示和读屏说明承载。
-  StudioMenuItem<_WorkspaceTarget> _menuItem({
+  MenuItemButton _menuItem({
     required Key key,
     required Widget icon,
     required String label,
     required String targetDescription,
     required bool available,
     required String unavailableReason,
-    required _WorkspaceTarget value,
+    required VoidCallback onActivated,
   }) {
     // 覆盖整个按钮（包括禁用项），并保留 Tooltip 默认的读屏说明。
     final tooltipMessage = available
         ? '$label\n$targetDescription'
         : '$label\n$targetDescription\n$unavailableReason';
-    return StudioMenuItem<_WorkspaceTarget>(
-      value: value,
-      enabled: available,
-      itemKey: key,
-      tooltip: tooltipMessage,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          icon,
-          const SizedBox(width: 12),
-          Flexible(
-            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-        ],
+    return MenuItemButton(
+      key: key,
+      overflowAxis: Axis.vertical,
+      onPressed: available
+          ? () {
+              _controller.close();
+              _triggerFocusNode.requestFocus();
+              onActivated();
+            }
+          : null,
+      child: Tooltip(
+        message: tooltipMessage,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            icon,
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -468,22 +473,11 @@ class _AgentSwitcher extends ConsumerStatefulWidget {
 }
 
 class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
+  final MenuController _controller = MenuController();
   final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'agent-switcher');
-  Timer? _hoverTimer;
-  StudioMenuController? _menu;
-  bool _hadTriggerFocus = false;
-  bool _pointerOnTrigger = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _triggerFocusNode.addListener(_handleTriggerFocus);
-  }
 
   @override
   void dispose() {
-    _hoverTimer?.cancel();
-    _triggerFocusNode.removeListener(_handleTriggerFocus);
     _triggerFocusNode.dispose();
     super.dispose();
   }
@@ -506,24 +500,35 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
     final menuHeight = (viewport.height - 96)
         .clamp(0.0, _agentMenuMaxHeight)
         .toDouble();
-    return StudioMenu<String>.custom(
-      menuConstraints: BoxConstraints(
-        minWidth: menuWidth,
-        maxWidth: menuWidth,
-        maxHeight: menuHeight,
-      ),
+    return MenuAnchor(
+      controller: _controller,
       childFocusNode: _triggerFocusNode,
-      onSelected: (threadId) => unawaited(
-        ref
-            .read(directoryCommandsProvider.notifier)
-            .selectAgentThread(threadId),
+      style: MenuStyle(
+        minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
+        maximumSize: WidgetStatePropertyAll(Size(menuWidth, menuHeight)),
       ),
-      itemBuilder: (context) => [
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [
         for (final thread in threads)
-          StudioMenuItem<String>(
-            value: thread.id,
-            selected: thread.id == widget.state.selectedThreadId,
-            itemKey: StudioDriverKeys.agentRow(thread.id),
+          MenuItemButton(
+            key: StudioDriverKeys.agentRow(thread.id),
+            overflowAxis: Axis.vertical,
+            onPressed: () {
+              _controller.close();
+              _triggerFocusNode.requestFocus();
+              unawaited(
+                ref
+                    .read(directoryCommandsProvider.notifier)
+                    .selectAgentThread(thread.id),
+              );
+            },
+            style: thread.id == widget.state.selectedThreadId
+                ? ButtonStyle(
+                    backgroundColor: WidgetStatePropertyAll(
+                      Theme.of(context).colorScheme.surfaceContainerHigh,
+                    ),
+                  )
+                : null,
             child: LayoutBuilder(
               builder: (context, constraints) {
                 // 真实层级深度逐级缩进，不设固定深度上限；宽度不足时
@@ -573,41 +578,27 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
             ),
           ),
       ],
-      triggerBuilder: (context, controller, canOpen) {
-        _menu = controller;
-        return MouseRegion(
-          onEnter: (_) {
-            _hoverTimer?.cancel();
-            _hoverTimer = Timer(const Duration(milliseconds: 250), () {
-              // 悬停打开不抢走正在输入的焦点。
-              if (mounted && !controller.isOpen) {
-                controller.open(focusTrigger: false);
-              }
-            });
-          },
-          onExit: (_) => _hoverTimer?.cancel(),
-          child: Listener(
-            onPointerDown: (_) => _pointerOnTrigger = true,
-            onPointerUp: (_) => _pointerOnTrigger = false,
-            onPointerCancel: (_) => _pointerOnTrigger = false,
-            child: TextButton(
-              key: StudioDriverKeys.agentSwitcher,
-              focusNode: _triggerFocusNode,
-              onPressed: canOpen ? controller.toggle : null,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.circle, size: 6, color: aggregateColor),
-                  const SizedBox(width: 8),
-                  Text(context.l10n.statusAgentsCount(threads.length)),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.keyboard_arrow_down, size: 14),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+      child: TextButton(
+        key: StudioDriverKeys.agentSwitcher,
+        focusNode: _triggerFocusNode,
+        onPressed: () {
+          if (_controller.isOpen) {
+            _controller.close();
+          } else {
+            _controller.open();
+          }
+        },
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.circle, size: 6, color: aggregateColor),
+            const SizedBox(width: 8),
+            Text(context.l10n.statusAgentsCount(threads.length)),
+            const SizedBox(width: 4),
+            const Icon(Icons.keyboard_arrow_down, size: 14),
+          ],
+        ),
+      ),
     );
   }
 
@@ -682,34 +673,6 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
         ],
       ],
     );
-  }
-
-  void _handleTriggerFocus() {
-    final focused = _triggerFocusNode.hasFocus;
-    if (focused == _hadTriggerFocus) {
-      return;
-    }
-    _hadTriggerFocus = focused;
-    if (!focused) {
-      return;
-    }
-    // 点击按下产生的焦点增益不属于键盘进入：同一点击的 onPressed toggle
-    // 负责开关，这里再自动开会在 click 后立刻把刚打开的菜单关回去。
-    if (_pointerOnTrigger) {
-      return;
-    }
-    final menu = _menu;
-    if (menu == null) {
-      return;
-    }
-    // 选中条目后共享菜单会把焦点恢复到触发器；这次恢复不视为键盘进入，
-    // 消费一次性抑制，避免立刻自动重开。
-    if (menu.consumeAutoOpenSuppression()) {
-      return;
-    }
-    if (mounted && !menu.isOpen) {
-      menu.open();
-    }
   }
 }
 

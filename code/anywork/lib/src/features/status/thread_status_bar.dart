@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/models/studio_models.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../shared/studio_menu.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'context_usage_readout.dart';
 import 'session_selectors.dart';
@@ -332,15 +331,13 @@ class _StatusOverflow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StudioIconMenu<_StatusOverflowAction>(
+    return MenuAnchor(
       key: const ValueKey('status-overflow'),
-      tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
-      icon: const Icon(Icons.more_horiz, size: 18),
-      padding: EdgeInsets.zero,
-      onSelected: (action) => _showDetail(context, action),
-      itemBuilder: (context) => [
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [
         if (effort case final value?)
-          StudioMenuItem<_StatusOverflowAction>.header(
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Text(
               '${context.l10n.statusReasoningEffort}: $value',
               maxLines: 1,
@@ -348,8 +345,10 @@ class _StatusOverflow extends StatelessWidget {
             ),
           ),
         if (capabilities.isNotEmpty)
-          StudioMenuItem<_StatusOverflowAction>(
-            value: _StatusOverflowAction.capabilities,
+          MenuItemButton(
+            overflowAxis: Axis.vertical,
+            onPressed: () =>
+                _showDetail(context, _StatusOverflowAction.capabilities),
             child: Text(
               capabilities,
               maxLines: 2,
@@ -357,9 +356,10 @@ class _StatusOverflow extends StatelessWidget {
             ),
           ),
         if (lspServers.isNotEmpty)
-          StudioMenuItem<_StatusOverflowAction>(
-            value: _StatusOverflowAction.lsp,
-            itemKey: StudioDriverKeys.lspActivityOverflow(),
+          MenuItemButton(
+            key: StudioDriverKeys.lspActivityOverflow(),
+            overflowAxis: Axis.vertical,
+            onPressed: () => _showDetail(context, _StatusOverflowAction.lsp),
             child: Text(
               _lspOverflowSummary(context, lspServers),
               maxLines: 2,
@@ -367,6 +367,18 @@ class _StatusOverflow extends StatelessWidget {
             ),
           ),
       ],
+      builder: (context, controller, child) => IconButton(
+        tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
+        onPressed: () {
+          if (controller.isOpen) {
+            controller.close();
+          } else {
+            controller.open();
+          }
+        },
+        padding: EdgeInsets.zero,
+        icon: const Icon(Icons.more_horiz, size: 18),
+      ),
     );
   }
 

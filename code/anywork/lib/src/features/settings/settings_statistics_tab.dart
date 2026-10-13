@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_scope.dart';
@@ -402,25 +401,33 @@ class _HistoryHeader extends StatelessWidget {
         final filter = SizedBox(
           key: StudioDriverKeys.statisticsFilter,
           width: filterWidth,
-          child: StudioFormSelectField<String?>(
+          child: DropdownMenu<String?>(
             // Caller-owned canonical selection, not a draft edit: the field
-            // follows [value] without a value-driven key, so choosing a
-            // filter never remounts the field's state and its real trigger
-            // focus node survives the parent rebuild (an explicit null —
-            // "all models" — stays a legitimate controlled value).
-            value: value,
-            isExpanded: true,
-            decoration: const InputDecoration(isDense: true),
-            items: [
-              StudioFormSelectItem<String?>(
+            // follows [value] via initialSelection without a value-driven
+            // key, so choosing a filter never remounts the field's state
+            // (an explicit null — "all models" — stays a legitimate value;
+            // 初始空选择以提示文案呈现“全部模型”）。
+            initialSelection: value,
+            hintText: context.l10n.settingsStatisticsAllModels,
+            expandedInsets: EdgeInsets.zero,
+            dropdownMenuEntries: [
+              DropdownMenuEntry<String?>(
                 value: null,
-                child: Text(context.l10n.settingsStatisticsAllModels),
+                label: context.l10n.settingsStatisticsAllModels,
+                labelWidget: Text(context.l10n.settingsStatisticsAllModels),
               ),
               for (final sample in history)
                 if (seen.add(sample.filterKey))
-                  StudioFormSelectItem<String?>(
+                  DropdownMenuEntry<String?>(
                     value: sample.filterKey,
-                    child: Text(
+                    label: _formatPerformanceIdentity(
+                      context,
+                      sample.providerDisplayName,
+                      sample.providerInstanceId,
+                      sample.model,
+                      sample.reasoningEffort,
+                    ),
+                    labelWidget: Text(
                       _formatPerformanceIdentity(
                         context,
                         sample.providerDisplayName,
@@ -433,9 +440,16 @@ class _HistoryHeader extends StatelessWidget {
                   ),
               for (final summary in summaries)
                 if (seen.add(summary.filterKey))
-                  StudioFormSelectItem<String?>(
+                  DropdownMenuEntry<String?>(
                     value: summary.filterKey,
-                    child: Text(
+                    label: _formatPerformanceIdentity(
+                      context,
+                      summary.providerDisplayName,
+                      summary.providerInstanceId,
+                      summary.model,
+                      summary.reasoningEffort,
+                    ),
+                    labelWidget: Text(
                       _formatPerformanceIdentity(
                         context,
                         summary.providerDisplayName,
@@ -447,7 +461,7 @@ class _HistoryHeader extends StatelessWidget {
                     ),
                   ),
             ],
-            onChanged: onChanged,
+            onSelected: onChanged,
           ),
         );
         final mismatchFilter = InkWell(

@@ -6,10 +6,154 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
-import '../../shared/studio_menu.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import 'status_view.dart';
+
+/// One row of a [_QuietSelectorMenu].
+class _QuietMenuItem<T> {
+  const _QuietMenuItem({
+    required this.value,
+    required this.child,
+    this.enabled = true,
+    this.selected = false,
+    this.itemKey,
+  });
+
+  /// The value reported through [StudioMenuLabel]-style selectors when this
+  /// row is activated.
+  final T value;
+
+  /// Row content inside the menu.
+  final Widget child;
+
+  /// Whether the row can be activated.
+  final bool enabled;
+
+  /// Marks the row as the current choice.
+  final bool selected;
+
+  /// Stable interaction key for the row.
+  final Key? itemKey;
+}
+
+/// Quiet-label menu shared by the mode, workspace and effort selectors.
+///
+/// Plain Material [MenuAnchor] composition: anchoring, keyboard navigation,
+/// Escape/outside-tap closes and focus handling are framework behavior. This
+/// widget only contributes the borderless [StudioMenuLabel] trigger look and
+/// the selected-row presentation.
+class _QuietSelectorMenu<T> extends StatefulWidget {
+  const _QuietSelectorMenu({
+    required this.tooltip,
+    required this.items,
+    required this.child,
+    this.onSelected,
+    this.enabled = true,
+    this.onBlockedTap,
+    super.key,
+  });
+
+  /// Tooltip and semantics label for the trigger.
+  final String tooltip;
+
+  /// Current rows; refreshed with every owner rebuild, including while open.
+  final List<_QuietMenuItem<T>> items;
+
+  /// Reported with the activated row's value.
+  final ValueChanged<T>? onSelected;
+
+  /// Quiet-label trigger content.
+  final Widget child;
+
+  /// Whether rows can be activated and the trigger can open the menu.
+  final bool enabled;
+
+  /// Invoked instead of opening when [enabled] is false.
+  final VoidCallback? onBlockedTap;
+
+  @override
+  State<_QuietSelectorMenu<T>> createState() => _QuietSelectorMenuState<T>();
+}
+
+class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
+  final MenuController _controller = MenuController();
+  final FocusNode _triggerFocusNode = FocusNode(
+    debugLabel: 'quiet-selector-menu',
+  );
+
+  @override
+  void dispose() {
+    _triggerFocusNode.dispose();
+    super.dispose();
+  }
+
+  bool get _canOpen => widget.enabled && widget.items.isNotEmpty;
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      controller: _controller,
+      childFocusNode: _triggerFocusNode,
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [for (final item in widget.items) _buildRow(context, item)],
+      child: _buildTrigger(),
+    );
+  }
+
+  Widget _buildTrigger() {
+    return Tooltip(
+      message: widget.tooltip,
+      child: Semantics(
+        button: true,
+        enabled: widget.enabled || widget.onBlockedTap != null,
+        label: widget.tooltip,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            focusNode: _triggerFocusNode,
+            onTap: _canOpen
+                ? () {
+                    if (_controller.isOpen) {
+                      _controller.close();
+                    } else {
+                      _controller.open();
+                    }
+                  }
+                : widget.onBlockedTap,
+            child: ExcludeFocus(child: widget.child),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRow(BuildContext context, _QuietMenuItem<T> item) {
+    final selected = item.selected;
+    return MenuItemButton(
+      key: item.itemKey,
+      // Vertical overflow hands finite width to rows with flexible content,
+      // the same axis Material popup menus use.
+      overflowAxis: Axis.vertical,
+      onPressed: widget.enabled && item.enabled
+          ? () {
+              _controller.close();
+              _triggerFocusNode.requestFocus();
+              widget.onSelected?.call(item.value);
+            }
+          : null,
+      style: selected
+          ? ButtonStyle(
+              backgroundColor: WidgetStatePropertyAll(
+                Theme.of(context).colorScheme.surfaceContainerHigh,
+              ),
+            )
+          : null,
+      child: Semantics(selected: selected, child: item.child),
+    );
+  }
+}
 
 /// 根会话的模式选择器；起始页传新会话草稿，状态栏传当前 Thread 的 mode。
 class SessionModeSelector extends ConsumerWidget {
@@ -36,16 +180,16 @@ class SessionModeSelector extends ConsumerWidget {
         .where((descriptor) => descriptor.id == mode.id)
         .firstOrNull
         ?.displayName;
-    return StudioMenu<ThreadModeId>(
+    return _QuietSelectorMenu<ThreadModeId>(
       key: StudioDriverKeys.sessionMode,
       tooltip: enabled
           ? context.l10n.statusSessionMode
           : context.l10n.statusSessionModeLocked,
       enabled: enabled,
       onSelected: onSelected,
-      itemBuilder: (context) => [
+      items: [
         for (final option in options)
-          StudioMenuItem<ThreadModeId>(
+          _QuietMenuItem<ThreadModeId>(
             value: option,
             selected: option == mode,
             itemKey: StudioDriverKeys.sessionModeOption(option.name),
@@ -93,12 +237,12 @@ class SessionWorkspaceModeSelector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = context.l10n;
-    return StudioMenu<ThreadWorkspaceMode>(
+    return _QuietSelectorMenu<ThreadWorkspaceMode>(
       key: StudioDriverKeys.sessionWorkspaceMode,
       tooltip: l10n.composerWorkspaceModeLabel,
       onSelected: onSelected,
-      itemBuilder: (context) => [
-        StudioMenuItem<ThreadWorkspaceMode>(
+      items: [
+        _QuietMenuItem<ThreadWorkspaceMode>(
           selected: !mode.isWorktree,
           itemKey: StudioDriverKeys.sessionWorkspaceModeOption(
             ThreadWorkspaceMode.local.id,
@@ -109,7 +253,7 @@ class SessionWorkspaceModeSelector extends ConsumerWidget {
             label: l10n.composerWorkspaceModeLocal,
           ),
         ),
-        StudioMenuItem<ThreadWorkspaceMode>(
+        _QuietMenuItem<ThreadWorkspaceMode>(
           selected: mode.isWorktree,
           itemKey: StudioDriverKeys.sessionWorkspaceModeOption(
             ThreadWorkspaceMode.worktree.id,
@@ -342,23 +486,25 @@ class ReasoningEffortSelector extends StatelessWidget {
         : selectedEffort;
     final enabled =
         currentModel != null && efforts.isNotEmpty && blockedReason == null;
-    return StudioMenu<String>(
+    return _QuietSelectorMenu<String>(
       key: StudioDriverKeys.reasoningEffort,
       tooltip: blockedReason ?? context.l10n.statusReasoningEffort,
       enabled: enabled,
       onBlockedTap: blockedReason == null
           ? null
           : () => onExplain?.call(blockedReason!),
-      onSelected: (nextEffort) async {
+      onSelected: (nextEffort) {
+        FutureOr<void>? result;
         if (onEffortSelected case final callback?) {
-          await callback(nextEffort);
-        } else {
-          await onSelected?.call(providerId, model, nextEffort);
+          result = callback(nextEffort);
+        } else if (onSelected case final callback?) {
+          result = callback(providerId, model, nextEffort);
         }
+        if (result is Future<void>) unawaited(result);
       },
-      itemBuilder: (context) => [
+      items: [
         for (final effort in efforts)
-          StudioMenuItem<String>(
+          _QuietMenuItem<String>(
             value: effort,
             selected: effort == selectedEffort,
             itemKey: StudioDriverKeys.reasoningEffortOption(effort),

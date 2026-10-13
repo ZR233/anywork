@@ -1,6 +1,6 @@
 part of 'composer_dock.dart';
 
-class _AttachmentMenu extends StatelessWidget {
+class _AttachmentMenu extends StatefulWidget {
   const _AttachmentMenu({
     required this.enabled,
     required this.localCapabilities,
@@ -16,40 +16,76 @@ class _AttachmentMenu extends StatelessWidget {
   final Future<void> Function() onAddUrl;
 
   @override
+  State<_AttachmentMenu> createState() => _AttachmentMenuState();
+}
+
+class _AttachmentMenuState extends State<_AttachmentMenu> {
+  final MenuController _controller = MenuController();
+  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'attachment-menu');
+
+  @override
+  void dispose() {
+    _triggerFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final hasAny =
-        localCapabilities.isNotEmpty || remoteCapabilities.isNotEmpty;
-    return StudioIconMenu<String>(
+        widget.localCapabilities.isNotEmpty ||
+        widget.remoteCapabilities.isNotEmpty;
+    final enabled = widget.enabled && hasAny;
+    return MenuAnchor(
       key: StudioDriverKeys.attachmentEntry,
-      tooltip: hasAny
-          ? context.l10n.composerAttachmentAddTooltip
-          : context.l10n.composerAttachmentUnsupportedTooltip,
-      enabled: enabled && hasAny,
-      icon: const Icon(Icons.attach_file),
-      onSelected: (value) {
-        if (value == 'local') unawaited(onPickLocal(localCapabilities));
-        if (value == 'url') unawaited(onAddUrl());
-      },
-      itemBuilder: (context) => [
-        if (localCapabilities.isNotEmpty)
-          StudioMenuItem<String>(
-            value: 'local',
-            itemKey: StudioDriverKeys.attachmentLocal,
+      controller: _controller,
+      childFocusNode: _triggerFocusNode,
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [
+        if (widget.localCapabilities.isNotEmpty)
+          MenuItemButton(
+            key: StudioDriverKeys.attachmentLocal,
+            overflowAxis: Axis.vertical,
+            onPressed: () {
+              _controller.close();
+              _triggerFocusNode.requestFocus();
+              unawaited(widget.onPickLocal(widget.localCapabilities));
+            },
             child: ListTile(
               leading: const Icon(Icons.folder_open_outlined),
               title: Text(context.l10n.composerAttachmentPickLocal),
             ),
           ),
-        if (remoteCapabilities.isNotEmpty)
-          StudioMenuItem<String>(
-            value: 'url',
-            itemKey: StudioDriverKeys.attachmentUrl,
+        if (widget.remoteCapabilities.isNotEmpty)
+          MenuItemButton(
+            key: StudioDriverKeys.attachmentUrl,
+            overflowAxis: Axis.vertical,
+            onPressed: () {
+              _controller.close();
+              _triggerFocusNode.requestFocus();
+              unawaited(widget.onAddUrl());
+            },
             child: ListTile(
               leading: const Icon(Icons.link),
               title: Text(context.l10n.composerAddUrlTitle),
             ),
           ),
       ],
+      child: IconButton(
+        tooltip: hasAny
+            ? context.l10n.composerAttachmentAddTooltip
+            : context.l10n.composerAttachmentUnsupportedTooltip,
+        onPressed: enabled
+            ? () {
+                if (_controller.isOpen) {
+                  _controller.close();
+                } else {
+                  _controller.open();
+                }
+              }
+            : null,
+        focusNode: _triggerFocusNode,
+        icon: const Icon(Icons.attach_file),
+      ),
     );
   }
 }

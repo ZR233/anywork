@@ -7,7 +7,6 @@ import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/provider_brand.dart';
 import '../../shared/studio_chrome.dart';
-import '../../shared/studio_menu.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_provider_drafts.dart';
@@ -452,8 +451,6 @@ class _ProviderQuotaRow extends StatelessWidget {
   }
 }
 
-enum _ProviderRowAction { setDefault, refresh, edit, delete }
-
 class _ProviderRowMenu extends StatelessWidget {
   const _ProviderRowMenu({
     required this.isDefault,
@@ -471,26 +468,12 @@ class _ProviderRowMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StudioIconMenu<_ProviderRowAction>(
-      tooltip: context.l10n.settingsProviderActions,
-      icon: const Icon(Icons.more_horiz),
-      iconSize: 20,
-      onSelected: (action) {
-        switch (action) {
-          case _ProviderRowAction.setDefault:
-            return onSetDefault();
-          case _ProviderRowAction.refresh:
-            return onRefreshUsage();
-          case _ProviderRowAction.edit:
-            return onEdit();
-          case _ProviderRowAction.delete:
-            return onDelete?.call();
-        }
-      },
-      itemBuilder: (context) => [
-        StudioMenuItem<_ProviderRowAction>(
-          value: _ProviderRowAction.setDefault,
-          enabled: !isDefault,
+    return MenuAnchor(
+      alignmentOffset: const Offset(6, 6),
+      menuChildren: [
+        MenuItemButton(
+          overflowAxis: Axis.vertical,
+          onPressed: isDefault ? null : () => onSetDefault(),
           child: _ProviderMenuLabel(
             icon: isDefault
                 ? Icons.check_circle_outline
@@ -500,29 +483,44 @@ class _ProviderRowMenu extends StatelessWidget {
                 : context.l10n.settingsSetAsDefaultProvider,
           ),
         ),
-        StudioMenuItem<_ProviderRowAction>(
-          value: _ProviderRowAction.refresh,
+        MenuItemButton(
+          overflowAxis: Axis.vertical,
+          onPressed: () => onRefreshUsage(),
           child: _ProviderMenuLabel(
             icon: Icons.refresh,
             label: context.l10n.settingsRefreshUsage,
           ),
         ),
-        StudioMenuItem<_ProviderRowAction>(
-          value: _ProviderRowAction.edit,
+        MenuItemButton(
+          overflowAxis: Axis.vertical,
+          onPressed: () => onEdit(),
           child: _ProviderMenuLabel(
             icon: Icons.edit_outlined,
             label: context.l10n.settingsEditProvider,
           ),
         ),
         if (onDelete != null)
-          StudioMenuItem<_ProviderRowAction>(
-            value: _ProviderRowAction.delete,
+          MenuItemButton(
+            overflowAxis: Axis.vertical,
+            onPressed: () => onDelete?.call(),
             child: _ProviderMenuLabel(
               icon: Icons.delete_outline,
               label: context.l10n.settingsDeleteProvider,
             ),
           ),
       ],
+      builder: (context, controller, child) => IconButton(
+        tooltip: context.l10n.settingsProviderActions,
+        onPressed: () {
+          if (controller.isOpen) {
+            controller.close();
+          } else {
+            controller.open();
+          }
+        },
+        iconSize: 20,
+        icon: const Icon(Icons.more_horiz),
+      ),
     );
   }
 }

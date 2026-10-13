@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
 import 'provider_brand.dart';
-import 'studio_menu.dart';
 import 'studio_driver_keys.dart';
 import 'studio_menu_label.dart';
 
@@ -75,12 +74,14 @@ typedef ModelSelectionOptionKeyBuilder = Key Function(
 
 /// Shared compact model picker for session routes and Agent settings.
 ///
-/// This widget renders the session-style quiet trigger with the
-/// provider-grouped popup menu. It only presents the supplied choices and
+/// The menu is a plain Material [MenuAnchor] with [MenuItemButton] rows:
+/// anchoring, window clamping, keyboard navigation, Escape and outside-tap
+/// closes, and focus handling are framework behavior. This widget only owns
+/// presentation (provider-grouped rows, capability cards, selected hints) and
 /// reports a selection; it never chooses a fallback route or persists the
-/// result. Callers own the surrounding field description and validation
-/// hints because the trigger itself carries no form decoration.
-class ModelRouteSelector extends StatelessWidget {
+/// result. Callers own the surrounding field description and validation hints
+/// because the trigger itself carries no form decoration.
+class ModelRouteSelector extends StatefulWidget {
   const ModelRouteSelector({
     required this.options,
     required this.providerId,
@@ -116,83 +117,187 @@ class ModelRouteSelector extends StatelessWidget {
   final ModelSelectionOptionKeyBuilder? optionKeyBuilder;
 
   @override
+  State<ModelRouteSelector> createState() => _ModelRouteSelectorState();
+}
+
+class _ModelRouteSelectorState extends State<ModelRouteSelector> {
+  final MenuController _controller = MenuController();
+  final FocusNode _triggerFocusNode = FocusNode(
+    debugLabel: 'model-route-selector',
+  );
+
+  /// Scroll anchor attached to the selected row so opening the menu can bring
+  /// it into view. Retargeted on every build; the menu is transient, so a key
+  /// moving between rows never needs element-stable topology.
+  final GlobalKey _selectedRowKey = GlobalKey(debugLabel: 'model-selected-row');
+
+  @override
+  void dispose() {
+    _triggerFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final selected = _findOption(options, providerId, model);
-    final selectedLabel = selected?.displayName ?? unresolvedLabel ?? model;
-    final canSelect = enabled && options.isNotEmpty;
+    final selected = _findOption(
+      widget.options,
+      widget.providerId,
+      widget.model,
+    );
+    final selectedLabel =
+        selected?.displayName ?? widget.unresolvedLabel ?? widget.model;
+    final canSelect = widget.enabled && widget.options.isNotEmpty;
     final menuSize = _menuSize(context);
     final contentWidth = math.max(0.0, menuSize.width - 32);
 
-    return StudioMenu<ModelSelectionOption>(
-      key: selectorKey,
-      tooltip: tooltip ?? fieldLabel,
-      enabled: canSelect,
-      onBlockedTap: canSelect ? null : onBlockedTap,
-      menuConstraints: BoxConstraints(
-        minWidth: menuSize.width,
-        maxWidth: menuSize.width,
-        maxHeight: menuSize.height,
-      ),
-      onSelected: onSelected,
-      itemBuilder: (context) =>
-          _popupItems(context, contentWidth: contentWidth, selected: selected),
-      child: StudioMenuLabel(
-        label: selectedLabel,
-        enabled: canSelect,
-        maxWidth: labelMaxWidth,
+    return MenuAnchor(
+      key: widget.selectorKey,
+      controller: _controller,
+      childFocusNode: _triggerFocusNode,
+      style: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
+      alignmentOffset: const Offset(6, 6),
+      onOpen: _keepSelectedItemVisible,
+      menuChildren: _menuChildren(context, contentWidth, selected),
+      child: _buildTrigger(context, canSelect, selectedLabel),
+    );
+  }
+
+  Widget _buildTrigger(
+    BuildContext context,
+    bool canSelect,
+    String selectedLabel,
+  ) {
+    final tooltip = widget.tooltip ?? widget.fieldLabel;
+    return Tooltip(
+      message: tooltip,
+      child: Semantics(
+        button: true,
+        enabled: widget.enabled || widget.onBlockedTap != null,
+        label: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            focusNode: _triggerFocusNode,
+            onTap: canSelect
+                ? () {
+                    if (_controller.isOpen) {
+                      _controller.close();
+                    } else {
+                      _controller.open();
+                    }
+                  }
+                : widget.onBlockedTap,
+            child: ExcludeFocus(
+              child: StudioMenuLabel(
+                label: selectedLabel,
+                enabled: canSelect,
+                maxWidth: widget.labelMaxWidth,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  List<StudioMenuItem<ModelSelectionOption>> _popupItems(
-    BuildContext context, {
-    required double contentWidth,
-    required ModelSelectionOption? selected,
-  }) {
-    final items = <StudioMenuItem<ModelSelectionOption>>[];
-    if (showUnresolvedOption && selected == null && unresolvedLabel != null) {
-      items.add(
-        StudioMenuItem<ModelSelectionOption>.header(
-          child: SizedBox(
-            width: contentWidth,
-            child: _unresolvedEntry(context, unresolvedLabel!),
-          ),
-        ),
+  List<Widget> _menuChildren(
+    BuildContext context,
+    double contentWidth,
+    ModelSelectionOption? selected,
+  ) {
+    final children = <Widget>[];
+    if (widget.showUnresolvedOption &&
+        selected == null &&
+        widget.unresolvedLabel != null) {
+      children.add(
+        _unresolvedEntry(context, contentWidth, widget.unresolvedLabel!),
       );
     }
     for (final group in _groups()) {
-      items.add(
-        StudioMenuItem<ModelSelectionOption>.header(
-          child: SizedBox(
-            width: contentWidth,
-            child: _providerHeading(context, group),
-          ),
-        ),
-      );
+      children.add(_providerHeading(context, contentWidth, group));
       for (final option in group.options) {
-        items.add(
-          StudioMenuItem<ModelSelectionOption>(
-            value: option,
-            selected: option == selected,
-            itemKey: _optionKey(option),
+        final isSelected = option == selected;
+        final row = MenuItemButton(
+          key: _optionKey(option),
+          // Vertical overflow lays the label out with a flex child and hands
+          // finite width to rows with Expanded content, the same axis Material
+          // popup menus use.
+          overflowAxis: Axis.vertical,
+          onPressed: () => _select(option),
+          style: isSelected
+              ? ButtonStyle(
+                  backgroundColor: WidgetStatePropertyAll(
+                    Theme.of(context).colorScheme.surfaceContainerHigh,
+                  ),
+                )
+              : null,
+          child: Semantics(
+            selected: isSelected,
             child: SizedBox(
               width: contentWidth,
               child: _modelOptionContents(
                 context,
                 option,
-                selected: option == selected,
+                selected: isSelected,
               ),
             ),
           ),
         );
+        children.add(
+          isSelected ? KeyedSubtree(key: _selectedRowKey, child: row) : row,
+        );
       }
     }
-    return items;
+    return children;
+  }
+
+  /// Activates a row: closes the menu, restores trigger focus, and reports the
+  /// selection. An async Bridge command must not become an unobserved future;
+  /// the repository owns user-facing failure state, so unexpected programmer
+  /// errors stay diagnosable through FlutterError.
+  void _select(ModelSelectionOption option) {
+    _controller.close();
+    _triggerFocusNode.requestFocus();
+    final result = widget.onSelected(option);
+    if (result is Future<void>) {
+      unawaited(
+        result.catchError((Object error, StackTrace stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'anywork model route selector',
+              context: ErrorDescription('dispatching a model selection'),
+            ),
+          );
+        }),
+      );
+    }
+  }
+
+  /// Scrolls the menu's own list so the selected row is visible, without
+  /// moving any ancestor scrollable (settings pages keep their position).
+  void _keepSelectedItemVisible() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _selectedRowKey.currentContext;
+      final renderObject = context?.findRenderObject();
+      final scrollable = context == null ? null : Scrollable.maybeOf(context);
+      if (renderObject == null ||
+          !renderObject.attached ||
+          scrollable == null ||
+          !scrollable.position.hasContentDimensions ||
+          !mounted ||
+          !_controller.isOpen) {
+        return;
+      }
+      scrollable.position.ensureVisible(renderObject, duration: Duration.zero);
+    });
   }
 
   List<_ProviderModelGroup> _groups() {
     final groups = <String, _ProviderModelGroup>{};
-    for (final option in options) {
+    for (final option in widget.options) {
       groups
           .putIfAbsent(option.providerId, () => _ProviderModelGroup(option))
           .options
@@ -202,7 +307,7 @@ class ModelRouteSelector extends StatelessWidget {
   }
 
   Key _optionKey(ModelSelectionOption option) =>
-      optionKeyBuilder?.call(option) ??
+      widget.optionKeyBuilder?.call(option) ??
       StudioDriverKeys.modelOption(option.providerId, option.model);
 
   static ModelSelectionOption? _findOption(
@@ -227,46 +332,57 @@ class ModelRouteSelector extends StatelessWidget {
 
   static Widget _providerHeading(
     BuildContext context,
+    double contentWidth,
     _ProviderModelGroup group,
   ) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-      child: Semantics(
-        header: true,
-        child: Row(
-          children: [
-            ProviderBrandMark(
-              iconKey: group.iconKey,
-              fallbackName: group.name,
-              size: 14,
-            ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                group.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
+    return SizedBox(
+      width: contentWidth,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+        child: Semantics(
+          header: true,
+          child: Row(
+            children: [
+              ProviderBrandMark(
+                iconKey: group.iconKey,
+                fallbackName: group.name,
+                size: 14,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  group.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  static Widget _unresolvedEntry(BuildContext context, String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      child: Text(
-        label,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall
-            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+  static Widget _unresolvedEntry(
+    BuildContext context,
+    double contentWidth,
+    String label,
+  ) {
+    return SizedBox(
+      width: contentWidth,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Text(
+          label,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
       ),
     );
   }
@@ -279,52 +395,49 @@ class ModelRouteSelector extends StatelessWidget {
     final modalities = option.inputCapabilities
         .map((capability) => capability.modality)
         .toSet();
-    return Semantics(
-      selected: selected,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 20,
-            child: selected
-                ? Icon(
-                    Icons.check,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.primary,
-                  )
-                : null,
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  option.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (modalities.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Wrap(
-                    key: StudioDriverKeys.modelCapabilityTags(
-                      option.providerId,
-                      option.model,
-                    ),
-                    spacing: 5,
-                    runSpacing: 4,
-                    children: [
-                      for (final modality in modalities)
-                        _CapabilityCard(modality: modality),
-                    ],
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 20,
+          child: selected
+              ? Icon(
+                  Icons.check,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary,
+                )
+              : null,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                option.displayName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (modalities.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Wrap(
+                  key: StudioDriverKeys.modelCapabilityTags(
+                    option.providerId,
+                    option.model,
                   ),
-                ],
+                  spacing: 5,
+                  runSpacing: 4,
+                  children: [
+                    for (final modality in modalities)
+                      _CapabilityCard(modality: modality),
+                  ],
+                ),
               ],
-            ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

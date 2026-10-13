@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
-import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_views.dart';
@@ -228,24 +227,25 @@ class _RoleSettingsRow extends StatelessWidget {
         : selectedEffort == null && efforts.isNotEmpty
         ? context.l10n.statusModelRouteUnavailable
         : null;
-    final effortSelector = StudioFormSelectField<String>(
+    final effortSelector = DropdownMenu<String>(
       key: StudioDriverKeys.settingsRoleEffort(role),
-      value: selectedEffort,
-      hint: effortUnresolvedLabel == null ? null : Text(effortUnresolvedLabel),
-      decoration: InputDecoration(
-        labelText: context.l10n.statusReasoningEffort,
-        isDense: true,
-      ),
-      enabled: !pending,
-      items: [
+      initialSelection: selectedEffort,
+      label: Text(context.l10n.statusReasoningEffort),
+      hintText: effortUnresolvedLabel,
+      expandedInsets: EdgeInsets.zero,
+      enabled: !pending && efforts.isNotEmpty,
+      dropdownMenuEntries: [
         for (final effort in efforts)
-          StudioFormSelectItem<String>(
+          DropdownMenuEntry<String>(
             value: effort,
-            itemKey: StudioDriverKeys.settingsRoleEffortOption(role, effort),
-            child: Text(effort, overflow: TextOverflow.ellipsis),
+            label: effort,
+            labelWidget: KeyedSubtree(
+              key: StudioDriverKeys.settingsRoleEffortOption(role, effort),
+              child: Text(effort, overflow: TextOverflow.ellipsis),
+            ),
           ),
       ],
-      onChanged: efforts.isEmpty
+      onSelected: pending
           ? null
           : (effort) {
               if (effort != null) {

@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../shared/studio_form_select.dart';
 import 'settings_common.dart';
 import 'settings_views.dart';
 
@@ -225,24 +224,26 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
                 children: [
                   SizedBox(
                     width: fieldWidth,
-                    child: StudioFormSelectField<String>(
+                    child: DropdownMenu<String>(
                       key: const ValueKey('web_search_mode'),
-                      value: _mode,
-                      hint: _knownWebSearchModes.contains(_mode)
+                      initialSelection: _mode,
+                      label: Text(context.l10n.settingsWebSearchMode),
+                      hintText: _knownWebSearchModes.contains(_mode)
                           ? null
-                          : Text(_modeLabel(context, _mode)),
-                      decoration: InputDecoration(
-                        labelText: context.l10n.settingsWebSearchMode,
-                      ),
-                      items: [
+                          : _modeLabel(context, _mode),
+                      expandedInsets: EdgeInsets.zero,
+                      dropdownMenuEntries: [
                         for (final mode in _knownWebSearchModes)
-                          StudioFormSelectItem<String>(
+                          DropdownMenuEntry<String>(
                             value: mode,
-                            itemKey: ValueKey('web_search_mode_$mode'),
-                            child: Text(_modeLabel(context, mode)),
+                            label: _modeLabel(context, mode),
+                            labelWidget: KeyedSubtree(
+                              key: ValueKey('web_search_mode_$mode'),
+                              child: Text(_modeLabel(context, mode)),
+                            ),
                           ),
                       ],
-                      onChanged: _saving
+                      onSelected: _saving
                           ? null
                           : (value) => setState(() {
                               _mode = value ?? _mode;
@@ -252,31 +253,36 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
                   ),
                   SizedBox(
                     width: fieldWidth,
-                    child: StudioFormSelectField<String>(
+                    child: DropdownMenu<String>(
                       key: const ValueKey('web_search_context_size'),
-                      value: sizeValue,
-                      hint: contextSizeIsKnown
+                      initialSelection: sizeValue,
+                      label: Text(context.l10n.settingsWebSearchContextSize),
+                      hintText: contextSizeIsKnown
                           ? null
-                          : Text(_contextSizeLabel(context, sizeValue)),
-                      decoration: InputDecoration(
-                        labelText: context.l10n.settingsWebSearchContextSize,
-                      ),
-                      items: [
-                        StudioFormSelectItem<String>(
+                          : _contextSizeLabel(context, sizeValue),
+                      expandedInsets: EdgeInsets.zero,
+                      dropdownMenuEntries: [
+                        DropdownMenuEntry<String>(
                           value: '',
-                          itemKey: const ValueKey(
-                            'web_search_context_size_default',
+                          label: context.l10n.settingsServiceDefault,
+                          labelWidget: KeyedSubtree(
+                            key: const ValueKey(
+                              'web_search_context_size_default',
+                            ),
+                            child: Text(context.l10n.settingsServiceDefault),
                           ),
-                          child: Text(context.l10n.settingsServiceDefault),
                         ),
                         for (final size in _knownWebSearchContextSizes)
-                          StudioFormSelectItem<String>(
+                          DropdownMenuEntry<String>(
                             value: size,
-                            itemKey: ValueKey('web_search_context_size_$size'),
-                            child: Text(_contextSizeLabel(context, size)),
+                            label: _contextSizeLabel(context, size),
+                            labelWidget: KeyedSubtree(
+                              key: ValueKey('web_search_context_size_$size'),
+                              child: Text(_contextSizeLabel(context, size)),
+                            ),
                           ),
                       ],
-                      onChanged: _saving
+                      onSelected: _saving
                           ? null
                           : (value) => setState(() {
                               _contextSize = value?.isEmpty == true

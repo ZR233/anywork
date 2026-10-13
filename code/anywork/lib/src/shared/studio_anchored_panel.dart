@@ -1,30 +1,25 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'studio_anchored_surface.dart';
-
 /// Anchored free-content panel for readouts and detail views.
 ///
-/// The panel rides on the single Raw-driven anchored surface: the framework
-/// primitive owns the overlay lifecycle and the shared layout layer derives
-/// constraints and position from the real anchor bounds and the actual
-/// content size, so the panel stays next to its trigger, flips above only
-/// when the content does not fit below and never opens off-screen. Long
-/// content bounds to the available side and scrolls with a visible
-/// scrollbar.
+/// The panel rides on Material's [MenuAnchor]: anchoring, positioning, window
+/// clamping, the menu panel's bounded scrolling, outside-tap dismissal and
+/// closes on ancestor scrolls or view-size changes are framework behavior.
+/// Opening is programmatic ([MenuController.open]) without a
+/// `childFocusNode`, so hover entry never moves input focus away from where
+/// the user was working.
 ///
-/// The interaction contract follows the legacy status details: hovering the
-/// trigger shows the panel transiently (hidden after [hideDelay] once the
-/// pointer and focus have left), clicking toggles it, and a
-/// [pinOpenOnTap] trigger keeps an open panel open under the pointer instead
-/// of toggling it closed. Clicks focus the trigger first so Escape can close
-/// the panel; the focus change from that click never re-shows a panel the
-/// same click closed, and after a click closes the panel the hover under the
-/// pointer does not immediately reopen it. Hover entry never steals focus
-/// from other widgets, and keyboard entry follows the trigger's own focus.
+/// What remains here is the panel's business interaction, following the
+/// legacy status details: hovering the trigger shows the panel transiently
+/// (hidden after [hideDelay] once the pointer and focus have left), clicking
+/// toggles it, and a [pinOpenOnTap] trigger keeps an open panel open under the
+/// pointer instead of toggling it closed. Clicks focus the trigger first so
+/// Escape can close the panel; the focus change from that click never
+/// re-shows a panel the same click closed, and after a click closes the panel
+/// the hover under the pointer does not immediately reopen it.
 class StudioAnchoredPanel extends StatefulWidget {
   const StudioAnchoredPanel({
     required this.child,
@@ -48,8 +43,8 @@ class StudioAnchoredPanel extends StatefulWidget {
   /// Builds the panel content; called on every rebuild while open.
   final WidgetBuilder panelBuilder;
 
-  /// Preferred panel width; clamped to the measured safe area on every open
-  /// and relayout.
+  /// Preferred panel width; the framework clamps the panel to the measured
+  /// safe area on every open and relayout.
   final double width;
 
   /// Whether hover, focus and taps can open the panel.
@@ -64,8 +59,8 @@ class StudioAnchoredPanel extends StatefulWidget {
 
   /// Whether the panel content ignores business interactions (buttons and
   /// other activators inside the content cannot be triggered). Scrolling
-  /// stays available through the scrollbar thumb and the mouse wheel, so
-  /// bounded read-only content remains fully readable.
+  /// stays available through the scrollbar thumb, so bounded read-only
+  /// content remains readable.
   final bool panelIgnoresPointer;
 
   /// Semantics label for the trigger; when present the trigger is exposed as
@@ -89,13 +84,8 @@ class StudioAnchoredPanel extends StatefulWidget {
 }
 
 class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
-  final GlobalKey<StudioAnchoredSurfaceState> _surfaceKey = GlobalKey(
-    debugLabel: 'studio-panel-surface',
-  );
+  final MenuController _controller = MenuController();
   final FocusNode _focusNode = FocusNode(debugLabel: 'studio-anchored-panel');
-  final ScrollController _scrollController = ScrollController(
-    debugLabel: 'studio-panel-content',
-  );
   Timer? _hideTimer;
   bool _focused = false;
   bool _hovering = false;
@@ -105,29 +95,31 @@ class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
   /// not reopen it until the pointer actually leaves the trigger once.
   bool _hoverReopenSuppressed = false;
 
-  StudioAnchoredSurfaceState? get _surface => _surfaceKey.currentState;
-
-  bool get _isOpen => _surface?.isOpen ?? false;
+  bool get _isOpen => _controller.isOpen;
 
   @override
   void dispose() {
     _hideTimer?.cancel();
     _focusNode.dispose();
-    _scrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return StudioAnchoredSurface(
-      key: _surfaceKey,
-      enabled: widget.enabled,
-      fixedWidth: widget.width,
-      focusTriggerNode: widget.semanticsLabel == null ? null : _focusNode,
-      onOpen: _handleOpened,
+    return MenuAnchor(
+      controller: _controller,
+      // No childFocusNode: a programmatic open must leave focus wherever the
+      // user was working instead of pulling it onto the trigger.
+      style: MenuStyle(
+        minimumSize: WidgetStatePropertyAll(Size(widget.width, 0)),
+        maximumSize: WidgetStatePropertyAll(
+          Size(widget.width, double.infinity),
+        ),
+      ),
+      alignmentOffset: const Offset(6, 6),
       onClose: _handleClosed,
-      triggerBuilder: _buildTrigger,
-      contentBuilder: _buildPanel,
+      menuChildren: [_buildPanel(context)],
+      child: _buildTrigger(context),
     );
   }
 
@@ -166,6 +158,8 @@ class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
         SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+        // Escape here covers the focused trigger; Escape from inside the open
+        // panel is handled by the menu anchor's own dismiss action.
         SingleActivator(LogicalKeyboardKey.escape): _DismissPanelIntent(),
       },
       actions: {
@@ -187,48 +181,16 @@ class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
   }
 
   Widget _buildPanel(BuildContext context) {
-    final scrollable = SingleChildScrollView(
-      controller: _scrollController,
+    if (widget.panelIgnoresPointer) {
+      // Business interactions inside read-only content are disabled; the
+      // framework's own scrollbar thumb keeps the bounded content navigable.
+      return IgnorePointer(child: widget.panelBuilder(context));
+    }
+    return MouseRegion(
+      onEnter: (_) => _cancelHide(),
+      onExit: (_) => _scheduleHide(),
       child: widget.panelBuilder(context),
     );
-    if (widget.panelIgnoresPointer) {
-      // Business interactions inside read-only content are disabled, but the
-      // scrollbar thumb and the mouse wheel keep the bounded content
-      // scrollable; the translucent listener receives wheel signals even
-      // though the content below ignores pointers.
-      return Scrollbar(
-        controller: _scrollController,
-        thumbVisibility: true,
-        child: Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerSignal: _handlePointerSignal,
-          child: IgnorePointer(child: scrollable),
-        ),
-      );
-    }
-    return Scrollbar(
-      controller: _scrollController,
-      thumbVisibility: true,
-      child: MouseRegion(
-        onEnter: (_) => _cancelHide(),
-        onExit: (_) => _scheduleHide(),
-        child: scrollable,
-      ),
-    );
-  }
-
-  void _handlePointerSignal(PointerSignalEvent event) {
-    if (event is! PointerScrollEvent ||
-        !_scrollController.hasClients ||
-        _scrollController.position.maxScrollExtent <= 0) {
-      return;
-    }
-    final position = _scrollController.position;
-    final target = (position.pixels + event.scrollDelta.dy).clamp(
-      position.minScrollExtent,
-      position.maxScrollExtent,
-    );
-    _scrollController.jumpTo(target);
   }
 
   void _handleHover(bool hovering) {
@@ -300,17 +262,13 @@ class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
     if (!widget.enabled || _isOpen) {
       return;
     }
-    // Hover entry never takes focus; focus stays wherever the user was
-    // working (for example a composer input being typed into).
-    _surface?.open(focusTrigger: false);
-  }
-
-  void _handleOpened() {
-    // Presentational open hook; the anchoring contract lives in the shared
-    // surface.
+    _controller.open();
   }
 
   void _handleClosed() {
+    // Framework-initiated closes (outside taps, ancestor scrolls, window
+    // resizes) end the session; a stale hide timer must not close a panel
+    // that a later interaction reopened.
     _cancelHide();
   }
 
@@ -339,14 +297,7 @@ class _StudioAnchoredPanelState extends State<StudioAnchoredPanel> {
       // until the pointer leaves once.
       _hoverReopenSuppressed = true;
     }
-    // Keyboard dismissals restore focus to the trigger (which already holds
-    // it for detector-driven Escapes); hover-timeout closes are native: no
-    // focus is moved and nothing is armed.
-    _surface?.close(
-      reason: fromKeyboard
-          ? StudioSurfaceCloseReason.keyboardDismiss
-          : StudioSurfaceCloseReason.native,
-    );
+    _controller.close();
   }
 }
 

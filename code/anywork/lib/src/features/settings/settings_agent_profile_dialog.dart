@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
-import '../../shared/studio_form_select.dart';
 import 'agent_workspace_mode_label.dart';
 import 'settings_common.dart';
 
@@ -181,46 +180,43 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                   },
                 ),
                 const SizedBox(height: 10),
-                StudioFormSelectField<String?>(
+                DropdownMenu<String?>(
                   key: ValueKey('agent-profile-effort-$_providerId-$_model'),
-                  initialValue: _effort,
-                  decoration: InputDecoration(
-                    labelText: l10n.statusReasoningEffort,
-                  ),
-                  items: [
-                    StudioFormSelectItem<String?>(
+                  initialSelection: _effort,
+                  label: Text(l10n.statusReasoningEffort),
+                  // 空选择即“默认”：初始态以提示文案呈现；选中默认条目后由
+                  // 条目 label 接管显示。
+                  hintText: l10n.settingsAgentProfileEffortDefault,
+                  expandedInsets: EdgeInsets.zero,
+                  dropdownMenuEntries: [
+                    DropdownMenuEntry<String?>(
                       value: null,
-                      child: Text(l10n.settingsAgentProfileEffortDefault),
+                      label: l10n.settingsAgentProfileEffortDefault,
                     ),
                     if (_effortUnavailable)
-                      StudioFormSelectItem<String?>(
+                      DropdownMenuEntry<String?>(
                         value: _effort,
-                        child: Text(_effort!),
+                        label: _effort!,
                       ),
                     for (final effort in _efforts)
-                      StudioFormSelectItem<String?>(
-                        value: effort,
-                        child: Text(effort),
-                      ),
+                      DropdownMenuEntry<String?>(value: effort, label: effort),
                   ],
-                  onChanged: (effort) => setState(() => _effort = effort),
+                  onSelected: (effort) => setState(() => _effort = effort),
                 ),
                 const SizedBox(height: 12),
-                StudioFormSelectField<AgentWorkspaceMode>(
+                DropdownMenu<AgentWorkspaceMode>(
                   key: const ValueKey('agent-profile-workspace-mode'),
-                  initialValue: _workspaceMode,
-                  decoration: InputDecoration(
-                    labelText: l10n.settingsAgentProfileWorkspaceModeField,
-                  ),
-                  items: AgentWorkspaceMode.values
-                      .map(
-                        (mode) => StudioFormSelectItem<AgentWorkspaceMode>(
-                          value: mode,
-                          child: Text(agentWorkspaceModeLabel(context, mode)),
-                        ),
-                      )
-                      .toList(growable: false),
-                  onChanged: (mode) => setState(
+                  initialSelection: _workspaceMode,
+                  label: Text(l10n.settingsAgentProfileWorkspaceModeField),
+                  expandedInsets: EdgeInsets.zero,
+                  dropdownMenuEntries: [
+                    for (final mode in AgentWorkspaceMode.values)
+                      DropdownMenuEntry<AgentWorkspaceMode>(
+                        value: mode,
+                        label: agentWorkspaceModeLabel(context, mode),
+                      ),
+                  ],
+                  onSelected: (mode) => setState(
                     () => _workspaceMode = mode ?? AgentWorkspaceMode.directory,
                   ),
                 ),

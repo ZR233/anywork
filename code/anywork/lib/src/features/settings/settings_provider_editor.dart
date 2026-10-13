@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/provider_brand.dart';
-import '../../shared/studio_form_select.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_provider_auto_compact.dart';
@@ -70,14 +69,12 @@ class ProviderEditor extends StatelessWidget {
                   children: [
                     SettingsResponsiveFieldGrid(
                       children: [
-                        StudioFormSelectField<String>(
+                        DropdownMenu<String>(
                           key: StudioDriverKeys.providerPreset,
-                          initialValue: provider.templateKind,
-                          isExpanded: true,
-                          decoration: InputDecoration(
-                            labelText: context.l10n.settingsTemplate,
-                          ),
-                          items: [
+                          initialSelection: provider.templateKind,
+                          label: Text(context.l10n.settingsTemplate),
+                          expandedInsets: EdgeInsets.zero,
+                          dropdownMenuEntries: [
                             // provider 没有匹配的内置 preset（如 explicit catalog）时，
                             // 保留下拉可渲染的禁用占位项：不静默改写 preset，也不触发
                             // onChangeTemplate('')，保存原样透传 templateKind。
@@ -85,10 +82,13 @@ class ProviderEditor extends StatelessWidget {
                               (template) =>
                                   template.id == provider.templateKind,
                             ))
-                              StudioFormSelectItem<String>(
+                              DropdownMenuEntry<String>(
                                 value: provider.templateKind,
                                 enabled: false,
-                                child: Text(
+                                label: provider.templateKind.isEmpty
+                                    ? context.l10n.settingsCustomProvider
+                                    : provider.templateKind,
+                                labelWidget: Text(
                                   provider.templateKind.isEmpty
                                       ? context.l10n.settingsCustomProvider
                                       : provider.templateKind,
@@ -97,9 +97,10 @@ class ProviderEditor extends StatelessWidget {
                                 ),
                               ),
                             for (final template in presets)
-                              StudioFormSelectItem<String>(
+                              DropdownMenuEntry<String>(
                                 value: template.id,
-                                child: Row(
+                                label: template.displayName,
+                                labelWidget: Row(
                                   children: [
                                     ProviderBrandMark(
                                       iconKey: template.iconKey,
@@ -118,7 +119,7 @@ class ProviderEditor extends StatelessWidget {
                                 ),
                               ),
                           ],
-                          onChanged: saving
+                          onSelected: saving
                               ? null
                               : (value) {
                                   if (value != null) {
@@ -166,24 +167,25 @@ class ProviderEditor extends StatelessWidget {
                       ),
                     ],
                     const SizedBox(height: 10),
-                    StudioFormSelectField<String>(
-                      isExpanded: true,
-                      initialValue: provider.defaultModel.isNotEmpty
+                    DropdownMenu<String>(
+                      initialSelection: provider.defaultModel.isNotEmpty
                           ? provider.defaultModel
                           : models.firstOrNull?.slug,
-                      decoration: InputDecoration(
-                        labelText: context.l10n.settingsDefaultModel,
-                      ),
-                      items: [
+                      label: Text(context.l10n.settingsDefaultModel),
+                      expandedInsets: EdgeInsets.zero,
+                      dropdownMenuEntries: [
                         // canonical default model 不在当前列表时保留原 slug 并
                         // 标注 unavailable，不静默回退到 models.first。
                         if (provider.defaultModel.isNotEmpty &&
                             !models.any(
                               (model) => model.slug == provider.defaultModel,
                             ))
-                          StudioFormSelectItem<String>(
+                          DropdownMenuEntry<String>(
                             value: provider.defaultModel,
-                            child: Text(
+                            label: context.l10n.settingsAgentRouteUnavailable(
+                              provider.defaultModel,
+                            ),
+                            labelWidget: Text(
                               context.l10n.settingsAgentRouteUnavailable(
                                 provider.defaultModel,
                               ),
@@ -192,16 +194,17 @@ class ProviderEditor extends StatelessWidget {
                             ),
                           ),
                         for (final model in models)
-                          StudioFormSelectItem<String>(
+                          DropdownMenuEntry<String>(
                             value: model.slug,
-                            child: Text(
+                            label: '${model.displayName} (${model.slug})',
+                            labelWidget: Text(
                               '${model.displayName} (${model.slug})',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                       ],
-                      onChanged: saving
+                      onSelected: saving
                           ? null
                           : (value) {
                               if (value != null) {
@@ -397,24 +400,21 @@ class _CustomModelEditor extends StatelessWidget {
                 onChanged: (value) =>
                     onChanged(model.copyWith(displayName: value)),
               ),
-              StudioFormSelectField<String>(
-                initialValue: model.wireProtocol,
-                decoration: InputDecoration(
-                  labelText: context.l10n.settingsProtocolType,
-                ),
-                items: [
-                  StudioFormSelectItem<String>(
+              DropdownMenu<String>(
+                initialSelection: model.wireProtocol,
+                label: Text(context.l10n.settingsProtocolType),
+                expandedInsets: EdgeInsets.zero,
+                dropdownMenuEntries: [
+                  DropdownMenuEntry<String>(
                     value: 'chat_completions',
-                    child: Text(
-                      context.l10n.settingsProtocolChatCompletionsHttp,
-                    ),
+                    label: context.l10n.settingsProtocolChatCompletionsHttp,
                   ),
-                  StudioFormSelectItem<String>(
+                  DropdownMenuEntry<String>(
                     value: 'responses',
-                    child: Text(context.l10n.settingsProtocolResponsesHttp),
+                    label: context.l10n.settingsProtocolResponsesHttp,
                   ),
                 ],
-                onChanged: enabled
+                onSelected: enabled
                     ? (value) {
                         if (value != null) {
                           onChanged(
