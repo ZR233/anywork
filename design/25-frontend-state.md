@@ -23,8 +23,8 @@
 > - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记仍未实施。
 >
 > **尚未实施：**
-> - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区。
-> - 增量显示投影（去掉热路径整窗排序、全文拼接与无条件重分组）。
+> - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区（显示投影本身已按条目隔离）。
+> - 显示投影已按条目身份复用（只有内容真正变化的条目重新转换，行对象按渲染版本驻留，窗口事实不变时整个行列表复用），推理正文不再预拼整段字符串；尚未把正文窗口规范化为有序 ID 序列 + itemsById 的独立 read model。
 > - 由单一 viewport/ScrollPosition 所有者接管位置稳定性（按可见 itemId + offset 保持、用户滚动优先）；当前是合并后的单一校正点，尚未收敛成独立 controller。
 > - expand 结构化结果（Retained / AlreadyComplete / NotInWindow / Unavailable / Superseded）；当前仍由 Option 推断 retained。
 > - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。

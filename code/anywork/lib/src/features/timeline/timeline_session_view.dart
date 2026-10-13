@@ -67,14 +67,51 @@ TimelineSessionWindow? timelineSessionWindow(Ref ref) {
       history.isLoading && history.direction == TimelineDirection.older;
   final loadingNewer =
       history.isLoading && history.direction == TimelineDirection.newer;
-  return TimelineSessionWindow(
+  return _projection.window(
     threadId: threadId,
-    rows: timelineRowsFromThreadItems(session.items),
+    items: session.items,
     turn: session.activeTurn,
     history: history,
     isLoadingOlder: loadingOlder,
     isLoadingNewer: loadingNewer,
   );
+}
+
+/// 窗口投影的持有者：同一会话按条目复用转换结果，输入事实都没变时连窗口对象一起复用。
+///
+/// 字段变化（输入区、运行状态、保存水位）会替换 workspace 包装，但正文窗口本身可能完全
+/// 没变；此时重建 `TimelineSessionWindow` 会让所有下游消费者重新构建。
+final _TimelineWindowProjection _projection = _TimelineWindowProjection();
+
+class _TimelineWindowProjection {
+  final Map<String, TimelineRowProjector> _projectors = {};
+  TimelineSessionWindow? _last;
+
+  TimelineSessionWindow window({
+    required String threadId,
+    required List<ThreadItemView> items,
+    required StudioTurnView? turn,
+    required ThreadHistoryWindow history,
+    required bool isLoadingOlder,
+    required bool isLoadingNewer,
+  }) {
+    final projector = _projectors.putIfAbsent(
+      threadId,
+      TimelineRowProjector.new,
+    );
+    final next = TimelineSessionWindow(
+      threadId: threadId,
+      rows: projector.project(items),
+      turn: turn,
+      history: history,
+      isLoadingOlder: isLoadingOlder,
+      isLoadingNewer: isLoadingNewer,
+    );
+    final previous = _last;
+    if (previous != null && previous == next) return previous;
+    _last = next;
+    return next;
+  }
 }
 
 /// 把时间线 UI 命令完整映射到 threadCommands：分页、权威窗口扩展、本地跳转、正文补齐与锚点写回。

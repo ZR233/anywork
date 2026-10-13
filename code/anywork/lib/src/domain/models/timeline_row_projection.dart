@@ -153,149 +153,288 @@ List<TimelineRow> timelineRowsFromThreadItems(
   List<ThreadItemView> source, {
   Map<String, TimelineTurnView> turns = const {},
 }) {
-  final items = [...source]
-    ..sort((left, right) {
-      final ordinal = left.ordinal.compareTo(right.ordinal);
-      return ordinal != 0 ? ordinal : left.id.compareTo(right.id);
-    });
-  final rows = <TimelineRow>[];
-  final adjacentTools = <TimelineEntry>[];
-  final adjacentReasoning = <TimelineEntry>[];
+  return TimelineRowProjector().project(source, turns: turns);
+}
 
-  void flushTools() {
-    if (adjacentTools.isEmpty) return;
-    final first = adjacentTools.first;
-    rows.add(
-      TimelineRow.toolGroup(
-        TimelineToolGroup(
-          id: 'tool-group:${first.turnId}:${first.id}',
-          threadId: first.threadId,
-          groupId: first.turnId,
-          turnId: first.turnId,
-          items: [
-            for (final part in adjacentTools) TimelineToolGroupItem(part: part),
-          ],
-        ),
-      ),
-    );
-    adjacentTools.clear();
-  }
+/// 把有界窗口条目投影成显示行，并按条目复用转换结果。
+///
+/// 逐帧重算整窗投影的代价随窗口增长：流式增量只改变一条条目，但整窗重排、重新
+/// 构造 `TimelineEntry`（含把全部推理分块拼成一整段字符串）与重建分组都会跟着发生。
+/// 这里按条目身份 + 内容身份缓存转换结果：**只有真正变化的条目**重新转换，其余复用
+/// 上一步的对象。
+///
+/// 内容身份取自条目自身的 revision、updatedAt、保存水位与各字段列表**实例**：窗口按
+/// 稳定字段身份整体替换条目状态，因此列表实例变化等价于内容变化，且判定是 O(1) 而不是
+/// 重新遍历正文。投影在结构（身份序列）不变时直接复用上一步的行列表。
+class TimelineRowProjector {
+  TimelineRowProjector();
 
-  void flushReasoning() {
-    if (adjacentReasoning.isEmpty) return;
-    final first = adjacentReasoning.first;
-    rows.add(
-      TimelineRow.reasoningGroup(
-        TimelineReasoningGroup(
-          id: 'reasoning-group:${first.turnId}:${first.id}',
-          threadId: first.threadId,
-          groupId: first.turnId,
-          turnId: first.turnId,
-          parts: [...adjacentReasoning],
-        ),
-      ),
-    );
-    adjacentReasoning.clear();
-  }
+  final Map<String, _ProjectedEntry> _entries = {};
 
-  for (final item in items) {
-    if (const {
-      ThreadItemKind.file,
-      ThreadItemKind.turn,
-      ThreadItemKind.inference,
-      ThreadItemKind.contextCompaction,
-    }.contains(item.kind)) {
-      continue;
+  /// 行对象按 (身份, renderVersion) 驻留：版本没变就可以复用**同一个行对象**，下游
+  /// Widget 缓存与相等性判定因此不必重新计算。
+  final Map<(String, int), TimelineRow> _rowsByVersion = {};
+  List<String>? _lastIds;
+  Map<String, TimelineTurnView>? _lastTurns;
+  List<TimelineRow>? _lastRows;
+
+  /// 把窗口条目投影成显示行。
+  ///
+  /// 身份序列与轮次事实都没变、且每条条目的内容身份一致时，直接复用上一次的行列表；
+  /// 否则只重新转换内容真正变化的条目，其余复用缓存对象（分组因此也只在成员或顺序变化
+  /// 时才重建）。
+  List<TimelineRow> project(
+    List<ThreadItemView> source, {
+    Map<String, TimelineTurnView> turns = const {},
+  }) {
+    final sorted = [...source]
+      ..sort((left, right) {
+        final ordinal = left.ordinal.compareTo(right.ordinal);
+        return ordinal != 0 ? ordinal : left.id.compareTo(right.id);
+      });
+    if (_matchesLastInput(sorted, turns)) return _lastRows!;
+    final entries = <String, TimelineEntry>{};
+    final next = <String, _ProjectedEntry>{};
+    for (final item in sorted) {
+      final projected = _project(item);
+      entries[item.id] = projected.entry;
+      next[item.id] = projected;
     }
-    final part = _timelineEntryFromThreadItem(item);
-    if (item.kind == ThreadItemKind.toolCall) {
-      flushReasoning();
-      if (adjacentTools.isNotEmpty &&
-          adjacentTools.last.turnId != item.turnId) {
-        flushTools();
+    final rows = _rowsFrom(sorted, entries, turns);
+    _entries
+      ..clear()
+      ..addAll(next);
+    _lastIds = [for (final item in sorted) item.id];
+    _lastTurns = turns;
+    _lastRows = rows;
+    return rows;
+  }
+
+  bool _matchesLastInput(
+    List<ThreadItemView> sorted,
+    Map<String, TimelineTurnView> turns,
+  ) {
+    final ids = _lastIds;
+    if (ids == null || ids.length != sorted.length) return false;
+    if (!identical(_lastTurns, turns)) return false;
+    for (var index = 0; index < sorted.length; index++) {
+      final item = sorted[index];
+      if (ids[index] != item.id) return false;
+      final cached = _entries[item.id];
+      if (cached == null || cached.signature != _signature(item)) return false;
+    }
+    return true;
+  }
+
+  _ProjectedEntry _project(ThreadItemView item) {
+    final signature = _signature(item);
+    final cached = _entries[item.id];
+    if (cached != null && cached.signature == signature) return cached;
+    return _ProjectedEntry(
+      entry: _timelineEntryFromThreadItem(item),
+      signature: signature,
+    );
+  }
+
+  /// 条目内容身份：revision、状态实例、保存水位与各字段的有界指纹。
+  ///
+  /// 窗口按稳定字段身份整体替换条目状态，因此状态实例变化等价于字段变化；正文指纹只取
+  /// 长度与尾部样本，不重新遍历整段正文。
+  static _EntrySignature _signature(ThreadItemView item) {
+    return _EntrySignature(
+      revision: item.revision,
+      state: identityHashCode(item.state),
+      saved: item.saved,
+      omitted: item.bodyOmittedUnits,
+      body: _bodyFingerprint(item.text),
+      summary: _listFingerprint(item.reasoningSummary),
+      content: _listFingerprint(item.reasoningContent),
+    );
+  }
+
+  static Object? _listFingerprint(List<String> chunks) {
+    if (chunks.isEmpty) return 0;
+    return Object.hash(chunks.length, _bodyFingerprint(chunks.last));
+  }
+
+  /// 同一行在两个版本之间保持对象身份；版本变化时替换为新的行对象。
+  TimelineRow _interned(String id, int version, TimelineRow Function() build) {
+    final key = (id, version);
+    final cached = _rowsByVersion[key];
+    if (cached != null) return cached;
+    final row = build();
+    _rowsByVersion[key] = row;
+    if (_rowsByVersion.length > 1024) {
+      // 有界：只保留最近的一批版本，避免长时间会话积累历史行对象。
+      for (final stale
+          in _rowsByVersion.keys
+              .take(_rowsByVersion.length - 512)
+              .toList(growable: false)) {
+        _rowsByVersion.remove(stale);
       }
-      adjacentTools.add(part);
-      continue;
     }
-    if (item.kind == ThreadItemKind.reasoning) {
-      flushTools();
-      if (adjacentReasoning.isNotEmpty &&
-          adjacentReasoning.last.turnId != item.turnId) {
+    return row;
+  }
+
+  /// 单条行的渲染版本：与 `TimelineRow.item` 的算法一致，用于按版本驻留行对象。
+  static int _itemRowVersion(ThreadItemView item, TimelineEntry part) {
+    return Object.hash(_timelineRowRenderVersion(part), item.saved);
+  }
+
+  List<TimelineRow> _rowsFrom(
+    List<ThreadItemView> items,
+    Map<String, TimelineEntry> entries,
+    Map<String, TimelineTurnView> turns,
+  ) {
+    final rows = <TimelineRow>[];
+    final adjacentTools = <TimelineEntry>[];
+    final adjacentReasoning = <TimelineEntry>[];
+
+    void flushTools() {
+      if (adjacentTools.isEmpty) return;
+      final first = adjacentTools.first;
+      final group = TimelineToolGroup(
+        id: 'tool-group:${first.turnId}:${first.id}',
+        threadId: first.threadId,
+        groupId: first.turnId,
+        turnId: first.turnId,
+        items: [
+          for (final part in adjacentTools) TimelineToolGroupItem(part: part),
+        ],
+      );
+      rows.add(
+        _interned(
+          group.id,
+          group.renderVersion,
+          () => TimelineRow.toolGroup(group),
+        ),
+      );
+      adjacentTools.clear();
+    }
+
+    void flushReasoning() {
+      if (adjacentReasoning.isEmpty) return;
+      final first = adjacentReasoning.first;
+      final group = TimelineReasoningGroup(
+        id: 'reasoning-group:${first.turnId}:${first.id}',
+        threadId: first.threadId,
+        groupId: first.turnId,
+        turnId: first.turnId,
+        parts: [...adjacentReasoning],
+      );
+      rows.add(
+        _interned(
+          group.id,
+          group.renderVersion,
+          () => TimelineRow.reasoningGroup(group),
+        ),
+      );
+      adjacentReasoning.clear();
+    }
+
+    for (final item in items) {
+      if (const {
+        ThreadItemKind.file,
+        ThreadItemKind.turn,
+        ThreadItemKind.inference,
+        ThreadItemKind.contextCompaction,
+      }.contains(item.kind)) {
+        continue;
+      }
+      final part = entries[item.id]!;
+      if (item.kind == ThreadItemKind.toolCall) {
         flushReasoning();
+        if (adjacentTools.isNotEmpty &&
+            adjacentTools.last.turnId != item.turnId) {
+          flushTools();
+        }
+        adjacentTools.add(part);
+        continue;
       }
-      adjacentReasoning.add(part);
-      continue;
+      if (item.kind == ThreadItemKind.reasoning) {
+        flushTools();
+        if (adjacentReasoning.isNotEmpty &&
+            adjacentReasoning.last.turnId != item.turnId) {
+          flushReasoning();
+        }
+        adjacentReasoning.add(part);
+        continue;
+      }
+      rows.add(
+        _interned(
+          item.id,
+          _itemRowVersion(item, part),
+          () => TimelineRow.item(
+            item: item,
+            part: part,
+            type: switch (item.kind) {
+              ThreadItemKind.raw => TimelineRowType.finalAnswer,
+              ThreadItemKind.userMessage => TimelineRowType.userMessage,
+              ThreadItemKind.parentAgentMessage =>
+                TimelineRowType.parentAgentMessage,
+              ThreadItemKind.agentMessage =>
+                item.channel == AgentMessageChannel.commentary
+                    ? TimelineRowType.commentary
+                    : TimelineRowType.finalAnswer,
+              ThreadItemKind.skill => TimelineRowType.skillActivation,
+              ThreadItemKind.reasoning => TimelineRowType.reasoningSummary,
+              ThreadItemKind.toolCall => TimelineRowType.toolGroup,
+              ThreadItemKind.agent => TimelineRowType.agentActivity,
+              ThreadItemKind.turn ||
+              ThreadItemKind.inference ||
+              ThreadItemKind.file ||
+              ThreadItemKind.contextCompaction => TimelineRowType.finalAnswer,
+            },
+          ),
+        ),
+      );
     }
     flushTools();
     flushReasoning();
-    rows.add(
-      TimelineRow.item(
-        item: item,
-        part: part,
-        type: switch (item.kind) {
-          ThreadItemKind.raw => TimelineRowType.finalAnswer,
-          ThreadItemKind.userMessage => TimelineRowType.userMessage,
-          ThreadItemKind.parentAgentMessage =>
-            TimelineRowType.parentAgentMessage,
-          ThreadItemKind.agentMessage =>
-            item.channel == AgentMessageChannel.commentary
-                ? TimelineRowType.commentary
-                : TimelineRowType.finalAnswer,
-          ThreadItemKind.skill => TimelineRowType.skillActivation,
-          ThreadItemKind.reasoning => TimelineRowType.reasoningSummary,
-          ThreadItemKind.toolCall => TimelineRowType.toolGroup,
-          ThreadItemKind.agent => TimelineRowType.agentActivity,
-          ThreadItemKind.turn ||
-          ThreadItemKind.inference ||
-          ThreadItemKind.file ||
-          ThreadItemKind.contextCompaction => TimelineRowType.finalAnswer,
-        },
-      ),
-    );
-  }
-  flushTools();
-  flushReasoning();
-  final lastOrdinalByTurn = <String, int>{};
-  for (final item in items) {
-    lastOrdinalByTurn[item.turnId] = item.ordinal;
-  }
-  for (final item in items) {
-    if (item.kind == ThreadItemKind.turn &&
-        !turns.containsKey(item.turnId) &&
-        item.isTerminal &&
-        item.error?.trim().isNotEmpty == true) {
-      rows.add(TimelineRow.turnOutcome(item, lastOrdinalByTurn[item.turnId]!));
+    final lastOrdinalByTurn = <String, int>{};
+    for (final item in items) {
+      lastOrdinalByTurn[item.turnId] = item.ordinal;
     }
-  }
-  final byId = {for (final item in items) item.id: item};
-  for (final entry in turns.values) {
-    final end = byId[entry.lastItemId];
-    if (end == null) continue;
-    final turn = entry.turn;
-    final item = ThreadItemView(
-      id: 'turn:${turn.turnId.length}:${turn.turnId}',
-      threadId: turn.threadId,
-      turnId: turn.turnId,
-      ordinal: end.ordinal,
-      revision: turn.revision,
-      createdAt: turn.updatedAt,
-      updatedAt: turn.updatedAt,
-      state: ThreadTurnItemStateView(turn.state, inputId: turn.inputId),
-    );
-    if (item.isTerminal && item.error?.trim().isNotEmpty == true) {
-      rows.add(TimelineRow.turnOutcome(item, end.ordinal));
+    for (final item in items) {
+      if (item.kind == ThreadItemKind.turn &&
+          !turns.containsKey(item.turnId) &&
+          item.isTerminal &&
+          item.error?.trim().isNotEmpty == true) {
+        rows.add(
+          TimelineRow.turnOutcome(item, lastOrdinalByTurn[item.turnId]!),
+        );
+      }
     }
+    final byId = {for (final item in items) item.id: item};
+    for (final entry in turns.values) {
+      final end = byId[entry.lastItemId];
+      if (end == null) continue;
+      final turn = entry.turn;
+      final item = ThreadItemView(
+        id: 'turn:${turn.turnId.length}:${turn.turnId}',
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+        ordinal: end.ordinal,
+        revision: turn.revision,
+        createdAt: turn.updatedAt,
+        updatedAt: turn.updatedAt,
+        state: ThreadTurnItemStateView(turn.state, inputId: turn.inputId),
+      );
+      if (item.isTerminal && item.error?.trim().isNotEmpty == true) {
+        rows.add(TimelineRow.turnOutcome(item, end.ordinal));
+      }
+    }
+    rows.sort(_compareRows);
+    return rows;
   }
-  rows.sort(_compareRows);
-  return rows;
 }
 
 TimelineEntry _timelineEntryFromThreadItem(ThreadItemView item) {
   final text = switch (item.kind) {
-    ThreadItemKind.reasoning => [
-      ...item.reasoningSummary,
-      ...item.reasoningContent,
-    ].where((value) => value.trim().isNotEmpty).join('\n\n'),
+    // 推理正文不做整段拼接：分块原样带给 `reasoningSummary`/`reasoningContent`，渲染与
+    // 指纹都由分块列表给出。整窗投影每帧都会走到这里，把每次增量重新拼成一整段字符串
+    // 会让热路径随正文长度线性变慢。
+    ThreadItemKind.reasoning => '',
     ThreadItemKind.toolCall => _toolActivityText(item.tool),
     _ => item.text,
   };
@@ -420,4 +559,49 @@ bool _isIssueToolStatus(String status) {
     'cancelled',
     'interrupted',
   }.contains(status);
+}
+
+/// 一次投影的产物与它的内容身份。
+class _ProjectedEntry {
+  const _ProjectedEntry({required this.entry, required this.signature});
+
+  final TimelineEntry entry;
+  final _EntrySignature signature;
+}
+
+/// 条目内容身份；只用于缓存判定，不参与渲染。
+class _EntrySignature {
+  const _EntrySignature({
+    required this.revision,
+    required this.state,
+    required this.saved,
+    required this.omitted,
+    required this.body,
+    required this.summary,
+    required this.content,
+  });
+
+  final int revision;
+  final int state;
+  final bool saved;
+  final int omitted;
+  final Object? body;
+  final Object? summary;
+  final Object? content;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _EntrySignature &&
+          revision == other.revision &&
+          state == other.state &&
+          saved == other.saved &&
+          omitted == other.omitted &&
+          body == other.body &&
+          summary == other.summary &&
+          content == other.content;
+
+  @override
+  int get hashCode =>
+      Object.hash(revision, state, saved, omitted, body, summary, content);
 }
