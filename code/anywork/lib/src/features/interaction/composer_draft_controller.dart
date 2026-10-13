@@ -18,11 +18,16 @@ part 'composer_draft_controller.g.dart';
 /// 正文、附件引用和编辑状态都在这里。附件 admission 由 [AttachmentDrafts] 执行。
 @riverpod
 class ComposerDraftController extends _$ComposerDraftController {
+  /// onDispose 只读捕获的事实，不再访问 `state`/`Ref`：Riverpod 3 禁止在生命
+  /// 周期回调里读写 provider，debug 构建下会直接断言失败。
+  var _submissionPending = false;
+  var _attachmentIdsOnDispose = const <String>[];
+
   @override
   ComposerThreadState build(String threadId) {
     ref.onDispose(() {
-      if (state.isSubmissionPending) return;
-      final ids = [for (final attachment in state.attachments) attachment.id];
+      if (_submissionPending) return;
+      final ids = _attachmentIdsOnDispose;
       if (ids.isEmpty) return;
       final projectId = _projectId();
       unawaited(
@@ -38,21 +43,30 @@ class ComposerDraftController extends _$ComposerDraftController {
     return const ComposerThreadState.idle();
   }
 
+  /// 发布草稿状态，并同步 onDispose 需要的事实（提交中的草稿不释放附件）。
+  void _publish(ComposerThreadState next) {
+    _submissionPending = next.isSubmissionPending;
+    _attachmentIdsOnDispose = next.isSubmissionPending
+        ? const []
+        : [for (final attachment in next.attachments) attachment.id];
+    state = next;
+  }
+
   void updateDraft(String value) {
     final next = state.updateDraft(value);
     if (identical(next, state)) return;
-    state = next;
+    _publish(next);
   }
 
   void reportFailure(Object error) {
     final next = state.reportFailure(error);
     if (identical(next, state)) return;
-    state = next;
+    _publish(next);
   }
 
   void apply(ComposerThreadState next) {
     if (!ref.mounted || next == state) return;
-    state = next;
+    _publish(next);
   }
 
   Future<void> addLocalAttachments(List<String> paths) {
@@ -135,7 +149,7 @@ class ComposerDraftController extends _$ComposerDraftController {
         if (state.draft.trim().isEmpty && state.attachments.isEmpty) return;
         final submitting = state.beginSubmission();
         if (submitting is! SubmittingComposerThreadState) return;
-        state = submitting;
+        _publish(submitting);
         final input = StudioPromptInput(
           inputId: submitting.inputId,
           text: submitting.draft.trim(),
@@ -152,16 +166,20 @@ class ComposerDraftController extends _$ComposerDraftController {
               state.submissionRevision != submitting.submissionRevision) {
             return;
           }
-          state = ComposerThreadState.idle(
-            submissionRevision: submitting.submissionRevision,
-            attachmentGeneration: submitting.attachmentGeneration,
-            cleanupFailureDraftIds: submitting.cleanupFailureDraftIds,
+          _publish(
+            ComposerThreadState.idle(
+              submissionRevision: submitting.submissionRevision,
+              attachmentGeneration: submitting.attachmentGeneration,
+              cleanupFailureDraftIds: submitting.cleanupFailureDraftIds,
+            ),
           );
         } catch (error) {
           if (!ref.mounted) return;
-          state = state.fail(
-            error,
-            submissionRevision: submitting.submissionRevision,
+          _publish(
+            state.fail(
+              error,
+              submissionRevision: submitting.submissionRevision,
+            ),
           );
         }
       },

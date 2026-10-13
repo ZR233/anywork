@@ -912,7 +912,7 @@ class DemoStudioBridgeDataSource
     }
     _settingsRevision += 1;
     _emitAgentProfilesUpdate();
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -948,7 +948,7 @@ class DemoStudioBridgeDataSource
     );
     _settingsRevision += 1;
     _emitAgentProfilesUpdate();
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -1204,6 +1204,18 @@ class DemoStudioBridgeDataSource
     if (updated != null) {
       _emitThreadDirectoryUpdate(updated);
     }
+  }
+
+  /// settings 写入的 canonical 事实同时经 topic 交付。
+  ///
+  /// 真实侧每次 `publish_settings_state` 都发布 `SettingsConfigStateChanged` 与
+  /// `ModelCatalogStateChanged`，只让命令返回快照会让仅依赖 topic 的观察者停在旧值，
+  /// demo 因此与真实 bridge 语义分叉（design/25 §25.10）。
+  Future<SettingsStateSnapshot> _settingsWriteResult() async {
+    final state = (await readStudioState()).settingsState;
+    _publishProductPayload(SettingsConfigStateChangedPayload(state));
+    _publishProductPayload(ModelCatalogStateChangedPayload(state));
+    return state;
   }
 
   void _emitThreadDirectoryUpdate(StudioThread thread) {
@@ -1620,7 +1632,7 @@ class DemoStudioBridgeDataSource
         ];
     }
     _settingsRevision += 1;
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -1682,10 +1694,10 @@ class DemoStudioBridgeDataSource
       threadId,
       ThreadRuntimeUpdate(runtime: runtime, todo: workspace.todo),
     );
-    final settings = await readStudioState();
+    final settings = await _settingsWriteResult();
     return (
       runtime: runtime,
-      settings: settings.settingsState,
+      settings: settings,
       modeDefaultSaved: true,
       warning: null,
     );
@@ -1727,29 +1739,38 @@ class DemoStudioBridgeDataSource
               .where((candidate) => candidate.modeId == ThreadModeId.simple)
               .firstOrNull;
       final thread = workspace.thread;
-      final updated = workspace.copyWith(
-        revision: workspace.revision + 1,
-        thread: thread.copyWith(
-          mode: mode,
-          role: thread.isRoot ? 'planner' : thread.role,
-        ),
-        runtime: route == null
-            ? workspace.runtime
-            : workspace.runtime.copyWith(
-                modelRoute: ThreadModelRouteView(
-                  providerId: route.providerId,
-                  model: route.model,
-                  effort: route.effort,
-                  revision: (workspace.runtime.modelRoute?.revision ?? 0) + 1,
-                  available: true,
-                ),
-              ),
+      final updatedThread = thread.copyWith(
+        mode: mode,
+        role: thread.isRoot ? 'planner' : thread.role,
       );
-      _workspaces[threadId] = updated;
-      // 与生产一致：mode 变更由目录增量交付（目录 revision 前进）。只改内存
-      // workspace 而不推进目录水位，会让客户端的目录基线门与目录事件都看不到这次
-      // 变更，demo 因此与真实 bridge 语义分叉。
-      _emitThreadDirectoryUpdate(updated.thread);
+      // 与生产一致：mode 变更同时交付两条 canonical 事实。
+      //
+      // 其一，运行时事实：native `set_thread_mode` 经 reconfigure 改写 mode 默认
+      // route 扩展并发布 Thread 帧。demo 若只改内存 workspace 而不出这一帧，客户端
+      // 的 threadSession 就只能在显式重读下看到新 route，验收无法发现帧丢失。
+      _emitThreadUpdate(
+        threadId,
+        ThreadRuntimeUpdate(
+          runtime: route == null
+              ? workspace.runtime
+              : workspace.runtime.copyWith(
+                  modelRoute: ThreadModelRouteView(
+                    providerId: route.providerId,
+                    model: route.model,
+                    effort: route.effort,
+                    revision: (workspace.runtime.modelRoute?.revision ?? 0) + 1,
+                    available: true,
+                  ),
+                ),
+          todo: workspace.todo,
+        ),
+      );
+      _workspaces[threadId] = _workspaces[threadId]!.copyWith(
+        thread: updatedThread,
+      );
+      // 其二，目录事实：mode 由目录增量交付（目录 revision 前进）。不推进目录水位
+      // 会让客户端的目录基线门与目录事件都看不到这次变更。
+      _emitThreadDirectoryUpdate(updatedThread);
     }
   }
 
@@ -2601,7 +2622,7 @@ class DemoStudioBridgeDataSource
     _checkSettingsRevision(expectedSettingsRevision);
     _permissionMode = mode;
     _settingsRevision += 1;
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -2623,7 +2644,7 @@ class DemoStudioBridgeDataSource
       ...converted,
     ];
     _settingsRevision += 1;
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -2639,7 +2660,7 @@ class DemoStudioBridgeDataSource
     }
     _defaultProviderId = providerId;
     _settingsRevision += 1;
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override
@@ -2669,7 +2690,7 @@ class DemoStudioBridgeDataSource
         ? replacement
         : _defaultProviderId;
     _settingsRevision += 1;
-    return (await readStudioState()).settingsState;
+    return _settingsWriteResult();
   }
 
   @override

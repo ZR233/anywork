@@ -65,9 +65,9 @@ class ThreadCommands extends _$ThreadCommands {
         return;
       }
       await _api.setThreadMode(threadId: threadId, mode: mode);
-      if (!ref.mounted) return;
-      await _reloadProduct();
-      await _refreshSession(threadId);
+      // 命令后不显式重读：mode 由目录增量交付、mode 默认 route 由 Thread 有序流
+      // 交付（design/25 §25.5）。补偿式重读会让同一事实多出第二条合并路径，并让
+      // 「帧没到」这种缺陷在验收里不可见。
     });
   }
 
@@ -533,6 +533,8 @@ class ThreadCommands extends _$ThreadCommands {
         .applySnapshot(snapshot);
   }
 
+  /// 新建会话与目录类命令（重命名/归档/恢复等）的聚合重读；**mode 变更不走这里**：
+  /// mode 与其默认 route 各有 canonical 帧交付（design/25 §25.5）。
   Future<void> _reloadProduct() async {
     final snapshot = await _api.readStudioState();
     if (!ref.mounted) return;

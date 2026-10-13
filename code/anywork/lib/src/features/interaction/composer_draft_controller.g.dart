@@ -69,7 +69,7 @@ final class ComposerDraftControllerProvider
 }
 
 String _$composerDraftControllerHash() =>
-    r'2ec532e034f4679d388014af25156ab2539ef560';
+    r'32b58a08042cc84196ce5f55ba47b6dbd25bfea2';
 
 /// 会话输入草稿。不进入全局 store；autoDispose，最后一个观察者离开即释放附件。
 ///
