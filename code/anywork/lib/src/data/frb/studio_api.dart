@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'
 
 import '../../domain/models/studio_models.dart';
 import '../../platform/error_log.dart';
+import '../stores/chat_view_metrics.dart';
 import '../../rust/api/studio.dart' as frb;
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;

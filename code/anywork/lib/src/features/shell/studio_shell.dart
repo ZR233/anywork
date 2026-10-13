@@ -19,6 +19,7 @@ import '../../shared/recovery_check_status.dart';
 import '../../app/theme/material3_theme.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
+import '../../domain/models/timeline_commands.dart';
 import '../../data/stores/selection_store.dart';
 import '../../data/stores/thread_session_store.dart';
 import '../../data/stores/domain_sync.dart';

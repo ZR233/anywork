@@ -3339,6 +3339,7 @@ class _DemoChatWindow implements StudioChatWindow {
 
   @override
   Future<StudioChatReceipt> focus(String? itemId) async {
+    ChatViewMetrics.focusCalls += 1;
     _focusId = itemId;
     // 与原生窗口对齐：控制操作完成后必须唤醒唯一出口，让下一次 `next` 交付权威窗口。
     _api._notifyItemsChanged(_threadId);

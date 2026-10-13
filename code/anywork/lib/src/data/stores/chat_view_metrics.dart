@@ -13,6 +13,7 @@ abstract final class ChatViewMetrics {
   static int bindingOpens = 0;
   static int bindingCloses = 0;
   static int redundantFocusSkipped = 0;
+  static int focusCalls = 0;
   static int framesApplied = 0;
   static int framesResync = 0;
 
@@ -27,6 +28,7 @@ abstract final class ChatViewMetrics {
     bindingOpens = 0;
     bindingCloses = 0;
     redundantFocusSkipped = 0;
+    focusCalls = 0;
     framesApplied = 0;
     framesResync = 0;
   }

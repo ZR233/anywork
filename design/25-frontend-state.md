@@ -9,6 +9,9 @@
 > - Timeline 使用窗口交付的 `hasOlder` / `hasNewer` / `canExtendLatest`，不以「有无命令回调」推断补页能力；自动补页在边界/容量未变时不因 loading 落沿重复发起；core 的 extendLatest no-op 不推进版本、不发内容帧。
 > - load / extendLatest 在第一个 await 之前占位；回执版本未超过已观察窗口时视为「该水位已观察」并结束等待；旧操作 token 不能结束新占位。
 > - 活动摘要层只更新文本：不再以 label 作为切换动画身份，连续增量不重启淡入淡出；行状态（等待保存 / 已回退）占据固定高度元信息区，`saved` 翻转不改变行几何。
+> - Timeline 只有一个帧末被动校正调度点：跟随底线、锚点落位与条目布局变化合并到同一次校正，回调带（thread, windowEpoch, readingGeneration）身份，旧会话的迟到回调被丢弃。
+> - 阅读位置与后端窗口焦点分离：普通窗口内滚动只更新锚点，只有带定位动作（进入历史阅读 / 查看条目 / 跳回最新）的锚点才请求 native focus；去重依据已确认焦点与同一目标的在途请求，失败后同一目标仍可重试。
+> - 聊天内容路径有容量有界的逐事件记录（带会话/绑定身份与判定原因）与累计计数两层观测。
 > - 旧订阅释放只清理自己捕获的资源；await 之后若已有新绑定或新附件，不得清空当前窗口。
 > - 缺少 ChatWindowReader 标为内容同步失败，不再静默当成空窗口。
 > - 窗口内相同 Latest / 仍可见的 Around 焦点在 core 为 no-op：不推进 generation、不通知。
@@ -16,13 +19,13 @@
 > **部分实现：**
 > - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
 > - 内容绑定有身份与泵，但尚未收敛为完整 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机；打开成功即复位退避、EOF 与静默 catch 仍不完整。
-> - 像素滚动在已浏览同一 item 时跳过 native focus；从跟随最新切入历史阅读仍会 focus。
+> - 阅读位置与窗口焦点已分离（只有定位动作才换焦点）；尚未把「用户正在滚动时自动校正让位」与可见 itemId + 像素偏移的恢复收敛成独立 viewport controller。
 > - 操作回执只按「版本已观察」结束等待：receipt version 取自会话进度且 ChatUpdates 会跳过当前窗口不可见的变化，`receipt.version <= current` 因此只能说明不必再等这个水位，不能分类为 NoChange；后台不可见变化推高会话版本时不保证等待最终能结束。
 >
 > **尚未实施：**
 > - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区。
 > - 增量显示投影（去掉热路径整窗排序、全文拼接与无条件重分组）。
-> - 统一 viewport controller；消除两段 post-frame 底部跟随。
+> - 由单一 viewport/ScrollPosition 所有者接管位置稳定性（按可见 itemId + offset 保持、用户滚动优先）；当前是合并后的单一校正点，尚未收敛成独立 controller。
 > - expand 结构化结果（Retained / AlreadyComplete / NotInWindow / Unavailable / Superseded）；当前仍由 Option 推断 retained。
 > - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。
 > - Windows profile / release 原生性能验收。

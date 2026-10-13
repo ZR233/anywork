@@ -228,8 +228,16 @@ class _TimelineViewState extends State<_TimelineSurface> {
   bool _prefetchScheduled = false;
   bool _anchorPublishScheduled = false;
 
+  /// 已进入历史阅读、但还没用一次 focus 意图表达出来的待发送标记。
+  ///
+  /// 只在意图切换的那一刻置位，发布锚点时消费一次；因此窗口内继续滚动不会重发 focus。
+  bool _browseFocusPending = false;
+
   double? _viewportWidth;
   bool _geometrySyncScheduled = false;
+
+  /// 已登记但尚未执行的跟随底线请求；由帧末唯一校正点消费。
+  bool _bottomScrollRequested = false;
 
   /// 上一次上报的可见文本条目签名（身份 + 正文状态），用于去重（见 [_publishVisibleItemBodies]）。
   String? _visibleItemBodySignature;
@@ -814,6 +822,8 @@ class _TimelineViewState extends State<_TimelineSurface> {
       setState(() {
         _readingIntent = TimelineReadingIntent.browseHistory;
       });
+      // 进入历史阅读是一次真正的定位意图切换：只在这里登记一次 focus 意图。
+      _browseFocusPending = true;
     }
     _saveThreadState(widget.threadId);
     _schedulePrefetch();
@@ -828,18 +838,20 @@ class _TimelineViewState extends State<_TimelineSurface> {
   }
 
   void _scheduleBottomScroll() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted &&
-          !_userScrollActive &&
-          _followingBottom &&
-          !_detachedByUser) {
-        _scrollToBottom();
-      }
-    });
+    if (!_followingBottom || _detachedByUser || _userScrollActive) return;
+    _bottomScrollRequested = true;
+    _scheduleGeometrySync();
   }
 
   void _scrollToBottom() {
     if (!_controller.hasClients || _userScrollActive) return;
+    if (!_followingBottom || _detachedByUser || _pendingNewEvents != 0) {
+      setState(() {
+        _readingIntent = TimelineReadingIntent.followLatest;
+        _pendingNewEvents = 0;
+      });
+      _saveThreadState(widget.threadId);
+    }
     final position = _controller.position;
     if ((position.pixels - position.maxScrollExtent).abs() > 0.5) {
       _programmaticScroll = true;
@@ -857,13 +869,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
           'to': position.maxScrollExtent,
         },
       );
-    }
-    if (!_followingBottom || _detachedByUser || _pendingNewEvents != 0) {
-      setState(() {
-        _readingIntent = TimelineReadingIntent.followLatest;
-        _pendingNewEvents = 0;
-      });
-      _saveThreadState(widget.threadId);
     }
   }
 
@@ -940,15 +945,27 @@ class _TimelineViewState extends State<_TimelineSurface> {
   ///
   /// 放在帧末是因为两者都依赖本帧最终布局出来的滚动几何：`build` 期间
   /// [ScrollPosition] 的 min/max/pixels 还是上一帧的值。
+  ///
+  /// 这是 Timeline 唯一的被动校正调度点：跟随底线、锚点落位与条目布局变化都登记到同一次
+  /// 帧末校正，不再各自安排一次 post-frame。回调带下发时的（thread, windowEpoch,
+  /// readingGeneration）身份，任一变化即丢弃——旧会话的回调不能作用于新会话。
   void _scheduleGeometrySync() {
     if (_geometrySyncScheduled) return;
     _geometrySyncScheduled = true;
+    final token = _correctionToken;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _geometrySyncScheduled = false;
-      if (!mounted) return;
+      if (!mounted || token != _correctionToken) return;
       _syncTimelineGeometry();
     });
   }
+
+  ({String? threadId, int windowEpoch, int generation}) get _correctionToken =>
+      (
+        threadId: widget.threadId,
+        windowEpoch: widget.windowEpoch,
+        generation: _readingGeneration,
+      );
 
   void _syncTimelineGeometry() {
     _trackMountedRows();
@@ -956,8 +973,11 @@ class _TimelineViewState extends State<_TimelineSurface> {
     // SliverList may refine the extent of a very tall lazily built row over
     // several layouts. Keep followLatest attached to the real max extent;
     // this is a layout event response, never a timer or polling loop.
-    if (_followingBottom && !_detachedByUser && !_userScrollActive) {
-      _scheduleBottomScroll();
+    if (_bottomScrollRequested) {
+      _bottomScrollRequested = false;
+      if (_followingBottom && !_detachedByUser && !_userScrollActive) {
+        _scrollToBottom();
+      }
     }
     // 索引定位和真实几何校正后确认恢复完成，再发布位置。
     if (_refreshRestorePending()) _saveThreadState(widget.threadId);
@@ -1209,7 +1229,14 @@ class _TimelineViewState extends State<_TimelineSurface> {
         anchor: anchor,
         pendingNewEvents: _pendingNewEvents,
       );
-      _dispatch(TimelineAnchorChanged(anchor));
+      // 「要改后端焦点」是一次意图动作，不是消息里的状态：`browseHistory` 是持续意图，
+      // 滚动每定稿一次都会重新发布锚点；按状态判断会让窗口内继续滚动每次都换后端焦点，
+      // 而后端焦点变化会让内容流交付整窗 Reset。进入历史阅读只发一次 focus 意图。
+      final action = _browseFocusPending
+          ? TimelineViewAction.enterHistory
+          : null;
+      _browseFocusPending = false;
+      _dispatch(TimelineAnchorChanged(anchor, viewAction: action));
     });
   }
 }

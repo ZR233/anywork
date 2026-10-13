@@ -94,7 +94,16 @@ final class TimelineVisibleBodies extends TimelineCommand {
   final List<String> itemIds;
 }
 
+/// 阅读锚点上的一次**定位意图动作**；与锚点本身（持续状态）分开。
+///
+/// 只有真正的意图切换才带动作：进入历史阅读、显式查看某条目、跳回最新。普通滚动换顶行
+/// 只更新锚点，不改变后端窗口焦点。
+enum TimelineViewAction { enterHistory, inspectItem, backToLatest }
+
 final class TimelineAnchorChanged extends TimelineCommand {
-  const TimelineAnchorChanged(this.anchor);
+  const TimelineAnchorChanged(this.anchor, {this.viewAction});
   final TimelineAnchor anchor;
+
+  /// 本次锚点变化是否同时表达了「改后端焦点」的意图；null 表示只更新阅读位置。
+  final TimelineViewAction? viewAction;
 }

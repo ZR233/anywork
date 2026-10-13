@@ -174,6 +174,42 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final next = jumpTimelineToLatestState(state);
     if (next == state) return;
     state = next;
+    // 跳回最新会聚焦权威窗口的 Latest：确认焦点回到「跟随最新」。
+    _viewFocus.itemId = null;
+  }
+
+  /// 后端已确认的窗口焦点与在途目标（design/25 §25.6）。
+  ///
+  /// 与 UI 的阅读锚点严格分开：锚点表达「读者看到哪里」，焦点表达「后端窗口围绕哪一条」。
+  /// 普通窗口内滚动只改变锚点，只有真正的意图切换才允许改焦点——否则每次换顶行都会让后端
+  /// 换窗口并发一次内容 Reset，把滚动变成整窗重载。
+  final _ViewFocusTarget _viewFocus = _ViewFocusTarget();
+
+  /// 当前已确认的窗口焦点（`null` 表示 Latest）：供命令层与测试读取。
+  String? get confirmedViewFocus => _viewFocus.itemId;
+
+  /// 是否存在仍在途的焦点请求。用于「同一目标不重复发起，但失败后可以重试」。
+  bool get viewFocusPending => _viewFocus.pending;
+
+  /// 需要为 [itemId] 发起 native focus 时返回 true；已确认或已在途的同一目标不再是新请求。
+  ///
+  /// 去重只依据「后端已确认焦点」与「同一目标的在途请求」，不依据刚写下的 UI 锚点：失败后
+  /// 同一个目标必须能重试，否则一次失败会被本地意图永久压住。[itemId] 为 null 表示 Latest。
+  bool requestViewFocus(String? itemId) {
+    if (_viewFocus.itemId == itemId && !_viewFocus.pending) return false;
+    if (_viewFocus.pending && _viewFocus.inFlight == itemId) return false;
+    _viewFocus.pending = true;
+    _viewFocus.inFlight = itemId;
+    return true;
+  }
+
+  /// 标记一次焦点请求的结果：成功即成为已确认焦点，失败只清在途，允许下一次重试。
+  void settleViewFocus(String? itemId, {required bool succeeded}) {
+    if (_viewFocus.inFlight == itemId) {
+      _viewFocus.pending = false;
+      _viewFocus.inFlight = null;
+    }
+    if (succeeded) _viewFocus.itemId = itemId;
   }
 
   /// 写入阅读锚点（浏览历史意图标记脱离底部）。
@@ -660,4 +696,13 @@ class _WindowOperation {
       targetVersion: version,
     );
   }
+}
+
+/// 后端窗口焦点事实：已确认的目标（`null` = Latest）加上至多一个在途请求。
+///
+/// UI 阅读锚点不属于这里；这里是「后端窗口现在围绕哪一条」的唯一事实源。
+class _ViewFocusTarget {
+  String? itemId;
+  bool pending = false;
+  String? inFlight;
 }

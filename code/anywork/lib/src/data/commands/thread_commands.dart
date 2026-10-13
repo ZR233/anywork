@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../domain/models/studio_models.dart';
+import '../../domain/models/timeline_commands.dart';
 import '../frb/studio_api.dart';
 import '../repositories/studio_api_provider.dart';
 import '../stores/chat_view_metrics.dart';
@@ -294,33 +295,47 @@ class ThreadCommands extends _$ThreadCommands {
     if (window == null || !ref.mounted) return;
     try {
       await window.focus(null);
+      store.settleViewFocus(null, succeeded: true);
     } catch (error) {
+      store.settleViewFocus(null, succeeded: false);
       if (ref.mounted) {
         store.setHistoryError(TimelineDirection.newer, error.toString());
       }
     }
   }
 
-  /// 写入阅读锚点；浏览历史意图时，仅在需要更换窗口焦点时才调用 native focus。
+  /// 写入阅读锚点；只有带定位动作的锚点才允许改变后端窗口焦点。
+  ///
+  /// 普通窗口内滚动只更新锚点：后端焦点不变，窗口也不移动。此前用「上一次锚点」去重，
+  /// 于是每换一个顶行都会 focus 一次，而后端 focus 变化会让内容流发 Reset——滚动被放大成
+  /// 整窗重载。去重因此只依据已确认焦点与同一目标的在途请求；失败后同一目标仍可重试。
   Future<void> updateTimelineAnchor(
     String threadId,
-    TimelineAnchor anchor,
-  ) async {
+    TimelineAnchor anchor, {
+    TimelineViewAction? viewAction,
+  }) async {
     final store = ref.read(threadSessionStoreProvider(threadId).notifier);
-    final previous = ref.read(threadSessionStoreProvider(threadId)).history;
     store.setTimelineAnchor(anchor);
-    if (anchor.readingIntent != TimelineReadingIntent.browseHistory) return;
-    final focused = previous.detached ? previous.anchor?.itemId : null;
-    if (focused == anchor.itemId) {
+    if (viewAction == null ||
+        anchor.readingIntent != TimelineReadingIntent.browseHistory) {
+      return;
+    }
+    // 已确认焦点就是同一个条目时，这一次定位动作不产生新的后端请求。
+    if (!store.requestViewFocus(anchor.itemId)) {
       ChatViewMetrics.redundantFocusSkipped += 1;
       return;
     }
     final window = await store.chatView();
-    if (window == null || !ref.mounted) return;
+    if (window == null) {
+      store.settleViewFocus(anchor.itemId, succeeded: false);
+      return;
+    }
     try {
       await window.focus(anchor.itemId);
+      store.settleViewFocus(anchor.itemId, succeeded: true);
     } catch (_) {
-      // 聚焦失败保留当前窗口与锚点；下一次滚动或翻页会重试。
+      // 聚焦失败保留当前窗口与锚点；下一次同目标定位动作会重试。
+      store.settleViewFocus(anchor.itemId, succeeded: false);
     }
   }
 

@@ -379,8 +379,9 @@ class _PreviewThreadCommands extends ThreadCommands {
   @override
   Future<void> updateTimelineAnchor(
     String threadId,
-    TimelineAnchor anchor,
-  ) async {}
+    TimelineAnchor anchor, {
+    TimelineViewAction? viewAction,
+  }) async {}
 
   @override
   Future<void> ensureItemBodies(

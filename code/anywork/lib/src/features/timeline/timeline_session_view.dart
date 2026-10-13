@@ -96,10 +96,8 @@ Future<void> dispatchTimelineSessionCommand(
       threadId,
       itemIds,
     ),
-    TimelineAnchorChanged(:final anchor) => commands.updateTimelineAnchor(
-      threadId,
-      anchor,
-    ),
+    TimelineAnchorChanged(:final anchor, :final viewAction) =>
+      commands.updateTimelineAnchor(threadId, anchor, viewAction: viewAction),
   };
 }
 
