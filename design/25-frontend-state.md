@@ -28,7 +28,7 @@
 > - 由单一 viewport/ScrollPosition 所有者接管位置稳定性（按可见 itemId + offset 保持、用户滚动优先）；当前是合并后的单一校正点，尚未收敛成独立 controller。
 > - expand 结构化结果（Retained / AlreadyComplete / NotInWindow / Unavailable / Superseded）；当前仍由 Option 推断 retained。
 > - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。
-> - Windows profile / release 原生性能验收。
+> - Windows profile / release 原生性能与逐帧呈现验收：验收矩阵与取证口径已写入 [24](./24-testing.md) §24.5；本机（Linux）只能跑到 `manual-gui` 的启动与部分场景，未取得 Windows 帧时长与录像。
 
 本篇定义 Dart read model、命令、草稿、页面与订阅的职责。Rust 的可靠历史/恢复见 15/16/17；产品资源与版本见 18；呈现与滚动见 19；流协议见 07。文档各自拥有自己的定义，其他篇引用而不重新定义一套规则。
 
