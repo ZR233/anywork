@@ -214,45 +214,62 @@ class _TimelineRowBlock extends StatelessWidget {
                       onToggleToolGroup: onToggleToolGroup,
                     ),
                   ),
-                  if (!row.saved)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Tooltip(
-                        message: context.l10n.timelinePendingSave,
-                        child: Icon(
-                          Icons.cloud_upload_outlined,
-                          size: 14,
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  if (row.isRolledBack)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: DecoratedBox(
-                        key: StudioDriverKeys.timelineRolledBack(row.id),
-                        decoration: BoxDecoration(
-                          color: context.colors.surfaceContainer,
-                          border: Border.all(
-                            color: context.colors.outlineVariant,
-                          ),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 3,
-                          ),
-                          child: Text(
-                            context.l10n.timelineRolledBack,
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(
+                  // 行状态（等待保存 / 已回退）占据固定高度的元信息条：状态切换只改变
+                  // 图标可见性，不改变行高，正文几何与滚动锚点因此不受影响。
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        SizedBox.square(
+                          dimension: 16,
+                          child: Center(
+                            child: Visibility(
+                              visible: !row.saved,
+                              maintainSize: true,
+                              maintainAnimation: true,
+                              maintainState: true,
+                              child: Tooltip(
+                                message: context.l10n.timelinePendingSave,
+                                child: Icon(
+                                  Icons.cloud_upload_outlined,
+                                  size: 14,
                                   color: context.colors.onSurfaceVariant,
                                 ),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                        if (row.isRolledBack) ...[
+                          const SizedBox(width: 6),
+                          DecoratedBox(
+                            key: StudioDriverKeys.timelineRolledBack(row.id),
+                            decoration: BoxDecoration(
+                              color: context.colors.surfaceContainer,
+                              border: Border.all(
+                                color: context.colors.outlineVariant,
+                              ),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              child: Text(
+                                context.l10n.timelineRolledBack,
+                                style: Theme.of(context).textTheme.labelSmall
+                                    ?.copyWith(
+                                      color: context.colors.onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
+                  ),
                   // 分组行的展开只放大已截断文本；完整正文按底层条目身份单独回源。
                   for (final state in body) _ItemBodyNotice(state: state),
                 ],
@@ -784,27 +801,18 @@ class _TimelineActivitySummary extends StatelessWidget {
             Icon(icon, size: 16, color: color.withValues(alpha: 0.76)),
             const SizedBox(width: 8),
             Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 140),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                layoutBuilder: (currentChild, previousChildren) {
-                  return Stack(
-                    alignment: AlignmentDirectional.centerStart,
-                    children: [...previousChildren, ?currentChild],
-                  );
-                },
-                child: Text(
-                  label,
-                  key: ValueKey(label),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  softWrap: false,
-                  style: context.text.bodySmall?.copyWith(
-                    color: color,
-                    fontWeight: isIssue ? FontWeight.w600 : FontWeight.w400,
-                    height: 1.25,
-                  ),
+              // 摘要是持续追加的文本，不是一次性出现的内容：这里必须是普通 Text。
+              // 用 AnimatedSwitcher + label-key 会让每次增量都重新开始一段淡入淡出，
+              // 持续输出时多个旧文本同时退场，表现为摘要忽明忽暗、叠影。
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                style: context.text.bodySmall?.copyWith(
+                  color: color,
+                  fontWeight: isIssue ? FontWeight.w600 : FontWeight.w400,
+                  height: 1.25,
                 ),
               ),
             ),

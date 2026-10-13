@@ -7,7 +7,8 @@
 > **已实现（Dart/core 源码可核对；Windows 原生性能未测）：**
 > - 唯一内容泵消费 ChatView 首帧与后续帧；transport 不再维护第二份补丁基线。
 > - Timeline 使用窗口交付的 `hasOlder` / `hasNewer` / `canExtendLatest`，不以「有无命令回调」推断补页能力；自动补页在边界/容量未变时不因 loading 落沿重复发起；core 的 extendLatest no-op 不推进版本、不发内容帧。
-> - load / extendLatest 在第一个 await 之前占位；回执版本未超过已观察窗口时按 NoChange 结束，不等待不会出现的内容帧；旧操作 token 不能结束新占位。
+> - load / extendLatest 在第一个 await 之前占位；回执版本未超过已观察窗口时视为「该水位已观察」并结束等待；旧操作 token 不能结束新占位。
+> - 活动摘要层只更新文本：不再以 label 作为切换动画身份，连续增量不重启淡入淡出；行状态（等待保存 / 已回退）占据固定高度元信息区，`saved` 翻转不改变行几何。
 > - 旧订阅释放只清理自己捕获的资源；await 之后若已有新绑定或新附件，不得清空当前窗口。
 > - 缺少 ChatWindowReader 标为内容同步失败，不再静默当成空窗口。
 > - 窗口内相同 Latest / 仍可见的 Around 焦点在 core 为 no-op：不推进 generation、不通知。
@@ -16,6 +17,7 @@
 > - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
 > - 内容绑定有身份与泵，但尚未收敛为完整 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机；打开成功即复位退避、EOF 与静默 catch 仍不完整。
 > - 像素滚动在已浏览同一 item 时跳过 native focus；从跟随最新切入历史阅读仍会 focus。
+> - 操作回执只按「版本已观察」结束等待：receipt version 取自会话进度且 ChatUpdates 会跳过当前窗口不可见的变化，`receipt.version <= current` 因此只能说明不必再等这个水位，不能分类为 NoChange；后台不可见变化推高会话版本时不保证等待最终能结束。
 >
 > **尚未实施：**
 > - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区。
@@ -74,7 +76,7 @@ keepAlive 仅用于明确需要驻留的轻状态；不能让每个曾浏览的�
 
 控制操作不能改变“客户端已收到”的 baseline。focus/load 与 next 的并发由 Rust view 协调；next 的 readiness 等待在窗口锁外，关闭能打断等待。传输层不得自行生成新窗口事实。**已实施。**
 
-窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange（回执版本未超过已观察窗口，或能力门控判定无事可做）直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。回执里的 version 来自会话进度，ChatUpdates 会跳过当前窗口不可见的变化，因此不能把任意采样的全局 version 当作必须在内容帧出现的完成水位。**NoChange 与占位已实施；结构化 disposition 枚举与同流操作完成标记仍待实施。**
+窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。NoChange 表示后端操作确实没有改变窗口，必须由操作结果本身给出。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange 直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。**版本占位与旧 token 隔离已实施，NoChange 尚未实施：** 回执里的 version 来自会话进度，ChatUpdates 会跳过当前窗口不可见的变化，因此 `receipt.version <= current` 只能得到「该水位已观察、无需继续等它」，既不能证明窗口未变化，也不能保证等待一定会被满足——历史窗口已交付到 100、后台不可见内容把会话推进到 105、窗口本身无变化时，等待 `chatVersion >= 105` 的操作拿不到任何内容帧。收束方式是让 core 返回真正的操作结果（Applied / NoChange / Superseded / NotInWindow / Failed / Cancelled），并在同一有序出口上用只带 `(viewId, operationId, result)` 的操作完成标记结束 pending：标记只收束操作，不携带第二份正文、不伪造正文 revision，也不替代本应发送的内容帧。
 
 Patch 仅在 view/epoch 匹配且 from 等于本地版本时应用，to 必须更大但无需恰好加一；from 匹配时 to ≤ from 拒收并要求 resync。缺口恢复只影响该 view。旧绑定帧不能借新 epoch 覆盖新会话。Reset 来自 core 对尾部、可靠待保存事实和历史的统一视图，不由 Dart 再读 SQL 补齐。**from/to 防线已实施。**
 
@@ -96,7 +98,7 @@ ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页�
 
 命令成功返回 operationId、创建对象 identity 和受影响资源版本。canonical 只由资源观察帧写入；成功后不 readStudioState/重新读取目录或 Thread snapshot 来掩盖缺帧。
 
-Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、NoChange 与旧 token 隔离已实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
+Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、版本观察与旧 token 隔离已实施；操作结果分类（NoChange 等）与同流完成标记待实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
 
 冲突重基仅适用于可安全重做的字段修改。网络错误不代表未执行，不幂等业务不能自动重放。设置命令与使用设置新建会话存在明确因果依赖，不能以“读取此刻缓存”替代命令完成关系。导航不等待写入；依赖写入结果的业务动作自行协调。
 
@@ -107,6 +109,8 @@ Pending 完成条件是该 operation 成功并且本地观察到相关资源目�
 连接组件从 provider 取得全部事实；纯显示组件只使用构造输入。同一组件不得在 props 和 provider 之间运行时选择事实来源。
 
 Widget key 基于稳定 identity。Turn 的视觉分组不改变 item 身份，也不要求一个 Turn 是一个无限增长的 Widget。文本作为主要内容，工具、推理与运行提示按照 19 的呈现规范组织。
+
+持续追加的内容不产生进出场动画：显示文本本身不能充当 Widget 身份（以 label 作 key 的切换动画会让每个增量重启一次淡入淡出，旧文本在动画周期内叠加退场）。流式摘要是同一身份的文本更新，不是一次性出现的新内容。用户主动展开/收起可以有自己的动画，行的保存/回退等状态变化只能改固定几何区域内的可见性，不能改变正文所在行的几何。
 
 ## 25.9 重试、错误与恢复
 
