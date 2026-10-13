@@ -12,7 +12,7 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `view_closed`
+// These functions are ignored because they are not marked as `pub`: `next_operation_id`, `view_closed`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
 Future<BridgeChatView> openChatView({
@@ -28,27 +28,29 @@ abstract class BridgeChatView implements RustOpaqueInterface {
   /// 结束这个窗口：取消锁内的帧等待、打断正在 await history 的翻页/换焦点。
   Future<void> close();
 
-  /// 展开被有界窗口省略的条目：这是一次**同 view 的窗口操作**，不是另开窗口的只读查询。
+  /// 展开被有界窗口省略的条目：一次**同 view 的窗口操作**，返回操作回执。
   ///
   /// 步骤：锁外请求该身份的**完整**正文（同 view/revision，历史条目至多冷读一次并保留到身份离开
-  /// 窗口；被取消不会写回），再在短临界区里重新订阅这条窗口并把**权威窗口快照**交出去——返回的快照
-  /// 版本就是后续 `Patch.from` 的基线，因此 Dart 直接把它当成一次的 `Reset` 应用即可，不需要自己
-  /// 覆一份 item 或维持另一份 baseline（据此删除 `_completedBodies` 覆盖层）。
-  Future<BridgeChatSnapshot> expand({required String itemId});
+  /// 窗口；被取消不会写回）。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并通知，
+  /// 完整正文由下一次 `next` 以 typed 字段更新从唯一出口交付——客户端不在这里收到窗口，也不需要
+  /// 自己覆一份 item 或维持另一份 baseline。`retained == false` 表示身份已不在窗口或完整正文此刻
+  /// 不可得：调用方保留预览与重试入口，不伪造正文。
+  Future<BridgeChatReceipt> expand({required String itemId});
 
-  /// Fill a short latest viewport without detaching from live content. Closing cancels the read.
-  Future<BridgeChatSnapshot> extendLatest();
+  /// Fill a short latest viewport without detaching from live content; returns the operation
+  /// receipt (`extend_latest` 的 no-op 分支不推进版本、无帧）。Closing cancels the read.
+  Future<BridgeChatReceipt> extendLatest();
 
-  Future<BridgeChatSnapshot> focus({required BridgeChatFocus focus});
+  /// 换焦点的操作回执：窗口由下一次 `next` 以权威 `Reset` 交付。
+  Future<BridgeChatReceipt> focus({required BridgeChatFocus focus});
 
   /// The subscription baseline is captured before returning the handle.
   Future<BridgeChatSnapshot> initial();
 
-  /// 按方向翻页：从**当前窗口**继续（core `ChatView::load` 换入一页、换出相反方向的一页），
-  /// 因此每次调用都前进，也不会用同一个 item 反复拿到同一个居中窗口。
+  /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、换出相反方向的一页）。
   ///
-  /// `close` 会取消正在等待 history 的翻页，避免视图关闭后调用永久挂起。
-  Future<BridgeChatSnapshot> load({required BridgeChatDirection direction});
+  /// 窗口移动由下一次 `next` 交付；`close` 会取消正在等待 history 的翻页。
+  Future<BridgeChatReceipt> load({required BridgeChatDirection direction});
 
   /// Waits for one consolidated batch, then returns control to the consumer.
   ///
@@ -62,7 +64,4 @@ abstract class BridgeChatView implements RustOpaqueInterface {
   /// 不按 thread id 另找运行时实例，窗口句柄关闭后也不会读到别的实例的条目。一个挂起的 `next`
   /// 同样不会挡住正文读取。
   Future<BridgeChatItem?> readItem({required String itemId});
-
-  /// 当前窗口，并把订阅基线对齐到它：返回的快照版本一定等于随后差量的 `from`。
-  Future<BridgeChatSnapshot> snapshot();
 }

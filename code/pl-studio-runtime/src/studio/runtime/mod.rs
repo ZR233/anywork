@@ -33,7 +33,7 @@ mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
 mod tool_refresh;
-pub use chat_window::{ChatWindowHandle, ChatWindowStream};
+pub use chat_window::{ChatWindowHandle, ChatWindowReceipt, ChatWindowStream};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
 mod thread_observation;

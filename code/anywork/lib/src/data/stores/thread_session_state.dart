@@ -3,10 +3,11 @@ import '../bridge/thread_stream_gate.dart';
 import '../frb/studio_api.dart';
 import 'domain_sync.dart';
 
-/// 有界 Timeline 窗口上限。语义与旧 reducer 的 `maxTimelineWindowItems` 一致。
-const int threadTimelineWindowLimit = 100;
-
 /// 单个会话的 canonical 投影。
+///
+/// `workspace.items` 是权威 ChatView 窗口的**只读显示镜像**：窗口顺序、有界与去重都由原生
+/// owner 保证，本地不再做第二份排序/裁剪/去重；唯一写入者是 [`applyChatFrameState`]（Reset/Patch
+/// reducer）。`thread projection`（runtime/turn/interactions）来自 Thread 有序流，两路事实互相独立。
 ///
 /// revision / streamEpoch / baseRevision / history.epoch 都参与相等。
 /// workflow 在 [runtime] 上，不另建旁路字段。
@@ -186,95 +187,57 @@ ThreadSessionState applyThreadNotificationState(
   );
 }
 
-ThreadSessionState applyTimelinePageState(
-  ThreadSessionState current,
-  TimelinePage page,
-  TimelineDirection direction, {
-  bool replaceWindow = false,
-  bool followBottom = false,
-}) {
-  final workspace = current.workspace;
-  if (workspace == null || page.threadId != current.threadId) return current;
-  if (_timelinePageIsStale(
-    current.history,
-    page,
-    replaceWindow: replaceWindow,
-  )) {
-    return current;
-  }
-  final pageItems = [
-    for (final item in page.items)
-      if (item.threadId == current.threadId) item,
-  ];
-  final merged = <String, ThreadItemView>{
-    if (!replaceWindow)
-      for (final item in workspace.items) item.id: item,
-  };
-  final pagePreviewOmitted = {
-    for (final preview in page.previews) preview.itemId: preview.omittedBytes,
-  };
-  for (final item in pageItems) {
-    final existing = merged[item.id];
-    final selected = existing == null
-        ? item
-        : _preferPageItem(
-                existing,
-                item,
-                pageWatermark: page.watermark,
-                workspaceRevision: workspace.revision,
-              ) ??
-              existing;
-    merged[item.id] = selected.copyWith(
-      bodyOmittedUnits: pagePreviewOmitted[item.id] ?? 0,
-    );
-  }
-  final items = merged.values.toList()..sort(_compareItems);
-  // 裁剪判断必须用合并后的整窗长度，不能用有界窗口与本页长度比较。
-  final trimmed = items.length > threadTimelineWindowLimit;
-  var latestTurn = workspace.latestTurn;
-  for (final entry in page.turns) {
-    latestTurn = newestSessionTurn(latestTurn, entry.turn);
-  }
-  final bounded = _boundedTimeline(
-    workspace.copyWith(items: items, latestTurn: latestTurn),
-    direction,
-    anchorId: current.history.anchor?.itemId,
-  );
-  final droppedOlder = bounded.items.firstOrNull?.id != items.firstOrNull?.id;
-  final droppedNewer = bounded.items.lastOrNull?.id != items.lastOrNull?.id;
-  final history = _historyAfterPage(
-    current.history,
-    page,
-    bounded: bounded,
-    direction: direction,
-    replaceWindow: replaceWindow,
-    followBottom: followBottom,
-    droppedOlder: droppedOlder,
-    droppedNewer: droppedNewer,
-    trimmed: trimmed,
-  );
-  return current.copyWith(
-    workspace: bounded,
-    history: _syncItemBody(history, bounded),
-  );
+/// 一帧权威内容的本地应用结果。
+enum ChatFrameOutcome {
+  /// 帧已应用（或幂等空帧），read model 前进。
+  applied,
+
+  /// 帧属于旧绑定/已交付版本，静默丢弃。
+  irrelevant,
+
+  /// 连续性缺口或字段提交不匹配：废弃当前绑定并重新打开同一会话的有界窗口。
+  resync,
 }
 
-/// Chat 窗口一次交付对应的历史命令完成方向。
-///
-/// 与旧 reducer 的完成分类同义，定义在新骨架内，避免交叉引用。
-enum ChatHistoryCompletion { focus, older, newer }
+/// 帧应用的返回：`state` 恒为「应用后的最新状态」（`applied`/`irrelevant` 时可能等于输入）。
+class ChatFrameResult {
+  const ChatFrameResult(this.state, this.outcome);
 
-ThreadSessionState applyChatSnapshotState(
+  final ThreadSessionState state;
+  final ChatFrameOutcome outcome;
+}
+
+/// 唯一 chat reducer：接收权威 ChatView 交付的 Reset/Patch 帧。
+///
+/// Patch 仅在 `from == 本地 chatVersion` 时应用；`to` 必须更大但无需恰好加一（允许合并跨版本）。
+/// 已交付版本的重复帧幂等丢弃；缺口、目标 item 不在窗口、或 `expectedRevision` 不匹配都按
+/// `resync` 收束——由 binding 重开窗口拿最新有界 Reset，不在本地拼接或修补。
+ChatFrameResult applyChatFrameState(
   ThreadSessionState current,
-  StudioChatSnapshot snapshot, {
-  ChatHistoryCompletion? historyCompletion,
-}) {
+  StudioChatFrame frame,
+) {
   final workspace = current.workspace;
-  if (workspace == null) return current;
-  if (current.hasChatWindow &&
-      current.chatVersion != null &&
-      snapshot.version < current.chatVersion!) {
-    return current;
+  if (workspace == null) {
+    return ChatFrameResult(current, ChatFrameOutcome.irrelevant);
+  }
+  return switch (frame) {
+    StudioChatReset(:final snapshot) => _applyReset(
+      current,
+      workspace,
+      snapshot,
+    ),
+    StudioChatPatch() => _applyPatch(current, workspace, frame),
+  };
+}
+
+ChatFrameResult _applyReset(
+  ThreadSessionState current,
+  ThreadWorkspace workspace,
+  StudioChatSnapshot snapshot,
+) {
+  final version = current.chatVersion;
+  if (current.hasChatWindow && version != null && snapshot.version < version) {
+    return ChatFrameResult(current, ChatFrameOutcome.irrelevant);
   }
   final items = [for (final entry in snapshot.items) entry.item];
   final next = workspace.copyWith(items: items);
@@ -291,15 +254,6 @@ ThreadSessionState applyChatSnapshotState(
     canExtendLatest: snapshot.canExtendLatest,
     olderCursor: items.firstOrNull?.id,
     newerCursor: items.lastOrNull?.id,
-    isLoading: historyCompletion == null ? current.history.isLoading : false,
-    errorMessage: switch (historyCompletion) {
-      ChatHistoryCompletion.focus || ChatHistoryCompletion.older => null,
-      ChatHistoryCompletion.newer || null => current.history.errorMessage,
-    },
-    newerError: switch (historyCompletion) {
-      ChatHistoryCompletion.focus || ChatHistoryCompletion.newer => null,
-      ChatHistoryCompletion.older || null => current.history.newerError,
-    },
     detached: snapshot.focusedItemId != null,
     anchor: snapshot.focusedItemId == null
         ? inspectionAnchor
@@ -309,11 +263,94 @@ ThreadSessionState applyChatSnapshotState(
             readingIntent: TimelineReadingIntent.browseHistory,
           ),
   );
-  return current.copyWith(
-    workspace: next,
-    chatVersion: snapshot.version,
-    hasChatWindow: true,
-    history: _syncItemBody(history, next),
+  return ChatFrameResult(
+    current.copyWith(
+      workspace: next,
+      chatVersion: snapshot.version,
+      hasChatWindow: true,
+      history: _syncItemBody(history, next),
+    ),
+    ChatFrameOutcome.applied,
+  );
+}
+
+ChatFrameResult _applyPatch(
+  ThreadSessionState current,
+  ThreadWorkspace workspace,
+  StudioChatPatch patch,
+) {
+  final version = current.chatVersion;
+  if (version == null || !current.hasChatWindow) {
+    return ChatFrameResult(current, ChatFrameOutcome.resync);
+  }
+  if (patch.from != version) {
+    return ChatFrameResult(
+      current,
+      patch.to <= version
+          ? ChatFrameOutcome.irrelevant
+          : ChatFrameOutcome.resync,
+    );
+  }
+  var visible = [...workspace.items];
+  for (final change in patch.changes) {
+    switch (change) {
+      case StudioViewSplice(:final index, :final remove, :final items):
+        if (index < 0 ||
+            remove < 0 ||
+            index + remove > visible.length ||
+            remove == 0 && items.isEmpty) {
+          return ChatFrameResult(current, ChatFrameOutcome.resync);
+        }
+        visible.replaceRange(index, index + remove, [
+          for (final entry in items) entry.item,
+        ]);
+      case StudioViewItemUpdate(
+        :final itemId,
+        :final expectedRevision,
+        :final revision,
+        :final omittedUnits,
+        :final saved,
+        :final fields,
+      ):
+        // 整组字段在**一次**提交里原子应用：本地 revision 必须等于 expectedRevision，
+        // 应用完再一次性提交 revision/omitted/saved。终态条目拒绝迟到流式字段，
+        // 只接受保存/版本帧；任一条不成立就重开权威窗口，绝不把片段当正文。
+        // 字段身份只由 typed discriminator 决定（如 thinkingContent 的 chunkIndex），
+        // 不解析 JSON、不按字符串形状推断。
+        final index = visible.indexWhere((item) => item.id == itemId);
+        if (index < 0) {
+          return ChatFrameResult(current, ChatFrameOutcome.resync);
+        }
+        final nextItem = visible[index].applyFieldUpdates(
+          fields: [
+            for (final update in fields)
+              ThreadFieldUpdateView(field: update.field, change: update.change),
+          ],
+          expectedRevision: expectedRevision,
+          revision: revision,
+          omittedUnits: omittedUnits,
+          saved: saved,
+          terminal: visible[index].executionTerminal,
+        );
+        if (nextItem == null) {
+          return ChatFrameResult(current, ChatFrameOutcome.resync);
+        }
+        visible[index] = nextItem;
+    }
+  }
+  final next = workspace.copyWith(items: List.unmodifiable(visible));
+  final history = current.history.copyWith(
+    hasNewer: patch.hasNewer,
+    olderCursor: visible.firstOrNull?.id,
+    newerCursor: visible.lastOrNull?.id,
+  );
+  return ChatFrameResult(
+    current.copyWith(
+      workspace: next,
+      chatVersion: patch.to,
+      history: _syncItemBody(history, next),
+    ),
+    ChatFrameOutcome.applied,
   );
 }
 
@@ -334,16 +371,11 @@ ThreadSessionState releaseThreadHistoryState(ThreadSessionState current) {
 }
 
 ThreadSessionState jumpTimelineToLatestState(ThreadSessionState current) {
-  final workspace = current.workspace;
-  if (workspace == null) return current;
-  return current.copyWith(
-    workspace: workspace.copyWith(items: const []),
-    history: ThreadHistoryWindow(
-      epoch: current.history.epoch + 1,
-      databaseId: current.history.databaseId,
-      appliedWriteSequence: current.history.appliedWriteSequence,
-    ),
-  );
+  // 跳回最新是阅读意图切换：本地只推进 epoch 失效旧锚点恢复，正文镜像保留，
+  // 由权威窗口的 focus(latest) 交付的 Reset 替换，不渲染中间空窗。
+  final history = ThreadHistoryWindow(epoch: current.history.epoch + 1);
+  if (history == current.history) return current;
+  return current.copyWith(history: history);
 }
 
 StudioTurnView? newestSessionTurn(StudioTurnView? left, StudioTurnView? right) {
@@ -418,151 +450,6 @@ ThreadWorkspace _applyInteraction(
   return workspace.copyWith(revision: revision, interactions: interactions);
 }
 
-bool _timelinePageIsStale(
-  ThreadHistoryWindow window,
-  TimelinePage page, {
-  required bool replaceWindow,
-}) {
-  final windowDatabase = window.databaseId;
-  final pageDatabase = page.databaseId;
-  final identityKnown = windowDatabase.isNotEmpty && pageDatabase.isNotEmpty;
-  if (identityKnown && windowDatabase != pageDatabase) return !replaceWindow;
-  if (identityKnown &&
-      !replaceWindow &&
-      page.watermark < window.appliedWriteSequence) {
-    return true;
-  }
-  return false;
-}
-
-ThreadItemView? _preferPageItem(
-  ThreadItemView existing,
-  ThreadItemView incoming, {
-  required int pageWatermark,
-  required int workspaceRevision,
-}) {
-  if (!_sameItemIdentity(existing, incoming)) return null;
-  if (incoming.revision < existing.revision) return null;
-  final stable = incoming.ordinal == existing.ordinal
-      ? incoming
-      : incoming.copyWith(ordinal: existing.ordinal);
-  if (stable.revision > existing.revision) return stable;
-  if (stable.isTerminal && !existing.isTerminal) return stable;
-  if (pageWatermark >= workspaceRevision &&
-      stable.contextDisposition != existing.contextDisposition) {
-    return existing.copyWith(contextDisposition: stable.contextDisposition);
-  }
-  return null;
-}
-
-bool _sameItemIdentity(ThreadItemView left, ThreadItemView right) {
-  return left.id == right.id &&
-      left.threadId == right.threadId &&
-      left.turnId == right.turnId &&
-      left.kind == right.kind;
-}
-
-int _compareItems(ThreadItemView left, ThreadItemView right) {
-  final ordinal = left.ordinal.compareTo(right.ordinal);
-  return ordinal != 0 ? ordinal : left.id.compareTo(right.id);
-}
-
-ThreadWorkspace _boundedTimeline(
-  ThreadWorkspace workspace,
-  TimelineDirection direction, {
-  String? anchorId,
-}) {
-  final all = workspace.items;
-  var start =
-      all.length <= threadTimelineWindowLimit ||
-          direction == TimelineDirection.older
-      ? 0
-      : all.length - threadTimelineWindowLimit;
-  final anchor = all.indexWhere((item) => item.id == anchorId);
-  if (anchor >= 0) {
-    if (anchor < start) start = anchor;
-    if (anchor >= start + threadTimelineWindowLimit) {
-      start = anchor - threadTimelineWindowLimit + 1;
-    }
-  }
-  final items = all.sublist(
-    start,
-    (start + threadTimelineWindowLimit).clamp(start, all.length),
-  );
-  return workspace.copyWith(items: items);
-}
-
-ThreadHistoryWindow _historyAfterPage(
-  ThreadHistoryWindow history,
-  TimelinePage page, {
-  required ThreadWorkspace bounded,
-  required TimelineDirection direction,
-  required bool replaceWindow,
-  required bool followBottom,
-  required bool droppedOlder,
-  required bool droppedNewer,
-  required bool trimmed,
-}) {
-  final databaseId = page.databaseId.isEmpty
-      ? history.databaseId
-      : page.databaseId;
-  final appliedWriteSequence = replaceWindow
-      ? page.watermark
-      : (page.watermark > history.appliedWriteSequence
-            ? page.watermark
-            : history.appliedWriteSequence);
-  final followHasOlder = droppedOlder || page.olderCursor != null;
-  final followOlderCursor = !followHasOlder
-      ? null
-      : droppedOlder
-      ? bounded.items.firstOrNull?.id
-      : page.olderCursor ?? bounded.items.firstOrNull?.id;
-  return history.copyWith(
-    olderCursor: followBottom
-        ? followOlderCursor
-        : droppedOlder
-        ? bounded.items.firstOrNull?.id
-        : (replaceWindow || direction == TimelineDirection.older)
-        ? page.olderCursor
-        : history.olderCursor,
-    newerCursor: followBottom
-        ? null
-        : droppedNewer
-        ? bounded.items.lastOrNull?.id
-        : (replaceWindow || direction == TimelineDirection.newer)
-        ? page.newerCursor
-        : history.newerCursor,
-    hasOlder: followBottom
-        ? followHasOlder
-        : droppedOlder ||
-              ((replaceWindow || direction == TimelineDirection.older)
-                  ? page.olderCursor != null
-                  : history.hasOlder),
-    hasNewer: followBottom
-        ? droppedNewer
-        : droppedNewer ||
-              ((replaceWindow || direction == TimelineDirection.newer)
-                  ? page.newerCursor != null
-                  : history.hasNewer),
-    detached: followBottom
-        ? false
-        : replaceWindow ||
-              history.detached ||
-              (trimmed && direction == TimelineDirection.older),
-    isLoading: false,
-    errorMessage:
-        followBottom || replaceWindow || direction == TimelineDirection.older
-        ? null
-        : history.errorMessage,
-    newerError:
-        followBottom || replaceWindow || direction == TimelineDirection.newer
-        ? null
-        : history.newerError,
-    databaseId: databaseId,
-    appliedWriteSequence: appliedWriteSequence,
-  );
-}
-
 ThreadHistoryWindow _syncItemBody(
   ThreadHistoryWindow history,
   ThreadWorkspace workspace,
@@ -606,8 +493,6 @@ bool _historyTouched(ThreadHistoryWindow window) {
       window.newerCursor != null ||
       window.errorMessage != null ||
       window.newerError != null ||
-      window.databaseId.isNotEmpty ||
-      window.appliedWriteSequence != 0 ||
       window.previewedItemIds.isNotEmpty ||
       window.loadingItemIds.isNotEmpty ||
       window.pendingItemBodyIds.isNotEmpty ||

@@ -156,19 +156,8 @@ abstract class StudioBridgeDataSource {
     List<StudioShutdownIssue> externalIssues = const [],
   });
 
-  /// 读取 Thread 当前状态；Timeline 历史由 [listTimelineItems] 分页提供。
+  /// 读取 Thread 当前状态；Timeline 历史与实时正文统一由权威 ChatView 窗口交付。
   Future<ThreadWorkspace> readThreadSnapshot(String threadId);
-  Future<TimelinePage> listTimelineItems(
-    String threadId, {
-    TimelineQueryKind kind = TimelineQueryKind.latest,
-    String? itemId,
-    int limit = 100,
-  });
-  Future<ThreadHistoryPage> listThreadTurns(
-    String threadId, {
-    String? cursor,
-    int limit = 50,
-  });
   Future<SubmitPromptReceipt> submitPrompt(
     String threadId,
     StudioPromptInput input,
@@ -1930,68 +1919,6 @@ class FrbStudioBridgeDataSource
       ),
     );
     return FrbChatWindow(view);
-  }
-
-  @override
-  Future<TimelinePage> listTimelineItems(
-    String threadId, {
-    TimelineQueryKind kind = TimelineQueryKind.latest,
-    String? itemId,
-    int limit = 100,
-  }) async {
-    await _ensureReady();
-    final query = switch (kind) {
-      TimelineQueryKind.latest => const frb.BridgeTimelineQuery.latest(),
-      TimelineQueryKind.before => frb.BridgeTimelineQuery.before(
-        itemId: itemId!,
-      ),
-      TimelineQueryKind.after => frb.BridgeTimelineQuery.after(itemId: itemId!),
-      TimelineQueryKind.around => frb.BridgeTimelineQuery.around(
-        itemId: itemId!,
-      ),
-    };
-    final page = await _bridgeCall(
-      () => frb.listTimelineItems(
-        request: frb.ListTimelineItemsRequest(
-          threadId: threadId,
-          query: query,
-          limit: limit,
-        ),
-      ),
-    );
-    return _timelinePageFromFrb(page);
-  }
-
-  @override
-  Future<ThreadHistoryPage> listThreadTurns(
-    String threadId, {
-    String? cursor,
-    int limit = 50,
-  }) async {
-    await _ensureReady();
-    final response = await _bridgeCall(
-      () => frb.listThreadTurns(
-        request: frb.ListThreadTurnsRequest(
-          threadId: threadId,
-          cursor: cursor,
-          limit: limit.clamp(1, 200),
-        ),
-      ),
-    );
-    final items = [
-      for (final turn in response.turns)
-        for (final item in turn.items)
-          _threadItemFromFrb(
-            item,
-            contextDisposition: switch (turn.contextDisposition) {
-              frb.BridgeThreadContextDisposition.active =>
-                ThreadContextDisposition.active,
-              frb.BridgeThreadContextDisposition.rolledBack =>
-                ThreadContextDisposition.rolledBack,
-            },
-          ),
-    ]..sort(_compareThreadItems);
-    return ThreadHistoryPage(items: items, nextCursor: response.nextCursor);
   }
 
   @override

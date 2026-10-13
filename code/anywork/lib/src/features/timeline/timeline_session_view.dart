@@ -59,9 +59,7 @@ TimelineSessionWindow? timelineSessionWindow(Ref ref) {
   // needsOpen 时不 watch session，避免首屏恢复选择自动建流。
   if (threadId == null || selection.needsOpen) return null;
   final session = ref.watch(threadSessionStoreProvider(threadId));
-  if (!session.hasChatWindow &&
-      session.items.isEmpty &&
-      session.history.databaseId.isEmpty) {
+  if (!session.hasChatWindow && session.items.isEmpty) {
     return null;
   }
   final history = session.history;

@@ -19,7 +19,6 @@ pub use attachment::*;
 pub use chat::*;
 pub use error::*;
 pub use event::*;
-pub use history::*;
 pub use product_topic::*;
 pub use response::*;
 pub use runtime::*;

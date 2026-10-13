@@ -110,3 +110,15 @@ pub enum BridgeChatUpdate {
         priority: BridgeUpdatePriority,
     },
 }
+
+/// 控制操作回执：操作已被权威窗口接受；内容仍由 `next` 以 Reset/Patch 从唯一出口交付。
+///
+/// `operationId` 标识这次控制调用，供客户端把 pending 状态与「成功回执 + 本地观察到
+/// `version`」关联；`version` 是操作完成后的窗口当前版本（no-op 时等于操作前版本）。
+/// `retained` 只对「展开完整正文」有意义：`false` 表示该身份已不在窗口或完整正文此刻不可得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeChatReceipt {
+    pub operation_id: u64,
+    pub version: u64,
+    pub retained: bool,
+}

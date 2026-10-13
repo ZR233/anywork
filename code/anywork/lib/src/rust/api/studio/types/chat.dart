@@ -13,7 +13,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 enum BridgeChatDirection { older, newer }
 
@@ -61,6 +61,36 @@ class BridgeChatItem {
 
 /// 条目的执行终态事实，与保存水位 `saved` 严格独立。
 enum BridgeChatLifecycle { streaming, terminal }
+
+/// 控制操作回执：操作已被权威窗口接受；内容仍由 `next` 以 Reset/Patch 从唯一出口交付。
+///
+/// `operationId` 标识这次控制调用，供客户端把 pending 状态与「成功回执 + 本地观察到
+/// `version`」关联；`version` 是操作完成后的窗口当前版本（no-op 时等于操作前版本）。
+/// `retained` 只对「展开完整正文」有意义：`false` 表示该身份已不在窗口或完整正文此刻不可得。
+class BridgeChatReceipt {
+  final BigInt operationId;
+  final BigInt version;
+  final bool retained;
+
+  const BridgeChatReceipt({
+    required this.operationId,
+    required this.version,
+    required this.retained,
+  });
+
+  @override
+  int get hashCode =>
+      operationId.hashCode ^ version.hashCode ^ retained.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeChatReceipt &&
+          runtimeType == other.runtimeType &&
+          operationId == other.operationId &&
+          version == other.version &&
+          retained == other.retained;
+}
 
 class BridgeChatSnapshot {
   final BridgeChatFocus focus;

@@ -25,7 +25,8 @@ HTTP → pl-studio-server ───────┘         │              ↑
 ```
 
 箭头表示依赖方向。core 定义独立的 Thread、Model/Tool 契约、上下文与可选存储；
-model/tool 实现核心接口且不相互依赖。Studio 拥有配置、项目、Mode/Plan/workflow、
+model 实现供应商协议与模型路由，tool 消费 model 已解释的 provider 能力（crate 依赖的唯一
+权威源见 [design/02](design/02-crates.md)）。Studio 拥有配置、项目、Mode/Plan/workflow、
 子代理协调和统一装配；FRB 与 HTTP 适配同一业务 runtime。
 
 ### Workspace 与 Flutter 客户端
@@ -46,7 +47,7 @@ model/tool 实现核心接口且不相互依赖。Studio 拥有配置、项目�
 | `pl-studio-runtime` | `code/pl-studio-runtime/` | Studio 产品 SQLite、项目、配置、恢复与产品事件的唯一业务 façade |
 | `pl-studio-server` | `code/pl-studio-server/` | 独立 HTTP/OpenAPI/SSE transport 宿主 |
 | `pl-studio-bridge` | `code/anywork/rust/` | Flutter Rust Bridge v2 transport 适配器 |
-| `anywork`（非 Cargo 成员） | `code/anywork/` | Flutter 桌面应用：Material 3、Riverpod、Thread 事件订阅 |
+| `anywork`（非 Cargo 成员） | `code/anywork/` | Flutter 桌面应用：Material 3、Riverpod；Flutter 消费按资源版本化的只读镜像，聊天经 core ChatView 的单一有序出口取得有界窗口，页面不合并 SQL 历史与实时输出 |
 | `pl-xtask` | `xtask/` | GUI 生成、验证、运行、构建与发布编排入口 |
 | `pl-studio-acceptance` | `code/pl-studio-acceptance/` | 按需编译的隔离 GUI 验收工具，保留全部模拟与故障场景 |
 | `pl-dev-support` | `code/pl-dev-support/` | 工程工具共享的轻量路径、命令和进程树支持 |

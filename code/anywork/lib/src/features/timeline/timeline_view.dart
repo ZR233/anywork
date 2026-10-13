@@ -11,7 +11,6 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../domain/models/timeline_commands.dart';
-import '../../data/commands/thread_commands.dart';
 import '../../data/repositories/studio_api_provider.dart';
 import 'timeline_session_view.dart';
 import '../../l10n/studio_l10n.dart';
@@ -37,7 +36,10 @@ typedef TimelineRemoteImageProviderFactory = ImageProvider Function(String url);
 final timelineRemoteImageProviderFactoryProvider =
     Provider<TimelineRemoteImageProviderFactory>((ref) => NetworkImage.new);
 
-class TimelineView extends ConsumerWidget {
+/// 纯显示组件：全部事实经构造参数进入，不内部订阅 provider、不在 props 与 store
+/// 之间运行时选择事实来源（design/25 §25.8）。订阅与命令派发由连接组件
+/// （`_AgentTimelineHost` 等）负责。
+class TimelineView extends StatelessWidget {
   const TimelineView({
     required this.threadId,
     required this.rows,
@@ -86,67 +88,30 @@ class TimelineView extends ConsumerWidget {
   final Set<String> unavailableItemIds;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final window = ref.watch(timelineSessionWindowProvider);
-    final threadId = this.threadId;
-    final useStore =
-        window != null && threadId != null && window.threadId == threadId;
-    if (!useStore) {
-      return _TimelineSurface(
-        key: key,
-        threadId: threadId,
-        rows: rows,
-        turn: turn,
-        planConfirmation: planConfirmation,
-        planExpanded: planExpanded,
-        onPlanToggle: onPlanToggle,
-        onCommand: onCommand,
-        isLoadingOlder: isLoadingOlder,
-        isLoadingNewer: isLoadingNewer,
-        anchor: anchor,
-        olderError: olderError,
-        newerError: newerError,
-        hasNewer: hasNewer,
-        olderCursor: olderCursor,
-        newerCursor: newerCursor,
-        windowEpoch: windowEpoch,
-        previewedItemIds: previewedItemIds,
-        loadingItemIds: loadingItemIds,
-        itemBodyErrors: itemBodyErrors,
-        pendingItemBodyIds: pendingItemBodyIds,
-        unavailableItemIds: unavailableItemIds,
-      );
-    }
-    final history = window.history;
+  Widget build(BuildContext context) {
     return _TimelineSurface(
       key: key,
-      threadId: window.threadId,
-      rows: window.rows,
-      turn: window.turn,
+      threadId: threadId,
+      rows: rows,
+      turn: turn,
       planConfirmation: planConfirmation,
       planExpanded: planExpanded,
       onPlanToggle: onPlanToggle,
-      onCommand: (command) => unawaited(
-        dispatchTimelineSessionCommand(
-          ref.read(threadCommandsProvider.notifier),
-          window.threadId,
-          command,
-        ),
-      ),
-      isLoadingOlder: window.isLoadingOlder,
-      isLoadingNewer: window.isLoadingNewer,
-      anchor: history.anchor,
-      olderError: history.errorMessage,
-      newerError: history.newerError,
-      hasNewer: history.hasNewer,
-      olderCursor: history.olderCursor,
-      newerCursor: history.newerCursor,
-      windowEpoch: history.epoch,
-      previewedItemIds: history.previewedItemIds,
-      loadingItemIds: history.loadingItemIds,
-      itemBodyErrors: history.itemBodyErrors,
-      pendingItemBodyIds: history.pendingItemBodyIds,
-      unavailableItemIds: history.unavailableItemIds,
+      onCommand: onCommand,
+      isLoadingOlder: isLoadingOlder,
+      isLoadingNewer: isLoadingNewer,
+      anchor: anchor,
+      olderError: olderError,
+      newerError: newerError,
+      hasNewer: hasNewer,
+      olderCursor: olderCursor,
+      newerCursor: newerCursor,
+      windowEpoch: windowEpoch,
+      previewedItemIds: previewedItemIds,
+      loadingItemIds: loadingItemIds,
+      itemBodyErrors: itemBodyErrors,
+      pendingItemBodyIds: pendingItemBodyIds,
+      unavailableItemIds: unavailableItemIds,
     );
   }
 }

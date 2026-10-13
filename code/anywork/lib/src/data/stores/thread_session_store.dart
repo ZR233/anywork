@@ -15,14 +15,22 @@ part 'thread_session_store.g.dart';
 
 /// 会话状态族。首个观察者经 Bridge 建流，最后一个观察者释放订阅。
 ///
-/// keepAlive 保留 last-known canonical；订阅寿命用 onCancel/onResume/onDispose，
-/// 不引入可见性 generation。
+/// keepAlive 保留 last-known canonical runtime 状态；订阅寿命用 onCancel/onResume/onDispose。
+/// 聊天正文按显示需求消费（design/25 §25.4）：无观察者时关闭权威 ChatView 并清正文镜像，
+/// 恢复观察后重开窗口、重获最新有界 Reset——Rust 执行、可靠事实保存不依赖 Dart 是否观察。
 @Riverpod(keepAlive: true)
 class ThreadSessionStore extends _$ThreadSessionStore {
   BridgeThreadAttachment? _attachment;
   var _closed = false;
-  StudioChatWindow? _chatView;
-  Future<StudioChatWindow?>? _chatViewOpening;
+
+  /// 当前内容绑定：一个绑定独占一个 native 窗口与它的内容泵。
+  ///
+  /// 绑定身份（`generation`）用于拒收迟到回调：旧绑定只清理自己的句柄，泵只把帧写进
+  /// 仍是当前的绑定；换代/关闭后的迟到帧一律丢弃。
+  _ChatBinding? _binding;
+  Future<_ChatBinding?>? _bindingOpening;
+  int _bindingGeneration = 0;
+  int _resyncAttempts = 0;
 
   @override
   ThreadSessionState build(String threadId) {
@@ -30,17 +38,18 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final bridge = ref.watch(studioBridgeProvider);
     ref.onCancel(() {
       unawaited(_releaseSubscription(clearHistory: true));
+      _closeBinding();
     });
     ref.onResume(() {
       if (_closed || _attachment != null) return;
       clearStreamEpoch();
       _attach(bridge);
+      unawaited(_openChatBinding());
     });
     ref.onDispose(() {
       _closed = true;
       unawaited(_releaseSubscription(clearHistory: false));
-      unawaited(_chatView?.close());
-      _chatView = null;
+      _closeBinding();
     });
     scheduleMicrotask(() {
       if (_closed || !ref.mounted) return;
@@ -72,34 +81,22 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     state = next;
   }
 
-  void applyTimelinePage(
-    TimelinePage page,
-    TimelineDirection direction, {
-    bool replaceWindow = false,
-    bool followBottom = false,
-  }) {
-    final next = applyTimelinePageState(
-      state,
-      page,
-      direction,
-      replaceWindow: replaceWindow,
-      followBottom: followBottom,
-    );
-    if (next == state) return;
-    state = next;
-  }
-
-  void applyChatSnapshot(
-    StudioChatSnapshot snapshot, {
-    ChatHistoryCompletion? historyCompletion,
-  }) {
-    final next = applyChatSnapshotState(
-      state,
-      snapshot,
-      historyCompletion: historyCompletion,
-    );
-    if (next == state) return;
-    state = next;
+  /// 唯一 chat 写入路径：内容泵把权威帧交给唯一 reducer。
+  ///
+  /// `binding` 是帧所属的绑定：已关闭/已换代的绑定迟到帧直接丢弃。
+  void _applyFrame(_ChatBinding binding, StudioChatFrame frame) {
+    if (!ref.mounted || binding.closed || !identical(binding, _binding)) {
+      return;
+    }
+    final result = applyChatFrameState(state, frame);
+    switch (result.outcome) {
+      case ChatFrameOutcome.applied:
+        state = result.state;
+      case ChatFrameOutcome.irrelevant:
+        return;
+      case ChatFrameOutcome.resync:
+        unawaited(_resyncBinding(binding));
+    }
   }
 
   void releaseHistory() {
@@ -139,35 +136,99 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     state = next;
   }
 
-  /// 惰性打开该会话的权威 ChatView 窗口句柄。
+  /// 确保该会话的权威内容窗口已打开并持续消费，返回窗口句柄供控制操作使用。
   ///
-  /// 句柄生命周期与 store 实例一致：store 释放（invalidate/销毁）时关闭；
+  /// 绑定生命周期与 store 的订阅寿命一致：打开后内容泵立即采纳首帧（Reset）并持续接收
+  /// `next`；普通翻页、换焦点、追新、正文展开都操作同一窗口，内容由唯一出口交付。
   /// 未建立权威快照前不打开；打开结果被换代/关闭取代时立即关闭。
-  Future<StudioChatWindow?> chatView() {
+  Future<StudioChatWindow?> chatView() async {
+    final binding = await _openChatBinding();
+    return binding?.window;
+  }
+
+  /// 打开（或复用）当前内容绑定；泵任务由绑定自己持有。
+  Future<_ChatBinding?> _openChatBinding() {
     if (_closed || !ref.mounted || !state.hasSnapshot) {
       return Future<void>.value().then((_) => null);
     }
-    final existing = _chatView;
-    if (existing != null) return Future.value(existing);
-    return _chatViewOpening ??= () async {
+    final existing = _binding;
+    if (existing != null && !existing.closed) {
+      return Future.value(existing);
+    }
+    return _bindingOpening ??= () async {
+      final generation = ++_bindingGeneration;
       try {
         final source = ref.read(studioBridgeDataSourceProvider);
         if (source is! ChatWindowReader) return null;
         final window = await (source as ChatWindowReader).openChatWindow(
           threadId,
         );
-        if (!ref.mounted || _closed || !state.hasSnapshot) {
+        if (!ref.mounted ||
+            _closed ||
+            !state.hasSnapshot ||
+            generation != _bindingGeneration) {
           await window.close();
           return null;
         }
-        _chatView = window;
-        return window;
+        final binding = _ChatBinding(generation, window);
+        _binding = binding;
+        _resyncAttempts = 0;
+        _applyFrame(binding, StudioChatReset(await window.initial()));
+        unawaited(_pumpFrames(binding));
+        return binding;
       } catch (_) {
         return null;
       } finally {
-        _chatViewOpening = null;
+        _bindingOpening = null;
       }
     }();
+  }
+
+  /// 内容泵：一个绑定同时至多一个未完成的 `next`；reduce 完上一帧后再取下一帧。
+  Future<void> _pumpFrames(_ChatBinding binding) async {
+    while (!binding.closed) {
+      final StudioChatFrame? frame;
+      try {
+        frame = await binding.window.next();
+      } catch (_) {
+        // 传输故障：废弃当前绑定并重开，保留最后有效内容等下一次权威 Reset。
+        await _resyncBinding(binding);
+        return;
+      }
+      if (binding.closed || frame == null) return;
+      _applyFrame(binding, frame);
+      if (!identical(binding, _binding)) return;
+    }
+  }
+
+  /// 连续性缺口或传输故障：废弃当前绑定，稍作退避后重开同一会话的有界窗口。
+  ///
+  /// 恢复只重建受影响资源的观察，不重启业务 owner；期间保留最后有效内容，
+  /// 不把数据不可用渲染为空列表（design/25 §25.9）。
+  Future<void> _resyncBinding(_ChatBinding binding) async {
+    if (!identical(binding, _binding)) return;
+    _closeBinding();
+    final attempts = ++_resyncAttempts;
+    if (attempts > 1) {
+      await Future<void>.delayed(
+        Duration(milliseconds: 50 * (attempts - 1).clamp(0, 10)),
+      );
+    }
+    if (_closed || !ref.mounted) return;
+    unawaited(_openChatBinding());
+  }
+
+  /// 关闭当前内容绑定：立即让绑定失效（迟到帧拒收），再可靠关闭 native 窗口。
+  void _closeBinding() {
+    final binding = _binding;
+    _binding = null;
+    _bindingGeneration++;
+    if (binding == null) return;
+    binding.closed = true;
+    unawaited(binding.window.close());
+    if (ref.mounted && state.hasChatWindow) {
+      state = state.copyWith(hasChatWindow: false);
+    }
   }
 
   void setHistoryLoading(TimelineDirection direction) {
@@ -195,7 +256,7 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     state = state.copyWith(history: history);
   }
 
-  /// 页被拒绝或代次已变时结束加载，不改另一方向的错误。
+  /// 回执到达或代次已变时结束加载，不改另一方向的错误。
   void finishHistoryLoad() {
     if (!state.history.isLoading) return;
     state = state.copyWith(history: state.history.copyWith(isLoading: false));
@@ -275,4 +336,13 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     }
     return null;
   }
+}
+
+/// 一次内容窗口绑定：native 窗口 + 它的内容泵的身份。
+class _ChatBinding {
+  _ChatBinding(this.generation, this.window);
+
+  final int generation;
+  final StudioChatWindow window;
+  var closed = false;
 }

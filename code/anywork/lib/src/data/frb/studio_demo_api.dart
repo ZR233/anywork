@@ -360,7 +360,7 @@ class DemoStudioBridgeDataSource
         updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
       ),
       // Product snapshot 与 bridge 一样只暴露当前状态；Timeline 条目属于
-      // 分页历史，由 subscribeThread 首帧之后的 listTimelineItems 提供。
+      // 历史与实时正文由权威 ChatView 窗口交付，状态流不携带条目。
       workspacesByThread: Map.unmodifiable({
         for (final entry in _workspaces.entries)
           entry.key: _snapshotOf(entry.value),
@@ -1996,32 +1996,6 @@ class DemoStudioBridgeDataSource
     return workspace.copyWith(items: const [], latestTurn: null);
   }
 
-  @override
-  Future<TimelinePage> listTimelineItems(
-    String threadId, {
-    TimelineQueryKind kind = TimelineQueryKind.latest,
-    String? itemId,
-    int limit = 100,
-  }) async {
-    final all = _workspaces[threadId]?.items;
-    if (all == null) throw StateError('unknown demo Thread');
-    final index = itemId == null
-        ? all.length
-        : all.indexWhere((item) => item.id == itemId);
-    if (index < 0) throw StateError('unknown timeline item');
-    final start = switch (kind) {
-      TimelineQueryKind.latest => (all.length - limit).clamp(0, all.length),
-      TimelineQueryKind.before => (index - limit).clamp(0, all.length),
-      TimelineQueryKind.after => (index + 1).clamp(0, all.length),
-      TimelineQueryKind.around => (index - limit ~/ 2).clamp(0, all.length),
-    };
-    final end = kind == TimelineQueryKind.before
-        ? index
-        : (start + limit).clamp(start, all.length);
-    final items = all.sublist(start, end);
-    return _demoTimelinePage(threadId, items, start: start, end: end);
-  }
-
   /// 内容窗口：正文（含流式）只经它交给 UI，与状态流相互独立。
   @override
   Future<StudioChatWindow> openChatWindow(String threadId) async {
@@ -2055,37 +2029,6 @@ class DemoStudioBridgeDataSource
       );
     }
     return CurrentThreadActivityDetail(activity: activity);
-  }
-
-  TimelinePage _demoTimelinePage(
-    String threadId,
-    List<ThreadItemView> items, {
-    int? start,
-    int? end,
-  }) {
-    final all = _workspaces[threadId]?.items ?? const <ThreadItemView>[];
-    return TimelinePage(
-      threadId: threadId,
-      databaseId: _demoHistoryDatabaseId(threadId),
-      watermark: _workspaces[threadId]!.revision,
-      items: items,
-      olderCursor: start != null && start > 0 ? items.firstOrNull?.id : null,
-      newerCursor: end != null && end < all.length
-          ? items.lastOrNull?.id
-          : null,
-      firstItemId: items.firstOrNull?.id,
-      lastItemId: items.lastOrNull?.id,
-      turns: _demoTimelineTurns(items),
-    );
-  }
-
-  @override
-  Future<ThreadHistoryPage> listThreadTurns(
-    String threadId, {
-    String? cursor,
-    int limit = 50,
-  }) async {
-    return const ThreadHistoryPage(items: [], nextCursor: null);
   }
 
   @override
@@ -3050,12 +2993,17 @@ class DemoStudioBridgeDataSource
 
 /// 内容窗口的内存实现：快照直接来自 demo 的工作区条目，变化由 [_DemoChatWindow.next]
 /// 唤醒；不参与状态流，也没有第二份业务状态。
+///
+/// demo 没有 typed 差量，每帧都以权威 `Reset` 交付；控制操作同样只返回回执——
+/// 与原生窗口共用同一契约形状（唯一 next 出口、回执不交付窗口），demo 预览因此
+/// 不能证明原生差量链路，只用于界面预览。
 class _DemoChatWindow implements StudioChatWindow {
   _DemoChatWindow(this._api, this._threadId);
 
   final DemoStudioBridgeDataSource _api;
   final String _threadId;
   String? _focusId;
+  int _operations = 0;
   bool _closed = false;
 
   List<ThreadItemView> get _items =>
@@ -3081,40 +3029,56 @@ class _DemoChatWindow implements StudioChatWindow {
     );
   }
 
+  StudioChatReceipt _receipt() {
+    return StudioChatReceipt(
+      operationId: ++_operations,
+      version: _api._workspaces[_threadId]?.revision ?? 0,
+      retained: true,
+    );
+  }
+
   @override
   Future<StudioChatSnapshot> initial() async => _snapshot();
 
   @override
-  Future<StudioChatSnapshot?> next() async {
+  Future<StudioChatFrame?> next() async {
     final from = _api._chatChangeSeq[_threadId] ?? 0;
     await _api._awaitItemsChanged(_threadId, from);
     if (_closed) return null;
-    return _snapshot();
+    return StudioChatReset(_snapshot());
   }
 
   @override
-  Future<StudioChatSnapshot> load(TimelineDirection direction) async =>
-      _snapshot();
+  Future<StudioChatReceipt> load(TimelineDirection direction) async =>
+      _receipt();
 
   @override
-  Future<StudioChatSnapshot> extendLatest() async => _snapshot();
+  Future<StudioChatReceipt> extendLatest() async => _receipt();
 
   @override
-  Future<StudioChatSnapshot> focus(String? itemId) async {
+  Future<StudioChatReceipt> focus(String? itemId) async {
     _focusId = itemId;
-    return _snapshot();
+    // 与原生窗口对齐：控制操作完成后必须唤醒唯一出口，让下一次 `next` 交付权威窗口。
+    _api._notifyItemsChanged(_threadId);
+    return _receipt();
   }
 
   /// demo 的窗口条目没有字节预览预算：窗口里已经是完整正文，按身份展开只需确认身份仍在窗口。
   @override
-  Future<StudioChatSnapshot?> expandItem(String itemId) async {
-    if (_closed) return null;
-    return _items.any((item) => item.id == itemId) ? _snapshot() : null;
+  Future<StudioChatReceipt> expandItem(String itemId) async {
+    final retained = _items.any((item) => item.id == itemId);
+    return StudioChatReceipt(
+      operationId: ++_operations,
+      version: _api._workspaces[_threadId]?.revision ?? 0,
+      retained: retained,
+    );
   }
 
   @override
   Future<void> close() async {
     _closed = true;
+    // 与原生窗口对齐：close 必须打断挂起的 next 等待，否则内容泵永久泄漏。
+    _api._notifyItemsChanged(_threadId);
   }
 }
 
@@ -3201,44 +3165,6 @@ AttachmentDraftView _demoAttachmentDraft(
     },
     filename: filename,
     byteSize: 0,
-  );
-}
-
-/// demo 的历史数据库身份：与分页、按 identity 回源共用，使窗口身份校验生效。
-String _demoHistoryDatabaseId(String threadId) => 'demo-history:$threadId';
-
-/// 页内 Turn 摘要：取自页范围内的 Turn Item；`lastItemId` 指向该 Turn 在本页
-/// 的最后一条内容，供行投影定位终态行。
-List<TimelineTurnView> _demoTimelineTurns(List<ThreadItemView> items) {
-  final lastItemByTurn = <String, ThreadItemView>{};
-  final turnItemByTurn = <String, ThreadItemView>{};
-  for (final item in items) {
-    final previous = lastItemByTurn[item.turnId];
-    if (previous == null || item.ordinal > previous.ordinal) {
-      lastItemByTurn[item.turnId] = item;
-    }
-    if (item.state is ThreadTurnItemStateView) {
-      turnItemByTurn[item.turnId] = item;
-    }
-  }
-  return [
-    for (final entry in turnItemByTurn.entries)
-      TimelineTurnView(
-        turn: _turnOfItem(entry.value),
-        lastItemId: lastItemByTurn[entry.key]!.id,
-      ),
-  ];
-}
-
-StudioTurnView _turnOfItem(ThreadItemView item) {
-  final state = item.state as ThreadTurnItemStateView;
-  return StudioTurnView(
-    inputId: state.inputId,
-    turnId: item.turnId,
-    threadId: item.threadId,
-    revision: item.revision,
-    state: state.state,
-    updatedAt: item.updatedAt,
   );
 }
 

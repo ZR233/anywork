@@ -30,8 +30,10 @@ authoritative snapshot，最后发送 snapshot，之后只转发投影帧，自�
 只在窗口内部按 cursor 分页读取 `history.sqlite`，磁盘写入与保存水位都不进入状态流。普通滚动
 分页不得查询 owner 或触发 flush。未驻留 Thread 只有执行或读取当前状态时才显式激活；单纯历史
 查询直接读取 `history.sqlite`。
-实时流没有 durable replay，缺口通过数据库 cursor 重同步，不通过完整 snapshot 或内存 journal
-补丁恢复。
+实时流没有 durable replay，状态缺口通过重新订阅以新基线收束；内容缺口废弃当前绑定并重开
+同一会话的有界 ChatView（core 从内存尾部、可靠待保存集合与历史存储统一生成 `Reset`），只读
+SQL 页不是 GUI 的恢复替代路径。恢复仅重建受影响资源的观察，不重启业务 owner，也不要求重放
+全部 token。
 
 实时事件总线只拥有 Turn、Item、Interaction、runtime 与 live overlay 的实时投影，不拥有
 Thread directory 元数据。订阅注册完成后，Studio 运行时必须用内存 Thread directory owner 的
@@ -87,15 +89,15 @@ typed 事实。订阅建立时若快照没有活动 Turn，就以同一水位在
 该帧与被广播帧来自同一个 Turn 投影，因此最近终态、原因与身份在实时与重订阅之间一致，不
 需要客户端从窗口正文反推 Turn，也不需要缓存它曾见到的 `running` 状态。活动 Turn 存在时不补发，
 迟到的终态帧也不会把已终结的 Turn 重新标成运行；同一 Turn 的终态只交付一次。Item 仍然没有
-durable replay：缺口依旧靠数据库 cursor 重同步，这里补发的只是 owner 作为当前状态持有的**最新
-Turn 事实**，不是历史条目。
+durable replay：缺口依旧靠重开有界内容窗口的权威 `Reset` 收束，这里补发的只是 owner 作为当前
+状态持有的**最新 Turn 事实**，不是历史条目。
 
 owner 首次安装或进程回收后冷恢复时，这份保留事实不能是空：live owner 在安装路径（本就读取
 history 的唯一冷读点）从既有 durable Turn 记录做一次有界、不读条目正文的读取，取得最近终态 Turn
 并按执行序号播种；正在投影的更新只按更大的执行序号/修订向前合并，正常实时提交路径仍不回读刚写
 SQL。retired 子会话没有 owner 可保留，其订阅在权威快照之后以同一 `turnCompleted` 契约补发一次
 durable 最近终态 Turn，因此有无 owner 的前端都从同一 Turn 事实读 `lastTurn`。这仍不是 Item 的
-durable replay，缺的条目依旧由数据库 cursor 重同步。
+durable replay，缺的条目依旧由重开有界内容窗口的权威 `Reset` 收束。
 
 TurnFinished 是最终校验与 worker 失败的终态投影边界：非正常完成必须在 TurnCompleted 前发布
 对应 typed Turn Item，使实时与持久化历史均能显示失败、取消或预算原因；已有同轮终态错误 Item
@@ -190,6 +192,18 @@ Timeline workspace 的正文只有一个 owner：这份单列视图就是该 Thr
 正文，因此打开或重连即可见，**不等待** history writer 或 checkpoint 水位；已保存历史只在窗口
 内部按 cursor 分页读取 `history.sqlite`，首窗与翻页都走同一条 view 内部路径，不做状态流
 `Latest` 首窗加 overlay 合并，磁盘写入与 flush 也不进入状态流。
+
+窗口内容交付只有**一个出口** `next`：首帧 `initial`（Reset），之后 Reset/Patch。控制操作
+（`load`/`focus`/`extend_latest`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`
+与操作后的窗口版本；`expand` 另带正文是否成功保留），不直接交付窗口，也不重置订阅基线——
+core 在这些操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定把窗口移动
+表达成权威 `Reset`（或大 splice `Patch`），`from` 始终等于客户端最后收到的版本。因此
+「已交付给客户端」的水位只由 `next`/`take` 推进；GUI 不再有 load/focus 直接返回快照的第二条
+交付路径，也不存在 SQL 分页与实时条目的双路合并。GUI 消费方（`ThreadSessionStore` 的内容
+绑定）打开窗口后立即采纳首帧并持续泵送 `next`；同一 view 同时至多一个未完成的 `next`，
+reduce 完上一帧后再取下一帧。连续性缺口（`from` 不匹配本地版本、目标 item 不在窗口、
+`expected_revision` 不匹配或传输故障）废弃当前绑定并重开同一会话的有界窗口，期间保留最后
+有效内容。
 
 core `pl-core::chat` 窗口是这一单列视图的唯一内容窗口：它以稳定的 `ChatField` 为内容身份，
 `Body`、带 provider part 身份的 `Part` 与宿主定义的 opaque `Host` key（例如工具 arguments 与
@@ -295,8 +309,9 @@ receiver 与 pin。Runtime subscription 在恢复 owner 前取得 pin，并持�
 
 FRB `readThreadSnapshot` 与 HTTP `GET /api/v1/threads/{thread_id}` 机械调用同一个 snapshot
 query，均返回不含历史 Item 的当前 Thread 状态，不得让 HTTP route 退化为只返回 Thread directory
-元数据。FRB 与 HTTP 另有同一 HistoryReader 支持的 Timeline page API；HTTP route 为
-`GET /api/v1/threads/{thread_id}/timeline`。
+元数据。Timeline 历史与实时正文在 GUI 侧统一由权威 ChatView 窗口交付；FRB 不再暴露 SQL 分页
+或按 identity 读条目的旁路入口，HTTP 仍保留只读的
+`GET /api/v1/threads/{thread_id}/timeline` 分页供外部消费，两者不共用 GUI 热路径。
 Skill 激活使用普通的终态 Skill Item 和 `threadRuntimeUpdated` 通知；激活来源是 typed 的
 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置是 typed resource base，不允许
 transport 或前端从工具 JSON 推断；Timeline 文案按来源区分代理激活与用户激活。首次订阅及重连

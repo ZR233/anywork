@@ -10,25 +10,37 @@ part of 'thread_commands.dart';
 // ignore_for_file: type=lint, type=warning
 /// 会话命令 lane。
 ///
+/// 命令在提交时**冻结资源身份**（threadId/projectId/turnId）：排队期间切换会话不会改变命令
+/// 目标；执行时只重新读取该资源自身的版本与合法性（design/25 §25.7）。
+///
 /// route 更新与设置写入共用 settings lane，并按双 revision rebase。响应里的
 /// runtime 不是第二事实源：只合并 settings，route 本身等 Thread 有序流。
-/// 其他命令直通数据源；无目录 revision 的结果不拼进目录。
+/// 其他命令直通数据源；命令成功后不重读聚合状态——目录增量、Thread 快照与聊天内容由
+/// 各自 owner 的流交付（design/25 §25.5）。
 
 @ProviderFor(ThreadCommands)
 final threadCommandsProvider = ThreadCommandsProvider._();
 
 /// 会话命令 lane。
 ///
+/// 命令在提交时**冻结资源身份**（threadId/projectId/turnId）：排队期间切换会话不会改变命令
+/// 目标；执行时只重新读取该资源自身的版本与合法性（design/25 §25.7）。
+///
 /// route 更新与设置写入共用 settings lane，并按双 revision rebase。响应里的
 /// runtime 不是第二事实源：只合并 settings，route 本身等 Thread 有序流。
-/// 其他命令直通数据源；无目录 revision 的结果不拼进目录。
+/// 其他命令直通数据源；命令成功后不重读聚合状态——目录增量、Thread 快照与聊天内容由
+/// 各自 owner 的流交付（design/25 §25.5）。
 final class ThreadCommandsProvider
     extends $NotifierProvider<ThreadCommands, ThreadCommandBoard> {
   /// 会话命令 lane。
   ///
+  /// 命令在提交时**冻结资源身份**（threadId/projectId/turnId）：排队期间切换会话不会改变命令
+  /// 目标；执行时只重新读取该资源自身的版本与合法性（design/25 §25.7）。
+  ///
   /// route 更新与设置写入共用 settings lane，并按双 revision rebase。响应里的
   /// runtime 不是第二事实源：只合并 settings，route 本身等 Thread 有序流。
-  /// 其他命令直通数据源；无目录 revision 的结果不拼进目录。
+  /// 其他命令直通数据源；命令成功后不重读聚合状态——目录增量、Thread 快照与聊天内容由
+  /// 各自 owner 的流交付（design/25 §25.5）。
   ThreadCommandsProvider._()
     : super(
         from: null,
@@ -56,13 +68,17 @@ final class ThreadCommandsProvider
   }
 }
 
-String _$threadCommandsHash() => r'7dae0e408d89eb3eb703b4aaf3b5a9adee6f852a';
+String _$threadCommandsHash() => r'8de0a1cdc8edf0c259a48b0ae09cb0d78cf727a5';
 
 /// 会话命令 lane。
 ///
+/// 命令在提交时**冻结资源身份**（threadId/projectId/turnId）：排队期间切换会话不会改变命令
+/// 目标；执行时只重新读取该资源自身的版本与合法性（design/25 §25.7）。
+///
 /// route 更新与设置写入共用 settings lane，并按双 revision rebase。响应里的
 /// runtime 不是第二事实源：只合并 settings，route 本身等 Thread 有序流。
-/// 其他命令直通数据源；无目录 revision 的结果不拼进目录。
+/// 其他命令直通数据源；命令成功后不重读聚合状态——目录增量、Thread 快照与聊天内容由
+/// 各自 owner 的流交付（design/25 §25.5）。
 
 abstract class _$ThreadCommands extends $Notifier<ThreadCommandBoard> {
   ThreadCommandBoard build();

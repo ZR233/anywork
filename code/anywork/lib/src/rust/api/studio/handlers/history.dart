@@ -4,14 +4,11 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import '../types/attachment.dart';
 import '../types/error.dart';
-import '../types/history.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
 import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';
-import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -39,31 +36,6 @@ Future<BridgeThreadActivityDetail> readThreadActivityDetail({
       threadId: threadId,
       activityId: activityId,
     );
-
-Future<BridgeThreadTurnPage> listThreadTurns({
-  required ListThreadTurnsRequest request,
-}) => RustLib.instance.api.crateApiStudioHandlersHistoryListThreadTurns(
-  request: request,
-);
-
-/// Reads a bounded, bidirectional item page from the durable per-Thread history database.
-Future<BridgeTimelinePage> listTimelineItems({
-  required ListTimelineItemsRequest request,
-}) => RustLib.instance.api.crateApiStudioHandlersHistoryListTimelineItems(
-  request: request,
-);
-
-/// 按 item identity 直接读取一条完整条目正文，绕过页面的单条预览预算。
-///
-/// 返回与分页一致的 item、database identity 与 watermark，使客户端能按 identity 把
-/// 完整载荷合并进既有窗口并替换同身份的预览条目。
-Future<BridgeTimelinePage> readTimelineItem({
-  required String threadId,
-  required String itemId,
-}) => RustLib.instance.api.crateApiStudioHandlersHistoryReadTimelineItem(
-  threadId: threadId,
-  itemId: itemId,
-);
 
 /// Searches the full project/session directory, including archived history.
 Future<BridgeThreadDirectoryPage> queryThreads({

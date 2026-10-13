@@ -440,10 +440,10 @@ void retryShellPersistenceQueue(StudioBridge bridge) {
   bridge.retryTopic(const PersistenceQueueTopic());
 }
 
+/// 与 `timelineSessionWindowProvider` 共用的「已有时间线窗口」判定；正文镜像只在
+/// 内容绑定交付首帧后出现，历史库 identity 不再参与（SQL 分页旁路已删除）。
 bool sessionHasTimelineWindow(ThreadSessionState session) {
-  return session.hasChatWindow ||
-      session.items.isNotEmpty ||
-      session.history.databaseId.isNotEmpty;
+  return session.hasChatWindow || session.items.isNotEmpty;
 }
 
 AgentWorkspaceSyncState sessionSyncState(ThreadSessionState session) {

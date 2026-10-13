@@ -548,9 +548,11 @@ revision 与执行终态。重同步重新建立订阅并消费首帧（`epoch` 
 显式跳到最新时由同一个 view 交付该 Thread 的权威窗口（`Reset`），不在 Dart 侧读 SQL `Latest`
 首窗再拼 overlay。阅读历史时实时事件只更新内容与新内容提示，不抢占当前阅读锚点或跟随底部状态。
 
-历史页只走 `history.sqlite` 的 keyset 分页（latest/around/before/after），不经过 Thread owner、
-不读取驻留内存历史。增量事件按版本化封套（`epoch`/`base_revision`/`revision`）判连续；正文本身
-不由状态流交付，而是由**唯一内容窗口**交付：同一 item 的全部字段变化合批为一次 `UpdateItem`
+GUI 的历史与实时正文统一由唯一内容窗口的 `next` 出口交付（控制操作只返回回执，见
+[07](./07-streaming.md) §7.4）；GUI 不再有只读 SQL 的 `Latest`/`before`/`after` 分页旁路，
+HTTP 侧的 `history.sqlite` keyset 只读分页保留给外部消费。增量事件按版本化封套
+（`epoch`/`base_revision`/`revision`）判连续；正文本身不由状态流交付，而是由**唯一内容窗口**
+交付：同一 item 的全部字段变化合批为一次 `UpdateItem`
 （`expected_revision` 一次基线校验、`revision` 一次内容版本提交，`omitted_bytes` 与保存水位
 `saved` 随批提交），字段按稳定 `ChatField` 身份输出 `Append`/`Replace`/`Remove`/`Unchanged`，
 正文按具体文本字段应用而不是向 JSON 字符串追加字节；缺口或 `lagged` 时重新订阅并从数据库窗口重建
@@ -559,16 +561,18 @@ revision 与执行终态。重同步重新建立订阅并消费首帧（`epoch` 
 ChatView 是 pending/live/history 的唯一 body owner：未落盘的流式条目与已落盘历史条目在同一个
 canonical 条目集合里按 ordinal 排序，宿主只消费窗口差量，不维护第二份 `cachedItems` 正文缓存、
 也不维护终态正文覆盖层。窗口条目按有界预览交付（`omitted_bytes` 记录省略字节），需要完整正文时用
-**同一个 view** 的按身份读取（`expand`/`readComplete`）请求，成功后交出的仍是该窗口的权威快照，
-宿主直接把它当成一次 `Reset` 应用；客户端不再有 `kTimelineItemBodyBudget` 之类的截断策略，也不
+**同一个 view** 的按身份读取（`expand`/`readComplete`）请求，成功保留后完整正文由下一次
+`next` 的 typed 字段更新（或权威 `Reset`）交付，命令路径只消费回执；客户端不再有 `kTimelineItemBodyBudget` 之类的截断策略，也不
 在窗口过期时拼接旧载荷。同一个 view 复用同一个 `Session`，因此回源不会另开实例、也不会读到别的
 Thread 的条目；请求已发出但正文尚未可读时条目保持可见并可重试，不当作身份缺席。
 
-Timeline 宿主对外提供按 `threadId` 生命周期管理的 `TimelineSession`：界面只订阅当前打开会话的
-`events`，通过 `dispatch` 发送分页、聚焦、正文补齐和锚点命令，并在切换时 `close`。事件至少覆盖
-窗口 `Reset/Patch`、分页开始/完成/失败、正文补齐、运行态变化、流滞后和会话关闭；Widget 不直接
-查询 SQL、调用分页接口或轮询。会话事件经过版本和身份校验后投影到 Flutter 状态，迟到事件不能写入
-新会话。
+Timeline 组件分两层：**连接组件**（如 `_AgentTimelineHost` 与 store 派生 provider）负责订阅、
+合成与命令派发；**纯显示组件**（`TimelineView` 及其以下）只接受构造输入，不内部订阅 provider，
+也不在构造参数与 provider 之间运行时选择事实来源。Widget 不直接查询 SQL、调用分页接口或轮询。
+Timeline 宿主对外提供按 `threadId` 生命周期管理的内容绑定：界面只消费当前打开会话的窗口帧，
+通过命令入口发送分页、聚焦、正文补齐和锚点操作，并在切换时关闭绑定。事件至少覆盖
+窗口 `Reset/Patch`、分页开始/完成/失败、正文补齐、运行态变化、流滞后和会话关闭；会话事件经过
+版本和身份校验后投影到 Flutter 状态，迟到事件不能写入新会话。
 
 四个事实互不替代：item 内容 `revision`、窗口 `version`、保存水位 `saved` 与执行终态
 `ChatLifecycle`。终态只由执行事实决定，迟到预览不能把终态条目拉回流式；保存确认只翻 `saved`，

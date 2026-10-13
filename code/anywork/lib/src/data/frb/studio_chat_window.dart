@@ -36,32 +36,127 @@ class StudioChatSnapshot {
   final bool canExtendLatest;
 }
 
+/// 一次同 item 的原子字段提交：全部字段应用完后一次提交 revision/omitted/saved。
+class StudioFieldUpdateView {
+  const StudioFieldUpdateView({required this.field, required this.change});
+
+  final ThreadContentFieldView field;
+  final ThreadFieldChangeView change;
+}
+
+/// 窗口差量里的单条结构化变化（后端 `BridgeViewChange` 的 domain 投影）。
+sealed class StudioViewChange {
+  const StudioViewChange();
+}
+
+class StudioViewSplice extends StudioViewChange {
+  const StudioViewSplice({
+    required this.index,
+    required this.remove,
+    required this.items,
+  });
+
+  final int index;
+  final int remove;
+  final List<StudioChatItem> items;
+}
+
+class StudioViewItemUpdate extends StudioViewChange {
+  const StudioViewItemUpdate({
+    required this.itemId,
+    required this.expectedRevision,
+    required this.revision,
+    required this.omittedUnits,
+    required this.saved,
+    required this.fields,
+  });
+
+  final String itemId;
+  final int expectedRevision;
+  final int revision;
+  final int omittedUnits;
+  final bool saved;
+  final List<StudioFieldUpdateView> fields;
+}
+
+/// 唯一内容出口交付的一帧权威内容。
+///
+/// `Reset` 是权威整窗替换（窗口建立、换焦点/翻页的窗口移动、宿主回退）；
+/// `Patch` 是相对消费者自己交付基线的 typed 差量。transport 只做 DTO 投影，
+/// 不保存第二份 baseline，也不在此应用差量——应用只属于 read model 的唯一 reducer。
+sealed class StudioChatFrame {
+  const StudioChatFrame();
+}
+
+class StudioChatReset extends StudioChatFrame {
+  const StudioChatReset(this.snapshot);
+
+  final StudioChatSnapshot snapshot;
+}
+
+class StudioChatPatch extends StudioChatFrame {
+  const StudioChatPatch({
+    required this.from,
+    required this.to,
+    required this.changes,
+    required this.hasNewer,
+  });
+
+  final int from;
+  final int to;
+  final List<StudioViewChange> changes;
+  final bool hasNewer;
+}
+
+/// 控制操作回执：操作已被权威窗口接受；内容仍由 [StudioChatWindow.next] 以 Reset/Patch
+/// 从唯一出口交付。
+class StudioChatReceipt {
+  const StudioChatReceipt({
+    required this.operationId,
+    required this.version,
+    required this.retained,
+  });
+
+  /// 控制操作标识：把 pending 状态与「成功回执 + 本地观察到目标版本」关联。
+  final int operationId;
+
+  /// 操作完成后的窗口当前版本（no-op 时等于操作前版本）。
+  final int version;
+
+  /// 只对「展开完整正文」有意义：`false` 表示该身份已不在窗口或完整正文此刻不可得。
+  final bool retained;
+}
+
+/// 一个有界、独立定位的权威内容窗口。
+///
+/// 唯一内容出口是 [next]：首帧 [initial]，之后 Reset/Patch。控制操作（[load]/[focus]/
+/// [extendLatest]/[expandItem]）只返回回执，不交付窗口；「已交付给客户端」的基线只由
+/// `next` 推进。同一 view 同时至多一个未完成的 `next`——消费方 reduce 完上一帧后再取下一帧。
 abstract interface class StudioChatWindow {
   Future<StudioChatSnapshot> initial();
-  Future<StudioChatSnapshot?> next();
-  Future<StudioChatSnapshot> load(TimelineDirection direction);
-  Future<StudioChatSnapshot> extendLatest();
-  Future<StudioChatSnapshot> focus(String? itemId);
+  Future<StudioChatFrame?> next();
+  Future<StudioChatReceipt> load(TimelineDirection direction);
+  Future<StudioChatReceipt> extendLatest();
+  Future<StudioChatReceipt> focus(String? itemId);
 
-  /// 按 identity 请求一条窗口条目的完整正文，并交回**同一权威窗口**的新快照。
+  /// 按 identity 请求一条窗口条目的完整正文。
   ///
-  /// 展开是一次同 view 的窗口操作：原生窗口把该身份完整正文 retain 进窗口，并重新订阅
-  /// 交出权威快照。返回快照的版本**就是**后续差量的 `from`，调用方把它当成一次 Reset
-  /// 应用即可；窗口仍是唯一正文 owner，绝不另造第二条窗口基线或覆盖层。
-  ///
-  /// 返回 null 表示该身份已不在窗口、数据源此刻给不出完整正文，或响应到达时窗口已经
-  /// 改变；调用方保留预览并等待下一次窗口帧或下一次可见触发，不伪造正文。迟到/被取代的
-  /// 展开结果绝不写回新窗口。
-  Future<StudioChatSnapshot?> expandItem(String itemId);
+  /// 这是一次同 view 的窗口操作：原生窗口把该身份完整正文 retain 进窗口；当它真的升级了可见
+  /// 正文时，完整正文由下一次 `next` 以 typed 字段更新交付。`retained == false` 表示该身份已
+  /// 不在窗口、或数据源此刻给不出完整正文：调用方保留预览并等待下一次窗口帧或显式重试，不伪造
+  /// 正文。迟到/被取代的展开结果绝不写回新窗口。
+  Future<StudioChatReceipt> expandItem(String itemId);
   Future<void> close();
 }
 
 /// The UI requests another batch only after it has processed the preceding one.
+///
+/// transport 是薄壳：只把 FRB DTO 机械映射成 domain 投影（[StudioChatItem]/[StudioViewChange]），
+/// 不保留 baseline、不应用 patch、不生成窗口事实——那是 read model 唯一 reducer 的职责。
 class FrbChatWindow implements StudioChatWindow {
   FrbChatWindow(this._view);
 
   final frb_chat.BridgeChatView _view;
-  StudioChatSnapshot? _baseline;
   bool _closed = false;
 
   StudioChatItem _item(frb_chat_types.BridgeChatItem item) => StudioChatItem(
@@ -77,7 +172,7 @@ class FrbChatWindow implements StudioChatWindow {
         : StudioChatLifecycle.streaming,
   );
 
-  StudioChatSnapshot _adopt(frb_chat_types.BridgeChatSnapshot snapshot) {
+  StudioChatSnapshot _snapshot(frb_chat_types.BridgeChatSnapshot snapshot) {
     final next = StudioChatSnapshot(
       focusedItemId: snapshot.focus.when(
         latest: () => null,
@@ -89,7 +184,6 @@ class FrbChatWindow implements StudioChatWindow {
       hasNewer: snapshot.hasNewer,
       canExtendLatest: snapshot.canExtendLatest,
     );
-    _baseline = next;
     // 只读内容交付计数（仅 Driver 启用时统计；不是 FRB 物理 wire 字节）。
     StudioDriverState.recordChatWindowReset(next.items.length);
     for (final entry in next.items) {
@@ -98,23 +192,57 @@ class FrbChatWindow implements StudioChatWindow {
     return next;
   }
 
-  Future<StudioChatSnapshot> _reset() async => _adopt(await _view.snapshot());
+  StudioViewChange _change(frb_chat_types.BridgeViewChange change) {
+    return switch (change) {
+      frb_chat_types.BridgeViewChange_Splice(
+        :final index,
+        :final remove,
+        :final items,
+      ) =>
+        StudioViewSplice(
+          index: _frbInt(index),
+          remove: _frbInt(remove),
+          items: List.unmodifiable(items.map(_item)),
+        ),
+      frb_chat_types.BridgeViewChange_UpdateItem(
+        :final itemId,
+        :final expectedRevision,
+        :final revision,
+        :final omittedBytes,
+        :final saved,
+        :final fields,
+      ) =>
+        StudioViewItemUpdate(
+          itemId: itemId,
+          expectedRevision: _frbInt(expectedRevision),
+          revision: _frbInt(revision),
+          omittedUnits: _frbInt(omittedBytes),
+          saved: saved,
+          fields: [
+            for (final update in fields)
+              StudioFieldUpdateView(
+                field: _contentField(update.field),
+                change: _fieldChange(update.change),
+              ),
+          ],
+        ),
+    };
+  }
 
   @override
   Future<StudioChatSnapshot> initial() async {
     if (_closed) throw StateError('Chat window is closed');
-    final baseline = _baseline;
-    return baseline ?? _adopt(await _view.initial());
+    return _snapshot(await _view.initial());
   }
 
   @override
-  Future<StudioChatSnapshot?> next() async {
+  Future<StudioChatFrame?> next() async {
     if (_closed) return null;
     final update = await _view.next();
     if (_closed || update == null) return null;
     return switch (update) {
-      frb_chat_types.BridgeChatUpdate_Reset(:final snapshot) => _adopt(
-        snapshot,
+      frb_chat_types.BridgeChatUpdate_Reset(:final snapshot) => StudioChatReset(
+        _snapshot(snapshot),
       ),
       frb_chat_types.BridgeChatUpdate_Patch(
         :final from,
@@ -122,95 +250,37 @@ class FrbChatWindow implements StudioChatWindow {
         :final changes,
         :final hasNewer,
       ) =>
-        await _applyPatch(from, to, changes, hasNewer),
+        _patch(from, to, changes, hasNewer),
     };
   }
 
-  Future<StudioChatSnapshot> _applyPatch(
+  StudioChatFrame _patch(
     BigInt from,
     BigInt to,
     List<frb_chat_types.BridgeViewChange> changes,
     bool hasNewer,
-  ) async {
-    final baseline = _baseline;
-    if (baseline == null || _frbInt(from) != baseline.version) {
-      return _reset();
-    }
-    final visible = [...baseline.items];
-    for (final change in changes) {
+  ) {
+    final projected = [for (final change in changes) _change(change)];
+    // 只读差量交付计数（仅 Driver 启用时统计）。
+    StudioDriverState.recordChatWindowPatch(projected.length);
+    for (final change in projected) {
       switch (change) {
-        case frb_chat_types.BridgeViewChange_Splice(
-          :final index,
-          :final remove,
-          :final items,
-        ):
-          final start = _frbInt(index);
-          final count = _frbInt(remove);
-          if (start < 0 || count < 0 || start + count > visible.length) {
-            return _reset();
-          }
-          final added = items.map(_item).toList();
-          visible.replaceRange(start, start + count, added);
-          // 新进窗口的条目正文也是一次真实交付（只读计数，仅 Driver 启用时统计）。
-          for (final entry in added) {
+        case StudioViewSplice(:final items):
+          for (final entry in items) {
             _recordItemBody(entry.item);
           }
-        case frb_chat_types.BridgeViewChange_UpdateItem(
-          :final itemId,
-          :final expectedRevision,
-          :final revision,
-          :final omittedBytes,
-          :final saved,
-          :final fields,
-        ):
-          // 整组字段在**一次**提交里原子应用：本地 revision 必须等于 expectedRevision，
-          // 应用完再一次性提交 revision/omitted/saved。终态条目拒绝迟到流式字段，
-          // 只接受保存/版本帧；任一条不成立就重建权威窗口，绝不把片段当正文。
-          //
-          // 字段身份只由 typed discriminator 决定（如 thinkingContent 的 chunkIndex），
-          // 不解析 JSON、不按字符串形状推断；真正不匹配的 item 或 revision 一律重建。
-          // `Patch.priority`（Immediate/Coalesced）由 core 分类，宿主不自行 sleep/throttle，
-          // 因此两档都在此立即应用。
-          final index = visible.indexWhere((entry) => entry.item.id == itemId);
-          if (index < 0) return _reset();
-          final entry = visible[index];
-          final updates = <ThreadFieldUpdateView>[
-            for (final update in fields)
-              ThreadFieldUpdateView(
-                field: _contentField(update.field),
-                change: _fieldChange(update.change),
-              ),
-          ];
-          for (final update in updates) {
+        case StudioViewItemUpdate(:final fields):
+          for (final update in fields) {
             _recordFieldChange(update.change);
           }
-          final nextItem = entry.item.applyFieldUpdates(
-            fields: updates,
-            expectedRevision: _frbInt(expectedRevision),
-            revision: _frbInt(revision),
-            omittedUnits: _frbInt(omittedBytes),
-            saved: saved,
-            terminal: entry.lifecycle == StudioChatLifecycle.terminal,
-          );
-          if (nextItem == null) return _reset();
-          visible[index] = StudioChatItem(
-            nextItem,
-            saved: saved,
-            lifecycle: entry.lifecycle,
-          );
       }
     }
-    final next = StudioChatSnapshot(
-      focusedItemId: baseline.focusedItemId,
-      version: _frbInt(to),
-      items: List.unmodifiable(visible),
-      hasOlder: baseline.hasOlder,
+    return StudioChatPatch(
+      from: _frbInt(from),
+      to: _frbInt(to),
+      changes: List.unmodifiable(projected),
       hasNewer: hasNewer,
-      canExtendLatest: baseline.canExtendLatest,
     );
-    _baseline = next;
-    StudioDriverState.recordChatWindowPatch(next.items.length);
-    return next;
   }
 
   /// 记录一次字段变化的正文交付字节（只读计数，仅 Driver 启用时统计）。
@@ -255,9 +325,9 @@ class FrbChatWindow implements StudioChatWindow {
   }
 
   @override
-  Future<StudioChatSnapshot> load(TimelineDirection direction) async {
+  Future<StudioChatReceipt> load(TimelineDirection direction) async {
     if (_closed) throw StateError('Chat window is closed');
-    return _adopt(
+    return _receipt(
       await _view.load(
         direction: switch (direction) {
           TimelineDirection.older => frb_chat_types.BridgeChatDirection.older,
@@ -268,15 +338,15 @@ class FrbChatWindow implements StudioChatWindow {
   }
 
   @override
-  Future<StudioChatSnapshot> extendLatest() async {
+  Future<StudioChatReceipt> extendLatest() async {
     if (_closed) throw StateError('Chat window is closed');
-    return _adopt(await _view.extendLatest());
+    return _receipt(await _view.extendLatest());
   }
 
   @override
-  Future<StudioChatSnapshot> focus(String? itemId) async {
+  Future<StudioChatReceipt> focus(String? itemId) async {
     if (_closed) throw StateError('Chat window is closed');
-    return _adopt(
+    return _receipt(
       await _view.focus(
         focus: itemId == null
             ? const frb_chat_types.BridgeChatFocus.latest()
@@ -286,15 +356,17 @@ class FrbChatWindow implements StudioChatWindow {
   }
 
   @override
-  Future<StudioChatSnapshot?> expandItem(String itemId) async {
-    if (_closed) return null;
-    final baseline = _baseline;
-    if (baseline == null) return null;
-    // 原生窗口是唯一正文 owner：请求该身份完整正文后重新订阅，交回权威快照。
-    // 迟到/被取代的结果不写回：只接纳仍与当前窗口基线一致（身份仍在窗口）的返回。
-    final snapshot = await _view.expand(itemId: itemId);
-    if (_closed) return null;
-    return _adopt(snapshot);
+  Future<StudioChatReceipt> expandItem(String itemId) async {
+    if (_closed) throw StateError('Chat window is closed');
+    return _receipt(await _view.expand(itemId: itemId));
+  }
+
+  StudioChatReceipt _receipt(frb_chat_types.BridgeChatReceipt receipt) {
+    return StudioChatReceipt(
+      operationId: _frbInt(receipt.operationId),
+      version: _frbInt(receipt.version),
+      retained: receipt.retained,
+    );
   }
 
   ThreadContentFieldView _contentField(

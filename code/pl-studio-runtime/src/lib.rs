@@ -80,7 +80,7 @@ pub use provider_usage::{
     ZhipuToolUsageDetail, provider_usage_records, zhipu_limit_by_window,
 };
 pub use studio::{
-    AttachmentRecord, ChatWindowHandle, ChatWindowStream, PersistenceState,
+    AttachmentRecord, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream, PersistenceState,
     PersistenceStateSnapshot, ProductEventBus, ProjectRecord, ProviderUsageStateData,
     ProviderUsageStateSnapshot, ShutdownExternalHook, SkillSearchResult, SkillsStateSnapshot,
     StudioDatabaseError, StudioHostKind, StudioProductTopicSubscription, StudioRecoveryIssue,

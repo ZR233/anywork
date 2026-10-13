@@ -1232,8 +1232,6 @@ class ThreadHistoryWindow {
     this.newerError,
     this.detached = false,
     this.anchor,
-    this.databaseId = '',
-    this.appliedWriteSequence = 0,
     this.previewedItemIds = const {},
     this.loadingItemIds = const {},
     this.itemBodyErrors = const {},
@@ -1252,12 +1250,6 @@ class ThreadHistoryWindow {
   final String? newerError;
   final bool detached;
   final TimelineAnchor? anchor;
-
-  /// 当前窗口来自哪个 history 数据库实体；与页的 databaseId 不一致表示窗口过期。
-  final String databaseId;
-
-  /// 当前窗口已采纳的 applied write sequence；比它更旧的历史页必须拒绝。
-  final int appliedWriteSequence;
 
   /// 窗口内因超单条预览预算而只以预览呈现的条目 ID。
   final Set<String> previewedItemIds;
@@ -1293,8 +1285,6 @@ class ThreadHistoryWindow {
             newerError == other.newerError &&
             detached == other.detached &&
             anchor == other.anchor &&
-            databaseId == other.databaseId &&
-            appliedWriteSequence == other.appliedWriteSequence &&
             _sameStringSet(previewedItemIds, other.previewedItemIds) &&
             _sameStringSet(loadingItemIds, other.loadingItemIds) &&
             _sameStringMap(itemBodyErrors, other.itemBodyErrors) &&
@@ -1316,8 +1306,6 @@ class ThreadHistoryWindow {
     newerError,
     detached,
     anchor,
-    databaseId,
-    appliedWriteSequence,
     Object.hashAll(previewedItemIds.toList()..sort()),
     Object.hashAll(loadingItemIds.toList()..sort()),
     Object.hashAll(
@@ -1343,8 +1331,6 @@ class ThreadHistoryWindow {
     Object? newerError = _workspaceUnset,
     bool? detached,
     Object? anchor = _workspaceUnset,
-    String? databaseId,
-    int? appliedWriteSequence,
     Set<String>? previewedItemIds,
     Set<String>? loadingItemIds,
     Map<String, String>? itemBodyErrors,
@@ -1373,8 +1359,6 @@ class ThreadHistoryWindow {
     anchor: identical(anchor, _workspaceUnset)
         ? this.anchor
         : anchor as TimelineAnchor?,
-    databaseId: databaseId ?? this.databaseId,
-    appliedWriteSequence: appliedWriteSequence ?? this.appliedWriteSequence,
     previewedItemIds: previewedItemIds ?? this.previewedItemIds,
     loadingItemIds: loadingItemIds ?? this.loadingItemIds,
     itemBodyErrors: itemBodyErrors ?? this.itemBodyErrors,

@@ -17,6 +17,12 @@
 //! 基线规则只有一条：本窗口对外交付的 `Reset` 版本**必须**等于之后差量的 `from`。因此任何“有效基线
 //! 重置”（换焦点/方向、按需重读当前窗口、镜像失同步）都重新 `subscribe()`，让 core 的差量基线与
 //! 交付出去的窗口是同一次读取。
+//!
+//! 控制操作（`focus`/`load`/`extend_latest`/`expand`）只返回**操作回执**，不直接交付窗口：core 在
+//! 焦点/翻页完成时推进版本并立即唤醒，消费者下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口
+//! 移动表达成权威 `Reset`（或大 splice `Patch`）。因此“已交付给客户端”的基线只由 `next`/`take`
+//! 推进，控制调用无法私自推进交付基线；唯一例外是 `expand`——core `read_complete` 不推进版本也不
+//! 通知，由 [`ChatWindowStream::take`] 优先交付一次安排好的权威 `Reset`。
 
 use anyhow::Result;
 use pl_core::chat::{
@@ -72,10 +78,9 @@ impl ChatWindowHandle {
     /// 冷读一次并在该 view 内保留，直到身份离开窗口。
     ///
     /// 它只是把完整正文**请求进这条 view**（core 的 retain 绑定到本 view 且只在身份仍在窗口时生效），
-    /// 不重新打开窗口、不另查 SQL、也不推进窗口版本。调用方随后应当在**短临界区**里
-    /// [`ChatWindowStream::resync_snapshot`] 取得包含完整正文的权威窗口，并让后续 `Patch.from` 与之
-    /// 对齐——core `read_complete` 本身不 bump 版本也不通知（见
-    /// `/tmp/anywork-realtime-impl/activity-typed-contract.md` 的 core 依赖）。
+    /// 不重新打开窗口、不另查 SQL。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并
+    /// 通知，因此完整正文由订阅者的下一次 `take` 以 typed 字段更新从唯一出口交付；调用方只把返回值
+    /// 是否取回条目填进 [`ChatWindowStream::receipt`] 的 `retained`，不在锁内等待或另交一份窗口。
     ///
     /// 取消/身份已离开窗口都不会把结果写回窗口：core 的 retain 只在身份仍在本窗口时保留。
     pub async fn request_complete(&self, item_id: &str) -> Result<Option<ChatWindowItem>> {
@@ -88,6 +93,16 @@ impl ChatWindowHandle {
     }
 }
 
+/// 控制操作回执：操作已被权威窗口接受；内容仍由 `next`/`take` 以 Reset/Patch 从**唯一出口**交付。
+///
+/// `version` 是操作完成后的窗口当前版本（no-op 时等于操作前版本）；`retained` 只对「展开完整正文」
+/// 有意义——`false` 表示该身份已不在窗口或完整正文此刻不可得，调用方保留预览与重试入口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatWindowReceipt {
+    pub version: u64,
+    pub retained: bool,
+}
+
 /// 一条 HTTP 连接或一个 FRB 窗口自有的内容窗口。
 pub struct ChatWindowStream {
     thread_id: String,
@@ -96,7 +111,8 @@ pub struct ChatWindowStream {
     /// 当前**订阅读取**的窗口快照。
     ///
     /// `initial()` 返回它而不是重新 `snapshot()`，这样对外交付的窗口版本与后续差量的 `from` 一定是
-    /// 同一个版本。任何订阅读取（建立窗口、换锚点/方向、权威重同步）都经 [`Self::resubscribe`]。
+    /// 同一个版本。建立窗口时经 `subscribe()` 捕获；帧路径中的权威 `Reset`（含宿主无 wire 字段域的
+    /// 回退）由 [`Self::convert`] 同步更新。
     baseline: ChatSnapshot,
 }
 
@@ -159,8 +175,13 @@ impl ChatWindowStream {
         Ok(Some(self.convert(&thread_id, update)?))
     }
 
-    /// 按请求（锚点 + 方向）重建窗口；返回新的权威窗口快照。
-    pub async fn focus(&mut self, query: &ChatWindowQuery) -> Result<ChatWindowSnapshot> {
+    /// 按请求（锚点 + 方向）重建窗口，返回操作回执。
+    ///
+    /// 控制操作**不**重置订阅基线、也不直接交付窗口：core 在焦点/翻页完成时推进版本并立即唤醒，
+    /// 消费者的下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口移动表达成权威 `Reset`（或大
+    /// splice `Patch`），仍以消费者自己的交付基线为 `from`。「已交付给客户端」的水位只由
+    /// `next`/`take` 推进。
+    pub async fn focus(&mut self, query: &ChatWindowQuery) -> Result<ChatWindowReceipt> {
         self.view
             .focus(focus_of(query.anchor.as_deref()))
             .await
@@ -171,31 +192,22 @@ impl ChatWindowStream {
                 .await
                 .map_err(anyhow::Error::new)?;
         }
-        self.resubscribe();
-        self.initial()
+        Ok(self.receipt(true))
     }
 
-    /// 从当前窗口继续向指定方向翻一页。
-    pub async fn load(&mut self, direction: ChatWindowDirection) -> Result<ChatWindowSnapshot> {
+    /// 从当前窗口继续向指定方向翻一页，返回操作回执（内容由 `next` 交付）。
+    pub async fn load(&mut self, direction: ChatWindowDirection) -> Result<ChatWindowReceipt> {
         self.view
             .load(core_direction(direction))
             .await
             .map_err(anyhow::Error::new)?;
-        self.resubscribe();
-        self.initial()
+        Ok(self.receipt(true))
     }
 
-    /// 按页扩充 Latest，保持最新端；历史阅读或容量已满时不改变窗口。
-    pub async fn extend_latest(&mut self) -> Result<ChatWindowSnapshot> {
+    /// 按页扩充 Latest，保持最新端；历史阅读或容量已满时不改变窗口（回执版本不推进、无帧）。
+    pub async fn extend_latest(&mut self) -> Result<ChatWindowReceipt> {
         self.view.extend_latest().await?;
-        self.resubscribe();
-        self.initial()
-    }
-
-    /// 读取当前窗口，并把它变成新的订阅基线。
-    pub async fn snapshot(&mut self) -> Result<ChatWindowSnapshot> {
-        self.resubscribe();
-        self.initial()
+        Ok(self.receipt(true))
     }
 
     /// 按 identity 读一条条目（同 view，内存优先）。
@@ -203,27 +215,15 @@ impl ChatWindowStream {
         self.handle().read_item(item_id).await
     }
 
-    /// 同一 view 的窗口操作：重新订阅当前窗口并返回与订阅基线一致的权威快照。
+    /// 以当前窗口版本构造控制操作回执。
     ///
-    /// 用在「请求完整正文」之后：core `read_complete` 把完整正文保留进这条 view 后，重新订阅会让权威
-    /// 窗口（含完整正文）成为新的订阅基线，因此随后差量的 `from` 与它对齐。**不虚构版本**：返回的
-    /// 版本就是 core 订阅读取到的窗口版本。
-    pub fn resync_snapshot(&mut self) -> Result<ChatWindowSnapshot> {
-        self.resubscribe();
-        self.initial()
-    }
-
-    /// 同一 view 的「展开完整正文」窗口操作：请求完整正文（可能冷读一次），再返回与之基线一致的权威
-    /// 窗口快照。单任务消费者（HTTP 的一条 SSE 连接）可直接用它；持锁消费者用
-    /// [`ChatWindowHandle::request_complete`] + [`Self::resync_snapshot`] 把等待移到锁外。
-    pub async fn expand(&mut self, item_id: &str) -> Result<ChatWindowSnapshot> {
-        // 请求把完整正文保留进这条 view；权威窗口在下面统一交出。
-        let _ = self
-            .view
-            .read_complete(item_id)
-            .await
-            .map_err(anyhow::Error::new)?;
-        self.resync_snapshot()
+    /// `retained` 由「展开完整正文」的调用方按 [`ChatWindowHandle::request_complete`] 是否取回条目
+    /// 填写；其余控制操作恒为 `true`。
+    pub fn receipt(&self, retained: bool) -> ChatWindowReceipt {
+        ChatWindowReceipt {
+            version: self.view.version(),
+            retained,
+        }
     }
 
     /// 把一次 core typed 差量映射成 wire 差量。
@@ -291,7 +291,9 @@ impl ChatWindowStream {
         })
     }
 
-    /// 有效基线重置：重新订阅，让 core 的差量与对外窗口来自同一次读取。
+    /// 帧回退用的有效基线重置：重新订阅，让 core 的差量与对外窗口来自同一次读取。
+    ///
+    /// 只服务 [`Self::resync`]（宿主无 wire 字段域的权威回退）；控制操作不再重置基线。
     fn resubscribe(&mut self) {
         let (baseline, updates) = self.view.subscribe();
         self.updates = updates;
@@ -340,8 +342,7 @@ impl StudioRuntime {
     /// 按 identity 读一条窗口条目，读的是共享会话（内存优先），因此未落盘的流式条目同样可读。
     ///
     /// 这是内容窗口的「按身份读」入口；**完整**正文请走同 view 的窗口操作
-    /// [`ChatWindowStream::expand`]（或 [`ChatWindowHandle::request_complete`] +
-    /// [`ChatWindowStream::resync_snapshot`] 的两步形态）。
+    /// [`ChatWindowHandle::request_complete`]（完整正文经下一次 `take` 从唯一出口交付）。
     ///
     /// # Errors
     /// 未知 Thread（不激活执行、也不读 durable 正文），或条目与其产品载荷不一致。
