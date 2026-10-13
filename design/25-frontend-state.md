@@ -20,13 +20,13 @@
 > - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
 > - 内容绑定按候选安装：首帧验证成功之前不进入当前绑定，因此不会把「有句柄、没有泵」的实例当 ready 复用；出口结束（EOF）与传输故障走同一条收束路径并带退避重开，重开在无法推进时停下；退避计数只在首帧真正落地时清零。尚未收敛为显式的 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机。
 > - 阅读位置与窗口焦点已分离（只有定位动作才换焦点）；尚未把「用户正在滚动时自动校正让位」与可见 itemId + 像素偏移的恢复收敛成独立 viewport controller。
-> - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记仍未实施。
+> - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；操作结果收敛为 typed 结果（noChange / alreadyObserved / contentVersionObserved / bindingChanged / bindingRetired / localCompletion），等待期间绑定退休也会确定收束。仍未实施：由后端返回的 Applied / Superseded / NotInWindow 等 disposition（当前只能从版本与绑定身份推断）。
 >
 > **尚未实施：**
 > - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区（显示投影本身已按条目隔离）。
 > - 显示投影已按条目身份复用（只有内容真正变化的条目重新转换，行对象按渲染版本驻留，窗口事实不变时整个行列表复用），推理正文不再预拼整段字符串；尚未把正文窗口规范化为有序 ID 序列 + itemsById 的独立 read model。
-> - 由单一 viewport/ScrollPosition 所有者接管位置稳定性（按可见 itemId + offset 保持、用户滚动优先）；当前是合并后的单一校正点，尚未收敛成独立 controller。
-> - expand 结构化结果（Retained / AlreadyComplete / NotInWindow / Unavailable / Superseded）；当前仍由 Option 推断 retained。
+> - 由单一 viewport/ScrollPosition 所有者接管位置稳定性；当前是合并后的单一校正点（用户在滚动时自动校正让位、按可见 itemId + offset 恢复），尚未收敛成独立 controller。
+> - expand 结构化结果：`read_item` 返回 `Option<item>`、回执带 `retained`，二者合起来已能区分「条目仍在窗口」与「窗口已不含该身份」；无需再引入一层枚举，但 `Superseded` / `Failed` 仍只能由调用方从错误传播推断。
 > - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。
 > - Windows profile / release 原生性能与逐帧呈现验收：验收矩阵与取证口径已写入 [24](./24-testing.md) §24.5；本机（Linux）只能跑到 `manual-gui` 的启动与部分场景，未取得 Windows 帧时长与录像。
 
