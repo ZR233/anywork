@@ -195,15 +195,17 @@ Timeline workspace 的正文只有一个 owner：这份单列视图就是该 Thr
 
 窗口内容交付只有**一个出口** `next`：首帧 `initial`（Reset），之后 Reset/Patch。控制操作
 （`load`/`focus`/`extend_latest`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`
-与操作后的窗口版本；`expand` 另带正文是否成功保留），不直接交付窗口，也不重置订阅基线——
-core 在这些操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定把窗口移动
+与操作后的窗口版本；`expand` 另带正文是否成功保留），不直接交付窗口，也不重置订阅基线。
+`extend_latest` 在已到头、容量已满或不在 Latest 时合法 no-op：版本不变、不发内容帧。
+相同 Latest 焦点，或窗口内仍可见的同一 Around 身份，focus 为 no-op：不推进 generation、不通知。
+core 在真正改变窗口的操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定把窗口移动
 表达成权威 `Reset`（或大 splice `Patch`），`from` 始终等于客户端最后收到的版本。因此
 「已交付给客户端」的水位只由 `next`/`take` 推进；GUI 不再有 load/focus 直接返回快照的第二条
-交付路径，也不存在 SQL 分页与实时条目的双路合并。GUI 消费方（`ThreadSessionStore` 的内容
+交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手读取的会话进度 **不是** 必须在内容帧出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。GUI 把回执版本未超过已观察窗口视为 NoChange，结束 pending 且终止本轮自动补页。GUI 消费方（`ThreadSessionStore` 的内容
 绑定）打开窗口后立即采纳首帧并持续泵送 `next`；同一 view 同时至多一个未完成的 `next`，
 reduce 完上一帧后再取下一帧。连续性缺口（`from` 不匹配本地版本、目标 item 不在窗口、
 `expected_revision` 不匹配或传输故障）废弃当前绑定并重开同一会话的有界窗口，期间保留最后
-有效内容。
+有效内容。`expand` 在可见全文升级时推进版本并通知，完整正文仍由下一次 `take` 交付；条目已离开窗口时不 retain、不通知。结构化 retained 结果（区分读到条目与仍在窗口）尚未从 Option 推断中收口。
 
 core `pl-core::chat` 窗口是这一单列视图的唯一内容窗口：它以稳定的 `ChatField` 为内容身份，
 `Body`、带 provider part 身份的 `Part` 与宿主定义的 opaque `Host` key（例如工具 arguments 与

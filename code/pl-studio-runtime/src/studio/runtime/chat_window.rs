@@ -21,8 +21,8 @@
 //! 控制操作（`focus`/`load`/`extend_latest`/`expand`）只返回**操作回执**，不直接交付窗口：core 在
 //! 焦点/翻页完成时推进版本并立即唤醒，消费者下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口
 //! 移动表达成权威 `Reset`（或大 splice `Patch`）。因此“已交付给客户端”的基线只由 `next`/`take`
-//! 推进，控制调用无法私自推进交付基线；唯一例外是 `expand`——core `read_complete` 不推进版本也不
-//! 通知，由 [`ChatWindowStream::take`] 优先交付一次安排好的权威 `Reset`。
+//! 推进，控制调用无法私自推进交付基线。`expand` 在可见全文升级时由 core 推进版本并通知，完整
+//! 正文仍由下一次 `take` 从唯一出口交付；条目已离开窗口时 core 不 retain、不通知。
 
 use anyhow::Result;
 use pl_core::chat::{
@@ -79,8 +79,9 @@ impl ChatWindowHandle {
     ///
     /// 它只是把完整正文**请求进这条 view**（core 的 retain 绑定到本 view 且只在身份仍在窗口时生效），
     /// 不重新打开窗口、不另查 SQL。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并
-    /// 通知，因此完整正文由订阅者的下一次 `take` 以 typed 字段更新从唯一出口交付；调用方只把返回值
-    /// 是否取回条目填进 [`ChatWindowStream::receipt`] 的 `retained`，不在锁内等待或另交一份窗口。
+    /// 通知，因此完整正文由订阅者的下一次 `take` 以 typed 字段更新从唯一出口交付。读到条目不等于已
+    /// retain：身份已离开窗口时 core 仍可能返回读取结果，但不保留、不通知；调用方只把「是否仍在窗口
+    /// 并成功保留」填进 [`ChatWindowStream::receipt`] 的 `retained`，不在锁内等待或另交一份窗口。
     ///
     /// 取消/身份已离开窗口都不会把结果写回窗口：core 的 retain 只在身份仍在本窗口时保留。
     pub async fn request_complete(&self, item_id: &str) -> Result<Option<ChatWindowItem>> {

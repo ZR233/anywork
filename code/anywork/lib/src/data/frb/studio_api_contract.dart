@@ -21,7 +21,10 @@ abstract interface class PersistenceQueueReader {
   Future<PersistenceQueueSnapshot> readPersistenceQueue();
 }
 
-/// Opens a bounded chat window without asking the UI to reconcile live and SQL items.
+/// 生产聊天内容出口：打开该会话的有界 ChatView。
+///
+/// 这是正文显示的必要能力，不是可选后备。生产数据源与可证明内容路径的测试替身
+/// 必须实现它；缺少实现时 store 把内容同步标为失败，而不是静默当成空窗口。
 abstract interface class ChatWindowReader {
   Future<StudioChatWindow> openChatWindow(String threadId);
 }

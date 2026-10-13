@@ -10,6 +10,8 @@ SQLite 与私有、测试条件编译的可控故障点，不为测试扩展生�
 静态分析、构建、生成一致性和发布配置的检查仍独立运行。上游技能随源码携带的测例
 保持原样，不参加项目门禁。
 
+Flutter 侧对内容窗口消费增加了确定性组件与 store 用例：短窗无历史时自动补页不循环、load/extend 占位与 NoChange、迟到旧订阅清理不得清空已恢复窗口、Patch `to <= from` 拒收。这些证明 Dart reducer / Timeline 门控 / store 生命周期，不能代替 Windows 原生 profile 或真实 FRB 时序。`pl-core` 公开 API 另覆盖相同可见焦点不通知。
+
 `pl-core` 仅使用测试侧的脚本化模型、工具和按锚点查询的临时历史后端，证明 Thread 的执行、
 并发、取消、恢复、effect、有界 ChatView 窗口及可选持久化契约，不依赖模型供应商适配。
 ChatView 测试覆盖新旧 revision 保存确认竞争（旧确认不得把较新的内容标记为已保存、确认对已

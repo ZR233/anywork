@@ -16,6 +16,7 @@ import 'timeline_session_view.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
 import '../../shared/studio_chrome.dart';
+import '../../data/stores/chat_view_metrics.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../shared/typed_json.dart';
@@ -53,7 +54,9 @@ class TimelineView extends StatelessWidget {
     this.anchor,
     this.olderError,
     this.newerError,
+    this.hasOlder = false,
     this.hasNewer = false,
+    this.canExtendLatest = false,
     this.olderCursor,
     this.newerCursor,
     this.windowEpoch = 0,
@@ -77,7 +80,9 @@ class TimelineView extends StatelessWidget {
   final TimelineAnchor? anchor;
   final String? olderError;
   final String? newerError;
+  final bool hasOlder;
   final bool hasNewer;
+  final bool canExtendLatest;
   final String? olderCursor;
   final String? newerCursor;
   final int windowEpoch;
@@ -103,7 +108,9 @@ class TimelineView extends StatelessWidget {
       anchor: anchor,
       olderError: olderError,
       newerError: newerError,
+      hasOlder: hasOlder,
       hasNewer: hasNewer,
+      canExtendLatest: canExtendLatest,
       olderCursor: olderCursor,
       newerCursor: newerCursor,
       windowEpoch: windowEpoch,
@@ -130,7 +137,9 @@ class _TimelineSurface extends StatefulWidget {
     this.anchor,
     this.olderError,
     this.newerError,
+    this.hasOlder = false,
     this.hasNewer = false,
+    this.canExtendLatest = false,
     this.olderCursor,
     this.newerCursor,
     this.windowEpoch = 0,
@@ -154,7 +163,9 @@ class _TimelineSurface extends StatefulWidget {
   final TimelineAnchor? anchor;
   final String? olderError;
   final String? newerError;
+  final bool hasOlder;
   final bool hasNewer;
+  final bool canExtendLatest;
   final String? olderCursor;
   final String? newerCursor;
   final int windowEpoch;
@@ -194,9 +205,10 @@ class _TimelineViewState extends State<_TimelineSurface> {
   bool get _followingBottom =>
       _readingIntent == TimelineReadingIntent.followLatest;
   bool get _detachedByUser => !_followingBottom;
-  bool get _canLoadOlder => widget.onCommand != null;
-  bool get _canLoadNewer => widget.onCommand != null;
-  bool get _canExtendLatest => widget.onCommand != null;
+  bool get _canLoadOlder => widget.onCommand != null && widget.hasOlder;
+  bool get _canLoadNewer => widget.onCommand != null && widget.hasNewer;
+  bool get _canExtendLatest =>
+      widget.onCommand != null && widget.canExtendLatest;
 
   void _dispatch(TimelineCommand command) {
     final onCommand = widget.onCommand;
@@ -358,17 +370,18 @@ class _TimelineViewState extends State<_TimelineSurface> {
       _cancelLayoutRestore();
     }
     _retainExpandedGroups(oldWidget.rows);
-    if ((oldWidget.isLoadingOlder && !widget.isLoadingOlder) ||
-        oldWidget.windowEpoch != widget.windowEpoch ||
+    if (oldWidget.windowEpoch != widget.windowEpoch ||
         (oldWidget.olderCursor ?? oldWidget.rows.firstOrNull?.id) !=
-            (widget.olderCursor ?? widget.rows.firstOrNull?.id)) {
+            (widget.olderCursor ?? widget.rows.firstOrNull?.id) ||
+        oldWidget.hasOlder != widget.hasOlder ||
+        oldWidget.canExtendLatest != widget.canExtendLatest) {
       _olderLoadRequested = false;
     }
 
-    if ((oldWidget.isLoadingNewer && !widget.isLoadingNewer) ||
-        oldWidget.windowEpoch != widget.windowEpoch ||
+    if (oldWidget.windowEpoch != widget.windowEpoch ||
         (oldWidget.newerCursor ?? oldWidget.rows.lastOrNull?.id) !=
-            (widget.newerCursor ?? widget.rows.lastOrNull?.id)) {
+            (widget.newerCursor ?? widget.rows.lastOrNull?.id) ||
+        oldWidget.hasNewer != widget.hasNewer) {
       _newerLoadRequested = false;
     }
     if (_detachedByUser &&

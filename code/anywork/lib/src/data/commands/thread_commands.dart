@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../domain/models/studio_models.dart';
 import '../frb/studio_api.dart';
 import '../repositories/studio_api_provider.dart';
+import '../stores/chat_view_metrics.dart';
 import '../stores/domain_sync.dart';
 import '../stores/recovery_store.dart';
 import '../stores/selection_store.dart';
@@ -172,15 +173,20 @@ class ThreadCommands extends _$ThreadCommands {
   }
 
   /// 停止是独立的可取消控制入口：不排在归档/创建/长查询后面，也不按「当前是否选中」
-  /// 过滤目标——调用时冻结的 threadId 就是命令目标。
+  /// 过滤目标——调用时冻结的 threadId + turnId 就是命令目标。
   Future<void> stop(String threadId) {
+    final turn = ref.read(threadSessionStoreProvider(threadId)).activeTurn;
+    if (turn == null || !turn.state.isBusy) return Future<void>.value();
+    final turnId = turn.turnId;
     return _stopLane.enqueue(() async {
-      final turn = ref.read(threadSessionStoreProvider(threadId)).activeTurn;
-      if (turn == null || !turn.state.isBusy) return;
+      final latest = ref.read(threadSessionStoreProvider(threadId)).activeTurn;
+      if (latest == null || latest.turnId != turnId || !latest.state.isBusy) {
+        return;
+      }
       final key = 'stop:$threadId';
       _begin(key, label: threadId);
       try {
-        await _api.interruptTurn(threadId, turn.turnId);
+        await _api.interruptTurn(threadId, turnId);
         _clear(key);
       } catch (error) {
         _fail(key, threadId, error);
@@ -249,18 +255,34 @@ class ThreadCommands extends _$ThreadCommands {
 
   /// 运行中窗口追新：向旧扩充操作；loading 落在 older 边，与 timeline 上边缘的重试指示对齐。
   Future<void> extendLatestHistory(String threadId) async {
+    final session = ref.read(threadSessionStoreProvider(threadId));
+    if (!session.history.canExtendLatest || session.history.isLoading) return;
+    ChatViewMetrics.extendLatestCalls += 1;
     final store = ref.read(threadSessionStoreProvider(threadId).notifier);
-    final window = await store.chatView();
-    if (window == null || !ref.mounted) return;
-    store.setHistoryLoading(TimelineDirection.older);
+    final token = store.beginHistoryOp(TimelineDirection.older);
+    if (token == null) return;
     try {
-      await window.extendLatest();
-      // 回执即命令完成；扩充后的窗口由内容泵交付（design/25 §25.5）。
-      if (ref.mounted) store.finishHistoryLoad();
-    } catch (error) {
-      if (ref.mounted) {
-        store.setHistoryError(TimelineDirection.older, error.toString());
+      final window = await store.chatView();
+      if (window == null || !ref.mounted) {
+        store.failHistoryOp(token, 'Chat window is unavailable');
+        return;
       }
+      final latest = ref.read(threadSessionStoreProvider(threadId));
+      if (!latest.history.canExtendLatest) {
+        store.observeHistoryOp(
+          token,
+          StudioChatReceipt(
+            operationId: token,
+            version: latest.chatVersion ?? 0,
+            retained: true,
+          ),
+        );
+        return;
+      }
+      final receipt = await window.extendLatest();
+      if (ref.mounted) store.observeHistoryOp(token, receipt);
+    } catch (error) {
+      if (ref.mounted) store.failHistoryOp(token, error.toString());
     }
   }
 
@@ -279,14 +301,20 @@ class ThreadCommands extends _$ThreadCommands {
     }
   }
 
-  /// 写入阅读锚点；浏览历史意图时同步聚焦权威窗口的历史条目。
+  /// 写入阅读锚点；浏览历史意图时，仅在需要更换窗口焦点时才调用 native focus。
   Future<void> updateTimelineAnchor(
     String threadId,
     TimelineAnchor anchor,
   ) async {
     final store = ref.read(threadSessionStoreProvider(threadId).notifier);
+    final previous = ref.read(threadSessionStoreProvider(threadId)).history;
     store.setTimelineAnchor(anchor);
     if (anchor.readingIntent != TimelineReadingIntent.browseHistory) return;
+    final focused = previous.detached ? previous.anchor?.itemId : null;
+    if (focused == anchor.itemId) {
+      ChatViewMetrics.redundantFocusSkipped += 1;
+      return;
+    }
     final window = await store.chatView();
     if (window == null || !ref.mounted) return;
     try {
@@ -355,18 +383,38 @@ class ThreadCommands extends _$ThreadCommands {
     final older = direction == TimelineDirection.older;
     final canPage = older ? history.hasOlder : history.hasNewer;
     if (!session.hasSnapshot || history.isLoading || !canPage) return;
+    if (older) {
+      ChatViewMetrics.loadOlderCalls += 1;
+    } else {
+      ChatViewMetrics.loadNewerCalls += 1;
+    }
     final store = ref.read(threadSessionStoreProvider(threadId).notifier);
-    final window = await store.chatView();
-    if (window == null || !ref.mounted) return;
-    store.setHistoryLoading(direction);
+    final token = store.beginHistoryOp(direction);
+    if (token == null) return;
     try {
-      await window.load(direction);
-      // 回执即命令完成；翻页后的窗口由内容泵交付。
-      if (ref.mounted) store.finishHistoryLoad();
-    } catch (error) {
-      if (ref.mounted) {
-        store.setHistoryError(direction, error.toString());
+      final window = await store.chatView();
+      if (window == null || !ref.mounted) {
+        store.failHistoryOp(token, 'Chat window is unavailable');
+        return;
       }
+      final latest = ref.read(threadSessionStoreProvider(threadId)).history;
+      final stillCanPage = older ? latest.hasOlder : latest.hasNewer;
+      if (!stillCanPage) {
+        store.observeHistoryOp(
+          token,
+          StudioChatReceipt(
+            operationId: token,
+            version:
+                ref.read(threadSessionStoreProvider(threadId)).chatVersion ?? 0,
+            retained: true,
+          ),
+        );
+        return;
+      }
+      final receipt = await window.load(direction);
+      if (ref.mounted) store.observeHistoryOp(token, receipt);
+    } catch (error) {
+      if (ref.mounted) store.failHistoryOp(token, error.toString());
     }
   }
 

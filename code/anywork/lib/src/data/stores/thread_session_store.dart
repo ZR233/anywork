@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../domain/models/studio_models.dart';
@@ -7,6 +8,7 @@ import '../bridge/studio_bridge.dart';
 import '../bridge/thread_stream_gate.dart';
 import '../frb/studio_api.dart';
 import '../repositories/studio_api_provider.dart';
+import 'chat_view_metrics.dart';
 import 'domain_sync.dart';
 import 'thread_directory_store.dart';
 import 'thread_session_state.dart';
@@ -31,6 +33,9 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   Future<_ChatBinding?>? _bindingOpening;
   int _bindingGeneration = 0;
   int _resyncAttempts = 0;
+  int _windowOperationSeq = 0;
+  _WindowOperation? _windowOperation;
+  Completer<void>? _subscriptionReleaseHold;
 
   @override
   ThreadSessionState build(String threadId) {
@@ -42,9 +47,12 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     });
     ref.onResume(() {
       if (_closed || _attachment != null) return;
-      clearStreamEpoch();
-      _attach(bridge);
-      unawaited(_openChatBinding());
+      scheduleMicrotask(() {
+        if (_closed || !ref.mounted || _attachment != null) return;
+        clearStreamEpoch();
+        _attach(bridge);
+        unawaited(_openChatBinding());
+      });
     });
     ref.onDispose(() {
       _closed = true;
@@ -91,10 +99,13 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final result = applyChatFrameState(state, frame);
     switch (result.outcome) {
       case ChatFrameOutcome.applied:
+        ChatViewMetrics.framesApplied += 1;
         state = result.state;
+        _completeHistoryOpIfObserved();
       case ChatFrameOutcome.irrelevant:
         return;
       case ChatFrameOutcome.resync:
+        ChatViewMetrics.framesResync += 1;
         unawaited(_resyncBinding(binding));
     }
   }
@@ -102,6 +113,7 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   void releaseHistory() {
     final next = releaseThreadHistoryState(state);
     if (next == state) return;
+    ChatViewMetrics.historyClears += 1;
     state = next;
   }
 
@@ -157,12 +169,18 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     }
     return _bindingOpening ??= () async {
       final generation = ++_bindingGeneration;
+      ChatViewMetrics.bindingOpens += 1;
       try {
         final source = ref.read(studioBridgeDataSourceProvider);
-        if (source is! ChatWindowReader) return null;
-        final window = await (source as ChatWindowReader).openChatWindow(
-          threadId,
-        );
+        if (source is! ChatWindowReader) {
+          markResync(
+            StateError('ChatWindowReader is required for chat content'),
+            failed: true,
+          );
+          return null;
+        }
+        final reader = source as ChatWindowReader;
+        final window = await reader.openChatWindow(threadId);
         if (!ref.mounted ||
             _closed ||
             !state.hasSnapshot ||
@@ -172,11 +190,21 @@ class ThreadSessionStore extends _$ThreadSessionStore {
         }
         final binding = _ChatBinding(generation, window);
         _binding = binding;
-        _resyncAttempts = 0;
-        _applyFrame(binding, StudioChatReset(await window.initial()));
+        final initial = await window.initial();
+        if (binding.closed || !identical(binding, _binding)) {
+          await window.close();
+          return null;
+        }
+        _applyFrame(binding, StudioChatReset(initial));
+        if (identical(binding, _binding)) {
+          _resyncAttempts = 0;
+        }
         unawaited(_pumpFrames(binding));
         return binding;
-      } catch (_) {
+      } catch (error) {
+        if (generation == _bindingGeneration && ref.mounted && !_closed) {
+          markResync(error, failed: true);
+        }
         return null;
       } finally {
         _bindingOpening = null;
@@ -195,7 +223,11 @@ class ThreadSessionStore extends _$ThreadSessionStore {
         await _resyncBinding(binding);
         return;
       }
-      if (binding.closed || frame == null) return;
+      if (binding.closed) return;
+      if (frame == null) {
+        binding.closed = true;
+        return;
+      }
       _applyFrame(binding, frame);
       if (!identical(binding, _binding)) return;
     }
@@ -221,14 +253,30 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   /// 关闭当前内容绑定：立即让绑定失效（迟到帧拒收），再可靠关闭 native 窗口。
   void _closeBinding() {
     final binding = _binding;
+    final closedGeneration = _bindingGeneration;
     _binding = null;
     _bindingGeneration++;
+    final op = _windowOperation;
+    if (op != null && op.generation == closedGeneration) {
+      _windowOperation = null;
+    }
     if (binding == null) return;
     binding.closed = true;
+    ChatViewMetrics.bindingCloses += 1;
     unawaited(binding.window.close());
-    if (ref.mounted && state.hasChatWindow) {
-      state = state.copyWith(hasChatWindow: false);
+    // Riverpod 禁止在 onCancel/onDispose 里读写 notifier state；收束后的投影更新延后到微任务。
+    scheduleMicrotask(() => _afterBindingClosed(closedGeneration));
+  }
+
+  void _afterBindingClosed(int closedGeneration) {
+    if (!ref.mounted || _closed || _binding != null) return;
+    if (_bindingGeneration != closedGeneration + 1) return;
+    var history = state.history;
+    if (_windowOperation == null && history.isLoading) {
+      history = history.copyWith(isLoading: false);
     }
+    if (!state.hasChatWindow && history == state.history) return;
+    state = state.copyWith(hasChatWindow: false, history: history);
   }
 
   void setHistoryLoading(TimelineDirection direction) {
@@ -258,8 +306,79 @@ class ThreadSessionStore extends _$ThreadSessionStore {
 
   /// 回执到达或代次已变时结束加载，不改另一方向的错误。
   void finishHistoryLoad() {
+    _finishHistoryOp(_windowOperation);
+  }
+
+  /// 在第一个 await 之前占位：同一 view 同一方向只允许一项在途控制操作。
+  int? beginHistoryOp(TimelineDirection direction) {
+    if (!ref.mounted || _closed) return null;
+    if (state.history.isLoading) return null;
+    final token = ++_windowOperationSeq;
+    _windowOperation = _WindowOperation(
+      token: token,
+      generation: _bindingGeneration,
+      direction: direction,
+    );
+    setHistoryLoading(direction);
+    return token;
+  }
+
+  /// 回执已到：有内容变化时等对应帧进入 read model；NoChange 立即结束本轮。
+  void observeHistoryOp(int token, StudioChatReceipt receipt) {
+    final op = _windowOperation;
+    if (op == null || op.token != token) return;
+    if (op.generation != _bindingGeneration) {
+      _finishHistoryOp(op);
+      return;
+    }
+    final current = state.chatVersion;
+    if (current != null && receipt.version <= current) {
+      _finishHistoryOp(op);
+      return;
+    }
+    _windowOperation = op.waitingFor(receipt.version);
+    _completeHistoryOpIfObserved();
+  }
+
+  void failHistoryOp(int token, String message) {
+    final op = _windowOperation;
+    if (op == null || op.token != token) return;
+    _windowOperation = null;
+    setHistoryError(op.direction, message);
+  }
+
+  void _completeHistoryOpIfObserved() {
+    final op = _windowOperation;
+    if (op == null || op.targetVersion == null) return;
+    final current = state.chatVersion;
+    if (current != null && current >= op.targetVersion!) {
+      _finishHistoryOp(op);
+    }
+  }
+
+  void _finishHistoryOp(_WindowOperation? op) {
+    if (op == null) return;
+    if (!identical(_windowOperation, op) &&
+        _windowOperation?.token != op.token) {
+      return;
+    }
+    _windowOperation = null;
     if (!state.history.isLoading) return;
     state = state.copyWith(history: state.history.copyWith(isLoading: false));
+  }
+
+  /// 测试用：挂起旧订阅释放，验证迟到清理不能清空新窗口。
+  @visibleForTesting
+  void holdNextSubscriptionRelease() {
+    _subscriptionReleaseHold = Completer<void>();
+  }
+
+  /// 测试用：放行被挂起的旧订阅释放。
+  @visibleForTesting
+  void releaseHeldSubscription() {
+    final hold = _subscriptionReleaseHold;
+    _subscriptionReleaseHold = null;
+    if (hold != null && !hold.isCompleted) hold.complete();
   }
 
   /// 局部重同步：保留 workspace / 窗口，只暴露传输错误。
@@ -320,8 +439,13 @@ class ThreadSessionStore extends _$ThreadSessionStore {
   Future<void> _releaseSubscription({required bool clearHistory}) async {
     final attachment = _attachment;
     _attachment = null;
+    final hold = _subscriptionReleaseHold;
+    if (hold != null) {
+      await hold.future;
+    }
     await attachment?.release();
-    if (!ref.mounted || !clearHistory) return;
+    if (!clearHistory || !ref.mounted) return;
+    if (_attachment != null || _binding != null) return;
     releaseHistory();
   }
 
@@ -345,4 +469,27 @@ class _ChatBinding {
   final int generation;
   final StudioChatWindow window;
   var closed = false;
+}
+
+class _WindowOperation {
+  _WindowOperation({
+    required this.token,
+    required this.generation,
+    required this.direction,
+    this.targetVersion,
+  });
+
+  final int token;
+  final int generation;
+  final TimelineDirection direction;
+  final int? targetVersion;
+
+  _WindowOperation waitingFor(int version) {
+    return _WindowOperation(
+      token: token,
+      generation: generation,
+      direction: direction,
+      targetVersion: version,
+    );
+  }
 }

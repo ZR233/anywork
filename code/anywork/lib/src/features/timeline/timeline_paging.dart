@@ -243,6 +243,7 @@ extension on _TimelineViewState {
             widget.olderError == null &&
             !_olderLoadRequested) {
           _olderLoadRequested = true;
+          ChatViewMetrics.prefetchExtendLatest += 1;
           _dispatch(const TimelineExtendLatest());
         }
         return;
@@ -258,6 +259,7 @@ extension on _TimelineViewState {
           widget.olderError == null &&
           !_olderLoadRequested) {
         _olderLoadRequested = true;
+        ChatViewMetrics.prefetchLoadOlder += 1;
         _dispatch(const TimelineLoadOlder());
       } else if (!_scrollingOlder &&
           (underfull ||
@@ -266,6 +268,7 @@ extension on _TimelineViewState {
           widget.newerError == null &&
           !_newerLoadRequested) {
         _newerLoadRequested = true;
+        ChatViewMetrics.prefetchLoadNewer += 1;
         _dispatch(const TimelineLoadNewer());
       }
     });

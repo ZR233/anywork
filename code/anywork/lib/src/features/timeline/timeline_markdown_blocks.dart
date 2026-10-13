@@ -56,7 +56,7 @@ class _AgentMarkdown extends ConsumerWidget {
       ),
       child: GptMarkdown(
         repaired,
-        key: ValueKey('gpt-markdown-$id-$status'),
+        key: ValueKey('gpt-markdown-$id'),
         style: _markdownBodyStyle(context, surface),
         styleSheet: GptMarkdownStyleSheet(
           blockQuote: BlockQuoteStyle(

@@ -1,6 +1,29 @@
 # 25 - Flutter 前端状态与资源生命周期
 
-> 替换提案，尚未实施。对应全栈审查基线 d0ad8f91155f0072ce526f7e87099100bfb49a96。合入时必须与 Rust 流协议、调用方及测试一起切换；不能只替换本文便宣告新架构生效。
+> 本篇是前端状态的目标契约。内容出口收敛（唯一 ChatView、删除 Dart transport 补丁基线、删除 GUI 普通 SQL 分页旁路、控制操作返回回执）已在 5a8210 落地；随后补页门控、窗口操作确认与旧绑定清理竞争按本节标注推进。不能用「内容出口已经统一」推导出「前端性能重构已经完成」，也不能把尚未存在的规范化 ChatState 写成实施状态。
+>
+> 对照基线：内容出口收敛 `5a8210f3525cc9eb7da7eb3f6f5dcf9815e14cef`。合入后续切片时必须与 Rust 流协议、调用方及测试一起切换。
+>
+> **已实现（Dart/core 源码可核对；Windows 原生性能未测）：**
+> - 唯一内容泵消费 ChatView 首帧与后续帧；transport 不再维护第二份补丁基线。
+> - Timeline 使用窗口交付的 `hasOlder` / `hasNewer` / `canExtendLatest`，不以「有无命令回调」推断补页能力；自动补页在边界/容量未变时不因 loading 落沿重复发起；core 的 extendLatest no-op 不推进版本、不发内容帧。
+> - load / extendLatest 在第一个 await 之前占位；回执版本未超过已观察窗口时按 NoChange 结束，不等待不会出现的内容帧；旧操作 token 不能结束新占位。
+> - 旧订阅释放只清理自己捕获的资源；await 之后若已有新绑定或新附件，不得清空当前窗口。
+> - 缺少 ChatWindowReader 标为内容同步失败，不再静默当成空窗口。
+> - 窗口内相同 Latest / 仍可见的 Around 焦点在 core 为 no-op：不推进 generation、不通知。
+>
+> **部分实现：**
+> - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
+> - 内容绑定有身份与泵，但尚未收敛为完整 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机；打开成功即复位退避、EOF 与静默 catch 仍不完整。
+> - 像素滚动在已浏览同一 item 时跳过 native focus；从跟随最新切入历史阅读仍会 focus。
+>
+> **尚未实施：**
+> - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区。
+> - 增量显示投影（去掉热路径整窗排序、全文拼接与无条件重分组）。
+> - 统一 viewport controller；消除两段 post-frame 底部跟随。
+> - expand 结构化结果（Retained / AlreadyComplete / NotInWindow / Unavailable / Superseded）；当前仍由 Option 推断 retained。
+> - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。
+> - Windows profile / release 原生性能验收。
 
 本篇定义 Dart read model、命令、草稿、页面与订阅的职责。Rust 的可靠历史/恢复见 15/16/17；产品资源与版本见 18；呈现与滚动见 19；流协议见 07。文档各自拥有自己的定义，其他篇引用而不重新定义一套规则。
 
@@ -47,17 +70,19 @@ keepAlive 仅用于明确需要驻留的轻状态；不能让每个曾浏览的�
 
 ## 25.5 聊天内容协议
 
-唯一内容出口为 ChatView.next：首帧 Reset，之后 Reset/Patch。同一 view 同时仅一个未完成 next，前一帧进入 reducer 后才取下一帧。load/focus/expand 仅返回 operation 回执，权威内容仍从同一出口交付。
+唯一内容出口为 ChatView.next：首帧 Reset，之后 Reset/Patch。同一 view 同时仅一个未完成 next，前一帧进入 reducer 后才取下一帧。load/focus/expand 仅返回 operation 回执，权威内容仍从同一出口交付。**已实施。**
 
-控制操作不能改变“客户端已收到”的 baseline。focus/load 与 next 的并发由 Rust view 协调；next 的 readiness 等待在窗口锁外，关闭能打断等待。传输层不得自行生成新窗口事实。
+控制操作不能改变“客户端已收到”的 baseline。focus/load 与 next 的并发由 Rust view 协调；next 的 readiness 等待在窗口锁外，关闭能打断等待。传输层不得自行生成新窗口事实。**已实施。**
 
-Patch 仅在 view/epoch 匹配且 from 等于本地版本时应用，to 必须更大但无需恰好加一。缺口恢复只影响该 view。旧绑定帧不能借新 epoch 覆盖新会话。Reset 来自 core 对尾部、可靠待保存事实和历史的统一视图，不由 Dart 再读 SQL 补齐。
+窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange（回执版本未超过已观察窗口，或能力门控判定无事可做）直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。回执里的 version 来自会话进度，ChatUpdates 会跳过当前窗口不可见的变化，因此不能把任意采样的全局 version 当作必须在内容帧出现的完成水位。**NoChange 与占位已实施；结构化 disposition 枚举与同流操作完成标记仍待实施。**
+
+Patch 仅在 view/epoch 匹配且 from 等于本地版本时应用，to 必须更大但无需恰好加一；from 匹配时 to ≤ from 拒收并要求 resync。缺口恢复只影响该 view。旧绑定帧不能借新 epoch 覆盖新会话。Reset 来自 core 对尾部、可靠待保存事实和历史的统一视图，不由 Dart 再读 SQL 补齐。**from/to 防线已实施。**
 
 正文是稳定 item/part 身份上的 typed 字段更新，不由字符串形状、当前选中消息或最新一行推断目标。正文终态和保存状态独立；保存确认不删除行、重新查询再插入。
 
 ## 25.6 Read model 与通知
 
-ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页边界和连接状态。阅读意图/像素锚点归 UI，不混入 Rust 执行状态。
+ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页边界和连接状态。阅读意图/像素锚点归 UI，不混入 Rust 执行状态。**尚未实施：** 当前仍是 workspace.items 加整窗投影；外层 pane / 输入区 / header 仍观察整个 session。
 
 内容字段变化不生成新的 ID 序列。列表观察结构，行观察自己的 item；工具/推理活动摘要和输入区分开观察。单行相等性只受本行内容与显示状态影响，不能包含所有消息共有的全局 revision。
 
@@ -71,7 +96,7 @@ ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页�
 
 命令成功返回 operationId、创建对象 identity 和受影响资源版本。canonical 只由资源观察帧写入；成功后不 readStudioState/重新读取目录或 Thread snapshot 来掩盖缺帧。
 
-Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。
+Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、NoChange 与旧 token 隔离已实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
 
 冲突重基仅适用于可安全重做的字段修改。网络错误不代表未执行，不幂等业务不能自动重放。设置命令与使用设置新建会话存在明确因果依赖，不能以“读取此刻缓存”替代命令完成关系。导航不等待写入；依赖写入结果的业务动作自行协调。
 

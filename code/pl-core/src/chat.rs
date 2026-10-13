@@ -1731,6 +1731,18 @@ impl ChatView {
                 .window
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            let same_focus = match &focus {
+                ChatFocus::Latest => window.focus == ChatFocus::Latest,
+                ChatFocus::Around(id) => {
+                    window.focus == focus && window.items.iter().any(|item| &item.item_id == id)
+                }
+            };
+            // A newly constructed view starts as Latest with generation 0; that first
+            // focus still has to load. Later identical Latest / visible Around is a no-op.
+            if same_focus && window.generation != 0 {
+                drop(window);
+                return Ok(());
+            }
             window.generation = window.generation.wrapping_add(1);
             if matches!(&focus, ChatFocus::Around(id) if window.items.iter().any(|item| &item.item_id == id))
             {

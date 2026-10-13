@@ -455,6 +455,36 @@ async fn focusing_a_visible_saved_reply_preserves_its_delivered_body() {
     assert!(reading.has_newer);
 }
 
+#[tokio::test]
+async fn repeating_the_same_visible_focus_does_not_notify() {
+    let session = Session::new(Stored {
+        items: [(1, item(1, 1, "one", true))].into(),
+    });
+    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
+    let (initial, mut updates) = view.subscribe();
+    assert_eq!(initial.focus, ChatFocus::Latest);
+
+    view.focus(ChatFocus::Latest).await.unwrap();
+    assert!(
+        updates.take().is_none(),
+        "same Latest focus must not notify"
+    );
+
+    view.focus(ChatFocus::Around("item-1".into()))
+        .await
+        .unwrap();
+    apply_next(&mut Client::new(&initial), &mut updates, &view).await;
+    assert_eq!(view.snapshot().focus, ChatFocus::Around("item-1".into()));
+
+    view.focus(ChatFocus::Around("item-1".into()))
+        .await
+        .unwrap();
+    assert!(
+        updates.take().is_none(),
+        "same visible Around focus must not notify"
+    );
+}
+
 /// A view that requested a large in-flight body keeps following it across later revisions.
 ///
 /// A durable but still-streaming body larger than the preview bound is shown as a bounded preview

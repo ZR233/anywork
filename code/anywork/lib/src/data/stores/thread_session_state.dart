@@ -291,6 +291,9 @@ ChatFrameResult _applyPatch(
           : ChatFrameOutcome.resync,
     );
   }
+  if (patch.to <= patch.from) {
+    return ChatFrameResult(current, ChatFrameOutcome.resync);
+  }
   var visible = [...workspace.items];
   for (final change in patch.changes) {
     switch (change) {
@@ -489,6 +492,7 @@ bool _sameIds(Set<String> left, Set<String> right) =>
 bool _historyTouched(ThreadHistoryWindow window) {
   return window.hasOlder ||
       window.hasNewer ||
+      window.canExtendLatest ||
       window.olderCursor != null ||
       window.newerCursor != null ||
       window.errorMessage != null ||
