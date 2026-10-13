@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:anywork/src/data/bridge/studio_bridge.dart';
 import 'package:anywork/src/data/frb/studio_api.dart';
 import 'package:anywork/src/data/repositories/studio_api_provider.dart';
+import 'package:anywork/src/data/stores/chat_view_events.dart';
 import 'package:anywork/src/data/stores/thread_directory_store.dart';
 import 'package:anywork/src/data/stores/thread_session_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
@@ -76,6 +77,77 @@ void main() {
     expect(
       container.read(threadSessionStoreProvider(threadId)).history.isLoading,
       isFalse,
+    );
+  });
+
+  test('回执版本等于窗口交付版本时按 NoChange 结束并留下可核对的事实', () async {
+    ChatViewEvents.reset();
+    final store = container.read(threadSessionStoreProvider(threadId).notifier);
+    await store.chatView();
+    await _until(
+      () =>
+          container.read(threadSessionStoreProvider(threadId)).chatVersion !=
+          null,
+      '窗口版本',
+    );
+    final version = container
+        .read(threadSessionStoreProvider(threadId))
+        .chatVersion!;
+    final token = store.beginHistoryOp(TimelineDirection.older)!;
+    store.observeHistoryOp(
+      token,
+      StudioChatReceipt(operationId: token, version: version, retained: true),
+    );
+
+    expect(
+      container.read(threadSessionStoreProvider(threadId)).history.isLoading,
+      isFalse,
+    );
+    final settled = ChatViewEvents.ofKind(ChatViewEventKind.operationSettled);
+    expect(settled, hasLength(1));
+    expect(settled.single.details['result'], 'noChange');
+    expect(settled.single.identity['operation'], '$token');
+    expect(
+      ChatViewEvents.ofKind(
+        ChatViewEventKind.operationSettled,
+      ).single.details['currentVersion'],
+      version,
+    );
+  });
+
+  test('内容帧先于回执到达时按 alreadyObserved 结束', () async {
+    ChatViewEvents.reset();
+    final store = container.read(threadSessionStoreProvider(threadId).notifier);
+    await store.chatView();
+    await _until(
+      () =>
+          container.read(threadSessionStoreProvider(threadId)).chatVersion !=
+          null,
+      '窗口版本',
+    );
+    final version = container
+        .read(threadSessionStoreProvider(threadId))
+        .chatVersion!;
+    final token = store.beginHistoryOp(TimelineDirection.older)!;
+    // 帧已经交付到更高版本：回执只是确认，不再等第二个帧。
+    store.observeHistoryOp(
+      token,
+      StudioChatReceipt(
+        operationId: token,
+        version: version - 1,
+        retained: true,
+      ),
+    );
+
+    expect(
+      container.read(threadSessionStoreProvider(threadId)).history.isLoading,
+      isFalse,
+    );
+    expect(
+      ChatViewEvents.ofKind(
+        ChatViewEventKind.operationSettled,
+      ).single.details['result'],
+      'alreadyObserved',
     );
   });
 

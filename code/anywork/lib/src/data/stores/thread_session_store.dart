@@ -502,17 +502,23 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     }
     final current = state.chatVersion;
     if (current != null && receipt.version <= current) {
+      // 回执版本取自**窗口交付域**（runtime 以窗口快照版本填回执）：等于已交付版本表示
+      // 这次操作没有产生本窗口可见的变化（真正的 NoChange），小于则表示对应内容帧已经
+      // 先于回执到达。两者都不需要继续等一个不会到来的内容帧。
+      final result = receipt.version == current
+          ? 'noChange'
+          : 'alreadyObserved';
       ChatViewEvents.record(
         ChatViewEventKind.operationObserved,
         identity: {'thread': _currentThreadId, 'operation': '$token'},
         details: {
-          'reason': 'versionAlreadyObserved',
+          'reason': result,
           'receiptVersion': receipt.version,
           'currentVersion': current,
           'retained': receipt.retained,
         },
       );
-      _finishHistoryOp(op, 'versionAlreadyObserved');
+      _finishHistoryOp(op, result);
       return;
     }
     ChatViewEvents.record(

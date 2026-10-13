@@ -20,7 +20,7 @@
 > - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
 > - 内容绑定有身份与泵，但尚未收敛为完整 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机；打开成功即复位退避、EOF 与静默 catch 仍不完整。
 > - 阅读位置与窗口焦点已分离（只有定位动作才换焦点）；尚未把「用户正在滚动时自动校正让位」与可见 itemId + 像素偏移的恢复收敛成独立 viewport controller。
-> - 操作回执只按「版本已观察」结束等待：receipt version 取自会话进度且 ChatUpdates 会跳过当前窗口不可见的变化，`receipt.version <= current` 因此只能说明不必再等这个水位，不能分类为 NoChange；后台不可见变化推高会话版本时不保证等待最终能结束。
+> - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记仍未实施。
 >
 > **尚未实施：**
 > - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区。
@@ -79,7 +79,7 @@ keepAlive 仅用于明确需要驻留的轻状态；不能让每个曾浏览的�
 
 控制操作不能改变“客户端已收到”的 baseline。focus/load 与 next 的并发由 Rust view 协调；next 的 readiness 等待在窗口锁外，关闭能打断等待。传输层不得自行生成新窗口事实。**已实施。**
 
-窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。NoChange 表示后端操作确实没有改变窗口，必须由操作结果本身给出。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange 直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。**版本占位与旧 token 隔离已实施，NoChange 尚未实施：** 回执里的 version 来自会话进度，ChatUpdates 会跳过当前窗口不可见的变化，因此 `receipt.version <= current` 只能得到「该水位已观察、无需继续等它」，既不能证明窗口未变化，也不能保证等待一定会被满足——历史窗口已交付到 100、后台不可见内容把会话推进到 105、窗口本身无变化时，等待 `chatVersion >= 105` 的操作拿不到任何内容帧。收束方式是让 core 返回真正的操作结果（Applied / NoChange / Superseded / NotInWindow / Failed / Cancelled），并在同一有序出口上用只带 `(viewId, operationId, result)` 的操作完成标记结束 pending：标记只收束操作，不携带第二份正文、不伪造正文 revision，也不替代本应发送的内容帧。
+窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。NoChange 表示后端操作确实没有改变窗口，必须由操作结果本身给出。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange 直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。**版本占位、旧 token 隔离与 NoChange 判定已实施：** 回执版本必须是窗口快照版本，而不是会话进度版本——会话版本会因本窗口看不到的变化前进，而 `ChatUpdates::take` 对这种变化不发帧（交付基线不动），用会话版本作等待水位会让操作永久停在 loading。窗口快照版本由 `Reset`/`Patch` 原样交付，因此 `receipt.version <= current` 现在确实等价于「这次操作没有产生本窗口可见的变化」：等于表示真正的 NoChange，小于表示对应内容帧已先于回执到达。剩余缺口是结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记：`(viewId, operationId, result)` 标记只收束操作，不携带第二份正文、不伪造正文 revision，也不替代本应发送的内容帧。
 
 Patch 仅在 view/epoch 匹配且 from 等于本地版本时应用，to 必须更大但无需恰好加一；from 匹配时 to ≤ from 拒收并要求 resync。缺口恢复只影响该 view。旧绑定帧不能借新 epoch 覆盖新会话。Reset 来自 core 对尾部、可靠待保存事实和历史的统一视图，不由 Dart 再读 SQL 补齐。**from/to 防线已实施。**
 
@@ -101,7 +101,7 @@ ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页�
 
 命令成功返回 operationId、创建对象 identity 和受影响资源版本。canonical 只由资源观察帧写入；成功后不 readStudioState/重新读取目录或 Thread snapshot 来掩盖缺帧。
 
-Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、版本观察与旧 token 隔离已实施；操作结果分类（NoChange 等）与同流完成标记待实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
+Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、窗口版本水位与旧 token 隔离已实施，NoChange 由「回执版本等于已交付窗口版本」判定；结构化 disposition 枚举与同流完成标记待实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
 
 冲突重基仅适用于可安全重做的字段修改。网络错误不代表未执行，不幂等业务不能自动重放。设置命令与使用设置新建会话存在明确因果依赖，不能以“读取此刻缓存”替代命令完成关系。导航不等待写入；依赖写入结果的业务动作自行协调。
 

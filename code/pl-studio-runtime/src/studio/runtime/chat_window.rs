@@ -216,13 +216,19 @@ impl ChatWindowStream {
         self.handle().read_item(item_id).await
     }
 
-    /// 以当前窗口版本构造控制操作回执。
+    /// 以**本窗口交付域**的版本构造控制操作回执。
     ///
     /// `retained` 由「展开完整正文」的调用方按 [`ChatWindowHandle::request_complete`] 是否取回条目
     /// 填写；其余控制操作恒为 `true`。
+    ///
+    /// 版本必须是窗口快照的版本，而不是会话进度版本：会话推进的版本可能来自本窗口看不到的变化，
+    /// [`ChatUpdates::take`] 对这种变化不发帧（交付基线不动）。回执若用会话版本，消费者会等一个
+    /// 永远不会交付的水位，控制操作就永久停在 loading。窗口快照版本由 `Reset`/`Patch` 的
+    /// `version`/`to` 原样交付，因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见
+    /// 的变化」，可以立即结束。
     pub fn receipt(&self, retained: bool) -> ChatWindowReceipt {
         ChatWindowReceipt {
-            version: self.view.version(),
+            version: self.view.snapshot().version,
             retained,
         }
     }

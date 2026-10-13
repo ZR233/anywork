@@ -3071,16 +3071,19 @@ class _DemoChatWindow implements StudioChatWindow {
 
   @override
   Future<StudioChatFrame?> next() async {
-    final from = _api._chatChangeSeq[_threadId] ?? 0;
-    await _api._awaitItemsChanged(_threadId, from);
-    if (_closed) return null;
-    final version = _api._workspaces[_threadId]?.revision ?? 0;
-    final baseline = _baselineVersion;
-    // 没有可比较的基线，或版本没有前进：只能重新交付权威整窗。
-    if (baseline == null || version <= baseline) {
-      return _resetFrame();
+    // 控制操作也会唤醒这条唯一出口（与原生窗口一致）；唤醒不等于有可交付变化。
+    // 只有窗口版本真的前进才交付帧，否则回到等待：空 Patch（from == to）是退化帧，
+    // 下游会按非递增版本拒收并要求重同步。
+    while (!_closed) {
+      final from = _api._chatChangeSeq[_threadId] ?? 0;
+      await _api._awaitItemsChanged(_threadId, from);
+      if (_closed) return null;
+      final version = _api._workspaces[_threadId]?.revision ?? 0;
+      final baseline = _baselineVersion;
+      if (baseline == null || version <= baseline) continue;
+      return _patchFrame(baseline, version) ?? _resetFrame();
     }
-    return _patchFrame(baseline, version) ?? _resetFrame();
+    return null;
   }
 
   StudioChatReset _resetFrame() {
