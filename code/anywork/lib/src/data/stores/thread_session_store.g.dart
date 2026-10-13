@@ -74,7 +74,7 @@ final class ThreadSessionStoreProvider
 }
 
 String _$threadSessionStoreHash() =>
-    r'0558a4752480857197bee1620ae8436a93c4e419';
+    r'e75bcd81d0b17b29e6eacdd093e7eadd5b35e743';
 
 /// 会话状态族。首个观察者经 Bridge 建流，最后一个观察者释放订阅。
 ///

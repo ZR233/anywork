@@ -103,16 +103,16 @@ void main() {
       container.read(threadSessionStoreProvider(threadId)).history.isLoading,
       isFalse,
     );
-    final settled = ChatViewEvents.ofKind(ChatViewEventKind.operationSettled);
+    final settled = _settledFor(token);
     expect(settled, hasLength(1));
     expect(settled.single.details['result'], 'noChange');
     expect(settled.single.identity['operation'], '$token');
     expect(
-      ChatViewEvents.ofKind(
-        ChatViewEventKind.operationSettled,
-      ).single.details['currentVersion'],
-      version,
+      settled.single.details['targetVersion'],
+      isNull,
+      reason: 'NoChange 不产生等待目标：它是在回执处直接收束的',
     );
+    expect(settled.single.details['currentVersion'], version);
   });
 
   test('内容帧先于回执到达时按 alreadyObserved 结束', () async {
@@ -143,12 +143,43 @@ void main() {
       container.read(threadSessionStoreProvider(threadId)).history.isLoading,
       isFalse,
     );
-    expect(
-      ChatViewEvents.ofKind(
-        ChatViewEventKind.operationSettled,
-      ).single.details['result'],
-      'alreadyObserved',
+    expect(_settledFor(token).single.details['result'], 'alreadyObserved');
+  });
+
+  test('等待内容帧期间绑定被废弃时操作确定收束，不停在 loading', () async {
+    ChatViewEvents.reset();
+    final store = container.read(threadSessionStoreProvider(threadId).notifier);
+    await store.chatView();
+    await _until(
+      () =>
+          container.read(threadSessionStoreProvider(threadId)).chatVersion !=
+          null,
+      '窗口版本',
     );
+    final version = container
+        .read(threadSessionStoreProvider(threadId))
+        .chatVersion!;
+    final token = store.beginHistoryOp(TimelineDirection.older)!;
+    // 回执指向一个比已交付更高的窗口版本：按设计要等内容帧。
+    store.observeHistoryOp(
+      token,
+      StudioChatReceipt(operationId: token, version: version + 5, retained: true),
+    );
+    expect(
+      container.read(threadSessionStoreProvider(threadId)).history.isLoading,
+      isTrue,
+      reason: 'Applied 操作要等匹配的窗口变化进入 read model',
+    );
+
+    // 绑定被重同步/关闭：目标版本不会再作为这一代绑定的帧到达。
+    sessionHold.close();
+    await _until(
+      () =>
+          !container.read(threadSessionStoreProvider(threadId)).history.isLoading,
+      '绑定废弃后的收束',
+    );
+
+    expect(_settledFor(token).single.details['result'], 'bindingRetired');
   });
 
   test('旧操作不能结束后提交的新占位', () async {
@@ -170,6 +201,14 @@ void main() {
       TimelineDirection.newer,
     );
   });
+}
+
+/// 本操作自己的收束事件；同一会话的其它操作（含离开页面时的收束）不参与断言。
+List<ChatViewEvent> _settledFor(int token) {
+  return [
+    for (final event in ChatViewEvents.ofKind(ChatViewEventKind.operationSettled))
+      if (event.identity['operation'] == '$token') event,
+  ];
 }
 
 Future<void> _until(bool Function() condition, String what) async {

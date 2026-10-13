@@ -448,21 +448,20 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     final closedGeneration = _bindingGeneration;
     _binding = null;
     _bindingGeneration++;
-    final op = _windowOperation;
-    if (op != null && op.generation == closedGeneration) {
-      _windowOperation = null;
-    }
     if (binding == null) return;
     binding.closed = true;
     ChatViewMetrics.bindingCloses += 1;
     unawaited(binding.window.close());
-    // Riverpod 禁止在 onCancel/onDispose 里读写 notifier state；收束后的投影更新延后到微任务。
+    // Riverpod 禁止在 onCancel/onDispose 里读写 notifier state：在途操作的收束与投影更新
+    // 一起延后到微任务，生命周期回调里不碰状态。
     scheduleMicrotask(() => _afterBindingClosed(closedGeneration));
   }
 
   void _afterBindingClosed(int closedGeneration) {
     if (!ref.mounted || _closed || _binding != null) return;
     if (_bindingGeneration != closedGeneration + 1) return;
+    // 这一代绑定已经退休：等它交付内容帧的操作不会再被满足，先确定收束。
+    _settleOperationOnBindingRetired(closedGeneration, record: true);
     var history = state.history;
     if (_windowOperation == null && history.isLoading) {
       history = history.copyWith(isLoading: false);
@@ -498,7 +497,7 @@ class ThreadSessionStore extends _$ThreadSessionStore {
 
   /// 回执到达或代次已变时结束加载，不改另一方向的错误。
   void finishHistoryLoad() {
-    _finishHistoryOp(_windowOperation, 'localCompletion');
+    _finishHistoryOp(_windowOperation, _HistoryOpResult.localCompletion);
   }
 
   /// 在第一个 await 之前占位：同一 view 同一方向只允许一项在途控制操作。
@@ -547,7 +546,7 @@ class ThreadSessionStore extends _$ThreadSessionStore {
           'receiptVersion': receipt.version,
         },
       );
-      _finishHistoryOp(op, 'bindingChanged');
+      _finishHistoryOp(op, _HistoryOpResult.bindingChanged);
       return;
     }
     final current = state.chatVersion;
@@ -556,13 +555,13 @@ class ThreadSessionStore extends _$ThreadSessionStore {
       // 这次操作没有产生本窗口可见的变化（真正的 NoChange），小于则表示对应内容帧已经
       // 先于回执到达。两者都不需要继续等一个不会到来的内容帧。
       final result = receipt.version == current
-          ? 'noChange'
-          : 'alreadyObserved';
+          ? _HistoryOpResult.noChange
+          : _HistoryOpResult.alreadyObserved;
       ChatViewEvents.record(
         ChatViewEventKind.operationObserved,
         identity: {'thread': _currentThreadId, 'operation': '$token'},
         details: {
-          'reason': result,
+          'reason': result.id,
           'receiptVersion': receipt.version,
           'currentVersion': current,
           'retained': receipt.retained,
@@ -602,29 +601,66 @@ class ThreadSessionStore extends _$ThreadSessionStore {
     if (op == null || op.targetVersion == null) return;
     final current = state.chatVersion;
     if (current != null && current >= op.targetVersion!) {
-      _finishHistoryOp(op, 'contentVersionObserved');
+      _finishHistoryOp(op, _HistoryOpResult.frameDelivered);
     }
   }
 
-  void _finishHistoryOp(_WindowOperation? op, String reason) {
+  void _finishHistoryOp(_WindowOperation? op, _HistoryOpResult result) {
     if (op == null) return;
     if (!identical(_windowOperation, op) &&
         _windowOperation?.token != op.token) {
       return;
     }
     _windowOperation = null;
+    _recordOperationSettled(op, result);
+    if (!state.history.isLoading) return;
+    state = state.copyWith(history: state.history.copyWith(isLoading: false));
+  }
+
+  /// 记录一次操作收束；不读写 `state`，因此也可以在生命周期回调路径上调用。
+  void _recordOperationSettled(_WindowOperation op, _HistoryOpResult result) {
+    final delivered = _deliveredVersion;
     ChatViewEvents.record(
       ChatViewEventKind.operationSettled,
       identity: {'thread': _currentThreadId, 'operation': '${op.token}'},
       details: {
-        'result': reason,
+        'result': result.id,
         'direction': op.direction.name,
         'targetVersion': op.targetVersion,
-        'currentVersion': state.chatVersion,
+        'currentVersion': delivered,
       },
     );
-    if (!state.history.isLoading) return;
-    state = state.copyWith(history: state.history.copyWith(isLoading: false));
+  }
+
+  /// 已交付的窗口版本；生命周期回调里读不到状态时返回 null。
+  int? get _deliveredVersion {
+    try {
+      return state.chatVersion;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 绑定被废弃时收束它在途操作。
+  ///
+  /// 窗口操作等的「已交付版本 >= 目标版本」只在**同一条绑定**上成立：绑定被重同步或关闭后，
+  /// 那个版本可能再也不会作为帧到达（新窗口会从自己的基线重新交付）。此时必须结束 pending，
+  /// 否则加载态会永久停在界面上——这正是「等一个不会交付的水位」的第二种形态。
+  void _settleOperationOnBindingRetired(
+    int generation, {
+    required bool record,
+  }) {
+    final op = _windowOperation;
+    // 操作所属的那一代绑定已经退休（当前代号可能已经更靠前：重同步会在同一次收束里
+    // 连开新绑定）。只要不是「操作挂在更新的绑定上」，就必须收束。
+    if (op == null || op.generation > generation) return;
+    if (record) {
+      _finishHistoryOp(op, _HistoryOpResult.bindingRetired);
+      return;
+    }
+    // 生命周期回调里不能写状态：占位先摘掉并留下事实，loading 由随后的投影更新收束。
+    _windowOperation = null;
+    _recordOperationSettled(op, _HistoryOpResult.bindingRetired);
   }
 
   /// 测试用：挂起旧订阅释放，验证迟到清理不能清空新窗口。
@@ -761,4 +797,27 @@ class _ViewFocusTarget {
   String? itemId;
   bool pending = false;
   String? inFlight;
+}
+
+/// 窗口操作的收束结果。
+///
+/// 只描述「这次操作怎么结束的」，不携带第二份正文，也不冒充正文 revision：
+/// - [noChange]：回执版本等于已交付窗口版本，操作没有产生本窗口可见的变化；
+/// - [alreadyObserved]：对应内容帧已先于回执到达；
+/// - [frameDelivered]：等到目标版本的内容帧进入 read model；
+/// - [bindingChanged]：回执到达时绑定已经换代；
+/// - [bindingRetired]：等待期间绑定被重同步或关闭，目标版本不会再作为帧到达；
+/// - [localCompletion]：调用方在本地结束本轮（例如能力门控判定无事可做）。
+enum _HistoryOpResult {
+  noChange('noChange'),
+  alreadyObserved('alreadyObserved'),
+  frameDelivered('contentVersionObserved'),
+  bindingChanged('bindingChanged'),
+  bindingRetired('bindingRetired'),
+  localCompletion('localCompletion');
+
+  const _HistoryOpResult(this.id);
+
+  /// 事件记录里的稳定标识；与枚举名分开，避免改名影响已记录的验收口径。
+  final String id;
 }
