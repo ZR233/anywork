@@ -57,6 +57,26 @@ void main() {
     expect(identical(after[1], before[1]), isTrue);
   });
 
+  test('推理分组仍能从分块派生摘要与展开正文', () {
+    final item = _thinkingItem(
+      content: const ['**判断**', '第一段推理内容', '第二段推理内容'],
+    );
+    final group = TimelineRowProjector().project([item]).single.reasoningGroup!;
+    expect(
+      group.summaries,
+      isNotEmpty,
+      reason: '摘要必须从分块派生：投影不再为推理预拼 text',
+    );
+    expect(group.summaries.first, '判断');
+    expect(group.latestSummary, '判断');
+    expect(group.details, contains('第一段推理内容'));
+    expect(
+      group.details,
+      contains('判断'),
+      reason: '展开正文只由分块列表派生',
+    );
+  });
+
   test('推理条目的投影不预先拼接整段正文', () {
     final item = _thinkingItem(
       content: const ['第一段推理内容', '第二段推理内容'],

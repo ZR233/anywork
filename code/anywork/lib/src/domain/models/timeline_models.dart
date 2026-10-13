@@ -277,13 +277,14 @@ class TimelineReasoningGroup {
     return null;
   }
 
+  /// 展开后的推理正文：只由分块列表派生，不依赖投影是否预拼 `text`。
   String get details => parts
-      .map((part) {
-        final raw = part.reasoningContent
-            .where((value) => value.trim().isNotEmpty)
-            .join('\n\n');
-        return raw.isNotEmpty ? raw : part.text.trim();
-      })
+      .map(
+        (part) => [
+          ...part.reasoningContent,
+          if (part.reasoningContent.isEmpty) ...part.reasoningSummary,
+        ].where((value) => value.trim().isNotEmpty).join('\n\n'),
+      )
       .where((text) => text.isNotEmpty)
       .join('\n\n');
 
@@ -382,11 +383,14 @@ String? _reasoningPartSummary(TimelineEntry part) {
   if (title != null) {
     return title;
   }
-  final lines = part.text.replaceAll('\r\n', '\n').split('\n');
-  for (final line in lines) {
-    final summary = plainReasoningSummary(line);
-    if (summary != null) {
-      return summary;
+  // 摘要只从分块列表派生：投影不为推理正文预拼 `text`（那会让热路径随正文长度线性
+  // 变慢），因此这里不能回退到 `part.text`。
+  for (final chunk in [...part.reasoningSummary, ...part.reasoningContent]) {
+    for (final line in chunk.replaceAll('\r\n', '\n').split('\n')) {
+      final summary = plainReasoningSummary(line);
+      if (summary != null) {
+        return summary;
+      }
     }
   }
   return null;
