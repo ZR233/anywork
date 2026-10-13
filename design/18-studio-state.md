@@ -657,7 +657,11 @@ Thread 目录窗口行中。两者是同一 Rust 事实的两个视图，因此 
 事件或一次目录基线页到达，而基线页是严格 `revision >` 门，任何不推进目录水位的 mode 变更
 都会永久停留在旧值，并让 mode selector 的文案与选中态一起陈旧。
 
-Thread route 的命令响应由 backend 的 canonical thread snapshot 组装，因此与状态流表达同一
-事实，只是缺少流的有序信封。响应携带的 `modelRoute` 按 route revision 单调采纳（更新的流事实
-永不被更旧响应覆盖），响应的其余运行时计数不在这里写入——它们只由有序 Thread reducer 收敛。
+Thread route 变更的 canonical 只由 Thread 有序流交付：native 在提交 model_route 扩展变更时
+publish 新的 thread snapshot，Dart 侧按同一 `epoch/baseRevision/revision` 水位收敛。命令响应
+里的 `runtime` 只服务于调用方 CAS 与就地提示，**不写入 store**，也不再按 revision 与流事实
+比较后择一采纳——同一事实不允许存在第二条合并路径。响应同时携带的 settings 是另一个资源，
+按 §18.11 的双时钟合并；mode 变更则由 `ThreadDirectoryChanged` 增量交付（§18.2/§18.8），
+mode 默认 route 的改写属 Thread 事实。由此得到硬约束：命令成功后不得再重新读取聚合状态或 thread snapshot 来
+"补齐"显示值；缺帧必须修在帧的那条路径上（[25](./25-frontend-state.md) §25.5）。
 丢弃这份 canonical route 会让选择器在乐观投影清除后回落到旧值，表现为"改完又变回去"。

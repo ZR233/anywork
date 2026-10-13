@@ -97,7 +97,11 @@ frame 与 baseline 进入同一条 merge path，任何调用方不得按到达�
 typed 错误，界面就地提示。
 
 - 命令成功以响应携带的 canonical snapshot 应用回对应 store（同一条 merge path），
-  不额外触发「显式刷新」。
+  不额外触发「显式刷新」。响应里哪些字段可用由资源 owner 决定：settings 命令合并
+  响应中的配置与目录快照；Thread route 变更只合并 settings，route 本身等 Thread
+  有序流帧；mode 变更由 `ThreadDirectoryChanged` 增量与 Thread 运行时帧交付。
+  **任何命令成功后都不得重新读取聚合状态、目录快照或 thread snapshot 去补齐显示值**：
+  那会让同一事实出现第二条合并路径，并让「帧没到」这类缺陷在验收里不可见。
 - lane 的结果状态（in-flight 目标值/失败）供 ViewProvider 组合显示；不把目标值写入
   canonical store，也不在本地维护回滚逻辑——canonical 收敛永远以下一帧/响应为准。
 - 不存在「导航前等待写入」的 flush 契约：页面离开只释放观察者租约，不取消也不等待
@@ -159,6 +163,13 @@ Flutter Driver / 验收工具的观测快照从 store 与 ViewProvider 派生，
 的只读投影；不再存在与 Riverpod 状态平行的静态发布通道。既有验收 key 的语义
 保持不变，观测面迁移只改数据来源，不改产品契约。demo 数据源与真实 FRB 数据源
 实现同一 Bridge 数据契约，上层分层不感知差异。
+
+该一致性是验收可信的前提，因此 demo 必须**逐条实现真实侧会发出的帧**，而不是只
+让命令返回正确的快照：命令若在 native 侧同时推进 topic/有序流水位，demo 也必须
+发出对应帧并推进同一水位。只发响应而不发帧的 demo 会让「帧丢失」被命令响应路径
+掩盖，`--demo` 验收在真实构建回归时仍然变绿。已识别的 demo 实现缺口：配置与模型
+目录在 demo 中共用同一 revision，使 §25.4 的双时钟分支在 demo 不可达；在该缺口关闭
+前，settings 双时钟相关收敛不得只依赖 `--demo` 结论。
 
 两条例外按本节约束成立：其一，纯 UI 诊断（timeline 滚动几何、活动条展开态、
 关机阶段等不属于任何领域 store 的瞬时观测）保留静态发布入口，仅供驱动断言，
