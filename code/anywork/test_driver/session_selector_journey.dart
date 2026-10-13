@@ -13,9 +13,10 @@ import 'flutter_driver_session.dart';
 /// 设置页才生效。证据分三层：
 ///   * 渲染证据：触发器的实际文本在选择后变化，且等于被选中那一行的文本；
 ///   * canonical 证据：driver `snapshot` 的 `navigation.newThreadMode` 到位。
-///     起始页思考强度是 route 草稿，提交前不写 `settings.modeModelRoutes`，
-///     快照也不投影 effort intent；验收落在触发器文案等于被选中的候选。
-///     `settings.mutations` 在这次选择后必须仍为空（没有停在 pending 命令上）。
+///     起始页思考强度是 route 草稿，提交前不写 `settings.modeModelRoutes`，因此这里
+///     断言的是**草稿没有越权写回 canonical**（`draftDidNotWriteCanonical`），
+///     canonical 路由的帧驱动收敛由 `test/data/session_fact_convergence_test.dart`
+///     覆盖。`settings.mutations` 在这次选择后必须仍为空（没有停在 pending 命令上）。
 ///     `settings.mutations[].phase` 若出现，只可能是 pending/failed/succeeded；
 ///     `settings.lastMerge` 恒为 null，本 journey 不把它当写入证据。
 ///   * 反证据：全程未出现设置页（`settings-back` 不存在），shell 与起始页仍在。
@@ -158,7 +159,12 @@ Future<void> _run(
     targetMode,
   );
   final effortAfter = _string(modeRouteAfter?['effort']);
-  checks['effortCanonicalRoute'] = effortAfter;
+  checks['effortCanonicalBefore'] = effortBefore;
+  checks['effortCanonicalAfter'] = effortAfter;
+  // 起始页的选择是 route 作用域草稿：它必须只改显示值，不得写回 canonical 路由
+  // （design/25 §25.6）。原来的实现是把 canonical 值记进 checks 但从不比较，
+  // 任何字符串都不会让验收失败。
+  checks['draftDidNotWriteCanonical'] = effortAfter == effortBefore;
   final effortLabelAfter = await _labelOf(session, effortTrigger);
   checks['effortLabelAfter'] = effortLabelAfter;
   checks['effortLabelUpdated'] = effortLabelAfter != effortLabelBefore;
