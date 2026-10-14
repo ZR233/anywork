@@ -586,8 +586,6 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
   }
 
   void _select(String action) {
-    _controller.close();
-    _triggerFocusNode.requestFocus();
     final result = widget.onAction(action);
     if (result is Future<void>) unawaited(result);
   }
@@ -695,8 +693,6 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
   }
 
   void _select(String action) {
-    _controller.close();
-    _triggerFocusNode.requestFocus();
     final result = widget.onAction(action);
     if (result is Future<void>) unawaited(result);
   }

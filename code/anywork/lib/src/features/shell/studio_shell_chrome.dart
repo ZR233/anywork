@@ -251,13 +251,7 @@ class _SessionOpenWorkspaceMenuState
     return MenuItemButton(
       key: key,
       overflowAxis: Axis.vertical,
-      onPressed: available
-          ? () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
-              onActivated();
-            }
-          : null,
+      onPressed: available ? onActivated : null,
       child: Tooltip(
         message: tooltipMessage,
         child: Row(
@@ -514,8 +508,6 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
             key: StudioDriverKeys.agentRow(thread.id),
             overflowAxis: Axis.vertical,
             onPressed: () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
               unawaited(
                 ref
                     .read(directoryCommandsProvider.notifier)

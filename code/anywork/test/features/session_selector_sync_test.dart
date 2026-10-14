@@ -101,6 +101,21 @@ void main() {
     await tester.tap(find.byKey(taskKey));
     await tester.pumpAndSettle();
 
+    expect(
+      find.byType(MenuItemButton),
+      findsNothing,
+      reason: '选择菜单项后官方菜单必须关闭',
+    );
+    final modeTrigger = find.descendant(
+      of: find.byKey(StudioDriverKeys.sessionMode),
+      matching: find.byType(TextButton),
+    );
+    expect(
+      tester.widget<TextButton>(modeTrigger).focusNode?.hasPrimaryFocus,
+      isTrue,
+      reason: '选择菜单项后焦点必须回到官方 TextButton 触发器',
+    );
+
     expect(find.text('任务'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
     expect(find.text('简洁'), findsNothing, reason: '旧模式不得残留');
     expect(
@@ -138,6 +153,21 @@ void main() {
       find.byKey(StudioDriverKeys.reasoningEffortOption(nextEffort!)),
     );
     await tester.pumpAndSettle();
+
+    expect(
+      find.byType(MenuItemButton),
+      findsNothing,
+      reason: '选择菜单项后官方菜单必须关闭',
+    );
+    final effortTrigger = find.descendant(
+      of: find.byKey(StudioDriverKeys.reasoningEffort),
+      matching: find.byType(TextButton),
+    );
+    expect(
+      tester.widget<TextButton>(effortTrigger).focusNode?.hasPrimaryFocus,
+      isTrue,
+      reason: '选择菜单项后焦点必须回到官方 TextButton 触发器',
+    );
 
     expect(
       _currentEffort(container),

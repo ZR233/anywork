@@ -174,27 +174,30 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
         button: true,
         enabled: widget.enabled || widget.onBlockedTap != null,
         label: tooltip,
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(6),
-            focusNode: _triggerFocusNode,
-            onTap: canSelect
-                ? () {
-                    if (_controller.isOpen) {
-                      _controller.close();
-                    } else {
-                      _controller.open();
-                    }
+        child: TextButton(
+          focusNode: _triggerFocusNode,
+          onPressed: canSelect
+              ? () {
+                  if (_controller.isOpen) {
+                    _controller.close();
+                  } else {
+                    _controller.open();
                   }
-                : widget.onBlockedTap,
-            child: ExcludeFocus(
-              child: StudioMenuLabel(
-                label: selectedLabel,
-                enabled: canSelect,
-                maxWidth: widget.labelMaxWidth,
-              ),
+                }
+              : widget.onBlockedTap,
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.zero,
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
             ),
+            side: BorderSide.none,
+          ),
+          child: StudioMenuLabel(
+            label: selectedLabel,
+            enabled: canSelect,
+            maxWidth: widget.labelMaxWidth,
           ),
         ),
       ),
@@ -252,13 +255,11 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     return children;
   }
 
-  /// Activates a row: closes the menu, restores trigger focus, and reports the
-  /// selection. An async Bridge command must not become an unobserved future;
-  /// the repository owns user-facing failure state, so unexpected programmer
-  /// errors stay diagnosable through FlutterError.
+  /// Reports a row selection after [MenuItemButton] performs its normal close
+  /// and trigger-focus restoration. An async Bridge command must not become an
+  /// unobserved future; the repository owns user-facing failure state, so
+  /// unexpected programmer errors stay diagnosable through FlutterError.
   void _select(ModelSelectionOption option) {
-    _controller.close();
-    _triggerFocusNode.requestFocus();
     final result = widget.onSelected(option);
     if (result is Future<void>) {
       unawaited(

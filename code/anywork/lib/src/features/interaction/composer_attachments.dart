@@ -46,8 +46,6 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
             key: StudioDriverKeys.attachmentLocal,
             overflowAxis: Axis.vertical,
             onPressed: () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
               unawaited(widget.onPickLocal(widget.localCapabilities));
             },
             child: ListTile(
@@ -60,8 +58,6 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
             key: StudioDriverKeys.attachmentUrl,
             overflowAxis: Axis.vertical,
             onPressed: () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
               unawaited(widget.onAddUrl());
             },
             child: ListTile(

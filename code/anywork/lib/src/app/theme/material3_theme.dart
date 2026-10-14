@@ -37,16 +37,12 @@ ThemeData _createStudioTheme() {
     return null;
   }
 
-  BorderSide focusBorder(Set<WidgetState> states) => BorderSide(
-    color: states.contains(WidgetState.focused)
-        ? scheme.primary
-        : Colors.transparent,
-    width: 2,
-  );
   final button = ButtonStyle(
     shape: WidgetStatePropertyAll(shape),
-    side: WidgetStateProperty.resolveWith(focusBorder),
     overlayColor: WidgetStateProperty.resolveWith(stateOverlay),
+  );
+  final menuButton = button.copyWith(
+    side: const WidgetStatePropertyAll(BorderSide.none),
   );
   final menuStyle = MenuStyle(
     backgroundColor: WidgetStatePropertyAll(scheme.surfaceContainerLowest),
@@ -219,7 +215,7 @@ ThemeData _createStudioTheme() {
     dropdownMenuTheme: DropdownMenuThemeData(menuStyle: menuStyle),
     menuTheme: MenuThemeData(style: menuStyle),
     menuBarTheme: MenuBarThemeData(style: menuStyle),
-    menuButtonTheme: MenuButtonThemeData(style: button),
+    menuButtonTheme: MenuButtonThemeData(style: menuButton),
     popupMenuTheme: PopupMenuThemeData(
       color: scheme.surfaceContainerLowest,
       surfaceTintColor: Colors.transparent,

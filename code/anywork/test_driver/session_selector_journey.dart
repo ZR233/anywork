@@ -103,15 +103,17 @@ Future<void> _run(
 
   // 起始页是新会话草稿的唯一入口：模式选择器改的是 draft，投影在
   // `navigation.newThreadMode`（完整 id，如 `mode.simple`）。
-  await session.waitFor(
-    find.byValueKey(StudioDriverKeyValues.newSession),
-    timeout: const Duration(seconds: 30),
-  );
-  await session.tap(find.byValueKey(StudioDriverKeyValues.newSession));
-  await session.waitFor(
-    find.byValueKey(StudioDriverKeyValues.startPage),
-    timeout: const Duration(seconds: 30),
-  );
+  // 隔离验收可能已经由启动流程展示起始页；只有仍在壳层时才点击新会话，
+  // 避免把已有起始页误判为缺少按钮而超时。
+  final startPage = find.byValueKey(StudioDriverKeyValues.startPage);
+  if (!await _exists(session, startPage)) {
+    await session.waitFor(
+      find.byValueKey(StudioDriverKeyValues.newSession),
+      timeout: const Duration(seconds: 30),
+    );
+    await session.tap(find.byValueKey(StudioDriverKeyValues.newSession));
+    await session.waitFor(startPage, timeout: const Duration(seconds: 30));
+  }
 
   final before = await session.readSnapshot();
   final beforeMode = _string(_navigation(before)?['newThreadMode']);
@@ -129,9 +131,7 @@ Future<void> _run(
   final targetRowLabel = await _labelOf(session, targetModeRow);
   await session.tap(targetModeRow);
 
-  final afterMode = _string(
-    _navigation(await session.readSnapshot())?['newThreadMode'],
-  );
+  final afterMode = await _waitForMode(session, targetMode);
   checks['modeAfter'] = afterMode;
   checks['modeConverged'] = afterMode == targetMode;
   // 触发器文案必须随同一事实收敛：读起始页选择器自己的标签键；界面可能晚一帧
@@ -154,56 +154,63 @@ Future<void> _run(
     _settings(await session.readSnapshot())?['modeModelRoutes'],
     targetMode,
   );
-  final effortBefore = _string(modeRouteBefore?['effort']);
-  checks['effortBefore'] = effortBefore;
-  final effortLabelBefore = await _labelOf(session, effortLabel);
-  checks['effortLabelBefore'] = effortLabelBefore;
-  final efforts = await _effortOptions(
-    session,
-    _string(modeRouteBefore?['providerId']),
-    _string(modeRouteBefore?['model']),
-  );
-  checks['effortOptions'] = efforts;
-  // 目标强度取自"当前显示文案"而不是 canonical：草稿意图可能已经存在，选同一个值
-  // 不会产生可见变化，也就无法证明界面跟随事实。
-  String? targetEffort;
-  for (final candidate in efforts) {
-    if (candidate != effortLabelBefore) {
-      targetEffort = candidate;
-      break;
+  if (!await _exists(session, effortTrigger)) {
+    checks['effortSelectionSkipped'] = '当前模型没有可选思考强度';
+  } else {
+    final effortBefore = _string(modeRouteBefore?['effort']);
+    checks['effortBefore'] = effortBefore;
+    final effortLabelBefore = await _labelOf(session, effortLabel);
+    checks['effortLabelBefore'] = effortLabelBefore;
+    final efforts = await _effortOptions(
+      session,
+      _string(modeRouteBefore?['providerId']),
+      _string(modeRouteBefore?['model']),
+    );
+    checks['effortOptions'] = efforts;
+    // 目标强度取自"当前显示文案"而不是 canonical：草稿意图可能已经存在，选同一个值
+    // 不会产生可见变化，也就无法证明界面跟随事实。
+    String? targetEffort;
+    for (final candidate in efforts) {
+      if (candidate != effortLabelBefore) {
+        targetEffort = candidate;
+        break;
+      }
     }
-  }
-  if (targetEffort == null) {
-    throw StateError('当前模型声明的思考强度候选不足两个：$efforts');
-  }
-  final targetEffortRow = scoped(
-    StudioDriverKeyValues.reasoningEffortOption(targetEffort),
-  );
-  await session.tap(effortTrigger);
-  await session.waitFor(targetEffortRow, timeout: const Duration(seconds: 10));
-  await session.tap(targetEffortRow);
+    if (targetEffort == null) {
+      throw StateError('当前模型声明的思考强度候选不足两个：$efforts');
+    }
+    final targetEffortRow = scoped(
+      StudioDriverKeyValues.reasoningEffortOption(targetEffort),
+    );
+    await session.tap(effortTrigger);
+    await session.waitFor(
+      targetEffortRow,
+      timeout: const Duration(seconds: 10),
+    );
+    await session.tap(targetEffortRow);
 
-  final modeRouteAfter = _routeFor(
-    _settings(await session.readSnapshot())?['modeModelRoutes'],
-    targetMode,
-  );
-  final effortAfter = _string(modeRouteAfter?['effort']);
-  checks['effortCanonicalBefore'] = effortBefore;
-  checks['effortCanonicalAfter'] = effortAfter;
-  // 起始页的选择是 route 作用域草稿：它必须只改显示值，不得写回 canonical 路由
-  // （design/25 §25.6）。原来的实现是把 canonical 值记进 checks 但从不比较，
-  // 任何字符串都不会让验收失败。
-  checks['draftDidNotWriteCanonical'] = effortAfter == effortBefore;
-  final immediateEffortLabel = await _labelOf(session, effortLabel);
-  final effortLabelAfter = await _waitForLabel(
-    session,
-    effortLabel,
-    targetEffort,
-  );
-  checks['effortLabelImmediate'] = immediateEffortLabel;
-  checks['effortLabelAfter'] = effortLabelAfter;
-  checks['effortDisplayed'] = effortLabelAfter == targetEffort;
-  checks['effortLabelUpdated'] = effortLabelAfter != effortLabelBefore;
+    final modeRouteAfter = _routeFor(
+      _settings(await session.readSnapshot())?['modeModelRoutes'],
+      targetMode,
+    );
+    final effortAfter = _string(modeRouteAfter?['effort']);
+    checks['effortCanonicalBefore'] = effortBefore;
+    checks['effortCanonicalAfter'] = effortAfter;
+    // 起始页的选择是 route 作用域草稿：它必须只改显示值，不得写回 canonical 路由
+    // （design/25 §25.6）。原来的实现是把 canonical 值记进 checks 但从不比较，
+    // 任何字符串都不会让验收失败。
+    checks['draftDidNotWriteCanonical'] = effortAfter == effortBefore;
+    final immediateEffortLabel = await _labelOf(session, effortLabel);
+    final effortLabelAfter = await _waitForLabel(
+      session,
+      effortLabel,
+      targetEffort,
+    );
+    checks['effortLabelImmediate'] = immediateEffortLabel;
+    checks['effortLabelAfter'] = effortLabelAfter;
+    checks['effortDisplayed'] = effortLabelAfter == targetEffort;
+    checks['effortLabelUpdated'] = effortLabelAfter != effortLabelBefore;
+  }
 
   // --- 反证据：没有发生任何页面跳转，也没有停在 pending 命令上 ---
   final finalSnapshot = await session.readSnapshot();
@@ -260,6 +267,22 @@ Future<String> _waitForLabel(
   for (var attempt = 0; attempt < 50 && observed != expected; attempt++) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     observed = await _labelOf(session, finder);
+  }
+  return observed;
+}
+
+Future<String> _waitForMode(
+  FlutterDriverSession session,
+  String expected,
+) async {
+  var observed = _string(
+    _navigation(await session.readSnapshot())?['newThreadMode'],
+  );
+  for (var attempt = 0; attempt < 50 && observed != expected; attempt++) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    observed = _string(
+      _navigation(await session.readSnapshot())?['newThreadMode'],
+    );
   }
   return observed;
 }

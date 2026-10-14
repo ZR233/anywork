@@ -108,22 +108,27 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
         button: true,
         enabled: widget.enabled || widget.onBlockedTap != null,
         label: widget.tooltip,
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(6),
-            focusNode: _triggerFocusNode,
-            onTap: _canOpen
-                ? () {
-                    if (_controller.isOpen) {
-                      _controller.close();
-                    } else {
-                      _controller.open();
-                    }
+        child: TextButton(
+          focusNode: _triggerFocusNode,
+          onPressed: _canOpen
+              ? () {
+                  if (_controller.isOpen) {
+                    _controller.close();
+                  } else {
+                    _controller.open();
                   }
-                : widget.onBlockedTap,
-            child: ExcludeFocus(child: widget.child),
+                }
+              : widget.onBlockedTap,
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.zero,
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+            ),
+            side: BorderSide.none,
           ),
+          child: widget.child,
         ),
       ),
     );
@@ -137,11 +142,7 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
       // the same axis Material popup menus use.
       overflowAxis: Axis.vertical,
       onPressed: widget.enabled && item.enabled
-          ? () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
-              widget.onSelected?.call(item.value);
-            }
+          ? () => widget.onSelected?.call(item.value)
           : null,
       style: selected
           ? ButtonStyle(

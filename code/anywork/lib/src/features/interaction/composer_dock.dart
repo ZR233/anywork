@@ -1074,8 +1074,6 @@ class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
           MenuItemButton(
             overflowAxis: Axis.vertical,
             onPressed: () {
-              _controller.close();
-              _triggerFocusNode.requestFocus();
               unawaited(
                 ref
                     .read(settingsCommandsProvider.notifier)
@@ -1115,24 +1113,25 @@ class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
         child: Semantics(
           button: true,
           label: context.l10n.permissionModeTooltip,
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              focusNode: _triggerFocusNode,
-              onTap: () {
-                if (_controller.isOpen) {
-                  _controller.close();
-                } else {
-                  _controller.open();
-                }
-              },
-              child: ExcludeFocus(
-                child: StudioMenuLabel(
-                  label: context.permissionModeLabel(mode),
-                ),
+          child: TextButton(
+            focusNode: _triggerFocusNode,
+            onPressed: () {
+              if (_controller.isOpen) {
+                _controller.close();
+              } else {
+                _controller.open();
+              }
+            },
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
               ),
+              side: BorderSide.none,
             ),
+            child: StudioMenuLabel(label: context.permissionModeLabel(mode)),
           ),
         ),
       ),
