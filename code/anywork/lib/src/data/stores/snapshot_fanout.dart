@@ -32,9 +32,6 @@ void applyProductSnapshot(Ref ref, StudioState snapshot) {
       .read(threadDirectoryStoreProvider.notifier)
       .applyWindow(snapshot.threadDirectory);
   ref.read(settingsStoreProvider.notifier).merge(snapshot.settingsState);
-  ref
-      .read(settingsStoreProvider.notifier)
-      .applyProviderCatalog(snapshot.providerCatalog);
   final profiles = snapshot.agentProfilesState;
   if (profiles != null) {
     ref.read(settingsStoreProvider.notifier).applyAgentProfiles(profiles);

@@ -91,25 +91,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   bool _reportedReady = false;
   double? _sidebarWidth;
   bool _sidebarHidden = false;
-  String? _selectedProjectId;
   GeneralSettingsView _general = const GeneralSettingsView();
-
-  void _focusSearch() {
-    if (_sidebarKey.currentState == null) {
-      _scaffoldKey.currentState?.openDrawer();
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _sidebarKey.currentState?._searchFocus.requestFocus();
-    });
-  }
-
-  void _newSession() {
-    if (_selectedProjectId == null) {
-      unawaited(showAddProjectDialog(context));
-    } else {
-      unawaited(ref.read(directoryCommandsProvider.notifier).beginNewThread());
-    }
-  }
 
   Future<void> _persistWidth() async {
     try {
@@ -132,7 +114,6 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   Widget build(BuildContext context) {
     final startup = ref.watch(shellStartupViewProvider);
     _general = ref.watch(shellGeneralProvider);
-    _selectedProjectId = ref.watch(shellSelectionProvider).selectedProjectId;
     ref.listen(shellHistoryOpenRequestProvider, (previous, next) {
       if (next == null || next == previous) return;
       unawaited(
@@ -143,188 +124,150 @@ class _StudioShellState extends ConsumerState<StudioShell> {
     });
     final savedWidth = _general.sidebarWidth;
     final desiredWidth = _sidebarWidth ?? savedWidth.toDouble();
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyK, control: true):
-            _focusSearch,
-        const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
-            _focusSearch,
-        const SingleActivator(LogicalKeyboardKey.keyN, control: true):
-            _newSession,
-        const SingleActivator(LogicalKeyboardKey.keyN, meta: true): _newSession,
-      },
-      child: Builder(
-        builder: (context) {
-          // 初次无数据才使用启动页；已有 chrome 时后续刷新/重连不整页替换已显示内容。
-          if (!startup.ready) {
-            return startup.error != null
-                ? _StudioFatalError(error: startup.error!)
-                : const _StudioStartup();
-          }
-          final chrome = ref.watch(shellChromeViewProvider);
-          final sidebar = ref.watch(sidebarViewProvider);
-          final header = ref.watch(headerViewProvider);
-          if (!_reportedReady) {
-            _reportedReady = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                debugPrint(
-                  'startup_stage=first_usable_frame elapsed_ms=${_startupClock.elapsedMilliseconds}',
-                );
-                unawaited(
-                  ref
-                      .read(directoryCommandsProvider.notifier)
-                      .openSelectedThread(),
-                );
-              }
-            });
-          }
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final compact =
-                  constraints.maxWidth < StudioLayout.compactBreakpoint ||
-                  MediaQuery.textScalerOf(context).scale(14) >= 21;
-              final overlay = compact || _sidebarHidden;
-              final maximumWidth = (constraints.maxWidth - 600).clamp(
-                300.0,
-                440.0,
+    return Builder(
+      builder: (context) {
+        // 初次无数据才使用启动页；已有 chrome 时后续刷新/重连不整页替换已显示内容。
+        if (!startup.ready) {
+          return startup.error != null
+              ? _StudioFatalError(error: startup.error!)
+              : const _StudioStartup();
+        }
+        final chrome = ref.watch(shellChromeViewProvider);
+        final sidebar = ref.watch(sidebarViewProvider);
+        final header = ref.watch(headerViewProvider);
+        if (!_reportedReady) {
+          _reportedReady = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              debugPrint(
+                'startup_stage=first_usable_frame elapsed_ms=${_startupClock.elapsedMilliseconds}',
               );
-              final width =
-                  (constraints.maxWidth < 1200 &&
-                              _sidebarWidth == null &&
-                              savedWidth == 336
-                          ? 300.0
-                          : desiredWidth)
-                      .clamp(300.0, maximumWidth);
-              return Scaffold(
-                key: _scaffoldKey,
-                drawer: overlay
-                    ? Drawer(
-                        width: (constraints.maxWidth - 24).clamp(0.0, 360.0),
-                        child: _Sidebar(
-                          key: _sidebarKey,
-                          state: sidebar,
-                          onNavigate: () =>
-                              _scaffoldKey.currentState?.closeDrawer(),
-                        ),
-                      )
-                    : null,
-                backgroundColor: context.colors.surface,
-                body: KeyedSubtree(
-                  key: StudioDriverKeys.shell,
-                  child: Row(
-                    children: [
-                      if (!overlay) ...[
-                        SizedBox(
-                          width: width,
-                          child: _Sidebar(key: _sidebarKey, state: sidebar),
-                        ),
-                        Semantics(
-                          label: context.l10n.sidebarResize,
-                          child: Focus(
-                            onKeyEvent: (_, event) {
-                              if (event is! KeyDownEvent) {
-                                return KeyEventResult.ignored;
-                              }
-                              final key = event.logicalKey;
-                              if (key == LogicalKeyboardKey.home ||
-                                  key == LogicalKeyboardKey.arrowLeft ||
-                                  key == LogicalKeyboardKey.arrowRight) {
-                                setState(
-                                  () => _sidebarWidth =
-                                      key == LogicalKeyboardKey.home
-                                      ? 336
-                                      : (desiredWidth +
-                                                (key ==
-                                                        LogicalKeyboardKey
-                                                            .arrowLeft
-                                                    ? -16
-                                                    : 16))
-                                            .clamp(300, maximumWidth),
-                                );
-                                unawaited(_persistWidth());
-                                return KeyEventResult.handled;
-                              }
-                              return KeyEventResult.ignored;
+              unawaited(
+                ref
+                    .read(directoryCommandsProvider.notifier)
+                    .openSelectedThread(),
+              );
+            }
+          });
+        }
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final compact =
+                constraints.maxWidth < StudioLayout.compactBreakpoint ||
+                MediaQuery.textScalerOf(context).scale(14) >= 21;
+            final overlay = compact || _sidebarHidden;
+            final maximumWidth = (constraints.maxWidth - 600).clamp(
+              300.0,
+              440.0,
+            );
+            final width =
+                (constraints.maxWidth < 1200 &&
+                            _sidebarWidth == null &&
+                            savedWidth == 336
+                        ? 300.0
+                        : desiredWidth)
+                    .clamp(300.0, maximumWidth);
+            return Scaffold(
+              key: _scaffoldKey,
+              drawer: overlay
+                  ? Drawer(
+                      width: (constraints.maxWidth - 24).clamp(0.0, 360.0),
+                      child: _Sidebar(
+                        key: _sidebarKey,
+                        state: sidebar,
+                        onNavigate: () =>
+                            _scaffoldKey.currentState?.closeDrawer(),
+                      ),
+                    )
+                  : null,
+              backgroundColor: context.colors.surface,
+              body: KeyedSubtree(
+                key: StudioDriverKeys.shell,
+                child: Row(
+                  children: [
+                    if (!overlay) ...[
+                      SizedBox(
+                        width: width,
+                        child: _Sidebar(key: _sidebarKey, state: sidebar),
+                      ),
+                      Semantics(
+                        label: context.l10n.sidebarResize,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.resizeColumn,
+                          child: GestureDetector(
+                            onHorizontalDragUpdate: (event) => setState(
+                              () => _sidebarWidth = (width + event.delta.dx)
+                                  .clamp(300, maximumWidth),
+                            ),
+                            onHorizontalDragEnd: (_) =>
+                                unawaited(_persistWidth()),
+                            onDoubleTap: () {
+                              setState(() => _sidebarWidth = 336);
+                              unawaited(_persistWidth());
                             },
-                            child: MouseRegion(
-                              cursor: SystemMouseCursors.resizeColumn,
-                              child: GestureDetector(
-                                onHorizontalDragUpdate: (event) => setState(
-                                  () => _sidebarWidth = (width + event.delta.dx)
-                                      .clamp(300, maximumWidth),
-                                ),
-                                onHorizontalDragEnd: (_) =>
-                                    unawaited(_persistWidth()),
-                                onDoubleTap: () {
-                                  setState(() => _sidebarWidth = 336);
-                                  unawaited(_persistWidth());
-                                },
-                                child: Container(
-                                  width: 5,
-                                  color: context.colors.outlineVariant
-                                      .withValues(alpha: .5),
-                                ),
+                            child: Container(
+                              width: 5,
+                              color: context.colors.outlineVariant.withValues(
+                                alpha: .5,
                               ),
                             ),
                           ),
                         ),
-                      ],
-                      Expanded(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: context.colors.surface,
-                          ),
-                          child: Column(
-                            children: [
-                              Row(
-                                children: [
-                                  IconButton(
-                                    key: const ValueKey('sidebar-toggle'),
-                                    tooltip: context.l10n.sidebarNavigation,
-                                    onPressed: () {
-                                      if (overlay) {
-                                        _scaffoldKey.currentState?.openDrawer();
-                                      } else {
-                                        setState(() => _sidebarHidden = true);
-                                      }
-                                    },
-                                    icon: Icon(
-                                      overlay ? Icons.menu : Icons.chevron_left,
-                                    ),
-                                  ),
-                                  if (_sidebarHidden && !compact)
-                                    IconButton(
-                                      tooltip: context.l10n.sidebarNavigation,
-                                      onPressed: () => setState(
-                                        () => _sidebarHidden = false,
-                                      ),
-                                      icon: const Icon(Icons.chevron_right),
-                                    ),
-                                  Expanded(child: _Header(state: header)),
-                                ],
-                              ),
-                              const _PersistenceStatusPanel(),
-                              const _StartupRecoveryBanner(),
-                              if (chrome.applicationRecoveryIssues.isNotEmpty)
-                                _ApplicationRecoveryBanner(
-                                  issues: chrome.applicationRecoveryIssues,
-                                ),
-                              const RecoveryCheckStatus(showChecking: false),
-                              const Divider(height: 1),
-                              const Expanded(child: AgentWorkspacePane()),
-                            ],
-                          ),
-                        ),
                       ),
                     ],
-                  ),
+                    Expanded(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: context.colors.surface,
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                IconButton(
+                                  key: const ValueKey('sidebar-toggle'),
+                                  tooltip: context.l10n.sidebarNavigation,
+                                  onPressed: () {
+                                    if (overlay) {
+                                      _scaffoldKey.currentState?.openDrawer();
+                                    } else {
+                                      setState(() => _sidebarHidden = true);
+                                    }
+                                  },
+                                  icon: Icon(
+                                    overlay ? Icons.menu : Icons.chevron_left,
+                                  ),
+                                ),
+                                if (_sidebarHidden && !compact)
+                                  IconButton(
+                                    tooltip: context.l10n.sidebarNavigation,
+                                    onPressed: () =>
+                                        setState(() => _sidebarHidden = false),
+                                    icon: const Icon(Icons.chevron_right),
+                                  ),
+                                Expanded(child: _Header(state: header)),
+                              ],
+                            ),
+                            const _PersistenceStatusPanel(),
+                            const _StartupRecoveryBanner(),
+                            if (chrome.applicationRecoveryIssues.isNotEmpty)
+                              _ApplicationRecoveryBanner(
+                                issues: chrome.applicationRecoveryIssues,
+                              ),
+                            const RecoveryCheckStatus(showChecking: false),
+                            const Divider(height: 1),
+                            const Expanded(child: AgentWorkspacePane()),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              );
-            },
-          );
-        },
-      ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

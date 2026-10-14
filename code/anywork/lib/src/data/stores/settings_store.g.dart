@@ -53,7 +53,7 @@ final class SettingsStoreProvider
   }
 }
 
-String _$settingsStoreHash() => r'464023f2fb0344fd14fe39c70cc2b7f840f4d512';
+String _$settingsStoreHash() => r'8187b6eb3b938263da5db766f003bd2f005ee01d';
 
 /// 设置域：配置 revision 与模型目录 revision 独立比较。
 ///

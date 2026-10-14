@@ -409,6 +409,9 @@ class ProviderCatalogView {
   final List<ProviderPresetView> presets;
   final Map<String, List<ProviderModelView>> modelCatalogs;
 
+  /// 空目录只表示尚未加载，不能覆盖已经加载的静态事实。
+  bool get isUsable => revision.isNotEmpty && presets.isNotEmpty;
+
   ProviderPresetView? preset(String id) {
     for (final preset in presets) {
       if (preset.id == id) return preset;
@@ -537,6 +540,18 @@ ProviderSettingsView providerWithCatalogMetadata(
         : '${effectiveModels.length} models',
   );
 }
+
+/// 为整组供应商附加静态目录元数据。
+///
+/// 所有 UI 投影都通过这里完成目录 join，避免设置、状态栏和 Driver 各自
+/// 维护一份字段合并逻辑。
+List<ProviderSettingsView> providersWithCatalogMetadata(
+  Iterable<ProviderSettingsView> providers,
+  ProviderCatalogView catalog,
+) => [
+  for (final provider in providers)
+    providerWithCatalogMetadata(provider, catalog),
+];
 
 class ProviderUsageView {
   const ProviderUsageView({

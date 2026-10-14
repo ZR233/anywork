@@ -5,9 +5,6 @@ import 'domain_sync.dart';
 
 part 'settings_store.g.dart';
 
-/// 配置与模型目录进入同一条 merge path 的范围。
-enum SettingsMergeScope { both, configOnly, catalogOnly }
-
 /// 设置域：配置 revision 与模型目录 revision 独立比较。
 ///
 /// 命令 in-flight 结果放在 [commands]，不写入 canonical 字段。
@@ -41,6 +38,7 @@ class SettingsStore extends _$SettingsStore {
   /// 静态供应商目录的字符串 revision 不是配置/目录 int 时钟。
   /// 只用于幂等丢弃同一次目录加载，不参与双时钟比较。
   void applyProviderCatalog(ProviderCatalogView next) {
+    if (!next.isUsable) return;
     if (state.providerCatalogLoaded &&
         next.revision == state.providerCatalogRevision) {
       return;
@@ -222,78 +220,41 @@ SettingsStoreState mergeSettingsState(
   SettingsStateSnapshot incoming, {
   SettingsMergeScope scope = SettingsMergeScope.both,
 }) {
-  final incomingData = incoming.state.value;
-  if (incomingData == null) return current;
-  final takeConfig =
-      scope != SettingsMergeScope.catalogOnly &&
-      (!current.configLoaded || incoming.revision > current.settingsRevision);
-  final takeCatalog =
-      scope != SettingsMergeScope.configOnly &&
-      (!current.catalogLoaded ||
-          incoming.modelCatalogRevision > current.modelCatalogRevision);
-  if (!takeConfig && !takeCatalog) return current;
-
-  final previousData = current.canonical?.state.value ?? incomingData;
-  final configData = takeConfig ? incomingData : previousData;
-  final catalogData = takeCatalog ? incomingData : previousData;
-  final settingsRevision = takeConfig
-      ? incoming.revision
-      : current.settingsRevision;
-  final catalogRevision = takeCatalog
-      ? incoming.modelCatalogRevision
-      : current.modelCatalogRevision;
-  return current.copyWith(
-    canonical: projectSettingsSnapshot(
-      configData: configData,
-      catalogData: catalogData,
-      settingsRevision: settingsRevision,
-      modelCatalogRevision: catalogRevision,
+  final projection = mergeSettingsProjection(
+    SettingsProjectionState(
+      canonical: current.canonical,
+      configLoaded: current.configLoaded,
+      catalogLoaded: current.catalogLoaded,
+      settingsRevision: current.settingsRevision,
+      modelCatalogRevision: current.modelCatalogRevision,
     ),
-    configLoaded: current.configLoaded || takeConfig,
-    catalogLoaded: current.catalogLoaded || takeCatalog,
-    settingsRevision: settingsRevision,
-    modelCatalogRevision: catalogRevision,
+    incoming,
+    scope: scope,
+  );
+  if (identical(projection.canonical, current.canonical) &&
+      projection.configLoaded == current.configLoaded &&
+      projection.catalogLoaded == current.catalogLoaded &&
+      projection.settingsRevision == current.settingsRevision &&
+      projection.modelCatalogRevision == current.modelCatalogRevision) {
+    return current;
+  }
+  final takeConfig =
+      projection.configLoaded != current.configLoaded ||
+      projection.settingsRevision != current.settingsRevision;
+  final takeCatalog =
+      projection.catalogLoaded != current.catalogLoaded ||
+      projection.modelCatalogRevision != current.modelCatalogRevision;
+  return current.copyWith(
+    canonical: projection.canonical,
+    configLoaded: projection.configLoaded,
+    catalogLoaded: projection.catalogLoaded,
+    settingsRevision: projection.settingsRevision,
+    modelCatalogRevision: projection.modelCatalogRevision,
     configSync: takeConfig
         ? current.configSync.connected()
         : current.configSync,
     catalogSync: takeCatalog
         ? current.catalogSync.connected()
         : current.catalogSync,
-  );
-}
-
-SettingsStateSnapshot projectSettingsSnapshot({
-  required SettingsStateData configData,
-  required SettingsStateData catalogData,
-  required int settingsRevision,
-  required int modelCatalogRevision,
-}) {
-  final catalogByProvider = {
-    for (final provider in catalogData.providers) provider.id: provider,
-  };
-  final providers = [
-    for (final provider in configData.providers)
-      if (catalogByProvider[provider.id] case final catalogProvider?)
-        provider.copyWith(
-          models: catalogProvider.models,
-          modelCatalog: catalogProvider.modelCatalog,
-        )
-      else
-        provider,
-  ];
-  return SettingsStateSnapshot(
-    providers: providers,
-    defaultProviderId: configData.defaultProviderId,
-    modeModelRoutes: configData.modeModelRoutes,
-    roles: configData.roles,
-    mcpServers: configData.mcpServers,
-    instructions: configData.instructions,
-    skills: configData.skills,
-    general: configData.general,
-    webSearch: configData.webSearch,
-    deepSeekWebSearch: configData.deepSeekWebSearch,
-    permissionMode: configData.permissionMode,
-    revision: settingsRevision,
-    modelCatalogRevision: modelCatalogRevision,
   );
 }

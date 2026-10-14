@@ -243,7 +243,6 @@ class DemoStudioBridgeDataSource
           revision: 0,
           updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
         ),
-        providerCatalog: _providerCatalog,
         selectedProjectId: null,
         selectedThreadId: null,
       );
@@ -371,7 +370,6 @@ class DemoStudioBridgeDataSource
             syncState: AgentWorkspaceSyncState.ready,
           ),
       },
-      providerCatalog: _providerCatalog,
       selectedProjectId: selectedProjectId,
       selectedThreadId: selectedThreadId,
     );

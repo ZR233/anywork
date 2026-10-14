@@ -5,7 +5,7 @@ import '../../shared/studio_anchored_panel.dart';
 
 /// 状态读数的悬停/点击详情弹层。
 ///
-/// 锚定、开合、键盘入口与打开期间的 canonical 刷新由共享
+/// 锚定、开合与打开期间的 canonical 刷新由共享
 /// [StudioAnchoredPanel] 承担；本组件只补充状态语义标签。
 class StatusDetailPopover extends StatelessWidget {
   const StatusDetailPopover({
@@ -13,7 +13,6 @@ class StatusDetailPopover extends StatelessWidget {
     required this.detailBuilder,
     required this.semanticsLabel,
     required this.semanticsValue,
-    this.onFocusChange,
     this.width = 300,
     super.key,
   });
@@ -22,7 +21,6 @@ class StatusDetailPopover extends StatelessWidget {
   final WidgetBuilder detailBuilder;
   final String semanticsLabel;
   final String semanticsValue;
-  final ValueChanged<bool>? onFocusChange;
   final double width;
 
   @override
@@ -31,7 +29,6 @@ class StatusDetailPopover extends StatelessWidget {
       width: width,
       semanticsLabel: semanticsLabel,
       semanticsValue: semanticsValue,
-      onFocusChange: onFocusChange,
       panelBuilder: detailBuilder,
       child: child,
     );

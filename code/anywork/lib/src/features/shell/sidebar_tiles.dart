@@ -2,8 +2,8 @@ part of 'studio_shell.dart';
 
 /// 侧栏紧凑单行条目：标题单行省略，右侧固定状态区与按需快捷操作区。
 ///
-/// 快捷操作在悬停或键盘聚焦时可见，但通过 [Visibility] 保持占位，
-/// 出现与消失不挤动标题。触控输入模式下（最近指针输入为触摸/触笔，
+/// 快捷操作在悬停或选中时可见，并通过 [Visibility] 保持占位，避免出现
+/// 与消失挤动标题。触控输入模式下（最近指针输入为触摸/触笔，
 /// 见 `_SidebarState` 的输入模式检测）所有行的操作常显并放大命中区，
 /// 整个侧栏使用同一种输入模式，不做逐行切换。选中使用拿铁底色与
 /// [StudioSelectionMarker] 的细蓝标记。本组件不承载业务状态；状态指示
@@ -15,7 +15,6 @@ class _SidebarTile extends StatefulWidget {
     required this.onTap,
     required this.trailing,
     this.actions,
-    this.focusNode,
     this.touchMode = false,
   });
 
@@ -26,13 +25,8 @@ class _SidebarTile extends StatefulWidget {
   /// 右侧常驻状态区（例如会话工作树标识与行级运行状态）。
   final Widget trailing;
 
-  /// 悬停或聚焦时出现的快捷操作；为 null 时不占位。
+  /// 悬停或选中时出现的快捷操作；为 null 时不占位。
   final Widget? actions;
-
-  /// 行本体的真实焦点节点。存在时由外部（按需详情宿主）与锚定面共享同一
-  /// 节点，避免叠加额外可聚焦包装层而改变第一焦点停点；为 null 时由
-  /// [InkWell] 自建内部节点。
-  final FocusNode? focusNode;
 
   /// 触控输入模式：操作常显，行高与命中区按触控密度放大。
   final bool touchMode;
@@ -43,7 +37,6 @@ class _SidebarTile extends StatefulWidget {
 
 class _SidebarTileState extends State<_SidebarTile> {
   bool _hovering = false;
-  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
@@ -67,8 +60,6 @@ class _SidebarTileState extends State<_SidebarTile> {
           child: StudioSelectionMarker(
             selected: widget.selected,
             child: InkWell(
-              focusNode: widget.focusNode,
-              onFocusChange: (focused) => setState(() => _focused = focused),
               onTap: widget.onTap,
               hoverColor: context.colors.surface.withValues(alpha: 0.72),
               child: Padding(
@@ -103,10 +94,7 @@ class _SidebarTileState extends State<_SidebarTile> {
                     if (actions != null)
                       Visibility(
                         visible:
-                            widget.touchMode ||
-                            widget.selected ||
-                            _hovering ||
-                            _focused,
+                            widget.touchMode || widget.selected || _hovering,
                         maintainSize: true,
                         maintainAnimation: true,
                         maintainState: true,

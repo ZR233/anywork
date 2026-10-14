@@ -11,7 +11,6 @@ class _Sidebar extends ConsumerStatefulWidget {
 class _SidebarState extends ConsumerState<_Sidebar> {
   final _projectKeys = <String, GlobalKey>{};
   final _search = TextEditingController();
-  final _searchFocus = FocusNode();
   final _expanded = <String>{};
   final _pages = <String, ThreadDirectoryPage>{};
   final _loading = <String>{};
@@ -152,7 +151,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   void dispose() {
     _debounce?.cancel();
     _search.dispose();
-    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -308,7 +306,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                 child: TextField(
                   key: const ValueKey('sidebar-search'),
                   controller: _search,
-                  focusNode: _searchFocus,
                   decoration: InputDecoration(
                     hintText: context.l10n.sidebarSearch,
                     prefixIcon: const Icon(Icons.search, size: 18),

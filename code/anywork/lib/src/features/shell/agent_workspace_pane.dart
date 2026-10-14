@@ -352,10 +352,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
 /// 计划详情面板左边缘分隔条（design/13-plan.md §13）。
 ///
-/// 拖拽或方向键调整宽度，Home 复位；宽度只属于当前 GUI 的临时视图状态，
-/// 不写入 Plan 状态机或持久化。
+/// 拖拽或双击调整宽度；宽度只属于当前 GUI 的临时视图状态，不写入 Plan
+/// 状态机或持久化。
 const double _planResizeHandleWidth = 5.0;
-const double _planResizeStep = 24.0;
 
 class _PlanResizeHandle extends StatefulWidget {
   const _PlanResizeHandle({
@@ -380,11 +379,10 @@ class _PlanResizeHandle extends StatefulWidget {
 
 class _PlanResizeHandleState extends State<_PlanResizeHandle> {
   bool _hovering = false;
-  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
-    final active = _hovering || _focused;
+    final active = _hovering;
     final color = active
         ? context.colors.primary.withValues(alpha: 0.6)
         : context.colors.outlineVariant.withValues(alpha: 0.5);
@@ -392,38 +390,15 @@ class _PlanResizeHandleState extends State<_PlanResizeHandle> {
       label: widget.label,
       child: Tooltip(
         message: widget.label,
-        child: Focus(
-          onFocusChange: (value) => setState(() => _focused = value),
-          onKeyEvent: (_, event) {
-            if (event is! KeyDownEvent) {
-              return KeyEventResult.ignored;
-            }
-            final key = event.logicalKey;
-            if (key == LogicalKeyboardKey.home) {
-              widget.onReset();
-              return KeyEventResult.handled;
-            }
-            if (key == LogicalKeyboardKey.arrowLeft) {
-              widget.onDelta(_planResizeStep);
-              return KeyEventResult.handled;
-            }
-            if (key == LogicalKeyboardKey.arrowRight) {
-              widget.onDelta(-_planResizeStep);
-              return KeyEventResult.handled;
-            }
-            return KeyEventResult.ignored;
-          },
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeColumn,
-            onEnter: (_) => setState(() => _hovering = true),
-            onExit: (_) => setState(() => _hovering = false),
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onHorizontalDragUpdate: (event) =>
-                  widget.onDelta(-event.delta.dx),
-              onDoubleTap: widget.onReset,
-              child: Container(width: _planResizeHandleWidth, color: color),
-            ),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.resizeColumn,
+          onEnter: (_) => setState(() => _hovering = true),
+          onExit: (_) => setState(() => _hovering = false),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate: (event) => widget.onDelta(-event.delta.dx),
+            onDoubleTap: widget.onReset,
+            child: Container(width: _planResizeHandleWidth, color: color),
           ),
         ),
       ),

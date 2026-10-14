@@ -122,20 +122,11 @@ class ModelRouteSelector extends StatefulWidget {
 
 class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(
-    debugLabel: 'model-route-selector',
-  );
 
   /// Scroll anchor attached to the selected row so opening the menu can bring
   /// it into view. Retargeted on every build; the menu is transient, so a key
   /// moving between rows never needs element-stable topology.
   final GlobalKey _selectedRowKey = GlobalKey(debugLabel: 'model-selected-row');
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -153,7 +144,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     return MenuAnchor(
       key: widget.selectorKey,
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       style: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
       alignmentOffset: const Offset(6, 6),
       onOpen: _keepSelectedItemVisible,
@@ -175,7 +165,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
         enabled: widget.enabled || widget.onBlockedTap != null,
         label: tooltip,
         child: TextButton(
-          focusNode: _triggerFocusNode,
           onPressed: canSelect
               ? () {
                   if (_controller.isOpen) {

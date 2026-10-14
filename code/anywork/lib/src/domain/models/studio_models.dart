@@ -15,6 +15,7 @@ export 'recovery_models.dart';
 export 'remote_models.dart';
 export 'runtime_models.dart';
 export 'settings_models.dart';
+export 'settings_snapshot_projection.dart';
 export 'studio_commands.dart';
 export 'studio_enums.dart';
 export 'studio_projection_models.dart';

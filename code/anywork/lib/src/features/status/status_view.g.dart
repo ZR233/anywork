@@ -298,4 +298,4 @@ final class StatusBarViewProvider
   }
 }
 
-String _$statusBarViewHash() => r'89048c7b351cb21d529f437e9c03fe3e59cfabb6';
+String _$statusBarViewHash() => r'851d1e3bf2a88faf86d762a04c7063324c559064';

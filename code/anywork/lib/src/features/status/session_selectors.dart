@@ -78,15 +78,6 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
 
 class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(
-    debugLabel: 'quiet-selector-menu',
-  );
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   bool get _canOpen => widget.enabled && widget.items.isNotEmpty;
 
@@ -94,7 +85,6 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
   Widget build(BuildContext context) {
     return MenuAnchor(
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [for (final item in widget.items) _buildRow(context, item)],
       child: _buildTrigger(),
@@ -109,7 +99,6 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
         enabled: widget.enabled || widget.onBlockedTap != null,
         label: widget.tooltip,
         child: TextButton(
-          focusNode: _triggerFocusNode,
           onPressed: _canOpen
               ? () {
                   if (_controller.isOpen) {

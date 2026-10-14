@@ -650,7 +650,6 @@ class _ComposerTargetDiagnosticView extends StatelessWidget {
 
 class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   TextEditingController? _ownedController;
-  late final FocusNode _inputFocusNode;
   bool _dragging = false;
   bool _pasteInFlight = false;
   bool _syncingDraft = false;
@@ -664,7 +663,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     if (widget.textController == null) {
       _ownedController = TextEditingController(text: widget.composer.draft);
     }
-    _inputFocusNode = FocusNode(debugLabel: 'composer-input');
     _controller.addListener(_onDraftChanged);
   }
 
@@ -696,7 +694,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   void dispose() {
     widget.textController?.removeListener(_onDraftChanged);
     _ownedController?.removeListener(_onDraftChanged);
-    _inputFocusNode.dispose();
     _ownedController?.dispose();
     super.dispose();
   }
@@ -716,41 +713,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
         capability.modality == ModelModalityView.image &&
         capability.supportsSource(ModelInputSourceView.local),
   );
-
-  /// 回车提交当前草稿，语义与主按钮一致。
-  ///
-  /// Shift+Enter 与输入法组字过程保持原生行为（插入换行）；未满足提交前置条件
-  /// 时不消费按键。返回 [KeyEventResult.handled] 让引擎不再把它当作文本输入。
-  KeyEventResult _handleComposerKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final key = event.logicalKey;
-    if (_isPasteShortcut(key)) {
-      if (!_inputFocusNode.hasFocus || !widget.enabled || _submissionPending) {
-        return KeyEventResult.ignored;
-      }
-      if (!_pasteInFlight) unawaited(_pasteClipboard());
-      return KeyEventResult.handled;
-    }
-    if (key != LogicalKeyboardKey.enter &&
-        key != LogicalKeyboardKey.numpadEnter) {
-      return KeyEventResult.ignored;
-    }
-    if (HardwareKeyboard.instance.isShiftPressed ||
-        _controller.value.composing.isValid) {
-      return KeyEventResult.ignored;
-    }
-    if (!_canSubmit) return KeyEventResult.ignored;
-    widget.onSubmit();
-    return KeyEventResult.handled;
-  }
-
-  bool _isPasteShortcut(LogicalKeyboardKey key) {
-    final keyboard = HardwareKeyboard.instance;
-    return key == LogicalKeyboardKey.paste ||
-        key == LogicalKeyboardKey.keyV &&
-            (keyboard.isControlPressed || keyboard.isMetaPressed) ||
-        key == LogicalKeyboardKey.insert && keyboard.isShiftPressed;
-  }
 
   Future<void> _pasteClipboard() async {
     _pasteInFlight = true;
@@ -832,32 +794,63 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               enabled: attachmentEnabled,
               onRemove: (id) => unawaited(widget.onRemoveAttachment(id)),
             ),
-          Focus(
-            skipTraversal: true,
-            onKeyEvent: _handleComposerKey,
-            child: TextField(
-              key: StudioDriverKeys.composerInput,
-              controller: _controller,
-              focusNode: _inputFocusNode,
-              enabled: widget.enabled && !_submissionPending,
-              minLines: widget.compact ? 2 : 3,
-              maxLines: 8,
-              decoration: InputDecoration(
-                hintText: context.l10n.composerHint,
-                hintStyle: TextStyle(color: colors.onSurfaceVariant),
-                isDense: true,
-                filled: false,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-              ),
-              onChanged: widget.onChanged,
-              onSubmitted: (_) {
-                if (_canSubmit) {
-                  widget.onSubmit();
-                }
+          Shortcuts(
+            shortcuts: const {
+              SingleActivator(LogicalKeyboardKey.paste): _PasteComposerIntent(),
+              SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                  _PasteComposerIntent(),
+              SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+                  _PasteComposerIntent(),
+              SingleActivator(LogicalKeyboardKey.insert, shift: true):
+                  _PasteComposerIntent(),
+              SingleActivator(LogicalKeyboardKey.escape): _StopComposerIntent(),
+            },
+            child: Actions(
+              actions: {
+                _PasteComposerIntent: CallbackAction<_PasteComposerIntent>(
+                  onInvoke: (_) {
+                    if (widget.enabled &&
+                        !_submissionPending &&
+                        !_pasteInFlight) {
+                      unawaited(_pasteClipboard());
+                    }
+                    return null;
+                  },
+                ),
+                _StopComposerIntent: CallbackAction<_StopComposerIntent>(
+                  onInvoke: (_) {
+                    if (widget.isBusy &&
+                        !_submissionPending &&
+                        widget.onStop != null) {
+                      widget.onStop!();
+                    }
+                    return null;
+                  },
+                ),
               },
+              child: TextField(
+                key: StudioDriverKeys.composerInput,
+                controller: _controller,
+                enabled: widget.enabled && !_submissionPending,
+                minLines: widget.compact ? 2 : 3,
+                maxLines: 8,
+                decoration: InputDecoration(
+                  hintText: context.l10n.composerHint,
+                  hintStyle: TextStyle(color: colors.onSurfaceVariant),
+                  isDense: true,
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                ),
+                onChanged: widget.onChanged,
+                onSubmitted: (_) {
+                  if (_canSubmit) {
+                    widget.onSubmit();
+                  }
+                },
+              ),
             ),
           ),
           if (composer.error case final error?)
@@ -947,30 +940,24 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
         ],
       ),
     );
-    return CallbackShortcuts(
-      bindings: {
-        if (widget.isBusy && !_submissionPending && widget.onStop != null)
-          const SingleActivator(LogicalKeyboardKey.escape): widget.onStop!,
+    return DropTarget(
+      onDragEntered: attachmentEnabled && localCapabilities.isNotEmpty
+          ? (_) => setState(() => _dragging = true)
+          : null,
+      onDragExited: (_) {
+        if (_dragging) setState(() => _dragging = false);
       },
-      child: DropTarget(
-        onDragEntered: attachmentEnabled && localCapabilities.isNotEmpty
-            ? (_) => setState(() => _dragging = true)
-            : null,
-        onDragExited: (_) {
-          if (_dragging) setState(() => _dragging = false);
-        },
-        onDragDone: attachmentEnabled && localCapabilities.isNotEmpty
-            ? (event) {
-                setState(() => _dragging = false);
-                final paths = event.files
-                    .map((file) => file.path)
-                    .where((path) => path.isNotEmpty)
-                    .toList();
-                if (paths.isNotEmpty) unawaited(widget.onAddLocal(paths));
-              }
-            : null,
-        child: panel,
-      ),
+      onDragDone: attachmentEnabled && localCapabilities.isNotEmpty
+          ? (event) {
+              setState(() => _dragging = false);
+              final paths = event.files
+                  .map((file) => file.path)
+                  .where((path) => path.isNotEmpty)
+                  .toList();
+              if (paths.isNotEmpty) unawaited(widget.onAddLocal(paths));
+            }
+          : null,
+      child: panel,
     );
   }
 
@@ -1043,6 +1030,14 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   }
 }
 
+class _PasteComposerIntent extends Intent {
+  const _PasteComposerIntent();
+}
+
+class _StopComposerIntent extends Intent {
+  const _StopComposerIntent();
+}
+
 class _PermissionSelector extends ConsumerStatefulWidget {
   const _PermissionSelector({required this.mode});
 
@@ -1055,22 +1050,12 @@ class _PermissionSelector extends ConsumerStatefulWidget {
 
 class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(
-    debugLabel: 'permission-selector',
-  );
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final mode = widget.mode;
     return MenuAnchor(
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
         for (final option in PermissionMode.values)
@@ -1117,7 +1102,6 @@ class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
           button: true,
           label: context.l10n.permissionModeTooltip,
           child: TextButton(
-            focusNode: _triggerFocusNode,
             onPressed: () {
               if (_controller.isOpen) {
                 _controller.close();

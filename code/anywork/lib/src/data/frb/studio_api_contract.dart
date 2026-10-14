@@ -482,6 +482,7 @@ class FrbStudioBridgeDataSource
   // 单向终止闩：一经置位，本进程余下生命周期内不再启动或发布运行时。
   static bool _closing = false;
   ProviderCatalogView? _providerCatalogCache;
+  Future<ProviderCatalogView>? _providerCatalogFuture;
 
   static Future<void> ensureReady() => _ensureReady();
 
@@ -1097,11 +1098,27 @@ class FrbStudioBridgeDataSource
   Future<ProviderCatalogView> loadProviderCatalog() async {
     final cached = _providerCatalogCache;
     if (cached != null) return cached;
+    final inFlight = _providerCatalogFuture;
+    if (inFlight != null) return inFlight;
+    final future = _loadProviderCatalog();
+    _providerCatalogFuture = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_providerCatalogFuture, future)) {
+        _providerCatalogFuture = null;
+      }
+    }
+  }
+
+  Future<ProviderCatalogView> _loadProviderCatalog() async {
     await _ensureReady();
     final catalog = providerCatalogFromFrb(
       await _bridgeCall(frb.loadProviderCatalog),
     );
-    _providerCatalogCache = catalog;
+    if (catalog.isUsable) {
+      _providerCatalogCache = catalog;
+    }
     return catalog;
   }
 

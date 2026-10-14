@@ -4,29 +4,25 @@ part of 'studio_shell.dart';
 /// 窄抽屉中自动收窄。
 const double _sidebarDetailCardWidth = 300.0;
 
-/// 侧栏行的按需悬浮/键盘详情宿主。
+/// 侧栏行的按需悬浮详情宿主。
 ///
 /// 详情卡是直接架在 Material [MenuAnchor] 上的自由内容面板：锚定、窗口
 /// 收敛、祖先滚动/窗口变化关闭、外点关闭、Escape 与面板内有界滚动都是
 /// 框架行为。`MenuStyle.alignment` 让卡片贴行**侧向**展开（LTR 优先文字
 /// 尾侧），不覆盖同列相邻行，空间不足换侧并按安全区收敛。本组件只内联
-/// 悬停/聚焦显示与延迟收起的业务交互，并把行本体**真实的焦点节点**交给
-/// 行内容：不叠加额外可聚焦包装层，因此第一焦点停点仍是行本体（Enter
-/// 选择会话、聚焦即显示详情）。
+/// 悬停显示与延迟收起的业务交互，并把菜单开合通知传给行内容。
 class _SidebarHoverDetail extends StatefulWidget {
   const _SidebarHoverDetail({
     required this.childBuilder,
     required this.detailBuilder,
   });
 
-  /// 构建行本体，并把共享焦点节点交给它挂到真实可聚焦控件上。
-  /// [focusNode] 挂到真实可聚焦控件；[onMenuOpenChanged] 由行内更多菜单接到
+  /// 构建行本体；[onMenuOpenChanged] 由行内更多菜单接到
   /// `onOpen`/`onClose`，仅在真实打开时暂停重开（`onClose` 复位，不自动重开）；
   /// [onMenuBeforeOpen] 由菜单触发器在打开**之前**同步调用，收起父详情，
   /// 避免详情卡与菜单浮层同时可见、互相遮挡。
   final Widget Function(
     BuildContext context,
-    FocusNode focusNode,
     ValueChanged<bool> onMenuOpenChanged,
     VoidCallback onMenuBeforeOpen,
   )
@@ -40,9 +36,7 @@ class _SidebarHoverDetail extends StatefulWidget {
 
 class _SidebarHoverDetailState extends State<_SidebarHoverDetail> {
   final MenuController _controller = MenuController();
-  final FocusNode _focusNode = FocusNode(debugLabel: 'sidebar-row-trigger');
   Timer? _hideTimer;
-  bool _focused = false;
 
   /// 行内更多菜单是否正打开。菜单打开前详情已同步收起；打开期间暂停
   /// hover/聚焦重开，避免详情卡盖住菜单项、拦截菜单点击。
@@ -51,30 +45,12 @@ class _SidebarHoverDetailState extends State<_SidebarHoverDetail> {
   @override
   void initState() {
     super.initState();
-    _focusNode.addListener(_handleFocusChange);
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
-    _focusNode.removeListener(_handleFocusChange);
-    _focusNode.dispose();
     super.dispose();
-  }
-
-  /// 键盘聚焦/离开行本体：聚焦立即展示详情，离开后延迟收起。
-  void _handleFocusChange() {
-    // 只有行本体自己拿到主焦点才展开详情：行内后代控件（快捷操作、更多菜单
-    // 触发按钮）聚焦不应自动开详情，否则打开菜单时详情会盖住菜单项。
-    final focused = _focusNode.hasPrimaryFocus;
-    if (focused == _focused) return;
-    _focused = focused;
-    if (focused) {
-      _cancelHide();
-      _show();
-    } else {
-      _scheduleHide();
-    }
   }
 
   void _handleHover(bool hovering) {
@@ -106,7 +82,6 @@ class _SidebarHoverDetailState extends State<_SidebarHoverDetail> {
 
   void _scheduleHide() {
     _cancelHide();
-    if (_focused) return;
     _hideTimer = Timer(const Duration(milliseconds: 120), _hide);
   }
 
@@ -119,8 +94,7 @@ class _SidebarHoverDetailState extends State<_SidebarHoverDetail> {
   Widget build(BuildContext context) {
     return MenuAnchor(
       controller: _controller,
-      // 不传 childFocusNode：hover 打开不迁移输入焦点，聚焦行本体时焦点
-      // 已在行上，Escape 由锚点在菜单打开期间注册的 Dismiss 动作关闭。
+      // Hover 打开不迁移输入焦点；菜单自身继续使用 Material 默认行为。
       style: const MenuStyle(
         minimumSize: WidgetStatePropertyAll(Size(_sidebarDetailCardWidth, 0)),
         maximumSize: WidgetStatePropertyAll(
@@ -135,12 +109,7 @@ class _SidebarHoverDetailState extends State<_SidebarHoverDetail> {
       child: MouseRegion(
         onEnter: (_) => _handleHover(true),
         onExit: (_) => _handleHover(false),
-        child: widget.childBuilder(
-          context,
-          _focusNode,
-          _handleMenuOpenChanged,
-          _hide,
-        ),
+        child: widget.childBuilder(context, _handleMenuOpenChanged, _hide),
       ),
     );
   }

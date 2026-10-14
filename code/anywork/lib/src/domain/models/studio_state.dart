@@ -64,7 +64,6 @@ class StudioState {
     this.composerDiagnosticsByTarget = const {},
     this.newThreadModeByProject = const {},
     this.newThreadWorkspaceModeByProject = const {},
-    this.providerCatalog = const ProviderCatalogView.empty(),
     required this.selectedProjectId,
     required this.selectedThreadId,
   });
@@ -87,7 +86,6 @@ class StudioState {
 
   /// 按项目隔离的起始页工作区模式草稿；提交后仍保留，供同一项目再次创建会话。
   final Map<String, ThreadWorkspaceMode> newThreadWorkspaceModeByProject;
-  final ProviderCatalogView providerCatalog;
   final String? selectedProjectId;
   final String? selectedThreadId;
   final ProjectDirectoryState projectDirectory;
@@ -137,10 +135,7 @@ class StudioState {
   Map<String, StudioAgentView> get agentsByThread => {
     for (final agent in agentDirectory.values) agent.threadId: agent,
   };
-  List<ProviderSettingsView> get providers => [
-    for (final provider in settingsState.providers)
-      providerWithCatalogMetadata(provider, providerCatalog),
-  ];
+  List<ProviderSettingsView> get providers => settingsState.providers;
   String? get defaultProviderId => settingsState.defaultProviderId;
   List<ModeModelRouteView> get modeModelRoutes => settingsState.modeModelRoutes;
   List<ProviderUsageView> get providerUsages => providerUsageState.usages;
@@ -389,7 +384,6 @@ class StudioState {
     Map<String, ComposerTargetDiagnostic>? composerDiagnosticsByTarget,
     Map<String, ThreadModeId>? newThreadModeByProject,
     Map<String, ThreadWorkspaceMode>? newThreadWorkspaceModeByProject,
-    ProviderCatalogView? providerCatalog,
     Object? selectedProjectId = _studioStateUnset,
     Object? selectedThreadId = _studioStateUnset,
     ProjectDirectoryState? projectDirectory,
@@ -424,7 +418,6 @@ class StudioState {
       newThreadWorkspaceModeByProject:
           newThreadWorkspaceModeByProject ??
           this.newThreadWorkspaceModeByProject,
-      providerCatalog: providerCatalog ?? this.providerCatalog,
       selectedProjectId: identical(selectedProjectId, _studioStateUnset)
           ? this.selectedProjectId
           : selectedProjectId as String?,

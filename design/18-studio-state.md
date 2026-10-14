@@ -641,6 +641,11 @@ Settings 配置事实与模型目录观察是两个资源，分别使用 `settin
 frame 和 baseline 进入 settings store 的同一条 merge path，调用方不得按到达顺序整体替换
 （Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
 
+静态供应商目录是启动阶段加载的独立事实，只由 Dart `SettingsStore` 持有并与运行时
+配置快照组合显示。`BridgeStudioStateSnapshot` 不携带该目录；聚合快照转换不得以空目录
+覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。供应商 Logo、preset
+能力和目录模型均通过该唯一目录投影进入 UI。
+
 Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种不同事实，所有权与
 组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由 route 作用域
 控制器持有，canonical 永不覆盖；配置写入由 settings 命令 lane 串行化并以响应 canonical

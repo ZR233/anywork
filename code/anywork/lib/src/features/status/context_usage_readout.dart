@@ -19,7 +19,6 @@ class ContextUsageReadout extends StatefulWidget {
 
 class _ContextUsageReadoutState extends State<ContextUsageReadout> {
   bool _hovering = false;
-  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +36,6 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
           progress: progress,
           hasKnownCapacity: hasKnownCapacity,
         ),
-        onFocusChange: (focused) => setState(() => _focused = focused),
         detailBuilder: (context) => KeyedSubtree(
           key: StudioDriverKeys.contextUsageDetail(),
           child: _ContextDetail(
@@ -56,7 +54,7 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
               height: 26,
               padding: const EdgeInsets.symmetric(horizontal: 7),
               decoration: BoxDecoration(
-                color: _hovering || _focused
+                color: _hovering
                     ? context.colors.surface.withValues(alpha: 0.76)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(StudioRadii.xs),

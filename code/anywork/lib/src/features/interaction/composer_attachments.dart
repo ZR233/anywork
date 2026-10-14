@@ -21,13 +21,6 @@ class _AttachmentMenu extends StatefulWidget {
 
 class _AttachmentMenuState extends State<_AttachmentMenu> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'attachment-menu');
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,7 +31,6 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
     return MenuAnchor(
       key: StudioDriverKeys.attachmentEntry,
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
         if (widget.localCapabilities.isNotEmpty)
@@ -79,7 +71,6 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                 }
               }
             : null,
-        focusNode: _triggerFocusNode,
         icon: const Icon(Icons.attach_file),
       ),
     );

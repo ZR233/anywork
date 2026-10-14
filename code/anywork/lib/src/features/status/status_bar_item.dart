@@ -37,7 +37,6 @@ class StatusBarItem extends StatefulWidget {
 
 class _StatusBarItemState extends State<StatusBarItem> {
   bool _hovering = false;
-  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +76,7 @@ class _StatusBarItemState extends State<StatusBarItem> {
         ],
       ],
     );
-    final highlighted = (_hovering || _focused) && widget.enabled;
+    final highlighted = _hovering && widget.enabled;
     final content = AnimatedContainer(
       duration: const Duration(milliseconds: 120),
       height: 26,
@@ -100,12 +99,11 @@ class _StatusBarItemState extends State<StatusBarItem> {
     final detailBuilder = widget.detailBuilder;
     final Widget interactive;
     if (detailBuilder != null) {
-      // 详情弹层的锚定、悬停显隐、点击钉住与键盘入口由共享面板承担；
-      // 本组件只跟踪悬停/焦点状态用于高亮。
+      // 详情弹层的锚定、悬停显隐和点击钉住由共享面板承担；
+      // 本组件只跟踪悬停状态用于高亮。
       interactive = StudioAnchoredPanel(
         width: widget.detailWidth,
         enabled: widget.enabled,
-        showOnFocus: true,
         pinOpenOnTap: widget.interactive,
         panelIgnoresPointer: !widget.interactive,
         semanticsLabel: widget.interactive
@@ -113,15 +111,11 @@ class _StatusBarItemState extends State<StatusBarItem> {
             : null,
         semanticsValue: widget.label,
         onHoverChange: (hovering) => setState(() => _hovering = hovering),
-        onFocusChange: (focused) => setState(() => _focused = focused),
         panelBuilder: detailBuilder,
         child: hoverable,
       );
     } else {
-      interactive = Focus(
-        onFocusChange: (focused) => setState(() => _focused = focused),
-        child: hoverable,
-      );
+      interactive = hoverable;
     }
     final chip = Padding(
       padding: const EdgeInsets.only(right: 2),

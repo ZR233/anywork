@@ -109,11 +109,10 @@ StatusBarView? statusBarView(Ref ref) {
     thread: thread,
     runtime: runtime,
     permissionMode: canonical?.permissionMode ?? PermissionMode.requestApproval,
-    providers: [
-      for (final provider
-          in canonical?.providers ?? const <ProviderSettingsView>[])
-        providerWithCatalogMetadata(provider, settings.providerCatalog),
-    ],
+    providers: providersWithCatalogMetadata(
+      canonical?.providers ?? const <ProviderSettingsView>[],
+      settings.providerCatalog,
+    ),
     roles: canonical?.roles ?? const [],
     isBusy: session.activeTurn?.state.isBusy ?? false,
   );

@@ -1,7 +1,7 @@
 part of 'studio_shell.dart';
 
 /// 侧栏项目行：折叠箭头、文件夹、项目名、真实本地/SSH 标识、常驻新建
-/// 与更多菜单。完整路径不再常驻占用辅助行，悬停或聚焦项目名时在浮层
+/// 与更多菜单。完整路径不再常驻占用辅助行，悬停项目名时在浮层
 /// 详情中查看与复制；存在 recovery issue 时诊断提示优先。
 class _ProjectTile extends ConsumerWidget {
   const _ProjectTile({
@@ -32,125 +32,100 @@ class _ProjectTile extends ConsumerWidget {
       return _buildRow(context, ref, nameTooltip: issue.detail);
     }
     // 详情宿主锚定**整行**：卡片贴在完整项目行边界外侧，不再覆盖同项目的
-    // 新建/更多按钮和相邻会话行的状态/操作槽；名称 InkWell 复用宿主传入的
-    // 同一 focusNode，仍是唯一键盘选择入口，不新增 Focus/Tab 层。
+    // 新建/更多按钮和相邻会话行的状态/操作槽。
     return _SidebarHoverDetail(
       detailBuilder: (_) => _projectDetailCard(context),
-      childBuilder: (context, nameFocus, onMenuOpenChanged, onMenuBeforeOpen) =>
-          _buildRow(
-            context,
-            ref,
-            nameFocus: nameFocus,
-            onMenuOpenChanged: onMenuOpenChanged,
-            onMenuBeforeOpen: onMenuBeforeOpen,
-          ),
+      childBuilder: (context, onMenuOpenChanged, onMenuBeforeOpen) => _buildRow(
+        context,
+        ref,
+        onMenuOpenChanged: onMenuOpenChanged,
+        onMenuBeforeOpen: onMenuBeforeOpen,
+      ),
     );
   }
 
   /// 构建整行（折叠箭头、名称、常驻新建与更多菜单）。详情宿主/诊断 Tooltip
-  /// 由调用方决定，本方法只返回原有的快捷键、`skipTraversal` 焦点容器与
-  /// `projectRow` 键，保持全部行内语义不变。
+  /// 由调用方决定，本方法只返回行内控件与 `projectRow` 键。
   Widget _buildRow(
     BuildContext context,
     WidgetRef ref, {
-    FocusNode? nameFocus,
     ValueChanged<bool>? onMenuOpenChanged,
     VoidCallback? onMenuBeforeOpen,
     String? nameTooltip,
   }) {
     final general = ref.watch(shellGeneralProvider);
-    final nameArea = _buildProjectNameArea(context, ref, focusNode: nameFocus);
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () {
-          if (!expanded) onToggle();
-        },
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
-          if (expanded) onToggle();
-        },
-      },
-      child: Focus(
-        skipTraversal: true,
-        child: KeyedSubtree(
-          key: StudioDriverKeys.projectRow(project.id),
-          child: Row(
-            children: [
-              _tileIconButton(
-                key: StudioDriverKeys.projectExpand(project.id),
-                tooltip: context.l10n.sidebarProjects,
-                icon: expanded ? Icons.expand_more : Icons.chevron_right,
-                iconSize: 18,
-                minTarget: touchMode ? 44 : 32,
-                onPressed: onToggle,
-              ),
-              Expanded(
-                child: nameTooltip == null
-                    ? nameArea
-                    : Tooltip(message: nameTooltip, child: nameArea),
-              ),
-              _tileIconButton(
-                key: selected
-                    ? StudioDriverKeys.newSession
-                    : ValueKey('project-new-session-${project.id}'),
-                tooltip: '${context.l10n.sidebarNewSession} · ${project.name}',
-                icon: Icons.add,
-                iconSize: 18,
-                minTarget: touchMode ? 44 : 32,
-                onPressed: recoveryIssue == null
-                    ? () async {
-                        final commands = ref.read(
-                          directoryCommandsProvider.notifier,
-                        );
-                        await commands.selectProject(project.id);
-                        if (!context.mounted) return;
-                        await commands.beginNewThread();
-                        onNavigate?.call();
-                      }
-                    : null,
-              ),
-              SizedBox.square(
-                dimension: touchMode ? 44 : 32,
-                child: _ProjectMenuButton(
-                  menuKey: StudioDriverKeys.projectMenu(project.id),
-                  pinned: general.pinnedProjectIds.contains(project.id),
-                  onBeforeOpen: onMenuBeforeOpen,
-                  onOpenChanged: onMenuOpenChanged,
-                  onAction: (action) async {
-                    if (action == 'pin') {
-                      await _saveSidebarPreferences(
-                        ref,
-                        general: general,
-                        projectId: project.id,
-                      );
-                    }
-                    if (action == 'copy') {
-                      await Clipboard.setData(
-                        ClipboardData(text: project.path),
-                      );
-                    }
-                    if (action == 'close') {
-                      await ref
-                          .read(directoryCommandsProvider.notifier)
-                          .archiveProject(project.id);
-                    }
-                  },
-                ),
-              ),
-            ],
+    final nameArea = _buildProjectNameArea(context, ref);
+    return KeyedSubtree(
+      key: StudioDriverKeys.projectRow(project.id),
+      child: Row(
+        children: [
+          _tileIconButton(
+            key: StudioDriverKeys.projectExpand(project.id),
+            tooltip: context.l10n.sidebarProjects,
+            icon: expanded ? Icons.expand_more : Icons.chevron_right,
+            iconSize: 18,
+            minTarget: touchMode ? 44 : 32,
+            onPressed: onToggle,
           ),
-        ),
+          Expanded(
+            child: nameTooltip == null
+                ? nameArea
+                : Tooltip(message: nameTooltip, child: nameArea),
+          ),
+          _tileIconButton(
+            key: selected
+                ? StudioDriverKeys.newSession
+                : ValueKey('project-new-session-${project.id}'),
+            tooltip: '${context.l10n.sidebarNewSession} · ${project.name}',
+            icon: Icons.add,
+            iconSize: 18,
+            minTarget: touchMode ? 44 : 32,
+            onPressed: recoveryIssue == null
+                ? () async {
+                    final commands = ref.read(
+                      directoryCommandsProvider.notifier,
+                    );
+                    await commands.selectProject(project.id);
+                    if (!context.mounted) return;
+                    await commands.beginNewThread();
+                    onNavigate?.call();
+                  }
+                : null,
+          ),
+          SizedBox.square(
+            dimension: touchMode ? 44 : 32,
+            child: _ProjectMenuButton(
+              menuKey: StudioDriverKeys.projectMenu(project.id),
+              pinned: general.pinnedProjectIds.contains(project.id),
+              onBeforeOpen: onMenuBeforeOpen,
+              onOpenChanged: onMenuOpenChanged,
+              onAction: (action) async {
+                if (action == 'pin') {
+                  await _saveSidebarPreferences(
+                    ref,
+                    general: general,
+                    projectId: project.id,
+                  );
+                }
+                if (action == 'copy') {
+                  await Clipboard.setData(ClipboardData(text: project.path));
+                }
+                if (action == 'close') {
+                  await ref
+                      .read(directoryCommandsProvider.notifier)
+                      .archiveProject(project.id);
+                }
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildProjectNameArea(
-    BuildContext context,
-    WidgetRef ref, {
-    FocusNode? focusNode,
-  }) {
+  Widget _buildProjectNameArea(BuildContext context, WidgetRef ref) {
     final issue = recoveryIssue;
     return InkWell(
-      focusNode: focusNode,
       onTap: issue == null
           ? () async {
               await ref
@@ -307,7 +282,6 @@ class _ThreadTile extends ConsumerWidget {
       children: statusIndicators,
     );
     Widget tile({
-      FocusNode? focusNode,
       ValueChanged<bool>? onMenuOpenChanged,
       VoidCallback? onMenuBeforeOpen,
     }) => _SidebarTile(
@@ -323,7 +297,6 @@ class _ThreadTile extends ConsumerWidget {
           : null,
       trailing: statusArea,
       touchMode: touchMode,
-      focusNode: focusNode,
       actions: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -420,13 +393,11 @@ class _ThreadTile extends ConsumerWidget {
           ? _SidebarHoverDetail(
               detailBuilder: (detailContext) =>
                   _threadDetailCard(detailContext),
-              childBuilder:
-                  (context, focusNode, onMenuOpenChanged, onMenuBeforeOpen) =>
-                      tile(
-                        focusNode: focusNode,
-                        onMenuOpenChanged: onMenuOpenChanged,
-                        onMenuBeforeOpen: onMenuBeforeOpen,
-                      ),
+              childBuilder: (context, onMenuOpenChanged, onMenuBeforeOpen) =>
+                  tile(
+                    onMenuOpenChanged: onMenuOpenChanged,
+                    onMenuBeforeOpen: onMenuBeforeOpen,
+                  ),
             )
           : Tooltip(message: issue.detail, child: tile()),
     );
@@ -568,13 +539,6 @@ class _ProjectMenuButton extends StatefulWidget {
 
 class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'project-menu');
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   void _open() {
     widget.onBeforeOpen?.call();
@@ -595,7 +559,6 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
     return MenuAnchor(
       key: widget.menuKey,
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       alignmentOffset: const Offset(6, 6),
       onOpen: () => widget.onOpenChanged?.call(true),
       onClose: () => widget.onOpenChanged?.call(false),
@@ -622,7 +585,6 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
       child: IconButton(
         tooltip: context.l10n.sidebarProjects,
         onPressed: _open,
-        focusNode: _triggerFocusNode,
         visualDensity: VisualDensity.standard,
         style: const ButtonStyle(
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -675,13 +637,6 @@ class _ThreadMenuButton extends StatefulWidget {
 
 class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'thread-menu');
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   void _open() {
     widget.onBeforeOpen?.call();
@@ -705,7 +660,6 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
       child: MenuAnchor(
         key: StudioDriverKeys.threadMenu(thread.id),
         controller: _controller,
-        childFocusNode: _triggerFocusNode,
         alignmentOffset: const Offset(6, 6),
         onOpen: () => widget.onOpenChanged?.call(true),
         onClose: () => widget.onOpenChanged?.call(false),
@@ -781,7 +735,6 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
         ],
         child: IconButton(
           onPressed: _open,
-          focusNode: _triggerFocusNode,
           visualDensity: VisualDensity.standard,
           style: const ButtonStyle(
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,

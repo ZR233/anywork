@@ -541,7 +541,6 @@ Future<void> _showStudioImageDialog(
   required Key dialogKey,
   String? label,
 }) async {
-  final previousFocus = FocusManager.instance.primaryFocus;
   await showDialog<void>(
     context: context,
     barrierDismissible: true,
@@ -607,5 +606,4 @@ Future<void> _showStudioImageDialog(
       ),
     ),
   );
-  previousFocus?.requestFocus();
 }

@@ -296,11 +296,10 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
         ? AgentComposerMode.runtimeDriven
         : AgentComposerMode.editable,
     permissionMode: canonical?.permissionMode ?? PermissionMode.requestApproval,
-    providers: [
-      for (final provider
-          in canonical?.providers ?? const <ProviderSettingsView>[])
-        providerWithCatalogMetadata(provider, settings.providerCatalog),
-    ],
+    providers: providersWithCatalogMetadata(
+      canonical?.providers ?? const <ProviderSettingsView>[],
+      settings.providerCatalog,
+    ),
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
     agents: agentsForThreads(workspaceThreads, agents),

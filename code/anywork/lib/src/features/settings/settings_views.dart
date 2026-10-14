@@ -80,8 +80,10 @@ class SettingsProvidersView {
   final int modelCatalogRevision;
   final String providerCatalogRevision;
 
-  List<ProviderSettingsView> get providers =>
-      settingsCanonicalProviders(canonical, providerCatalog);
+  List<ProviderSettingsView> get providers => providersWithCatalogMetadata(
+    canonical?.providers ?? const <ProviderSettingsView>[],
+    providerCatalog,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -282,8 +284,10 @@ class SettingsAgentsView {
   final int settingsRevision;
   final String providerCatalogRevision;
 
-  List<ProviderSettingsView> get providers =>
-      settingsCanonicalProviders(canonical, providerCatalog);
+  List<ProviderSettingsView> get providers => providersWithCatalogMetadata(
+    canonical?.providers ?? const <ProviderSettingsView>[],
+    providerCatalog,
+  );
 
   List<RoleSettingsView> get roles => canonical?.roles ?? const [];
 
@@ -667,17 +671,6 @@ SettingsCommands readSettingsCommands(WidgetRef ref) =>
 
 DirectoryCommands readDirectoryCommands(WidgetRef ref) =>
     ref.read(directoryCommandsProvider.notifier);
-
-List<ProviderSettingsView> settingsCanonicalProviders(
-  SettingsStateSnapshot? canonical,
-  ProviderCatalogView catalog,
-) {
-  final source = canonical?.providers ?? const <ProviderSettingsView>[];
-  return [
-    for (final provider in source)
-      providerWithCatalogMetadata(provider, catalog),
-  ];
-}
 
 class _SelectedSessionFacts {
   const _SelectedSessionFacts({

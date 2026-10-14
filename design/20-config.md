@@ -368,6 +368,10 @@ preset、endpoint、凭证提示、协议、允许连接模式、suggested model
 模型角色初始化为创建时选择的 suggested/default model 和该模型声明的默认 effort，该选择
 只投影为五条 route，不写入 provider runtime。
 
+静态 provider catalog 由启动事实加载器写入 `SettingsStore`，不属于 `readStudioState`
+聚合快照。空 revision 或无 preset 的目录只表示未初始化，不能覆盖已有目录；设置页、状态
+栏和其他产品投影必须通过同一个 catalog selector 取得 Logo 与 preset 元数据。
+
 内置目录装配失败必须沿目录查询、模板选择和草稿构造接口返回原始错误，不得静默使用空目录
 或触发 panic；此类错误属于程序定义故障，不进入用户配置损坏的重置流程。
 

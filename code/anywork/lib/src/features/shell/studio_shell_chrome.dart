@@ -135,15 +135,6 @@ class _SessionOpenWorkspaceMenu extends ConsumerStatefulWidget {
 class _SessionOpenWorkspaceMenuState
     extends ConsumerState<_SessionOpenWorkspaceMenu> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(
-    debugLabel: 'session-open-workspace-menu',
-  );
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -165,7 +156,6 @@ class _SessionOpenWorkspaceMenuState
         : '$alias:${thread.workspacePath}';
     return MenuAnchor(
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
         _menuItem(
@@ -210,7 +200,6 @@ class _SessionOpenWorkspaceMenuState
               _controller.open();
             }
           },
-          focusNode: _triggerFocusNode,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -468,13 +457,6 @@ class _AgentSwitcher extends ConsumerStatefulWidget {
 
 class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
   final MenuController _controller = MenuController();
-  final FocusNode _triggerFocusNode = FocusNode(debugLabel: 'agent-switcher');
-
-  @override
-  void dispose() {
-    _triggerFocusNode.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -496,7 +478,6 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
         .toDouble();
     return MenuAnchor(
       controller: _controller,
-      childFocusNode: _triggerFocusNode,
       style: MenuStyle(
         minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
         maximumSize: WidgetStatePropertyAll(Size(menuWidth, menuHeight)),
@@ -572,7 +553,6 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
       ],
       child: TextButton(
         key: StudioDriverKeys.agentSwitcher,
-        focusNode: _triggerFocusNode,
         onPressed: () {
           if (_controller.isOpen) {
             _controller.close();

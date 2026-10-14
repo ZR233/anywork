@@ -41,11 +41,10 @@ void projectStudioDriverState(ProviderContainer container) {
   final threads = directory.window.threads;
   final settings = container.read(settingsStoreProvider);
   final canonical = settings.canonical;
-  final providers = [
-    for (final provider
-        in canonical?.providers ?? const <ProviderSettingsView>[])
-      providerWithCatalogMetadata(provider, settings.providerCatalog),
-  ];
+  final providers = providersWithCatalogMetadata(
+    canonical?.providers ?? const <ProviderSettingsView>[],
+    settings.providerCatalog,
+  );
   final projects =
       container.read(projectStoreProvider).projects?.values ??
       const <StudioProject>[];

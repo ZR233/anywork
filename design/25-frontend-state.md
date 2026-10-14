@@ -63,6 +63,11 @@ Widget ← 小型 selector ← feature read model ← 有序帧 ← Rust owner
 
 configuration 与 model catalog 分别建 read model，组合显示由纯 selector 完成，不保留两份配置/目录双时钟合并函数。显示优先级为明确草稿，其次当前 operation 的 pending 目标，最后 canonical。
 
+静态 provider catalog 是启动事实，由 `SettingsStore` 单独持有；它不进入 FRB 聚合快照，
+也不得被空的聚合默认值覆盖。Logo、preset 能力和目录模型通过唯一 selector 与运行时
+provider 配置组合，FRB 初始化仍由现有 `RustLib`/native runtime owner 管理，不需要新增
+进程级 Dart 单例。
+
 ## 25.4 观察生命周期
 
 App-root 在 Navigator 之外维持必要配置和当前选中会话的小型执行/保存状态观察。页面不再以“仍挂载”为理由假定 Riverpod 监听持续活跃。
