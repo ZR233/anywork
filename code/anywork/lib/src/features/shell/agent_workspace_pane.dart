@@ -33,9 +33,15 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   @override
   Widget build(BuildContext context) {
     final selection = ref.watch(shellSelectionProvider);
+    final threadId = selection.selectedThreadId;
+    if (threadId != null && !selection.needsOpen) {
+      // 派生投影（shell workspace / timeline window）会在每个内容帧后重算，
+      // 重算期间可能暂时没有下游监听者。由 pane 持有稳定的会话租约，避免这种
+      // 纯投影抖动触发 ThreadSessionStore.onCancel，进而关闭真实 FRB ChatView。
+      ref.watch(threadSessionStoreProvider(threadId));
+    }
     final workspace = ref.watch(shellComposerWorkspaceProvider);
     final timeline = ref.watch(timelineSessionWindowProvider);
-    final threadId = selection.selectedThreadId;
     // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
     if (threadId == null) return const _StudioStartPage();
     if (workspace == null || workspace.threadId != threadId) {
