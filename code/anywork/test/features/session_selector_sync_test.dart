@@ -190,6 +190,53 @@ void main() {
       reason: '旧选中行不得保持深色选中态',
     );
   });
+
+  testWidgets('切换模型后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
+    final initial = container.read(startPageComposerViewProvider);
+    final route = initial.displayRoute(initial.mode);
+    expect(route, isNotNull);
+    final options = modelOptions(initial.providers);
+    expect(options.length, greaterThan(1), reason: '模型目录需要至少两个候选');
+    final current = options.firstWhere(
+      (option) =>
+          option.providerId == route!.providerId && option.model == route.model,
+    );
+    final next = options.firstWhere(
+      (option) =>
+          option.providerId != route!.providerId || option.model != route.model,
+    );
+
+    await tester.pumpWidget(harness(const _ModelSelectorHost()));
+    await tester.pumpAndSettle();
+
+    final trigger = find.byKey(StudioDriverKeys.model);
+    final before = current.displayName;
+    expect(find.text(before), findsOneWidget);
+    await tester.tap(trigger);
+    await tester.pumpAndSettle();
+    final nextKey = StudioDriverKeys.modelOption(next.providerId, next.model);
+    expect(selectedRow(nextKey), findsNothing);
+
+    await tester.tap(find.byKey(nextKey));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(MenuItemButton),
+      findsNothing,
+      reason: '选择模型后官方菜单必须关闭',
+    );
+    expect(find.text(next.displayName), findsOneWidget);
+    expect(find.text(before), findsNothing);
+    final after = container
+        .read(startPageComposerViewProvider)
+        .displayRoute(initial.mode);
+    expect(after?.providerId, next.providerId);
+    expect(after?.model, next.model);
+
+    await tester.tap(trigger);
+    await tester.pumpAndSettle();
+    expect(selectedRow(nextKey), findsOneWidget, reason: '模型选中态必须随草稿事实移动');
+  });
 }
 
 class _ModeSelectorHost extends ConsumerWidget {
@@ -228,6 +275,28 @@ class _EffortSelectorHost extends ConsumerWidget {
         ref
             .read(startSessionControllerProvider.notifier)
             .setEffortIntent(page.mode, effort);
+      },
+    );
+  }
+}
+
+class _ModelSelectorHost extends ConsumerWidget {
+  const _ModelSelectorHost();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final page = ref.watch(startPageComposerViewProvider);
+    final route = page.displayRoute(page.mode);
+    if (route == null) return const SizedBox.shrink();
+    return ModelRoleSelector(
+      providers: page.providers,
+      providerId: route.providerId,
+      model: route.model,
+      effort: route.effort,
+      onModelSelected: (providerId, model) {
+        ref
+            .read(startSessionControllerProvider.notifier)
+            .setModelIntent(page.mode, providerId, model);
       },
     );
   }
