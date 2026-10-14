@@ -155,6 +155,7 @@ class _StartPageComposerBodyState
   Widget build(BuildContext context) {
     final projection = ref.watch(startPageComposerViewProvider);
     final projectId = projection.project?.id;
+    final selectorsEnabled = projection.canSubmit && !projection.submitting;
     final mode = projection.mode;
     final route = projection.displayRoute(mode);
     final pending = projection.routePending(mode) || projection.submitting;
@@ -201,10 +202,12 @@ class _StartPageComposerBodyState
                 children: [
                   SessionModeSelector(
                     mode: mode,
+                    enabled: selectorsEnabled,
                     onSelected: (next) => _setMode(next),
                   ),
                   SessionWorkspaceModeSelector(
                     mode: projection.workspaceMode,
+                    enabled: selectorsEnabled,
                     onSelected: _setWorkspaceMode,
                   ),
                   ..._modelRouteSelectorChildren(
@@ -216,6 +219,7 @@ class _StartPageComposerBodyState
                       mode,
                     ),
                     pending: pending,
+                    enabled: selectorsEnabled,
                     unavailableReason: unavailableReason,
                     onModelSelected: (providerId, model) {
                       ref
@@ -829,7 +833,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               onRemove: (id) => unawaited(widget.onRemoveAttachment(id)),
             ),
           Focus(
-            canRequestFocus: false,
             skipTraversal: true,
             onKeyEvent: _handleComposerKey,
             child: TextField(
@@ -1213,6 +1216,7 @@ List<Widget> _modelRouteSelectorChildren({
   required List<ProviderSettingsView> providers,
   required bool requiresFunctionCalling,
   required bool pending,
+  bool enabled = true,
   required String unavailableReason,
   String? providerId,
   String? model,
@@ -1239,6 +1243,7 @@ List<Widget> _modelRouteSelectorChildren({
         model: model ?? '',
         effort: effort,
         requiresFunctionCalling: requiresFunctionCalling,
+        enabled: enabled,
         pending: pending,
         available: false,
         unavailableReason: unavailableReason,
@@ -1257,6 +1262,7 @@ List<Widget> _modelRouteSelectorChildren({
       model: model,
       effort: effort,
       requiresFunctionCalling: requiresFunctionCalling,
+      enabled: enabled,
       pending: pending,
       available: available,
       unavailableReason: routeUnavailableReason,
@@ -1270,6 +1276,7 @@ List<Widget> _modelRouteSelectorChildren({
       providerId: providerId,
       model: model,
       effort: effort,
+      enabled: enabled,
       pending: pending,
       blockedReason: blockedReason,
       onExplain: onExplain,

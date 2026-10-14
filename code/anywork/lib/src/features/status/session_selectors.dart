@@ -229,11 +229,13 @@ class SessionWorkspaceModeSelector extends ConsumerWidget {
   const SessionWorkspaceModeSelector({
     required this.mode,
     required this.onSelected,
+    this.enabled = true,
     super.key,
   });
 
   final ThreadWorkspaceMode mode;
   final ValueChanged<ThreadWorkspaceMode> onSelected;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -241,6 +243,7 @@ class SessionWorkspaceModeSelector extends ConsumerWidget {
     return _QuietSelectorMenu<ThreadWorkspaceMode>(
       key: StudioDriverKeys.sessionWorkspaceMode,
       tooltip: l10n.composerWorkspaceModeLabel,
+      enabled: enabled,
       onSelected: onSelected,
       items: [
         _QuietMenuItem<ThreadWorkspaceMode>(
@@ -266,7 +269,11 @@ class SessionWorkspaceModeSelector extends ConsumerWidget {
           ),
         ),
       ],
-      child: StudioMenuLabel(label: _label(context), maxWidth: 96),
+      child: StudioMenuLabel(
+        label: _label(context),
+        enabled: enabled,
+        maxWidth: 96,
+      ),
     );
   }
 
@@ -323,6 +330,7 @@ class ModelRoleSelector extends StatelessWidget {
     required this.effort,
     this.onSelected,
     this.onModelSelected,
+    this.enabled = true,
     this.pending = false,
     this.available = true,
     this.unavailableReason,
@@ -342,6 +350,7 @@ class ModelRoleSelector extends StatelessWidget {
   /// callbacks below so model and reasoning effort cannot overwrite siblings.
   final ModelRouteChanged? onSelected;
   final ModelSelectionChanged? onModelSelected;
+  final bool enabled;
 
   /// Kept in the projection for status/optimistic rendering. Selection stays
   /// enabled while pending so the coordinator can supersede an older intent.
@@ -417,8 +426,8 @@ class ModelRoleSelector extends StatelessWidget {
           // Pending is an optimistic projection, not a lock.  The controller
           // supersedes older route intents by stable target identity, so users
           // can select A -> B -> C without waiting for each Bridge round trip.
-          enabled: selectionBlockedReason == null,
-          onBlockedTap: selectionBlockedReason == null
+          enabled: enabled && selectionBlockedReason == null,
+          onBlockedTap: !enabled || selectionBlockedReason == null
               ? null
               : () => explain(selectionBlockedReason),
           onSelected: (option) async {
@@ -454,6 +463,7 @@ class ReasoningEffortSelector extends StatelessWidget {
     required this.effort,
     this.onSelected,
     this.onEffortSelected,
+    this.enabled = true,
     this.pending = false,
     this.blockedReason,
     this.onExplain,
@@ -466,6 +476,7 @@ class ReasoningEffortSelector extends StatelessWidget {
   final String? effort;
   final ModelRouteChanged? onSelected;
   final EffortSelectionChanged? onEffortSelected;
+  final bool enabled;
   final bool pending;
   final String? blockedReason;
   final ValueChanged<String>? onExplain;
@@ -485,13 +496,16 @@ class ReasoningEffortSelector extends StatelessWidget {
             selectedEffort ?? context.l10n.settingsMissing,
           )
         : selectedEffort;
-    final enabled =
-        currentModel != null && efforts.isNotEmpty && blockedReason == null;
+    final selectionEnabled =
+        enabled &&
+        currentModel != null &&
+        efforts.isNotEmpty &&
+        blockedReason == null;
     return _QuietSelectorMenu<String>(
       key: StudioDriverKeys.reasoningEffort,
       tooltip: blockedReason ?? context.l10n.statusReasoningEffort,
-      enabled: enabled,
-      onBlockedTap: blockedReason == null
+      enabled: selectionEnabled,
+      onBlockedTap: !enabled || blockedReason == null
           ? null
           : () => onExplain?.call(blockedReason!),
       onSelected: (nextEffort) {
@@ -512,7 +526,7 @@ class ReasoningEffortSelector extends StatelessWidget {
             child: Text(effort),
           ),
       ],
-      child: _ControlItem(label: label, enabled: enabled),
+      child: _ControlItem(label: label, enabled: selectionEnabled),
     );
   }
 }

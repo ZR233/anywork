@@ -9,6 +9,7 @@ import 'package:anywork/src/data/stores/project_store.dart';
 import 'package:anywork/src/data/stores/selection_store.dart';
 import 'package:anywork/src/data/stores/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
+import 'package:anywork/src/features/interaction/composer_dock.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/features/interaction/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
@@ -236,6 +237,69 @@ void main() {
     await tester.tap(trigger);
     await tester.pumpAndSettle();
     expect(selectedRow(nextKey), findsOneWidget, reason: '模型选中态必须随草稿事实移动');
+  });
+
+  testWidgets('未打开项目时输入与会话选择器按同一准入状态禁用', (tester) async {
+    container
+        .read(selectionStoreProvider.notifier)
+        .restoreStartup(projectId: null, threadId: null, needsOpen: false);
+
+    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpAndSettle();
+
+    final input = tester.widget<TextField>(
+      find.byKey(StudioDriverKeys.composerInput),
+    );
+    expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
+
+    for (final key in [
+      StudioDriverKeys.sessionMode,
+      StudioDriverKeys.sessionWorkspaceMode,
+      StudioDriverKeys.model,
+    ]) {
+      final trigger = find.descendant(
+        of: find.byKey(key),
+        matching: find.byType(TextButton),
+      );
+      expect(trigger, findsOneWidget, reason: '选择器仍应使用官方 TextButton');
+      expect(
+        tester.widget<TextButton>(trigger).onPressed,
+        isNull,
+        reason: '$key 必须反映未打开项目的禁用状态',
+      );
+    }
+  });
+
+  testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
+    final projectId = container.read(selectionStoreProvider).selectedProjectId!;
+
+    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpAndSettle();
+
+    final input = find.byKey(StudioDriverKeys.composerInput);
+    expect(tester.widget<TextField>(input).enabled, isTrue);
+    await tester.tap(input);
+    await tester.enterText(input, '新会话正文');
+    await tester.pump();
+    expect(
+      container.read(startSessionControllerProvider).forProject(projectId).text,
+      '新会话正文',
+    );
+
+    await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
+    await tester.pumpAndSettle();
+    final worktreeKey = StudioDriverKeys.sessionWorkspaceModeOption(
+      ThreadWorkspaceMode.worktree.id,
+    );
+    await tester.tap(find.byKey(worktreeKey));
+    await tester.pumpAndSettle();
+    expect(
+      container
+          .read(startSessionControllerProvider)
+          .forProject(projectId)
+          .workspaceMode,
+      ThreadWorkspaceMode.worktree,
+    );
   });
 }
 
