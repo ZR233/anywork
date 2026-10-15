@@ -52,10 +52,12 @@
 - Rust crate 名称统一以 `pl-` 开头，例如 `pl-core`、`pl-model`、`pl-studio-bridge`。
 - Flutter app 的 Dart package 名称是 `anywork`。
 - Flutter 项目根目录是 `code/anywork`。
+- SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；Client 命令通过 `cargo xtask verify-client` 在正确目录执行。
+- 每个 `AppGraph` 拥有独立 Client 与资源。`presentation/providers` 只适配只读观察；其销毁只能取消自己的观察和预算 permit，不能关闭 Session/ChatView、清草稿或清附件。业务意图直接调用 Client action；`features/**` 不导入 FRB、transport 或 Client 私有实现。
 
 ### Flutter 与 Dart 命令
 
-- 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。项目命令的工作目录必须是 `code/anywork`，或由仓库包装命令显式切换到该目录。
+- 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。Flutter app 命令的工作目录必须是 `code/anywork`；纯 Client 命令由 `verify-client` 切换到 `code/anywork_client`。不得在 SDK 目录执行项目命令。
 - 从仓库根目录执行 Flutter/Dart 命令时，优先使用 `cargo flutter <args...>` 和 `cargo dart <args...>`；参数原样透传，包装命令会自动切换到 `code/anywork`。
 - 只有包装命令无法满足需求时，才可直接运行 `flutter` 或 `dart`，且必须先把工作目录切换到 `code/anywork`；不得把 SDK 目录当作项目目录。
 - 常用命令：
@@ -154,7 +156,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 - 验证按实际影响选择。纯文档、技能或协作规则修改（包括提交前）只检查内容、引用、规则一致性及适用格式，不运行 Rust、Flutter、GUI 或 live 全量验收；若同时改变构建／生成输入、运行配置或测试执行语义，则按这些实际影响验证。代码修改先运行定向检查，跨 crate、协议、构建或依赖变更扩展到相关消费者；提交前执行下述代码门禁，生成输入、GUI 行为与 live 验收另遵守对应要求。
 - 适用检查通过且需求已满足后直接交付；只有新修改、失败或尚未解决的具体风险才扩展或重复验证。只读分析以结论与出处为完成条件；修改任务以范围内修改完成、适用验证通过和差异可审查为完成条件；提 PR 任务还须交付 PR 链接及实际 CI 状态，排队或运行中不算通过。环境或权限阻塞时报告已完成项、原始失败和剩余工作，不声称全部完成。
-- 项目自有的常规自动化用例仅位于 `pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；仅 `pl-studio-runtime` 历史保存与数据迁移允许专项故障注入测试，不为测试扩展生产公共接口。其他 crate 不新增测试，Flutter widget/integration 与发布脚本测试仍不进入门禁。两库测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
+- Rust 常规自动化用例位于 `pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；纯 Dart Client 的公开行为测试位于 `code/anywork_client/test/`，Riverpod/路由适配契约测试位于 `code/anywork/test/client/` 并纳入 `verify-client` 门禁；仅 `pl-studio-runtime` 历史保存与数据迁移允许专项故障注入测试，不为测试扩展生产公共接口。其他 Rust crate 不新增测试；除上述 Client 适配契约外，Flutter widget/integration 与发布脚本测试仍不进入门禁。两库测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 代码、构建、依赖或生成输入变更提交前，在本地执行与 CI 一致的检查清单（纯说明性变更按本节首条豁免；只需保证当前环境通过；
@@ -167,6 +169,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo test -p pl-model
   cargo test -p pl-core --features sqlite
   cargo test -p pl-studio-runtime
+  cargo xtask verify-client
   cargo xtask verify-gui
   ```
 

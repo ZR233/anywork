@@ -3,9 +3,10 @@
 use anyhow::{Context, Result, bail};
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
-    RemoveProviderRequest, SetDefaultProviderRequest, SetThreadModelRouteRequest,
-    SettingsFieldUpdate, SettingsStateResponse, ThreadModelRouteUpdateResponse,
-    UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
+    CommandEffectPoint, RemoveProviderRequest, SetDefaultProviderRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
+    ThreadModelRouteCommandReply, UpdatePermissionSettingsRequest, UpdateProviderRequest,
+    UpdateSettingsFieldRequest,
 };
 
 use crate::config::{ModelRouteConfig, ProviderId, ReasoningEffort};
@@ -21,7 +22,7 @@ pub(crate) use view::{model_catalog_snapshot, settings_config_snapshot, settings
 use view::{normalized_optional, normalized_string_list};
 
 impl StudioRuntime {
-    fn settings_response(
+    pub(super) fn read_settings_response(
         &self,
         state: &crate::ConfigRuntimeSnapshot,
     ) -> Result<SettingsStateResponse> {
@@ -35,7 +36,7 @@ impl StudioRuntime {
 
     /// Reads the secret-free canonical Settings snapshot from the in-memory owner.
     pub fn read_settings(&self) -> Result<SettingsStateResponse> {
-        self.settings_response(&self.config_runtime.read()?)
+        self.read_settings_response(&self.config_runtime.read()?)
     }
 
     /// Applies one typed settings field/resource mutation.
@@ -47,7 +48,8 @@ impl StudioRuntime {
     pub async fn apply_settings_field(
         &self,
         request: UpdateSettingsFieldRequest,
-    ) -> Result<SettingsStateResponse> {
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let mark_skills_stale = matches!(
             &request.update,
             SettingsFieldUpdate::SkillsEnabled { .. }
@@ -65,11 +67,20 @@ impl StudioRuntime {
                 | SettingsFieldUpdate::McpServerTransport { .. }
                 | SettingsFieldUpdate::McpServerEndpoint { .. }
         );
+        let effect = match &request.update {
+            SettingsFieldUpdate::GeneralFollowActiveTurn { .. }
+            | SettingsFieldUpdate::GeneralCompactTimeline { .. }
+            | SettingsFieldUpdate::GeneralSidebarWidth { .. }
+            | SettingsFieldUpdate::GeneralPinnedThreadIds { .. }
+            | SettingsFieldUpdate::GeneralPinnedProjectIds { .. } => CommandEffectPoint::Immediate,
+            _ => CommandEffectPoint::FutureSession,
+        };
+        let mut changed = false;
         let update = request.update;
         let state = self.config_runtime.update_with_effective(
             request.expected_revision,
-            |config, effective| {
-                let mut config = config.clone();
+            |desired, effective| {
+                let mut config = desired.clone();
                 let route_validation_config = if matches!(
                     &update,
                     SettingsFieldUpdate::ModeModel { .. }
@@ -318,6 +329,7 @@ impl StudioRuntime {
                     }
                 }
                 config.validate_declarations()?;
+                changed = desired != &config;
                 Ok(config)
             },
         )?;
@@ -328,24 +340,32 @@ impl StudioRuntime {
         if reconcile_mcp {
             self.reconcile_mcp_runtime().await?;
         }
-        self.settings_response(&state)
+        self.settings_command_reply(request.operation_id, &state, changed, effect)
     }
 
     pub fn save_permission_settings(
         &self,
         request: UpdatePermissionSettingsRequest,
-    ) -> Result<SettingsStateResponse> {
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let mode = PermissionMode::from_label(&request.mode)
             .ok_or_else(|| invalid_settings_argument("Unsupported permission mode"))?;
+        let mut changed = false;
         let state = self
             .config_runtime
             .update(request.expected_revision, |config| {
                 let mut config = config.clone();
+                changed = config.runtime.permission_mode != mode;
                 config.runtime.permission_mode = mode;
                 Ok(config)
             })?;
         self.publish_settings_state(state.clone())?;
-        self.settings_response(&state)
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            changed,
+            CommandEffectPoint::FutureSession,
+        )
     }
 
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
@@ -354,13 +374,14 @@ impl StudioRuntime {
         self.skills.mark_all_stale().await;
         let _ = self.apply_provider_config(&state.config).await?;
         self.reconcile_mcp_runtime().await?;
-        self.settings_response(&state)
+        self.read_settings_response(&state)
     }
 
     pub async fn save_provider(
         &self,
         request: UpdateProviderRequest,
-    ) -> Result<SettingsStateResponse> {
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let provider = provider_edit::provider_edit(request.provider, &current.config)?;
         let next = provider.to_single_config(&current.config)?;
@@ -370,13 +391,19 @@ impl StudioRuntime {
         self.publish_settings_state(state.clone())?;
         let _ = self.apply_provider_config(&state.config).await?;
         self.reconcile_mcp_runtime().await?;
-        self.settings_response(&state)
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            current.canonical_config() != state.canonical_config(),
+            CommandEffectPoint::FutureSession,
+        )
     }
 
     pub fn set_default_provider(
         &self,
         request: SetDefaultProviderRequest,
-    ) -> Result<SettingsStateResponse> {
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let provider_id = ProviderId::new(request.provider_id.trim())?;
         let provider = current
@@ -422,10 +449,16 @@ impl StudioRuntime {
             .config_runtime
             .replace(request.expected_revision, next)?;
         self.publish_settings_state(state.clone())?;
-        self.settings_response(&state)
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            current.canonical_config() != state.canonical_config(),
+            CommandEffectPoint::FutureSession,
+        )
     }
 
-    pub fn remove_provider(&self, request: RemoveProviderRequest) -> Result<SettingsStateResponse> {
+    pub fn remove_provider(&self, request: RemoveProviderRequest) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let next = crate::config_editor::remove_provider(
             &current.config,
@@ -436,14 +469,20 @@ impl StudioRuntime {
             .config_runtime
             .replace(request.expected_revision, next)?;
         self.publish_settings_state(state.clone())?;
-        self.settings_response(&state)
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            current.canonical_config() != state.canonical_config(),
+            CommandEffectPoint::FutureSession,
+        )
     }
 
     pub async fn save_thread_model_route(
         &self,
         thread_id: &str,
         request: SetThreadModelRouteRequest,
-    ) -> Result<ThreadModelRouteUpdateResponse> {
+    ) -> Result<ThreadModelRouteCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let _guard = self.lifecycle_lock.lock().await;
         let record = self.read_owned_thread(thread_id).await?;
         anyhow::ensure!(
@@ -497,7 +536,7 @@ impl StudioRuntime {
             route.reasoning_config(),
         )
         .validate_context_origin(&state.context)?;
-        match thread
+        let committed = match thread
             .queue_deferred_model_update_if_current(
                 self.deferred_model_update(&route, &settings.config)?,
                 pl_core::thread::DeferredModelUpdatePrecondition::commit_sequence(
@@ -511,7 +550,7 @@ impl StudioRuntime {
             )
             .await
         {
-            Ok(_) => {}
+            Ok(committed) => committed,
             Err(pl_core::thread::ThreadError::ExtensionConflict {
                 id,
                 expected: Some(expected),
@@ -520,16 +559,29 @@ impl StudioRuntime {
                 return Err(crate::ConfigRuntimeError::StaleRevision { expected, actual }.into());
             }
             Err(error) => return Err(error.into()),
-        }
+        };
+        let route_changed = previous.payload
+            != committed
+                .extensions
+                .get(route_extension_id)
+                .context("committed route missing")?
+                .payload;
+        let route_revision = committed
+            .extensions
+            .get(route_extension_id)
+            .context("committed route missing")?
+            .revision;
         self.tool_catalog_updates.notify_one();
 
+        let mut confirmed_settings = settings.clone();
+        let mut default_changed = false;
         let mut mode_default_saved = false;
         let mut warning = None;
         for _ in 0..3 {
             let latest = self.config_runtime.read()?;
-            let mut config = latest.config;
+            let mut config = latest.canonical_config().clone();
             let candidate = match validated_route(
-                &config,
+                &latest.config,
                 &format!("Thread Mode {mode}"),
                 &request.provider_id,
                 &request.model,
@@ -546,6 +598,8 @@ impl StudioRuntime {
             config.mode_model_routes.insert(mode.clone(), candidate);
             match self.config_runtime.replace(latest.revision, config) {
                 Ok(updated) => {
+                    default_changed = latest.canonical_config() != updated.canonical_config();
+                    confirmed_settings = updated.clone();
                     if let Err(error) = self.publish_settings_state(updated) {
                         warning = Some(format!(
                             "current Thread and Mode default were saved, but the Settings event was not published: {error}"
@@ -572,9 +626,21 @@ impl StudioRuntime {
         let runtime = snapshot
             .runtime
             .context("Thread runtime snapshot is unavailable")?;
-        Ok(ThreadModelRouteUpdateResponse {
+        let mut targets =
+            vec![self.resource_stamp(format!("thread-route:{thread_id}"), route_revision)];
+        if mode_default_saved {
+            targets.push(self.resource_stamp("settings", confirmed_settings.revision));
+        }
+        Ok(ThreadModelRouteCommandReply {
             runtime,
-            settings: self.read_settings()?,
+            receipt: self.command_receipt(
+                request.operation_id,
+                route_changed || default_changed,
+                targets,
+                CommandEffectPoint::NextTurn,
+                false,
+            ),
+            settings: self.read_settings_response(&confirmed_settings)?,
             mode_default_saved,
             warning,
         })
@@ -707,7 +773,7 @@ fn apply_mcp_server_endpoint(
     Ok(())
 }
 
-fn validated_route(
+pub(super) fn validated_route(
     config: &crate::StudioConfig,
     subject: &str,
     provider_id: &str,

@@ -1,24 +1,27 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
-import 'settings_views.dart';
 
-class InstructionsTab extends ConsumerStatefulWidget {
-  const InstructionsTab({super.key, required this.settings});
+class InstructionsTab extends StatefulWidget {
+  const InstructionsTab({
+    super.key,
+    required this.settings,
+    required this.onCommand,
+  });
 
   final InstructionsSettingsView settings;
+  final Future<void> Function(SettingsFieldCommand) onCommand;
 
   @override
-  ConsumerState<InstructionsTab> createState() => _InstructionsTabState();
+  State<InstructionsTab> createState() => _InstructionsTabState();
 }
 
-class _InstructionsTabState extends ConsumerState<InstructionsTab> {
+class _InstructionsTabState extends State<InstructionsTab> {
   late final TextEditingController _baseController;
   late final TextEditingController _developerController;
   late final TextEditingController _userController;
@@ -141,21 +144,18 @@ class _InstructionsTabState extends ConsumerState<InstructionsTab> {
       _error = null;
     });
     try {
-      final commands = readSettingsCommands(ref);
       if (_baseController.text != widget.settings.baseOverride) {
-        await commands.applySettingsField(
+        await widget.onCommand(
           InstructionBaseOverrideCommand(_baseController.text),
         );
       }
       if (_developerController.text != widget.settings.developer) {
-        await commands.applySettingsField(
+        await widget.onCommand(
           InstructionDeveloperCommand(_developerController.text),
         );
       }
       if (_userController.text != widget.settings.user) {
-        await commands.applySettingsField(
-          InstructionUserCommand(_userController.text),
-        );
+        await widget.onCommand(InstructionUserCommand(_userController.text));
       }
     } catch (error) {
       if (mounted) {

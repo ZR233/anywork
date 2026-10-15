@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,20 +8,17 @@ import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/commands/settings_commands.dart';
-import '../../data/commands/thread_commands.dart';
-import '../../domain/models/studio_models.dart';
+
 import '../../l10n/studio_l10n.dart';
 import '../../platform/clipboard_image_reader.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
-import 'attachment_drafts.dart';
-import 'composer_draft_controller.dart';
 import 'composer_view.dart';
 import 'interaction_payload.dart';
-import 'start_session_controller.dart';
+import '../../presentation/providers/start_session_controller.dart';
 import 'plan_confirmation_dock.dart';
 import 'tool_approval_dock.dart';
 import 'user_input_dock.dart';
@@ -28,24 +26,17 @@ import 'user_input_dock.dart';
 part 'composer_attachments.dart';
 
 class ComposerDock extends ConsumerWidget {
-  const ComposerDock({
-    required this.workspace,
-    this.compact = false,
-    super.key,
-  });
+  const ComposerDock({required this.threadId, this.compact = false, super.key});
 
-  final AgentWorkspaceView workspace;
+  final String threadId;
 
   /// 矮窗口紧凑布局：收起留白与输入行数，但发送/停止等操作保持不变。
   final bool compact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final view = ref.watch(composerDockViewProvider(workspace.thread.id));
-    // 快照到达前只借用传入 workspace 的会话身份做加载回退，不读旧 composer。
-    final thread = view.hasSnapshot
-        ? view.thread
-        : (view.thread ?? workspace.thread);
+    final view = ref.watch(composerDockViewProvider(threadId));
+    final thread = view.thread;
     if (thread == null) return const SizedBox.shrink();
     final interaction = view.activeInteraction;
     final additionalDiagnostics = [
@@ -155,10 +146,14 @@ class _StartPageComposerBodyState
   Widget build(BuildContext context) {
     final projection = ref.watch(startPageComposerViewProvider);
     final projectId = projection.project?.id;
-    final selectorsEnabled = projection.canSubmit && !projection.submitting;
     final mode = projection.mode;
+    final requiresFunctionCalling = projection.requiresFunctionCalling(mode);
+    final selectorsEnabled =
+        projection.canSubmit &&
+        projection.settingsLoaded &&
+        requiresFunctionCalling != null;
     final route = projection.displayRoute(mode);
-    final pending = projection.routePending(mode) || projection.submitting;
+    final pending = projection.routePending(mode);
     final model = route == null
         ? null
         : modelForRoute(projection.providers, route.providerId, route.model);
@@ -215,20 +210,22 @@ class _StartPageComposerBodyState
                     providerId: route?.providerId,
                     model: route?.model,
                     effort: route?.effort,
-                    requiresFunctionCalling: projection.requiresFunctionCalling(
-                      mode,
-                    ),
+                    // Unknown capabilities keep selectors disabled until the
+                    // Client catalog arrives; no model is admitted by fallback.
+                    requiresFunctionCalling: requiresFunctionCalling ?? false,
                     pending: pending,
                     enabled: selectorsEnabled,
                     unavailableReason: unavailableReason,
                     onModelSelected: (providerId, model) {
                       ref
-                          .read(startSessionControllerProvider.notifier)
+                          .read(anyworkClientProvider)
+                          .startDraft
                           .setModelIntent(mode, providerId, model);
                     },
                     onEffortSelected: (effort) {
                       ref
-                          .read(startSessionControllerProvider.notifier)
+                          .read(anyworkClientProvider)
+                          .startDraft
                           .setEffortIntent(mode, effort);
                     },
                   ),
@@ -253,33 +250,41 @@ class _StartPageComposerBodyState
   void _updateDraft(String value) {
     final projectId = widget.projectId;
     if (projectId == null) return;
-    ref
-        .read(startSessionControllerProvider.notifier)
-        .updateDraft(projectId, value);
+    ref.read(anyworkClientProvider).startDraft.updateDraft(projectId, value);
   }
 
   void _setMode(ThreadModeId mode) {
     final projectId = widget.projectId;
     if (projectId == null) return;
-    ref.read(startSessionControllerProvider.notifier).setMode(projectId, mode);
+    ref.read(anyworkClientProvider).startDraft.setMode(projectId, mode);
   }
 
   void _setWorkspaceMode(ThreadWorkspaceMode mode) {
     final projectId = widget.projectId;
     if (projectId == null) return;
     ref
-        .read(startSessionControllerProvider.notifier)
+        .read(anyworkClientProvider)
+        .startDraft
         .setWorkspaceMode(projectId, mode);
   }
 
   Future<void> _submit() async {
     final projectId = widget.projectId;
     if (projectId == null) return;
-    final controller = ref.read(startSessionControllerProvider.notifier);
+    final controller = ref.read(anyworkClientProvider).startDraft;
     controller.updateDraft(projectId, _draft.text);
     final accepted = await controller.submit(projectId);
     if (!mounted || !accepted) return;
-    _draft.clear();
+    final latest = ref
+        .read(startSessionControllerProvider)
+        .forProject(projectId)
+        .text;
+    if (_draft.text != latest) {
+      _draft.value = TextEditingValue(
+        text: latest,
+        selection: TextSelection.collapsed(offset: latest.length),
+      );
+    }
   }
 
   String? get _projectId => widget.projectId;
@@ -294,7 +299,8 @@ class _StartPageComposerBodyState
     final projectId = _projectId;
     if (projectId == null) return Future<void>.value();
     return ref
-        .read(attachmentDraftsProvider.notifier)
+        .read(anyworkClientProvider)
+        .attachments
         .addNewThreadClipboard(
           projectId: projectId,
           mode: _mode,
@@ -306,7 +312,8 @@ class _StartPageComposerBodyState
     final projectId = _projectId;
     if (projectId == null) return;
     ref
-        .read(attachmentDraftsProvider.notifier)
+        .read(anyworkClientProvider)
+        .attachments
         .reportNewThreadFailure(projectId, error);
   }
 
@@ -314,7 +321,8 @@ class _StartPageComposerBodyState
     final projectId = _projectId;
     if (projectId == null || paths.isEmpty) return Future<void>.value();
     return ref
-        .read(attachmentDraftsProvider.notifier)
+        .read(anyworkClientProvider)
+        .attachments
         .admitNewThread(
           projectId: projectId,
           mode: _mode,
@@ -328,7 +336,8 @@ class _StartPageComposerBodyState
     final projectId = _projectId;
     if (projectId == null) return Future<void>.value();
     return ref
-        .read(attachmentDraftsProvider.notifier)
+        .read(anyworkClientProvider)
+        .attachments
         .addNewThreadRemote(projectId: projectId, mode: _mode, url: url);
   }
 
@@ -336,7 +345,8 @@ class _StartPageComposerBodyState
     final projectId = _projectId;
     if (projectId == null) return Future<void>.value();
     return ref
-        .read(attachmentDraftsProvider.notifier)
+        .read(anyworkClientProvider)
+        .attachments
         .removeNewThreadDraft(projectId, draftId);
   }
 }
@@ -402,7 +412,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     if (oldWidget.thread.id != widget.thread.id ||
         oldWidget.thread.status != widget.thread.status ||
         oldWidget.view.hasActiveWorkflow != widget.view.hasActiveWorkflow ||
-        oldWidget.view.modelRoute != widget.view.modelRoute) {
+        oldWidget.view.displayRoute != widget.view.displayRoute) {
       _modelNotice = null;
     }
   }
@@ -411,7 +421,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
   Widget build(BuildContext context) {
     final thread = widget.thread;
     final view = widget.view;
-    final route = view.modelRoute;
+    final route = view.displayRoute;
     final model = route == null
         ? null
         : modelForRoute(view.providers, route.providerId, route.model);
@@ -429,9 +439,22 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     final unavailableReason = failure != null && failure.isNotEmpty
         ? failure
         : context.l10n.statusModelRouteUnavailableFallback;
-    final draftController = ref.read(
-      composerDraftControllerProvider(thread.id).notifier,
-    );
+    final draftController = ref
+        .read(anyworkClientProvider)
+        .existingComposer(thread.id);
+    if (draftController == null) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (view.composer.error case final error?) Text(error),
+          TextButton(
+            onPressed: () =>
+                ref.read(anyworkClientProvider).retrySession(thread.id),
+            child: Text(context.l10n.runtimeFatalRetry),
+          ),
+        ],
+      );
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -490,7 +513,8 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                           view.activeInteraction == null,
                       onSelected: (mode) => unawaited(
                         ref
-                            .read(threadCommandsProvider.notifier)
+                            .read(anyworkClientProvider)
+                            .threadCommands
                             .setThreadMode(mode),
                       ),
                     ),
@@ -499,7 +523,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       providerId: route?.providerId,
                       model: route?.model,
                       effort: route?.effort,
-                      requiresFunctionCalling: view.requiresFunctionCalling,
+                      requiresFunctionCalling:
+                          view.requiresFunctionCalling ?? false,
+                      enabled: view.requiresFunctionCalling != null,
                       pending: view.routePending,
                       available: route?.available ?? false,
                       routeUnavailableReason: route?.unavailableReason,
@@ -507,14 +533,37 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       blockedReason: blockedReason,
                       onExplain: (message) =>
                           setState(() => _modelNotice = message),
-                      onSelected: (providerId, model, effort) {
+                      onModelSelected: (providerId, model) {
                         unawaited(
                           ref
-                              .read(threadCommandsProvider.notifier)
+                              .read(anyworkClientProvider)
+                              .threadCommands
                               .setThreadModelRoute(
                                 threadId: thread.id,
                                 providerId: providerId,
                                 model: model,
+                                effort:
+                                    ModelRouteQueries.effortAfterModelSelection(
+                                      ModelRouteQueries.model(
+                                        view.providers,
+                                        providerId,
+                                        model,
+                                      ),
+                                      route?.effort,
+                                    ),
+                              ),
+                        );
+                      },
+                      onEffortSelected: (effort) {
+                        if (route == null) return;
+                        unawaited(
+                          ref
+                              .read(anyworkClientProvider)
+                              .threadCommands
+                              .setThreadModelRoute(
+                                threadId: thread.id,
+                                providerId: route.providerId,
+                                model: route.model,
                                 effort: effort,
                               ),
                         );
@@ -526,7 +575,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           onChanged: draftController.updateDraft,
           onSubmit: () => unawaited(draftController.submit()),
           onStop: () => unawaited(
-            ref.read(threadCommandsProvider.notifier).stop(thread.id),
+            ref.read(anyworkClientProvider).threadCommands.stop(thread.id),
           ),
           inputCapabilities: model?.inputCapabilities ?? const [],
           onPasteImage: draftController.addClipboardImage,
@@ -774,7 +823,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               capability.supportsSource(ModelInputSourceView.remoteUrl),
         )
         .toList();
-    final attachmentEnabled = widget.enabled && !_submissionPending;
+    final attachmentEnabled = widget.enabled;
     final panel = StudioPanel(
       backgroundColor: colors.surfaceContainerLowest,
       borderColor: _dragging
@@ -809,9 +858,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               actions: {
                 _PasteComposerIntent: CallbackAction<_PasteComposerIntent>(
                   onInvoke: (_) {
-                    if (widget.enabled &&
-                        !_submissionPending &&
-                        !_pasteInFlight) {
+                    if (widget.enabled && !_pasteInFlight) {
                       unawaited(_pasteClipboard());
                     }
                     return null;
@@ -831,7 +878,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               child: TextField(
                 key: StudioDriverKeys.composerInput,
                 controller: _controller,
-                enabled: widget.enabled && !_submissionPending,
+                enabled: widget.enabled,
                 minLines: widget.compact ? 2 : 3,
                 maxLines: 8,
                 decoration: InputDecoration(
@@ -1064,7 +1111,8 @@ class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
             onPressed: () {
               unawaited(
                 ref
-                    .read(settingsCommandsProvider.notifier)
+                    .read(anyworkClientProvider)
+                    .settingsCommands
                     .setPermissionMode(option),
               );
             },
@@ -1189,8 +1237,9 @@ class _StopButton extends ConsumerWidget {
     return IconButton.filledTonal(
       tooltip: context.l10n.composerStop,
       icon: const Icon(Icons.stop),
-      onPressed: () =>
-          unawaited(ref.read(threadCommandsProvider.notifier).stop(threadId)),
+      onPressed: () => unawaited(
+        ref.read(anyworkClientProvider).threadCommands.stop(threadId),
+      ),
     );
   }
 }
@@ -1209,7 +1258,6 @@ List<Widget> _modelRouteSelectorChildren({
   String? routeUnavailableReason,
   String? blockedReason,
   ValueChanged<String>? onExplain,
-  ModelRouteChanged? onSelected,
   ModelSelectionChanged? onModelSelected,
   EffortSelectionChanged? onEffortSelected,
 }) {
@@ -1233,7 +1281,6 @@ List<Widget> _modelRouteSelectorChildren({
         unavailableReason: unavailableReason,
         blockedReason: blockedReason,
         onExplain: onExplain,
-        onSelected: onSelected,
         onModelSelected: onModelSelected,
       ),
       _UnavailableEffortSelector(reason: unavailableReason),
@@ -1252,7 +1299,6 @@ List<Widget> _modelRouteSelectorChildren({
       unavailableReason: routeUnavailableReason,
       blockedReason: blockedReason,
       onExplain: onExplain,
-      onSelected: onSelected,
       onModelSelected: onModelSelected,
     ),
     ReasoningEffortSelector(
@@ -1264,7 +1310,6 @@ List<Widget> _modelRouteSelectorChildren({
       pending: pending,
       blockedReason: blockedReason,
       onExplain: onExplain,
-      onSelected: onSelected,
       onEffortSelected: onEffortSelected,
     ),
   ];

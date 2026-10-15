@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -321,7 +320,6 @@ pub(crate) struct AttachmentDraftObject {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub initial_remote_url: Option<String>,
-    pub admitted_at: Instant,
 }
 
 pub(super) const MAX_IMAGE_SIDE: u32 = 2000;

@@ -1092,17 +1092,6 @@ impl Session {
         Ok(page)
     }
 
-    fn notify(&self) {
-        let mut state = self
-            .0
-            .timeline
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // A focus or window-move change is structural and must never wait for text coalescing.
-        let progress = bump_version(&mut state, true);
-        self.0.changed.send_replace(progress);
-    }
-
     // Lock order is timeline -> window registry -> view, matching snapshot's
     // timeline -> view order; database IO is never performed under these locks.
     fn update_visible(&self, item_id: &str, mut update: impl FnMut(&mut ChatItem)) {
@@ -1301,7 +1290,8 @@ impl fmt::Debug for ChatView {
 pub struct ChatSnapshot {
     pub focus: ChatFocus,
     /// Monotonic snapshot version of the session's window state. Every publication or window
-    /// operation advances it, including changes to identities outside the visible items, so it is
+    /// operation that changes visible facts advances it, including publications to identities
+    /// outside the visible items, so it is
     /// the continuity watermark a patch's `from`/`to` refer to. It is independent of any item's
     /// content revision and of the save watermark.
     pub version: u64,
@@ -1310,6 +1300,62 @@ pub struct ChatSnapshot {
     pub has_newer: bool,
     /// Whether another older page can be added without leaving Latest or evicting its tail.
     pub can_extend_latest: bool,
+}
+
+/// The result of one control operation at its authoritative window commit point.
+///
+/// A producer may advance the shared session while an operation awaits history. Such publication
+/// does not make that operation `Applied`: only the operation's own visible window write does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatControlDisposition {
+    Applied,
+    NoChange,
+}
+
+/// A control result, independent of any subscriber's delivered content baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatControlReceipt {
+    pub disposition: ChatControlDisposition,
+    /// The session window version captured under the same lock as the control's disposition.
+    /// Only `Applied` establishes a content observation barrier for this operation.
+    pub version: u64,
+}
+
+/// The complete-body query and its view-local retention result at one commit point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatExpansion {
+    pub item: Option<ChatItem>,
+    pub receipt: ChatControlReceipt,
+    /// The identity was still visible and its body complete at this operation's commit point.
+    /// Reading an item that already left the window does not retain or resurrect it.
+    pub retained: bool,
+}
+
+/// An operation-local comparison, captured only while the timeline and window are locked together.
+/// It excludes session progress so concurrent publications cannot be attributed to the operation.
+struct WindowContents {
+    focus: ChatFocus,
+    items: Vec<ChatItem>,
+    has_older: bool,
+    has_newer: bool,
+}
+
+impl WindowContents {
+    fn capture(window: &Window) -> Self {
+        Self {
+            focus: window.focus.clone(),
+            items: window.items.clone(),
+            has_older: window.has_older,
+            has_newer: window.has_newer,
+        }
+    }
+
+    fn matches(&self, window: &Window) -> bool {
+        self.focus == window.focus
+            && self.items == window.items
+            && self.has_older == window.has_older
+            && self.has_newer == window.has_newer
+    }
 }
 
 /// Typed change for one content field, derived from the shared block lineage.
@@ -1725,8 +1771,14 @@ impl ChatView {
 
     /// Changes reading intent. Focusing an item already in this window preserves
     /// its delivered bodies and page boundaries; only an absent anchor needs IO.
-    pub async fn focus(&self, focus: ChatFocus) -> Result<(), ChatError> {
+    pub async fn focus(&self, focus: ChatFocus) -> Result<ChatControlReceipt, ChatError> {
         let generation = {
+            let mut state = self
+                .session
+                .0
+                .timeline
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut window = self
                 .window
                 .lock()
@@ -1740,18 +1792,15 @@ impl ChatView {
             // A newly constructed view starts as Latest with generation 0; that first
             // focus still has to load. Later identical Latest / visible Around is a no-op.
             if same_focus && window.generation != 0 {
-                drop(window);
-                return Ok(());
+                return Ok(self.finish_control(&mut state, &mut window, false));
             }
             window.generation = window.generation.wrapping_add(1);
             if matches!(&focus, ChatFocus::Around(id) if window.items.iter().any(|item| &item.item_id == id))
             {
                 window.focus = focus;
-                // Notify outside the window lock: Session uses timeline -> window
-                // ordering. The generation also invalidates older in-flight loads.
-                drop(window);
-                self.session.notify();
-                return Ok(());
+                // The generation also invalidates older in-flight loads. The focus write,
+                // disposition and version commit share the timeline -> window critical section.
+                return Ok(self.finish_control(&mut state, &mut window, true));
             }
             window.generation
         };
@@ -1817,56 +1866,67 @@ impl ChatView {
             || matches!((candidate_first, items.first()), (Some(candidate), Some(first)) if candidate < first.order);
         let has_newer = page.has_newer
             || matches!((candidate_last, items.last()), (Some(candidate), Some(last)) if candidate > last.order);
+        let mut state = self
+            .session
+            .0
+            .timeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut window = self
             .window
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if window.generation != generation {
-            return Ok(());
+            return Ok(self.finish_control(&mut state, &mut window, false));
         }
+        let before = WindowContents::capture(&window);
         window.focus = focus;
         window.items = items;
         window.has_older = has_older;
         window.has_newer = has_newer;
         overlay_complete(&mut window);
-        drop(window);
-        self.session.notify();
-        Ok(())
+        let changed = !before.matches(&window);
+        Ok(self.finish_control(&mut state, &mut window, changed))
     }
 
-    pub async fn load(&self, direction: Direction) -> Result<ChatSnapshot, ChatError> {
+    pub async fn load(&self, direction: Direction) -> Result<ChatControlReceipt, ChatError> {
         self.load_page(PageLoad::Browse(direction)).await
     }
 
     /// Adds one older page to a latest window without changing its reading intent.
     /// Stops at the bounded capacity instead of evicting the live tail. A concurrent focus or
     /// boundary change discards the read; cancellation before publication leaves the window intact.
-    pub async fn extend_latest(&self) -> Result<ChatSnapshot, ChatError> {
+    pub async fn extend_latest(&self) -> Result<ChatControlReceipt, ChatError> {
         self.load_page(PageLoad::ExtendLatest).await
     }
 
-    async fn load_page(&self, intent: PageLoad) -> Result<ChatSnapshot, ChatError> {
+    async fn load_page(&self, intent: PageLoad) -> Result<ChatControlReceipt, ChatError> {
         let direction = match intent {
             PageLoad::Browse(direction) => direction,
             PageLoad::ExtendLatest => Direction::Older,
         };
         let (anchor, focus, generation) = {
-            let window = self
+            let mut state = self
+                .session
+                .0
+                .timeline
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut window = self
                 .window
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if matches!(intent, PageLoad::ExtendLatest) && !window.can_extend_latest() {
-                drop(window);
-                return Ok(self.snapshot());
+                return Ok(self.finish_control(&mut state, &mut window, false));
             }
             let anchor = match direction {
                 Direction::Older => window.items.first().map(|item| item.order),
                 Direction::Newer => window.items.last().map(|item| item.order),
             };
+            let Some(anchor) = anchor else {
+                return Ok(self.finish_control(&mut state, &mut window, false));
+            };
             (anchor, window.focus.clone(), window.generation)
-        };
-        let Some(anchor) = anchor else {
-            return Ok(self.snapshot());
         };
         let query = match direction {
             Direction::Older => ChatQuery::Before(anchor),
@@ -1881,6 +1941,12 @@ impl ChatView {
             Direction::Older => addition = addition.into_iter().rev().take(PAGE_ITEMS).collect(),
             Direction::Newer => addition.truncate(PAGE_ITEMS),
         }
+        let mut state = self
+            .session
+            .0
+            .timeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut window = self
             .window
             .lock()
@@ -1892,9 +1958,9 @@ impl ChatView {
                 Direction::Newer => window.items.last().map(|item| item.order),
             } != Some(anchor)
         {
-            drop(window);
-            return Ok(self.snapshot());
+            return Ok(self.finish_control(&mut state, &mut window, false));
         }
+        let before = WindowContents::capture(&window);
         let had_newer = window.has_newer;
         let had_older = window.has_older;
         if direction == Direction::Older
@@ -1932,9 +1998,8 @@ impl ChatView {
             had_newer || newer_removed
         };
         overlay_complete(&mut window);
-        drop(window);
-        self.session.notify();
-        Ok(self.snapshot())
+        let changed = !before.matches(&window);
+        Ok(self.finish_control(&mut state, &mut window, changed))
     }
 
     /// Reads one canonical item from the in-memory tail or the durable history.
@@ -1966,15 +2031,14 @@ impl ChatView {
     /// revision. Storage is never awaited while a timeline or window lock is held. Two callers that
     /// race on the same not-yet-retained durable identity may each read storage once before the first
     /// one fills the cache; every settled read is still a single read.
-    pub async fn read_complete(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
+    pub async fn expand(&self, item_id: &str) -> Result<ChatExpansion, ChatError> {
         if let Some(item) = self.session.memory_item(item_id)
             && item.omitted_bytes == 0
         {
-            return Ok(Some(self.retain_complete(item)));
+            return Ok(self.retain_complete(item));
         }
-        // Take the cache hit in its own scope so the window guard is dropped **before** reconciling:
-        // `reconcile_window_facts` locks the same non-reentrant mutex, and a scrutinee temporary
-        // would otherwise stay alive across the `if let` body and self-deadlock.
+        // Drop the cache lookup guard before committing. Retention always reacquires locks in
+        // timeline -> window order, and no guard is held while storage is awaited.
         let cached = {
             let window = self
                 .window
@@ -1983,120 +2047,105 @@ impl ChatView {
             window.complete.get(item_id).cloned()
         };
         if let Some(cached) = cached {
-            // The cache is a body snapshot: reconcile it with the window slot so a caller observes
-            // the latest timeline-owned save/lifecycle facts rather than the ones captured when the
-            // body was fetched.
-            return Ok(Some(self.reconcile_window_facts(cached)));
+            return Ok(self.retain_complete(cached));
         }
         let Some(full) = self.session.read_item(item_id).await? else {
-            return Ok(None);
-        };
-        Ok(Some(self.retain_complete(full)))
-    }
-
-    /// Reconciles a cached body snapshot with the window slot at the same content revision.
-    ///
-    /// The row identity, `saved` save watermark and `lifecycle` execution fact are owned by the
-    /// timeline and mirrored into the window slot by publication and [`Session::confirm_saved`]. A
-    /// complete-content cache only supplies a body, so this never lets the cached body overwrite a
-    /// newer save acknowledgement or execution terminal fact. Facts are copied **only** at the exact
-    /// same revision: if the window has advanced past the cached body, the cached body is a stale
-    /// read and the authoritative newest item is returned instead of a mixed-revision item; if the
-    /// cached body is newer than the window slot it is returned on its own facts.
-    fn reconcile_window_facts(&self, mut item: ChatItem) -> ChatItem {
-        let window = self
-            .window
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(slot) = window
-            .items
-            .iter()
-            .find(|candidate| candidate.item_id == item.item_id)
-        else {
-            return item;
-        };
-        match item.revision.cmp(&slot.revision) {
-            Ordering::Equal => {
-                item.saved = slot.saved;
-                item.lifecycle = slot.lifecycle;
-                item.turn_id = slot.turn_id.clone();
-                item.meta = slot.meta.clone();
-                item.order = slot.order;
-                item
-            }
-            // The window advanced past the cached body: the cached body is a stale read.
-            Ordering::Less => slot.clone(),
-            // The cached body is newer than the window slot: keep it on its own facts.
-            Ordering::Greater => item,
-        }
-    }
-
-    /// Retains a complete item only while its identity stays in this view's window, and returns the
-    /// effective body a caller should observe.
-    ///
-    /// When this actually upgrades the visible **body** of an item still in the window (for example a
-    /// same-revision bounded preview upgraded to the complete body), it advances the session's window
-    /// version and notifies watchers, so a subscriber taking the current version sees the complete
-    /// body instead of a version-equal no-op. The row identity, `saved` watermark and `lifecycle` are
-    /// copied **from** the window slot onto the retained body rather than the other way round: they
-    /// are timeline-owned facts the cache must never roll back, so a `confirm_saved` or terminal
-    /// admission that arrives at the same revision is not undone by a later overlay. Facts are only
-    /// ever copied at the **same** content revision: a stale read for an identity the window already
-    /// advanced past is discarded and the authoritative newest item is returned instead of a
-    /// mixed-revision item; a body newer than the window slot is retained on its own facts. The cache
-    /// is never overwritten by a stale revision. The window lock is released before the timeline is
-    /// touched, preserving the timeline -> window lock order (no storage IO or timeline lock is ever
-    /// taken while holding the window lock). An item that already left the window after a late read
-    /// changes nothing, is neither retained nor notified.
-    fn retain_complete(&self, item: ChatItem) -> ChatItem {
-        if item.omitted_bytes != 0 {
-            return item;
-        }
-        let mut effective = item;
-        let mut visible_changed = false;
-        let mut authoritative: Option<ChatItem> = None;
-        {
+            let mut state = self
+                .session
+                .0
+                .timeline
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut window = self
                 .window
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let Some(index) = window
-                .items
-                .iter()
-                .position(|candidate| candidate.item_id == effective.item_id)
-            else {
-                return effective;
+            return Ok(ChatExpansion {
+                item: None,
+                receipt: self.finish_control(&mut state, &mut window, false),
+                retained: false,
+            });
+        };
+        Ok(self.retain_complete(full))
+    }
+
+    /// Retains a complete body only while its identity stays visible. Independent facts are copied
+    /// from the authoritative slot only at the same revision, and a stale body never replaces a
+    /// newer revision. The visible body write, its disposition and version are committed under the
+    /// same timeline -> window lock pair used by producers; no IO or await occurs here.
+    fn retain_complete(&self, item: ChatItem) -> ChatExpansion {
+        let mut state = self
+            .session
+            .0
+            .timeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut effective = item;
+        let mut visible_changed = false;
+        let Some(index) = window
+            .items
+            .iter()
+            .position(|candidate| candidate.item_id == effective.item_id)
+        else {
+            return ChatExpansion {
+                item: Some(effective),
+                receipt: self.finish_control(&mut state, &mut window, false),
+                retained: false,
             };
+        };
+        if effective.omitted_bytes == 0 {
             match effective.revision.cmp(&window.items[index].revision) {
-                // The read is newer than the window slot: retain it on its own facts.
+                // A storage read may be ahead of this view. Retain its body on its own facts;
+                // overlaying still requires the visible slot to reach exactly that revision.
                 Ordering::Greater => retain_cached_body(&mut window.complete, effective.clone()),
-                // The window advanced past the read: the read is stale, discard it and return the
-                // authoritative newest item instead of copying newer facts onto an older body.
-                Ordering::Less => authoritative = Some(window.items[index].clone()),
+                Ordering::Less => effective = window.items[index].clone(),
                 Ordering::Equal => {
-                    // Keep the timeline-owned independent state facts, upgrade only the body.
                     let slot = &window.items[index];
                     effective.saved = slot.saved;
                     effective.lifecycle = slot.lifecycle;
                     effective.turn_id = slot.turn_id.clone();
                     effective.meta = slot.meta.clone();
                     effective.order = slot.order;
-                    let before = (slot.revision, slot.omitted_bytes);
+                    let omitted = slot.omitted_bytes;
                     overlay_complete_body(&mut window.items[index], &effective);
-                    let after = window.items[index].revision;
-                    let after_omitted = window.items[index].omitted_bytes;
-                    visible_changed = (after, after_omitted) != before;
+                    visible_changed = window.items[index].omitted_bytes != omitted;
                     retain_cached_body(&mut window.complete, effective.clone());
                 }
             }
         }
-        if let Some(authoritative) = authoritative {
-            return authoritative;
+        let retained = window.items[index].omitted_bytes == 0;
+        ChatExpansion {
+            item: Some(effective),
+            receipt: self.finish_control(&mut state, &mut window, visible_changed),
+            retained,
         }
-        if visible_changed {
-            self.session.notify();
+    }
+
+    /// Finishes a control while both authoritative guards remain held. A producer cannot publish
+    /// between the window write, disposition decision and version commit. Publishing the wake-up
+    /// under the timeline lock also preserves the watch waterline's order with producer wake-ups.
+    fn finish_control(
+        &self,
+        state: &mut TimelineState,
+        window: &mut Window,
+        changed: bool,
+    ) -> ChatControlReceipt {
+        let disposition = if changed {
+            let progress = bump_version(state, true);
+            self.session.0.changed.send_replace(progress);
+            ChatControlDisposition::Applied
+        } else {
+            ChatControlDisposition::NoChange
+        };
+        window.version = state.version;
+        ChatControlReceipt {
+            disposition,
+            version: state.version,
         }
-        effective
     }
 }
 

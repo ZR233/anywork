@@ -1,20 +1,20 @@
-import 'dart:async';
-
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../data/bridge/studio_bridge.dart';
-import '../../data/stores/domain_sync.dart';
-import '../../data/stores/mode_catalog_store.dart';
-import '../../data/stores/persistence_store.dart';
-import '../../data/stores/project_store.dart';
-import '../../data/stores/recovery_store.dart';
-import '../../data/stores/selection_store.dart';
-import '../../data/stores/session_costs_store.dart';
-import '../../data/stores/settings_store.dart';
-import '../../data/stores/thread_directory_store.dart';
-import '../../data/stores/thread_session_state.dart';
-import '../../data/stores/thread_session_store.dart';
+import 'package:anywork_client/studio_client.dart';
+
 import '../../domain/models/studio_models.dart';
+
+import '../../presentation/providers/mode_catalog_store.dart';
+import '../../presentation/providers/persistence_store.dart';
+import '../../presentation/providers/project_store.dart';
+import '../../presentation/providers/recovery_store.dart';
+import '../../presentation/providers/selection_store.dart';
+import '../../presentation/providers/session_costs_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
+
+import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/bootstrap_store.dart';
 
 part 'shell_view.g.dart';
 
@@ -30,72 +30,56 @@ const shellEmptyRuntime = ThreadRuntimeView(
   activeLspServers: [],
 );
 
-/// Shell 常驻 topic 租约。观察者离开时释放，不在 provider 初始化里写业务状态。
-@Riverpod(keepAlive: true)
-BridgeTopicLeaseBundle shellTopicLease(Ref ref) {
-  final bundle = ref.watch(studioBridgeProvider).acquireShellBundle();
-  ref.onDispose(() {
-    unawaited(bundle.release());
-  });
-  return bundle;
-}
-
-/// 持久化面板可见时才持有队列租约。
-@riverpod
-BridgeTopicLease persistenceQueueLease(Ref ref) {
-  final lease = ref.watch(studioBridgeProvider).acquirePersistenceQueue();
-  ref.onDispose(() {
-    unawaited(lease.release());
-  });
-  return lease;
-}
-
-/// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-@riverpod
-BridgeTopicLease shellSessionCostsLease(Ref ref, String rootThreadId) {
-  final lease = ref
-      .watch(studioBridgeProvider)
-      .acquireSessionCosts(rootThreadId);
-  ref.onDispose(() {
-    unawaited(lease.release());
-  });
-  return lease;
-}
-
 @riverpod
 SessionCostView? shellSessionCost(Ref ref, String rootThreadId) {
-  ref.watch(shellSessionCostsLeaseProvider(rootThreadId));
   return ref.watch(sessionCostsStoreProvider(rootThreadId)).value?.cost;
 }
 
-/// 启动是否已有足够目录事实。失败只看项目目录传输；选择本身没有 canonical 水位。
+/// 启动结果来自 Client；目录传输失败保留已有界面，选择没有 canonical 水位。
 class ShellStartupView {
-  const ShellStartupView({required this.ready, this.error});
+  const ShellStartupView({
+    required this.ready,
+    this.error,
+    this.directoryError,
+  });
 
   final bool ready;
   final Object? error;
+  final String? directoryError;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ShellStartupView && ready == other.ready && error == other.error;
+      other is ShellStartupView &&
+          ready == other.ready &&
+          error == other.error &&
+          directoryError == other.directoryError;
 
   @override
-  int get hashCode => Object.hash(ready, error);
+  int get hashCode => Object.hash(ready, error, directoryError);
 }
 
 @riverpod
 ShellStartupView shellStartupView(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
+  final bootstrap = ref.watch(clientBootstrapProvider);
   final projects = ref.watch(projectStoreProvider);
   final settings = ref.watch(settingsStoreProvider);
   final modes = ref.watch(modeCatalogStoreProvider);
   final failed = projects.projectSync.phase == DomainSyncPhase.failed;
   final ready =
-      projects.projectsLoaded && settings.loaded && modes.loaded && !failed;
+      bootstrap.phase == StudioBootstrapPhase.ready &&
+      projects.projectsLoaded &&
+      settings.loaded &&
+      modes.loaded;
   return ShellStartupView(
     ready: ready,
-    error: !projects.projectsLoaded && failed
+    error:
+        bootstrap.failure ??
+        (!projects.projectsLoaded && failed
+            ? projects.projectSync.errorMessage ??
+                  'project directory unavailable'
+            : null),
+    directoryError: projects.projectsLoaded && failed
         ? projects.projectSync.errorMessage ?? 'project directory unavailable'
         : null,
   );
@@ -104,20 +88,17 @@ ShellStartupView shellStartupView(Ref ref) {
 /// 已订阅的选择事实。Widget 用它替代一次性读取。
 @riverpod
 SelectionStoreState shellSelection(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
   return ref.watch(selectionStoreProvider);
 }
 
 @riverpod
 GeneralSettingsView shellGeneral(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
   return ref.watch(settingsStoreProvider).canonical?.general ??
       const GeneralSettingsView();
 }
 
 @riverpod
 ShellChromeView shellChromeView(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
   final issues =
       ref.watch(recoveryStoreProvider).value?.values ??
       const <StudioRecoveryIssue>[];
@@ -134,7 +115,6 @@ ShellChromeView shellChromeView(Ref ref) {
 
 @riverpod
 SidebarView sidebarView(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
   final selection = ref.watch(selectionStoreProvider);
   final projects =
       ref.watch(projectStoreProvider).projects?.values ??
@@ -189,7 +169,6 @@ SidebarView sidebarView(Ref ref) {
 
 @riverpod
 HeaderView headerView(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
   final selection = ref.watch(selectionStoreProvider);
   final threads = ref.watch(threadDirectoryStoreProvider).window.threads;
   final projects = ref.watch(projectStoreProvider);
@@ -263,13 +242,16 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
   final selection = ref.watch(selectionStoreProvider);
   final threadId = selection.selectedThreadId;
   if (threadId == null) return null;
-  final threads = ref.watch(threadDirectoryStoreProvider).window.threads;
-  final directoryThread = threadById(threads, threadId);
+  final directory = ref.watch(threadDirectoryStoreProvider);
+  final threads = directory.window.threads;
+  final thread = threadById([
+    ...threads,
+    ...directory.overlayThreads,
+  ], threadId);
   ThreadSessionState? session;
   if (!selection.needsOpen) {
     session = ref.watch(threadSessionStoreProvider(threadId));
   }
-  final thread = session?.workspace?.thread ?? directoryThread;
   if (thread == null) return null;
   final root = rootThread(threads, thread) ?? thread;
   final settings = ref.watch(settingsStoreProvider);
@@ -404,8 +386,6 @@ class ShellStorageFact {
 
 @riverpod
 PersistencePanelView persistencePanelView(Ref ref) {
-  ref.watch(shellTopicLeaseProvider);
-  ref.watch(persistenceQueueLeaseProvider);
   final persistence = ref.watch(persistenceStoreProvider);
   final selection = ref.watch(selectionStoreProvider);
   ShellStorageFact? selectedStorage;
@@ -414,7 +394,13 @@ PersistencePanelView persistencePanelView(Ref ref) {
     final session = ref.watch(threadSessionStoreProvider(selectedId));
     final storage = session.storage;
     if (storage != null) {
-      final title = session.workspace?.thread.title.trim() ?? '';
+      final directory = ref.watch(threadDirectoryStoreProvider);
+      final title =
+          threadById([
+            ...directory.window.threads,
+            ...directory.overlayThreads,
+          ], selectedId)?.title.trim() ??
+          '';
       selectedStorage = ShellStorageFact(
         threadId: selectedId,
         label: title.isEmpty ? selectedId : title,
@@ -435,8 +421,8 @@ PersistencePanelView persistencePanelView(Ref ref) {
   );
 }
 
-void retryShellPersistenceQueue(StudioBridge bridge) {
-  bridge.retryTopic(const PersistenceQueueTopic());
+void retryShellPersistenceQueue(AnyworkClient client) {
+  client.retryResource(const PersistenceQueueTopic());
 }
 
 /// 与 `timelineSessionWindowProvider` 共用的「已有时间线窗口」判定；正文镜像只在

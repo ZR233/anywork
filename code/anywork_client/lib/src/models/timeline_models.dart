@@ -1,0 +1,432 @@
+import 'studio_enums.dart';
+import 'thread_models.dart';
+import 'typed_json.dart';
+
+part 'timeline_agent_events.dart';
+part 'timeline_row_projection.dart';
+
+enum TimelineTextChannel { user, parentAgent, commentary, finalAnswer }
+
+enum TimelineRowType {
+  userMessage,
+  parentAgentMessage,
+  commentary,
+  toolGroup,
+  reasoningSummary,
+  skillActivation,
+  agentActivity,
+  finalAnswer,
+  turnOutcome,
+}
+
+class TimelineSkillActivation {
+  const TimelineSkillActivation({
+    required this.name,
+    required this.source,
+    required this.providerId,
+    required this.resourceBase,
+    required this.cause,
+    required this.activatedAt,
+  });
+
+  final String name;
+  final String source;
+  final String providerId;
+  final SkillResourceBaseView resourceBase;
+  final SkillActivationCauseView cause;
+  final DateTime activatedAt;
+}
+
+class TimelineToolPart {
+  const TimelineToolPart({
+    required this.toolCallId,
+    required this.name,
+    this.callId,
+    this.providerItemId,
+    this.arguments = '',
+    this.result,
+    this.attachments = const [],
+    this.outputArtifacts = const [],
+    this.exitCode,
+    this.timedOut = false,
+    this.workingDirectory,
+    this.denialReason,
+    this.taskId,
+  });
+
+  final String toolCallId;
+  final String name;
+  final String? callId;
+  final String? providerItemId;
+  final String arguments;
+  final String? result;
+  final List<ThreadAttachmentView> attachments;
+  final List<Object?> outputArtifacts;
+  final int? exitCode;
+  final bool timedOut;
+  final String? workingDirectory;
+  final String? denialReason;
+  final String? taskId;
+
+  TimelineToolPart copyWith({String? arguments, String? result}) {
+    return TimelineToolPart(
+      toolCallId: toolCallId,
+      name: name,
+      callId: callId,
+      providerItemId: providerItemId,
+      arguments: arguments ?? this.arguments,
+      result: result ?? this.result,
+      attachments: attachments,
+      outputArtifacts: outputArtifacts,
+      exitCode: exitCode,
+      timedOut: timedOut,
+      workingDirectory: workingDirectory,
+      denialReason: denialReason,
+      taskId: taskId,
+    );
+  }
+}
+
+class TimelineToolGroupItem {
+  const TimelineToolGroupItem({required this.part});
+
+  final TimelineEntry part;
+
+  TimelineToolPart? get tool => part.tool;
+
+  String get id => part.id;
+
+  String get name => tool?.name ?? part.title ?? 'Tool';
+
+  String get status => part.status;
+
+  String get summary => _commandSummary(tool?.arguments ?? '') ?? '';
+
+  String get details => part.text;
+}
+
+class TimelineToolGroup {
+  const TimelineToolGroup({
+    required this.id,
+    required this.threadId,
+    required this.groupId,
+    required this.turnId,
+    required this.items,
+  });
+
+  final String id;
+  final String threadId;
+  final String groupId;
+  final String turnId;
+  final List<TimelineToolGroupItem> items;
+
+  int get count => items.length;
+
+  bool get isRolledBack =>
+      items.isNotEmpty &&
+      items.every(
+        (item) =>
+            item.part.contextDisposition == ThreadContextDisposition.rolledBack,
+      );
+
+  int get runningCount =>
+      items.where((item) => _isActiveToolStatus(item.status)).length;
+
+  int get issueCount =>
+      items.where((item) => _isIssueToolStatus(item.status)).length;
+
+  String? get firstIssueReason {
+    for (final item in items.where((item) => _isIssueToolStatus(item.status))) {
+      final candidates = [
+        item.part.error,
+        item.tool?.denialReason,
+        item.tool?.result,
+      ];
+      for (final candidate in candidates) {
+        final normalized = candidate?.trim().replaceAll(RegExp(r'\s+'), ' ');
+        if (normalized != null && normalized.isNotEmpty) {
+          return normalized.length <= 120
+              ? normalized
+              : '${normalized.substring(0, 117)}...';
+        }
+      }
+    }
+    return null;
+  }
+
+  String get status {
+    final statuses = items.map((item) => item.status).toSet();
+    if (statuses.contains('awaitingApproval')) {
+      return 'awaitingApproval';
+    }
+    if (statuses.contains('cancelling')) {
+      return 'cancelling';
+    }
+    if (statuses.any(
+      (status) => _isActiveToolStatus(status) && status != 'queued',
+    )) {
+      return 'running';
+    }
+    if (statuses.contains('queued')) {
+      return 'queued';
+    }
+    for (final status in const [
+      'failed',
+      'denied',
+      'cancelled',
+      'interrupted',
+      'succeeded',
+    ]) {
+      if (statuses.contains(status)) {
+        return status;
+      }
+    }
+    return statuses.isEmpty ? 'succeeded' : statuses.first;
+  }
+
+  int get order => items.isEmpty ? 0 : items.first.part.order;
+
+  int get sequence => items.fold(0, (value, item) {
+    final sequence = item.part.sequence;
+    return sequence > value ? sequence : value;
+  });
+
+  DateTime? get createdAt => items.isEmpty ? null : items.first.part.createdAt;
+
+  int get renderVersion => Object.hashAll([
+    id,
+    threadId,
+    groupId,
+    turnId,
+    status,
+    count,
+    runningCount,
+    issueCount,
+    for (final item in items) _timelineRowRenderVersion(item.part),
+  ]);
+}
+
+class TimelineReasoningGroup {
+  const TimelineReasoningGroup({
+    required this.id,
+    required this.threadId,
+    required this.groupId,
+    required this.turnId,
+    required this.parts,
+  });
+
+  final String id;
+  final String threadId;
+  final String groupId;
+  final String turnId;
+  final List<TimelineEntry> parts;
+
+  int get count => parts.length;
+
+  bool get isRolledBack =>
+      parts.isNotEmpty &&
+      parts.every(
+        (part) =>
+            part.contextDisposition == ThreadContextDisposition.rolledBack,
+      );
+
+  int get order => parts.isEmpty ? 0 : parts.first.order;
+
+  int get sequence => parts.fold(0, (value, part) {
+    return part.sequence > value ? part.sequence : value;
+  });
+
+  DateTime? get createdAt => parts.isEmpty ? null : parts.first.createdAt;
+
+  bool get isActive =>
+      parts.any((part) => !isTerminalTimelineStatus(part.status));
+
+  String get status {
+    for (final part in parts.reversed) {
+      if (!isTerminalTimelineStatus(part.status)) {
+        return part.status;
+      }
+    }
+    for (final status in const [
+      'failed',
+      'interrupted',
+      'cancelled',
+      'denied',
+      'budgetLimited',
+      'completed',
+    ]) {
+      if (parts.any((part) => part.status == status)) {
+        return status;
+      }
+    }
+    return parts.isEmpty ? 'completed' : parts.last.status;
+  }
+
+  List<String> get summaries => parts
+      .map(_reasoningPartSummary)
+      .whereType<String>()
+      .toList(growable: false);
+
+  String? get latestSummary {
+    for (final part in parts.reversed) {
+      final summary = _reasoningPartSummary(part);
+      if (summary != null) {
+        return summary;
+      }
+    }
+    return null;
+  }
+
+  /// 展开后的推理正文：只由分块列表派生，不依赖投影是否预拼 `text`。
+  String get details => parts
+      .map(
+        (part) => [
+          ...part.reasoningContent,
+          if (part.reasoningContent.isEmpty) ...part.reasoningSummary,
+        ].where((value) => value.trim().isNotEmpty).join('\n\n'),
+      )
+      .where((text) => text.isNotEmpty)
+      .join('\n\n');
+
+  int get renderVersion => Object.hashAll([
+    id,
+    threadId,
+    groupId,
+    turnId,
+    status,
+    count,
+    for (final part in parts) _timelineRowRenderVersion(part),
+  ]);
+}
+
+class TimelineEntry {
+  const TimelineEntry({
+    required this.id,
+    required this.groupId,
+    required this.type,
+    required this.text,
+    this.reasoningSummary = const [],
+    this.reasoningContent = const [],
+    this.threadId = '',
+    this.turnId = '',
+    this.order = 0,
+    this.sequence = 0,
+    this.status = 'completed',
+    this.revision = 0,
+    this.createdAt,
+    this.updatedAt,
+    this.completedAt,
+    this.error,
+    this.title,
+    this.textChannel,
+    this.tool,
+    this.skill,
+    this.attachments = const [],
+    this.contextDisposition = ThreadContextDisposition.active,
+  });
+
+  final String id;
+  final String groupId;
+  final String threadId;
+  final String turnId;
+  final TimelineEntryType type;
+  final int order;
+  final int sequence;
+  final String text;
+  final List<String> reasoningSummary;
+  final List<String> reasoningContent;
+  final String? title;
+  final String status;
+  final int revision;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+  final DateTime? completedAt;
+  final String? error;
+  final TimelineTextChannel? textChannel;
+  final TimelineToolPart? tool;
+  final TimelineSkillActivation? skill;
+  final List<ThreadAttachmentView> attachments;
+  final ThreadContextDisposition contextDisposition;
+}
+
+String _toolActivityText(TimelineToolPart? tool) {
+  if (tool == null) {
+    return '';
+  }
+  return [
+    _commandSummary(tool.arguments),
+    tool.workingDirectory,
+    tool.denialReason,
+    tool.result,
+  ].whereType<String>().where((value) => value.trim().isNotEmpty).join('\n');
+}
+
+String? _commandSummary(String arguments) {
+  final json = decodeJsonObject(arguments);
+  final command = jsonStringValue(json['command']);
+  final path =
+      jsonStringValue(json['path']) ??
+      jsonStringValue(json['filePath']) ??
+      jsonStringValue(json['targetPath']) ??
+      jsonStringValue(json['workingDirectory']);
+  final query = jsonStringValue(json['query']);
+  final value = command?.isNotEmpty == true
+      ? command!.split('\n').first
+      : path?.isNotEmpty == true
+      ? path!
+      : query;
+  return value == null || value.isEmpty ? null : value;
+}
+
+String? _reasoningPartSummary(TimelineEntry part) {
+  final title = plainReasoningSummary(part.title ?? '');
+  if (title != null) {
+    return title;
+  }
+  // 摘要只从分块列表派生：投影不为推理正文预拼 `text`（那会让热路径随正文长度线性
+  // 变慢），因此这里不能回退到 `part.text`。
+  for (final chunk in [...part.reasoningSummary, ...part.reasoningContent]) {
+    for (final line in chunk.replaceAll('\r\n', '\n').split('\n')) {
+      final summary = plainReasoningSummary(line);
+      if (summary != null) {
+        return summary;
+      }
+    }
+  }
+  return null;
+}
+
+/// 把一行 reasoning 文本压成无标记的纯文本摘要；空行与注释占位返回 null。
+///
+/// 固定活动条与 Timeline 推理摘要共用这一处映射，避免两处各自实现一套去除
+/// markdown 标记的规则而出现不一致。
+String? plainReasoningSummary(String value) {
+  var summary = value.trim();
+  if (summary.isEmpty || summary == '<!-- -->') {
+    return null;
+  }
+  if ((summary.startsWith('**') && summary.endsWith('**')) ||
+      (summary.startsWith('__') && summary.endsWith('__'))) {
+    summary = summary.substring(2, summary.length - 2);
+  }
+  summary = summary
+      .replaceFirst(RegExp(r'^#{1,6}\s+'), '')
+      .replaceFirst(RegExp(r'^>\s*'), '')
+      .replaceFirst(RegExp(r'^(?:[-+*]|\d+[.)])\s+'), '')
+      .replaceAll(RegExp(r'[*_`]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return summary.isEmpty ? null : summary;
+}
+
+bool isTerminalTimelineStatus(String status) {
+  return const {
+    'completed',
+    'succeeded',
+    'failed',
+    'interrupted',
+    'cancelled',
+    'denied',
+    'budgetLimited',
+  }.contains(status);
+}

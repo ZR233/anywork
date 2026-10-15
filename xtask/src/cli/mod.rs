@@ -29,6 +29,8 @@ pub(crate) enum Command {
     CheckGuiGenerated,
     /// Check generated sources, formatting, and Flutter analysis.
     VerifyGui,
+    /// Check the Dart Client boundary and run Client/adapter contract tests.
+    VerifyClient,
     /// Build and run the isolated GUI acceptance tool (arguments forwarded).
     ManualGui(ToolOptions),
     /// Run the anywork desktop app.

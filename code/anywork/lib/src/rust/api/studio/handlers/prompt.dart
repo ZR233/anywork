@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/attachment.dart';
+import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/thread_stream.dart';
@@ -16,23 +17,29 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 Future<SubmitPromptResponse> submitPrompt({
   required String threadId,
   required BridgeStudioPromptInput input,
+  required BigInt expectedModelRouteRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptSubmitPrompt(
   threadId: threadId,
   input: input,
+  expectedModelRouteRevision: expectedModelRouteRevision,
 );
 
-Future<InterruptTurnResponse> interruptTurn({
+Future<BridgeInterruptTurnCommandReply> interruptTurn({
+  required String operationId,
   required String threadId,
   required String turnId,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptInterruptTurn(
+  operationId: operationId,
   threadId: threadId,
   turnId: turnId,
 );
 
-Future<BridgeInteractionRequest> respondInteraction({
+Future<BridgeInteractionCommandReply> respondInteraction({
+  required String operationId,
   required String interactionId,
   required BridgeInteractionResolution resolution,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptRespondInteraction(
+  operationId: operationId,
   interactionId: interactionId,
   resolution: resolution,
 );

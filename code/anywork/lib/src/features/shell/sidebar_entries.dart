@@ -82,9 +82,9 @@ class _ProjectTile extends ConsumerWidget {
             minTarget: touchMode ? 44 : 32,
             onPressed: recoveryIssue == null
                 ? () async {
-                    final commands = ref.read(
-                      directoryCommandsProvider.notifier,
-                    );
+                    final commands = ref
+                        .read(anyworkClientProvider)
+                        .directoryCommands;
                     await commands.selectProject(project.id);
                     if (!context.mounted) return;
                     await commands.beginNewThread();
@@ -112,7 +112,8 @@ class _ProjectTile extends ConsumerWidget {
                 }
                 if (action == 'close') {
                   await ref
-                      .read(directoryCommandsProvider.notifier)
+                      .read(anyworkClientProvider)
+                      .directoryCommands
                       .archiveProject(project.id);
                 }
               },
@@ -129,7 +130,8 @@ class _ProjectTile extends ConsumerWidget {
       onTap: issue == null
           ? () async {
               await ref
-                  .read(directoryCommandsProvider.notifier)
+                  .read(anyworkClientProvider)
+                  .directoryCommands
                   .selectProject(project.id);
               onNavigate?.call();
             }
@@ -290,7 +292,8 @@ class _ThreadTile extends ConsumerWidget {
       onTap: !blocked
           ? () async {
               await ref
-                  .read(directoryCommandsProvider.notifier)
+                  .read(anyworkClientProvider)
+                  .directoryCommands
                   .selectThread(thread.id);
               onNavigate?.call();
             }
@@ -342,7 +345,8 @@ class _ThreadTile extends ConsumerWidget {
             onAction: (action) async {
               if (action == 'retry') {
                 await ref
-                    .read(directoryCommandsProvider.notifier)
+                    .read(anyworkClientProvider)
+                    .directoryCommands
                     .retryRecovery();
               }
               if (action == 'pin') {
@@ -824,7 +828,10 @@ Future<void> _archiveThreadFromSidebar(
   );
   if (confirmed != true || !context.mounted) return;
   try {
-    await ref.read(threadCommandsProvider.notifier).archiveThread(threadId);
+    await ref
+        .read(anyworkClientProvider)
+        .threadCommands
+        .archiveThread(threadId);
   } on Object catch (error) {
     if (!context.mounted) return;
     final message = switch (error) {
@@ -851,7 +858,8 @@ Future<void> _renameThreadFromSidebar(
   if (title == null || !context.mounted) return;
   try {
     await ref
-        .read(threadCommandsProvider.notifier)
+        .read(anyworkClientProvider)
+        .threadCommands
         .renameThread(thread.id, title);
   } on Object {
     if (!context.mounted) return;

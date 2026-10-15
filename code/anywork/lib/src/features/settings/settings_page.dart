@@ -1,8 +1,11 @@
+import 'package:anywork_client/studio_client.dart'
+    show DeepSeekWebSearchEnabledCommand;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/theme/studio_tokens.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_badges.dart';
@@ -46,8 +49,7 @@ class _SettingsPageBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 页面生命周期持有公共 topic。配置 canonical 到达前只占位，不重建已保留的 tab。
-    ref.watch(settingsPageTopicsLeaseProvider);
+    // 页面只观察 Client 的公共 topic 镜像；首个 canonical 到达前显示占位。
     final readiness = ref.watch(settingsPageReadinessProvider);
     if (!readiness.ready) {
       // 仅在首帧尚无任何 canonical 设置视图时占位。
@@ -71,7 +73,7 @@ class _SettingsPageBody extends ConsumerWidget {
 
 /// 把设置壳的 [DefaultTabController] 当前索引同步到 [settingsVisibleTabProvider]。
 ///
-/// 设置壳保活已访问过的 tab，但可见性变化必须让各数据页建立/释放自己的 scope 租约。
+/// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察。
 /// provider 写入延到微任务，避免在 build/通知阶段直接改 provider。
 class _SettingsTabVisibilitySync extends ConsumerStatefulWidget {
   const _SettingsTabVisibilitySync({required this.child});
@@ -121,18 +123,12 @@ class _SettingsTabVisibilitySyncState
 /// Each settings tab subscribes to the smallest projection it can render.
 /// The retained settings shell therefore survives catalog/config events and a
 /// model click only rebuilds the provider tab that displays that catalog.
-class _ProvidersSettingsTab extends ConsumerWidget {
+class _ProvidersSettingsTab extends StatelessWidget {
   const _ProvidersSettingsTab();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final view = ref.watch(settingsProvidersViewProvider);
-    return ProvidersTab(
-      providers: view.providers,
-      providerCatalog: view.providerCatalog,
-      defaultProviderId: view.defaultProviderId,
-      tabIndex: _SettingsTab.providers.index,
-    );
+  Widget build(BuildContext context) {
+    return ProvidersTab(tabIndex: _SettingsTab.providers.index);
   }
 }
 
@@ -142,7 +138,13 @@ class _InstructionsSettingsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final view = ref.watch(settingsInstructionsViewProvider);
-    return InstructionsTab(settings: view.settings);
+    final commands = ref.read(anyworkClientProvider).settingsCommands;
+    return InstructionsTab(
+      settings: view.settings,
+      onCommand: (command) async {
+        await commands.applySettingsField(command);
+      },
+    );
   }
 }
 
@@ -152,7 +154,14 @@ class _SecuritySettingsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final view = ref.watch(settingsSecurityViewProvider);
-    return SecurityTab(mode: view.mode);
+    return SecurityTab(
+      mode: view.mode,
+      pending: view.pending,
+      onSelected: ref
+          .read(anyworkClientProvider)
+          .settingsCommands
+          .setPermissionMode,
+    );
   }
 }
 
@@ -162,11 +171,27 @@ class _GeneralSettingsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final view = ref.watch(settingsGeneralViewProvider);
+    final commands = ref.read(anyworkClientProvider).settingsCommands;
     return GeneralTab(
       settings: view.settings,
       webSearch: view.webSearch,
       deepSeekWebSearch: view.deepSeekWebSearch,
       runtimeBusy: view.runtimeBusy,
+      onCommand: (command) async {
+        await commands.applySettingsField(command);
+      },
+      onSaveWebSearch: (changes) async {
+        var confirmed = view.webSearch;
+        for (final change in changes) {
+          confirmed = (await commands.applySettingsField(change)).webSearch;
+        }
+        return confirmed;
+      },
+      onDeepSeekChanged: (enabled) async {
+        await commands.applySettingsField(
+          DeepSeekWebSearchEnabledCommand(enabled),
+        );
+      },
     );
   }
 }

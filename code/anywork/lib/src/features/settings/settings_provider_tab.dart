@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../domain/models/studio_models.dart';
+import '../../presentation/providers/client_provider.dart';
+
+import 'package:anywork_client/studio_client.dart';
+
 import '../../l10n/studio_l10n.dart';
 import 'settings_provider_details.dart';
 import 'settings_provider_drafts.dart';
@@ -12,19 +15,9 @@ import 'settings_usage_refresh.dart';
 import 'settings_views.dart';
 
 class ProvidersTab extends ConsumerStatefulWidget {
-  const ProvidersTab({
-    super.key,
-    required this.providers,
-    required this.providerCatalog,
-    required this.defaultProviderId,
-    required this.tabIndex,
-  });
+  const ProvidersTab({super.key, required this.tabIndex});
 
-  final List<ProviderSettingsView> providers;
-  final ProviderCatalogView providerCatalog;
-  final String? defaultProviderId;
-
-  /// 本页在设置壳中的 tab 索引，用于「仅在可见时持有租约」。
+  /// Tab visibility controls observations; Client retains its topic owner.
   final int tabIndex;
 
   @override
@@ -42,10 +35,16 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   String? _refreshingCatalog;
   final SettingsUsageRefresh _usageRefresh = SettingsUsageRefresh();
 
+  SettingsProvidersView get _settings =>
+      ref.read(settingsProvidersViewProvider);
+
   Future<void> _refreshCatalog(String providerId) async {
     setState(() => _refreshingCatalog = providerId);
     try {
-      await readDirectoryCommands(ref).refreshModelCatalog(providerId);
+      await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .refreshModelCatalog(providerId);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -62,29 +61,29 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     super.didUpdateWidget(oldWidget);
     final selected = _selectedProviderId;
     if (selected != null &&
-        !widget.providers.any((provider) => provider.id == selected)) {
-      _selectedProviderId = widget.providers.firstOrNull?.id;
+        !_settings.providers.any((provider) => provider.id == selected)) {
+      _selectedProviderId = _settings.providers.firstOrNull?.id;
       _showDetails = false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // 只在 Providers tab 可见时租用 Provider usage topic；隐藏页不因 keep-alive 持租约。
+    // The Connector observes usage only while visible; the Client owns demand.
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     watchSettingsScope(
       ref,
       visible: visible,
       kind: BridgeSettingsScopeKind.usage,
     );
-    final catalog = widget.providerCatalog;
-    final defaultProviderId =
-        widget.defaultProviderId ?? widget.providers.firstOrNull?.id;
+    final settings = ref.watch(settingsProvidersViewProvider);
+    final catalog = settings.providerCatalog;
+    final defaultProviderId = settings.defaultProviderId;
     final selectedId =
         _selectedProviderId ??
         defaultProviderId ??
-        widget.providers.firstOrNull?.id;
-    final selected = widget.providers
+        _settings.providers.firstOrNull?.id;
+    final selected = _settings.providers
         .where((provider) => provider.id == selectedId)
         .firstOrNull;
     final filtered = _filteredProviders();
@@ -95,7 +94,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     };
     final usageErrorsByProviderId = _usageRefresh.state
         .visibleErrorsByProviderId(
-          providerIds: widget.providers.map((provider) => provider.id),
+          providerIds: _settings.providers.map((provider) => provider.id),
           canonicalUsages: canonicalUsages,
           storeRevision: usageView.revision,
         );
@@ -165,7 +164,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       onRefreshAll: _refreshUsages,
       onRefreshProvider: (provider) => _refreshUsages(providerId: provider.id),
       onEdit: _startEdit,
-      onDelete: widget.providers.length <= 1 ? null : _removeProvider,
+      onDelete: _settings.providers.length <= 1 ? null : _removeProvider,
     );
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -203,9 +202,9 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   List<ProviderSettingsView> _filteredProviders() {
     final query = _query.trim().toLowerCase();
     if (query.isEmpty) {
-      return widget.providers;
+      return _settings.providers;
     }
-    return widget.providers.where((provider) {
+    return _settings.providers.where((provider) {
       final haystack = [
         provider.name,
         provider.id,
@@ -318,9 +317,10 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       return provider.copyWith(
         customModels: [...provider.customModels, model],
         models: [...provider.defaultModels, ...provider.customModels, model],
-        defaultModel: provider.defaultModel.isEmpty
-            ? slug
-            : provider.defaultModel,
+        defaultModel: ModelRouteQueries.defaultModelAfterAddition(
+          provider.defaultModel,
+          slug,
+        ),
       );
     });
   }
@@ -379,9 +379,11 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         ..remove(removedSlug);
       // 仅当被移除的模型正是当前默认模型时才改写，避免覆盖无法解析的
       // canonical defaultModel。
-      final defaultModel = provider.defaultModel == removedSlug
-          ? models.firstOrNull?.slug ?? ''
-          : provider.defaultModel;
+      final defaultModel = ModelRouteQueries.defaultModelAfterRemoval(
+        current: provider.defaultModel,
+        removed: removedSlug,
+        remaining: models,
+      );
       return provider.copyWith(
         customModels: custom,
         modelConnectionModes: connections,
@@ -413,23 +415,28 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
           current.mode == ProviderDraftMode.create ||
           ref.read(settingsProvidersViewProvider).defaultProviderId ==
               current.originalId;
-      final saved = await readSettingsCommands(ref).saveProvider(
-        ProviderCommandBuilder.buildProvider(
-          provider,
-          originalId: current.mode == ProviderDraftMode.edit
-              ? current.originalId
-              : null,
-        ),
-      );
+      final saved = await ref
+          .read(anyworkClientProvider)
+          .settingsCommands
+          .saveProvider(
+            ProviderCommandBuilder.buildProvider(
+              provider,
+              originalId: current.mode == ProviderDraftMode.edit
+                  ? current.originalId
+                  : null,
+            ),
+          );
       if (!saved.providers.any((candidate) => candidate.id == provider.id)) {
         throw StateError(
           'Provider save returned a canonical snapshot without ${provider.id}.',
         );
       }
       if (makeDefault) {
-        await readSettingsCommands(ref).setDefaultProvider(provider.id);
+        await ref
+            .read(anyworkClientProvider)
+            .settingsCommands
+            .setDefaultProvider(provider.id);
       }
-      await _waitForProviderList(provider.id);
       if (mounted) {
         setState(() {
           _selectedProviderId = provider.id;
@@ -450,7 +457,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }
 
   Future<void> _removeProvider(ProviderSettingsView provider) async {
-    if (widget.providers.length <= 1) {
+    if (_settings.providers.length <= 1) {
       return;
     }
     final providers = _canonicalProviders
@@ -459,10 +466,14 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     final currentDefaultId = ref
         .read(settingsProvidersViewProvider)
         .defaultProviderId;
-    final selectedProviderId = currentDefaultId == provider.id
-        ? providers.firstOrNull?.id
-        : currentDefaultId;
-    final saved = await readSettingsCommands(ref)
+    final selectedProviderId = ModelRouteQueries.providerAfterRemoval(
+      providers: providers,
+      currentDefault: currentDefaultId,
+      removed: provider.id,
+    );
+    final saved = await ref
+        .read(anyworkClientProvider)
+        .settingsCommands
         .removeProvider(provider.id, replacementProviderId: selectedProviderId);
     if (saved.providers.any((candidate) => candidate.id == provider.id)) {
       throw StateError(
@@ -470,7 +481,6 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         '${provider.id}.',
       );
     }
-    await _waitForProviderList(provider.id, shouldExist: false);
     if (mounted) {
       setState(() {
         _selectedProviderId = selectedProviderId;
@@ -485,7 +495,10 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   Future<void> _setDefaultProvider(ProviderSettingsView provider) async {
     setState(() => _selectedProviderId = provider.id);
-    await readSettingsCommands(ref).setDefaultProvider(provider.id);
+    await ref
+        .read(anyworkClientProvider)
+        .settingsCommands
+        .setDefaultProvider(provider.id);
     final saved = ref.read(settingsProvidersViewProvider);
     if (saved.canonical == null || saved.defaultProviderId != provider.id) {
       throw StateError(
@@ -517,39 +530,17 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
                 -1,
         };
       },
-      refreshCanonical: () =>
-          readDirectoryCommands(ref).refreshProviderUsages(),
+      refreshCanonical: () => ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .refreshProviderUsages(),
       onChanged: () {
         if (mounted) setState(() {});
       },
     );
   }
 
-  List<ProviderSettingsView> get _canonicalProviders {
-    final providers = ref.read(settingsProvidersViewProvider).providers;
-    return providers.isEmpty ? widget.providers : providers;
-  }
-
-  /// Keep the editor open until the parent Settings projection has observed the
-  /// canonical save. This prevents a successful backend response from briefly
-  /// revealing a stale provider list while the page rebuild is still queued.
-  Future<void> _waitForProviderList(
-    String providerId, {
-    bool shouldExist = true,
-  }) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while (DateTime.now().isBefore(deadline)) {
-      final providers = ref.read(settingsProvidersViewProvider).providers;
-      final exists = providers.any((provider) => provider.id == providerId);
-      if (exists == shouldExist) return;
-      await WidgetsBinding.instance.endOfFrame;
-    }
-    throw StateError(
-      shouldExist
-          ? 'Saved provider $providerId is not visible in the provider list.'
-          : 'Removed provider $providerId is still visible in the provider list.',
-    );
-  }
+  List<ProviderSettingsView> get _canonicalProviders => _settings.providers;
 
   String _suggestProviderId(String base) {
     final existing = _canonicalProviders.map((provider) => provider.id).toSet();

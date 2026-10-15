@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
 import 'realtime_journey.dart';
+import 'sidebar_navigation.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length != 6) {
@@ -234,12 +235,14 @@ class ReplayRecoveryJourney {
     final prior =
         jsonDecode(await observed.readAsString()) as Map<String, dynamic>;
     final threadId = prior['threadId'] as String;
+    await revealSidebarThread(driver, threadId);
     await tap('thread-row-$threadId');
     final reopened = await waitFor(
       (snapshot) =>
           workspaceOf(snapshot)?['threadId'] == threadId && settled(snapshot),
       'opened',
     );
+    await clearSidebarSearch(driver);
     if (jsonEncode(frozenRows(reopened)) != jsonEncode(prior['rows'])) {
       throw StateError(
         'restored timeline differs from the saved identities, order or text',

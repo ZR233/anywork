@@ -3416,7 +3416,13 @@ mod storage_fault_tests {
         assert_eq!(initial.items.first().unwrap().item_id, "message-88");
         assert_eq!(initial.items.last().unwrap().item_id, "message-119");
         assert!(initial.has_older);
-        let older = view.load(pl_core::chat::Direction::Older).await?;
+        let receipt = view.load(pl_core::chat::Direction::Older).await?;
+        let older = view.snapshot();
+        assert_eq!(
+            receipt.disposition,
+            pl_core::chat::ChatControlDisposition::Applied
+        );
+        assert_eq!(receipt.version, older.version);
         assert_eq!(older.items.len(), 64);
         assert_eq!(older.items.first().unwrap().item_id, "message-56");
         assert_eq!(older.items.last().unwrap().item_id, "message-119");

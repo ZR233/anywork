@@ -15,10 +15,11 @@ use pl_protocol::studio::{
     ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest,
     ModelCatalogSnapshot, OpenProjectRequest, RefreshModelCatalogRequest, RemoveProviderRequest,
     RenameThreadRequest, ResolveInteractionRequest, SearchSkillsRequest, SetDefaultProviderRequest,
-    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsStateResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
-    SubmitPromptRequest, ThreadModelRouteUpdateResponse, ThreadPageQuery, TimelinePageQuery,
-    UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
+    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
+    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
+    TimelinePageQuery, UpdatePermissionSettingsRequest, UpdateProviderRequest,
+    UpdateSettingsFieldRequest,
 };
 use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
@@ -437,14 +438,15 @@ async fn read_thread_activity_detail(
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/threads/{thread_id}", operation_id = "thread.archive", params(("thread_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(delete, path = "/api/v1/threads/{thread_id}", operation_id = "thread.archive", params(("thread_id" = String, Path)), request_body = StudioCommandRequest, responses(StudioApiErrors, (status = 200)))]
 async fn archive_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
+    ApiJson(request): ApiJson<StudioCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let result = state
         .runtime
-        .archive_thread(thread_id)
+        .archive_thread(request.operation_id, thread_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError(StudioError::not_found("Thread")))?;
@@ -460,24 +462,24 @@ async fn rename_thread(
     Ok(Json(
         state
             .runtime
-            .rename_thread(thread_id, request.title)
+            .rename_thread(request.operation_id, thread_id, request.title)
             .await
             .map_err(ApiError::from)?,
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/mode", operation_id = "thread.setMode", params(("thread_id" = String, Path)), request_body = SetThreadModeRequest, responses(StudioApiErrors, (status = 204)))]
+#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/mode", operation_id = "thread.setMode", params(("thread_id" = String, Path)), request_body = SetThreadModeRequest, responses(StudioApiErrors, (status = 200, body = pl_protocol::studio::ThreadModeCommandReply)))]
 async fn set_thread_mode(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     ApiJson(request): ApiJson<SetThreadModeRequest>,
-) -> Result<StatusCode, ApiError> {
-    state
+) -> Result<impl IntoResponse, ApiError> {
+    let reply = state
         .runtime
-        .set_thread_mode(&thread_id, parse_mode(&request.mode)?)
+        .set_thread_mode(request.operation_id, &thread_id, parse_mode(&request.mode)?)
         .await
         .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(reply))
 }
 
 #[utoipa::path(get, path = "/api/v1/threads/{thread_id}/turns", operation_id = "thread.listTurns", params(("thread_id" = String, Path), ("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
@@ -590,15 +592,16 @@ async fn submit_prompt(
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/threads/{thread_id}/turns/{turn_id}", operation_id = "turn.interrupt", params(("thread_id" = String, Path), ("turn_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(delete, path = "/api/v1/threads/{thread_id}/turns/{turn_id}", operation_id = "turn.interrupt", params(("thread_id" = String, Path), ("turn_id" = String, Path)), request_body = StudioCommandRequest, responses(StudioApiErrors, (status = 200)))]
 async fn interrupt_turn(
     State(state): State<AppState>,
     Path((thread_id, turn_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<StudioCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .interrupt_prompt(thread_id, turn_id)
+            .interrupt_prompt(request.operation_id, thread_id, turn_id)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -804,7 +807,7 @@ async fn resolve_interaction(
     Ok(Json(
         state
             .runtime
-            .resolve_interaction(interaction_id, request.resolution)
+            .resolve_interaction(request.operation_id, interaction_id, request.resolution)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -854,11 +857,11 @@ async fn refresh_model_catalog(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/permission", operation_id = "settings.savePermission", request_body = UpdatePermissionSettingsRequest, responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]
+#[utoipa::path(put, path = "/api/v1/settings/permission", operation_id = "settings.savePermission", request_body = UpdatePermissionSettingsRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
 async fn save_permission_settings(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<UpdatePermissionSettingsRequest>,
-) -> Result<Json<SettingsStateResponse>, ApiError> {
+) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -867,11 +870,11 @@ async fn save_permission_settings(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/provider", operation_id = "settings.saveProvider", request_body = UpdateProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]
+#[utoipa::path(put, path = "/api/v1/settings/provider", operation_id = "settings.saveProvider", request_body = UpdateProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
 async fn save_provider(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<UpdateProviderRequest>,
-) -> Result<Json<SettingsStateResponse>, ApiError> {
+) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -881,11 +884,11 @@ async fn save_provider(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/default-provider", operation_id = "settings.setDefaultProvider", request_body = SetDefaultProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]
+#[utoipa::path(put, path = "/api/v1/settings/default-provider", operation_id = "settings.setDefaultProvider", request_body = SetDefaultProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
 async fn set_default_provider(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<SetDefaultProviderRequest>,
-) -> Result<Json<SettingsStateResponse>, ApiError> {
+) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -894,11 +897,11 @@ async fn set_default_provider(
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/settings/providers", operation_id = "settings.removeProvider", request_body = RemoveProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]
+#[utoipa::path(delete, path = "/api/v1/settings/providers", operation_id = "settings.removeProvider", request_body = RemoveProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
 async fn remove_provider(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<RemoveProviderRequest>,
-) -> Result<Json<SettingsStateResponse>, ApiError> {
+) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -907,11 +910,11 @@ async fn remove_provider(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/field", operation_id = "settings.applyField", request_body = UpdateSettingsFieldRequest, responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]
+#[utoipa::path(put, path = "/api/v1/settings/field", operation_id = "settings.applyField", request_body = UpdateSettingsFieldRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
 async fn apply_settings_field(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<UpdateSettingsFieldRequest>,
-) -> Result<Json<SettingsStateResponse>, ApiError> {
+) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -921,7 +924,7 @@ async fn apply_settings_field(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/model-route", operation_id = "thread.setModelRoute", params(("thread_id" = String, Path)), request_body = SetThreadModelRouteRequest, responses(StudioApiErrors, (status = 200, body = ThreadModelRouteUpdateResponse)))]
+#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/model-route", operation_id = "thread.setModelRoute", params(("thread_id" = String, Path)), request_body = SetThreadModelRouteRequest, responses(StudioApiErrors, (status = 200, body = ThreadModelRouteCommandReply)))]
 async fn set_thread_model_route(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,

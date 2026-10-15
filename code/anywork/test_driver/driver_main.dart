@@ -6,23 +6,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:anywork/main.dart' as studio;
+import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
-import 'package:anywork/src/data/bridge/studio_bridge.dart';
-import 'package:anywork/src/data/commands/thread_commands.dart';
-import 'package:anywork/src/data/frb/studio_api.dart';
-import 'package:anywork/src/data/repositories/studio_api_provider.dart';
-import 'package:anywork/src/data/stores/mcp_store.dart';
-import 'package:anywork/src/data/stores/model_performance_store.dart';
-import 'package:anywork/src/data/stores/persistence_store.dart';
-import 'package:anywork/src/data/stores/selection_store.dart';
-import 'package:anywork/src/data/stores/settings_store.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/interaction/attachment_drafts.dart';
-import 'package:anywork/src/features/interaction/composer_draft_controller.dart';
-import 'package:anywork/src/features/interaction/start_session_controller.dart';
-import 'package:anywork/src/features/settings/settings_scope.dart';
-import 'package:anywork/src/features/shell/shell_view.dart';
+import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+
 import 'package:anywork/src/platform/error_log.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
@@ -35,6 +24,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'raw_tap_extension.dart';
 import 'pointer_scroll_extension.dart';
+import 'pointer_drag_extension.dart';
 import 'scrollbar_drag_extension.dart';
 import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
@@ -49,21 +39,28 @@ void main() {
     commands: <CommandExtension>[
       RawTapCommandExtension(),
       PointerScrollCommandExtension(),
+      PointerDragCommandExtension(),
       ScrollbarDragCommandExtension(),
       KeyPressCommandExtension(),
       ToolProbeExtension(),
     ],
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
-  _container = ProviderContainer();
-  bindStudioDriver(_container);
+  final graph = const bool.fromEnvironment('ANYWORK_DEMO')
+      ? AppGraph.demo(driver: true)
+      : AppGraph.production();
+  _container = ProviderContainer(
+    overrides: [appGraphProvider.overrideWithValue(graph)],
+  );
+  bindStudioDriver(graph.client);
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
   // 与窗口关闭共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
   StudioExitCoordinator.install(
     StudioExitCoordinator(
-      _container.read(studioBridgeDataSourceProvider),
+      graph.client.transport,
       _container.read(studioShutdownProgressStateProvider.notifier).update,
+      closeClient: (deadline) => graph.close(deadline: deadline),
     ),
   );
 }
@@ -71,50 +68,31 @@ void main() {
 /// Driver-only 初始化故障注入：`ANYWORK_DRIVER_SHUTDOWN_FAULT` 取值
 /// `pending-init`（初始化永久挂住）或 `bridge-load-error`（初始化显式抛错）。
 ///
-/// 复用既有 [FrbStudioBridgeDataSource.debugOverrideInitialization]，不新增生产 fault 接口；订阅
+/// 复用既有 [FrbStudioTransport.debugOverrideInitialization]，不新增生产 fault 接口；订阅
 /// 故障由验收侧独立 Driver 入口/装饰器提供（见 ui-handoff-r3.txt）。
 void _applyShutdownFaultOverride() {
   final fault = Platform.environment['ANYWORK_DRIVER_SHUTDOWN_FAULT'];
   if (fault == 'pending-init') {
-    FrbStudioBridgeDataSource.debugOverrideInitialization(
+    FrbStudioTransport.debugOverrideInitialization(
       () => Completer<void>().future,
     );
   } else if (fault == 'bridge-load-error') {
-    FrbStudioBridgeDataSource.debugOverrideInitialization(() async {
+    FrbStudioTransport.debugOverrideInitialization(() async {
       throw StateError('driver-injected bridge load failure');
     });
   }
 }
 
 late final ProviderContainer _container;
+AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
 Future<void>? _driverFixtureClipboardImageTask;
-ProviderSubscription<BridgeTopicLeaseBundle>? _driverStatisticsScope;
-ProviderSubscription<BridgeTopicLease>? _driverQueueScope;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
 int _verySlowFrames = 0;
 int _maxFrameMicros = 0;
 final List<Map<String, num>> _frameSamples = [];
-
-void _ensureDriverStatisticsScope() {
-  _driverStatisticsScope ??= _container.listen(
-    settingsScopeLeaseProvider(
-      const SettingsScopeRequest(BridgeSettingsScopeKind.statistics),
-    ),
-    (_, _) {},
-    fireImmediately: true,
-  );
-}
-
-void _ensureDriverQueueScope() {
-  _driverQueueScope ??= _container.listen(
-    persistenceQueueLeaseProvider,
-    (_, _) {},
-    fireImmediately: true,
-  );
-}
 
 void _recordFrameTimings(List<FrameTiming> timings) {
   if (!_recordingFrames) return;
@@ -176,8 +154,7 @@ Future<String> _handleDriverData(String? message) async {
       return jsonEncode({'pid': pid});
     case 'statistics':
       // Driver 是显式观察者；产品会话不会因一次请求偷偷常驻全局统计租约。
-      _ensureDriverStatisticsScope();
-      final performance = _container.read(modelPerformanceStoreProvider).value;
+      final performance = _client.modelPerformance.state.value;
       return jsonEncode({
         'revision': performance?.revision,
         'statisticsPending': performance?.statisticsPending,
@@ -209,19 +186,16 @@ Future<String> _handleDriverData(String? message) async {
         ],
       });
     case 'thread-current':
-      final threadId = _container.read(selectionStoreProvider).selectedThreadId;
+      final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'outputTokens': null});
-      final snapshot = await _container
-          .read(studioBridgeDataSourceProvider)
-          .readThreadSnapshot(threadId);
+      final snapshot = _client.sessionState(threadId)?.workspace;
       return jsonEncode({
-        'outputTokens': snapshot.runtime.completionTokens,
-        'revision': snapshot.revision,
+        'outputTokens': snapshot?.runtime.completionTokens,
+        'revision': snapshot?.revision,
       });
     case 'persistence-queue':
       // Driver 通过显式 topic lease 读取事件缓存，避免恢复已删除的 GUI 周期查询。
-      _ensureDriverQueueScope();
-      final queue = _container.read(persistenceStoreProvider).queue?.queue;
+      final queue = _client.persistence.state.queue?.queue;
       return jsonEncode({
         'pendingOperations': queue?.pendingOperations,
         'threads': [
@@ -239,15 +213,15 @@ Future<String> _handleDriverData(String? message) async {
         ],
       });
     case 'load-older':
-      final threadId = _container.read(selectionStoreProvider).selectedThreadId;
+      final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      await _container
-          .read(threadCommandsProvider.notifier)
-          .loadOlderHistory(threadId);
+      await _client.threadCommands.loadOlderHistory(threadId);
       return jsonEncode({'loaded': true});
     case 'selection-body':
       // Read-only: the rendered split of the long assistant body.
       return jsonEncode(<String, Object?>{'ok': true, ...?_renderedLongBody()});
+    case 'body-layout':
+      return jsonEncode(_longBodyLayout());
     case 'selection-select-all':
       return _handleSelectAll();
     case 'selection-copy':
@@ -327,8 +301,8 @@ Future<String> _handleDriverData(String? message) async {
         ...diagnostics,
         'startup': {
           if (startup is Map<String, Object?>) ...startup,
-          'phase': FrbStudioBridgeDataSource.startupProgress.value.name,
-          'ownerPresent': FrbStudioBridgeDataSource.runtimeOwnerPresent,
+          'phase': FrbStudioTransport.startupProgress.value.name,
+          'ownerPresent': FrbStudioTransport.runtimeOwnerPresent,
         },
       });
     default:
@@ -337,17 +311,8 @@ Future<String> _handleDriverData(String? message) async {
 }
 
 Future<StudioShutdownReport> _runShutdown() async {
-  _driverStatisticsScope?.close();
-  _driverStatisticsScope = null;
-  _driverQueueScope?.close();
-  _driverQueueScope = null;
-  final api = _container.read(studioBridgeDataSourceProvider);
-  final progress = _container.read(
-    studioShutdownProgressStateProvider.notifier,
-  );
-  final coordinator = StudioExitCoordinator(api, progress.update);
   // arm native 首次期限并执行 typed 清理，返回真实报告；不结束进程。
-  return coordinator.cleanupOnly();
+  return StudioExitCoordinator.cleanupActive();
 }
 
 Map<String, Object?> _shutdownReportJson(StudioShutdownReport report) {
@@ -378,18 +343,19 @@ Map<String, Object?> _shutdownReportJson(StudioShutdownReport report) {
 /// assembled in this Driver entrypoint rather than in the production snapshot
 /// owner and is not part of the production protocol.
 String _driverSnapshotJson() {
-  final decoded = jsonDecode(StudioDriverState.snapshotJson());
+  final facts = StudioDriverState.readFacts();
+  final decoded = jsonDecode(StudioDriverState.snapshotJson(observed: facts));
   if (decoded is! Map) {
     throw const FormatException('driver snapshot must be a JSON object');
   }
   final snapshot = decoded.cast<String, dynamic>();
-  snapshot['driverDiagnostics'] = _driverDiagnostics();
+  snapshot['driverDiagnostics'] = _driverDiagnostics(observed: facts);
   return jsonEncode(snapshot);
 }
 
-Map<String, Object?> _driverDiagnostics() {
-  StudioDriverState.refreshBound();
-  final workspace = StudioDriverState.observedWorkspace;
+Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
+  final facts = observed ?? StudioDriverState.readFacts();
+  final workspace = facts.workspace;
   final runtime = workspace?.runtime;
   final liveUsage = runtime?.liveUsage;
   final observedUsage =
@@ -461,7 +427,7 @@ Map<String, Object?> _driverDiagnostics() {
       'observationSequence': metricsAvailable
           ? observedUsage.observationSequence
           : null,
-      'revision': StudioDriverState.observedThreadRevision,
+      'revision': facts.timelineWorkspace?.revision,
       'contextTokens': contextTokens,
       'contextWindow': contextWindow,
       'totalTokens': totalTokens,
@@ -483,15 +449,11 @@ Map<String, Object?> _driverDiagnostics() {
             },
     },
     'composer': <String, Object?>{
-      'newThread': _driverComposerDiagnostics(
-        StudioDriverState.observedNewThreadComposer,
-      ),
-      'thread': _driverComposerDiagnostics(
-        StudioDriverState.observedThreadComposer,
-      ),
+      'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
+      'thread': _driverComposerDiagnostics(facts.threadComposer),
     },
-    'providers': _driverProviderDiagnostics(),
-    'topics': studioDriverTopicDiagnostics(_container),
+    'providers': _driverProviderDiagnostics(facts),
+    'topics': studioDriverTopicDiagnostics(_client),
     'seams': <String, Object?>{
       // No production ClipboardImageReader override/fixture is present in this
       // Driver entrypoint. The fixture request below therefore does not claim
@@ -540,8 +502,8 @@ Map<String, Object?>? _driverComposerDiagnostics(
   };
 }
 
-Map<String, Object?> _driverProviderDiagnostics() {
-  final settingsAvailable = StudioDriverState.observedSettingsReady;
+Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
+  final settingsAvailable = facts.settingsReady;
   if (!settingsAvailable) {
     return <String, Object?>{
       'availability': 'unavailable',
@@ -549,7 +511,7 @@ Map<String, Object?> _driverProviderDiagnostics() {
       'details': null,
     };
   }
-  final providers = StudioDriverState.observedProviders;
+  final providers = facts.providers;
   return <String, Object?>{
     'availability': 'available',
     // The list projection deliberately contains count/status metadata only.
@@ -608,7 +570,7 @@ Future<String> _startDriverFixtureClipboardImage() async {
     });
   }
 
-  final selection = _container.read(selectionStoreProvider);
+  final selection = _client.selection.state;
   final projectId = selection.selectedProjectId;
   if (projectId == null) {
     return jsonEncode(<String, Object?>{
@@ -623,23 +585,23 @@ Future<String> _startDriverFixtureClipboardImage() async {
   final threadId = selection.selectedThreadId;
   final Future<void> task;
   if (threadId != null) {
-    task = _container
-        .read(composerDraftControllerProvider(threadId).notifier)
-        .addClipboardImage(bytes);
+    if (_client.composerState(threadId) == null) {
+      return jsonEncode(<String, Object?>{
+        'ok': false,
+        'hook': 'driver-fixture-clipboard-image',
+        'pasteSeam': 'unavailable',
+        'systemClipboardTouched': false,
+        'reason': 'composer-not-ready',
+      });
+    }
+    task = _client.composer(threadId).addClipboardImage(bytes);
   } else {
-    final mode = _container.exists(startSessionControllerProvider)
-        ? _container
-              .read(startSessionControllerProvider)
-              .forProject(projectId)
-              .mode
-        : ThreadModeId.simple;
-    task = _container
-        .read(attachmentDraftsProvider.notifier)
-        .addNewThreadClipboard(
-          projectId: projectId,
-          mode: mode,
-          pngBytes: bytes,
-        );
+    final mode = _client.startDraft.state.forProject(projectId).mode;
+    task = _client.attachments.addNewThreadClipboard(
+      projectId: projectId,
+      mode: mode,
+      pngBytes: bytes,
+    );
   }
   _driverFixtureClipboardImageTask = task;
   // The admission hook is intentionally fire-and-observe: it does not await
@@ -701,7 +663,7 @@ Future<String> _finishDriverFixtureClipboardImage() async {
 // reduced to scheme/host/path.
 
 Future<String> _handleSearchSettings() async {
-  final settings = _container.read(settingsStoreProvider).canonical;
+  final settings = _client.settings.state.canonical;
   if (settings == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
@@ -737,7 +699,7 @@ Future<String> _handleSearchSettings() async {
 }
 
 Future<String> _handleSearchMcpState() async {
-  final mcp = _container.read(mcpStoreProvider).value;
+  final mcp = _client.mcp.state.value;
   if (mcp == null) {
     return jsonEncode(<String, Object?>{
       'ok': false,
@@ -924,6 +886,123 @@ Map<String, Object?>? _renderedLongBody() {
     'head': _headOf(rendered),
     'tail': _tailOf(rendered),
     'hash': _fnv1a64Hex(rendered),
+  };
+}
+
+/// Read the actual painted character at a fixed viewport point. A row's top can
+/// remain unchanged while a different paragraph split moves its text; checking
+/// both catches that distinction without keeping another content projection.
+Map<String, Object?> _longBodyLayout() {
+  final elements = _longBodyTextElements();
+  final root = WidgetsBinding.instance.rootElement;
+  RenderBox? viewport;
+  if (root != null) {
+    _visitElements(root, (element) {
+      if (element.widget.key == const ValueKey('timeline-scrollable')) {
+        final render = element.findRenderObject();
+        if (render is RenderBox && render.hasSize) viewport = render;
+      }
+    });
+  }
+  if (elements.isEmpty || viewport == null) {
+    return {'ok': false, 'reason': 'body or timeline viewport is not mounted'};
+  }
+  final viewportTop = viewport!.localToGlobal(Offset.zero).dy;
+  final sampleY = viewportTop + 24;
+  final chunks = <Map<String, Object?>>[];
+  Map<String, Object?>? visible;
+  var offset = 0;
+  for (final element in elements) {
+    final paragraph = _renderParagraphOf(element);
+    if (paragraph == null || !paragraph.hasSize) continue;
+    final text = paragraph.text.toPlainText();
+    final style = paragraph.text.style;
+    final top = paragraph.localToGlobal(Offset.zero).dy;
+    final wordOffset = text.indexOf('WWWWWWWWWWWWWWWWWWWW');
+    final wordBoxes = wordOffset < 0
+        ? const <TextBox>[]
+        : paragraph.getBoxesForSelection(
+            TextSelection(
+              baseOffset: wordOffset,
+              extentOffset: wordOffset + 20,
+            ),
+          );
+    final painter = TextPainter(
+      text: paragraph.text,
+      textDirection: paragraph.textDirection,
+      textAlign: paragraph.textAlign,
+      textScaler: paragraph.textScaler,
+      strutStyle: paragraph.strutStyle,
+      locale: paragraph.locale,
+      maxLines: paragraph.maxLines,
+      textWidthBasis: paragraph.textWidthBasis,
+      textHeightBehavior: paragraph.textHeightBehavior,
+    )..layout(maxWidth: paragraph.constraints.maxWidth);
+    final measuredHeight = painter.height;
+    painter.dispose();
+    chunks.add({
+      'start': offset,
+      'characters': text.length,
+      'width': paragraph.size.width,
+      'height': paragraph.size.height,
+      'measuredHeight': measuredHeight,
+      'wordWidth': wordBoxes.isEmpty
+          ? null
+          : wordBoxes.first.right - wordBoxes.first.left,
+      'lineStartOffsets': [
+        for (final y in [11.0, 33.0, 55.0])
+          paragraph.getPositionForOffset(Offset(0, y)).offset,
+      ],
+      'minWidth': paragraph.constraints.minWidth,
+      'maxWidth': paragraph.constraints.maxWidth,
+      'top': top - viewportTop,
+      'head': _headOf(text),
+      'tail': _tailOf(text),
+      'style': {
+        'fontFamily': style?.fontFamily,
+        'fontFamilyFallback': style?.fontFamilyFallback,
+        'fontSize': style?.fontSize,
+        'fontWeight': style?.fontWeight?.value,
+        'letterSpacing': style?.letterSpacing,
+        'wordSpacing': style?.wordSpacing,
+        'height': style?.height,
+        'leadingDistribution': style?.leadingDistribution?.name,
+      },
+      'scaledFontSize': paragraph.textScaler.scale(style?.fontSize ?? 14),
+      'heightBehavior': paragraph.textHeightBehavior.toString(),
+      'textAlign': paragraph.textAlign.name,
+      'textScaler': paragraph.textScaler.toString(),
+      'softWrap': paragraph.softWrap,
+      'maxLines': paragraph.maxLines,
+      'locale': paragraph.locale.toString(),
+    });
+    if (visible == null &&
+        top <= sampleY &&
+        top + paragraph.size.height > sampleY) {
+      final position = paragraph.getPositionForOffset(Offset(1, sampleY - top));
+      final index = position.offset.clamp(0, text.length);
+      final boxes = paragraph.getBoxesForSelection(
+        TextSelection(
+          baseOffset: index,
+          extentOffset: (index + 1).clamp(0, text.length),
+        ),
+      );
+      visible = {
+        'characterOffset': offset + index,
+        'text': text.substring(index, (index + 80).clamp(0, text.length)),
+        'glyphTop': boxes.isEmpty ? null : top + boxes.first.top - viewportTop,
+      };
+    }
+    offset += text.length;
+  }
+  return {
+    'ok': visible != null,
+    'characters': offset,
+    'viewportWidth': viewport!.size.width,
+    'viewportHeight': viewport!.size.height,
+    'sampleY': 24,
+    'visible': visible,
+    'chunks': chunks,
   };
 }
 

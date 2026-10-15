@@ -52,6 +52,11 @@ Thread directory 元数据。订阅注册完成后，Studio 运行时必须用�
 只有当 `epoch` 相同且 `base_revision` 恰好等于本地已知水位时才能拼接；否则视为缺口并重同步，
 不把迟到帧接到新生命周期上。
 
+查询快照的 core commit sequence 与订阅通知的 revision 属于不同版本域，不能用查询结果修补
+当前订阅水位。已知 CAS 冲突需要刷新 Thread 轻状态时，Client 取消并 join 旧 runtime binding，
+重新订阅并等待该 binding 的首个 owner baseline，再按原 OperationId 重试；当前 ChatView 保留。
+关闭或切换会话终止 baseline 等待，实际取消未完成的 binding 仍由 Session 持有并计入预算。
+
 通知穷尽为：
 
 - `turnStarted`
@@ -194,18 +199,24 @@ Timeline workspace 的正文只有一个 owner：这份单列视图就是该 Thr
 `Latest` 首窗加 overlay 合并，磁盘写入与 flush 也不进入状态流。
 
 窗口内容交付只有**一个出口** `next`：首帧 `initial`（Reset），之后 Reset/Patch。控制操作
-（`load`/`focus`/`extend_latest`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`
-与操作后的窗口版本；`expand` 另带正文是否成功保留），不直接交付窗口，也不重置订阅基线。
+（`load`/`focus`/`extend_latest`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`、
+权威 `Applied | NoChange` 与操作提交的窗口版本；`expand` 另带正文是否成功保留），不直接交付
+窗口，也不重置订阅基线。disposition 在窗口 owner 的提交边界裁决，不能由消费者读两次快照推断。
 `extend_latest` 在已到头、容量已满或不在 Latest 时合法 no-op：版本不变、不发内容帧。
 相同 Latest 焦点，或窗口内仍可见的同一 Around 身份，focus 为 no-op：不推进 generation、不通知。
 core 在真正改变窗口的操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定把窗口移动
 表达成权威 `Reset`（或大 splice `Patch`），`from` 始终等于客户端最后收到的版本。因此
 「已交付给客户端」的水位只由 `next`/`take` 推进；GUI 不再有 load/focus 直接返回快照的第二条
-交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手读取的会话进度 **不是** 必须在内容帧出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。GUI 把回执版本未超过已观察窗口视为 NoChange，结束 pending 且终止本轮自动补页。GUI 消费方（`ThreadSessionStore` 的内容
-绑定）打开窗口后立即采纳首帧并持续泵送 `next`；同一 view 同时至多一个未完成的 `next`，
+交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手读取的会话进度不是必须在内容帧
+出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。回执版本未超过当前已交付版本，只能
+证明观察屏障到达；Applied 的帧先于回包到达时版本也会相等，不能因此改判 NoChange。
+Client ChatChannel 把 initial 作为新 attempt 的首个 Reset，和后续帧送入同一个 reducer；
+同一 view 同时至多一个未完成的 `next`，
 reduce 完上一帧后再取下一帧。连续性缺口（`from` 不匹配本地版本、目标 item 不在窗口、
 `expected_revision` 不匹配或传输故障）废弃当前绑定并重开同一会话的有界窗口，期间保留最后
-有效内容。`expand` 在可见全文升级时推进版本并通知，完整正文仍由下一次 `take` 交付；条目已离开窗口时不 retain、不通知。结构化 retained 结果（区分读到条目与仍在窗口）尚未从 Option 推断中收口。
+有效内容。lastGood 仅暂时显示，不能成为新 view 的 Patch baseline。`expand` 在可见全文升级时推进
+版本并通知，完整正文仍由下一次 `take` 交付；条目已离开窗口时不 retain、不通知。
+ViewStamp 与 ResourceStamp 的版本域、attempt 关闭和 provider 观察边界见 [25](./25-frontend-state.md)。
 
 core `pl-core::chat` 窗口是这一单列视图的唯一内容窗口：它以稳定的 `ChatField` 为内容身份，
 `Body`、带 provider part 身份的 `Part` 与宿主定义的 opaque `Host` key（例如工具 arguments 与

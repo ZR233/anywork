@@ -5,7 +5,6 @@ use super::runtime::{
     BridgeStudioRecoveryIssueDto, BridgeUninitializedResource, RuntimeSnapshot,
 };
 use super::settings::{BridgeModelCatalogProviderDto, BridgeStudioSettingsDto};
-use super::thread_stream::BridgeThreadRuntimeSnapshot;
 use super::thread_stream::{BridgeRuntimeCostAmount, BridgeThread};
 use super::updater::BridgeUpdaterStateSnapshot;
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStudioStateSnapshot {
+    pub owner_epoch: String,
     pub runtime: RuntimeSnapshot,
     pub project_directory: BridgeProjectDirectoryState,
     /// 目录分页窗口的首页；后续页通过 `listThreadsPage` keyset cursor 加载。
@@ -460,14 +460,6 @@ pub struct BridgeModelCatalogSnapshotDto {
     pub providers: Vec<BridgeModelCatalogProviderDto>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeThreadModelRouteUpdateResponse {
-    pub runtime: BridgeThreadRuntimeSnapshot,
-    pub settings: BridgeSettingsStateResponse,
-    pub mode_default_saved: bool,
-    pub warning: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum BridgeRecoveryStateSnapshot {
@@ -685,14 +677,6 @@ pub struct ArchiveThreadResult {
     pub archived_root_id: String,
     pub removed_thread_ids: Vec<String>,
     pub next_root: Option<BridgeThread>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InterruptTurnResponse {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

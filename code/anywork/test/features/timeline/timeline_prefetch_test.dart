@@ -2,16 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/data/stores/chat_view_metrics.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork_client/models.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  setUp(ChatViewMetrics.reset);
 
   testWidgets('不足一屏且没有可加载历史时，不反复发出 extendLatest', (tester) async {
     final commands = <TimelineCommand>[];
@@ -43,8 +40,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 16));
 
     expect(_paging(commands), isEmpty);
-    expect(ChatViewMetrics.prefetchExtendLatest, 0);
-    expect(ChatViewMetrics.prefetchLoadOlder, 0);
   });
 
   testWidgets('no-op 之后边界不变，不再自动补页', (tester) async {
@@ -69,7 +64,6 @@ void main() {
     await tester.pumpWidget(view(loading: false, canExtend: true));
     await tester.pump();
     expect(_paging(commands), const [TimelineExtendLatest()]);
-    expect(ChatViewMetrics.prefetchExtendLatest, 1);
 
     await tester.pumpWidget(view(loading: true, canExtend: true));
     await tester.pump();
@@ -78,7 +72,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 16));
 
     expect(_paging(commands), const [TimelineExtendLatest()]);
-    expect(ChatViewMetrics.prefetchExtendLatest, 1);
   });
 }
 

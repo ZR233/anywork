@@ -1,10 +1,10 @@
 part of 'studio_shell.dart';
 
-class _StudioStartup extends StatelessWidget {
+class _StudioStartup extends ConsumerWidget {
   const _StudioStartup();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       key: const ValueKey('studio-startup'),
       backgroundColor: context.colors.surface,
@@ -36,7 +36,7 @@ class _StudioStartup extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 ValueListenableBuilder<StudioStartupPhase>(
-                  valueListenable: FrbStudioBridgeDataSource.startupProgress,
+                  valueListenable: ref.read(appGraphProvider).startupProgress,
                   builder: (context, phase, _) => Semantics(
                     liveRegion: true,
                     child: Text(

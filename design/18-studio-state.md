@@ -24,11 +24,13 @@ Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由�
 失败提交和恢复重放不计入。目录排序和版本化游标只消费会话元信息，不从历史回填；
 字段缺失与保存语义遵循 [17](./17-studio-storage.md)。
 
-StudioState 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
+服务端启动 snapshot 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
 recovery、MCP/LSP、provider usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
 Thread workspace 单独包含当前
 状态、pending Interaction、ThreadRuntimeView、workflow 投影和有界 Timeline 窗口；不存在
-taskDirectory。Thread 目录条目携带
+taskDirectory。Client 只将聚合读取用于一次 typed bootstrap，拆入各自 read model；正常命令成功
+不重读聚合状态。runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
+epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner epoch。Thread 目录条目携带
 会话工作区模式（`local | worktree`）与会话工作区地址 `workspacePath`，只读投影为侧栏与会话
 展示的 canonical 事实，GUI 不推导、不本地改写，也不按模式分别取 Project 路径或工作树路径。
 Settings snapshot 以 `modeModelRoutes` 暴露全局 Mode 默认 selector，并继续以 `roles` 暴露四个
@@ -41,6 +43,25 @@ canonical `modelRoute.revision`。该令牌对应模型路由 extension 的版�
 过时请求，不无条件覆盖或自动重试写入；失败保留原路由并向会话输入区反馈错误。
 成功响应中的 canonical route 与 settings 更新选择状态，Flutter 不人为递增 workspace
 订阅 revision；通知水位仍只由状态流维护。
+
+已有 Thread 的新 prompt 同样携带已观察的 `expectedModelRouteRevision`。runtime 在现有
+Thread lifecycle 锁内先检查 input 幂等命中，再校验 route extension revision，成功后才执行附件
+promotion 与新输入受理。过期 route 明确拒绝，不能把本地冻结 selector 当作后端已采用的事实；
+该 CAS 不承诺后续显式 route 更新不会影响未来 Turn。新建 Thread 随创建请求直接携带完整 route，
+在目录发布与首次 activation 前作为该 Thread 的初始化输入，不先修改全局 mode 默认值。
+
+业务 mutation 返回携带 OperationId、Applied/NoChange、目标 ResourceStamp、effect point 的
+typed receipt。结果由实际 owner 的提交点给出，不能通过响应和镜像 revision 相等推断 NoChange。
+Accepted、Observed、Effective、Durable 分别确认；配置对 next Turn 或 future Session 生效与
+正在执行的模型调用切换不同。durable 只来自真实保存确认。客户端未知结果与观察失败的处理
+以及 latest intent 的隔离见 [25](./25-frontend-state.md)。
+
+停止与交互确认使用明确的身份观察屏障：receipt 声明 `requiresIdentityObservation` 时，空目标
+或资源版本相等均不能自动确认。客户端在发命令前注册对应 Thread owner 的原子观察，只有目标
+Turn 已结束或目标 interaction 已移除才确认 Observed。停止 ACK 只确认取消请求已受理，
+Effective 要等目标 Turn 结束；交互受理可先 Effective，但仍等待身份移除。普通受理不表示
+Durable，只有命中真实已保存的交互回执才确认持久化。输入提交的 Durable 必须匹配
+ThreadId + inputId 的 Chat Turn `saved`，执行终态、receipt cursor 与其他资源 revision 都不能代替。
 
 Product event 携带完整领域 snapshot 或明确 revision：ProjectDirectoryChanged、
 ThreadDirectoryChanged、AgentDirectoryChanged、ModeCatalogChanged、ThreadRuntimeChanged
@@ -77,10 +98,10 @@ MCP、LSP、Mode catalog、Provider usage、模型统计、Updater、持久化�
 冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable
 replay。重同步只读取受影响领域，不触发 activation、扫描或 mutation。
 
-Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域的 lease 由 Bridge 层统一持有
-与释放，帧在 Bridge 的单一分发点进入对应领域 store 的 reduce 入口，再由各 feature 的
-ViewProvider 派生读取；页面不得各自复制 reducer 或直接消费底层 stream。最后一个观察者
-释放 lease 后取消该领域订阅；ready 状态以外的 controller 变化不得导致 lease 重建。
+Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应用实例的 Client 统一持有
+与释放，帧经单一分发点进入对应领域 read model reducer，再由 Riverpod 只读适配和 Connector
+派生读取。页面不得复制 reducer 或直接消费底层 stream；最后一个页面观察者退出只取消自己的
+观察，不关闭仍有应用逻辑 demand 的 topic、ChatView 或草稿。Settings 往返不重建当前会话资源。
 收到 `lagged` 时只使对应 topic/作用域进入局部重同步，取消旧句柄并重新建立“先接收后
 基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默
 空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在关闭与新 lease 建立期间继续生效，
@@ -653,14 +674,13 @@ Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种
 
 ## 18.11.1 Thread 身份的单一来源
 
-Thread 身份事实（mode、title、status、workspace）同时出现在会话自身的状态流快照与
-Thread 目录窗口行中。两者是同一 Rust 事实的两个视图，因此 Dart 侧按"会话自身快照为准、
-目录增量次之"的顺序做**单调单行合并**：快照携带的 thread 先经目录窗口的单行替换并入窗口
-（窗口未包含该会话时保持窗口不变，分页窗口不是完整目录），workspace 再从合并后的行读取。
-更旧的载荷（`updatedAt` 落后于窗口行）不改写窗口里更新的事实；排序键变化时按 canonical
-目录序重排。**旧实现固定取目录行，使会话自身的状态流永远无法修正 mode**：mode 只能靠目录
-事件或一次目录基线页到达，而基线页是严格 `revision >` 门，任何不推进目录水位的 mode 变更
-都会永久停留在旧值，并让 mode selector 的文案与选中态一起陈旧。
+Thread 身份事实（mode、title、status、workspace）的显示值由目录 owner 交付，按目录的
+epoch/revision 合并。会话状态流快照也携带 Thread 定位信息，但属于另一个版本域，不能
+反写目录窗口；`updatedAt` 是业务时间，既不能排序这两个资源的更新，也不能证明同秒载荷
+的新旧。首快照即使晚于目录终态到达，也不能把 idle、最新 title 或 mode 覆盖为旧值。
+workspace、Connector 与 Driver 从当前目录行组合身份与会话轻状态；未取得目录行的独立
+会话镜像仅以自身快照定位，不据此插入分页目录。mode 变更必须由 Rust 提交目录增量并推进
+目录水位；不能以首快照合并、同水位基线或命令后的回读补偿缺失的目录事件。
 
 Thread route 变更的 canonical 只由 Thread 有序流交付：native 在提交 model_route 扩展变更时
 publish 新的 thread snapshot，Dart 侧按同一 `epoch/baseRevision/revision` 水位收敛。命令响应

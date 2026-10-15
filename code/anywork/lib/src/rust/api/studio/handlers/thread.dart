@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/attachment.dart';
+import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';
@@ -26,19 +27,27 @@ Future<StartNewThreadResponse> startNewThread({
   required String projectId,
   required BridgeStudioPromptInput input,
   required String mode,
+  required String providerId,
+  required String model,
+  String? effort,
   String? workspaceMode,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadStartNewThread(
   projectId: projectId,
   input: input,
   mode: mode,
+  providerId: providerId,
+  model: model,
+  effort: effort,
   workspaceMode: workspaceMode,
 );
 
 /// Renames a root Thread and returns its canonical directory record.
-Future<BridgeThread> renameThread({
+Future<BridgeRenameThreadCommandReply> renameThread({
+  required String operationId,
   required String threadId,
   required String title,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadRenameThread(
+  operationId: operationId,
   threadId: threadId,
   title: title,
 );
@@ -48,24 +57,32 @@ Future<BridgeThread> renameThread({
 /// # Errors
 ///
 /// Returns an error when the Thread does not exist, is a child Thread, or its tree is active.
-Future<ArchiveThreadResult> archiveThread({required String threadId}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersThreadArchiveThread(threadId: threadId);
+Future<BridgeArchiveThreadCommandReply> archiveThread({
+  required String operationId,
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersThreadArchiveThread(
+  operationId: operationId,
+  threadId: threadId,
+);
 
 /// Changes the selected root Thread to a registered Thread Mode ID.
 ///
 /// # Errors
 ///
 /// Returns an error when the Thread does not exist, is a child Thread, or is busy.
-Future<void> setThreadMode({required String threadId, required String mode}) =>
-    RustLib.instance.api.crateApiStudioHandlersThreadSetThreadMode(
-      threadId: threadId,
-      mode: mode,
-    );
+Future<BridgeThreadModeCommandReply> setThreadMode({
+  required String operationId,
+  required String threadId,
+  required String mode,
+}) => RustLib.instance.api.crateApiStudioHandlersThreadSetThreadMode(
+  operationId: operationId,
+  threadId: threadId,
+  mode: mode,
+);
 
 /// Changes a root Thread's durable model route. The active Turn keeps its admitted binding.
-Future<BridgeThreadModelRouteUpdateResponse> setThreadModelRoute({
+Future<BridgeThreadModelRouteCommandReply> setThreadModelRoute({
+  required String operationId,
   required String threadId,
   required String providerId,
   required String model,
@@ -73,6 +90,7 @@ Future<BridgeThreadModelRouteUpdateResponse> setThreadModelRoute({
   required BigInt expectedModelRouteRevision,
   required BigInt expectedSettingsRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadSetThreadModelRoute(
+  operationId: operationId,
   threadId: threadId,
   providerId: providerId,
   model: model,

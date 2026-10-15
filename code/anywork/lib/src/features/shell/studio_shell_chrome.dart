@@ -302,7 +302,8 @@ Future<void> _openThreadWorkspaceInVsCode(
     try {
       // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioBridgeDataSourceProvider)
+          .read(anyworkClientProvider)
+          .remote
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -356,7 +357,8 @@ Future<void> _openThreadWorkspaceInZed(
     try {
       // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioBridgeDataSourceProvider)
+          .read(anyworkClientProvider)
+          .remote
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -410,7 +412,8 @@ Future<void> _openThreadWorkspaceInTerminal(
     try {
       // SSH 列表没有命令 lane。这里直接读 data source，不往 data/ 补方法。
       final servers = await ref
-          .read(studioBridgeDataSourceProvider)
+          .read(anyworkClientProvider)
+          .remote
           .listSshServers();
       // await 恢复后先确认 context 仍在，再继续启动或反馈 UI。
       if (!context.mounted) return;
@@ -491,7 +494,8 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
             onPressed: () {
               unawaited(
                 ref
-                    .read(directoryCommandsProvider.notifier)
+                    .read(anyworkClientProvider)
+                    .directoryCommands
                     .selectAgentThread(thread.id),
               );
             },
@@ -943,7 +947,7 @@ class _ConversationActivityHostState
     try {
       // 活动详情没有命令 lane。展开时直接读 data source，不写入 store。
       final detail = await ref
-          .read(studioBridgeDataSourceProvider)
+          .read(anyworkClientProvider)
           .readThreadActivityDetail(threadId, activity.identity);
       if (!mounted || generation != _generation || !_expanded) return;
       final latest = ref
@@ -1019,10 +1023,10 @@ class _StatusBarHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final status = ref.watch(statusBarViewProvider);
-    if (status == null) return const SizedBox.shrink();
-    return ThreadStatusBar(
-      view: status,
+    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
+    if (threadId == null) return const SizedBox.shrink();
+    return ThreadStatusConnector(
+      threadId: threadId,
       showTodo: showTodo,
       todoExpanded: todoExpanded,
       onToggleTodo: onToggleTodo,
@@ -1037,8 +1041,8 @@ class _ComposerHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final workspace = ref.watch(shellComposerWorkspaceProvider);
-    if (workspace == null) return const SizedBox.shrink();
-    return ComposerDock(workspace: workspace, compact: compact);
+    final threadId = ref.watch(shellSelectionProvider).selectedThreadId;
+    if (threadId == null) return const SizedBox.shrink();
+    return ComposerDock(threadId: threadId, compact: compact);
   }
 }

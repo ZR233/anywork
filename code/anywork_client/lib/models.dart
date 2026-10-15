@@ -1,0 +1,33 @@
+/// Canonical, SDK-only models shared by the Client and platform adapters.
+library;
+
+export 'src/models/agent_models.dart';
+export 'src/models/agent_profile_models.dart';
+export 'src/models/attachment_models.dart';
+export 'src/models/collection_extensions.dart';
+export 'src/models/command_receipts.dart';
+export 'src/models/composer_models.dart';
+export 'src/models/conversation_activity_models.dart';
+export 'src/models/failure_models.dart';
+export 'src/models/interaction_models.dart';
+export 'src/models/model_catalog.dart';
+export 'src/models/persistence_models.dart';
+export 'src/models/product_topic_models.dart';
+export 'src/models/provider_models.dart';
+export 'src/models/recovery_models.dart';
+export 'src/models/remote_models.dart';
+export 'src/models/runtime_models.dart';
+export 'src/models/settings_models.dart';
+export 'src/models/settings_snapshot_projection.dart';
+export 'src/models/startup_models.dart';
+export 'src/models/studio_commands.dart';
+export 'src/models/studio_enums.dart';
+export 'src/models/studio_shutdown_models.dart';
+export 'src/models/studio_state_snapshots.dart';
+export 'src/models/thread_activity_models.dart';
+export 'src/models/thread_directory_models.dart';
+export 'src/models/thread_models.dart';
+export 'src/models/timeline_commands.dart';
+export 'src/models/timeline_models.dart';
+export 'src/models/token_format.dart';
+export 'src/models/turn_models.dart';

@@ -118,7 +118,10 @@ class SettingsUsageRefresh {
         onChanged: onChanged,
       ),
     );
-    _refreshTail = operation.catchError((Object _, StackTrace _) {});
+    _refreshTail = operation.catchError((Object _, StackTrace _) {
+      // Keep the serial queue usable; the original operation is returned to its
+      // caller and _runRefresh records the visible error for this generation.
+    });
     return operation;
   }
 

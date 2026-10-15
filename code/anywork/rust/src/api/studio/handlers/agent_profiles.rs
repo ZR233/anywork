@@ -1,9 +1,9 @@
 use crate::api::studio::bridge_runtime::active_bridge;
+use crate::api::studio::convert::commands::settings_command_reply;
 use crate::api::studio::convert::runtime::bridge_agent_profiles;
-use crate::api::studio::convert::settings::bridge_settings_snapshot;
 use crate::api::studio::types::{
     BridgeAgentProfilesStateSnapshot, BridgeAgentWorkspaceMode, BridgeError,
-    BridgeSettingsStateResponse,
+    BridgeSettingsCommandReply,
 };
 
 /// 读取配置 owner 已发布的 Agent Profiles 资源快照（完整配置与逐文件诊断）。
@@ -19,21 +19,26 @@ pub async fn read_agent_profiles_state() -> Result<BridgeAgentProfilesStateSnaps
 
 /// Enables or disables an immutable built-in Agent Profile.
 pub async fn set_system_agent_enabled(
+    operation_id: String,
     expected_settings_revision: u64,
     profile_id: String,
     enabled: bool,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
-        bridge
-            .studio
-            .set_system_agent_enabled(expected_settings_revision, &profile_id, enabled)?,
+    Ok(settings_command_reply(
+        bridge.studio.set_system_agent_enabled(
+            operation_id,
+            expected_settings_revision,
+            &profile_id,
+            enabled,
+        )?,
     ))
 }
 
 /// Atomically creates or replaces one user Agent Profile TOML file.
 #[allow(clippy::too_many_arguments)]
 pub async fn save_user_agent_profile(
+    operation_id: String,
     expected_settings_revision: u64,
     profile_id: String,
     enabled: bool,
@@ -45,7 +50,7 @@ pub async fn save_user_agent_profile(
     model: String,
     effort: Option<String>,
     workspace_mode: BridgeAgentWorkspaceMode,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     let profile = pl_studio_runtime::UserAgentProfile {
         enabled,
@@ -66,10 +71,13 @@ pub async fn save_user_agent_profile(
             BridgeAgentWorkspaceMode::Review => pl_protocol::AgentWorkspaceMode::Review,
         },
     };
-    Ok(bridge_settings_snapshot(
-        bridge
-            .studio
-            .save_user_agent_profile(expected_settings_revision, &profile_id, &profile)?,
+    Ok(settings_command_reply(
+        bridge.studio.save_user_agent_profile(
+            operation_id,
+            expected_settings_revision,
+            &profile_id,
+            &profile,
+        )?,
     ))
 }
 

@@ -414,6 +414,12 @@ Future<void> main(List<String> args) async {
     await File('${output.path}/stress-body-reopened.png')
         .writeAsBytes(await driver.screenshot());
     final reopenedScroll = _timelineScroll(reopened);
+    final reopenedLayout = _decodeDriverMap(
+      await driver.requestData('body-layout'),
+    );
+    await File('${output.path}/stress-body-reopened-layout.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(reopenedLayout)}\n',
+    );
     await File('${output.path}/stress-body-timeline-scroll.json').writeAsString(
       '${const JsonEncoder.withIndent('  ').convert(reopenedScroll)}\n',
     );
@@ -430,6 +436,16 @@ Future<void> main(List<String> args) async {
     // body is complete and the restore has settled; when it is complete and still
     // wrong the run fails immediately, and the offset tolerance is never widened.
     final diagnosticPresent = reopenedScroll != null;
+    final visibleBefore = (reading['layout'] as Map?)?['visible'] as Map?;
+    final visibleAfter = reopenedLayout?['visible'] as Map?;
+    final lineTopBefore = visibleBefore?['glyphTop'];
+    final lineTopAfter = visibleAfter?['glyphTop'];
+    final visibleTextRestored =
+        visibleBefore?['characterOffset'] is int &&
+        visibleBefore?['characterOffset'] == visibleAfter?['characterOffset'] &&
+        lineTopBefore is num &&
+        lineTopAfter is num &&
+        (lineTopBefore - lineTopAfter).abs() <= 1.0;
     final anchorRestored =
         bodyReady &&
         reading['insideLongBody'] == true &&
@@ -438,7 +454,8 @@ Future<void> main(List<String> args) async {
         reading['anchorOffset'] is num &&
         readingAnchorAfter == reading['anchorItemId'] &&
         readingOffsetAfter != null &&
-        (readingOffsetAfter - (readingOffset as num).toDouble()).abs() <= 1.0;
+        (readingOffsetAfter - (readingOffset as num).toDouble()).abs() <= 1.0 &&
+        visibleTextRestored;
     report['sessionSwitch'] = <String, Object?>{
       'originalThreadId': originalId,
       'secondThreadId': secondId,
@@ -456,6 +473,9 @@ Future<void> main(List<String> args) async {
       'readingOffsetBefore': readingOffset,
       'readingOffsetAfter': readingOffsetAfter,
       'readingAnchorRestored': diagnosticPresent ? anchorRestored : null,
+      'visibleTextBefore': visibleBefore,
+      'visibleTextAfter': visibleAfter,
+      'visibleTextRestored': visibleTextRestored,
       'reopenDiagnostics': reopenDiagnostics,
     };
     if (diagnosticPresent) {
@@ -825,7 +845,14 @@ Future<Map<String, Object?>> _readIntoLongBody(
     };
   }
   var scrolled = false;
-  var scroll = _timelineScroll(await driver.readSnapshot());
+  var scroll = _timelineScroll(
+    await _waitFor(
+      driver,
+      (snapshot) => _idleReadingGeometry(_timelineScroll(snapshot)),
+      'reading_start_geometry',
+      evidence: output,
+    ),
+  );
   var reading = _readingGeometry(scroll, target);
   // Every step records the real geometry before/after the scroll, so the reading
   // position can be re-checked instead of trusted from a single frame.
@@ -838,13 +865,29 @@ Future<Map<String, Object?>> _readIntoLongBody(
       step < _maxReadSteps && reading['insideLongBody'] != true;
       step++
     ) {
+      final beforeUpdates = scroll!['userDragUpdates'] as int;
       await driver.scrollBy(
         find.byValueKey('timeline-scrollable'),
         _readScrollStep,
         timeout: const Duration(seconds: 15),
       );
       scrolled = true;
-      scroll = _timelineScroll(await driver.readSnapshot());
+      // The Driver command can finish before its pointer events have all
+      // reached the published geometry. Capture the reading position only
+      // after this gesture has produced updates and its idle frame; otherwise
+      // a valid reopen is compared against an intermediate drag step.
+      scroll = _timelineScroll(
+        await _waitFor(
+          driver,
+          (snapshot) {
+            final current = _timelineScroll(snapshot);
+            return _idleReadingGeometry(current) &&
+                (current!['userDragUpdates'] as int) > beforeUpdates;
+          },
+          'reading_drag_${step + 1}_idle',
+          evidence: output,
+        ),
+      );
       reading = _readingGeometry(scroll, target);
       geometry.add(<String, Object?>{
         'phase': 'after_scroll_${step + 1}',
@@ -859,6 +902,9 @@ Future<Map<String, Object?>> _readIntoLongBody(
   }
   await File('${output.path}/stress-body-reading.png')
       .writeAsBytes(await driver.screenshot());
+  final layout = _decodeDriverMap(await driver.requestData('body-layout'));
+  await File('${output.path}/stress-body-reading-layout.json')
+      .writeAsString('${const JsonEncoder.withIndent('  ').convert(layout)}\n');
   await File('${output.path}/stress-body-reading-scroll.json').writeAsString(
     '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'targetRowId': target, 'geometry': geometry, 'final': scroll})}\n',
   );
@@ -910,8 +956,17 @@ Future<Map<String, Object?>> _readIntoLongBody(
     'detachedByUser': reading['detachedByUser'],
     'followingBottomBeforeReading': followingBottomBefore,
     'geometry': geometry,
+    'layout': layout,
   };
 }
+
+bool _idleReadingGeometry(Map<String, dynamic>? scroll) =>
+    scroll?['isScrolling'] == false &&
+    scroll?['restorePending'] == false &&
+    scroll?['programmaticScroll'] == false &&
+    (scroll?['mountedRowCount'] as num? ?? 0) > 0 &&
+    scroll?['anchor'] != null &&
+    scroll?['userDragUpdates'] is int;
 
 /// One reading-position observation: the anchor identity/offset plus the live
 /// scroll geometry that proves the viewport left the bottom.
@@ -950,6 +1005,8 @@ Map<String, Object?> _readingGeometry(
     'viewportDimension': viewport,
     'followingBottom': followingBottom,
     'detachedByUser': scroll?['detachedByUser'],
+    'isScrolling': scroll?['isScrolling'],
+    'userDragUpdates': scroll?['userDragUpdates'],
     'insideLongBody': inside,
   };
 }
@@ -1385,6 +1442,7 @@ bool _reopenBodyReady(
 ) {
   final window = snapshot['timelineWindow'];
   if (window is! Map) return false;
+  if (window['loading'] != false) return false;
   if (_idList(window, 'pendingItemBodyIds').contains(expectedRowId)) {
     return false;
   }
@@ -1398,6 +1456,7 @@ bool _reopenBodyReady(
   if (scroll != null) {
     if (scroll['restorePending'] != false) return false;
     if (scroll['programmaticScroll'] != false) return false;
+    if (scroll['isScrolling'] != false) return false;
   }
   return true;
 }
@@ -1438,6 +1497,7 @@ Map<String, Object?> _reopenDiagnostics(
     'previewedItemIds': _idList(window, 'previewedItemIds'),
     'loadedItemIds': _idList(window, 'loadedItemIds'),
     'pendingItemBodyIds': _idList(window, 'pendingItemBodyIds'),
+    'windowLoading': window is Map ? window['loading'] : null,
     'restorePending': scroll?['restorePending'],
     'programmaticScroll': scroll?['programmaticScroll'],
     'restoreAnchor': scroll?['restoreAnchor'],

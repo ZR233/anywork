@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'sidebar_navigation.dart';
 // Public snapshot helpers shared with the realtime/history/plan journeys: this
 // journey reads the same Driver projection and never forks a second reading.
 import 'realtime_journey.dart'
@@ -832,26 +833,16 @@ class ShutdownJourney {
   }
 
   Future<void> _ensureThreadOpen(String threadId, String label) async {
-    await driver.waitFor(
-      find.byValueKey('thread-row-$threadId'),
-      timeout: const Duration(seconds: 90),
-    );
-    try {
-      await waitFor(
-        (snapshot) => threadIdOf(snapshot) == threadId,
-        '${label}_already_open',
-        timeout: const Duration(seconds: 10),
-      );
-      return;
-    } on StateError {
-      // Not the open workspace yet: switch through the real sidebar row.
-    }
+    final current = await snapshot();
+    if (threadIdOf(current) == threadId) return;
+    await revealSidebarThread(driver, threadId);
     await _tap('thread-row-$threadId');
     await waitFor(
       (snapshot) => threadIdOf(snapshot) == threadId,
       '${label}_opened',
       timeout: const Duration(seconds: 60),
     );
+    await clearSidebarSearch(driver);
   }
 
   /// Submits [index] and waits for the new Turn to complete and become durable.

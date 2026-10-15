@@ -10,8 +10,8 @@ use super::super::thread_title::{
     ThreadTitleCancellation, ThreadTitleCancellationCause, manual_title, provisional_title,
 };
 use super::super::{
-    StudioArchiveThreadResult, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
-    StudioSubmitPromptRequest,
+    ArchiveThreadCommandReply, RenameThreadCommandReply, StudioArchiveThreadResult,
+    StudioStartNewThreadRequest, StudioStartNewThreadResponse, StudioSubmitPromptRequest,
 };
 
 /// 归档收束轮询间隔：既避免忙等，又让正常收束延迟保持在可忽略范围。
@@ -62,7 +62,23 @@ impl StudioRuntime {
             .resolve(&request.input.attachment_draft_ids)
             .await?;
         let config = self.config_runtime.read()?;
-        let route = config.config.resolve_mode_model_route(&request.mode)?;
+        let selector = super::super::settings_api::validated_route(
+            &config.config,
+            "new Thread",
+            &request.route.provider_id,
+            &request.route.model,
+            request.route.effort.as_deref(),
+        )?;
+        let route = config
+            .config
+            .models
+            .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
+        let mode_definition = self
+            .thread_modes
+            .snapshot()
+            .mode(&request.mode)
+            .context("requested Thread Mode is unavailable")?;
+        crate::mode::validate_thread_mode_model(Some(&mode_definition), &route.model)?;
         self.attachment_drafts
             .validate_for_model(&route.model, &drafts)?;
         // 校验走内存目录 owner：open_project 的落库是异步跟随的。
@@ -128,6 +144,10 @@ impl StudioRuntime {
             request.workspace_mode,
             workspace_path,
         );
+        // Stage before publication: a directory observer may concurrently
+        // activate this identity, and must use this exact request route.
+        self.thread_factory
+            .stage_initial_route(&thread.id, selector);
         // 目录事实内存先行；SQLite 失败进入持久化降级而不是命令失败
         // （design/18 §18.2）。
         if let Err(error) = self
@@ -136,6 +156,7 @@ impl StudioRuntime {
             .commit_directory(delta)
             .await
         {
+            self.thread_factory.clear_initial_route(&thread.id);
             self.clear_creating_session_worktree(&session_lease);
             self.preserve_session_worktree(
                 session_lease.take(),
@@ -148,6 +169,7 @@ impl StudioRuntime {
         self.clear_creating_session_worktree(&session_lease);
         let thread = ThreadRecord::from_directory_thread(thread);
         if let Err(error) = self.register_new_thread(thread.clone()).await {
+            self.thread_factory.clear_initial_route(&thread.id);
             // 目录事实已发布：必须先按未启动会话补偿（关闭并归档），不能留下无法激活的
             // 已发布会话；会话自身 worktree 仍按 D6 只收束为 `preserved`。
             self.preserve_session_worktree(
@@ -163,6 +185,7 @@ impl StudioRuntime {
             }
             return Err(error);
         }
+        self.thread_factory.clear_initial_route(&thread.id);
         let submission = self
             .submit_prompt_for_owned_thread_with_lifecycle_lock(
                 StudioSubmitPromptRequest {
@@ -200,7 +223,13 @@ impl StudioRuntime {
     }
 
     /// Renames a root Thread and publishes the canonical directory update.
-    pub async fn rename_thread(&self, thread_id: String, title: String) -> Result<ThreadRecord> {
+    pub async fn rename_thread(
+        &self,
+        operation_id: String,
+        thread_id: String,
+        title: String,
+    ) -> Result<RenameThreadCommandReply> {
+        Self::validate_operation_id(&operation_id)?;
         let title = manual_title(&title)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.ensure_prompt_runtime_ready().await?;
@@ -217,16 +246,27 @@ impl StudioRuntime {
         self.title_tasks
             .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
             .await;
+        let changed = thread.title != title;
         thread.title = title;
         thread.updated_at = crate::studio::unix_seconds();
-        self.agent_facility
+        let committed = self
+            .agent_facility
             .product_events
             .commit_directory(DirectoryDelta {
                 thread_upserts: vec![thread.clone()],
                 ..Default::default()
             })
             .await?;
-        Ok(ThreadRecord::from_directory_thread(thread))
+        Ok(RenameThreadCommandReply {
+            thread: ThreadRecord::from_directory_thread(thread),
+            receipt: self.command_receipt(
+                operation_id,
+                changed,
+                vec![self.thread_directory_stamp(&committed)?],
+                pl_protocol::studio::CommandEffectPoint::Immediate,
+                false,
+            ),
+        })
     }
 
     pub(in crate::studio::runtime) async fn apply_automatic_thread_title(
@@ -271,8 +311,10 @@ impl StudioRuntime {
 
     pub async fn archive_thread(
         &self,
+        operation_id: String,
         thread_id: String,
-    ) -> Result<Option<StudioArchiveThreadResult>> {
+    ) -> Result<Option<ArchiveThreadCommandReply>> {
+        Self::validate_operation_id(&operation_id)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let Some((thread, roots, thread_tree)) =
             self.activate_thread_archive_scope(&thread_id).await?
@@ -306,7 +348,8 @@ impl StudioRuntime {
             .await?;
         self.publish_archived_cleanup_recovery(&removed_thread_ids)
             .await;
-        self.agent_facility
+        let committed = self
+            .agent_facility
             .product_events
             .commit_directory(DirectoryDelta::archive_threads(removed_thread_ids.clone()))
             .await?;
@@ -319,10 +362,19 @@ impl StudioRuntime {
                 .await;
         }
         self.model_performance.remove_session(&thread.id).await?;
-        Ok(Some(StudioArchiveThreadResult {
-            archived_root_id: thread.id,
-            removed_thread_ids,
-            next_root,
+        Ok(Some(ArchiveThreadCommandReply {
+            result: StudioArchiveThreadResult {
+                archived_root_id: thread.id,
+                removed_thread_ids,
+                next_root,
+            },
+            receipt: self.command_receipt(
+                operation_id,
+                true,
+                vec![self.thread_directory_stamp(&committed)?],
+                pl_protocol::studio::CommandEffectPoint::Immediate,
+                false,
+            ),
         }))
     }
 

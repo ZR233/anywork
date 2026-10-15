@@ -1,13 +1,15 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../data/stores/lsp_store.dart';
-import '../../data/stores/mode_catalog_store.dart';
-import '../../data/stores/selection_store.dart';
-import '../../data/stores/settings_store.dart';
-import '../../data/stores/thread_directory_store.dart';
-import '../../data/stores/thread_session_state.dart';
-import '../../data/stores/thread_session_store.dart';
-import '../../data/stores/domain_sync.dart';
+import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mode_catalog_store.dart';
+import '../../presentation/providers/selection_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
+
+import 'package:anywork_client/studio_client.dart';
+
+import '../../presentation/providers/thread_session_store.dart';
+
 import '../../domain/models/studio_models.dart';
 
 part 'status_view.g.dart';
@@ -99,8 +101,7 @@ StudioThroughputProjection? statusThroughputProjection(Ref ref) {
 StatusBarView? statusBarView(Ref ref) {
   final session = _selectedSession(ref);
   if (session == null) return null;
-  final thread =
-      session.workspace?.thread ?? _directoryThread(ref, session.threadId);
+  final thread = _directoryThread(ref, session.threadId);
   if (thread == null) return null;
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;
@@ -126,7 +127,11 @@ ThreadSessionState? _selectedSession(Ref ref) {
 }
 
 StudioThread? _directoryThread(Ref ref, String threadId) {
-  for (final thread in ref.watch(threadDirectoryStoreProvider).window.threads) {
+  final directory = ref.watch(threadDirectoryStoreProvider);
+  for (final thread in [
+    ...directory.window.threads,
+    ...directory.overlayThreads,
+  ]) {
     if (thread.id == threadId) return thread;
   }
   return null;

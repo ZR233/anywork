@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'sidebar_navigation.dart';
 // Public snapshot helpers shared with the realtime/history journeys: this
 // journey reads the same Driver projection and must not fork a second reading.
 import 'realtime_journey.dart';
@@ -848,20 +849,8 @@ class PlanRecoveryJourney {
 
   /// Ensures exactly the target session is the open workspace.
   Future<void> _ensureThreadOpen(String threadId, String label) async {
-    await driver.waitFor(
-      find.byValueKey('thread-row-$threadId'),
-      timeout: const Duration(seconds: 60),
-    );
-    try {
-      await waitFor(
-        (snapshot) => threadIdOf(snapshot) == threadId,
-        '${label}_already_open',
-        timeout: const Duration(seconds: 10),
-      );
-      return;
-    } on StateError {
-      // Not the open workspace yet: switch through the real sidebar row.
-    }
+    if (threadIdOf(await snapshot()) == threadId) return;
+    await revealSidebarThread(driver, threadId);
     await _tapForEffect(
       'thread-row-$threadId',
       (snapshot) => threadIdOf(snapshot) == threadId,
@@ -873,6 +862,7 @@ class PlanRecoveryJourney {
       '${label}_opened',
       timeout: const Duration(seconds: 60),
     );
+    await clearSidebarSearch(driver);
   }
 
   /// Proves no pending Plan confirmation exists in the current workspace.

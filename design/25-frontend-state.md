@@ -1,145 +1,201 @@
-# 25 - Flutter 前端状态与资源生命周期
+# 25 - Client、前端状态与资源生命周期
 
-> 本篇是前端状态的目标契约。内容出口收敛（唯一 ChatView、删除 Dart transport 补丁基线、删除 GUI 普通 SQL 分页旁路、控制操作返回回执）已在 5a8210 落地；随后补页门控、窗口操作确认与旧绑定清理竞争按本节标注推进。不能用「内容出口已经统一」推导出「前端性能重构已经完成」，也不能把尚未存在的规范化 ChatState 写成实施状态。
->
-> 对照基线：内容出口收敛 `5a8210f3525cc9eb7da7eb3f6f5dcf9815e14cef`。合入后续切片时必须与 Rust 流协议、调用方及测试一起切换。
->
-> **已实现（Dart/core 源码可核对；Windows 原生性能未测）：**
-> - 唯一内容泵消费 ChatView 首帧与后续帧；transport 不再维护第二份补丁基线。
-> - Timeline 使用窗口交付的 `hasOlder` / `hasNewer` / `canExtendLatest`，不以「有无命令回调」推断补页能力；自动补页在边界/容量未变时不因 loading 落沿重复发起；core 的 extendLatest no-op 不推进版本、不发内容帧。
-> - load / extendLatest 在第一个 await 之前占位；回执版本未超过已观察窗口时视为「该水位已观察」并结束等待；旧操作 token 不能结束新占位。
-> - 活动摘要层只更新文本：不再以 label 作为切换动画身份，连续增量不重启淡入淡出；行状态（等待保存 / 已回退）占据固定高度元信息区，`saved` 翻转不改变行几何。
-> - Timeline 只有一个帧末被动校正调度点：跟随底线、锚点落位与条目布局变化合并到同一次校正，回调带（thread, windowEpoch, readingGeneration）身份，旧会话的迟到回调被丢弃。
-> - 阅读位置与后端窗口焦点分离：普通窗口内滚动只更新锚点，只有带定位动作（进入历史阅读 / 查看条目 / 跳回最新）的锚点才请求 native focus；去重依据已确认焦点与同一目标的在途请求，失败后同一目标仍可重试。
-> - 聊天内容路径有容量有界的逐事件记录（带会话/绑定身份与判定原因）与累计计数两层观测。
-> - 旧订阅释放只清理自己捕获的资源；await 之后若已有新绑定或新附件，不得清空当前窗口。
-> - 缺少 ChatWindowReader 标为内容同步失败，不再静默当成空窗口。
-> - 窗口内相同 Latest / 仍可见的 Around 焦点在 core 为 no-op：不推进 generation、不通知。
->
-> **部分实现：**
-> - 停止命令在点击时冻结 turnId，执行时校验同一轮；普通命令仍是跨会话共享 lane。
-> - 内容绑定按候选安装：首帧验证成功之前不进入当前绑定，因此不会把「有句柄、没有泵」的实例当 ready 复用；出口结束（EOF）与传输故障走同一条收束路径并带退避重开，重开在无法推进时停下；退避计数只在首帧真正落地时清零。尚未收敛为显式的 Idle / Opening / Streaming / Reconnecting / Closed / Failed 状态机。
-> - 阅读位置与窗口焦点已分离（只有定位动作才换焦点）；尚未把「用户正在滚动时自动校正让位」与可见 itemId + 像素偏移的恢复收敛成独立 viewport controller。
-> - 操作回执的版本已改为**窗口交付域**（窗口快照版本），因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见的变化」，不再等待永不交付的水位；操作结果收敛为 typed 结果（noChange / alreadyObserved / contentVersionObserved / bindingChanged / bindingRetired / localCompletion），等待期间绑定退休也会确定收束。仍未实施：由后端返回的 Applied / Superseded / NotInWindow 等 disposition（当前只能从版本与绑定身份推断）。
->
-> **尚未实施：**
-> - 结构与正文分离的 ChatState（`orderedItemIds` / `itemsById` / 独立 sync）；正文变化仍扇出整个 session / 工作区（显示投影本身已按条目隔离）。
-> - 显示投影已按条目身份复用（只有内容真正变化的条目重新转换，行对象按渲染版本驻留，窗口事实不变时整个行列表复用），推理正文不再预拼整段字符串；尚未把正文窗口规范化为有序 ID 序列 + itemsById 的独立 read model。
-> - 由单一 viewport/ScrollPosition 所有者接管位置稳定性；当前是合并后的单一校正点（用户在滚动时自动校正让位、按可见 itemId + offset 恢复），尚未收敛成独立 controller。
-> - expand 结构化结果：`read_item` 返回 `Option<item>`、回执带 `retained`，二者合起来已能区分「条目仍在窗口」与「窗口已不含该身份」；无需再引入一层枚举，但 `Superseded` / `Failed` 仍只能由调用方从错误传播推断。
-> - 删除宿主 Timeline fallback；资源级命令串行；route pending 等实际观察收敛。
-> - Windows profile / release 原生性能与逐帧呈现验收：验收矩阵与取证口径已写入 [24](./24-testing.md) §24.5；本机（Linux）只能跑到 `manual-gui` 的启动与部分场景，未取得 Windows 帧时长与录像。
+Rust 持有业务事实；应用实例持有纯 Dart Client；Riverpod 适配只读观察；Widget 呈现并发出意图。
+本篇是客户端所有权、命令、草稿和导航的唯一权威契约。可靠历史与迁移见
+[17](./17-studio-storage.md)，版本化流见 [07](./07-streaming.md)，领域和关闭见
+[18](./18-studio-state.md)，呈现与阅读位置见 [19](./19-studio-ui.md)，验证边界见
+[24](./24-testing.md)。规范不把源码实现或纯 Dart 测试等同于真实 native 与平台验收。
 
-本篇定义 Dart read model、命令、草稿、页面与订阅的职责。Rust 的可靠历史/恢复见 15/16/17；产品资源与版本见 18；呈现与滚动见 19；流协议见 07。文档各自拥有自己的定义，其他篇引用而不重新定义一套规则。
+## 25.1 分层与应用实例
 
-## 25.1 核心约束
-
-Rust 是业务事实 owner。Dart 保存供展示的唯一只读镜像，不在本地重新裁决领域状态。对同一资源，一个 reducer 接收全部权威帧；transport 不保留另一份合并后的 canonical。
-
-单一接收者以资源和订阅为作用域，不要求全应用一个巨型总线。配置、目录、会话状态和聊天内容是独立资源。派生视图只做组合，不反向写 canonical。
-
-## 25.2 分层
-
-```text
-Widget → 用户 intent → 命令服务 → typed transport → Rust owner
-Widget ← 小型 selector ← feature read model ← 有序帧 ← Rust owner
+```mermaid
+flowchart LR
+  V[View] --> C[Connector / Riverpod]
+  C --> A[anywork_client 公共 API]
+  A --> P[Typed transport ports]
+  F[FRB adapter] -.实现.-> P
+  F --> R[Rust runtime / pl-core]
+  R --> F
+  A --> C
+  C --> V
 ```
 
-复杂 feature 可以有 Binding + Reducer + ReadModel + Selector；简单 feature 不必机械复制所有层。Transport 不依赖 store、Widget 或 Riverpod Ref；read model 不依赖 Widget。命令服务不直接改 canonical，只维护用户操作结果并等待 owner 帧。
+`anywork_client` 的运行依赖只有 Dart SDK，不依赖 Flutter、Riverpod、FRB、Ref 或
+BuildContext。生成 DTO 和 native 句柄留在 adapter，Client 只消费 typed domain 契约。
+feature 不导入生成代码、adapter、transport 或 Client 私有实现。应用装配入口同时认识
+Client 与 adapter，其他层只认识各自的公共依赖。
 
-资源版本/owner epoch 是业务流身份，客户端 Binding 身份只用于拒收旧订阅回调；不能因订阅重开便让命令回执失去可比较的资源身份。owner 实例确实更换时，以 Reset 和 operation 查询重新确认，不能跨 epoch 比较 revision。
+每个 AppGraph 创建自己的 Client、transport 订阅登记、read models、命令板、草稿和附件
+owner。禁止 module-level Client、业务 Map 和跨 ProviderContainer 共享的会话资源。
+原生库的进程初始化与宿主退出仍归 native host，不能借此共享两个 Client 的观察句柄或草稿。
+ProviderScope 借用注入的实例，只拥有自己的观察注册。
 
-生成 DTO 是协议表示；只有确实存在 UI 语义差别时才生成/定义独立 view 类型。不得为了分层把同一个完整对象在多个目录手工镜像。
+## 25.2 所有权与唯一写入
 
-## 25.3 状态种类
+| 事实或资源 | 权威 owner | Dart owner / 唯一写入入口 | 身份与结束条件 |
+| --- | --- | --- | --- |
+| 项目、目录、配置、catalog、服务状态 | Rust 对应领域 | 各领域 read model reducer | 各自 ResourceStamp；领域关闭或应用退出 |
+| Turn、activity、interaction、runtime、storage | Rust Thread | Client session 的状态 reducer | Thread 与 owner epoch；选择变化结束观察，不结束 Turn |
+| 正文、saved、terminal、omitted、字段变更 | Rust Session / ChatView | ChatChannel 的 Reset/Patch reducer | ViewStamp；逻辑 demand 变化或退出 |
+| 当前项目、会话与 Settings 导航 | Client 本地意图 | Workspace / Selection controller | 选择身份；旧异步命令不能覆盖新选择 |
+| 输入、参数、route 与附件引用 | Client 草稿；受理后可靠附件由 Rust 持有 | Draft owner 与附件 ownership ledger | DraftStamp + OperationId；明确转移或放弃 |
+| 提交、pending overlay 与未知结果 | Rust mutation owner / Client operation owner | MutationBoard | OperationId 与目标 stamp；真实结果分别记录 |
+| 跨 view 的阅读意图与 item + pixel offset 锚点 | Client 会话 owner | Timeline 意图更新 | ThreadId；切换仅释放正文，显式跳到最新清除锚点 |
+| 光标、composing、焦点、折叠与即时滚动几何 | Widget / UI controller | 局部 UI controller | draftId / reading generation；Widget dispose |
 
-| 状态 | 所有者 | 生命周期 |
-|---|---|---|
-| 执行、配置、目录、可靠历史 | Rust 领域 owner | 领域生命周期 |
-| canonical 显示镜像 | 对应 feature read model | 必要观察期；重型数据严格有界 |
-| 用户未提交输入和选项 | 明确的 route/thread draft controller | 产品规定的草稿周期，不由流覆盖 |
-| 已提交命令的 pending/failed | mutation 状态 | operationId 从提交到确认/失败 |
-| 滚动、焦点、折叠、动画 | Widget 或 UI controller | 页面/窗口周期 |
+同一 canonical 资源只有一个 reducer。命令响应若携带该资源的权威 snapshot，进入同一个
+reducer；命令状态和 overlay 不成为第二份 canonical。bootstrap 只负责启动恢复，不能在
+命令成功后读取聚合状态掩盖缺帧。Demo 分领域发布 baseline/frame，不能把生产缺帧通过
+本地成功回读补齐。可靠历史、SQLite、checkpoint 和 writer 始终由 Rust 持有。
+Demo 的模式目录同样由独立、带版本的 catalog baseline 交付，组件不以本地默认列表补全缺失的能力。
 
-configuration 与 model catalog 分别建 read model，组合显示由纯 selector 完成，不保留两份配置/目录双时钟合并函数。显示优先级为明确草稿，其次当前 operation 的 pending 目标，最后 canonical。
+启动的 loading、ready 与 typed failure 由 Client 持有并供只读观察。应用生命周期调用一次
+bootstrap；目录与 catalog 均就绪后才显示可用 shell。首个 baseline 前的失败也必须显示其
+typed code 与 correlation，不能困在 Widget 的局部等待标志里。显式重试复用同一 Client，
+清除失败尝试后重新启动；路由重建和普通查询不自动重试启动。
+启动成功后，目录观察失败保留最后有效目录与可用 shell，并显示该领域的显式重试入口；不能
+退回无操作的启动页。Thread 状态流的同步状态与 ChatUiState 分别属于各自观察通道；正文
+重连或预算阻塞不污染 runtime 同步状态，正文恢复也不能把仍失败的 runtime 标成 ready。
 
-静态 provider catalog 是启动事实，由 `SettingsStore` 单独持有；它不进入 FRB 聚合快照，
-也不得被空的聚合默认值覆盖。Logo、preset 能力和目录模型通过唯一 selector 与运行时
-provider 配置组合，FRB 初始化仍由现有 `RustLib`/native runtime owner 管理，不需要新增
-进程级 Dart 单例。
+## 25.3 版本域
 
-## 25.4 观察生命周期
+- ResourceStamp 由 ResourceKey、OwnerEpoch、Revision 组成。仅同资源同 owner 可比较。
+- ViewStamp 由 ThreadId、ViewId、ViewEpoch、Version 组成。新 view 的版本不能与旧 view 比较。
+- AttemptId 是一次客户端异步绑定身份，不能充当业务 owner epoch。
+- OperationId 是一次业务提交身份，首次 await 前产生，未知结果不换 ID 自动重放。
+- DraftStamp 是 DraftId 与字段或项目 revision，不能用窗口版本替代。
 
-App-root 在 Navigator 之外维持必要配置和当前选中会话的小型执行/保存状态观察。页面不再以“仍挂载”为理由假定 Riverpod 监听持续活跃。
+配置与 catalog 的 revision 独立；Thread model route revision 是 route extension 的 CAS，
+不是 Thread 通知序号。`saved` 与执行终态独立。窗口版本相等只说明观察屏障到达，不能推导
+Applied 或 NoChange。owner 更换后必须接受新 baseline，旧 epoch 的回执不能由新 epoch 满足。
 
-聊天正文在有显示需求时打开 ChatView。不可见时可以停止内容消费或关闭 view；返回后获得最新有界 Reset。Rust 执行、可靠事实保存和必要后台投影不依赖 Dart 是否观察。停止观察不等于停止 Turn。
+## 25.4 观察与导航
 
-每个 Binding 拥有自己的 native handle、取消信号和有效性身份。失效时立即拒绝迟到回调，再取消本绑定资源。跨 await 的回调需同时检查 Ref 生命周期与 Binding 身份。旧清理只能释放捕获的旧资源，不能清空新绑定内容。
+观察 API 同步登记接收者并返回当前值，检查当前镜像与注册 predicate 之间不能有 await。
+显示观察暂停时，每个观察者只保留最新快照；可靠事件仍使用有序交付，不套用 latest-only。
+订阅取消只移除自己的观察，不能关闭跨路由 Session、ChatView、草稿或附件。
 
-keepAlive 仅用于明确需要驻留的轻状态；不能让每个曾浏览的会话永久持有正文窗口。close 必须有可取消路径，应用退出需要等待实际资源收束，不能用 Dart 对象已回收推断 Rust 已关闭。
+AppGraph 通过逻辑 demand 管理资源。进入 Settings、切换设置标签和 Widget 暂停不改变当前
+ChatView demand，不清理新会话或 Thread 草稿。明确切换 Thread 才 retire 旧内容资源；关闭项目、
+归档与应用退出显式结束相应需求。provider keepAlive 不能承担 native 资源所有权，也不能让
+每个曾访问会话永久保留正文。轻量 owner 缓存、观察者和镜像均受预算约束。
 
-## 25.5 聊天内容协议
+## 25.5 ChatChannel 与关闭
 
-唯一内容出口为 ChatView.next：首帧 Reset，之后 Reset/Patch。同一 view 同时仅一个未完成 next，前一帧进入 reducer 后才取下一帧。load/focus/expand 仅返回 operation 回执，权威内容仍从同一出口交付。**已实施。**
+transport 保留 open、initial、next 形态。一次 attempt 在第一次 await 前登记身份、
+demand generation、原始 open Future、候选 handle、取消信号、pump、close/join 和预算 permit。
+句柄返回后立即归该 attempt；每次 await 后校验 owner、attempt、demand 和 retired 状态。
 
-控制操作不能改变“客户端已收到”的 baseline。focus/load 与 next 的并发由 Rust view 协调；next 的 readiness 等待在窗口锁外，关闭能打断等待。传输层不得自行生成新窗口事实。**已实施。**
+initial 必须形成新 view 自己的首个 Reset，和后续 Reset/Patch 进入同一个 reducer，验证成功
+后才 Ready。Opening、Ready、Reconnecting、Failed 明确区分；lastGood 可临时显示，不能成为
+新 view 的 Patch baseline。同一 view 同时最多一个未完成 next，reduce 完后才取下一帧。
+Patch.from 必须等于当前已交付版本，to 必须前进；缺口只 resync 当前 view。
 
-窗口控制结果区分 Applied / NoChange / Superseded / Cancelled / Failed。NoChange 表示后端操作确实没有改变窗口，必须由操作结果本身给出。占位发生在第一个 await 之前；Applied 要等匹配的窗口变化进入 read model；NoChange 直接结束且终止本轮自动补页，不等待不会出现的内容帧；旧操作不能清除新操作的 loading。**版本占位、旧 token 隔离与 NoChange 判定已实施：** 回执版本必须是窗口快照版本，而不是会话进度版本——会话版本会因本窗口看不到的变化前进，而 `ChatUpdates::take` 对这种变化不发帧（交付基线不动），用会话版本作等待水位会让操作永久停在 loading。窗口快照版本由 `Reset`/`Patch` 原样交付，因此 `receipt.version <= current` 现在确实等价于「这次操作没有产生本窗口可见的变化」：等于表示真正的 NoChange，小于表示对应内容帧已先于回执到达。剩余缺口是结构化 disposition 枚举（Applied / Superseded / NotInWindow / Failed / Cancelled）与同流操作完成标记：`(viewId, operationId, result)` 标记只收束操作，不携带第二份正文、不伪造正文 revision，也不替代本应发送的内容帧。
+load、focus、extendLatest、expand 返回 typed receipt，不直接替换 Dart baseline。
+Applied / NoChange 来自后端操作本身。已观察到 receipt 的目标版本只表示观察完成；
+帧先到和回执先到都必须收束，旧 attempt 的回包不能完成新 attempt 的操作。
 
-Patch 仅在 view/epoch 匹配且 from 等于本地版本时应用，to 必须更大但无需恰好加一；from 匹配时 to ≤ from 拒收并要求 resync。缺口恢复只影响该 view。旧绑定帧不能借新 epoch 覆盖新会话。Reset 来自 core 对尾部、可靠待保存事实和历史的统一视图，不由 Dart 再读 SQL 补齐。**from/to 防线已实施。**
+阅读锚点及其像素偏移属于 Client；Reset 只替换内容和窗口能力，不根据服务端 focus 改写阅读
+意图。每个新 attempt 在首 Reset 前登记主动历史阅读的 focus 恢复，控制操作等待该 view Ready，
+并以相同内容泵观察回执目标版本。初始 latest 窗口没有锚点时，呈现层等待恢复或显示其失败，
+不能据此丢弃历史阅读意图。查看条目仍遵循 [19](./19-studio-ui.md) 的 Latest 策略。
+focus 请求另有 attempt 内的对象身份，旧 A 回包不能完成 A→B→A 的新 A；新的显式聚焦使旧
+窗口操作退役。恢复等待、控制任务和句柄一起纳入 ChatChannel 的预算及关闭 join。
 
-正文是稳定 item/part 身份上的 typed 字段更新，不由字符串形状、当前选中消息或最新一行推断目标。正文终态和保存状态独立；保存确认不删除行、重新查询再插入。
+retire 同步拒绝旧回调、发送取消并 requestClose；finally 只清理自己捕获的资源。
+close 等待 view-owned pump、FRB sink 和 native handle 的真实 ACK。失败或超时保留强 owner、
+unresolved 记录和预算，不以 Map.clear 或 dispose 代替关闭。显式 retryCleanup 只重试资源收束。
+关闭 ChatView 不关闭 Rust Session、Turn 或 history writer。
 
-## 25.6 Read model 与通知
+观察重连使用有界退避和显式 retry，不重放业务写入。active、opening、retiring、unresolved、
+观察缓冲、草稿附件和 pending operation 均计入预算。耗尽时返回 typed failure，不能静默开更多
+窗口或把缺失历史表现为空列表。资源计数上限不等同于字节/RSS 已证明有界，字节预算见
+[15](./15-session-storage.md)。
+Chat handle 容量被 retiring/opening owner 占满时保持 typed failure；逻辑 demand 仍有效时，
+只在真实 permit 释放通知后恢复观察准入，不增加容量，也不轮询或重放业务提交。
+退役或退出会取消容量等待；永不返回的 open 仍保留 unresolved owner 和原 permit。
+Thread 状态流交付有效增量后才重置连续失败计数，分散的 lagged 不累积成永久失效；
+仅收到首快照就再次 EOF/lagged 的循环仍受重试上限约束。显式 lagged 与封套连续性错误分别诊断。
+已知 CAS 冲突通过 `resyncRuntime()` 只替换 runtime binding，等待新订阅首个 baseline 后才重试
+原 OperationId，保留现有 ChatView。core 查询 revision 不得写入订阅通知的水位；取消等待与实际
+资源收束分别处理，未完成的 binding 继续占用预算。
 
-ChatState 保存 view stamp、有界 orderedItemIds、有界 itemsById、分页边界和连接状态。阅读意图/像素锚点归 UI，不混入 Rust 执行状态。**尚未实施：** 当前仍是 workspace.items 加整窗投影；外层 pane / 输入区 / header 仍观察整个 session。
+## 25.6 Read model 与呈现
 
-内容字段变化不生成新的 ID 序列。列表观察结构，行观察自己的 item；工具/推理活动摘要和输入区分开观察。单行相等性只受本行内容与显示状态影响，不能包含所有消息共有的全局 revision。
+设置、项目、目录、选择、Thread 轻状态、正文分别建 read model。状态流不转发正文；
+ChatView 是所有内容与保存标记的唯一出口。read model 只能从所属资源的响应或 frame 更新。
+ThreadWorkspace 首快照携带的 Thread 仅用于建立身份；标题、模式、状态和工作区元数据的
+当前值统一从目录 owner 查询。Connector 与 Driver 将目录身份和 runtime/content 镜像组合，
+不优先读取首快照里的旧元数据，也不通过 Turn 终态在本地推导目录状态。
+状态流快照不反写目录行；`updatedAt` 不充当跨资源版本，尤其同秒晚到快照不能覆盖已交付的
+目录终态。mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 
-所有 canonical 值不可变。允许有界 Map/列表复制，但不能为“结构相等”每帧深比较整段巨大正文。优先复用未变对象，以明确内容版本标识变化，并保证保存、状态等可见变化也参与对应 selector。
+正文窗口保留有界 orderedIds 与按身份索引的 immutable row。列表观察结构与分页能力；行按
+ThreadId + ItemId 观察本行；不把全局窗口 revision 注入所有行的相等性。未变化的行复用身份，
+移出窗口的行观察结束。TimelineSession 是具体显示 owner，拥有 events、dispatch 和 close；
+Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件。
 
-## 25.7 命令
+Connector 读取查询并调用稳定目标 action，向纯 View 传不可变 props。同一份业务值不能同时
+经 props 与 provider fallback 读取。图像、菜单和输入法等平台依赖留在适配层或 UI controller。
+阅读位置按 thread/view/window/readingGeneration 校验，滚动与官方组件契约见 [19](./19-studio-ui.md)。
 
-命令提交时冻结资源身份；执行时重新校验该资源的最新版本。不在排队后的回调中重新读取当前选中对象作为目标。
+## 25.7 命令、观察与效果
 
-同一资源冲突写串行，不同资源可以并行。取消/停止不经过长任务 FIFO。只读 body/分页不占用设置或执行命令队列。相同幂等查询可合并为一个在途请求，取消一个观察者不应取消仍被其他观察者使用的共享请求。
+首次 await 前冻结目标、expected revision 和 OperationId。停止命令捕获 ThreadId + TurnId，
+不按排队执行时的当前选择重定向。同一资源的冲突写串行，不同资源可独立推进；停止不排在
+长任务 FIFO 后。分页和正文查询不占用设置写 lane。
 
-命令成功返回 operationId、创建对象 identity 和受影响资源版本。canonical 只由资源观察帧写入；成功后不 readStudioState/重新读取目录或 Thread snapshot 来掩盖缺帧。
+CommitReceipt 至少携带 OperationId、Applied/NoChange、目标 ResourceStamp 和 effect point。
+接受、观察、生效、持久化是独立事实：Accepted、AwaitingObservation、Observed、Effective、Durable
+不能彼此替代。模型配置可对下一 Turn 或未来新会话生效，收到配置响应不代表正在执行的
+调用已经切换。durable 只由可靠保存确认推进。
 
-Pending 完成条件是该 operation 成功并且本地观察到相关资源目标版本。帧早于响应到达也应正确；旧命令不能清掉后提交的新目标。断连时保留最后事实与明确等待同步状态；恢复通过局部 Reset 或按 operationId 查结果。**窗口 load/extend 的占位、窗口版本水位与旧 token 隔离已实施，NoChange 由「回执版本等于已交付窗口版本」判定；结构化 disposition 枚举与同流完成标记待实施；route pending 等实际观察收敛、设置与新建会话的因果依赖仍待实施。**
+身份型回执按 [18](./18-studio-state.md) 的 Turn/interaction 谓词观察，不伪造 revision 或
+通过空目标绕过屏障。观察拥有预算，并在确认、失败或 owner close 时释放；草稿提交的保存
+确认继续等待对应 input 的 `saved`，不能以 terminal 代替。观察未到达时阶段仍为
+AwaitingObservation，已知 Effective/Durable 单独保留。
 
-冲突重基仅适用于可安全重做的字段修改。网络错误不代表未执行，不幂等业务不能自动重放。设置命令与使用设置新建会话存在明确因果依赖，不能以“读取此刻缓存”替代命令完成关系。导航不等待写入；依赖写入结果的业务动作自行协调。
+Rejected 表示明确未受理；UnknownOutcome 表示提交可能已执行但缺少确定结果；SyncFailed
+表示已知结果的观察失败。未知结果的非幂等命令不自动重放。局部 conflict、lagged 或失败才做
+对应领域 typed resync；正常成功不执行 readStudioState 或聚合 reload。
 
-## 25.8 草稿与呈现
+MutationBoard 分开保存每次真实结果与每个目标的 latest intent。旧 operation 不能清除新 overlay。
+观察 predicate 原子检查当前镜像并注册，使帧先到和回执先到均不漏确认。观察水位只在相同
+owner epoch 和资源域合并。
 
-草稿控制器只能写用户意图，不得写 canonical。canonical 到达不抹掉未提交输入；提交完成后按 operationId 结束对应草稿。Thread 草稿的保留/清除由产品规定，不能让页面暂停意外删除输入。
+## 25.8 草稿与附件
 
-连接组件从 provider 取得全部事实；纯显示组件只使用构造输入。同一组件不得在 props 和 provider 之间运行时选择事实来源。
+StartDraft 与 ComposerDraft 有独立逻辑寿命，不随页面 observer 消失。freezeForSubmit 在
+同步阶段冻结 DraftStamp、项目/Thread 身份、文本、模式、工作区、完整 route 和附件 ID 集合。
+新建 Thread 直接提交该 route，不先写全局默认设置再读取缓存。已有 Thread 提交携带所观察的
+route extension revision，受理 CAS 的语义见 [18](./18-studio-state.md)。
 
-Widget key 基于稳定 identity。Turn 的视觉分组不改变 item 身份，也不要求一个 Turn 是一个无限增长的 Widget。文本作为主要内容，工具、推理与运行提示按照 19 的呈现规范组织。
+markSubmitting、accepted、observed 和 durable 均关联同一 DraftStamp + OperationId。
+提交期间可继续输入和修改草稿；旧 ACK 只清理仍属于该提交且 revision 相符的字段。
+TextEditingController 保存 composing/selection，draftId 变化时替换；同一草稿的普通重建不反复
+重写 controller.text，旧完成也不能直接清空当前 controller。
 
-持续追加的内容不产生进出场动画：显示文本本身不能充当 Widget 身份（以 label 作 key 的切换动画会让每个增量重启一次淡入淡出，旧文本在动画周期内叠加退场）。流式摘要是同一身份的文本更新，不是一次性出现的新内容。用户主动展开/收起可以有自己的动画，行的保存/回退等状态变化只能改固定几何区域内的可见性，不能改变正文所在行的几何。
+附件 ledger 分开记录逻辑草稿引用和冻结提交引用。提交成功只转移冻结引用，较新草稿继续
+引用的相同附件 ID 仍有效。只有最后一个 owner 释放后才请求 native 删除；删除失败保留 owner、
+诊断与预算。未知受理结果保留冻结引用，不因页面退出、放弃当前草稿或全局 orphan sweep 删除。
+本地 clipboard 暂存和晚到 admission 也由同一 ledger 收束。关闭过程等待在途创建和清理，
+不以销毁 provider 代替异步资源回收；可靠附件与旧数据保留规则见 [17](./17-studio-storage.md)。
 
-## 25.9 重试、错误与恢复
+## 25.9 应用退出
 
-provider build 不执行写业务。自动重试仅用于允许重试的读取/观察初始化，显式区分暂时性传输故障与权限/schema/存储损坏等终止错误。重同步保留最后有效内容，不把数据不可用渲染为空列表或已到历史尽头。
+AppGraph.close 幂等，重复调用复用首次 close Future 和绝对 deadline。先封闭草稿生产者，
+加入在途提交，再收束会话、topic、update operation 和附件任务；独立取消并发启动，共用剩余
+预算。每个未解决 operation 和资源出现在 CloseReport，不释放仍未确认关闭的 permit。
 
-ref.mounted 只证明生命周期，不证明请求仍属于当前视图。异步结果使用 binding/view/operation 身份校验；必要代次不能以“简化”为由删除，也不按每个字段建立重复 generation map。
+StudioExitCoordinator 的应用实例状态不跨图共享；宿主出口只路由到当前协调器。Client 的
+CloseReport 在 Rust finalizer 前并入 externalIssues，只有所有真实 ACK 和可靠保存均确认才可
+报告 Clean。超时不得另起期限或在 runtime 宣布 Clean 后追加失败来掩盖提前释锁。
 
-持久化失败只由 Rust typed 状态表示，GUI 不解析错误文本推导健康。重试保存与恢复执行是不同命令，按照 15/18 的故障版本和水位控制。
+## 25.10 验证与删除项
 
-## 25.10 观测与验证
+验证层次、证据边界与正式门禁以 [24](./24-testing.md) 为准。纯 Client fake、Riverpod adapter、
+真实 Flutter 路由、FRB DTO fake、真实 native 和各平台 GUI 不相互替代。Driver 只保留诊断与
+可见投影，不维护另一套业务生命周期或可写 canonical。
 
-测试观察同一个 read model 和 Widget 输出，不维护平行静态业务状态。允许只读的帧时延、重建次数、字节交付、滚动几何与资源计数；这些数据不得写回业务。
-
-观测分两层，缺一不可：累计计数回答「发生了多少次」，有界事件记录回答「是哪一次、属于谁、依据什么判定」。聊天内容路径因此维护一份容量有界的逐事件记录，每条带会话与绑定代次身份和判定原因：帧采纳/拒收/重同步（含命中的校验分支）、绑定打开与关闭（含失败与取代原因）、控制操作占位与收束、滚动几何校正（原因、来源与目标位置）、行进入/离开布局集合与行 Widget 重建原因。只有 `resync=20` 时无法回答是哪个绑定、哪条校验、哪一行，因此禁止只增加全局累计计数。记录只保存身份、枚举与数值，不保存正文、凭据或载荷；稳定输出不产生记录。
-
-Dart fake 用于纯 reducer、provider 生命周期与组件测试；真实 Rust fixture/FRB 用于端到端收敛、持久化与背压。Demo 不得代替生产协议，也不得通过正确的命令响应掩盖缺失的状态帧；反过来，demo 的窗口交付形状必须与原生窗口一致（首帧与控制操作后是权威 Reset，条目原地变化是 typed Patch，`Patch.from` 等于对外交付的基线），否则差量 reducer 在预览与人工验收里完全不被走到。
-
-最低验证包括：首帧与增量连续；load/focus/next 交错；快速 A→B→A；页面不可见时 provider 暂停；响应和帧两种先后顺序；迟到旧清理；同版本/旧版本/跨 epoch 帧；大正文与工具输出；慢消费者；writer 失败；退出取消等待。性能数值以 README 计划中的校准预算和原生 profile 记录为准。
-
-## 25.11 下线项
-
-下线 GUI 普通历史页与实时项的双路合并、FRB adapter 中的第二 canonical baseline、全应用命令后快照刷新、Timeline props/provider fallback、无状态但包装成 Notifier 的空命令 state、配置/目录重复合并、可选 ChatWindowReader 静默后备、无消费者旧别名。
-
-保留有实际用途的独立查询、原生平台支持、供应商协议适配和必要资源代次；它们不是仅因复杂便应删除的“历史包袱”。切换完成后生产只保留新路径，生成文件、测试与文档同时更新。
+已被新 owner 替代的 provider 资源租约、第二份正文 baseline、成功后聚合回读、全局附件清扫、
+宿主 Timeline fallback 和直接 FRB feature 入口应随调用方迁移删除，不保留永久回退分支。

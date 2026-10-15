@@ -1,6 +1,6 @@
 //! 输入提交入口：内容校验、持久资源准备与 core 的原子路由受理。
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::studio::ThreadRecord;
 
@@ -18,7 +18,10 @@ impl StudioRuntime {
         self.submit_prompt(StudioSubmitPromptRequest {
             thread_id,
             input: request.input,
-            options: StudioSubmitPromptOptions::default(),
+            options: StudioSubmitPromptOptions {
+                expected_model_route_revision: Some(request.expected_model_route_revision),
+                ..StudioSubmitPromptOptions::default()
+            },
         })
         .await
     }
@@ -110,6 +113,26 @@ impl StudioRuntime {
                 input_id: input.input_id,
                 cursor: previous.entry.accepted_sequence,
             });
+        }
+        // The caller's frozen route is a CAS against its canonical extension,
+        // not a Thread revision or the current mode default. Both route writes
+        // and input admission hold lifecycle_lock, so it cannot change between
+        // this check and submit_input_and_continue. An already accepted input
+        // above keeps its original receipt even after a later route update.
+        if let Some(expected) = options.expected_model_route_revision {
+            let state = thread.snapshot();
+            let (record, _) = crate::studio::model_route::route_record(
+                &state,
+                thread_record.parent_thread_id.is_some(),
+            )?
+            .context("Thread has no saved model route")?;
+            if record.revision != expected {
+                return Err(crate::ConfigRuntimeError::StaleRevision {
+                    expected,
+                    actual: record.revision,
+                }
+                .into());
+            }
         }
         if thread_record.parent_thread_id.is_none() {
             self.thread_observations
@@ -234,7 +257,9 @@ impl StudioRuntime {
         self.agent_facility
             .product_events
             .record_user_message(&thread_id, crate::studio::unix_seconds());
-        self.attachment_drafts.commit(&attachment_draft_ids).await;
+        // Session resources were retained before admission. Staging remains
+        // immutable and reusable while a newer Client draft still references
+        // these ids; only an explicit last-owner release removes staging.
         self.residency.touch(&thread_id).await;
         Ok(StudioSubmitPromptResponse {
             thread_id,

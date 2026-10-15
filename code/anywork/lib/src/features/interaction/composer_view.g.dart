@@ -8,14 +8,12 @@ part of 'composer_view.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// 起始页投影。Mode、工作区、正文与模型意图来自 route 作用域草稿；
-/// 未显式选择时跟随 settingsStore canonical，并用命令 lane 的 pending 目标覆盖。
+/// 只读 Connector 投影；草稿、默认路由解析和 pending 展示规则由 Client 持有。
 
 @ProviderFor(startPageComposerView)
 final startPageComposerViewProvider = StartPageComposerViewProvider._();
 
-/// 起始页投影。Mode、工作区、正文与模型意图来自 route 作用域草稿；
-/// 未显式选择时跟随 settingsStore canonical，并用命令 lane 的 pending 目标覆盖。
+/// 只读 Connector 投影；草稿、默认路由解析和 pending 展示规则由 Client 持有。
 
 final class StartPageComposerViewProvider
     extends
@@ -25,8 +23,7 @@ final class StartPageComposerViewProvider
           StartPageComposerProjection
         >
     with $Provider<StartPageComposerProjection> {
-  /// 起始页投影。Mode、工作区、正文与模型意图来自 route 作用域草稿；
-  /// 未显式选择时跟随 settingsStore canonical，并用命令 lane 的 pending 目标覆盖。
+  /// 只读 Connector 投影；草稿、默认路由解析和 pending 展示规则由 Client 持有。
   StartPageComposerViewProvider._()
     : super(
         from: null,
@@ -126,7 +123,7 @@ final class ComposerDockViewProvider
   }
 }
 
-String _$composerDockViewHash() => r'a0f2b7f468ab5bfc6b2f86f8ae81b8e3d7027eb1';
+String _$composerDockViewHash() => r'42b1db159d81a48811e171c0af7027daf7bd4082';
 
 final class ComposerDockViewFamily extends $Family
     with $FunctionalFamilyOverride<ComposerDockView, String> {

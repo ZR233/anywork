@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelInfo;
@@ -24,8 +23,6 @@ use super::validate::{
     admission_rejection, model_modality, preflight_sources, validate_actual_limits,
     validate_draft_batch, validate_model_source,
 };
-
-const ATTACHMENT_DRAFT_TTL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct AttachmentDraftRuntime {
@@ -50,7 +47,6 @@ impl AttachmentDraftRuntime {
         sources: Vec<StudioAttachmentDraftSource>,
         model: &ModelInfo,
     ) -> Result<AdmitAttachmentDraftsResponse> {
-        self.remove_expired().await;
         let predicted = preflight_sources(&sources, model).map_err(admission_rejection)?;
 
         let mut admitted = Vec::with_capacity(sources.len());
@@ -105,7 +101,6 @@ impl AttachmentDraftRuntime {
                     width: normalized.width,
                     height: normalized.height,
                     initial_remote_url: loaded.initial_remote_url,
-                    admitted_at: Instant::now(),
                 })
             }
             .await;
@@ -145,7 +140,6 @@ impl AttachmentDraftRuntime {
         &self,
         draft_ids: &[String],
     ) -> Result<Vec<AttachmentDraftObject>> {
-        self.remove_expired().await;
         let entries = self.entries.lock().await;
         let mut seen = BTreeSet::new();
         let mut drafts = Vec::with_capacity(draft_ids.len());
@@ -160,26 +154,20 @@ impl AttachmentDraftRuntime {
     }
 
     pub(in crate::studio::runtime) async fn remove(&self, draft_id: &str) -> Result<bool> {
-        let draft = self.entries.lock().await.remove(draft_id);
-        if let Some(draft) = draft {
-            let _ = tokio::fs::remove_file(draft.storage_path).await;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub(in crate::studio::runtime) async fn commit(&self, draft_ids: &[String]) {
         let mut entries = self.entries.lock().await;
-        let drafts = draft_ids
-            .iter()
-            .filter_map(|draft_id| entries.remove(draft_id))
-            .collect::<Vec<_>>();
-        drop(entries);
-        cleanup_drafts(&drafts).await;
+        let Some(draft) = entries.get(draft_id) else {
+            return Ok(false);
+        };
+        match tokio::fs::remove_file(&draft.storage_path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("failed to remove attachment staging"),
+        }
+        entries.remove(draft_id);
+        Ok(true)
     }
 
     pub(in crate::studio::runtime) async fn read(&self, draft_id: &str) -> Result<Vec<u8>> {
-        self.remove_expired().await;
         let path = self
             .entries
             .lock()
@@ -188,22 +176,6 @@ impl AttachmentDraftRuntime {
             .map(|draft| draft.storage_path.clone())
             .with_context(|| format!("attachment draft {draft_id} is unavailable"))?;
         Ok(tokio::fs::read(path).await?)
-    }
-
-    async fn remove_expired(&self) {
-        let mut entries = self.entries.lock().await;
-        let now = Instant::now();
-        let expired_ids = entries
-            .iter()
-            .filter(|(_, draft)| now.duration_since(draft.admitted_at) >= ATTACHMENT_DRAFT_TTL)
-            .map(|(draft_id, _)| draft_id.clone())
-            .collect::<Vec<_>>();
-        let expired = expired_ids
-            .iter()
-            .filter_map(|draft_id| entries.remove(draft_id))
-            .collect::<Vec<_>>();
-        drop(entries);
-        cleanup_drafts(&expired).await;
     }
 }
 

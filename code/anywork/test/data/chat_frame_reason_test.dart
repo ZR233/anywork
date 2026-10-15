@@ -1,16 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/data/frb/studio_api.dart';
-import 'package:anywork/src/data/stores/chat_view_events.dart';
-import 'package:anywork/src/data/stores/thread_session_state.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
+import 'package:anywork_client/studio_client.dart';
 
 /// 逐事件观测的缺陷敏感度：只看 `framesResync=20` 无法定位「哪条校验失败」，
 /// 因此每种拒绝路径都必须给出自己的原因。
 void main() {
-  // 每个用例前清空事件缓冲：失败信息里只应出现本用例的记录。
-  setUp(ChatViewEvents.reset);
-
   test('Reset 早于已交付版本按 resetOlderThanDelivered 拒收', () {
     final state = _state(version: 5);
     final result = applyChatFrameState(

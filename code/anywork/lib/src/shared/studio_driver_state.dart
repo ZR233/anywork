@@ -1,16 +1,70 @@
 import 'dart:convert';
 
-import '../domain/models/studio_models.dart';
-import '../data/stores/domain_sync.dart';
+import 'package:anywork_client/studio_client.dart';
 
-/// Read-only state exported through Flutter Driver in local acceptance builds.
+import '../domain/models/agent_workspace_view.dart';
+
+/// One immutable, synchronous read of the Client's current mirrors. Driver keeps
+/// no copy after serialization and cannot write these values back to the Client.
+final class StudioDriverFacts {
+  StudioDriverFacts({
+    this.timelineWorkspace,
+    this.history = const ThreadHistoryWindow(),
+    Map<String, ThreadWorkspace> workspacesByThread = const {},
+    List<StudioThread> rootThreads = const [],
+    this.directoryHasMore = false,
+    this.selectedProjectId,
+    this.selectedThreadId,
+    this.newThreadMode = ThreadModeId.simple,
+    this.newThreadWorkspaceMode = ThreadWorkspaceMode.local,
+    this.newThreadComposer = const ComposerThreadState.idle(),
+    this.threadComposer = const ComposerThreadState.idle(),
+    this.settingsRevision = 0,
+    this.modelCatalogRevision = 0,
+    List<ModeModelRouteView> modeModelRoutes = const [],
+    List<RoleSettingsView> roles = const [],
+    List<ProviderSettingsView> providers = const [],
+    List<CommandStatus> commands = const [],
+    this.settingsReady = false,
+    this.persistence = const PersistenceStateSnapshot.ready(),
+    List<StudioRecoveryIssue> recoveryIssues = const [],
+    this.project,
+    this.workspace,
+  }) : workspacesByThread = Map.unmodifiable(workspacesByThread),
+       rootThreads = List.unmodifiable(rootThreads),
+       modeModelRoutes = List.unmodifiable(modeModelRoutes),
+       roles = List.unmodifiable(roles),
+       providers = List.unmodifiable(providers),
+       commands = List.unmodifiable(commands),
+       recoveryIssues = List.unmodifiable(recoveryIssues);
+
+  final ThreadWorkspace? timelineWorkspace;
+  final ThreadHistoryWindow history;
+  final Map<String, ThreadWorkspace> workspacesByThread;
+  final List<StudioThread> rootThreads;
+  final bool directoryHasMore;
+  final String? selectedProjectId;
+  final String? selectedThreadId;
+  final ThreadModeId newThreadMode;
+  final ThreadWorkspaceMode newThreadWorkspaceMode;
+  final ComposerThreadState newThreadComposer;
+  final ComposerThreadState threadComposer;
+  final int settingsRevision;
+  final int modelCatalogRevision;
+  final List<ModeModelRouteView> modeModelRoutes;
+  final List<RoleSettingsView> roles;
+  final List<ProviderSettingsView> providers;
+  final List<CommandStatus> commands;
+  final bool settingsReady;
+  final PersistenceStateSnapshot persistence;
+  final List<StudioRecoveryIssue> recoveryIssues;
+  final StudioProject? project;
+  final AgentWorkspaceView? workspace;
+}
+
+/// Read-only Client queries and bounded UI/host diagnostics for Driver builds.
 abstract final class StudioDriverState {
-  static void Function()? _beforeSnapshot;
-  static StudioProject? _project;
-  static AgentWorkspaceView? _workspace;
-  static ThreadWorkspace? _timelineWorkspace;
-  static ThreadHistoryWindow _history = const ThreadHistoryWindow();
-  static Map<String, ThreadWorkspace> _workspacesByThread = const {};
+  static StudioDriverFacts Function()? _query;
   static final List<StudioShutdownProgress> _shutdownProgress = [];
   static StudioShutdownReport? _shutdownReport;
   static int? _nativeExitRemainingMs;
@@ -18,98 +72,17 @@ abstract final class StudioDriverState {
   static int _exitRequests = 0;
   static String? _startupFailureCode;
   static String? _startupFailureCorrelationId;
-  static List<String> _sidebarDirectoryIds = const [];
-  static List<StudioThread> _currentRootThreads = const [];
-  static bool _sidebarDirectoryHasMore = false;
-  static String? _selectedProjectId;
-  static String? _selectedThreadId;
-  static ThreadModeId _newThreadMode = ThreadModeId.simple;
-  static ThreadWorkspaceMode _newThreadWorkspaceMode =
-      ThreadWorkspaceMode.local;
-  static ComposerThreadState _newThreadComposer =
-      const ComposerThreadState.idle();
-  static ComposerThreadState _threadComposer = const ComposerThreadState.idle();
-  static int _settingsRevision = 0;
-  static int _modelCatalogRevision = 0;
-  static List<ModeModelRouteView> _modeModelRoutes = const [];
-  static List<RoleSettingsView> _roles = const [];
-  static List<ProviderSettingsView> _providers = const [];
-  static List<CommandStatus> _commands = const [];
-  static bool _settingsReady = false;
-  static PersistenceStateSnapshot _persistenceState =
-      const PersistenceStateSnapshot.ready();
-  static List<StudioRecoveryIssue> _recoveryIssues = const [];
   static ConversationActivityView? _conversationActivity;
   static bool _activityExpanded = false;
   static TimelineScrollDiagnostic? _timelineScroll;
 
-  /// Driver 启动时注册快照刷新。刷新实现放在独立库，避免本文件反向依赖 feature 草稿。
-  static void bindSnapshotRefresh(void Function() refresh) {
-    _beforeSnapshot = refresh;
+  /// Application assembly lends a query; binding never creates an observer or
+  /// changes resource demand. Each request reads current Client facts directly.
+  static void bindSnapshotQuery(StudioDriverFacts Function() query) {
+    _query = query;
   }
 
-  static void refreshBound() => _beforeSnapshot?.call();
-
-  static AgentWorkspaceView? get observedWorkspace => _workspace;
-  static ComposerThreadState get observedNewThreadComposer =>
-      _newThreadComposer;
-  static ComposerThreadState get observedThreadComposer => _threadComposer;
-  static List<ProviderSettingsView> get observedProviders => _providers;
-  static bool get observedSettingsReady => _settingsReady;
-  static String? get observedSelectedThreadId => _selectedThreadId;
-  static int? get observedThreadRevision => _timelineWorkspace?.revision;
-
-  /// 用 store / 已存在草稿的投影替换业务字段。诊断发布字段不在这里覆盖。
-  static void replaceCanonicalFacts({
-    required ThreadWorkspace? timelineWorkspace,
-    required ThreadHistoryWindow history,
-    required Map<String, ThreadWorkspace> workspacesByThread,
-    required List<StudioThread> rootThreads,
-    required bool directoryHasMore,
-    required String? selectedProjectId,
-    required String? selectedThreadId,
-    required ThreadModeId newThreadMode,
-    required ThreadWorkspaceMode newThreadWorkspaceMode,
-    required ComposerThreadState newThreadComposer,
-    required ComposerThreadState threadComposer,
-    required int settingsRevision,
-    required int modelCatalogRevision,
-    required List<ModeModelRouteView> modeModelRoutes,
-    required List<RoleSettingsView> roles,
-    required List<ProviderSettingsView> providers,
-    required List<CommandStatus> commands,
-    required bool settingsReady,
-    required PersistenceStateSnapshot persistence,
-    required List<StudioRecoveryIssue> recoveryIssues,
-    required StudioProject? project,
-    required AgentWorkspaceView? workspace,
-  }) {
-    _timelineWorkspace = timelineWorkspace;
-    _history = history;
-    _workspacesByThread = workspacesByThread;
-    _currentRootThreads = List.unmodifiable(rootThreads);
-    _sidebarDirectoryIds = List.unmodifiable([
-      for (final thread in rootThreads) thread.id,
-    ]);
-    _sidebarDirectoryHasMore = directoryHasMore;
-    _selectedProjectId = selectedProjectId;
-    _selectedThreadId = selectedThreadId;
-    _newThreadMode = newThreadMode;
-    _newThreadWorkspaceMode = newThreadWorkspaceMode;
-    _newThreadComposer = newThreadComposer;
-    _threadComposer = threadComposer;
-    _settingsRevision = settingsRevision;
-    _modelCatalogRevision = modelCatalogRevision;
-    _modeModelRoutes = List.unmodifiable(modeModelRoutes);
-    _roles = List.unmodifiable(roles);
-    _providers = List.unmodifiable(providers);
-    _commands = List.unmodifiable(commands);
-    _settingsReady = settingsReady;
-    _persistenceState = persistence;
-    _recoveryIssues = List.unmodifiable(recoveryIssues);
-    _project = project;
-    _workspace = workspace;
-  }
+  static StudioDriverFacts readFacts() => _query?.call() ?? StudioDriverFacts();
 
   /// 内容交付计数是否启用。
   ///
@@ -215,6 +188,7 @@ abstract final class StudioDriverState {
 
   static void publishShutdownProgress(StudioShutdownProgress progress) {
     _shutdownProgress.add(progress);
+    if (_shutdownProgress.length > 256) _shutdownProgress.removeAt(0);
   }
 
   static List<StudioShutdownProgress> get shutdownProgress =>
@@ -297,13 +271,13 @@ abstract final class StudioDriverState {
     };
   }
 
-  static String snapshotJson() {
-    refreshBound();
-    final workspace = _workspace;
+  static String snapshotJson({StudioDriverFacts? observed}) {
+    final facts = observed ?? readFacts();
+    final workspace = facts.workspace;
     final lastTurn = workspace?.lastTurn;
     return jsonEncode({
       'recoveryIssues': [
-        for (final issue in _recoveryIssues)
+        for (final issue in facts.recoveryIssues)
           {
             'id': issue.id,
             'category': issue.category.name,
@@ -316,83 +290,84 @@ abstract final class StudioDriverState {
       ],
       'timelineWindow': {
         'itemIds':
-            _timelineWorkspace?.items.map((item) => item.id).toList() ?? [],
+            facts.timelineWorkspace?.items.map((item) => item.id).toList() ??
+            [],
         // 有界预览与显式回源身份：驱动据此按 canonical item id 定位大正文，
         // 无需从渲染文本里猜测。
         'previewedItemIds': [
           for (final item
-              in _timelineWorkspace?.items ?? const <ThreadItemView>[])
-            if (_history.previewedItemIds.contains(item.id)) item.id,
+              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
+            if (facts.history.previewedItemIds.contains(item.id)) item.id,
         ],
         // 窗口内正文完整的条目：窗口是唯一正文 owner，展开后省略量归零即视为已完整。
         'loadedItemIds': [
           for (final item
-              in _timelineWorkspace?.items ?? const <ThreadItemView>[])
+              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
             if (!item.bodyPreviewed) item.id,
         ],
         // 回源已发出但完整正文尚未可取（例如历史事务尚未 durable）：入口仍可见可重试。
         'pendingItemBodyIds': [
           for (final item
-              in _timelineWorkspace?.items ?? const <ThreadItemView>[])
-            if (_history.pendingItemBodyIds.contains(item.id)) item.id,
+              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
+            if (facts.history.pendingItemBodyIds.contains(item.id)) item.id,
         ],
         // ChatView 窗口条目数（唯一正文源）。
-        'windowItemCount': _timelineWorkspace?.items.length ?? 0,
-        'hasOlder': _history.hasOlder,
-        'hasNewer': _history.hasNewer,
-        'canExtendLatest': _history.canExtendLatest,
-        'loading': _history.isLoading,
-        'direction': _history.direction.name,
-        'epoch': _history.epoch,
-        'olderError': _history.errorMessage,
-        'newerError': _history.newerError,
-        'anchor': _history.anchor == null
+        'windowItemCount': facts.timelineWorkspace?.items.length ?? 0,
+        'hasOlder': facts.history.hasOlder,
+        'hasNewer': facts.history.hasNewer,
+        'canExtendLatest': facts.history.canExtendLatest,
+        'loading': facts.history.isLoading,
+        'direction': facts.history.direction.name,
+        'epoch': facts.history.epoch,
+        'olderError': facts.history.errorMessage,
+        'newerError': facts.history.newerError,
+        'anchor': facts.history.anchor == null
             ? null
             : {
-                'itemId': _history.anchor!.itemId,
-                'offset': _history.anchor!.offset,
+                'itemId': facts.history.anchor!.itemId,
+                'offset': facts.history.anchor!.offset,
                 'followingBottom':
-                    _history.anchor!.readingIntent ==
+                    facts.history.anchor!.readingIntent ==
                     TimelineReadingIntent.followLatest,
-                'readingIntent': _history.anchor!.readingIntent.name,
+                'readingIntent': facts.history.anchor!.readingIntent.name,
               },
       },
       // 只读滚动几何：判断“末尾是否贴底、内容是否填满视口、上翻历史是否还在原锚点”
       // 不必从截图猜测（见 TimelineScrollDiagnostic）。
       'timelineScroll': _timelineScroll?.toJson(),
       'sidebarDirectory': {
-        'count': _sidebarDirectoryIds.length,
-        'hasMore': _sidebarDirectoryHasMore,
-        'ids': _sidebarDirectoryIds,
+        'count': facts.rootThreads.length,
+        'hasMore': facts.directoryHasMore,
+        'ids': [for (final thread in facts.rootThreads) thread.id],
         'titles': {
-          for (final thread in _currentRootThreads) thread.id: thread.title,
+          for (final thread in facts.rootThreads) thread.id: thread.title,
         },
         'workspaceModes': {
-          for (final thread in _currentRootThreads)
+          for (final thread in facts.rootThreads)
             thread.id: thread.workspaceMode.id,
         },
         'workspacePaths': {
-          for (final thread in _currentRootThreads)
+          for (final thread in facts.rootThreads)
             thread.id: thread.workspacePath,
         },
       },
       'navigation': {
-        'selectedProjectId': _selectedProjectId,
-        'selectedThreadId': _selectedThreadId,
-        'isStartPage': _selectedThreadId == null,
-        'newThreadMode': _newThreadMode.name,
-        'newThreadWorkspaceMode': _newThreadWorkspaceMode.id,
+        'selectedProjectId': facts.selectedProjectId,
+        'selectedThreadId': facts.selectedThreadId,
+        'isStartPage': facts.selectedThreadId == null,
+        'newThreadMode': facts.newThreadMode.name,
+        'newThreadWorkspaceMode': facts.newThreadWorkspaceMode.id,
         'newThreadComposer': {
-          'draft': _newThreadComposer.draft,
-          'phase': switch (_newThreadComposer) {
+          'draft': facts.newThreadComposer.draft,
+          'phase': switch (facts.newThreadComposer) {
             IdleComposerThreadState() => 'idle',
             SubmittingComposerThreadState() => 'submitting',
             FailedComposerThreadState() => 'failed',
           },
-          'submissionRevision': _newThreadComposer.submissionRevision,
-          'error': _newThreadComposer.error,
+          'submissionRevision': facts.newThreadComposer.submissionRevision,
+          'error': facts.newThreadComposer.error,
           'attachments': [
-            for (final attachment in _newThreadComposer.attachments)
+            for (final attachment in facts.newThreadComposer.attachments)
               {
                 'id': attachment.id,
                 'modality': attachment.modality.name,
@@ -407,10 +382,10 @@ abstract final class StudioDriverState {
       'shutdownReport': _shutdownReportJson(),
       'nativeExit': _nativeExitJson(),
       'settings': {
-        'revision': _settingsRevision,
-        'modelCatalogRevision': _modelCatalogRevision,
+        'revision': facts.settingsRevision,
+        'modelCatalogRevision': facts.modelCatalogRevision,
         'providers': [
-          for (final provider in _providers)
+          for (final provider in facts.providers)
             {
               'id': provider.id,
               'preset': provider.templateKind,
@@ -457,7 +432,7 @@ abstract final class StudioDriverState {
             },
         ],
         'roles': [
-          for (final role in _roles)
+          for (final role in facts.roles)
             {
               'key': role.key,
               'providerId': role.providerId,
@@ -466,7 +441,7 @@ abstract final class StudioDriverState {
             },
         ],
         'modeModelRoutes': [
-          for (final route in _modeModelRoutes)
+          for (final route in facts.modeModelRoutes)
             {
               'modeId': route.modeId.id,
               'providerId': route.providerId,
@@ -475,7 +450,7 @@ abstract final class StudioDriverState {
             },
         ],
         'mutations': [
-          for (final command in _commands)
+          for (final command in facts.commands)
             {
               'key': command.key,
               // 新命令 lane 没有 operation id 或开始时间。保留 key，不发明第二事实源。
@@ -492,23 +467,23 @@ abstract final class StudioDriverState {
         'lastMerge': null,
       },
       'persistence': {
-        'revision': _persistenceState.revision,
-        'kind': switch (_persistenceState.state) {
+        'revision': facts.persistence.revision,
+        'kind': switch (facts.persistence.state) {
           ReadyPersistenceState() => 'ready',
           FlushingPersistenceState() => 'flushing',
           DegradedPersistenceState() => 'degraded',
           RecoveringPersistenceState() => 'recovering',
           BlockedPersistenceState() => 'blocked',
         },
-        'pendingCommits': _persistenceState.state.pendingCommits,
-        'oldestPendingRevision': _persistenceState.state.oldestPendingRevision,
-        'firstFailedAt': _persistenceState.state.firstFailedAt,
-        'needsAttention': _persistenceState.needsAttention,
-        'errorCode': _persistenceState.state.error?.code,
+        'pendingCommits': facts.persistence.state.pendingCommits,
+        'oldestPendingRevision': facts.persistence.state.oldestPendingRevision,
+        'firstFailedAt': facts.persistence.state.firstFailedAt,
+        'needsAttention': facts.persistence.needsAttention,
+        'errorCode': facts.persistence.state.error?.code,
       },
-      'project': _project == null
+      'project': facts.project == null
           ? null
-          : {'id': _project!.id, 'path': _project!.path},
+          : {'id': facts.project!.id, 'path': facts.project!.path},
       'workspace': workspace == null
           ? null
           : {
@@ -713,7 +688,7 @@ abstract final class StudioDriverState {
       // 与 `history-resume-<id>`（本块给出与其一致的事实）校验“重试保存 / 继续执行”分离。
       // `null` 一律表示未知，不折叠成 0/健康。
       'storageRecovery': [
-        for (final entry in _workspacesByThread.entries)
+        for (final entry in facts.workspacesByThread.entries)
           if (entry.value.storage case final storage?)
             {
               'threadId': entry.key,
@@ -853,6 +828,7 @@ class TimelineScrollDiagnostic {
     required this.hasNewer,
     required this.showJumpToLatest,
     required this.programmaticScroll,
+    required this.isScrolling,
     required this.userDragUpdates,
     required this.anchor,
     required this.restorePending,
@@ -886,6 +862,9 @@ class TimelineScrollDiagnostic {
   /// 程序化定位（例如恢复标记没有归零），此时 `detachedByUser` 永远不会变化——这与锚点/
   /// 贴底几何无关（见 `_restorePendingPosition`）。
   final bool programmaticScroll;
+
+  /// Flutter's current scroll activity, including an unfinished drag or fling.
+  final bool isScrolling;
 
   /// 真实指针拖动累计产生的滚动更新次数（单调递增，`dragDetails != null`）。
   ///
@@ -924,6 +903,7 @@ class TimelineScrollDiagnostic {
     'hasNewer': hasNewer,
     'showJumpToLatest': showJumpToLatest,
     'programmaticScroll': programmaticScroll,
+    'isScrolling': isScrolling,
     'userDragUpdates': userDragUpdates,
     'restorePending': restorePending,
     'restoreAnchor': restoreAnchor == null

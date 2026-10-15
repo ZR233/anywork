@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/agent_profile.dart';
+import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
@@ -21,19 +22,22 @@ Future<BridgeAgentProfilesStateSnapshot> readAgentProfilesState() => RustLib
     .crateApiStudioHandlersAgentProfilesReadAgentProfilesState();
 
 /// Enables or disables an immutable built-in Agent Profile.
-Future<BridgeSettingsStateResponse> setSystemAgentEnabled({
+Future<BridgeSettingsCommandReply> setSystemAgentEnabled({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String profileId,
   required bool enabled,
 }) => RustLib.instance.api
     .crateApiStudioHandlersAgentProfilesSetSystemAgentEnabled(
+      operationId: operationId,
       expectedSettingsRevision: expectedSettingsRevision,
       profileId: profileId,
       enabled: enabled,
     );
 
 /// Atomically creates or replaces one user Agent Profile TOML file.
-Future<BridgeSettingsStateResponse> saveUserAgentProfile({
+Future<BridgeSettingsCommandReply> saveUserAgentProfile({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String profileId,
   required bool enabled,
@@ -47,6 +51,7 @@ Future<BridgeSettingsStateResponse> saveUserAgentProfile({
   required BridgeAgentWorkspaceMode workspaceMode,
 }) => RustLib.instance.api
     .crateApiStudioHandlersAgentProfilesSaveUserAgentProfile(
+      operationId: operationId,
       expectedSettingsRevision: expectedSettingsRevision,
       profileId: profileId,
       enabled: enabled,

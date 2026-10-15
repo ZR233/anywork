@@ -113,10 +113,42 @@ fn generate_gui_sources_from_existing_dependencies(
     run_flutter(workspace_root, app_dir, &["gen-l10n"], DemoMode::Native)?;
     ensure_frb_codegen_version()?;
     run_frb_codegen(workspace_root, app_dir)?;
+    remove_orphaned_build_runner_outputs(&app_dir.join("lib"))?;
     run_build_runner(app_dir)?;
     let generated_dart_files = normalize_generated_dart_files(&app_dir.join("lib"))?;
     format_generated_dart_files(app_dir, &generated_dart_files)?;
     format_generated_rust_file(workspace_root, app_dir)
+}
+
+/// Moving/removing a handwritten library must remove its generated part through
+/// the same canonical entrypoint. A clean checkout has no build_runner cache
+/// from which to discover outputs belonging to deleted inputs.
+fn remove_orphaned_build_runner_outputs(root: &Path) -> Result<()> {
+    for path in generated_dart_files(root)? {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".g.dart") else {
+            continue;
+        };
+        let content = fs::read_to_string(&path)?;
+        if !content.contains("GENERATED CODE") || !content.contains("part of ") {
+            continue;
+        }
+        let input = path.with_file_name(format!("{stem}.dart"));
+        let declared = if input.try_exists()? {
+            let source = fs::read_to_string(&input)?;
+            source.contains(&format!("part '{name}';"))
+                || source.contains(&format!("part \"{name}\";"))
+        } else {
+            false
+        };
+        if !declared {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove orphan generated part {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn run_build_runner(app_dir: &Path) -> Result<()> {

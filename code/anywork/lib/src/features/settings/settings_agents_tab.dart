@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../presentation/providers/client_provider.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../shared/recovery_check_status.dart';
 import '../../domain/models/studio_models.dart';
@@ -27,11 +28,10 @@ class AgentsTab extends ConsumerStatefulWidget {
 class _AgentsTabState extends ConsumerState<AgentsTab> {
   String _query = '';
 
-  /// 最近一次可用的 canonical Profiles；重置/失败只保留局部提示，不清空既有 cards。
-  AgentProfilesStateView? _lastProfiles;
-
   Future<void> _setSystemEnabled(AgentProfileView profile, bool enabled) async {
-    await readSettingsCommands(ref)
+    await ref
+        .read(anyworkClientProvider)
+        .settingsCommands
         .setSystemAgentEnabled(profileId: profile.id, enabled: enabled);
   }
 
@@ -42,7 +42,10 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
           AgentProfileDialog(profile: profile, providers: _routeProviders()),
     );
     if (draft == null || !mounted) return;
-    await readSettingsCommands(ref).saveUserAgentProfile(draft);
+    await ref
+        .read(anyworkClientProvider)
+        .settingsCommands
+        .saveUserAgentProfile(draft);
   }
 
   List<ProviderSettingsView> _routeProviders() =>
@@ -60,12 +63,8 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
       );
     }
     final agents = ref.watch(settingsAgentsViewProvider);
-    final latest = agents.profiles;
-    if (latest != null) _lastProfiles = latest;
-    final profilesState = latest ?? _lastProfiles;
+    final profilesState = agents.profiles;
     final profiles = profilesState?.data.profiles ?? const <AgentProfileView>[];
-    final providers = agents.providers;
-    final roles = agents.roles;
     final recoveryState = agents.recovery;
     final worktreeIssues =
         recoveryState?.values
@@ -174,12 +173,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
                         ),
                     ],
                     children: [
-                      if (profile.system)
-                        AgentRouteControls(
-                          role: profile.id,
-                          providers: providers,
-                          roles: roles,
-                        ),
+                      if (profile.system) AgentRouteConnector(role: profile.id),
                       const Divider(height: 24),
                     ],
                   ),

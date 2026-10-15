@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:anywork_client/studio_client.dart' show CloseReport;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../data/frb/studio_api.dart';
+import '../infrastructure/frb/studio_api.dart';
 import '../domain/models/studio_models.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
@@ -44,9 +46,10 @@ class StudioShutdownProgressState extends _$StudioShutdownProgressState {
 /// 伪造终态。订阅创建/取消都有界：同步失败、取消错误或进度流错误都只累积为独立诊断，
 /// 绝不覆盖可靠的 runtime 报告，也绝不挂起退出。
 Future<StudioShutdownReport> runStudioShutdown(
-  StudioBridgeDataSource api,
+  StudioTransport api,
   void Function(StudioShutdownProgress progress) onProgress, {
   required int remainingMs,
+  Future<CloseReport> Function(DateTime deadline)? closeClient,
 }) async {
   // 本次清理预算的本地单调时钟：所有阶段共享并随时扣除真实耗时，绝不另起 2s。
   final watch = Stopwatch()..start();
@@ -82,10 +85,17 @@ Future<StudioShutdownReport> runStudioShutdown(
 
   // 尽早同步封闭退出准入：一经进入关闭就封闭新的 mutation/订阅，绝不因随后的 Dart 进度
   // 订阅取消挂住而允许新的 mutation 借机进入。
-  FrbStudioBridgeDataSource.sealForShutdown();
+  api.sealForShutdown();
   // 本地受控进度：bridge 关机进度流在 runtime 收束前即被取消，故不依赖它仍存活；终态
   // `Stopped` 只由协调器在可靠 Clean 之后发布。
   publish(const StoppingSubscriptionsProgress());
+  // Seal the application owner at entry. It joins the same deadline before the
+  // Rust finalizer decides Clean; provider disposal has no role in cleanup.
+  final clientClosing = closeClient?.call(
+    DateTime.now().add(
+      Duration(milliseconds: _remainingBudget(remainingMs, watch)),
+    ),
+  );
 
   // 在任何 Dart 外部取消等待之前，先有界封闭退出准入（native `begin_runtime_exit`）：即使
   // 随后的 Dart 取消失败或长时间不返回，runtime 准入与独立取消也已在期限一开始完成，且迟到
@@ -98,7 +108,7 @@ Future<StudioShutdownReport> runStudioShutdown(
     );
   } on Object catch (error, stackTrace) {
     // Frb core 已用同一 correlation 记录脱敏诊断时复用 memoized issue，避免重复记录。
-    final recorded = FrbStudioBridgeDataSource.recordedBeginExitIssue(error);
+    final recorded = FrbStudioTransport.recordedBeginExitIssue(error);
     if (recorded != null) {
       issues.add(recorded);
     } else {
@@ -133,10 +143,9 @@ Future<StudioShutdownReport> runStudioShutdown(
   // 完整等待两者收敛，等待顺序不改变并发关系；两实现内部都已把失败收敛为 typed issue
   // （不抛出），不会互相遮蔽，也不引入 unhandled error。
   final progressIssues = <StudioShutdownIssue>[];
-  final dartSubscriptionCancel =
-      FrbStudioBridgeDataSource.cancelDartSubscriptions(
-        budgetMs: _remainingBudget(remainingMs, watch),
-      );
+  final dartSubscriptionCancel = api.cancelDartSubscriptions(
+    budgetMs: _remainingBudget(remainingMs, watch),
+  );
   final progressCancel = _cancelBounded(
     subscription,
     progressIssues,
@@ -149,6 +158,36 @@ Future<StudioShutdownReport> runStudioShutdown(
   issues.addAll(await dartSubscriptionCancel);
   await progressCancel;
   issues.addAll(progressIssues);
+  if (clientClosing != null) {
+    try {
+      final report = await clientClosing.timeout(
+        Duration(milliseconds: _remainingBudget(remainingMs, watch)),
+      );
+      for (final resource in report.unresolved) {
+        issues.add(
+          StudioShutdownIssue(
+            stage: 'client',
+            code: 'unresolvedResource',
+            message: 'client resource cleanup did not confirm',
+            retryable: false,
+            correlationId: newStudioCorrelationId(),
+          ),
+        );
+        recordDartError(resource.reason, null, stage: 'client-close');
+      }
+    } catch (error, stack) {
+      issues.add(
+        StudioShutdownIssue(
+          stage: 'client',
+          code: 'cleanupFailed',
+          message: 'client cleanup did not confirm',
+          retryable: false,
+          correlationId: newStudioCorrelationId(),
+        ),
+      );
+      recordDartError(error, stack, stage: 'client-close');
+    }
+  }
 
   // 即使 Dart 取消已耗尽预算，也必须立即向已初始化的 runtime 广播封闭请求
   // （remainingMs=0，原生 hard deadline 照常），绝不整段跳过。全部外部 issue 作为同一

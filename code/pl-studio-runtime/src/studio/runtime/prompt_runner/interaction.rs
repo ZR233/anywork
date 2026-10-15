@@ -9,16 +9,18 @@ use super::super::{StudioResolveInteractionResponse, StudioRuntime};
 impl StudioRuntime {
     pub async fn resolve_interaction(
         &self,
+        operation_id: String,
         interaction_id: String,
         resolution: InteractionResolution,
     ) -> Result<StudioResolveInteractionResponse> {
+        Self::validate_operation_id(&operation_id)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let Some(current) = self.read_interaction_for_resolve(&interaction_id).await? else {
             // The owner and the checkpoint no longer retain this terminal record: adjudicate the
             // repeat from the durable receipt instead of reporting "not found", minting a new
             // revision or granting a new execution permission.
             return self
-                .durable_interaction_receipt(&interaction_id, &resolution)
+                .durable_interaction_receipt(operation_id, &interaction_id, &resolution)
                 .await;
         };
         if current.status() != InteractionStatus::Pending {
@@ -26,10 +28,7 @@ impl StudioRuntime {
                 current.resolution().as_ref() == Some(&resolution),
                 "interaction already has a different terminal resolution"
             );
-            return Ok(StudioResolveInteractionResponse {
-                thread_id: current.scope.thread_id.clone(),
-                interaction: current,
-            });
+            return Ok(self.interaction_command_reply(operation_id, current, false, false));
         }
         self.ensure_thread_owner(&current.scope.thread_id).await?;
         // 到达这里的决议一定来自 Pending 交互，真实受理路径只有 UserInput 决议：
@@ -45,10 +44,32 @@ impl StudioRuntime {
                 .product_events
                 .record_user_message(&interaction.scope.thread_id, crate::studio::unix_seconds());
         }
-        Ok(StudioResolveInteractionResponse {
+        Ok(self.interaction_command_reply(operation_id, interaction, true, false))
+    }
+
+    fn interaction_command_reply(
+        &self,
+        operation_id: String,
+        interaction: InteractionRequest,
+        changed: bool,
+        durable: bool,
+    ) -> StudioResolveInteractionResponse {
+        let mut receipt = self.command_receipt(
+            operation_id,
+            changed,
+            vec![self.resource_stamp(
+                format!("interaction:{}", interaction.interaction_id),
+                interaction.revision,
+            )],
+            pl_protocol::studio::CommandEffectPoint::Immediate,
+            durable,
+        );
+        receipt.requires_identity_observation = true;
+        StudioResolveInteractionResponse {
             thread_id: interaction.scope.thread_id.clone(),
             interaction,
-        })
+            receipt,
+        }
     }
 
     /// Answers a repeated terminal interaction command from its durable receipt.
@@ -59,6 +80,7 @@ impl StudioRuntime {
     /// is read, projected through the same product mapping and compared only.
     async fn durable_interaction_receipt(
         &self,
+        operation_id: String,
         interaction_id: &str,
         resolution: &InteractionResolution,
     ) -> Result<StudioResolveInteractionResponse> {
@@ -95,10 +117,7 @@ impl StudioRuntime {
                 projected.resolution().as_ref() == Some(resolution),
                 "interaction already has a different terminal resolution"
             );
-            return Ok(StudioResolveInteractionResponse {
-                thread_id: thread_id.to_owned(),
-                interaction: projected,
-            });
+            return Ok(self.interaction_command_reply(operation_id, projected, false, true));
         }
         anyhow::bail!("interaction not found")
     }

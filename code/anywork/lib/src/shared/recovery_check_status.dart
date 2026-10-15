@@ -1,9 +1,9 @@
+import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme/studio_tokens.dart';
-import '../data/commands/directory_commands.dart';
-import '../data/stores/recovery_store.dart';
+import '../presentation/providers/recovery_store.dart';
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
 
@@ -62,7 +62,8 @@ class RecoveryCheckStatus extends ConsumerWidget {
                 onPressed: () async {
                   try {
                     await ref
-                        .read(directoryCommandsProvider.notifier)
+                        .read(anyworkClientProvider)
+                        .directoryCommands
                         .retryRecovery();
                   } catch (error) {
                     if (context.mounted) {

@@ -1,19 +1,17 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/commands/directory_commands.dart';
-import '../../data/commands/settings_commands.dart';
-import '../../data/stores/domain_sync.dart';
-import '../../data/stores/lsp_store.dart';
-import '../../data/stores/mcp_store.dart';
-import '../../data/stores/model_performance_store.dart';
-import '../../data/stores/provider_usage_store.dart';
-import '../../data/stores/recovery_store.dart';
-import '../../data/stores/selection_store.dart';
-import '../../data/stores/settings_store.dart';
-import '../../data/stores/skills_store.dart';
-import '../../data/stores/thread_session_store.dart';
-import '../../domain/models/studio_models.dart';
+import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mcp_store.dart';
+import '../../presentation/providers/model_performance_store.dart';
+import '../../presentation/providers/provider_usage_store.dart';
+import '../../presentation/providers/recovery_store.dart';
+import '../../presentation/providers/selection_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/skills_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
+
+import 'package:anywork_client/studio_client.dart';
 
 /// 设置页是否已经有可渲染的配置 canonical。
 ///
@@ -665,12 +663,6 @@ final settingsRoleCommandPendingProvider = Provider.autoDispose
         settingsRevision: selected.revision,
       );
     }, name: 'settingsRoleCommandPendingProvider');
-
-SettingsCommands readSettingsCommands(WidgetRef ref) =>
-    ref.read(settingsCommandsProvider.notifier);
-
-DirectoryCommands readDirectoryCommands(WidgetRef ref) =>
-    ref.read(directoryCommandsProvider.notifier);
 
 class _SelectedSessionFacts {
   const _SelectedSessionFacts({

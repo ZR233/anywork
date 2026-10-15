@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../presentation/providers/client_provider.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
@@ -112,23 +113,32 @@ class _LspTabState extends ConsumerState<LspTab> {
   }
 
   Future<void> _refresh() {
-    return readDirectoryCommands(ref).refreshLspState();
+    return ref.read(anyworkClientProvider).directoryCommands.refreshLspState();
   }
 
   Future<void> _probe() {
-    return readDirectoryCommands(ref).probeLspServer();
+    return ref.read(anyworkClientProvider).directoryCommands.probeLspServer();
   }
 
   Future<void> _repair(String serverId) {
-    return readDirectoryCommands(ref).repairLspServer(serverId);
+    return ref
+        .read(anyworkClientProvider)
+        .directoryCommands
+        .repairLspServer(serverId);
   }
 
   Future<void> _resetServer(String serverId) {
-    return readDirectoryCommands(ref).resetLspServer(serverId);
+    return ref
+        .read(anyworkClientProvider)
+        .directoryCommands
+        .resetLspServer(serverId);
   }
 
   Future<void> _resetWorkspace() {
-    return readDirectoryCommands(ref).resetLspWorkspace();
+    return ref
+        .read(anyworkClientProvider)
+        .directoryCommands
+        .resetLspWorkspace();
   }
 
   Future<void> _run(Future<void> Function() operation) async {

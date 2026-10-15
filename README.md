@@ -14,20 +14,31 @@ Pure-Lang 是一个**自然语言编译器**：接收用户的自然语言需求
 
 ## 架构
 
-```text
-anywork → pl-studio-bridge ─┐
-                               ├→ pl-studio-runtime → pl-core
-HTTP → pl-studio-server ───────┘         │              ↑
-                                        ├→ pl-model ───┤
-                                        ├→ pl-tool ────┤
-                                        ├→ pl-trace ───┘
-                                        └→ pl-protocol
+```mermaid
+flowchart LR
+  App[anywork] --> Client[anywork_client]
+  Client --> Ports[Typed transport ports]
+  App --> Adapter[FRB adapter]
+  Adapter -.实现.-> Ports
+  Adapter --> Bridge[pl-studio-bridge]
+  HTTP --> Server[pl-studio-server]
+  Bridge --> Runtime[pl-studio-runtime]
+  Server --> Runtime
+  Runtime --> Core[pl-core]
+  Runtime --> Model[pl-model]
+  Runtime --> Tool[pl-tool]
+  Runtime --> Trace[pl-trace]
+  Runtime --> Protocol[pl-protocol]
+  Model --> Core
+  Tool --> Core
+  Trace --> Core
 ```
 
 箭头表示依赖方向。core 定义独立的 Thread、Model/Tool 契约、上下文与可选存储；
 model 实现供应商协议与模型路由，tool 消费 model 已解释的 provider 能力（crate 依赖的唯一
 权威源见 [design/02](design/02-crates.md)）。Studio 拥有配置、项目、Mode/Plan/workflow、
-子代理协调和统一装配；FRB 与 HTTP 适配同一业务 runtime。
+子代理协调和统一装配；FRB 与 HTTP 适配同一业务 runtime。应用实例的纯 Dart Client 拥有
+显示镜像、草稿、命令和资源生命周期，Riverpod 只适配观察；契约见 [design/25](design/25-frontend-state.md)。
 
 ### Workspace 与 Flutter 客户端
 
@@ -47,7 +58,8 @@ model 实现供应商协议与模型路由，tool 消费 model 已解释的 prov
 | `pl-studio-runtime` | `code/pl-studio-runtime/` | Studio 产品 SQLite、项目、配置、恢复与产品事件的唯一业务 façade |
 | `pl-studio-server` | `code/pl-studio-server/` | 独立 HTTP/OpenAPI/SSE transport 宿主 |
 | `pl-studio-bridge` | `code/anywork/rust/` | Flutter Rust Bridge v2 transport 适配器 |
-| `anywork`（非 Cargo 成员） | `code/anywork/` | Flutter 桌面应用：Material 3、Riverpod；Flutter 消费按资源版本化的只读镜像，聊天经 core ChatView 的单一有序出口取得有界窗口，页面不合并 SQL 历史与实时输出 |
+| `anywork_client`（非 Cargo 成员） | `code/anywork_client/` | SDK-only Dart Client：read models、唯一 ChatView reducer、命令回执、草稿/附件与资源预算 |
+| `anywork`（非 Cargo 成员） | `code/anywork/` | Flutter 桌面应用：AppGraph 装配 Client 与 FRB adapter，Riverpod 适配只读观察，Connector/View 呈现有界镜像 |
 | `pl-xtask` | `xtask/` | GUI 生成、验证、运行、构建与发布编排入口 |
 | `pl-studio-acceptance` | `code/pl-studio-acceptance/` | 按需编译的隔离 GUI 验收工具，保留全部模拟与故障场景 |
 | `pl-dev-support` | `code/pl-dev-support/` | 工程工具共享的轻量路径、命令和进程树支持 |
@@ -276,7 +288,8 @@ pure-lang/
 │   ├── pl-studio-server/     # HTTP/OpenAPI/SSE server
 │   ├── pl-studio-acceptance/ # 独立按需 GUI 验收工具
 │   ├── pl-dev-support/       # 轻量工程路径与进程支持
-│   └── anywork/          # Flutter 桌面应用与 FRB crate
+│   ├── anywork_client/    # SDK-only Dart Client 与公开行为测试
+│   └── anywork/           # Flutter 桌面应用与 FRB crate
 ├── design/                   # 架构设计文档及原型/视觉资产
 ├── .cargo/config.toml        # Cargo 配置
 ├── xtask/                    # pl-xtask 轻量开发任务入口
@@ -292,7 +305,8 @@ pure-lang/
 | 异步运行时 | tokio |
 | 数据库 | SQLite via SeaORM（SQLx 后端） |
 | 序列化 | serde + serde_json + toml |
-| Flutter 状态管理 | Riverpod |
+| 客户端状态与生命周期 | 纯 Dart anywork_client，AppGraph 实例所有权 |
+| Flutter 观察适配 | Riverpod |
 | Flutter 路由 | go_router |
 | LLM 集成 | 共享 OpenAI 协议、供应商 backend、reqwest 与 Responses WebSocket |
 | LSP 客户端 | lsp-types + 自研 JSON-RPC framing（rust-analyzer 支持） |
@@ -380,6 +394,9 @@ C++ 标准库头文件或 GTK 链接库时会报告实际命令和原始输出�
 # 从仓库根目录执行一般 Flutter/Dart 命令，参数原样透传
 cargo flutter analyze
 cargo dart format lib
+
+# 纯 Dart Client、FRB/Riverpod/路由适配契约与 AST 边界门禁
+cargo xtask verify-client
 
 # 从仓库根目录检查生成产物、格式与静态分析
 cargo xtask verify-gui

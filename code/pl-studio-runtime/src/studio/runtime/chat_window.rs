@@ -26,8 +26,9 @@
 
 use anyhow::Result;
 use pl_core::chat::{
-    ChatField, ChatFocus, ChatItem, ChatLifecycle, ChatSnapshot, ChatUpdate, ChatUpdates, ChatView,
-    Direction, FieldChange, PresentationPart, ViewChange,
+    ChatControlDisposition, ChatControlReceipt, ChatField, ChatFocus, ChatItem, ChatLifecycle,
+    ChatSnapshot, ChatUpdate, ChatUpdates, ChatView, Direction, FieldChange, PresentationPart,
+    ViewChange,
 };
 use pl_protocol::{
     ChatWindowChange, ChatWindowDirection, ChatWindowFocus, ChatWindowItem, ChatWindowLifecycle,
@@ -42,6 +43,7 @@ use super::chat_item::{TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, canonical_item};
 ///
 /// 它只共享这条窗口自己的 `ChatView`（同一个 `Session`），因此读取的是与窗口完全相同的事实来源：
 /// 不重新 `open_chat`、不按 thread id 另找运行时实例，窗口句柄关闭后也不会读到别的实例的条目。
+#[derive(Clone)]
 pub struct ChatWindowHandle {
     view: ChatView,
 }
@@ -80,26 +82,36 @@ impl ChatWindowHandle {
     /// 它只是把完整正文**请求进这条 view**（core 的 retain 绑定到本 view 且只在身份仍在窗口时生效），
     /// 不重新打开窗口、不另查 SQL。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并
     /// 通知，因此完整正文由订阅者的下一次 `take` 以 typed 字段更新从唯一出口交付。读到条目不等于已
-    /// retain：身份已离开窗口时 core 仍可能返回读取结果，但不保留、不通知；调用方只把「是否仍在窗口
-    /// 并成功保留」填进 [`ChatWindowStream::receipt`] 的 `retained`，不在锁内等待或另交一份窗口。
+    /// retain：回执只在操作结束时该身份仍在同一个窗口且正文完整时标记 `retained`。
     ///
     /// 取消/身份已离开窗口都不会把结果写回窗口：core 的 retain 只在身份仍在本窗口时保留。
-    pub async fn request_complete(&self, item_id: &str) -> Result<Option<ChatWindowItem>> {
-        self.view
-            .read_complete(item_id)
+    pub async fn expand(&self, item_id: &str) -> Result<ChatWindowReceipt> {
+        let expansion = self
+            .view
+            .expand(item_id)
             .await
-            .map_err(anyhow::Error::new)?
-            .map(window_item)
-            .transpose()
+            .map_err(anyhow::Error::new)?;
+        Ok(receipt(expansion.receipt, expansion.retained))
     }
+}
+
+/// 控制操作对权威可见窗口的结果，独立于消费者是否已经交付该版本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatWindowDisposition {
+    Applied,
+    NoChange,
 }
 
 /// 控制操作回执：操作已被权威窗口接受；内容仍由 `next`/`take` 以 Reset/Patch 从**唯一出口**交付。
 ///
-/// `version` 是操作完成后的窗口当前版本（no-op 时等于操作前版本）；`retained` 只对「展开完整正文」
-/// 有意义——`false` 表示该身份已不在窗口或完整正文此刻不可得，调用方保留预览与重试入口。
+/// `disposition` 由 core 在本操作的窗口提交点决定，与 `version` 在同一临界区捕获，不从前后快照或
+/// 消费者交付水位推导。`version` 是本操作提交点的窗口版本，只有 `Applied` 需要等待内容观察；
+/// `NoChange` 即使期间有 producer 推进版本也不
+/// 要求另一帧。`retained` 只对「展开完整正文」有意义——`false` 表示该身份已不在窗口或完整正文此刻
+/// 不可得，调用方保留预览与重试入口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatWindowReceipt {
+    pub disposition: ChatWindowDisposition,
     pub version: u64,
     pub retained: bool,
 }
@@ -183,54 +195,47 @@ impl ChatWindowStream {
     /// splice `Patch`），仍以消费者自己的交付基线为 `from`。「已交付给客户端」的水位只由
     /// `next`/`take` 推进。
     pub async fn focus(&mut self, query: &ChatWindowQuery) -> Result<ChatWindowReceipt> {
-        self.view
+        let mut committed = self
+            .view
             .focus(focus_of(query.anchor.as_deref()))
             .await
             .map_err(anyhow::Error::new)?;
         if let Some(direction) = query.direction {
-            self.view
+            let page = self
+                .view
                 .load(core_direction(direction))
                 .await
                 .map_err(anyhow::Error::new)?;
+            // A final NoChange can observe unrelated session progress that this view will skip.
+            // Preserve the last actual write as the composite operation's observation barrier.
+            if page.disposition == ChatControlDisposition::Applied
+                || committed.disposition == ChatControlDisposition::NoChange
+            {
+                committed = page;
+            }
         }
-        Ok(self.receipt(true))
+        Ok(receipt(committed, true))
     }
 
     /// 从当前窗口继续向指定方向翻一页，返回操作回执（内容由 `next` 交付）。
     pub async fn load(&mut self, direction: ChatWindowDirection) -> Result<ChatWindowReceipt> {
-        self.view
+        let committed = self
+            .view
             .load(core_direction(direction))
             .await
             .map_err(anyhow::Error::new)?;
-        Ok(self.receipt(true))
+        Ok(receipt(committed, true))
     }
 
-    /// 按页扩充 Latest，保持最新端；历史阅读或容量已满时不改变窗口（回执版本不推进、无帧）。
+    /// 按页扩充 Latest，保持最新端；历史阅读或容量已满时返回明确 NoChange，不等待另一帧。
     pub async fn extend_latest(&mut self) -> Result<ChatWindowReceipt> {
-        self.view.extend_latest().await?;
-        Ok(self.receipt(true))
+        let committed = self.view.extend_latest().await?;
+        Ok(receipt(committed, true))
     }
 
     /// 按 identity 读一条条目（同 view，内存优先）。
     pub async fn read_item(&self, item_id: &str) -> Result<Option<ChatWindowItem>> {
         self.handle().read_item(item_id).await
-    }
-
-    /// 以**本窗口交付域**的版本构造控制操作回执。
-    ///
-    /// `retained` 由「展开完整正文」的调用方按 [`ChatWindowHandle::request_complete`] 是否取回条目
-    /// 填写；其余控制操作恒为 `true`。
-    ///
-    /// 版本必须是窗口快照的版本，而不是会话进度版本：会话推进的版本可能来自本窗口看不到的变化，
-    /// [`ChatUpdates::take`] 对这种变化不发帧（交付基线不动）。回执若用会话版本，消费者会等一个
-    /// 永远不会交付的水位，控制操作就永久停在 loading。窗口快照版本由 `Reset`/`Patch` 的
-    /// `version`/`to` 原样交付，因此「回执版本 <= 已交付版本」等价于「这次操作没有产生本窗口可见
-    /// 的变化」，可以立即结束。
-    pub fn receipt(&self, retained: bool) -> ChatWindowReceipt {
-        ChatWindowReceipt {
-            version: self.view.snapshot().version,
-            retained,
-        }
     }
 
     /// 把一次 core typed 差量映射成 wire 差量。
@@ -349,7 +354,7 @@ impl StudioRuntime {
     /// 按 identity 读一条窗口条目，读的是共享会话（内存优先），因此未落盘的流式条目同样可读。
     ///
     /// 这是内容窗口的「按身份读」入口；**完整**正文请走同 view 的窗口操作
-    /// [`ChatWindowHandle::request_complete`]（完整正文经下一次 `take` 从唯一出口交付）。
+    /// [`ChatWindowHandle::expand`]（完整正文经下一次 `take` 从唯一出口交付）。
     ///
     /// # Errors
     /// 未知 Thread（不激活执行、也不读 durable 正文），或条目与其产品载荷不一致。
@@ -365,6 +370,18 @@ impl StudioRuntime {
             .await
             .map_err(anyhow::Error::new)?;
         item.map(window_item).transpose()
+    }
+}
+
+/// 只映射 core 的提交结果；不再次读取窗口，避免把 producer 的并发发布归因于控制操作。
+fn receipt(committed: ChatControlReceipt, retained: bool) -> ChatWindowReceipt {
+    ChatWindowReceipt {
+        disposition: match committed.disposition {
+            ChatControlDisposition::Applied => ChatWindowDisposition::Applied,
+            ChatControlDisposition::NoChange => ChatWindowDisposition::NoChange,
+        },
+        version: committed.version,
+        retained,
     }
 }
 

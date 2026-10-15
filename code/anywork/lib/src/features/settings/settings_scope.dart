@@ -1,29 +1,25 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../data/bridge/studio_bridge.dart';
-import '../../data/stores/domain_sync.dart';
-import '../../data/stores/lsp_store.dart';
-import '../../data/stores/mcp_store.dart';
-import '../../data/stores/model_performance_store.dart';
-import '../../data/stores/provider_usage_store.dart';
-import '../../data/stores/recovery_store.dart';
-import '../../data/stores/settings_store.dart';
-import '../../data/stores/skills_store.dart';
-import '../../domain/models/studio_models.dart';
+
+import 'package:anywork_client/studio_client.dart';
+
+import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mcp_store.dart';
+import '../../presentation/providers/model_performance_store.dart';
+import '../../presentation/providers/provider_usage_store.dart';
+import '../../presentation/providers/recovery_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/skills_store.dart';
 import '../../l10n/studio_l10n.dart';
 
-export '../../data/bridge/studio_bridge.dart' show BridgeSettingsScopeKind;
+export 'package:anywork_client/studio_client.dart' show BridgeSettingsScopeKind;
 
 /// 当前可见的设置 tab 索引（由设置壳的 TabController 驱动）。
 ///
-/// 设置页为保留编辑器草稿、搜索筛选与滚动位置，用 keep-alive 保活已访问过的 tab；
-/// 但「保留 UI 状态」不等于「持有 topic 租约」。每个数据页据此只在自身可见时
-/// `watch` 自己的 scope provider，隐藏时停止 `watch` 让 autoDispose 租约释放，
-/// 重新可见时先取得最新基线。lease 本身由 StudioBridge 单一入口提供。
+/// Visibility only changes observation; Client retains topic owners and drafts.
 final settingsVisibleTabProvider =
     NotifierProvider<SettingsVisibleTabNotifier, int>(
       SettingsVisibleTabNotifier.new,
@@ -39,57 +35,8 @@ class SettingsVisibleTabNotifier extends Notifier<int> {
   }
 }
 
-/// 设置页挂载期间持有的公共 topic。
-///
-/// Shell 尚未租用 bundle 时，设置页自己租用配置、模型目录与恢复 topic，离开即释放。
-/// 所有者仍应是启动/shell；这里只是页面生命周期内的过渡租约。
-final settingsPageTopicsLeaseProvider =
-    Provider.autoDispose<BridgeTopicLeaseBundle>((ref) {
-      final bridge = ref.watch(studioBridgeProvider);
-      final bundle = bridge.acquireTopics(const [
-        SettingsConfigTopic(),
-        ModelCatalogTopic(),
-        RecoveryTopic(),
-      ]);
-      ref.onDispose(() {
-        unawaited(bundle.release());
-      });
-      return bundle;
-    }, name: 'settingsPageTopicsLeaseProvider');
-
-/// 可见 tab 的作用域租约参数。projectId 只对 Skills 有意义。
-class SettingsScopeRequest {
-  const SettingsScopeRequest(this.kind, [this.projectId]);
-
-  final BridgeSettingsScopeKind kind;
-  final String? projectId;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SettingsScopeRequest &&
-          kind == other.kind &&
-          projectId == other.projectId;
-
-  @override
-  int get hashCode => Object.hash(kind, projectId);
-}
-
-/// 一个参数化租约入口：各 tab 只声明 kind（以及 Skills 的 projectId）。
-final settingsScopeLeaseProvider = Provider.autoDispose
-    .family<BridgeTopicLeaseBundle, SettingsScopeRequest>((ref, request) {
-      final bridge = ref.watch(studioBridgeProvider);
-      final bundle = bridge.acquireSettingsScope(
-        request.kind,
-        request.projectId,
-      );
-      ref.onDispose(() {
-        unawaited(bundle.release());
-      });
-      return bundle;
-    }, name: 'settingsScopeLeaseProvider');
-
-/// 可见 tab 才 watch 租约；隐藏时停止 watch，autoDispose 释放。
+/// Visibility controls observations only. AppGraph owns the corresponding
+/// topics throughout the application lifetime.
 void watchSettingsScope(
   WidgetRef ref, {
   required bool visible,
@@ -97,7 +44,9 @@ void watchSettingsScope(
   String? projectId,
 }) {
   if (!visible) return;
-  ref.watch(settingsScopeLeaseProvider(SettingsScopeRequest(kind, projectId)));
+  for (final topic in bridgeSettingsScopeTopics(kind, projectId)) {
+    ref.watch(settingsTopicSyncProvider(topic));
+  }
 }
 
 /// 静态供应商目录与启动选择由 `app/startup_facts.dart` 在 shell 挂载前写入。
@@ -188,7 +137,8 @@ class SettingsTopicStatus extends ConsumerWidget {
           if (failed)
             TextButton.icon(
               key: ValueKey('settings-topic-retry-${topic.runtimeType}'),
-              onPressed: () => ref.read(studioBridgeProvider).retryTopic(topic),
+              onPressed: () =>
+                  ref.read(anyworkClientProvider).retryResource(topic),
               icon: const Icon(Icons.refresh, size: 16),
               label: Text(context.l10n.sidebarRetry),
             ),

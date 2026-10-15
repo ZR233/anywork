@@ -168,9 +168,9 @@ class ProviderEditor extends StatelessWidget {
                     ],
                     const SizedBox(height: 10),
                     DropdownMenu<String>(
-                      initialSelection: provider.defaultModel.isNotEmpty
-                          ? provider.defaultModel
-                          : models.firstOrNull?.slug,
+                      initialSelection: provider.defaultModel.isEmpty
+                          ? null
+                          : provider.defaultModel,
                       label: Text(context.l10n.settingsDefaultModel),
                       expandedInsets: EdgeInsets.zero,
                       dropdownMenuEntries: [

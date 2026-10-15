@@ -18,11 +18,21 @@ pub struct SearchSkillsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NewThreadModelRoute {
+    pub provider_id: String,
+    pub model: String,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateThreadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub input: StudioPromptInput,
     pub mode: String,
+    /// Complete route frozen with the draft; does not mutate Mode defaults.
+    pub route: NewThreadModelRoute,
     /// 会话工作区模式；省略时按 `local` 解释。
     #[serde(default)]
     pub workspace_mode: crate::ThreadWorkspaceMode,
@@ -39,12 +49,14 @@ pub struct StudioPromptInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetThreadModeRequest {
+    pub operation_id: String,
     pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenameThreadRequest {
+    pub operation_id: String,
     pub title: String,
 }
 
@@ -52,17 +64,21 @@ pub struct RenameThreadRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitPromptRequest {
     pub input: StudioPromptInput,
+    /// The observed saved route/profile extension revision at the submit intent.
+    pub expected_model_route_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InterruptTurnRequest {
+    pub operation_id: String,
     pub expected_turn_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveInteractionRequest {
+    pub operation_id: String,
     pub resolution: crate::InteractionResolution,
 }
 

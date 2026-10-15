@@ -31,7 +31,8 @@ class _TimelineLayoutTarget {
     required this.top,
     required this.threadId,
     required this.windowEpoch,
-    required this.generation,
+    required this.viewId,
+    required this.readingGeneration,
   });
 
   final String itemId;
@@ -39,7 +40,8 @@ class _TimelineLayoutTarget {
   final double top;
   final String? threadId;
   final int windowEpoch;
-  final int generation;
+  final String? viewId;
+  final int readingGeneration;
 }
 
 extension on _TimelineViewState {
@@ -54,8 +56,9 @@ extension on _TimelineViewState {
     final target = _pendingRestore.target;
     if (target == null ||
         target.threadId != widget.threadId ||
+        target.viewId != widget.viewId ||
         target.windowEpoch != widget.windowEpoch ||
-        target.generation != _readingGeneration ||
+        target.readingGeneration != _readingGeneration ||
         !target.context.mounted ||
         (_anchorRowId(target.itemId) == null &&
             target.itemId !=
@@ -118,8 +121,9 @@ extension on _TimelineViewState {
             context: trigger,
             top: box.localToGlobal(Offset.zero, ancestor: viewport).dy,
             threadId: widget.threadId,
+            viewId: widget.viewId,
             windowEpoch: widget.windowEpoch,
-            generation: _readingGeneration,
+            readingGeneration: _readingGeneration,
           )
         : _validLayoutTarget;
     if (anchor != null || target != null) {

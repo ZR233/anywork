@@ -33,6 +33,11 @@ pub(in crate::studio) struct StudioThreadServices {
 pub(crate) struct StudioThreadFactory {
     services: StudioThreadServices,
     bindings: Arc<std::sync::Mutex<std::collections::BTreeMap<String, tool_bindings::ToolBinding>>>,
+    // Immutable assembly inputs admitted before a new directory identity is
+    // published. Every concurrent activation sees the same frozen selector.
+    initial_routes: Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, pl_model::config::ModelRouteConfig>>,
+    >,
 }
 impl StudioThreadFactory {
     /// Fresh allowance for each child Turn, including explicit continuation after a step limit.
@@ -45,7 +50,34 @@ impl StudioThreadFactory {
         Self {
             services,
             bindings: Default::default(),
+            initial_routes: Default::default(),
         }
+    }
+
+    pub(in crate::studio) fn stage_initial_route(
+        &self,
+        id: &str,
+        route: pl_model::config::ModelRouteConfig,
+    ) {
+        self.initial_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), route);
+    }
+
+    pub(in crate::studio) fn clear_initial_route(&self, id: &str) {
+        self.initial_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
+    fn initial_route(&self, id: &str) -> Option<pl_model::config::ModelRouteConfig> {
+        self.initial_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 }
 impl std::fmt::Debug for StudioThreadFactory {

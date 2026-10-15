@@ -18,6 +18,7 @@ pub(super) async fn read_studio_state_inner(
     let state = bridge.studio.read_state().await?;
 
     Ok(BridgeStudioStateSnapshot {
+        owner_epoch: state.owner_epoch,
         runtime: runtime_snapshot(state.runtime),
         project_directory: bridge_project_directory(state.project_directory.state),
         thread_directory: bridge_thread_directory_page(state.thread_directory.state),

@@ -15,9 +15,11 @@ impl StudioRuntime {
     /// Interrupts only the expected Turn; a delayed request cannot cancel a later Turn.
     pub async fn interrupt_prompt(
         &self,
+        operation_id: String,
         thread_id: String,
         expected_turn_id: String,
     ) -> Result<StudioInterruptPromptResponse> {
+        Self::validate_operation_id(&operation_id)?;
         self.read_owned_thread(&thread_id).await?;
         let interrupted = match self.threads.thread(&thread_id) {
             Some(thread) => thread
@@ -33,10 +35,22 @@ impl StudioRuntime {
                 })?,
             None => false,
         };
+        let mut receipt = self.command_receipt(
+            operation_id,
+            interrupted,
+            Vec::new(),
+            pl_protocol::studio::CommandEffectPoint::Immediate,
+            false,
+        );
+        // interrupt_turn acknowledges the cancellation request. The matching
+        // Turn must still stop in the owner stream before it is effective.
+        receipt.effective = false;
+        receipt.requires_identity_observation = true;
         Ok(StudioInterruptPromptResponse {
             thread_id,
             turn_id: expected_turn_id,
             interrupted,
+            receipt,
         })
     }
 }

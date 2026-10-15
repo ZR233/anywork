@@ -72,12 +72,14 @@ class _ThreadAttachmentCard extends ConsumerStatefulWidget {
 
 class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
   Future<Uint8List>? _image;
+  int _imageGeneration = 0;
 
   @override
   void didUpdateWidget(covariant _ThreadAttachmentCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.threadId != oldWidget.threadId ||
         widget.attachment.id != oldWidget.attachment.id) {
+      _imageGeneration++;
       _image = null;
     }
   }
@@ -86,11 +88,9 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
     return _ThreadImageCacheScope.of(context).load(
       widget.threadId,
       widget.attachment.id,
-      () => readTimelineAttachment(
-        ref.read(studioBridgeDataSourceProvider),
-        widget.threadId,
-        widget.attachment.id,
-      ),
+      () => ref
+          .read(anyworkClientProvider)
+          .readAttachmentBytes(widget.threadId, widget.attachment.id),
     );
   }
 
@@ -153,6 +153,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
   }
 
   void _retry() {
+    _imageGeneration++;
     _ThreadImageCacheScope.of(context)
         .invalidate(widget.threadId, widget.attachment.id);
     final image = _loadImage();
@@ -162,13 +163,14 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
   }
 
   Future<void> _showImage() async {
+    final generation = _imageGeneration;
     Uint8List? image;
     try {
       image = await _image;
     } on Object {
       return;
     }
-    if (!mounted || image == null) return;
+    if (!mounted || generation != _imageGeneration || image == null) return;
     await _showStudioImageDialog(
       context,
       MemoryImage(image),
@@ -389,11 +391,13 @@ class _ThreadToolImageThumbnail extends ConsumerStatefulWidget {
 class _ThreadToolImageThumbnailState
     extends ConsumerState<_ThreadToolImageThumbnail> {
   Future<Uint8List>? _image;
+  int _imageGeneration = 0;
   @override
   void didUpdateWidget(covariant _ThreadToolImageThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.threadId != oldWidget.threadId ||
         widget.entry.attachment.id != oldWidget.entry.attachment.id) {
+      _imageGeneration++;
       _image = null;
     }
   }
@@ -401,11 +405,9 @@ class _ThreadToolImageThumbnailState
   Future<Uint8List> _loadImage() => _ThreadImageCacheScope.of(context).load(
     widget.threadId,
     widget.entry.attachment.id,
-    () => readTimelineAttachment(
-      ref.read(studioBridgeDataSourceProvider),
-      widget.threadId,
-      widget.entry.attachment.id,
-    ),
+    () => ref
+        .read(anyworkClientProvider)
+        .readAttachmentBytes(widget.threadId, widget.entry.attachment.id),
   );
   @override
   Widget build(BuildContext context) {
@@ -435,19 +437,21 @@ class _ThreadToolImageThumbnailState
   }
 
   void _retry() {
+    _imageGeneration++;
     _ThreadImageCacheScope.of(context)
         .invalidate(widget.threadId, widget.entry.attachment.id);
     setState(() => _image = _loadImage());
   }
 
   Future<void> _showImage() async {
+    final generation = _imageGeneration;
     Uint8List image;
     try {
       image = await _image!;
     } on Object {
       return;
     }
-    if (!mounted) return;
+    if (!mounted || generation != _imageGeneration) return;
     await _showStudioImageDialog(
       context,
       MemoryImage(image),

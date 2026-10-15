@@ -8,21 +8,15 @@ import 'package:flutter/widget_previews.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../data/frb/studio_api.dart' show FrbStudioBridgeDataSource;
-import '../../data/bridge/studio_bridge.dart';
-import '../../data/commands/directory_commands.dart';
-import '../../data/commands/settings_commands.dart';
-import '../../data/commands/thread_commands.dart';
-import '../../data/repositories/studio_api_provider.dart';
+import '../../app/app_graph.dart';
+import '../../presentation/providers/client_provider.dart';
+
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
 import '../../app/theme/material3_theme.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
-import '../../domain/models/timeline_commands.dart';
-import '../../data/stores/selection_store.dart';
-import '../../data/stores/thread_session_store.dart';
-import '../../data/stores/domain_sync.dart';
+
 import '../../l10n/app_localizations.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/studio_platform.dart';
@@ -33,16 +27,15 @@ import '../../platform/zed_launcher.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_driver_state.dart';
-import '../update/studio_update_controller.dart';
+import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';
 import '../interaction/composer_dock.dart';
 import '../interaction/composer_view.dart';
-import '../interaction/start_session_controller.dart';
 import '../status/thread_status_bar.dart';
-import '../status/status_view.dart';
 import '../timeline/conversation_activity_bar.dart';
 import '../timeline/timeline_view.dart';
+import '../timeline/timeline_connector.dart';
 import '../timeline/timeline_session_view.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
@@ -118,7 +111,8 @@ class _StudioShellState extends ConsumerState<StudioShell> {
       if (next == null || next == previous) return;
       unawaited(
         ref
-            .read(threadCommandsProvider.notifier)
+            .read(anyworkClientProvider)
+            .threadCommands
             .loadLatestHistory(next.threadId),
       );
     });
@@ -144,7 +138,8 @@ class _StudioShellState extends ConsumerState<StudioShell> {
               );
               unawaited(
                 ref
-                    .read(directoryCommandsProvider.notifier)
+                    .read(anyworkClientProvider)
+                    .directoryCommands
                     .openSelectedThread(),
               );
             }
@@ -248,6 +243,27 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                                 Expanded(child: _Header(state: header)),
                               ],
                             ),
+                            if (startup.directoryError case final error?)
+                              MaterialBanner(
+                                key: const ValueKey(
+                                  'project-directory-failure',
+                                ),
+                                leading: const Icon(Icons.sync_problem),
+                                content: Text(error),
+                                actions: [
+                                  TextButton(
+                                    key: const ValueKey(
+                                      'project-directory-retry',
+                                    ),
+                                    onPressed: () => ref
+                                        .read(anyworkClientProvider)
+                                        .retryResource(
+                                          const ProjectDirectoryTopic(),
+                                        ),
+                                    child: Text(context.l10n.runtimeFatalRetry),
+                                  ),
+                                ],
+                              ),
                             const _PersistenceStatusPanel(),
                             const _StartupRecoveryBanner(),
                             if (chrome.applicationRecoveryIssues.isNotEmpty)

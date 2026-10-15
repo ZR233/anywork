@@ -1,10 +1,11 @@
+import 'package:anywork/src/presentation/providers/client_provider.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/commands/thread_commands.dart';
-import '../../data/stores/thread_session_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -280,7 +281,8 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
     }
     unawaited(
       ref
-          .read(threadCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .threadCommands
           .resolveActiveInteraction(
             widget.threadId,
             widget.interactionId,
@@ -296,7 +298,8 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
   void _submitAnswers() {
     unawaited(
       ref
-          .read(threadCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .threadCommands
           .resolveActiveInteraction(
             widget.threadId,
             widget.interactionId,

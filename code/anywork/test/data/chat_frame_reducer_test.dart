@@ -1,8 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/data/frb/studio_api.dart';
-import 'package:anywork/src/data/stores/thread_session_state.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
+import 'package:anywork_client/studio_client.dart';
 
 void main() {
   test('Patch 在 from 匹配时拒绝 to <= from', () {

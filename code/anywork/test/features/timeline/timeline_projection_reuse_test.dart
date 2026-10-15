@@ -13,21 +13,9 @@ void main() {
     // 只有第二条条目的正文变化（窗口按稳定字段身份整体替换该条目状态）。
     final after = projector.project(_window(texts: const ['一', '二改', '三']));
     expect(after, hasLength(3));
-    expect(
-      identical(after[0], before[0]),
-      isTrue,
-      reason: '未变化的行不能重新构造',
-    );
-    expect(
-      identical(after[2], before[2]),
-      isTrue,
-      reason: '未变化的行不能重新构造',
-    );
-    expect(
-      identical(after[1], before[1]),
-      isFalse,
-      reason: '变化的行必须重新构造',
-    );
+    expect(identical(after[0], before[0]), isTrue, reason: '未变化的行不能重新构造');
+    expect(identical(after[2], before[2]), isTrue, reason: '未变化的行不能重新构造');
+    expect(identical(after[1], before[1]), isFalse, reason: '变化的行必须重新构造');
     expect(after[1].part!.text, '二改');
     expect(
       identical(after[0].part, before[0].part),
@@ -41,11 +29,7 @@ void main() {
     final items = _items(const ['一', '二']);
     final first = projector.project(items);
     final second = projector.project(items);
-    expect(
-      identical(first, second),
-      isTrue,
-      reason: '同一份窗口事实不应重新投影',
-    );
+    expect(identical(first, second), isTrue, reason: '同一份窗口事实不应重新投影');
   });
 
   test('结构变化（新增条目）时按身份保留未变化行的对象', () {
@@ -58,40 +42,24 @@ void main() {
   });
 
   test('推理分组仍能从分块派生摘要与展开正文', () {
-    final item = _thinkingItem(
-      content: const ['**判断**', '第一段推理内容', '第二段推理内容'],
-    );
+    final item = _thinkingItem(content: const ['**判断**', '第一段推理内容', '第二段推理内容']);
     final group = TimelineRowProjector().project([item]).single.reasoningGroup!;
-    expect(
-      group.summaries,
-      isNotEmpty,
-      reason: '摘要必须从分块派生：投影不再为推理预拼 text',
-    );
+    expect(group.summaries, isNotEmpty, reason: '摘要必须从分块派生：投影不再为推理预拼 text');
     expect(group.summaries.first, '判断');
     expect(group.latestSummary, '判断');
     expect(group.details, contains('第一段推理内容'));
-    expect(
-      group.details,
-      contains('判断'),
-      reason: '展开正文只由分块列表派生',
-    );
+    expect(group.details, contains('判断'), reason: '展开正文只由分块列表派生');
   });
 
   test('推理条目的投影不预先拼接整段正文', () {
-    final item = _thinkingItem(
-      content: const ['第一段推理内容', '第二段推理内容'],
-    );
+    final item = _thinkingItem(content: const ['第一段推理内容', '第二段推理内容']);
     final entry = TimelineRowProjector()
         .project([item])
         .single
         .reasoningGroup!
         .parts
         .single;
-    expect(
-      entry.text,
-      isEmpty,
-      reason: '推理正文按分块交付，不在投影里预拼成整段字符串',
-    );
+    expect(entry.text, isEmpty, reason: '推理正文按分块交付，不在投影里预拼成整段字符串');
     expect(entry.reasoningContent, const ['第一段推理内容', '第二段推理内容']);
   });
 }

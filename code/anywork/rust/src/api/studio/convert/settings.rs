@@ -240,11 +240,13 @@ fn bridge_custom_model_settings(
 }
 
 pub(crate) fn provider_settings_request(
+    operation_id: String,
     expected_revision: u64,
     input: ProviderSettingsInput,
 ) -> pl_protocol::studio::UpdateProviderRequest {
     let provider = input.provider;
     pl_protocol::studio::UpdateProviderRequest {
+        operation_id,
         expected_revision,
         provider: pl_protocol::studio::ProviderSettingsUpdate {
             id: provider.id,

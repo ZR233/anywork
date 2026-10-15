@@ -8,6 +8,7 @@
 /code/anywork/dist
 /code/anywork/.tmp-tests
 /code/anywork/src-tauri/gen
+/code/anywork_client/.dart_tool/
 
 # Build caches left at the former application path.
 /code/pure-studio/.dart_tool/

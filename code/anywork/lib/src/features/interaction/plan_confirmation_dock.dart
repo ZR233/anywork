@@ -1,10 +1,11 @@
+import 'package:anywork/src/presentation/providers/client_provider.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/commands/thread_commands.dart';
-import '../../data/stores/thread_session_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import 'interaction_payload.dart';
 import '../../l10n/studio_l10n.dart';
@@ -112,7 +113,8 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
   void _resolve(List<String> answers) {
     unawaited(
       ref
-          .read(threadCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .threadCommands
           .resolveActiveInteraction(
             widget.threadId,
             widget.plan.interactionId,

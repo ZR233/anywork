@@ -1,22 +1,26 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
-import 'settings_views.dart';
 
-class SecurityTab extends ConsumerWidget {
-  const SecurityTab({super.key, required this.mode});
+class SecurityTab extends StatelessWidget {
+  const SecurityTab({
+    super.key,
+    required this.mode,
+    required this.pending,
+    required this.onSelected,
+  });
 
   final PermissionMode mode;
+  final bool pending;
+  final Future<void> Function(PermissionMode) onSelected;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final pending = ref.watch(settingsSecurityViewProvider).pending;
+  Widget build(BuildContext context) {
     return SettingsPane(
       header: SettingsHeader(
         title: context.l10n.settingsSecurityTitle,
@@ -29,7 +33,7 @@ class SecurityTab extends ConsumerWidget {
           onChanged: (value) {
             if (pending) return;
             if (value != null) {
-              unawaited(_savePermissionMode(context, ref, value));
+              unawaited(_savePermissionMode(context, () => onSelected(value)));
             }
           },
           child: Column(
@@ -78,11 +82,10 @@ class SecurityTab extends ConsumerWidget {
 
 Future<void> _savePermissionMode(
   BuildContext context,
-  WidgetRef ref,
-  PermissionMode mode,
+  Future<void> Function() action,
 ) async {
   try {
-    await readSettingsCommands(ref).setPermissionMode(mode);
+    await action();
   } catch (error) {
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);

@@ -8,12 +8,14 @@ use std::{
 
 use pl_core::{
     chat::{
-        ChatError, ChatField, ChatFocus, ChatHistory, ChatItem, ChatLifecycle, ChatQuery,
-        ChatSnapshot, ChatUpdate, ChatUpdatePriority, ChatUpdates, ChatView, Direction,
-        FieldChange, FieldUpdate, HistoryPage, PresentationPart, Session, ViewChange, WeakSession,
+        ChatControlDisposition, ChatError, ChatField, ChatFocus, ChatHistory, ChatItem,
+        ChatLifecycle, ChatQuery, ChatSnapshot, ChatUpdate, ChatUpdatePriority, ChatUpdates,
+        ChatView, Direction, FieldChange, FieldUpdate, HistoryPage, PresentationPart, Session,
+        ViewChange, WeakSession,
     },
     model::ContentBlock,
 };
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Default)]
 struct Stored {
@@ -101,8 +103,60 @@ impl ChatHistory for Counting {
     }
 }
 
+/// A storage boundary that lets a producer publish while one public window operation awaits IO.
+#[derive(Debug)]
+struct HistoryGate {
+    entered: Semaphore,
+    release: Semaphore,
+}
+
+impl HistoryGate {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+        }
+    }
+
+    async fn pause(&self) {
+        self.entered.add_permits(1);
+        self.release.acquire().await.unwrap().forget();
+    }
+}
+
+#[derive(Debug)]
+struct GatedHistory {
+    inner: Stored,
+    page: Option<(ChatQuery, Arc<HistoryGate>)>,
+    item: Option<(String, Arc<HistoryGate>)>,
+}
+
+impl ChatHistory for GatedHistory {
+    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
+        self.inner.latest_allocated_order().await
+    }
+
+    async fn page(&self, query: ChatQuery, limit: usize) -> Result<HistoryPage, ChatError> {
+        if let Some((gated_query, gate)) = &self.page
+            && *gated_query == query
+        {
+            gate.pause().await;
+        }
+        self.inner.page(query, limit).await
+    }
+
+    async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
+        if let Some((gated_id, gate)) = &self.item
+            && gated_id == item_id
+        {
+            gate.pause().await;
+        }
+        self.inner.item(item_id).await
+    }
+}
+
 /// A history whose stored items can be mutated between calls, to model storage advancing (or lagging)
-/// behind the live window while a `read_complete` is in flight.
+/// behind the live window while a `expand` is in flight.
 #[derive(Debug, Clone, Default)]
 struct Mutable {
     items: Arc<Mutex<BTreeMap<u64, ChatItem>>>,
@@ -374,7 +428,7 @@ async fn in_flight_body_is_complete_in_the_window_and_streams_along_it() {
     assert_eq!(visible.omitted_bytes, 0);
     assert_eq!(body_text(visible), full);
     assert_eq!(
-        body_text(&view.read_complete("item-1").await.unwrap().unwrap()),
+        body_text(&view.expand("item-1").await.unwrap().item.unwrap()),
         full
     );
     // Later deltas extend that same complete body instead of restarting from a bounded prefix.
@@ -412,10 +466,10 @@ async fn complete_body_is_read_from_durable_history_once() {
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
     // A committed item keeps a bounded preview in the window so its resident bytes stay small.
     assert!(view.snapshot().items[0].omitted_bytes > 0);
-    let first = view.read_complete("item-1").await.unwrap().unwrap();
+    let first = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(body_text(&first), full);
     // The complete body is retained for this window instead of rereading SQLite.
-    let second = view.read_complete("item-1").await.unwrap().unwrap();
+    let second = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(body_text(&second), full);
     assert_eq!(reads.load(Ordering::Relaxed), 1);
     // A later frame carries the complete body already served to this window.
@@ -430,7 +484,7 @@ async fn focusing_a_visible_saved_reply_preserves_its_delivered_body() {
     let reply = item(1, 1, &full, true);
     session.publish(reply.clone()).unwrap();
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
-    // Live delivery already supplied the full body: no read_complete request
+    // Live delivery already supplied the full body: no expand request
     // was needed. Saving must not make the first upward scroll reload a preview.
     history.set(durable(reply));
     session.confirm_saved("item-1", 1);
@@ -515,7 +569,7 @@ async fn a_requested_complete_body_keeps_following_new_revisions_without_store_r
     );
 
     // One request upgrades the visible body and establishes the standing complete-body intent.
-    let complete = view.read_complete("item-1").await.unwrap().unwrap();
+    let complete = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(complete.omitted_bytes, 0);
     assert_eq!(body_text(&complete), full);
     assert_eq!(reads.load(Ordering::Relaxed), 1);
@@ -574,7 +628,7 @@ async fn a_requested_complete_body_keeps_following_new_revisions_without_store_r
             .all(|item| item.item_id != "item-1"),
         "the followed identity left the window"
     );
-    view.read_complete("item-1").await.unwrap().unwrap();
+    view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(reads.load(Ordering::Relaxed), 2);
     assert!(
         view.snapshot()
@@ -595,7 +649,7 @@ async fn complete_body_is_released_once_its_identity_leaves_the_window() {
         item_reads: reads.clone(),
     });
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
-    view.read_complete("item-1").await.unwrap().unwrap();
+    view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(reads.load(Ordering::Relaxed), 1);
     // The identity leaves the window; the retained complete body must be released with it.
     for order in 2..=300 {
@@ -609,7 +663,7 @@ async fn complete_body_is_released_once_its_identity_leaves_the_window() {
         "the identity must have left the window"
     );
     // A new request for the released identity reads storage again instead of serving a released copy.
-    view.read_complete("item-1").await.unwrap().unwrap();
+    view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(reads.load(Ordering::Relaxed), 2);
     // ...and the late body still does not resurrect the identity into the window.
     assert!(
@@ -621,7 +675,7 @@ async fn complete_body_is_released_once_its_identity_leaves_the_window() {
 }
 
 #[tokio::test]
-async fn read_complete_does_not_resurrect_a_cancelled_identity() {
+async fn expand_does_not_resurrect_a_cancelled_identity() {
     let session = Session::new(Stored::default());
     session
         .publish_preview(item(1, 1, "in-flight", false))
@@ -632,12 +686,12 @@ async fn read_complete_does_not_resurrect_a_cancelled_identity() {
     session.drop_preview("item-1");
     assert!(view.snapshot().items.is_empty());
     // A late read for the cancelled identity must not bring it back.
-    assert!(view.read_complete("item-1").await.unwrap().is_none());
+    assert!(view.expand("item-1").await.unwrap().item.is_none());
     assert!(view.snapshot().items.is_empty());
 }
 
 #[tokio::test]
-async fn concurrent_read_complete_calls_do_not_corrupt_the_window() {
+async fn concurrent_expand_calls_do_not_corrupt_the_window() {
     let full = "d".repeat(300 * 1024);
     let reads = Arc::new(AtomicUsize::new(0));
     let session = Session::new(Counting {
@@ -647,10 +701,9 @@ async fn concurrent_read_complete_calls_do_not_corrupt_the_window() {
         item_reads: reads.clone(),
     });
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
-    let (left, right) =
-        futures::future::join(view.read_complete("item-1"), view.read_complete("item-1")).await;
-    assert_eq!(body_text(&left.unwrap().unwrap()), full);
-    assert_eq!(body_text(&right.unwrap().unwrap()), full);
+    let (left, right) = futures::future::join(view.expand("item-1"), view.expand("item-1")).await;
+    assert_eq!(body_text(&left.unwrap().item.unwrap()), full);
+    assert_eq!(body_text(&right.unwrap().item.unwrap()), full);
     // The window still serves the complete body once and only once, without a duplicate identity.
     let snapshot = view.snapshot();
     assert_eq!(snapshot.items.len(), 1);
@@ -660,7 +713,7 @@ async fn concurrent_read_complete_calls_do_not_corrupt_the_window() {
     let after_join = reads.load(Ordering::Relaxed);
     assert!(after_join <= 2);
     assert_eq!(
-        body_text(&view.read_complete("item-1").await.unwrap().unwrap()),
+        body_text(&view.expand("item-1").await.unwrap().item.unwrap()),
         full
     );
     assert_eq!(reads.load(Ordering::Relaxed), after_join);
@@ -668,7 +721,7 @@ async fn concurrent_read_complete_calls_do_not_corrupt_the_window() {
 
 /// A late complete-body read whose revision is older than the window's must not return a mixed item.
 ///
-/// The window advanced to revision 2 (a live update) while a `read_complete` was resolving a body
+/// The window advanced to revision 2 (a live update) while a `expand` was resolving a body
 /// against durable history, which still only had revision 1. Copying the newer slot's `saved` /
 /// `lifecycle` / metadata onto the older body would return a cross-revision item; the read must
 /// instead yield the authoritative newest item and leave the window untouched.
@@ -680,7 +733,7 @@ async fn a_late_read_older_than_the_window_never_mixes_revisions() {
     });
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
     // The host reads the complete revision 1 body; the window upgrades in place at the same revision.
-    let complete = view.read_complete("item-1").await.unwrap().unwrap();
+    let complete = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(complete.revision, 1);
     assert_eq!(body_text(&complete), full_v1);
 
@@ -694,7 +747,7 @@ async fn a_late_read_older_than_the_window_never_mixes_revisions() {
 
     // A fresh read of the identity resolves the stale revision 1 body from storage; the result must be
     // the window's revision 2 item, never a revision 1 body carrying revision 2's facts.
-    let late = view.read_complete("item-1").await.unwrap().unwrap();
+    let late = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(
         late.revision, 2,
         "a stale read must not be returned as current"
@@ -721,14 +774,14 @@ async fn a_stale_read_does_not_overwrite_a_newer_cached_body() {
     // Storage already holds revision 2 while the window slot is still revision 1; the request retains
     // the newer body on its own facts and returns it (cache is empty, so storage is read once).
     history.set(durable(item(1, 2, &full_v2, true)));
-    let newer = view.read_complete("item-1").await.unwrap().unwrap();
+    let newer = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(newer.revision, 2);
     assert_eq!(body_text(&newer), full_v2);
 
     // A late duplicate of the older revision arrives at storage. The cache-hit path serves the
     // retained revision 2 body and does not overwrite it with the stale revision 1 body.
     history.set(durable(item(1, 1, &full_v1, true)));
-    let served = view.read_complete("item-1").await.unwrap().unwrap();
+    let served = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(served.revision, 2);
     assert_eq!(body_text(&served), full_v2);
 }
@@ -1299,6 +1352,8 @@ async fn a_pending_wait_does_not_block_focus_or_load() {
     let loaded = view.load(Direction::Older);
     let (update, loaded) = tokio::join!(waited, loaded);
     let loaded = loaded.expect("load must proceed while a wait is pending");
+    assert_eq!(loaded.disposition, ChatControlDisposition::Applied);
+    let loaded = view.snapshot();
     assert!(
         !loaded.items.is_empty(),
         "the load produced a readable window"
@@ -1385,7 +1440,7 @@ async fn same_revision_preview_to_complete_updates_the_omitted_status() {
     let (initial, mut updates) = view.subscribe();
     let mut client = Client::new(&initial);
     // The host asks for the complete body; the window now holds the whole body at the same revision.
-    let complete = view.read_complete("item-1").await.unwrap().unwrap();
+    let complete = view.expand("item-1").await.unwrap().item.unwrap();
     assert_eq!(complete.omitted_bytes, 0);
     // Re-publishing the same identity at the same revision keeps the item set unchanged, so the frame
     // diffs the complete copy against the bounded baseline and must carry the new (zero) omitted
@@ -1407,7 +1462,7 @@ async fn same_revision_preview_to_complete_updates_the_omitted_status() {
 /// acknowledgement that lands at the same revision after the read must survive the next snapshot
 /// (and the real reducer frame) instead of being restored to the cached `false`.
 #[tokio::test]
-async fn read_complete_then_save_keeps_the_new_save_watermark() {
+async fn expand_then_save_keeps_the_new_save_watermark() {
     let session = Session::new(Stored::default());
     // A reliable, still-streaming item: the window serves its complete in-flight body.
     session.publish(item(1, 1, "hello", false)).unwrap();
@@ -1415,7 +1470,7 @@ async fn read_complete_then_save_keeps_the_new_save_watermark() {
     assert_eq!(view.snapshot().items[0].omitted_bytes, 0);
     // The host asks for the complete body while the item is still unsaved, filling the cache with a
     // snapshot that does not yet carry the save watermark.
-    let cached = view.read_complete("item-1").await.unwrap().unwrap();
+    let cached = view.expand("item-1").await.unwrap().item.unwrap();
     assert!(!cached.is_saved());
 
     let (initial, mut updates) = view.subscribe();
@@ -1446,7 +1501,7 @@ async fn read_complete_then_save_keeps_the_new_save_watermark() {
 /// without a content change). The execution lifecycle is an independent timeline-owned fact, so the
 /// cached streaming body must not restore `Streaming` over the window's `Terminal`.
 #[tokio::test]
-async fn read_complete_then_terminal_keeps_the_terminal_lifecycle() {
+async fn expand_then_terminal_keeps_the_terminal_lifecycle() {
     let session = Session::new(Stored::default());
     session
         .publish_preview(item(1, 1, "reasoning done", false))
@@ -1454,7 +1509,7 @@ async fn read_complete_then_terminal_keeps_the_terminal_lifecycle() {
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
     assert_eq!(view.snapshot().items[0].omitted_bytes, 0);
     // The cached body snapshot still claims `Streaming`.
-    let cached = view.read_complete("item-1").await.unwrap().unwrap();
+    let cached = view.expand("item-1").await.unwrap().item.unwrap();
     assert!(cached.is_streaming());
 
     let (initial, mut updates) = view.subscribe();
@@ -1625,7 +1680,8 @@ async fn paging_merges_uncommitted_rows_without_a_hole_or_a_second_identity() {
     assert!(view.snapshot().has_newer);
     let mut crossed_boundary = false;
     for _ in 0..7 {
-        let snapshot = view.load(Direction::Older).await.unwrap();
+        view.load(Direction::Older).await.unwrap();
+        let snapshot = view.snapshot();
         orders = snapshot.items.iter().map(|item| item.order).collect();
         assert!(orders.len() <= 96);
         assert!(orders.windows(2).all(|pair| pair[0] + 1 == pair[1]));
@@ -1702,9 +1758,11 @@ async fn coalesced_window_versions_arrive_as_one_patch() {
     assert_eq!(snapshot.items.len(), 32);
     assert_eq!(snapshot.items.first().unwrap().order, 269);
     assert_eq!(snapshot.items.last().unwrap().order, 300);
-    let first_page = view.load(Direction::Older).await.unwrap();
+    view.load(Direction::Older).await.unwrap();
+    let first_page = view.snapshot();
     assert_eq!(first_page.items.len(), 64);
-    let second_page = view.load(Direction::Older).await.unwrap();
+    view.load(Direction::Older).await.unwrap();
+    let second_page = view.snapshot();
     assert_eq!(second_page.items.len(), 96);
     assert_eq!(second_page.items.first().unwrap().order, 205);
     assert_eq!(second_page.items.last().unwrap().order, 300);
@@ -1723,7 +1781,8 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
     assert!(initial.can_extend_latest);
 
     for expected in [64, 96] {
-        let snapshot = view.extend_latest().await.unwrap();
+        view.extend_latest().await.unwrap();
+        let snapshot = view.snapshot();
         assert_eq!(snapshot.focus, ChatFocus::Latest);
         assert_eq!(snapshot.items.len(), expected);
         assert_eq!(snapshot.items.last().unwrap().order, 100);
@@ -1736,7 +1795,11 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
     let full = view.snapshot();
     assert!(!full.can_extend_latest);
     assert!(full.has_older);
-    assert_eq!(view.extend_latest().await.unwrap(), full);
+    assert_eq!(
+        view.extend_latest().await.unwrap().disposition,
+        ChatControlDisposition::NoChange,
+    );
+    assert_eq!(view.snapshot(), full);
     assert!(
         updates.take().is_none(),
         "capacity must not create a reload loop"
@@ -1750,10 +1813,16 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
     assert_eq!(live.items.first().unwrap().order, 6);
     assert_eq!(live.items.last().unwrap().order, 101);
 
-    let history = view.load(Direction::Older).await.unwrap();
+    view.load(Direction::Older).await.unwrap();
+
+    let history = view.snapshot();
     assert!(matches!(history.focus, ChatFocus::Around(_)));
     assert!(!history.can_extend_latest);
-    assert_eq!(view.extend_latest().await.unwrap(), history);
+    assert_eq!(
+        view.extend_latest().await.unwrap().disposition,
+        ChatControlDisposition::NoChange,
+    );
+    assert_eq!(view.snapshot(), history);
     session
         .publish(item(102, 1, "outside reading window", false))
         .unwrap();
@@ -1772,12 +1841,17 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
                 .collect(),
         });
         let view = short.open_chat(ChatFocus::Latest).await.unwrap();
-        let filled = view.extend_latest().await.unwrap();
+        view.extend_latest().await.unwrap();
+        let filled = view.snapshot();
         assert_eq!(filled.focus, ChatFocus::Latest);
         assert_eq!(filled.items.len(), count as usize);
         assert!(!filled.can_extend_latest);
         assert!(!filled.has_older);
-        assert_eq!(view.extend_latest().await.unwrap(), filled);
+        assert_eq!(
+            view.extend_latest().await.unwrap().disposition,
+            ChatControlDisposition::NoChange,
+        );
+        assert_eq!(view.snapshot(), filled);
     }
 }
 
@@ -2079,7 +2153,8 @@ async fn paging_keeps_a_record_when_writer_acks_after_a_stale_database_read() {
         .await
         .unwrap();
     assert_eq!(view.snapshot().items.first().unwrap().order, 185);
-    let page = view.load(Direction::Older).await.unwrap();
+    view.load(Direction::Older).await.unwrap();
+    let page = view.snapshot();
     let orders: Vec<_> = page.items.iter().map(|item| item.order).collect();
     assert!(orders.contains(&160), "committed item vanished: {orders:?}");
     assert!(orders.windows(2).all(|pair| pair[0] + 1 == pair[1]));
@@ -2323,7 +2398,7 @@ async fn history_window_skips_unrelated_live_updates_and_keeps_patch_continuity(
 
     // A genuinely visible change inside the window: the host reads the complete body of a history
     // item. The delivered patch must continue from the last received version, not from a skipped one.
-    view.read_complete("item-44").await.unwrap().unwrap();
+    view.expand("item-44").await.unwrap().item.unwrap();
     let update = updates.next().await.expect("the complete-body frame");
     let ChatUpdate::Patch {
         from, to, changes, ..
@@ -2374,7 +2449,8 @@ async fn history_window_skips_unrelated_live_updates_and_keeps_patch_continuity(
 
     // A user paging older must also continue from the last delivered version, as a patch rather than
     // a reset that would hide a broken watermark.
-    let loaded = view.load(Direction::Older).await.unwrap();
+    view.load(Direction::Older).await.unwrap();
+    let loaded = view.snapshot();
     assert!(loaded.items.len() > history_items.len());
     let paged = updates.next().await.expect("the paging frame");
     let ChatUpdate::Patch { from, .. } = &paged else {
@@ -2397,6 +2473,98 @@ async fn history_window_skips_unrelated_live_updates_and_keeps_patch_continuity(
 }
 
 #[tokio::test]
+async fn a_no_change_page_receipt_does_not_claim_a_concurrent_producer_write() {
+    let gate = Arc::new(HistoryGate::new());
+    let session = Session::new(GatedHistory {
+        inner: Stored {
+            items: [(1, durable(item(1, 1, "stored", false)))].into(),
+        },
+        page: Some((ChatQuery::Before(1), gate.clone())),
+        item: None,
+    });
+    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
+    let (initial, mut updates) = view.subscribe();
+    let mut client = Client::new(&initial);
+    let (receipt, published_version) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(view.load(Direction::Older), async {
+                gate.entered.acquire().await.unwrap().forget();
+                session
+                    .publish(item(1, 2, "producer replacement", false))
+                    .unwrap();
+                let version = view.version();
+                gate.release.add_permits(1);
+                version
+            })
+        })
+        .await
+        .expect("a gated history read must not hold the producer's locks");
+    let receipt = receipt.unwrap();
+    assert_eq!(receipt.disposition, ChatControlDisposition::NoChange);
+    assert_eq!(receipt.version, published_version);
+    assert_eq!(
+        view.version(),
+        published_version,
+        "NoChange does not notify"
+    );
+    assert_ne!(initial.items, view.snapshot().items);
+    let frame = updates.next().await.expect("the producer's actual write");
+    client.apply(&frame);
+    client.assert_matches(&view.snapshot());
+    assert_eq!(body_text(&view.snapshot().items[0]), "producer replacement");
+    assert!(updates.take().is_none());
+}
+
+#[tokio::test]
+async fn a_stale_expansion_receipt_does_not_claim_a_concurrent_producer_write() {
+    let gate = Arc::new(HistoryGate::new());
+    let full = "stored".repeat(60 * 1024);
+    let session = Session::new(GatedHistory {
+        inner: Stored {
+            items: [(1, durable(item(1, 1, &full, false)))].into(),
+        },
+        page: None,
+        item: Some(("item-1".into(), gate.clone())),
+    });
+    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
+    let (initial, mut updates) = view.subscribe();
+    let mut client = Client::new(&initial);
+    assert!(initial.items[0].omitted_bytes > 0);
+    let (expanded, published_version) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(view.expand("item-1"), async {
+                gate.entered.acquire().await.unwrap().forget();
+                session
+                    .publish(item(1, 2, "new authoritative body", false))
+                    .unwrap();
+                let version = view.version();
+                gate.release.add_permits(1);
+                version
+            })
+        })
+        .await
+        .expect("a gated body read must not hold the producer's locks");
+    let expanded = expanded.unwrap();
+    assert_eq!(
+        expanded.receipt.disposition,
+        ChatControlDisposition::NoChange
+    );
+    assert_eq!(expanded.receipt.version, published_version);
+    assert_eq!(view.version(), published_version);
+    assert!(expanded.retained);
+    let item = expanded.item.unwrap();
+    assert_eq!(
+        item.revision, 2,
+        "a stale read returns the authoritative slot"
+    );
+    assert_eq!(body_text(&item), "new authoritative body");
+    let frame = updates.next().await.expect("the producer's actual write");
+    client.apply(&frame);
+    client.assert_matches(&view.snapshot());
+    assert!(updates.take().is_none());
+}
+
+#[tokio::test]
 async fn reading_a_complete_body_advances_the_window_version_and_notifies() {
     let full = "z".repeat(300 * 1024);
     let session = Session::new(Stored {
@@ -2410,7 +2578,14 @@ async fn reading_a_complete_body_advances_the_window_version_and_notifies() {
     let observed_before = updates.observed_version();
 
     // Asking for the complete body changes the window's *visible* body at the same item revision.
-    let complete = view.read_complete("item-1").await.unwrap().unwrap();
+    let expanded = view.expand("item-1").await.unwrap();
+    assert_eq!(
+        expanded.receipt.disposition,
+        ChatControlDisposition::Applied
+    );
+    assert!(expanded.retained);
+    assert_eq!(expanded.receipt.version, view.version());
+    let complete = expanded.item.unwrap();
     assert_eq!(complete.omitted_bytes, 0);
     assert!(
         view.version() > observed_before,
@@ -2444,7 +2619,12 @@ async fn reading_a_complete_body_advances_the_window_version_and_notifies() {
     assert_eq!(updates.delivered_version(), delivered_to);
 
     // A second request for the now-retained body changes nothing and must not bump the version again.
-    view.read_complete("item-1").await.unwrap().unwrap();
+    let retained = view.expand("item-1").await.unwrap();
+    assert_eq!(
+        retained.receipt.disposition,
+        ChatControlDisposition::NoChange
+    );
+    assert!(retained.retained);
     assert_eq!(
         view.version(),
         delivered_to,
@@ -2463,7 +2643,9 @@ async fn reading_a_complete_body_advances_the_window_version_and_notifies() {
             .all(|item| item.item_id != "item-1")
     );
     let version_before_late = view.version();
-    view.read_complete("item-1").await.unwrap().unwrap();
+    let late = view.expand("item-1").await.unwrap();
+    assert_eq!(late.receipt.disposition, ChatControlDisposition::NoChange);
+    assert!(!late.retained);
     assert_eq!(
         view.version(),
         version_before_late,

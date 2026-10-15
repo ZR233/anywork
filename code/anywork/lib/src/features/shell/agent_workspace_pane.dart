@@ -34,12 +34,6 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   Widget build(BuildContext context) {
     final selection = ref.watch(shellSelectionProvider);
     final threadId = selection.selectedThreadId;
-    if (threadId != null && !selection.needsOpen) {
-      // 派生投影（shell workspace / timeline window）会在每个内容帧后重算，
-      // 重算期间可能暂时没有下游监听者。由 pane 持有稳定的会话租约，避免这种
-      // 纯投影抖动触发 ThreadSessionStore.onCancel，进而关闭真实 FRB ChatView。
-      ref.watch(threadSessionStoreProvider(threadId));
-    }
     final workspace = ref.watch(shellComposerWorkspaceProvider);
     final timeline = ref.watch(timelineSessionWindowProvider);
     // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
@@ -175,12 +169,8 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                                             ),
                                             hasContent:
                                                 (timeline != null &&
-                                                    timeline.threadId ==
-                                                        threadId &&
-                                                    timeline.rows.isNotEmpty) ||
-                                                workspace
-                                                    .timelineRows
-                                                    .isNotEmpty,
+                                                timeline.threadId == threadId &&
+                                                timeline.rows.isNotEmpty),
                                           ),
                                         ),
                                       if (planOverlaysTimeline &&
@@ -267,9 +257,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   /// 并先标 reconnecting，避免失败条在新帧到达前一直盖住时间线。
   /// `selectThread` 对已选中会话只 `markOpened`，不能重开已关闭的流。
   void _retryThreadLoad(String threadId) {
-    final session = ref.read(threadSessionStoreProvider(threadId).notifier);
-    session.markResync(null);
-    session.retry();
+    ref.read(anyworkClientProvider).retrySession(threadId);
   }
 
   void _togglePlan(String threadId, String interactionId) {
@@ -506,7 +494,8 @@ class _OpenThreadBanner extends ConsumerWidget {
                 key: StudioDriverKeys.openThread(threadId),
                 onPressed: () => unawaited(
                   ref
-                      .read(directoryCommandsProvider.notifier)
+                      .read(anyworkClientProvider)
+                      .directoryCommands
                       .selectThread(threadId),
                 ),
                 child: Text(context.l10n.threadOpenAction),
@@ -598,49 +587,11 @@ class _AgentTimelineHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final window = ref.watch(timelineSessionWindowProvider);
-    final matched = window != null && window.threadId == threadId
-        ? window
-        : null;
-    final fallback = ref.watch(shellComposerWorkspaceProvider);
-    final rows = matched != null
-        ? matched.rows
-        : fallback?.threadId == threadId
-        ? fallback!.timelineRows
-        : const <TimelineRow>[];
-    // 未打开或还没有窗口时，预览仍可用 workspace 行；两者都空则不铺空时间线。
-    if (matched == null && rows.isEmpty) return const SizedBox.shrink();
-    final history = matched?.history ?? const ThreadHistoryWindow();
-    return TimelineView(
+    return TimelineSessionConnector(
       threadId: threadId,
-      rows: rows,
-      turn: matched?.turn ?? fallback?.turn,
       planConfirmation: planConfirmation,
       planExpanded: planExpanded,
       onPlanToggle: onPlanToggle,
-      isLoadingOlder: matched?.isLoadingOlder ?? false,
-      isLoadingNewer: matched?.isLoadingNewer ?? false,
-      olderError: history.errorMessage,
-      newerError: history.newerError,
-      anchor: history.anchor,
-      hasOlder: history.hasOlder,
-      hasNewer: history.hasNewer,
-      canExtendLatest: history.canExtendLatest,
-      olderCursor: history.olderCursor,
-      newerCursor: history.newerCursor,
-      windowEpoch: history.epoch,
-      previewedItemIds: history.previewedItemIds,
-      loadingItemIds: history.loadingItemIds,
-      itemBodyErrors: history.itemBodyErrors,
-      pendingItemBodyIds: history.pendingItemBodyIds,
-      unavailableItemIds: history.unavailableItemIds,
-      onCommand: (command) => unawaited(
-        dispatchTimelineSessionCommand(
-          ref.read(threadCommandsProvider.notifier),
-          threadId,
-          command,
-        ),
-      ),
     );
   }
 }

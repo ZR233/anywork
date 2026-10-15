@@ -4,7 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
-import '../update/studio_update_controller.dart';
+import '../../presentation/providers/studio_update_controller.dart';
+import '../update/studio_update_actions.dart';
 
 class StudioUpdateSettingsRow extends ConsumerWidget {
   const StudioUpdateSettingsRow({super.key, required this.runtimeBusy});
@@ -91,7 +92,7 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
     WidgetRef ref,
     UpdaterStateSnapshot state,
   ) {
-    final controller = ref.read(studioUpdateControllerProvider.notifier);
+    final controller = readStudioUpdateActions(ref);
     if (state is CheckingUpdaterStateSnapshot) {
       return const SizedBox.square(
         dimension: 22,

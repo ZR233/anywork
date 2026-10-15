@@ -1,15 +1,7 @@
+import 'package:anywork_client/models.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
-import 'agent_models.dart';
 import 'agent_workspace_view.dart';
-import 'interaction_models.dart';
-import 'persistence_models.dart';
-import 'provider_models.dart';
-import 'recovery_models.dart';
-import 'runtime_models.dart';
-import 'thread_directory_models.dart';
-import 'settings_models.dart';
-import 'studio_enums.dart';
 import 'studio_state.dart';
 
 part 'studio_projection_models.freezed.dart';

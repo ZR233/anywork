@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'pointer_scroll.dart';
+import 'pointer_drag.dart';
 import 'raw_tap.dart';
 import 'scrollbar_drag.dart';
 
@@ -24,19 +25,6 @@ Future<void> main(List<String> args) async {
       (jsonDecode(await driver.requestData('snapshot')) as Map)
           .cast<String, dynamic>();
 
-  Future<Map<String, dynamic>> waitFor(
-    String label,
-    bool Function(Map<String, dynamic>) condition,
-  ) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 60));
-    while (DateTime.now().isBefore(deadline)) {
-      final state = await snapshot();
-      if (condition(state)) return state;
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-    }
-    throw StateError('timed out: $label');
-  }
-
   void record(String phase, Map<String, dynamic> state) {
     observations[phase] = {
       'bodyLength': _bodyLength(state),
@@ -45,16 +33,52 @@ Future<void> main(List<String> args) async {
     };
   }
 
-  Future<void> drag(double dy) =>
-      driver.scroll(timeline, 0, dy, const Duration(milliseconds: 150));
+  Future<Map<String, dynamic>> waitFor(
+    String label,
+    bool Function(Map<String, dynamic>) condition,
+  ) async {
+    await File('${output.path}/stage.txt').writeAsString('$label\n');
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    Map<String, dynamic>? last;
+    while (DateTime.now().isBefore(deadline)) {
+      final state = await snapshot();
+      last = state;
+      if (condition(state)) return state;
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    if (last != null) record('timeoutState', last);
+    throw StateError('timed out: $label');
+  }
+
+  bool idleGeometry(Map<String, dynamic> state) {
+    final scroll = _scroll(state);
+    return scroll['isScrolling'] == false &&
+        scroll['restorePending'] != true &&
+        (scroll['mountedRowCount'] as num? ?? 0) > 0 &&
+        scroll['anchor'] != null;
+  }
+
+  Future<void> drag(double dy) async {
+    final ready = await waitFor('drag start geometry', idleGeometry);
+    final before = _scroll(ready)['userDragUpdates'] as int;
+    final drags = observations.putIfAbsent('drags', () => <Object?>[]) as List;
+    drags.add(await driver.sendCommand(PointerDrag(timeline, dy)));
+    // Driver has sent pointer-up, but the last published geometry can still be
+    // from the middle of that drag. Compare anchors only after its idle frame.
+    await waitFor(
+      'drag idle geometry',
+      (state) =>
+          (_scroll(state)['userDragUpdates'] as int) > before &&
+          idleGeometry(state),
+    );
+  }
 
   Future<void> checkGrowth(Map<String, dynamic> before, String phase) async {
     final state = await waitFor(
       phase,
       (state) =>
-          ((!_busy(state) && (_scroll(state)['restorePending'] != true)) ||
-          (_bodyLength(state) > _bodyLength(before) + 16000 &&
-              _scroll(state)['restorePending'] != true)),
+          (!_busy(state) || _bodyLength(state) > _bodyLength(before) + 16000) &&
+          idleGeometry(state),
     );
     record(phase, state);
     final grew = _bodyLength(state) > _bodyLength(before) + 16000;
@@ -86,29 +110,13 @@ Future<void> main(List<String> args) async {
       (state) =>
           _busy(state) &&
           _bodyLength(state) > 12000 &&
-          _scroll(state)['followingBottom'] == true,
+          _scroll(state)['followingBottom'] == true &&
+          idleGeometry(state),
     );
     record('autoFollow', state);
     // Less than the near-bottom threshold: new layout must not resume following.
     await drag(40);
     state = await snapshot();
-    // Some desktop hosts deliver a very short Driver touch sequence without
-    // crossing the platform gesture slop.  Keep the intended small-step
-    // probe, then add one identical step only when the first was not observed.
-    for (
-      var attempt = 0;
-      attempt < 4 && _scroll(state)['followingBottom'] != false;
-      attempt += 1
-    ) {
-      await drag(40);
-      state = await snapshot();
-    }
-    if (_scroll(state)['followingBottom'] != false) {
-      state = await waitFor(
-        'small upward detach',
-        (state) => _scroll(state)['followingBottom'] == false,
-      );
-    }
     record('smallUpwardDrag', state);
     _require(_scroll(state)['followingBottom'] == false, 'drag did not detach');
     await checkGrowth(state, 'outputWhileReading');
@@ -123,7 +131,8 @@ Future<void> main(List<String> args) async {
     }
     state = await waitFor(
       'wheel back to latest',
-      (state) => _scroll(state)['followingBottom'] == true,
+      (state) =>
+          _scroll(state)['followingBottom'] == true && idleGeometry(state),
     );
     record('wheelToLatest', state);
     await checkGrowth(state, 'outputAfterReturning');
@@ -136,10 +145,16 @@ Future<void> main(List<String> args) async {
       'output prevented the second drag',
     );
     await checkGrowth(state, 'outputAfterSecondDrag');
+    final beforeThumb = _scroll(state)['userDragUpdates'] as int;
     observations['streamingThumbDrag'] = await driver.sendCommand(
       ScrollbarDrag(timeline, -60),
     );
-    state = await snapshot();
+    state = await waitFor(
+      'thumb idle geometry',
+      (state) =>
+          (_scroll(state)['userDragUpdates'] as int) > beforeThumb &&
+          idleGeometry(state),
+    );
     record('thumbWhileStreaming', state);
     _require(
       _scroll(state)['followingBottom'] == false,
@@ -149,7 +164,8 @@ Future<void> main(List<String> args) async {
     await driver.sendCommand(RawTap(find.byValueKey('timeline-jump-latest')));
     state = await waitFor(
       'explicit jump to latest',
-      (state) => _scroll(state)['followingBottom'] == true,
+      (state) =>
+          _scroll(state)['followingBottom'] == true && idleGeometry(state),
     );
     record('jumpToLatest', state);
     observations['checksPassed'] = true;

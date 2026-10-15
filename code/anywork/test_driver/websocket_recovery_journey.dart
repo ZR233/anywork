@@ -5,6 +5,7 @@ import 'dart:io';
 import 'context_replay_recovery_journey.dart' show ReplayRecoveryJourney;
 import 'flutter_driver_session.dart';
 import 'realtime_journey.dart';
+import 'sidebar_navigation.dart';
 
 Future<void> main(List<String> args) async {
   await runRecoveryJourney(args, WebSocketRecoveryJourney.new);
@@ -133,12 +134,14 @@ class WebSocketRecoveryJourney extends ReplayRecoveryJourney {
     if (phase == 'restart') {
       final prior = jsonDecode(await observed.readAsString()) as Map;
       final id = prior['threadId'] as String;
+      await revealSidebarThread(driver, id);
       await tap('thread-row-$id');
       final restored = await waitFor(
         (snapshot) =>
             workspaceOf(snapshot)?['threadId'] == id && settled(snapshot),
         'reopened',
       );
+      await clearSidebarSearch(driver);
       if (jsonEncode(frozenRows(restored)) != jsonEncode(prior['rows'])) {
         throw StateError('reopened history changed identity, order or text');
       }

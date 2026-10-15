@@ -1,12 +1,13 @@
 use crate::api::studio::bridge_runtime::{active_bridge, installed_bridge};
+use crate::api::studio::convert::commands::settings_command_reply;
 use crate::api::studio::convert::settings::{
     bridge_deepseek_web_search_settings, bridge_model_catalog_snapshot, bridge_settings_snapshot,
     bridge_web_search_settings, provider_settings_request,
 };
 use crate::api::studio::types::{
     BridgeDeepSeekWebSearchSettingsDto, BridgeError, BridgeModelCatalogSnapshotDto,
-    BridgeProviderCatalogSnapshot, BridgeSettingsStateResponse, BridgeWebSearchSettingsDto,
-    ProviderSettingsInput, RemoveProviderInput, SettingsFieldInput,
+    BridgeProviderCatalogSnapshot, BridgeSettingsCommandReply, BridgeSettingsStateResponse,
+    BridgeWebSearchSettingsDto, ProviderSettingsInput, RemoveProviderInput, SettingsFieldInput,
 };
 // ── Settings ──
 
@@ -37,14 +38,16 @@ pub async fn read_deepseek_web_search_settings()
 /// Applies one typed settings field/resource mutation. Sibling values are
 /// resolved by the runtime from its canonical desired configuration.
 pub async fn apply_settings_field(
+    operation_id: String,
     expected_settings_revision: u64,
     input: SettingsFieldInput,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
+    Ok(settings_command_reply(
         bridge
             .studio
             .apply_settings_field(pl_protocol::studio::UpdateSettingsFieldRequest {
+                operation_id,
                 expected_revision: expected_settings_revision,
                 update: input.into(),
             })
@@ -82,13 +85,15 @@ pub async fn reload_settings_from_disk(
 }
 
 pub async fn save_runtime_permission_mode(
+    operation_id: String,
     expected_settings_revision: u64,
     mode: String,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
+    Ok(settings_command_reply(
         bridge.studio.save_permission_settings(
             pl_protocol::studio::UpdatePermissionSettingsRequest {
+                operation_id,
                 expected_revision: expected_settings_revision,
                 mode,
             },
@@ -97,41 +102,48 @@ pub async fn save_runtime_permission_mode(
 }
 
 pub async fn save_provider(
+    operation_id: String,
     expected_settings_revision: u64,
     input: ProviderSettingsInput,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
+    Ok(settings_command_reply(
         bridge
             .studio
-            .save_provider(provider_settings_request(expected_settings_revision, input))
+            .save_provider(provider_settings_request(
+                operation_id,
+                expected_settings_revision,
+                input,
+            ))
             .await?,
     ))
 }
 
 pub async fn set_default_provider(
+    operation_id: String,
     expected_settings_revision: u64,
     provider_id: String,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
-        bridge
-            .studio
-            .set_default_provider(pl_protocol::studio::SetDefaultProviderRequest {
-                expected_revision: expected_settings_revision,
-                provider_id,
-            })?,
-    ))
+    Ok(settings_command_reply(bridge.studio.set_default_provider(
+        pl_protocol::studio::SetDefaultProviderRequest {
+            operation_id,
+            expected_revision: expected_settings_revision,
+            provider_id,
+        },
+    )?))
 }
 
 pub async fn remove_provider(
+    operation_id: String,
     expected_settings_revision: u64,
     provider_id: String,
     input: RemoveProviderInput,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(bridge.studio.remove_provider(
+    Ok(settings_command_reply(bridge.studio.remove_provider(
         pl_protocol::studio::RemoveProviderRequest {
+            operation_id,
             expected_revision: expected_settings_revision,
             provider_id,
             replacement_provider_id: input.replacement_provider_id,

@@ -1,14 +1,14 @@
 part of 'timeline_view.dart';
 
 extension on _TimelineViewState {
-  Widget _buildRow(TimelineRow row) {
+  Widget _buildRow(TimelineRow row, {required ThreadHistoryWindow body}) {
     _builtRowIds.add(row.id);
     final reasoningExpanded = _expandedReasoningGroups.contains(
       row.reasoningGroup?.id,
     );
     final toolExpanded = _expandedToolGroups.contains(row.toolGroup?.id);
     final version = row.renderVersion;
-    final bodyStates = _itemBodyStates(row);
+    final bodyStates = _itemBodyStates(row, body);
     final bodyState = _itemBodyCacheKey(bodyStates);
     final cached = _rowWidgets[row.id];
     final needsUpdate =
@@ -127,12 +127,16 @@ extension on _TimelineViewState {
   /// 单条行、raw 行与分组行都按 canonical item id 解析：分组行的 `row.id` 是合成身份
   /// （`tool-group:`/`reasoning-group:`），不能直接拿去查预览/回源状态，否则超大工具输出、
   /// 推理正文或 raw 载荷永远拿不到回源入口。
-  List<_ItemBodyState> _itemBodyStates(TimelineRow row) {
+  List<_ItemBodyState> _itemBodyStates(
+    TimelineRow row,
+    ThreadHistoryWindow body,
+  ) {
     final states = <_ItemBodyState>[];
     for (final candidate in _rowBodyCandidates(row)) {
       final state = _itemBodyState(
         candidate.id,
         candidate.label,
+        body: body,
         autoComplete: candidate.isText,
       );
       if (state != null) states.add(state);
@@ -180,13 +184,14 @@ extension on _TimelineViewState {
   _ItemBodyState? _itemBodyState(
     String itemId,
     String? label, {
+    required ThreadHistoryWindow body,
     bool autoComplete = false,
   }) {
-    final previewed = widget.previewedItemIds.contains(itemId);
-    final loading = widget.loadingItemIds.contains(itemId);
-    final error = widget.itemBodyErrors[itemId];
-    final pending = widget.pendingItemBodyIds.contains(itemId);
-    final unavailable = widget.unavailableItemIds.contains(itemId);
+    final previewed = body.previewedItemIds.contains(itemId);
+    final loading = body.loadingItemIds.contains(itemId);
+    final error = body.itemBodyErrors[itemId];
+    final pending = body.pendingItemBodyIds.contains(itemId);
+    final unavailable = body.unavailableItemIds.contains(itemId);
     if (autoComplete && !pending && !unavailable && error == null) {
       return null;
     }
@@ -263,11 +268,16 @@ extension on _TimelineViewState {
   }
 
   void _schedulePrefetch() {
-    if (_prefetchScheduled) return;
-    _prefetchScheduled = true;
+    final token = _correctionToken;
+    if (_prefetchScheduled == token) return;
+    _prefetchScheduled = token;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _prefetchScheduled = false;
-      if (!mounted || widget.isLoadingOlder || widget.isLoadingNewer) {
+      if (_prefetchScheduled != token) return;
+      _prefetchScheduled = null;
+      if (!mounted ||
+          token != _correctionToken ||
+          widget.isLoadingOlder ||
+          widget.isLoadingNewer) {
         return;
       }
       final position = _controller.hasClients ? _controller.position : null;

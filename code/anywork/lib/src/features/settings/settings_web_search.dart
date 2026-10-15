@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
-import 'settings_views.dart';
 
 /// Canonical web-search modes the settings card can edit. Any other runtime
 /// value is shown raw and never silently coerced into a known mode.
@@ -15,17 +13,22 @@ const _knownWebSearchModes = ['disabled', 'cached', 'indexed', 'live'];
 /// default. Any other runtime value is shown raw.
 const _knownWebSearchContextSizes = ['low', 'medium', 'high'];
 
-class WebSearchSettingsCard extends ConsumerStatefulWidget {
-  const WebSearchSettingsCard({super.key, required this.settings});
+class WebSearchSettingsCard extends StatefulWidget {
+  const WebSearchSettingsCard({
+    super.key,
+    required this.settings,
+    required this.onSave,
+  });
 
   final WebSearchSettingsView settings;
+  final Future<WebSearchSettingsView> Function(List<SettingsFieldCommand>)
+  onSave;
 
   @override
-  ConsumerState<WebSearchSettingsCard> createState() =>
-      WebSearchSettingsCardState();
+  State<WebSearchSettingsCard> createState() => WebSearchSettingsCardState();
 }
 
-class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
+class WebSearchSettingsCardState extends State<WebSearchSettingsCard> {
   late String _mode;
   String? _contextSize;
   late final TextEditingController _domainsController;
@@ -380,11 +383,9 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
       _error = null;
     });
     try {
-      final commands = readSettingsCommands(ref);
-      if (!ref.read(settingsPageReadinessProvider).ready) {
-        throw StateError('Settings are not loaded.');
-      }
-      WebSearchSettingsView? published;
+      // Freeze all intended field changes before the first await. The parent
+      // Connector dispatches them and returns an owner-confirmed snapshot.
+      final changes = <SettingsFieldCommand>[];
       final domains = _domainsController.text
           .split(RegExp(r'[,\n]'))
           .map((value) => value.trim())
@@ -392,48 +393,33 @@ class WebSearchSettingsCardState extends ConsumerState<WebSearchSettingsCard> {
           .toSet()
           .toList();
       if (_mode != widget.settings.configuredMode) {
-        published = (await commands.applySettingsField(
-          WebSearchModeCommand(_mode),
-        )).webSearch;
+        changes.add(WebSearchModeCommand(_mode));
       }
       if (_contextSize != widget.settings.contextSize) {
-        published = (await commands.applySettingsField(
-          WebSearchContextSizeCommand(_contextSize),
-        )).webSearch;
+        changes.add(WebSearchContextSizeCommand(_contextSize));
       }
       if (!_sameStrings(domains, widget.settings.allowedDomains)) {
-        published = (await commands.applySettingsField(
-          WebSearchAllowedDomainsCommand(domains),
-        )).webSearch;
+        changes.add(WebSearchAllowedDomainsCommand(domains));
       }
       final country = _nullableText(_countryController);
       final region = _nullableText(_regionController);
       final city = _nullableText(_cityController);
       final timezone = _nullableText(_timezoneController);
       if (country != widget.settings.country) {
-        published = (await commands.applySettingsField(
-          WebSearchCountryCommand(country),
-        )).webSearch;
+        changes.add(WebSearchCountryCommand(country));
       }
       if (region != widget.settings.region) {
-        published = (await commands.applySettingsField(
-          WebSearchRegionCommand(region),
-        )).webSearch;
+        changes.add(WebSearchRegionCommand(region));
       }
       if (city != widget.settings.city) {
-        published = (await commands.applySettingsField(
-          WebSearchCityCommand(city),
-        )).webSearch;
+        changes.add(WebSearchCityCommand(city));
       }
       if (timezone != widget.settings.timezone) {
-        published = (await commands.applySettingsField(
-          WebSearchTimezoneCommand(timezone),
-        )).webSearch;
+        changes.add(WebSearchTimezoneCommand(timezone));
       }
+      final publishedSettings = await widget.onSave(List.unmodifiable(changes));
       if (!mounted) return;
-      // 成功后显式采用已发布的 canonical 快照，清除 dirty，草稿与已保存值回到同一事实源。
-      final publishedSettings =
-          published ?? ref.read(settingsGeneralViewProvider).webSearch;
+      // Only the Connector's confirmed response can settle this form draft.
       setState(() {
         _syncFrom(publishedSettings);
         _dirty = false;
@@ -504,18 +490,23 @@ class _WebSearchStatusValue extends StatelessWidget {
   }
 }
 
-class DeepSeekWebSearchSettingsCard extends ConsumerStatefulWidget {
-  const DeepSeekWebSearchSettingsCard({super.key, required this.settings});
+class DeepSeekWebSearchSettingsCard extends StatefulWidget {
+  const DeepSeekWebSearchSettingsCard({
+    super.key,
+    required this.settings,
+    required this.onChanged,
+  });
 
   final DeepSeekWebSearchSettingsView settings;
+  final Future<void> Function(bool) onChanged;
 
   @override
-  ConsumerState<DeepSeekWebSearchSettingsCard> createState() =>
+  State<DeepSeekWebSearchSettingsCard> createState() =>
       _DeepSeekWebSearchSettingsCardState();
 }
 
 class _DeepSeekWebSearchSettingsCardState
-    extends ConsumerState<DeepSeekWebSearchSettingsCard> {
+    extends State<DeepSeekWebSearchSettingsCard> {
   bool _saving = false;
   String? _error;
 
@@ -616,8 +607,7 @@ class _DeepSeekWebSearchSettingsCardState
       _error = null;
     });
     try {
-      await readSettingsCommands(ref)
-          .applySettingsField(DeepSeekWebSearchEnabledCommand(enabled));
+      await widget.onChanged(enabled);
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {

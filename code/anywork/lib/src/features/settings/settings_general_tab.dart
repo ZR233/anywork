@@ -1,34 +1,39 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
 import 'settings_update_row.dart';
 import 'settings_web_search.dart';
-import 'settings_views.dart';
 
-class GeneralTab extends ConsumerStatefulWidget {
+class GeneralTab extends StatefulWidget {
   const GeneralTab({
     super.key,
     required this.settings,
     required this.webSearch,
     required this.deepSeekWebSearch,
     required this.runtimeBusy,
+    required this.onCommand,
+    required this.onSaveWebSearch,
+    required this.onDeepSeekChanged,
   });
 
   final GeneralSettingsView settings;
   final WebSearchSettingsView webSearch;
   final DeepSeekWebSearchSettingsView deepSeekWebSearch;
   final bool runtimeBusy;
+  final Future<void> Function(SettingsFieldCommand) onCommand;
+  final Future<WebSearchSettingsView> Function(List<SettingsFieldCommand>)
+  onSaveWebSearch;
+  final Future<void> Function(bool) onDeepSeekChanged;
 
   @override
-  ConsumerState<GeneralTab> createState() => _GeneralTabState();
+  State<GeneralTab> createState() => _GeneralTabState();
 }
 
-class _GeneralTabState extends ConsumerState<GeneralTab> {
+class _GeneralTabState extends State<GeneralTab> {
   String? _error;
 
   @override
@@ -67,11 +72,13 @@ class _GeneralTabState extends ConsumerState<GeneralTab> {
             WebSearchSettingsCard(
               key: const ValueKey('web_search_settings'),
               settings: widget.webSearch,
+              onSave: widget.onSaveWebSearch,
             ),
             const Divider(height: 32),
             DeepSeekWebSearchSettingsCard(
               key: const ValueKey('deepseek_web_search_settings'),
               settings: widget.deepSeekWebSearch,
+              onChanged: widget.onDeepSeekChanged,
             ),
           ],
         ),
@@ -87,14 +94,13 @@ class _GeneralTabState extends ConsumerState<GeneralTab> {
   Future<void> _save(GeneralSettingsView settings) async {
     try {
       setState(() => _error = null);
-      final commands = readSettingsCommands(ref);
       if (settings.followActiveTurn != widget.settings.followActiveTurn) {
-        await commands.applySettingsField(
+        await widget.onCommand(
           GeneralFollowActiveTurnCommand(settings.followActiveTurn),
         );
       }
       if (settings.compactTimeline != widget.settings.compactTimeline) {
-        await commands.applySettingsField(
+        await widget.onCommand(
           GeneralCompactTimelineCommand(settings.compactTimeline),
         );
       }

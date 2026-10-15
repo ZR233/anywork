@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../presentation/providers/client_provider.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
@@ -99,8 +100,10 @@ class _McpTabState extends ConsumerState<McpTab> {
                   enabled: _enabledByServer[server.id] ?? server.enabled,
                   onReconnect: () => unawaited(
                     _run(
-                      () =>
-                          readDirectoryCommands(ref).resetMcpServer(server.id),
+                      () => ref
+                          .read(anyworkClientProvider)
+                          .directoryCommands
+                          .resetMcpServer(server.id),
                     ),
                   ),
                   onEnabledChanged: (value) {
@@ -128,7 +131,7 @@ class _McpTabState extends ConsumerState<McpTab> {
   }
 
   Future<void> _refresh() {
-    return readDirectoryCommands(ref).refreshMcpState();
+    return ref.read(anyworkClientProvider).directoryCommands.refreshMcpState();
   }
 
   Future<void> _run(Future<void> Function() operation) async {
@@ -160,7 +163,9 @@ class _McpTabState extends ConsumerState<McpTab> {
       ),
     );
     if (confirmed == true && mounted) {
-      await _run(() => readDirectoryCommands(ref).resetAllMcp());
+      await _run(
+        () => ref.read(anyworkClientProvider).directoryCommands.resetAllMcp(),
+      );
     }
   }
 
@@ -175,7 +180,7 @@ class _McpTabState extends ConsumerState<McpTab> {
     try {
       setState(() => _error = null);
       final configServers = _configServers();
-      final commands = readSettingsCommands(ref);
+      final commands = ref.read(anyworkClientProvider).settingsCommands;
       for (final server in configServers) {
         final enabled = _enabledByServer[server.id] ?? server.enabled;
         final endpoint = server.hasLockedIdentity

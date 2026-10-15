@@ -48,7 +48,10 @@ impl StudioThreadFactory {
         let saved_route = crate::studio::model_route::saved(&saved)
             .map_err(|error| resource_error("decode saved model route", error))?;
         let has_saved_route = saved_route.is_some();
-        let default_route = config.mode_model_route(&selected_mode)?.clone();
+        let default_route = match self.initial_route(id).filter(|_| is_new) {
+            Some(frozen) => frozen,
+            None => config.mode_model_route(&selected_mode)?.clone(),
+        };
         let route_selector = saved_route
             .map(|saved| saved.route)
             .unwrap_or_else(|| default_route.clone());

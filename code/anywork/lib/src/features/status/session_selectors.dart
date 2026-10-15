@@ -78,13 +78,25 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
 
 class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
   final MenuController _controller = MenuController();
+  final FocusNode _triggerFocus = FocusNode(
+    debugLabel: 'session-selector-trigger',
+  );
 
   bool get _canOpen => widget.enabled && widget.items.isNotEmpty;
+
+  @override
+  void dispose() {
+    _triggerFocus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MenuAnchor(
       controller: _controller,
+      // RawMenuAnchor transfers focus here on pointer-open. Without the same
+      // node on the trigger, Escape still reaches the previously focused input.
+      childFocusNode: _triggerFocus,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [for (final item in widget.items) _buildRow(context, item)],
       child: _buildTrigger(),
@@ -99,6 +111,7 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
         enabled: widget.enabled || widget.onBlockedTap != null,
         label: widget.tooltip,
         child: TextButton(
+          focusNode: _triggerFocus,
           onPressed: _canOpen
               ? () {
                   if (_controller.isOpen) {
@@ -297,12 +310,6 @@ class _WorkspaceModeItem extends StatelessWidget {
   }
 }
 
-typedef ModelRouteChanged = FutureOr<void> Function(
-  String providerId,
-  String model,
-  String? effort,
-);
-
 typedef ModelSelectionChanged = FutureOr<void> Function(
   String providerId,
   String model,
@@ -317,7 +324,6 @@ class ModelRoleSelector extends StatelessWidget {
     required this.providerId,
     required this.model,
     required this.effort,
-    this.onSelected,
     this.onModelSelected,
     this.enabled = true,
     this.pending = false,
@@ -334,10 +340,6 @@ class ModelRoleSelector extends StatelessWidget {
   final String model;
   final String? effort;
 
-  /// Legacy combined callback for live Thread routes, whose model route is a
-  /// single runtime resource. New-session/settings callers use the two field
-  /// callbacks below so model and reasoning effort cannot overwrite siblings.
-  final ModelRouteChanged? onSelected;
   final ModelSelectionChanged? onModelSelected;
   final bool enabled;
 
@@ -404,6 +406,14 @@ class ModelRoleSelector extends StatelessWidget {
               ),
             ),
           ),
+        if (pending)
+          const Padding(
+            padding: EdgeInsets.only(right: 6),
+            child: SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5),
+            ),
+          ),
         ModelRouteSelector(
           selectorKey: StudioDriverKeys.model,
           options: options,
@@ -420,20 +430,7 @@ class ModelRoleSelector extends StatelessWidget {
               ? null
               : () => explain(selectionBlockedReason),
           onSelected: (option) async {
-            final nextEffort = option.reasoningEfforts.contains(effort)
-                ? effort
-                : option.defaultReasoningEffort.isNotEmpty
-                ? option.defaultReasoningEffort
-                : option.reasoningEfforts.firstOrNull;
-            if (onModelSelected case final callback?) {
-              await callback(option.providerId, option.model);
-            } else {
-              await onSelected?.call(
-                option.providerId,
-                option.model,
-                nextEffort,
-              );
-            }
+            await onModelSelected?.call(option.providerId, option.model);
           },
           optionKeyBuilder: (option) =>
               StudioDriverKeys.modelOption(option.providerId, option.model),
@@ -450,7 +447,6 @@ class ReasoningEffortSelector extends StatelessWidget {
     required this.providerId,
     required this.model,
     required this.effort,
-    this.onSelected,
     this.onEffortSelected,
     this.enabled = true,
     this.pending = false,
@@ -463,7 +459,6 @@ class ReasoningEffortSelector extends StatelessWidget {
   final String providerId;
   final String model;
   final String? effort;
-  final ModelRouteChanged? onSelected;
   final EffortSelectionChanged? onEffortSelected;
   final bool enabled;
   final bool pending;
@@ -498,12 +493,7 @@ class ReasoningEffortSelector extends StatelessWidget {
           ? null
           : () => onExplain?.call(blockedReason!),
       onSelected: (nextEffort) {
-        FutureOr<void>? result;
-        if (onEffortSelected case final callback?) {
-          result = callback(nextEffort);
-        } else if (onSelected case final callback?) {
-          result = callback(providerId, model, nextEffort);
-        }
+        final result = onEffortSelected?.call(nextEffort);
         if (result is Future<void>) unawaited(result);
       },
       items: [
@@ -557,14 +547,6 @@ ModelSelectionOption? modelForRoute(
         (option) => option.providerId == providerId && option.model == model,
       )
       .firstOrNull;
-}
-
-ModeModelRouteView? modeRouteFor(
-  List<ModeModelRouteView> routes,
-  ThreadModeId mode,
-) {
-  return routes.where((route) => route.modeId == mode).firstOrNull ??
-      routes.where((route) => route.modeId == ThreadModeId.simple).firstOrNull;
 }
 
 List<ModelSelectionOption> modelOptions(

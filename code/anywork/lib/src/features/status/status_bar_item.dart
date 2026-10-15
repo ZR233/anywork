@@ -99,18 +99,15 @@ class _StatusBarItemState extends State<StatusBarItem> {
     final detailBuilder = widget.detailBuilder;
     final Widget interactive;
     if (detailBuilder != null) {
-      // 详情弹层的锚定、悬停显隐和点击钉住由共享面板承担；
-      // 本组件只跟踪悬停状态用于高亮。
+      // 详情使用官方 Tooltip/MenuAnchor；本组件只跟踪悬停高亮。
       interactive = StudioAnchoredPanel(
         width: widget.detailWidth,
         enabled: widget.enabled,
-        pinOpenOnTap: widget.interactive,
         panelIgnoresPointer: !widget.interactive,
         semanticsLabel: widget.interactive
             ? (widget.semanticsLabel ?? widget.label)
             : null,
         semanticsValue: widget.label,
-        onHoverChange: (hovering) => setState(() => _hovering = hovering),
         panelBuilder: detailBuilder,
         child: hoverable,
       );

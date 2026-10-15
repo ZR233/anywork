@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../domain/models/studio_models.dart';
+import 'package:anywork_client/studio_client.dart';
+
 import '../../l10n/studio_l10n.dart';
 
 enum ProviderDraftMode { create, edit }
@@ -97,7 +98,7 @@ abstract final class ProviderDraftFactory {
       catalogId: '',
       defaultModels: const [],
       models: current.customModels,
-      defaultModel: current.customModels.firstOrNull?.slug ?? '',
+      defaultModel: ModelRouteQueries.defaultModelForCustomProvider(current),
       credentialLabel: 'API Key',
       credentialRequired: true,
       credentialEnv: '',

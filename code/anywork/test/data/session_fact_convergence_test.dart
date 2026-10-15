@@ -1,56 +1,42 @@
+import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/data/bridge/studio_bridge.dart';
-import 'package:anywork/src/data/bridge/thread_stream_gate.dart';
-import 'package:anywork/src/data/commands/thread_commands.dart';
-import 'package:anywork/src/data/frb/studio_api.dart';
-import 'package:anywork/src/data/repositories/studio_api_provider.dart';
-import 'package:anywork/src/data/stores/selection_store.dart';
-import 'package:anywork/src/data/stores/settings_store.dart';
-import 'package:anywork/src/data/stores/thread_directory_store.dart';
-import 'package:anywork/src/data/stores/thread_session_store.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
+import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork_client/studio_client.dart';
+
+import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/presentation/providers/settings_store.dart';
+import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
+import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 
 /// 用户可见症状的收敛证据：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
 /// canonical 事实流收敛**——mode 走目录增量，运行时 route 走 Thread 有序流。
 ///
-/// 这里用生产装配（真实 `StudioBridge` 租约 + 真实 store 族 + 真实命令 lane），只把
-/// FRB 数据源换成 demo 实现；因此它同时是 demo 与真实 bridge 的语义一致性检查：demo
+/// 这里用 AppGraph/Client owner 与只读 Riverpod adapter，只把
+/// transport 换成 Demo；它不证明 native FRB，但 Demo
 /// 少发任何一条真实侧会发的帧，本文件就会失败，而不会被“命令后重新读取”这类补偿
 /// 路径掩盖（design/25 §25.5：命令成功以响应 canonical 应用回 store，不额外触发
 /// 显式刷新）。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const projectId = 'project-local';
   const threadId = 'thread-main';
 
+  late AppGraph graph;
   late ProviderContainer container;
-  late BridgeTopicLeaseBundle shell;
   late ProviderSubscription<Object?> sessionHold;
   late ProviderSubscription<Object?> composerHold;
 
   setUp(() async {
-    final api = DemoStudioBridgeDataSource(lspActivityLoop: false);
+    final api = DemoStudioTransport(lspActivityLoop: false);
+    graph = AppGraph(transport: api, clientId: 'canonical-convergence');
     container = ProviderContainer(
-      overrides: [studioBridgeDataSourceProvider.overrideWithValue(api)],
+      overrides: [appGraphProvider.overrideWithValue(graph)],
     );
-    // Shell 常驻租约：目录增量的观察者在生产里就是它（design/25 §25.3）。
-    shell = container.read(studioBridgeProvider).acquireShellBundle();
-    await _until(
-      () => container.read(threadDirectoryStoreProvider).loaded,
-      '目录基线',
-    );
-    container
-        .read(selectionStoreProvider.notifier)
-        .restoreStartup(
-          projectId: projectId,
-          threadId: threadId,
-          needsOpen: true,
-        );
-    // 会话族的订阅寿命由 watcher 承担，不引入可见性 generation（§25.8）。
+    await graph.client.bootstrap();
+    await graph.client.directoryCommands.selectThread(threadId);
     sessionHold = container.listen(
       threadSessionStoreProvider(threadId),
       (_, _) {},
@@ -59,17 +45,14 @@ void main() {
       composerDockViewProvider(threadId),
       (_, _) {},
     );
-    await _until(
-      () => container.read(threadSessionStoreProvider(threadId)).hasSnapshot,
-      'Thread 快照',
-    );
+    await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
   });
 
   tearDown(() async {
     sessionHold.close();
     composerHold.close();
-    await shell.release();
     container.dispose();
+    await graph.close(deadline: DateTime.now().add(const Duration(seconds: 5)));
   });
 
   int routeRevision() => _routeRevision(container, threadId);
@@ -89,14 +72,20 @@ void main() {
         .revision;
 
     await container
-        .read(threadCommandsProvider.notifier)
+        .read(anyworkClientProvider)
+        .threadCommands
         .setThreadMode(ThreadModeId.task);
 
-    await _until(
-      () =>
-          container.read(composerDockViewProvider(threadId)).thread?.mode ==
-          ThreadModeId.task,
-      '模式收敛',
+    await graph.client
+        .session(threadId)
+        .source
+        .waitFor(
+          (s) => s.runtime?.modelRoute?.revision == routeRevisionBefore + 1,
+        );
+    await graph.client.threadDirectory.source.waitFor(
+      (state) => state.window.threads.any(
+        (thread) => thread.id == threadId && thread.mode == ThreadModeId.task,
+      ),
     );
     expect(
       container.read(threadDirectoryStoreProvider).revision,
@@ -126,7 +115,8 @@ void main() {
     final routeRevisionBefore = routeRevision();
 
     await container
-        .read(threadCommandsProvider.notifier)
+        .read(anyworkClientProvider)
+        .threadCommands
         .setThreadModelRoute(
           threadId: threadId,
           providerId: canonicalRoute.providerId,
@@ -134,8 +124,21 @@ void main() {
           effort: target,
         );
 
+    await graph.client
+        .session(threadId)
+        .source
+        .waitFor(
+          (state) =>
+              state.runtime?.modelRoute?.revision == routeRevisionBefore + 1 &&
+              state.runtime?.modelRoute?.effort == target,
+        );
+
     expect(
-      container.read(threadSessionStoreProvider(threadId)).runtime?.modelRoute?.effort,
+      container
+          .read(threadSessionStoreProvider(threadId))
+          .runtime
+          ?.modelRoute
+          ?.effort,
       target,
       reason: 'canonical 事实必须经 Thread 帧收敛，不能停留在乐观目标值',
     );
@@ -145,11 +148,7 @@ void main() {
       reason: 'route 变更必须带新的模型路由 revision 到达 store',
     );
     final settled = container.read(composerDockViewProvider(threadId));
-    expect(
-      settled.routePending,
-      isFalse,
-      reason: '命令完成后不得停在 pending 目标值',
-    );
+    expect(settled.routePending, isFalse, reason: '命令完成后不得停在 pending 目标值');
     expect(
       settled.modelRoute?.effort,
       target,
@@ -246,15 +245,4 @@ ThreadNotificationFrame _notification({
     baseRevision: baseRevision,
     update: const ThreadActivityUpdate(activity: null),
   );
-}
-
-/// 轮询等待 canonical 事实到达；超时即失败并给出未收敛的目标。
-Future<void> _until(bool Function() condition, String what) async {
-  final deadline = DateTime.now().add(const Duration(seconds: 5));
-  while (!condition()) {
-    if (DateTime.now().isAfter(deadline)) {
-      fail('$what 未在 5 秒内收敛');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
 }

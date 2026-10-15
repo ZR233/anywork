@@ -11,6 +11,7 @@ mod attachment_drafts;
 mod background_task;
 pub(crate) mod chat_item;
 mod chat_window;
+mod command_receipts;
 mod history;
 mod lifecycle;
 mod lsp_state;
@@ -33,7 +34,9 @@ mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
 mod tool_refresh;
-pub use chat_window::{ChatWindowHandle, ChatWindowReceipt, ChatWindowStream};
+pub use chat_window::{
+    ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
+};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
 mod thread_observation;
@@ -67,6 +70,7 @@ pub struct StudioStartNewThreadRequest {
     pub title: Option<String>,
     pub input: StudioPromptInput,
     pub mode: pl_protocol::ThreadModeId,
+    pub route: pl_protocol::studio::NewThreadModelRoute,
     pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub options: StudioSubmitPromptOptions,
 }
@@ -75,6 +79,10 @@ pub struct StudioStartNewThreadRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StudioSubmitPromptOptions {
     pub presentation: pl_protocol::MessagePresentation,
+    /// Existing-Thread user submissions carry the route revision observed by
+    /// their caller. Initial submission of an explicitly routed new Thread has
+    /// no prior Client mirror and remains in the same lifecycle transaction.
+    pub expected_model_route_revision: Option<u64>,
 }
 
 /// Studio 输入受理回执；实际 Turn 关联由 Thread 事实流提供。
@@ -103,6 +111,20 @@ pub struct StudioArchiveThreadResult {
     pub next_root: Option<ThreadRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameThreadCommandReply {
+    pub thread: ThreadRecord,
+    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveThreadCommandReply {
+    pub result: StudioArchiveThreadResult,
+    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+}
+
 /// Studio UI 请求停止当前 Thread Turn 后的结果。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +140,7 @@ pub struct StudioInterruptPromptResponse {
     pub thread_id: String,
     pub turn_id: String,
     pub interrupted: bool,
+    pub receipt: pl_protocol::studio::StudioCommandReceipt,
 }
 
 /// Studio UI resolve interaction 后的核心响应。
@@ -126,6 +149,7 @@ pub struct StudioInterruptPromptResponse {
 pub struct StudioResolveInteractionResponse {
     pub thread_id: String,
     pub interaction: InteractionRequest,
+    pub receipt: pl_protocol::studio::StudioCommandReceipt,
 }
 
 /// 归档前「结束会话树活动工作」的有界等待上界。
@@ -138,6 +162,7 @@ pub(in crate::studio::runtime) const ARCHIVE_TREE_SETTLE_TIMEOUT: std::time::Dur
 
 #[derive(Clone)]
 pub struct StudioRuntime {
+    owner_epoch: String,
     startup_recovery: Option<crate::StudioStartupRecovery>,
     persistence_observer: background_task::BackgroundTaskSlot,
     thread_observations: thread_observation::ThreadObservations,
@@ -239,43 +264,58 @@ impl StudioRuntime {
     /// 原子创建或保存一个用户 Agent Profile TOML。
     pub fn save_user_agent_profile(
         &self,
+        operation_id: String,
         expected_settings_revision: u64,
         profile_id: &str,
         profile: &crate::config::UserAgentProfile,
-    ) -> Result<pl_protocol::studio::SettingsStateResponse> {
-        let state = self.config_runtime.save_user_agent_profile(
+    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        Self::validate_operation_id(&operation_id)?;
+        let (state, changed) = self.config_runtime.save_user_agent_profile(
             expected_settings_revision,
             profile_id,
             profile,
         )?;
         self.publish_settings_state(state.clone())?;
-        settings_api::settings_state_response(&state, &self.config_runtime.read_catalog()?)
+        self.settings_command_reply(
+            operation_id,
+            &state,
+            changed,
+            pl_protocol::studio::CommandEffectPoint::FutureSession,
+        )
     }
 
     /// 启用或禁用不可编辑、不可删除的系统 Agent Profile。
     pub fn set_system_agent_enabled(
         &self,
+        operation_id: String,
         expected_settings_revision: u64,
         profile_id: &str,
         enabled: bool,
-    ) -> Result<pl_protocol::studio::SettingsStateResponse> {
+    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        Self::validate_operation_id(&operation_id)?;
         if !crate::config::is_system_profile_id(profile_id) {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
         }
         let profile_id = profile_id.to_string();
+        let mut changed = false;
         let state = self
             .config_runtime
             .update(expected_settings_revision, |config| {
                 let mut config = config.clone();
                 if enabled {
-                    config.disabled_system_agents.remove(&profile_id);
+                    changed = config.disabled_system_agents.remove(&profile_id);
                 } else {
-                    config.disabled_system_agents.insert(profile_id.clone());
+                    changed = config.disabled_system_agents.insert(profile_id.clone());
                 }
                 Ok(config)
             })?;
         self.publish_settings_state(state.clone())?;
-        settings_api::settings_state_response(&state, &self.config_runtime.read_catalog()?)
+        self.settings_command_reply(
+            operation_id,
+            &state,
+            changed,
+            pl_protocol::studio::CommandEffectPoint::FutureSession,
+        )
     }
 
     /// 立即重试待落库事实；查询和停止路径不需要调用本命令。

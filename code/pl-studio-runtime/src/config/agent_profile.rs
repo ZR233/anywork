@@ -146,7 +146,7 @@ pub fn save_user_agent_profile(
     profile_id: &str,
     profile: &UserAgentProfile,
     config: &StudioConfig,
-) -> Result<PathBuf> {
+) -> Result<bool> {
     validate_profile_id(profile_id)?;
     if StudioRole::from_key(profile_id).is_some() {
         return Err(PureError::ConfigError(format!(
@@ -162,8 +162,15 @@ pub fn save_user_agent_profile(
     let directory = paths.agents_dir();
     fs::create_dir_all(&directory)?;
     let path = directory.join(format!("{profile_id}.toml"));
+    let changed = match fs::read_to_string(&path) {
+        Ok(existing) => toml::from_str::<UserAgentProfile>(&existing)
+            .map(|existing| existing != *profile)
+            .unwrap_or(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error.into()),
+    };
     pl_tool::workspace::write_file_atomically(&path, content.as_bytes())?;
-    Ok(path)
+    Ok(changed)
 }
 
 pub fn is_system_profile_id(profile_id: &str) -> bool {

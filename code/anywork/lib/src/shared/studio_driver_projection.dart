@@ -1,78 +1,62 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork_client/studio_client.dart';
 
-import '../data/bridge/studio_bridge.dart';
-import '../data/stores/domain_sync.dart';
-import '../data/stores/lsp_store.dart';
-import '../data/stores/mcp_store.dart';
-import '../data/stores/mode_catalog_store.dart';
-import '../data/stores/model_performance_store.dart';
-import '../data/stores/persistence_store.dart';
-import '../data/stores/project_store.dart';
-import '../data/stores/provider_usage_store.dart';
-import '../data/stores/recovery_store.dart';
-import '../data/stores/selection_store.dart';
-import '../data/stores/session_costs_store.dart';
-import '../data/stores/settings_store.dart';
-import '../data/stores/skills_store.dart';
-import '../data/stores/thread_directory_store.dart';
-import '../data/stores/thread_session_store.dart';
-import '../data/stores/thread_session_state.dart';
-import '../data/stores/updater_store.dart';
-import '../domain/models/studio_models.dart';
-import '../features/interaction/attachment_drafts.dart';
-import '../features/interaction/composer_draft_controller.dart';
-import '../features/interaction/start_session_controller.dart';
-import '../features/shell/shell_view.dart';
+import '../domain/models/agent_workspace_view.dart';
+import '../features/shell/shell_view.dart'
+    show
+        agentsForThreads,
+        primaryInteraction,
+        threadsForRoot,
+        projectById,
+        rootThread;
 import 'studio_driver_state.dart';
 
-/// 把 Driver 容器接到验收快照。只在 Driver 入口调用。
-void bindStudioDriver(ProviderContainer container) {
-  StudioDriverState.bindSnapshotRefresh(
-    () => projectStudioDriverState(container),
-  );
+/// The Driver borrows this application's Client. Binding creates no provider,
+/// observation, draft, Session, ChatView, or native subscription.
+void bindStudioDriver(AnyworkClient client) {
+  StudioDriverState.bindSnapshotQuery(() => queryStudioDriverFacts(client));
 }
 
-/// 从各 store 与已经存在的草稿投影验收快照。
-///
-/// 不创建会话流，不 read 尚未存在的 family provider，也不调用 `beginSubmission()`。
-void projectStudioDriverState(ProviderContainer container) {
-  final selection = container.read(selectionStoreProvider);
-  final directory = container.read(threadDirectoryStoreProvider);
+/// Read immutable current mirrors synchronously. No business projection is
+/// retained by Driver, and owner existence never depends on a provider family.
+StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
+  final selection = client.selection.state;
+  final directory = client.threadDirectory.state;
   final threads = directory.window.threads;
-  final settings = container.read(settingsStoreProvider);
+  final settings = client.settings.state;
   final canonical = settings.canonical;
   final providers = providersWithCatalogMetadata(
     canonical?.providers ?? const <ProviderSettingsView>[],
     settings.providerCatalog,
   );
-  final projects =
-      container.read(projectStoreProvider).projects?.values ??
-      const <StudioProject>[];
-  final project = projectById(projects, selection.selectedProjectId);
-  final session = _existingSession(container, selection);
-  final rootThreads = [
-    for (final thread in threads)
-      if (thread.isRoot) thread,
-  ];
+  final projects = client.project.state;
+  final project = projectById(
+    projects.projects?.values.toList(growable: false) ??
+        const <StudioProject>[],
+    selection.selectedProjectId,
+  );
   final selectedThreadId = selection.selectedThreadId;
-  final directoryThread = threadById(threads, selectedThreadId);
-  final thread = session?.workspace?.thread ?? directoryThread;
+  final session = selectedThreadId == null || selection.needsOpen
+      ? null
+      : client.sessionState(selectedThreadId);
+  final thread = client.findThread(selectedThreadId ?? '');
   final root = thread == null ? null : rootThread(threads, thread) ?? thread;
-  final threadComposer = _existingThreadComposer(container, selectedThreadId);
-  final newThreadComposer = _newThreadComposer(container, selection);
-  final sessionDraft = _existingStartSession(container);
-  final projectDraft = sessionDraft?.forProject(selection.selectedProjectId);
+  final threadComposer = selectedThreadId == null
+      ? const ComposerThreadState.idle()
+      : client.composerState(selectedThreadId) ??
+            const ComposerThreadState.idle();
+  final newThreadComposer = _newThreadComposer(client, selection);
+  final projectDraft = client.startDraft.state.forProject(
+    selection.selectedProjectId,
+  );
   AgentWorkspaceView? workspace;
   if (thread != null && root != null) {
-    final agents =
-        container.read(projectStoreProvider).agents?.values ??
-        const <StudioAgentView>[];
+    final agents = projects.agents?.values ?? const <StudioAgentView>[];
     workspace = AgentWorkspaceView(
       thread: thread,
       rootThread: root,
       syncState: session == null
           ? AgentWorkspaceSyncState.idle
-          : sessionSyncState(session),
+          : _sessionSyncState(session),
       loadError: session?.sync.phase == DomainSyncPhase.failed
           ? session?.sync.errorMessage
           : null,
@@ -80,7 +64,7 @@ void projectStudioDriverState(ProviderContainer container) {
           ? const []
           : timelineRowsFromThreadItems(session.items),
       todo: session?.workspace?.todo,
-      runtime: session?.runtime ?? shellEmptyRuntime,
+      runtime: session?.runtime ?? _emptyRuntime,
       turn: session?.activeTurn,
       lastTurn: session?.workspace?.lastTurn,
       activeInteraction: primaryInteraction(session?.interactions ?? const []),
@@ -97,20 +81,24 @@ void projectStudioDriverState(ProviderContainer container) {
     );
   }
 
-  StudioDriverState.replaceCanonicalFacts(
+  return StudioDriverFacts(
     timelineWorkspace: session?.workspace,
     history: session?.history ?? const ThreadHistoryWindow(),
     workspacesByThread: {
-      for (final existing in _existingSessions(container))
-        existing.threadId: ?existing.workspace,
+      for (final state in client.sessionStates)
+        if (state.workspace case final workspace?)
+          if (client.findThread(state.threadId) case final identity?)
+            state.threadId: workspace.copyWith(thread: identity),
     },
-    rootThreads: rootThreads,
+    rootThreads: [
+      for (final thread in threads)
+        if (thread.isRoot) thread,
+    ],
     directoryHasMore: directory.hasMore,
     selectedProjectId: selection.selectedProjectId,
     selectedThreadId: selectedThreadId,
-    newThreadMode: projectDraft?.mode ?? ThreadModeId.simple,
-    newThreadWorkspaceMode:
-        projectDraft?.workspaceMode ?? ThreadWorkspaceMode.local,
+    newThreadMode: projectDraft.mode,
+    newThreadWorkspaceMode: projectDraft.workspaceMode,
     newThreadComposer: newThreadComposer,
     threadComposer: threadComposer,
     settingsRevision: settings.settingsRevision,
@@ -121,83 +109,41 @@ void projectStudioDriverState(ProviderContainer container) {
     commands: settings.commands.values.toList(growable: false),
     settingsReady: canonical?.state.value != null,
     persistence:
-        container.read(persistenceStoreProvider).persistence ??
+        client.persistence.state.persistence ??
         const PersistenceStateSnapshot.ready(),
-    recoveryIssues:
-        container.read(recoveryStoreProvider).value?.values ?? const [],
+    recoveryIssues: client.recovery.state.value?.values ?? const [],
     project: project,
     workspace: workspace,
   );
 }
 
-/// Driver topic 诊断。Bridge 不存在时不创建；family store 只枚举已经存在的实例。
-Map<String, Object?> studioDriverTopicDiagnostics(ProviderContainer container) {
-  if (!container.exists(studioBridgeProvider)) {
-    return const <String, Object?>{
-      'availability': 'unavailable',
-      'registryAvailability': 'unavailable',
-      'leaseRefs': null,
-      'connections': null,
-      'projectionRevisions': null,
-    };
-  }
-  Map<String, int>? leaseRefs;
-  try {
-    leaseRefs = container.read(studioBridgeProvider).activeTopicRefCountViews();
-  } on Object {
-    leaseRefs = null;
-  }
-  final registryAvailable = leaseRefs != null;
+/// Diagnostics read an existing registry and existing domain mirrors. Reading
+/// this endpoint never changes topic demand, even if no Widget observes it.
+Map<String, Object?> studioDriverTopicDiagnostics(AnyworkClient client) {
+  final refs = client.channels.activeTopicRefCountViews();
   return <String, Object?>{
-    'availability': registryAvailable ? 'available' : 'unavailable',
-    'registryAvailability': registryAvailable ? 'available' : 'unavailable',
-    'leaseRefs': registryAvailable ? _aggregateLeaseRefs(leaseRefs) : null,
-    'connections': registryAvailable ? _connectionCounts(container) : null,
-    'projectionRevisions': registryAvailable
-        ? _projectionRevisions(container)
-        : null,
+    'availability': 'available',
+    'registryAvailability': 'available',
+    'leaseRefs': <String, int>{
+      'topicCount': refs.length,
+      'totalRefs': refs.values.fold(0, (total, value) => total + value),
+    },
+    'connections': _connectionCounts(client),
+    'projectionRevisions': _projectionRevisions(client),
   };
 }
 
-ThreadSessionState? _existingSession(
-  ProviderContainer container,
-  SelectionStoreState selection,
-) {
-  final threadId = selection.selectedThreadId;
-  if (threadId == null || selection.needsOpen) return null;
-  final provider = threadSessionStoreProvider(threadId);
-  if (!container.exists(provider)) return null;
-  return container.read(provider);
-}
-
-ComposerThreadState _existingThreadComposer(
-  ProviderContainer container,
-  String? threadId,
-) {
-  if (threadId == null) return const ComposerThreadState.idle();
-  final provider = composerDraftControllerProvider(threadId);
-  if (!container.exists(provider)) return const ComposerThreadState.idle();
-  return container.read(provider);
-}
-
-StartSessionDraft? _existingStartSession(ProviderContainer container) {
-  if (!container.exists(startSessionControllerProvider)) return null;
-  return container.read(startSessionControllerProvider);
-}
-
 ComposerThreadState _newThreadComposer(
-  ProviderContainer container,
+  AnyworkClient client,
   SelectionStoreState selection,
 ) {
   final projectId = selection.selectedProjectId;
-  final session = _existingStartSession(container);
-  final text = session?.forProject(projectId).text ?? '';
-  final attachments =
-      projectId != null && container.exists(attachmentDraftsProvider)
-      ? container.read(attachmentDraftsProvider).newThread(projectId)
-      : const ComposerThreadState.idle();
-  final submitting =
-      session?.submitting == true || attachments.isSubmissionPending;
+  final draft = client.startDraft.state;
+  final text = draft.forProject(projectId).text;
+  final attachments = projectId == null
+      ? const ComposerThreadState.idle()
+      : client.attachments.state.newThread(projectId);
+  final submitting = draft.submitting || attachments.isSubmissionPending;
   if (!submitting && attachments is FailedComposerThreadState) {
     return FailedComposerThreadState(
       error: attachments.error,
@@ -230,99 +176,64 @@ ComposerThreadState _newThreadComposer(
   );
 }
 
-Iterable<ThreadSessionState> _existingSessions(
-  ProviderContainer container,
-) sync* {
-  for (final reference in container.allProviders(
-    family: threadSessionStoreProvider,
-  )) {
-    final provider = reference.provider;
-    if (provider is! ThreadSessionStoreProvider) continue;
-    yield container.read(provider);
-  }
-}
-
-Map<String, int> _aggregateLeaseRefs(Map<String, int> leaseRefs) {
-  var totalRefs = 0;
-  for (final refs in leaseRefs.values) {
-    totalRefs += refs;
-  }
-  return <String, int>{'topicCount': leaseRefs.length, 'totalRefs': totalRefs};
-}
-
-Map<String, int> _connectionCounts(ProviderContainer container) {
+Map<String, int> _connectionCounts(AnyworkClient client) {
   final counts = _SyncCounts();
-  final settings = container.read(settingsStoreProvider);
+  final settings = client.settings.state;
   counts.add(settings.configSync);
   counts.add(settings.catalogSync);
   counts.add(settings.agentProfilesSync);
-  counts.add(container.read(projectStoreProvider).projectSync);
-  counts.add(container.read(projectStoreProvider).agentSync);
-  counts.add(container.read(threadDirectoryStoreProvider).sync);
-  counts.add(container.read(recoveryStoreProvider).sync);
-  counts.add(container.read(mcpStoreProvider).sync);
-  counts.add(container.read(lspStoreProvider).sync);
-  counts.add(container.read(modeCatalogStoreProvider).sync);
-  counts.add(container.read(providerUsageStoreProvider).sync);
-  counts.add(container.read(modelPerformanceStoreProvider).sync);
-  counts.add(container.read(updaterStoreProvider).sync);
-  final persistence = container.read(persistenceStoreProvider);
-  counts.add(persistence.stateSync);
-  counts.add(persistence.queueSync);
-  for (final reference in container.allProviders(family: skillsStoreProvider)) {
-    final provider = reference.provider;
-    if (provider is! SkillsStoreProvider) continue;
-    counts.add(container.read(provider).sync);
+  counts.add(client.project.state.projectSync);
+  counts.add(client.project.state.agentSync);
+  counts.add(client.threadDirectory.state.sync);
+  counts.add(client.recovery.state.sync);
+  counts.add(client.mcp.state.sync);
+  counts.add(client.lsp.state.sync);
+  counts.add(client.modeCatalog.state.sync);
+  counts.add(client.providerUsage.state.sync);
+  counts.add(client.modelPerformance.state.sync);
+  counts.add(client.updater.state.sync);
+  counts.add(client.persistence.state.stateSync);
+  counts.add(client.persistence.state.queueSync);
+  for (final store in client.ownedSkills) {
+    counts.add(store.state.sync);
   }
-  for (final reference in container.allProviders(
-    family: sessionCostsStoreProvider,
-  )) {
-    final provider = reference.provider;
-    if (provider is! SessionCostsStoreProvider) continue;
-    counts.add(container.read(provider).sync);
+  for (final store in client.ownedSessionCosts) {
+    counts.add(store.state.sync);
   }
-  for (final session in _existingSessions(container)) {
+  for (final session in client.sessionStates) {
     counts.add(session.sync);
   }
   return counts.toJson();
 }
 
-Map<String, Object?> _projectionRevisions(ProviderContainer container) {
-  final settings = container.read(settingsStoreProvider);
-  final selection = container.read(selectionStoreProvider);
-  final session = _existingSession(container, selection);
-  final skills = <int>[];
-  for (final reference in container.allProviders(family: skillsStoreProvider)) {
-    final provider = reference.provider;
-    if (provider is! SkillsStoreProvider) continue;
-    final clock = container.read(provider);
-    if (clock.value != null) skills.add(clock.revision);
-  }
-  final costs = <int>[];
-  for (final reference in container.allProviders(
-    family: sessionCostsStoreProvider,
-  )) {
-    final provider = reference.provider;
-    if (provider is! SessionCostsStoreProvider) continue;
-    final clock = container.read(provider);
-    if (clock.value != null) costs.add(clock.revision);
-  }
+Map<String, Object?> _projectionRevisions(AnyworkClient client) {
+  final settings = client.settings.state;
+  final selection = client.selection.state;
+  final selected = selection.selectedThreadId;
+  final session = selected == null || selection.needsOpen
+      ? null
+      : client.sessionState(selected);
+  final skills = [
+    for (final store in client.ownedSkills)
+      if (store.state.value != null) store.state.revision,
+  ];
+  final costs = [
+    for (final store in client.ownedSessionCosts)
+      if (store.state.value != null) store.state.revision,
+  ];
   return <String, Object?>{
     'settings': settings.settingsRevision,
     'modelCatalog': settings.modelCatalogRevision,
-    'recovery': container.read(recoveryStoreProvider).revision,
-    'mcp': container.read(mcpStoreProvider).revision,
-    'lsp': container.read(lspStoreProvider).revision,
-    'threadModeCatalog': container.read(modeCatalogStoreProvider).revision,
-    'providerUsage': container.read(providerUsageStoreProvider).revision,
-    'modelPerformance': container.read(modelPerformanceStoreProvider).revision,
-    'persistence': container.read(persistenceStoreProvider).stateRevision,
-    'persistenceQueue': container
-        .read(persistenceStoreProvider)
-        .queue
-        ?.revision,
+    'recovery': client.recovery.state.revision,
+    'mcp': client.mcp.state.revision,
+    'lsp': client.lsp.state.revision,
+    'threadModeCatalog': client.modeCatalog.state.revision,
+    'providerUsage': client.providerUsage.state.revision,
+    'modelPerformance': client.modelPerformance.state.revision,
+    'persistence': client.persistence.state.stateRevision,
+    'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,
-    'threadDirectory': container.read(threadDirectoryStoreProvider).revision,
+    'threadDirectory': client.threadDirectory.state.revision,
     'selectedThread': session?.workspace?.revision,
     'skills': {
       'scopeCount': skills.length,
@@ -334,6 +245,35 @@ Map<String, Object?> _projectionRevisions(ProviderContainer container) {
     },
   };
 }
+
+AgentWorkspaceSyncState _sessionSyncState(ThreadSessionState session) =>
+    switch (session.sync.phase) {
+      DomainSyncPhase.idle =>
+        session.hasSnapshot
+            ? AgentWorkspaceSyncState.ready
+            : AgentWorkspaceSyncState.loading,
+      DomainSyncPhase.connecting => AgentWorkspaceSyncState.loading,
+      DomainSyncPhase.ready => AgentWorkspaceSyncState.ready,
+      DomainSyncPhase.reconnecting =>
+        session.hasSnapshot
+            ? AgentWorkspaceSyncState.reconnecting
+            : AgentWorkspaceSyncState.loading,
+      DomainSyncPhase.failed =>
+        session.hasSnapshot
+            ? AgentWorkspaceSyncState.stale
+            : AgentWorkspaceSyncState.failed,
+    };
+
+const _emptyRuntime = ThreadRuntimeView(
+  model: '',
+  contextTokens: 0,
+  contextWindow: 0,
+  totalTokens: 0,
+  costLabel: '',
+  activeSkills: [],
+  activeMcpServers: [],
+  activeLspServers: [],
+);
 
 int? _maxRevision(Iterable<int> revisions) {
   int? maximum;

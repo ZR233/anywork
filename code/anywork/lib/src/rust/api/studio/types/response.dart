@@ -16,7 +16,7 @@ import 'updater.dart';
 part 'response.freezed.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ProviderUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class ArchiveThreadResult {
   final String archivedRootId;
@@ -1240,6 +1240,7 @@ class BridgeSkillsStateSnapshot {
 }
 
 class BridgeStudioStateSnapshot {
+  final String ownerEpoch;
   final RuntimeSnapshot runtime;
   final BridgeProjectDirectoryState projectDirectory;
 
@@ -1262,6 +1263,7 @@ class BridgeStudioStateSnapshot {
   final BridgeAgentProfilesStateSnapshot agentProfiles;
 
   const BridgeStudioStateSnapshot({
+    required this.ownerEpoch,
     required this.runtime,
     required this.projectDirectory,
     required this.threadDirectory,
@@ -1284,6 +1286,7 @@ class BridgeStudioStateSnapshot {
 
   @override
   int get hashCode =>
+      ownerEpoch.hashCode ^
       runtime.hashCode ^
       projectDirectory.hashCode ^
       threadDirectory.hashCode ^
@@ -1308,6 +1311,7 @@ class BridgeStudioStateSnapshot {
       identical(this, other) ||
       other is BridgeStudioStateSnapshot &&
           runtimeType == other.runtimeType &&
+          ownerEpoch == other.ownerEpoch &&
           runtime == other.runtime &&
           projectDirectory == other.projectDirectory &&
           threadDirectory == other.threadDirectory &&
@@ -1436,37 +1440,6 @@ class BridgeThreadModeDescriptor {
           description == other.description &&
           order == other.order &&
           hasWorkflow == other.hasWorkflow;
-}
-
-class BridgeThreadModelRouteUpdateResponse {
-  final BridgeThreadRuntimeSnapshot runtime;
-  final BridgeSettingsStateResponse settings;
-  final bool modeDefaultSaved;
-  final String? warning;
-
-  const BridgeThreadModelRouteUpdateResponse({
-    required this.runtime,
-    required this.settings,
-    required this.modeDefaultSaved,
-    this.warning,
-  });
-
-  @override
-  int get hashCode =>
-      runtime.hashCode ^
-      settings.hashCode ^
-      modeDefaultSaved.hashCode ^
-      warning.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadModelRouteUpdateResponse &&
-          runtimeType == other.runtimeType &&
-          runtime == other.runtime &&
-          settings == other.settings &&
-          modeDefaultSaved == other.modeDefaultSaved &&
-          warning == other.warning;
 }
 
 /// 单个 Thread 的持久化水位与队列压力。
@@ -1599,31 +1572,6 @@ class DeepSeekBalanceInfoDto {
           totalBalance == other.totalBalance &&
           grantedBalance == other.grantedBalance &&
           toppedUpBalance == other.toppedUpBalance;
-}
-
-class InterruptTurnResponse {
-  final String threadId;
-  final String turnId;
-  final bool interrupted;
-
-  const InterruptTurnResponse({
-    required this.threadId,
-    required this.turnId,
-    required this.interrupted,
-  });
-
-  @override
-  int get hashCode =>
-      threadId.hashCode ^ turnId.hashCode ^ interrupted.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is InterruptTurnResponse &&
-          runtimeType == other.runtimeType &&
-          threadId == other.threadId &&
-          turnId == other.turnId &&
-          interrupted == other.interrupted;
 }
 
 class ProjectDto {

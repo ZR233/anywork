@@ -11,7 +11,13 @@ use pl_core::{
 use pl_protocol::ThreadModeId;
 
 impl StudioRuntime {
-    pub async fn set_thread_mode(&self, thread_id: &str, mode_id: ThreadModeId) -> Result<()> {
+    pub async fn set_thread_mode(
+        &self,
+        operation_id: String,
+        thread_id: &str,
+        mode_id: ThreadModeId,
+    ) -> Result<pl_protocol::studio::ThreadModeCommandReply> {
+        Self::validate_operation_id(&operation_id)?;
         let _guard = self.lifecycle_lock.lock().await;
         let record = self.read_owned_thread(thread_id).await?;
         anyhow::ensure!(
@@ -214,7 +220,7 @@ impl StudioRuntime {
         if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
             registrations.extend(self.threads.agent_control_tools()?);
         }
-        thread
+        let committed = thread
             .reconfigure(IdleReconfiguration {
                 expected_sequence: state.commit_sequence,
                 application: ApplicationUpdate { mutations, facts },
@@ -234,13 +240,30 @@ impl StudioRuntime {
         let mut directory = pl_protocol::Thread::from(record);
         directory.mode = mode_id;
         directory.updated_at = now;
-        self.agent_facility
+        let directory_commit = self
+            .agent_facility
             .product_events
             .commit_directory(crate::studio::store::directory::DirectoryDelta {
                 thread_upserts: vec![directory],
                 ..Default::default()
             })
             .await?;
-        Ok(())
+        // Even selecting an identical mode rebuilds an instruction snapshot;
+        // its committed context is an actual application, not a version guess.
+        Ok(pl_protocol::studio::ThreadModeCommandReply {
+            receipt: self.command_receipt(
+                operation_id,
+                true,
+                vec![
+                    self.resource_stamp(
+                        format!("thread-state:{thread_id}"),
+                        committed.commit_sequence,
+                    ),
+                    self.thread_directory_stamp(&directory_commit)?,
+                ],
+                pl_protocol::studio::CommandEffectPoint::Immediate,
+                false,
+            ),
+        })
     }
 }

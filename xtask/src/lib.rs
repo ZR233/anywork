@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::ffi::OsString;
 
 mod cli;
+mod client;
 mod flutter;
 mod release;
 mod remote_helper;
@@ -27,6 +28,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
             cli::Command::GenerateGui => flutter::generate_gui(),
             cli::Command::CheckGuiGenerated => flutter::check_gui_generated(),
             cli::Command::VerifyGui => flutter::verify_gui(),
+            cli::Command::VerifyClient => client::verify(),
             cli::Command::ManualGui(options) => studio_acceptance::run(&options.args),
             cli::Command::RunGui(options) => flutter::run_gui(options),
             cli::Command::BuildGui(options) => flutter::build_gui(options),

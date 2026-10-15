@@ -201,7 +201,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     });
     try {
       final page = await ref
-          .read(directoryCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .directoryCommands
           .queryThreads(
             DirectoryQuery(
               projectId: projectId,
@@ -494,7 +495,8 @@ class _SidebarState extends ConsumerState<_Sidebar> {
                         onPressed: () async {
                           try {
                             await ref
-                                .read(directoryCommandsProvider.notifier)
+                                .read(anyworkClientProvider)
+                                .directoryCommands
                                 .restoreThread(thread.id);
                             if (mounted) _refreshNow();
                           } catch (error) {
@@ -578,7 +580,7 @@ Future<void> _saveSidebarPreferences(
   final projects = [...general.pinnedProjectIds];
   if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
   if (projectId != null && !projects.remove(projectId)) projects.add(projectId);
-  final commands = ref.read(settingsCommandsProvider.notifier);
+  final commands = ref.read(anyworkClientProvider).settingsCommands;
   if (width != null && width != general.sidebarWidth) {
     await commands.applySettingsField(GeneralSidebarWidthCommand(width));
   }

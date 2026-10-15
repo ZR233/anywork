@@ -1,3 +1,4 @@
+use crate::api::studio::convert::commands::command_receipt;
 use anyhow::Context;
 
 use crate::api::studio::bridge_runtime::active_bridge;
@@ -7,8 +8,10 @@ use crate::api::studio::convert::{
     thread_stream::{bridge_thread, runtime_snapshot},
 };
 use crate::api::studio::types::{
-    ArchiveThreadResult, BridgeError, BridgeStudioPromptInput, BridgeThread,
-    BridgeThreadModelRouteUpdateResponse, StartNewThreadResponse, SubmitPromptResponse,
+    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError,
+    BridgeRenameThreadCommandReply, BridgeStudioPromptInput, BridgeThread,
+    BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply, StartNewThreadResponse,
+    SubmitPromptResponse,
 };
 use pl_studio_runtime::ThreadModeId;
 
@@ -28,6 +31,9 @@ pub async fn start_new_thread(
     project_id: String,
     input: BridgeStudioPromptInput,
     mode: String,
+    provider_id: String,
+    model: String,
+    effort: Option<String>,
     workspace_mode: Option<String>,
 ) -> Result<StartNewThreadResponse, BridgeError> {
     let mode = thread_mode(mode)?;
@@ -50,6 +56,11 @@ pub async fn start_new_thread(
                 title: None,
                 input: input.into(),
                 mode: mode.label().to_string(),
+                route: pl_protocol::studio::NewThreadModelRoute {
+                    provider_id,
+                    model,
+                    effort,
+                },
                 workspace_mode,
             },
         )
@@ -65,10 +76,20 @@ pub async fn start_new_thread(
 }
 
 /// Renames a root Thread and returns its canonical directory record.
-pub async fn rename_thread(thread_id: String, title: String) -> Result<BridgeThread, BridgeError> {
+pub async fn rename_thread(
+    operation_id: String,
+    thread_id: String,
+    title: String,
+) -> Result<BridgeRenameThreadCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    let thread = bridge.studio.rename_thread(thread_id, title).await?;
-    Ok(bridge_thread(thread_from_record(thread)))
+    let response = bridge
+        .studio
+        .rename_thread(operation_id, thread_id, title)
+        .await?;
+    Ok(BridgeRenameThreadCommandReply {
+        thread: bridge_thread(thread_from_record(response.thread)),
+        receipt: command_receipt(response.receipt),
+    })
 }
 
 /// Archives a root Thread and selects the next available Thread.
@@ -76,20 +97,27 @@ pub async fn rename_thread(thread_id: String, title: String) -> Result<BridgeThr
 /// # Errors
 ///
 /// Returns an error when the Thread does not exist, is a child Thread, or its tree is active.
-pub async fn archive_thread(thread_id: String) -> Result<ArchiveThreadResult, BridgeError> {
+pub async fn archive_thread(
+    operation_id: String,
+    thread_id: String,
+) -> Result<BridgeArchiveThreadCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     let archived = bridge
         .studio
-        .archive_thread(thread_id)
+        .archive_thread(operation_id, thread_id)
         .await?
         .context("selected Thread not found")?;
-    Ok(ArchiveThreadResult {
-        archived_root_id: archived.archived_root_id,
-        removed_thread_ids: archived.removed_thread_ids,
-        next_root: archived
-            .next_root
-            .map(thread_from_record)
-            .map(bridge_thread),
+    Ok(BridgeArchiveThreadCommandReply {
+        result: ArchiveThreadResult {
+            archived_root_id: archived.result.archived_root_id,
+            removed_thread_ids: archived.result.removed_thread_ids,
+            next_root: archived
+                .result
+                .next_root
+                .map(thread_from_record)
+                .map(bridge_thread),
+        },
+        receipt: command_receipt(archived.receipt),
     })
 }
 
@@ -98,30 +126,38 @@ pub async fn archive_thread(thread_id: String) -> Result<ArchiveThreadResult, Br
 /// # Errors
 ///
 /// Returns an error when the Thread does not exist, is a child Thread, or is busy.
-pub async fn set_thread_mode(thread_id: String, mode: String) -> Result<(), BridgeError> {
+pub async fn set_thread_mode(
+    operation_id: String,
+    thread_id: String,
+    mode: String,
+) -> Result<BridgeThreadModeCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    bridge
+    let response = bridge
         .studio
-        .set_thread_mode(&thread_id, thread_mode(mode)?)
+        .set_thread_mode(operation_id, &thread_id, thread_mode(mode)?)
         .await?;
-    Ok(())
+    Ok(BridgeThreadModeCommandReply {
+        receipt: command_receipt(response.receipt),
+    })
 }
 
 /// Changes a root Thread's durable model route. The active Turn keeps its admitted binding.
 pub async fn set_thread_model_route(
+    operation_id: String,
     thread_id: String,
     provider_id: String,
     model: String,
     effort: Option<String>,
     expected_model_route_revision: u64,
     expected_settings_revision: u64,
-) -> Result<BridgeThreadModelRouteUpdateResponse, BridgeError> {
+) -> Result<BridgeThreadModelRouteCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     let response = bridge
         .studio
         .save_thread_model_route(
             &thread_id,
             pl_protocol::studio::SetThreadModelRouteRequest {
+                operation_id,
                 expected_model_route_revision,
                 expected_settings_revision,
                 provider_id,
@@ -130,7 +166,8 @@ pub async fn set_thread_model_route(
             },
         )
         .await?;
-    Ok(BridgeThreadModelRouteUpdateResponse {
+    Ok(BridgeThreadModelRouteCommandReply {
+        receipt: command_receipt(response.receipt),
         runtime: runtime_snapshot(response.runtime),
         settings: bridge_settings_snapshot(response.settings),
         mode_default_saved: response.mode_default_saved,

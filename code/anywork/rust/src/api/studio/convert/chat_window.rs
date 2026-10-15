@@ -13,9 +13,10 @@ use pl_protocol::{
 
 use crate::api::studio::convert::thread_stream::bridge_chat_thread_item;
 use crate::api::studio::types::{
-    BridgeChatDirection, BridgeChatFocus, BridgeChatItem, BridgeChatLifecycle, BridgeChatReceipt,
-    BridgeChatSnapshot, BridgeChatUpdate, BridgeContentField, BridgeError, BridgeFieldChange,
-    BridgeFieldUpdate, BridgeUpdatePriority, BridgeViewChange,
+    BridgeChatDirection, BridgeChatDisposition, BridgeChatFocus, BridgeChatItem,
+    BridgeChatLifecycle, BridgeChatReceipt, BridgeChatSnapshot, BridgeChatUpdate,
+    BridgeContentField, BridgeError, BridgeFieldChange, BridgeFieldUpdate, BridgeUpdatePriority,
+    BridgeViewChange,
 };
 
 /// runtime 控制回执 → FRB DTO：机械映射，`operation_id` 由调用方的操作计数器提供。
@@ -25,6 +26,10 @@ pub(crate) fn receipt(
 ) -> BridgeChatReceipt {
     BridgeChatReceipt {
         operation_id,
+        disposition: match value.disposition {
+            pl_studio_runtime::ChatWindowDisposition::Applied => BridgeChatDisposition::Applied,
+            pl_studio_runtime::ChatWindowDisposition::NoChange => BridgeChatDisposition::NoChange,
+        },
         version: value.version,
         retained: value.retained,
     }

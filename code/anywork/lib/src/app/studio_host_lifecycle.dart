@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:anywork_client/studio_client.dart' show CloseReport;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import '../data/frb/studio_api.dart';
+import '../infrastructure/frb/studio_api.dart';
 import '../domain/models/studio_models.dart';
 import '../platform/error_log.dart';
 import '../shared/studio_driver_state.dart';
@@ -153,9 +155,10 @@ class StudioExitCoordinator {
     this._onProgress, {
     this.onFailure,
     this.shutdownOverride,
+    this.closeClient,
   });
 
-  final StudioBridgeDataSource _api;
+  final StudioTransport _api;
   final void Function(StudioShutdownProgress progress) _onProgress;
 
   /// 失败时呈现「正在结束 / 必要诊断」；不得向已销毁的 notifier 写状态。
@@ -163,14 +166,18 @@ class StudioExitCoordinator {
 
   /// 注入式清理（测试/自定义），成功即视为 Clean；默认走 [runStudioShutdown]。
   final Future<void> Function()? shutdownOverride;
+  final Future<CloseReport> Function(DateTime deadline)? closeClient;
 
   static StudioExitCoordinator? _active;
-  static Future<void>? _exitFuture;
+  Future<void>? _exitFuture;
   // 单一绝对 Dart 期限：首次武装时锚定，与 native 同一条 30s 总期限。用单调
   // Stopwatch 而非墙钟，系统时间调整不会延长 duration；重复关窗 / dispose / driver
   // 只复用该期限，绝不复位、绝不延长。
-  static Stopwatch? _exitClock;
-  static int _exitAnchorRemainingMs = 0;
+  Stopwatch? _exitClock;
+  int _exitAnchorRemainingMs = 0;
+  Future<StudioShutdownReport>? _cleanup;
+  Future<StudioShutdownReport>? _cleanupOnlyFuture;
+  Future<void>? _arming;
 
   /// 绑定当前进程的协调器并安装 native 退出回调。
   static void install(StudioExitCoordinator coordinator) {
@@ -186,8 +193,19 @@ class StudioExitCoordinator {
     return active._requestExit();
   }
 
+  static Future<StudioShutdownReport> cleanupActive() {
+    final active = _active;
+    if (active == null) {
+      return Future.error(StateError('No application exit coordinator'));
+    }
+    return active.cleanupOnly();
+  }
+
   /// Driver 使用的 typed 清理：arm native deadline 并返回报告，不结束进程。
-  Future<StudioShutdownReport> cleanupOnly() async {
+  Future<StudioShutdownReport> cleanupOnly() =>
+      _cleanupOnlyFuture ??= _cleanupOnly();
+
+  Future<StudioShutdownReport> _cleanupOnly() async {
     final budget = await _armAndComputeBudget();
     // 清理必须有总上限：即使桥不返回，也按同一绝对期限截断为 Degraded。
     StudioShutdownReport report;
@@ -284,11 +302,11 @@ class StudioExitCoordinator {
     // 最终报告（含 Dart 订阅/stream 收束）不是可靠 Clean 时撤销安全 dispose，绝不
     // 在仍有订阅或事件循环占用时释放 RustLib 把正常关闭拖成 watchdog degraded。
     if (!report.allowsCleanExit) {
-      FrbStudioBridgeDataSource.revokeSafeDispose();
+      FrbStudioTransport.revokeSafeDispose();
     }
     // 独立诊断收尾：不依赖 runtime 是否安装，也不依赖上面的清理是否成功。
     await _runBounded(
-      FrbStudioBridgeDataSource.finishShutdownDiagnostics,
+      FrbStudioTransport.finishShutdownDiagnostics,
       _remainingDiagnosticsDuration(),
     );
     // 只有全部关闭报告（含 Dart 订阅 / 诊断清理）确认可靠后才发布终态 `Stopped`；
@@ -306,17 +324,7 @@ class StudioExitCoordinator {
   }
 
   Future<int> _armAndComputeBudget() async {
-    if (_exitClock == null) {
-      // 首次：native 武装唯一绝对期限并返回剩余毫秒；用单调 Stopwatch 锚定。
-      // Stopwatch 在 beginExit 之前启动，因此往返耗时被保守地从预算中扣除。
-      final clock = Stopwatch()..start();
-      final remaining = await StudioHostLifecycle.beginExit();
-      _exitClock = clock;
-      _exitAnchorRemainingMs = remaining;
-    } else {
-      // 重复请求：native 只返回缩短后的剩余，绝不刷新；Dart 侧期限已锚定。
-      await StudioHostLifecycle.beginExit();
-    }
+    await (_arming ??= _arm());
     await StudioHostLifecycle.updateExitDiagnostics(stage: 'cleanup');
     // 用同一绝对期限扣除包括诊断握手在内的全部实际耗时，剩下的才是清理预算。
     final budget = _remainingCleanupBudget();
@@ -325,6 +333,11 @@ class StudioExitCoordinator {
       cleanupBudgetMs: budget,
     );
     return budget;
+  }
+
+  Future<void> _arm() async {
+    _exitClock = Stopwatch()..start();
+    _exitAnchorRemainingMs = await StudioHostLifecycle.beginExit();
   }
 
   /// 距离锚定绝对期限的剩余毫秒；未武装时回落到默认总期限。
@@ -374,18 +387,50 @@ class StudioExitCoordinator {
     );
   }
 
-  Future<StudioShutdownReport> _runCleanup(int budget) async {
+  Future<StudioShutdownReport> _runCleanup(int budget) {
     // 关闭路径绝不 ensureReady / retryInitialization：只收束既有 owner。
     final override = shutdownOverride;
     if (override != null) {
-      await override();
-      return const StudioShutdownReport(
-        outcome: StudioShutdownOutcome.clean,
-        issues: [],
-        persistence: DrainedStudioPendingPersistence(),
-      );
+      return _cleanup ??= _runCustomCleanup(override, budget);
     }
-    return runStudioShutdown(_api, _onProgress, remainingMs: budget);
+    return _cleanup ??= runStudioShutdown(
+      _api,
+      _onProgress,
+      remainingMs: budget,
+      closeClient: closeClient,
+    );
+  }
+
+  Future<StudioShutdownReport> _runCustomCleanup(
+    Future<void> Function() action,
+    int budget,
+  ) async {
+    CloseReport? clientReport;
+    await Future.wait<void>([
+      Future<void>.sync(action),
+      if (closeClient case final close?)
+        close(DateTime.now().add(Duration(milliseconds: budget)))
+            .then<void>((value) {
+              clientReport = value;
+            }),
+    ]);
+    final unresolved = clientReport?.unresolved ?? const [];
+    return StudioShutdownReport(
+      outcome: unresolved.isEmpty
+          ? StudioShutdownOutcome.clean
+          : StudioShutdownOutcome.degraded,
+      issues: [
+        for (final _ in unresolved)
+          StudioShutdownIssue(
+            stage: 'client',
+            code: 'unresolvedResource',
+            message: 'client resource cleanup did not confirm',
+            retryable: false,
+            correlationId: newStudioCorrelationId(),
+          ),
+      ],
+      persistence: const DrainedStudioPendingPersistence(),
+    );
   }
 
   Future<void> _reportTerminalDiagnostics(StudioShutdownReport report) async {

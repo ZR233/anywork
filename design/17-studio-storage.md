@@ -171,6 +171,14 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 
 ## 17.4 历史、调用与实时流
 
+附件 staging 与已受理输入的可靠附件分属两个 ownership 域。受理在可靠 session 资源中
+promotion 后，不自动删除同一 draft ID 的 staging 对象；较新的逻辑草稿可能仍引用它。
+Client 记录逻辑草稿与冻结提交引用，仅最后一个 owner 释放后显式请求删除 staging；删除失败
+保留登记和原文件，不先清索引再吞掉 I/O 错误。未知受理结果继续持有冻结引用。活动草稿不能
+因观察者消失或固定闲置时长过期而删除；可靠历史引用的附件不参与 staging 清理。
+应用退出不删除旧目录、v2 历史、配置或凭据。Client 关闭只收束在途资源任务，不能用清空数据
+代替生命周期确认。草稿协议见 [25](./25-frontend-state.md)。
+
 每个会话由会话管理器持有可靠的未提交 effect 队列，history writer 借用队头并写入
 `history.sqlite`，事务确认后才释放；同一事务记录任务身份、终态工具交付和交互回执。
 全局 call recorder 独立、尽力而为地写滚动日志及有界索引；其积压和故障不阻塞执行或历史确认。

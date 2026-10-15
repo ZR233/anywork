@@ -1,20 +1,6 @@
-import 'agent_models.dart';
+import 'package:anywork_client/models.dart';
+
 import 'agent_workspace_view.dart';
-import 'collection_extensions.dart';
-import 'composer_models.dart';
-import 'interaction_models.dart';
-import 'persistence_models.dart';
-import 'product_topic_models.dart';
-import 'provider_models.dart';
-import 'recovery_models.dart';
-import 'runtime_models.dart';
-import 'thread_directory_models.dart';
-import 'settings_models.dart';
-import 'studio_enums.dart';
-import 'studio_state_snapshots.dart';
-import 'thread_models.dart';
-import 'timeline_models.dart';
-import 'turn_models.dart';
 
 // Canonical workspace values are replaced by reducers. UI-only anchor/composer
 // changes must not rebuild all row projections; old entries are weakly held.

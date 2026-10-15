@@ -15,8 +15,8 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use pl_core::chat::{
-    ChatError, ChatField, ChatFocus, ChatHistory, ChatItem, ChatLifecycle, ChatQuery, ChatUpdate,
-    Direction, HistoryPage, Session,
+    ChatControlDisposition, ChatError, ChatField, ChatFocus, ChatHistory, ChatItem, ChatLifecycle,
+    ChatQuery, ChatUpdate, Direction, HistoryPage, Session,
 };
 use pl_core::model::ContentBlock;
 
@@ -123,6 +123,8 @@ async fn a_parked_wait_is_neither_blocked_nor_lost_by_a_window_move() {
     .expect("a parked wait must not block a window move on another handle");
 
     let page = page.expect("paging older must succeed");
+    assert_eq!(page.disposition, ChatControlDisposition::Applied);
+    let page = view.snapshot();
     assert_eq!(
         page.items.len(),
         64,

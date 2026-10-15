@@ -311,6 +311,7 @@ impl From<SkillsStateSnapshot> for StudioSkillsStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioStateSnapshot {
+    pub owner_epoch: String,
     pub runtime: crate::StudioRuntimeSnapshot,
     pub project_directory: StudioProjectDirectoryState,
     pub thread_directory: StudioThreadDirectoryPage,

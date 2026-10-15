@@ -13,9 +13,12 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 enum BridgeChatDirection { older, newer }
+
+/// 控制操作是否改变了本 view 的可见窗口，独立于消费者是否已经交付该变化。
+enum BridgeChatDisposition { applied, noChange }
 
 @freezed
 sealed class BridgeChatFocus with _$BridgeChatFocus {
@@ -64,23 +67,28 @@ enum BridgeChatLifecycle { streaming, terminal }
 
 /// 控制操作回执：操作已被权威窗口接受；内容仍由 `next` 以 Reset/Patch 从唯一出口交付。
 ///
-/// `operationId` 标识这次控制调用，供客户端把 pending 状态与「成功回执 + 本地观察到
-/// `version`」关联；`version` 是操作完成后的窗口当前版本（no-op 时等于操作前版本）。
+/// `operationId` 标识这次控制调用。`disposition` 是 Rust 对操作前后可见窗口的明确判断；客户端不能
+/// 用交付版本相等推断 NoChange。`Applied` 才需要把 pending 与本地观察到 `version` 关联。
 /// `retained` 只对「展开完整正文」有意义：`false` 表示该身份已不在窗口或完整正文此刻不可得。
 class BridgeChatReceipt {
   final BigInt operationId;
+  final BridgeChatDisposition disposition;
   final BigInt version;
   final bool retained;
 
   const BridgeChatReceipt({
     required this.operationId,
+    required this.disposition,
     required this.version,
     required this.retained,
   });
 
   @override
   int get hashCode =>
-      operationId.hashCode ^ version.hashCode ^ retained.hashCode;
+      operationId.hashCode ^
+      disposition.hashCode ^
+      version.hashCode ^
+      retained.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -88,6 +96,7 @@ class BridgeChatReceipt {
       other is BridgeChatReceipt &&
           runtimeType == other.runtimeType &&
           operationId == other.operationId &&
+          disposition == other.disposition &&
           version == other.version &&
           retained == other.retained;
 }

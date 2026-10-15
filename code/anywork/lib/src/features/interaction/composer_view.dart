@@ -1,24 +1,21 @@
+import 'package:anywork_client/studio_client.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../data/stores/domain_sync.dart';
-import '../../data/stores/mode_catalog_store.dart';
-import '../../data/stores/project_store.dart';
-import '../../data/stores/recovery_store.dart';
-import '../../data/stores/selection_store.dart';
-import '../../data/stores/settings_store.dart';
-import '../../data/stores/thread_directory_store.dart';
-import '../../data/stores/thread_session_store.dart';
-import '../../domain/models/studio_models.dart';
-import '../status/session_selectors.dart';
-import 'attachment_drafts.dart';
-import 'composer_draft_controller.dart';
+import '../../presentation/providers/mode_catalog_store.dart';
+import '../../presentation/providers/project_store.dart';
+import '../../presentation/providers/recovery_store.dart';
+import '../../presentation/providers/selection_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/attachment_drafts.dart';
+import '../../presentation/providers/composer_draft_controller.dart';
 import 'interaction_payload.dart';
-import 'start_session_controller.dart';
+import '../../presentation/providers/start_session_controller.dart';
 
 part 'composer_view.g.dart';
 
-/// 起始页投影。Mode、工作区、正文与模型意图来自 route 作用域草稿；
-/// 未显式选择时跟随 settingsStore canonical，并用命令 lane 的 pending 目标覆盖。
+/// 只读 Connector 投影；草稿、默认路由解析和 pending 展示规则由 Client 持有。
 @riverpod
 StartPageComposerProjection startPageComposerView(Ref ref) {
   final sessionDraft = ref.watch(startSessionControllerProvider);
@@ -70,16 +67,11 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
   final directory = ref.watch(threadDirectoryStoreProvider);
   final attachments = ref.watch(attachmentDraftsProvider);
   final catalog = ref.watch(modeCatalogStoreProvider).value;
-  StudioThread? thread;
-  for (final candidate in directory.window.threads) {
-    if (candidate.id == threadId) {
-      thread = candidate;
-      break;
-    }
-  }
-  thread ??= session.workspace?.thread;
+  final thread = ModelRouteQueries.threadIdentity(
+    threadId: threadId,
+    directory: [...directory.window.threads, ...directory.overlayThreads],
+  );
   final projectId = thread?.projectId;
-  final modeId = thread?.mode.id;
   final routeCommand = settings.commands['thread-route:$threadId'];
   final canonicalRoute = session.runtime?.modelRoute;
   return ComposerDockView(
@@ -89,7 +81,12 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     composer: draft,
     activeInteraction: activePendingInteraction(session.interactions),
     turn: session.activeTurn,
-    modelRoute: overlayThreadRoute(canonicalRoute, routeCommand),
+    modelRoute: canonicalRoute,
+    routeDisplay: ModelRouteQueries.threadRoute(
+      canonical: canonicalRoute,
+      command: routeCommand,
+      providers: settings.canonical?.providers ?? const [],
+    ),
     routePending: routeCommand?.isPending ?? false,
     routeFailure: routeCommand?.phase == CommandPhase.failed
         ? routeCommand?.error?.message
@@ -99,33 +96,13 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
         settings.canonical?.permissionMode ?? PermissionMode.requestApproval,
     providers: settings.canonical?.providers ?? const [],
     settingsLoaded: settings.configLoaded,
-    requiresFunctionCalling: modeId == null
-        ? false
-        : catalog?.modes
-                  .where((mode) => mode.id == modeId)
-                  .firstOrNull
-                  ?.hasWorkflow ??
-              false,
+    requiresFunctionCalling: thread == null
+        ? null
+        : ModelRouteQueries.requiresFunctionCalling(catalog, thread.mode),
     targetDiagnostic: projectId == null
         ? null
         : attachments.diagnostics[attachmentTargetKey(projectId, threadId)],
     additionalDiagnostics: attachments.forProject(projectId),
-  );
-}
-
-ThreadModelRouteView? overlayThreadRoute(
-  ThreadModelRouteView? canonical,
-  CommandStatus? pending,
-) {
-  final target = pending?.isPending == true ? pending?.target : null;
-  if (target?.providerId == null || target?.model == null) return canonical;
-  return ThreadModelRouteView(
-    providerId: target!.providerId!,
-    model: target.model!,
-    effort: target.effort ?? canonical?.effort,
-    revision: canonical?.revision ?? 0,
-    available: canonical?.available ?? true,
-    unavailableReason: canonical?.unavailableReason,
   );
 }
 
@@ -165,68 +142,31 @@ class StartPageComposerProjection {
   bool get submitting => sessionDraft.submitting;
 
   ModeModelRouteView? canonicalRoute(ThreadModeId mode) =>
-      modeRouteFor(modeModelRoutes, mode);
+      _route(mode).canonical;
 
   bool routePending(ThreadModeId mode) {
-    return commands['new-thread-route:model:${mode.id}']?.isPending == true ||
-        commands['new-thread-route:effort:${mode.id}']?.isPending == true;
+    return _route(mode).pending;
   }
 
   ModeModelRouteView? displayRoute(ThreadModeId mode) {
-    return overlayStartSessionRoute(
-      mode: mode,
-      laneRoute: laneRoute(mode),
-      modelIntent: sessionDraft.modelIntentFor(mode),
-      effortIntent: sessionDraft.effortIntentFor(mode),
-    );
+    return _route(mode).display;
   }
 
-  /// 命令 lane 的 `pending.target ?? canonical`。草稿意图不在这里覆盖。
-  ModeModelRouteView? laneRoute(ThreadModeId mode) {
-    final canonical = canonicalRoute(mode);
-    final model = commands['new-thread-route:model:${mode.id}'];
-    final effort = commands['new-thread-route:effort:${mode.id}'];
-    if (model != null &&
-        model.isPending &&
-        model.target.providerId != null &&
-        model.target.model != null) {
-      return ModeModelRouteView(
-        modeId: mode,
-        providerId: model.target.providerId!,
-        model: model.target.model!,
-        effort: model.target.effort ?? canonical?.effort ?? '',
-      );
-    }
-    if (effort != null && effort.isPending && canonical != null) {
-      return ModeModelRouteView(
-        modeId: mode,
-        providerId: canonical.providerId,
-        model: canonical.model,
-        effort: effort.target.effort ?? canonical.effort,
-      );
-    }
-    return canonical;
-  }
+  ModeModelRouteView? laneRoute(ThreadModeId mode) => _route(mode).lane;
 
-  bool requiresFunctionCalling(ThreadModeId mode) =>
-      modeCatalog?.modes
-          .where((descriptor) => descriptor.id == mode.id)
-          .firstOrNull
-          ?.hasWorkflow ??
-      false;
+  bool? requiresFunctionCalling(ThreadModeId mode) =>
+      ModelRouteQueries.requiresFunctionCalling(modeCatalog, mode);
 
   String? routeFailure(ThreadModeId mode) {
-    for (final key in [
-      'new-thread-route:model:${mode.id}',
-      'new-thread-route:effort:${mode.id}',
-    ]) {
-      final status = commands[key];
-      if (status?.phase == CommandPhase.failed) {
-        return status?.error?.message;
-      }
-    }
-    return null;
+    return _route(mode).failure;
   }
+
+  StartRouteQuery _route(ThreadModeId mode) => ModelRouteQueries.startRoute(
+    routes: modeModelRoutes,
+    commands: commands,
+    draft: sessionDraft,
+    mode: mode,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -271,6 +211,7 @@ class ComposerDockView {
     required this.activeInteraction,
     required this.turn,
     required this.modelRoute,
+    this.routeDisplay,
     required this.routePending,
     required this.routeFailure,
     required this.workflow,
@@ -289,18 +230,26 @@ class ComposerDockView {
   final PendingInteraction? activeInteraction;
   final StudioTurnView? turn;
   final ThreadModelRouteView? modelRoute;
+  final ModelRouteDisplay? routeDisplay;
   final bool routePending;
   final String? routeFailure;
   final WorkflowRuntimeView? workflow;
   final PermissionMode permissionMode;
   final List<ProviderSettingsView> providers;
   final bool settingsLoaded;
-  final bool requiresFunctionCalling;
+  final bool? requiresFunctionCalling;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
 
   bool get isBusy => turn?.state.isBusy ?? false;
   bool get hasActiveWorkflow => workflow?.isActive ?? false;
+  ModelRouteDisplay? get displayRoute =>
+      routeDisplay ??
+      ModelRouteQueries.threadRoute(
+        canonical: modelRoute,
+        command: null,
+        providers: providers,
+      );
 
   @override
   bool operator ==(Object other) =>
@@ -317,6 +266,7 @@ class ComposerDockView {
           activeInteraction?.id == other.activeInteraction?.id &&
           turn == other.turn &&
           modelRoute == other.modelRoute &&
+          routeDisplay == other.routeDisplay &&
           routePending == other.routePending &&
           routeFailure == other.routeFailure &&
           workflow == other.workflow &&
@@ -339,6 +289,7 @@ class ComposerDockView {
     activeInteraction?.id,
     turn,
     modelRoute,
+    routeDisplay,
     routePending,
     routeFailure,
     workflow,

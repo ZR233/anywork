@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../domain/models/studio_models.dart';
+import 'package:anywork_client/studio_client.dart';
+
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import 'agent_workspace_mode_label.dart';
@@ -39,9 +40,10 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
     _whenToUse = TextEditingController(text: profile?.whenToUse);
     _instructions = TextEditingController(text: profile?.systemInstructions);
     if (profile == null) {
-      _providerId = widget.providers.firstOrNull?.id ?? '';
-      _model = _modelsFor(_providerId).firstOrNull?.slug ?? '';
-      _effort = _canonicalEffort(null);
+      final route = ModelRouteQueries.newAgentProfileRoute(widget.providers);
+      _providerId = route.providerId;
+      _model = route.model;
+      _effort = route.effort;
     } else {
       // 保留 canonical provider/model/effort；不可解析时只在展示层标记
       // unavailable，不静默改为 options.first 或模型默认 effort，也不阻断
@@ -135,8 +137,8 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                             ),
                             Flexible(
                               child: ModelRouteSelector(
-                                selectorKey: ValueKey(
-                                  'agent-profile-model-$_providerId',
+                                selectorKey: const ValueKey(
+                                  'agent-profile-model',
                                 ),
                                 fieldLabel: l10n.settingsModelField,
                                 options: options,
@@ -181,7 +183,7 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                 ),
                 const SizedBox(height: 10),
                 DropdownMenu<String?>(
-                  key: ValueKey('agent-profile-effort-$_providerId-$_model'),
+                  key: const ValueKey('agent-profile-effort'),
                   initialSelection: _effort,
                   label: Text(l10n.statusReasoningEffort),
                   // 空选择即“默认”：初始态以提示文案呈现；选中默认条目后由
@@ -329,18 +331,6 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
 
   bool get _effortUnavailable => _effort != null && !_efforts.contains(_effort);
 
-  String? _canonicalEffort(String? candidate) {
-    final model = _selectedModel;
-    if (candidate != null &&
-        model?.reasoningEfforts.contains(candidate) == true) {
-      return candidate;
-    }
-    final declaredDefault = model?.defaultReasoningEffort;
-    if (declaredDefault != null &&
-        declaredDefault.isNotEmpty &&
-        model?.reasoningEfforts.contains(declaredDefault) == true) {
-      return declaredDefault;
-    }
-    return model?.reasoningEfforts.firstOrNull;
-  }
+  String? _canonicalEffort(String? candidate) =>
+      ModelRouteQueries.agentProfileEffort(_selectedModel, candidate);
 }

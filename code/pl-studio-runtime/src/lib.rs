@@ -80,16 +80,16 @@ pub use provider_usage::{
     ZhipuToolUsageDetail, provider_usage_records, zhipu_limit_by_window,
 };
 pub use studio::{
-    AttachmentRecord, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream, PersistenceState,
-    PersistenceStateSnapshot, ProductEventBus, ProjectRecord, ProviderUsageStateData,
-    ProviderUsageStateSnapshot, ShutdownExternalHook, SkillSearchResult, SkillsStateSnapshot,
-    StudioDatabaseError, StudioHostKind, StudioProductTopicSubscription, StudioRecoveryIssue,
-    StudioRecoveryIssueAction, StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
-    StudioRecoveryWorktreeOwner, StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions,
-    StudioRuntimeSnapshot, StudioRuntimeStateKind, StudioStartNewThreadResponse,
-    StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
-    StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview,
-    ThreadRecord,
+    AttachmentRecord, ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
+    PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProjectRecord,
+    ProviderUsageStateData, ProviderUsageStateSnapshot, ShutdownExternalHook, SkillSearchResult,
+    SkillsStateSnapshot, StudioDatabaseError, StudioHostKind, StudioProductTopicSubscription,
+    StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
+    StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
+    StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
+    StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
+    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadRecord,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

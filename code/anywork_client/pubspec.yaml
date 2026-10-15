@@ -1,0 +1,10 @@
+name: anywork_client
+description: Application-owned state and resource coordination for Anywork.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.1
+
+dev_dependencies:
+  test: ^1.31.0

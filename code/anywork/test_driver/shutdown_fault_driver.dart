@@ -2,7 +2,7 @@
 //
 // It reuses the frozen [driver_main] entrypoint (same Driver requests, same real
 // bridge bootstrap) and, after the first frame is mounted, re-installs the very
-// same [StudioExitCoordinator] implementation over a [FrbStudioBridgeDataSource] subclass that
+// same [StudioExitCoordinator] implementation over a [FrbStudioTransport] subclass that
 // overrides *only* `subscribeShutdownProgress`. Every other bridge member is
 // inherited unchanged, so the real runtime is still shut down; only the progress
 // subscription fails (and its cancel hangs), which must surface as a typed
@@ -14,7 +14,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/data/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -31,13 +31,13 @@ void main() {
   });
 }
 
-/// A real `FrbStudioBridgeDataSource` whose shutdown-progress subscription is faulty.
+/// A real `FrbStudioTransport` whose shutdown-progress subscription is faulty.
 ///
 /// `shutdownRuntime` and every other member are inherited from the real bridge,
 /// so the observable difference is exactly the broken progress channel: the
 /// subscription emits an error (a typed `progress` issue) and never completes
 /// its cancel (a typed `timeout` issue on the bounded cancel).
-class _FaultSubscriptionApi extends FrbStudioBridgeDataSource {
+class _FaultSubscriptionApi extends FrbStudioTransport {
   @override
   Stream<StudioShutdownProgress> subscribeShutdownProgress() {
     late final StreamController<StudioShutdownProgress> controller;

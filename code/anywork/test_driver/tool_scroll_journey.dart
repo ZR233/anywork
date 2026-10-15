@@ -76,6 +76,8 @@ Future<void> main(List<String> args) async {
   final output = Directory(args[1]);
   await output.create(recursive: true);
   final evidence = <String, Object?>{};
+  final layoutWaits = <Map<String, Object?>>[];
+  evidence['layoutWaits'] = layoutWaits;
   final timeline = find.byValueKey('timeline-scrollable');
   Future<Map<String, dynamic>> snapshot() async =>
       (jsonDecode(await driver.requestData('snapshot')) as Map)
@@ -116,6 +118,21 @@ Future<void> main(List<String> args) async {
       if (sample['mounted'] == false) {
         final state = await snapshot();
         final rows = (state['workspace'] as Map)['timeline'] as List;
+        final scroll = state['timelineScroll'] as Map;
+        // Client delivery and Flutter layout are independent observations.
+        // A completed load can publish its rows before the viewport has laid
+        // them out. Let the existing probe cross the framework's endOfFrame
+        // barrier before comparing a painted anchor with the new row order.
+        if (scroll['rowCount'] != rows.length) {
+          layoutWaits.add({
+            'iteration': i,
+            'projectedRows': rows.length,
+            'laidOutRows': scroll['rowCount'],
+            'restorePending': scroll['restorePending'],
+          });
+          await probe(timeline, 'observe');
+          continue;
+        }
         final key = (target as ByValueKey).keyValue as String;
         final targetIndex = rows.indexWhere(
           (row) =>
@@ -124,7 +141,7 @@ Future<void> main(List<String> args) async {
                 (tool) => key.contains(tool['itemId'] as String),
               ),
         );
-        final anchor = (state['timelineScroll'] as Map)['anchor'] as Map?;
+        final anchor = scroll['anchor'] as Map?;
         final anchorIndex = rows.indexWhere(
           (row) =>
               row['id'] == anchor?['itemId'] ||
@@ -133,7 +150,18 @@ Future<void> main(List<String> args) async {
               ),
         );
         if (targetIndex < 0 || anchorIndex < 0) {
-          throw StateError('Cannot locate lazy tool row: $key');
+          await File('${output.path}/lazy-target-failure.json').writeAsString(
+            jsonEncode({
+              'key': key,
+              'targetIndex': targetIndex,
+              'anchorIndex': anchorIndex,
+              'snapshot': state,
+            }),
+          );
+          throw StateError(
+            'Cannot locate lazy tool row: $key '
+            '(target=$targetIndex, anchor=$anchorIndex)',
+          );
         }
         await probe(
           timeline,

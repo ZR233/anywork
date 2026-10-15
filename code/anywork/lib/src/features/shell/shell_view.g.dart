@@ -8,202 +8,6 @@ part of 'shell_view.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Shell 常驻 topic 租约。观察者离开时释放，不在 provider 初始化里写业务状态。
-
-@ProviderFor(shellTopicLease)
-final shellTopicLeaseProvider = ShellTopicLeaseProvider._();
-
-/// Shell 常驻 topic 租约。观察者离开时释放，不在 provider 初始化里写业务状态。
-
-final class ShellTopicLeaseProvider
-    extends
-        $FunctionalProvider<
-          BridgeTopicLeaseBundle,
-          BridgeTopicLeaseBundle,
-          BridgeTopicLeaseBundle
-        >
-    with $Provider<BridgeTopicLeaseBundle> {
-  /// Shell 常驻 topic 租约。观察者离开时释放，不在 provider 初始化里写业务状态。
-  ShellTopicLeaseProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'shellTopicLeaseProvider',
-        isAutoDispose: false,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$shellTopicLeaseHash();
-
-  @$internal
-  @override
-  $ProviderElement<BridgeTopicLeaseBundle> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  BridgeTopicLeaseBundle create(Ref ref) {
-    return shellTopicLease(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(BridgeTopicLeaseBundle value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<BridgeTopicLeaseBundle>(value),
-    );
-  }
-}
-
-String _$shellTopicLeaseHash() => r'd77b05113388fc18a8f87cae2ee521a254c96578';
-
-/// 持久化面板可见时才持有队列租约。
-
-@ProviderFor(persistenceQueueLease)
-final persistenceQueueLeaseProvider = PersistenceQueueLeaseProvider._();
-
-/// 持久化面板可见时才持有队列租约。
-
-final class PersistenceQueueLeaseProvider
-    extends
-        $FunctionalProvider<
-          BridgeTopicLease,
-          BridgeTopicLease,
-          BridgeTopicLease
-        >
-    with $Provider<BridgeTopicLease> {
-  /// 持久化面板可见时才持有队列租约。
-  PersistenceQueueLeaseProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'persistenceQueueLeaseProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$persistenceQueueLeaseHash();
-
-  @$internal
-  @override
-  $ProviderElement<BridgeTopicLease> $createElement($ProviderPointer pointer) =>
-      $ProviderElement(pointer);
-
-  @override
-  BridgeTopicLease create(Ref ref) {
-    return persistenceQueueLease(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(BridgeTopicLease value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<BridgeTopicLease>(value),
-    );
-  }
-}
-
-String _$persistenceQueueLeaseHash() =>
-    r'c55e668df5cbb7bacefc0d5eab28f5f0f178c0f3';
-
-/// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-
-@ProviderFor(shellSessionCostsLease)
-final shellSessionCostsLeaseProvider = ShellSessionCostsLeaseFamily._();
-
-/// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-
-final class ShellSessionCostsLeaseProvider
-    extends
-        $FunctionalProvider<
-          BridgeTopicLease,
-          BridgeTopicLease,
-          BridgeTopicLease
-        >
-    with $Provider<BridgeTopicLease> {
-  /// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-  ShellSessionCostsLeaseProvider._({
-    required ShellSessionCostsLeaseFamily super.from,
-    required String super.argument,
-  }) : super(
-         retry: null,
-         name: r'shellSessionCostsLeaseProvider',
-         isAutoDispose: true,
-         dependencies: null,
-         $allTransitiveDependencies: null,
-       );
-
-  @override
-  String debugGetCreateSourceHash() => _$shellSessionCostsLeaseHash();
-
-  @override
-  String toString() {
-    return r'shellSessionCostsLeaseProvider'
-        ''
-        '($argument)';
-  }
-
-  @$internal
-  @override
-  $ProviderElement<BridgeTopicLease> $createElement($ProviderPointer pointer) =>
-      $ProviderElement(pointer);
-
-  @override
-  BridgeTopicLease create(Ref ref) {
-    final argument = this.argument as String;
-    return shellSessionCostsLease(ref, argument);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(BridgeTopicLease value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<BridgeTopicLease>(value),
-    );
-  }
-
-  @override
-  bool operator ==(Object other) {
-    return other is ShellSessionCostsLeaseProvider &&
-        other.argument == argument;
-  }
-
-  @override
-  int get hashCode {
-    return argument.hashCode;
-  }
-}
-
-String _$shellSessionCostsLeaseHash() =>
-    r'28e6c45285e92ea0ae05862d76fb478135986f0c';
-
-/// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-
-final class ShellSessionCostsLeaseFamily extends $Family
-    with $FunctionalFamilyOverride<BridgeTopicLease, String> {
-  ShellSessionCostsLeaseFamily._()
-    : super(
-        retry: null,
-        name: r'shellSessionCostsLeaseProvider',
-        dependencies: null,
-        $allTransitiveDependencies: null,
-        isAutoDispose: true,
-      );
-
-  /// 根会话费用租约。family 参数是稳定 rootThreadId，观察者离开即释放。
-
-  ShellSessionCostsLeaseProvider call(String rootThreadId) =>
-      ShellSessionCostsLeaseProvider._(argument: rootThreadId, from: this);
-
-  @override
-  String toString() => r'shellSessionCostsLeaseProvider';
-}
 
 @ProviderFor(shellSessionCost)
 final shellSessionCostProvider = ShellSessionCostFamily._();
@@ -267,7 +71,7 @@ final class ShellSessionCostProvider
   }
 }
 
-String _$shellSessionCostHash() => r'3a2c268befa70eacc337459368c23370c8aba14f';
+String _$shellSessionCostHash() => r'99a4b974ed4eaff687b6b80bee75ff6f5a59820e';
 
 final class ShellSessionCostFamily extends $Family
     with $FunctionalFamilyOverride<SessionCostView?, String> {
@@ -331,7 +135,7 @@ final class ShellStartupViewProvider
   }
 }
 
-String _$shellStartupViewHash() => r'be3caf579de206a48f0ff4445a32bbd6f231bb0c';
+String _$shellStartupViewHash() => r'0dec146e9153a0471fb7a1087bab5afc414008f3';
 
 /// 已订阅的选择事实。Widget 用它替代一次性读取。
 
@@ -383,7 +187,7 @@ final class ShellSelectionProvider
   }
 }
 
-String _$shellSelectionHash() => r'71cec947a694b6d7685fc55df890d9562d5c69cd';
+String _$shellSelectionHash() => r'a4a056583d94b4ce3e3ac788f3dd0109402420d1';
 
 @ProviderFor(shellGeneral)
 final shellGeneralProvider = ShellGeneralProvider._();
@@ -430,7 +234,7 @@ final class ShellGeneralProvider
   }
 }
 
-String _$shellGeneralHash() => r'1ea8ab6e73b2886486e7b5496e08822092f33ca8';
+String _$shellGeneralHash() => r'913e92c7e48bdd4521b66f7221e6a27f48b8fdcc';
 
 @ProviderFor(shellChromeView)
 final shellChromeViewProvider = ShellChromeViewProvider._();
@@ -472,7 +276,7 @@ final class ShellChromeViewProvider
   }
 }
 
-String _$shellChromeViewHash() => r'7542867a6a57cb3bcba618f2067195f2ef01a65d';
+String _$shellChromeViewHash() => r'7d8b87b86dec2c78e812d075c375064de29e7809';
 
 @ProviderFor(sidebarView)
 final sidebarViewProvider = SidebarViewProvider._();
@@ -513,7 +317,7 @@ final class SidebarViewProvider
   }
 }
 
-String _$sidebarViewHash() => r'0dd0167c7b840e8337165e1c617ede45c689a458';
+String _$sidebarViewHash() => r'2e9bd913a9b350bdc9fbcdd3bd16ac8aa0113d76';
 
 @ProviderFor(headerView)
 final headerViewProvider = HeaderViewProvider._();
@@ -554,7 +358,7 @@ final class HeaderViewProvider
   }
 }
 
-String _$headerViewHash() => r'bc12eb0cd4ba1e35cdad66a7e8bd48fac94ad1a3';
+String _$headerViewHash() => r'466ac6c30420510eea3313d0644abd73844c0b4f';
 
 /// `needsOpen` 时不订阅会话。已有历史窗口后不再请求首窗。
 
@@ -666,7 +470,7 @@ final class ShellComposerWorkspaceProvider
 }
 
 String _$shellComposerWorkspaceHash() =>
-    r'd058a0812d154c021305e7cf589b693e706ae77f';
+    r'9139b29f5274e05c94843d3f3d0f66cebaa9e3ec';
 
 @ProviderFor(conversationActivityInput)
 final conversationActivityInputProvider = ConversationActivityInputFamily._();
@@ -799,4 +603,4 @@ final class PersistencePanelViewProvider
 }
 
 String _$persistencePanelViewHash() =>
-    r'b800defde0586a79257dffd2145c07527398c823';
+    r'1f7a8020bc1e1e54fdc1b7e314a0ec1da915102c';

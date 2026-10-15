@@ -3,170 +3,97 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../domain/models/studio_models.dart';
+import '../../presentation/providers/client_provider.dart';
+
+import 'package:anywork_client/studio_client.dart';
+
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_views.dart';
 
-class _AgentRouteConfiguration {
-  const _AgentRouteConfiguration({
-    required this.providers,
-    required this.roles,
-  });
-
-  final List<ProviderSettingsView> providers;
-  final List<RoleSettingsView> roles;
-
-  Widget _buildRoleRow(
-    BuildContext context,
-    WidgetRef ref,
-    String role,
-    List<ModelSelectionOption> options,
-  ) {
-    final configuredRole = roles
-        .where((candidate) => candidate.key == role)
-        .firstOrNull;
-    final hasConfiguredRoute =
-        configuredRole != null &&
-        (configuredRole.providerId.isNotEmpty ||
-            configuredRole.model.isNotEmpty);
-    final option = hasConfiguredRoute
-        ? options
-              .where(
-                (candidate) =>
-                    candidate.providerId == configuredRole.providerId &&
-                    candidate.model == configuredRole.model,
-              )
-              .firstOrNull
-        : options.firstOrNull;
-    final routeUnavailable = hasConfiguredRoute && option == null;
-    final unresolvedLabel = routeUnavailable
-        ? context.l10n.settingsAgentRouteUnavailable(
-            [
-              configuredRole.providerId,
-              configuredRole.model,
-            ].where((part) => part.isNotEmpty).join(' / '),
-          )
-        : option == null
-        ? context.l10n.settingsDefaultModel
-        : null;
-    final selectedProviderId =
-        option?.providerId ??
-        (hasConfiguredRoute ? configuredRole.providerId : 'default');
-    final selectedModel =
-        option?.model ??
-        (hasConfiguredRoute ? configuredRole.model : 'default');
-    final storedEffort = configuredRole?.effort;
-    final canonicalEffort = storedEffort?.isNotEmpty == true
-        ? storedEffort
-        : null;
-    final efforts = option?.reasoningEfforts ?? const <String>[];
-    final defaultEffort = option == null
-        ? null
-        : option.defaultReasoningEffort.isNotEmpty
-        ? option.defaultReasoningEffort
-        : option.reasoningEfforts.firstOrNull;
-    final selectedEffort = hasConfiguredRoute ? canonicalEffort : defaultEffort;
-    final pending = ref.watch(
-      settingsRoleCommandPendingProvider(role).select((state) => state.pending),
-    );
-
-    Future<void> saveRoleModel({
-      required String providerId,
-      required String model,
-    }) async {
-      try {
-        await readSettingsCommands(ref).setRoleModelField(
-          roleKey: role,
-          providerId: providerId,
-          model: model,
-        );
-      } catch (error) {
-        if (!context.mounted) return;
-        final messenger = ScaffoldMessenger.of(context);
-        messenger.hideCurrentSnackBar();
-        messenger.showSnackBar(SnackBar(content: Text(error.toString())));
-      }
-    }
-
-    Future<void> saveRoleEffort(String? effort) async {
-      try {
-        await readSettingsCommands(ref)
-            .setRoleReasoningEffortField(roleKey: role, effort: effort);
-      } catch (error) {
-        if (!context.mounted) return;
-        final messenger = ScaffoldMessenger.of(context);
-        messenger.hideCurrentSnackBar();
-        messenger.showSnackBar(SnackBar(content: Text(error.toString())));
-      }
-    }
-
-    return _RoleSettingsRow(
-      role: role,
-      selectedProviderId: selectedProviderId,
-      selectedModel: selectedModel,
-      selectedEffort: selectedEffort,
-      options: options,
-      efforts: efforts,
-      unresolvedLabel: unresolvedLabel,
-      showUnresolvedOption: routeUnavailable,
-      pending: pending,
-      onModelChanged: (value) {
-        // 重选当前 provider/model 不产生任何变更。
-        if (value.providerId == selectedProviderId &&
-            value.model == selectedModel) {
-          return Future<void>.value();
-        }
-        return saveRoleModel(providerId: value.providerId, model: value.model);
-      },
-      onEffortChanged: (value) {
-        if (option == null) return Future<void>.value();
-        return saveRoleEffort(value);
-      },
-    );
-  }
-
-  List<ModelSelectionOption> _roleModelOptions(
-    List<ProviderSettingsView> providers,
-  ) {
-    return buildModelSelectionOptions(
-      providers,
-      modelsForProvider: (provider) {
-        final models = provider.models;
-        return models.where((model) => model.slug.isNotEmpty).toList();
-      },
-    );
-  }
-}
-
-/// One built-in Agent route editor embedded in its canonical Agent card.
-class AgentRouteControls extends ConsumerWidget {
-  const AgentRouteControls({
-    super.key,
-    required this.role,
-    required this.providers,
-    required this.roles,
-  });
+/// Observes Client facts and dispatches role intents for one stable role.
+class AgentRouteConnector extends ConsumerWidget {
+  const AgentRouteConnector({super.key, required this.role});
 
   final String role;
-  final List<ProviderSettingsView> providers;
-  final List<RoleSettingsView> roles;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final section = _AgentRouteConfiguration(
+    final settings = ref.watch(settingsAgentsViewProvider);
+    final providers = settings.providers;
+    final route = ModelRouteQueries.roleRoute(
       providers: providers,
-      roles: roles,
+      roles: settings.roles,
+      role: role,
     );
-    final options = section._roleModelOptions(providers);
-    return section._buildRoleRow(context, ref, role, options);
+    final options = buildModelSelectionOptions(
+      providers,
+      modelsForProvider: (provider) =>
+          provider.models.where((model) => model.slug.isNotEmpty).toList(),
+    );
+    final pending = ref.watch(
+      settingsRoleCommandPendingProvider(role).select((state) => state.pending),
+    );
+    final unresolvedLabel = route.unavailable
+        ? context.l10n.settingsAgentRouteUnavailable(
+            [
+              route.providerId,
+              route.model,
+            ].where((part) => part.isNotEmpty).join(' / '),
+          )
+        : route.descriptor == null
+        ? context.l10n.settingsDefaultModel
+        : null;
+    final commands = ref.read(anyworkClientProvider).settingsCommands;
+
+    Future<void> report(Future<void> Function() action) async {
+      try {
+        await action();
+      } catch (error) {
+        if (!context.mounted) return;
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
+
+    return AgentRouteView(
+      role: role,
+      selectedProviderId: route.providerId,
+      selectedModel: route.model,
+      selectedEffort: route.effort,
+      options: options,
+      efforts: route.descriptor?.reasoningEfforts ?? const [],
+      unresolvedLabel: unresolvedLabel,
+      showUnresolvedOption: route.unavailable,
+      pending: pending,
+      onModelChanged: (option) {
+        if (option.providerId == route.providerId &&
+            option.model == route.model) {
+          return Future<void>.value();
+        }
+        return report(
+          () => commands.setRoleModelField(
+            roleKey: role,
+            providerId: option.providerId,
+            model: option.model,
+          ),
+        );
+      },
+      onEffortChanged: (effort) => report(
+        () =>
+            commands.setRoleReasoningEffortField(roleKey: role, effort: effort),
+      ),
+    );
   }
 }
 
-class _RoleSettingsRow extends StatelessWidget {
-  const _RoleSettingsRow({
+/// Renders the supplied role route; it neither observes nor resolves defaults.
+class AgentRouteView extends StatelessWidget {
+  const AgentRouteView({
+    super.key,
     required this.role,
     required this.selectedProviderId,
     required this.selectedModel,
@@ -209,7 +136,7 @@ class _RoleSettingsRow extends StatelessWidget {
             model: selectedModel,
             unresolvedLabel: unresolvedLabel,
             showUnresolvedOption: showUnresolvedOption,
-            enabled: options.isNotEmpty && !pending,
+            enabled: options.isNotEmpty,
             onSelected: onModelChanged,
             optionKeyBuilder: (option) =>
                 StudioDriverKeys.settingsRoleModelOption(
@@ -219,6 +146,14 @@ class _RoleSettingsRow extends StatelessWidget {
                 ),
           ),
         ),
+        if (pending)
+          const Padding(
+            padding: EdgeInsets.only(left: 8),
+            child: SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5),
+            ),
+          ),
       ],
     );
     final effortUnresolvedLabel =
@@ -233,7 +168,7 @@ class _RoleSettingsRow extends StatelessWidget {
       label: Text(context.l10n.statusReasoningEffort),
       hintText: effortUnresolvedLabel,
       expandedInsets: EdgeInsets.zero,
-      enabled: !pending && efforts.isNotEmpty,
+      enabled: efforts.isNotEmpty,
       dropdownMenuEntries: [
         for (final effort in efforts)
           DropdownMenuEntry<String>(
@@ -245,14 +180,12 @@ class _RoleSettingsRow extends StatelessWidget {
             ),
           ),
       ],
-      onSelected: pending
-          ? null
-          : (effort) {
-              if (effort != null) {
-                final result = onEffortChanged(effort);
-                if (result is Future<void>) unawaited(result);
-              }
-            },
+      onSelected: (effort) {
+        if (effort != null) {
+          final result = onEffortChanged(effort);
+          if (result is Future<void>) unawaited(result);
+        }
+      },
     );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),

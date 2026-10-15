@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../domain/models/conversation_activity_models.dart';
+
+import 'package:anywork_client/models.dart';
+
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'timeline_wait_indicator.dart';

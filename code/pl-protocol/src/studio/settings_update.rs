@@ -128,6 +128,7 @@ pub enum SettingsFieldUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateSettingsFieldRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub update: SettingsFieldUpdate,
 }
@@ -135,6 +136,7 @@ pub struct UpdateSettingsFieldRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdatePermissionSettingsRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub mode: String,
 }
@@ -145,6 +147,7 @@ pub struct UpdatePermissionSettingsRequest {
 /// runtime route 必须在同一次 CAS 中通过联合校验。新会话/Mode 默认值和
 /// Agent role 则使用上面的单字段更新，选择模型不会重放旧思考强度。
 pub struct SetThreadModelRouteRequest {
+    pub operation_id: String,
     pub expected_model_route_revision: u64,
     pub expected_settings_revision: u64,
     pub provider_id: String,
@@ -154,9 +157,10 @@ pub struct SetThreadModelRouteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThreadModelRouteUpdateResponse {
+pub struct ThreadModelRouteCommandReply {
     #[schema(value_type = Object)]
     pub runtime: crate::ThreadRuntimeSnapshot,
+    pub receipt: super::StudioCommandReceipt,
     pub settings: SettingsStateResponse,
     pub mode_default_saved: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +176,7 @@ pub struct ThreadModelRouteUpdateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateProviderRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub provider: ProviderSettingsUpdate,
 }
@@ -179,6 +184,7 @@ pub struct UpdateProviderRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveProviderRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub provider_id: String,
     /// 删除仍被模式或角色路由引用的 provider 时，必须显式指定替换 provider。
@@ -190,6 +196,7 @@ pub struct RemoveProviderRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetDefaultProviderRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub provider_id: String,
 }

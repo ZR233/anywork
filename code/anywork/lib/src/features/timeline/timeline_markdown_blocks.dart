@@ -297,27 +297,31 @@ class _HeadingSelectionUnitState extends State<_HeadingSelectionUnit> {
 /// 段落布局"是**可证推断**（该正文不含 markdown 语法、确实走单个 [Text]，段落布局成本随
 /// 正文长度增长），不是已做 profile 的结论。
 ///
-/// 这里把已稳定的行按真实换行边界切成有界块，每块复用同一个 [Text] 实例——实例不变时
-/// Flutter 跳过重建与重排——只对仍在增长的尾块重新布局。收益是**有条件的**：
+/// 用固定的完整测量窗确定分区，一次处理本次正文的全部可封存前缀。流式追加与全量重开
+/// 得到相同分区，未变正文不会因无关 build 继续切块。每块复用同一个 [Text] 实例，追加时
+/// 只布局新增块与尾块；精确前缀验证仍随已有正文长度增长，首次快照仍需 O(n) 排版。
 ///
-/// - 逐帧追加（流式）：单次 build 新封存 ≤ `_sealBatchLimit` × `_sealMeasureCharacters`，
-///   正常增量下每帧只封存一块，因此每帧布局成本 ≈ 尾块，与整段长度无关。
-/// - 一次性换入超大正文（例如重开历史）：该帧仍会包含一个未及封存的大块尾部，其布局与
-///   整段同阶（与优化前同级，无回归）；后续各帧继续按批封存。
+/// native 验收证明：相同声明样式的超长段落与短段落仍可能量出不同的字符宽度，因此不能
+/// 以“切在一次测量的行起点”推断任意段长下的可见换行都相同。稳定阅读依赖确定分区，
+/// 而不是让一个巨型尾段在后续 rebuild 中逐步改变分区。
+///
+/// 收益是**有条件的**：
 /// - **整体退回单个 [Text]**：方向不是 LTR，或当前正文（未封存后缀）含 RTL/bidi 控制
 ///   字符——此时已封存前缀也会被清掉，不留"已分块前缀 + 风险正文"。
 /// - **只是不再新增块**：测量窗内量不出安全断点（单个超长无空白 run、CJK 无空格断行、
-///   缩进续行等）时保留已封存前缀 + 单个尾块 [Text]；尾块起点仍是真实行起点，所以这样
-///   是安全的，只是收益到此为止——这种情况不等于整体回退，不伪称"O(尾块)"覆盖所有正文。
+///   缩进续行等）时保留已封存前缀 + 单个尾块 [Text]；尾块仍从已确定的分区起点开始，
+///   收益到此为止——这种情况不等于整体回退，不伪称"O(尾块)"覆盖所有正文。
 ///
 /// 正确性约束：
 ///
 /// - 断点取自 [TextPainter] 在**有界测量窗**内、用**同一 style/宽度/TextScaler/方向/
-///   locale** 量出的真实行起点，且要求上一行以空白结束、下一行以非空白开始；各块单独
-///   换行与整段一致（贪心断行只取决于断点之前的正文），块内文本按顺序拼接仍等于原文
-///   ——不插换行、不丢空白、不截尾。
-/// - 复用前对**每一块**做逐字精确比较，不做首尾采样、也不用哈希近似：同 identity 的
-///   Replace 可以只改中间而首尾不变，只有整个已封存前缀逐字一致才允许复用。
+///   locale** 量出的候选行起点，且要求上一行以空白结束、下一行以非空白开始。每次使用
+///   完整的同长窗口，尾块不足一个窗口时不封存；块内文本顺序拼接仍等于原文，不插换行、
+///   不丢空白、不截尾。
+/// - 这里不证明所有 Text 继承参数下与单段排版等价：bold/spacing overrides、THB、
+///   softWrap/maxLines/widthBasis 仍由 Text 应用；原生阅读与复制验证的范围单独记录。
+/// - 只有整个上一版正文逐字未变或严格追加时复用；非追加 Replace 整体重算，包括缩短或
+///   只修改断点之后的 lookahead。不能只检查已封存字节，否则重开可能得到另一分区。
 /// - 复用前还对**本次 canonical 正文**做一次风险判定：已封存前缀由逐字校验证明未变（且
 ///   当初是在无风险判定下封存的），未封存后缀整段扫描，因此不会漏掉短于阈值的尾巴或
 ///   Replace 进尾巴的风险字符。
@@ -326,7 +330,7 @@ class _HeadingSelectionUnitState extends State<_HeadingSelectionUnit> {
 ///   的 `getSelectedContent`），因此应与整段一致；该契约与真机的选择手柄/复制表现仍需实机
 ///   确认，这里不当作已验证结论。
 /// - 缓存与正文同源、与 [id] 绑定：换会话/换条目、正文被替换、宽度/文字缩放/方向/locale
-///   变化时整体失效重建，既不产生第二份正文事实源，也不会无界增长。
+///   变化时整体失效重建，不产生第二份正文事实源；缓存随当前正文线性增长，不累积旧版本。
 class _PlainBodyText extends StatefulWidget {
   const _PlainBodyText({
     required this.id,
@@ -346,22 +350,14 @@ class _PlainBodyText extends StatefulWidget {
 }
 
 class _PlainBodyTextState extends State<_PlainBodyText> {
-  /// 只有超过这么多字符的正文才切块；普通消息保持单个 [Text]。
-  static const _sealMinimumCharacters = 4096;
-
   /// 单个块的期望上限（字符）：断点在不超过它的前提下尽可能靠近。
   static const _sealTargetCharacters = 4096;
 
-  /// 测量窗上限（目标块长 + 尾部上下文）：保证每次 [TextPainter] 测量有界，且断点所在
-  /// 行的换行不会因为人为截断而改变。
+  /// 固定测量窗（目标块长 + 尾部上下文）：每次 [TextPainter] 测量有界，同一前缀的分区
+  /// 不依赖正文到达批次；不据此推断不同段长的原生排版必然相同。
   static const _sealMeasureCharacters = 6144;
 
-  /// 单次 build 最多新封存的块数，把一次 build 的封存工作量收成有界。
-  // Keep each build bounded while allowing the sealed prefix to catch up with
-  // a streaming response.  Each pass lays out only a 6 KiB window.
-  static const _sealBatchLimit = 2;
-
-  final List<_PlainBodyChunk> _sealed = <_PlainBodyChunk>[];
+  final List<Text> _sealed = <Text>[];
   int _sealedEnd = 0;
   double? _width;
   TextScaler? _textScaler;
@@ -375,8 +371,8 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
   int _riskStart = 0;
   bool _riskVerdict = false;
 
-  /// 上一次已验证的 canonical 正文。流式响应通常只追加尾部，可据此跳过已封存
-  /// 前缀的重复逐字比较；发生中间替换时仍回退到完整校验。
+  /// 上一次已验证的 canonical 正文。同一实例可直接复用；其他实例须精确比较完整前缀，
+  /// 非追加替换则使全部分区失效。
   String? _validatedText;
   String? _validatedId;
 
@@ -390,29 +386,15 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
     _sealed.clear();
     _sealedEnd = 0;
     _validatedText = null;
+    _riskText = null;
   }
 
-  /// 精确校验已封存前缀：逐块与当前正文对应位置比较，全部一致才允许复用。
-  ///
-  /// 只比对首尾块是采样，无法排除"同 identity 的 Replace 只改中间"；这里对每一块做连续
-  /// 字符串比较（memcmp 级，不触发布局，也不用哈希近似），任一字符不同即整体重建。代价是
-  /// 每帧一次 O(已封存长度) 的字符串比较，用来换取"显示的正文一定是最新正文"。
-  bool _sealedPrefixMatches(String text) {
-    if (_sealedEnd > text.length) return false;
+  /// 完整比较上一版正文，同时保留每块当时的测量 lookahead。
+  bool _canReuseSealed(String text) {
     final validatedText = _validatedText;
-    if (validatedText != null &&
-        (identical(validatedText, text) || text.startsWith(validatedText))) {
-      _validatedText = text;
-      return true;
-    }
-    var offset = 0;
-    for (final chunk in _sealed) {
-      if (!text.startsWith(chunk.text, offset)) return false;
-      offset += chunk.text.length;
-    }
-    final matches = offset == _sealedEnd;
-    if (matches) _validatedText = text;
-    return matches;
+    return validatedText == null ||
+        identical(validatedText, text) ||
+        text.startsWith(validatedText);
   }
 
   @override
@@ -444,10 +426,10 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
           _locale = locale;
           _resetSealed();
         }
-        if (!_sealedPrefixMatches(widget.text)) {
+        if (!_canReuseSealed(widget.text)) {
           _resetSealed();
         }
-        _validatedText ??= widget.text;
+        _validatedText = widget.text;
         // 复用前对**本次 canonical 正文**做风险判定，而不是只看测量窗：已封存前缀由上面的
         // 逐字校验证明未变（且它是在"当时无风险"的判定下才封存的），未封存后缀在这里整段
         // 扫描——因此不会漏掉短于阈值的尾巴，也不会漏掉 Replace 到尾巴里的风险字符。
@@ -470,7 +452,7 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
         }
         final open = widget.text.substring(_sealedEnd);
         final children = <Widget>[
-          for (final chunk in _sealed) chunk.widget,
+          ..._sealed,
           if (open.isNotEmpty)
             Text(
               open,
@@ -495,7 +477,7 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
     );
   }
 
-  /// 在有界测量窗内把待渲染区封存成有界块；单次 build 最多封存 [_sealBatchLimit] 块。
+  /// 固定完整窗口保证分区与正文的到达批次和 build 次数无关。
   void _seal({
     required double width,
     required TextStyle style,
@@ -504,52 +486,43 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
     required Locale? locale,
   }) {
     if (!width.isFinite || width <= 0) return;
-    for (var attempt = 0; attempt < _sealBatchLimit; attempt += 1) {
-      final open = widget.text.substring(_sealedEnd);
-      if (open.length <= _sealMinimumCharacters) return;
-      // 只测量有界的候选前缀；未截断的尾部继续留在尾块里。
-      final measureLength = open.length < _sealMeasureCharacters
-          ? open.length
-          : _sealMeasureCharacters;
-      final window = open.substring(0, measureLength);
+    while (widget.text.length - _sealedEnd >= _sealMeasureCharacters) {
+      // 不逐次复制整个剩余尾串；每个测量窗与新块均有界。
+      final window = widget.text.substring(
+        _sealedEnd,
+        _sealedEnd + _sealMeasureCharacters,
+      );
       final boundary = _sealBoundary(
         window,
-        open: open,
         width: width,
         style: style,
         textScaler: textScaler,
         textDirection: textDirection,
         locale: locale,
       );
-      // 量不出新的安全边界时不再新增块：保留已封存前缀 + 单个尾块 Text。这不是整体回退，
-      // 也仍然安全——前缀块与尾块都以真实行起点开始，单独换行与整段一致。
+      // 无安全边界时保留单个尾块，不声称所有正文都有块长上限。
       if (boundary <= 0) return;
-      final chunkText = open.substring(0, boundary);
+      final chunkText = window.substring(0, boundary);
       _sealed.add(
-        _PlainBodyChunk(
-          text: chunkText,
-          widget: Text(
-            chunkText,
-            key: ValueKey('plain-chunk-${widget.id}-${_sealed.length}'),
-            style: _markdownBodyStyle(context, widget.surface),
-          ),
+        Text(
+          chunkText,
+          key: ValueKey('plain-chunk-${widget.id}-${_sealed.length}'),
+          style: _markdownBodyStyle(context, widget.surface),
         ),
       );
       _sealedEnd += boundary;
     }
   }
 
-  /// [window] 内最后一个可安全切分的位置（真实换行点），量不出时返回 0。
+  /// [window] 内的候选切分位置（测量窗口的换行点），量不出时返回 0。
   ///
-  /// 只测量 [window]（有界前缀），但"空白之后"的判定用完整 [open]：截断不会改变断点所在
-  /// 行的换行（贪心断行只取决于断点之前的正文），尾部上下文也保留在尾块里。
+  /// 只读取完整固定 [window]，既不依赖尚未到达的正文，也不构造巨型尾串。
   ///
   /// 行首用 [TextPainter.getPositionForOffset] 用同一 style/宽度/TextScaler/方向/locale
-  /// 量出，因此切在这里各块单独换行与整段一致。优先取不超过 [_sealTargetCharacters] 的
+  /// 量出。优先取不超过 [_sealTargetCharacters] 的
   /// 最后一个安全边界；窗口内没有这样的边界时退到最后一个安全边界（仍然有界）。
   int _sealBoundary(
     String window, {
-    required String open,
     required double width,
     required TextStyle style,
     required TextScaler textScaler,
@@ -583,13 +556,13 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
       for (final raw in starts) {
         // 行首偏移可能正好落在被断行吞掉的空白上，先归一到空白之后。
         var start = raw;
-        while (start < open.length && open.codeUnitAt(start) == 0x20) {
+        while (start < window.length && window.codeUnitAt(start) == 0x20) {
           start += 1;
         }
         // 断点必须落在测量窗内，块长才确实有界（窗口外的正文留给尾块）。
-        if (start < _sealMinimumCharacters || start >= window.length) continue;
-        if (open.codeUnitAt(start - 1) != 0x20 ||
-            open.codeUnitAt(start) == 0x20) {
+        if (start <= 0 || start >= window.length) continue;
+        if (window.codeUnitAt(start - 1) != 0x20 ||
+            window.codeUnitAt(start) == 0x20) {
           continue;
         }
         lastSafe = start;
@@ -603,20 +576,15 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
 
   /// [text] 自 [start] 起的后缀里是否含 RTL 或 bidi 控制字符，带同一实例/同起点的结果缓存。
   ///
-  /// 已封存前缀不在这里重复扫描：它由 [_sealedPrefixMatches] 逐字证明未变，并且是在
+  /// 已封存前缀不在这里重复扫描：它由 [_canReuseSealed] 逐字证明未变，并且是在
   /// "当时无风险"的判定下才封存的；因此"前缀安全 + 后缀安全"覆盖整段当前正文。
   bool _suffixHasBidiRisk(String text, int start) {
     if (identical(_riskText, text) && _riskStart == start) {
       return _riskVerdict;
     }
-    final previousText = _riskText;
-    final appendOnly =
-        previousText != null &&
-        _riskStart == start &&
-        text.startsWith(previousText);
-    final verdict = appendOnly
-        ? _riskVerdict || _hasBidiRisk(text, previousText.length, text.length)
-        : _hasBidiRisk(text, start, text.length);
+    // 未配对的尾部 high surrogate 会暂时触发风险，随后追加 low surrogate 可以修复它。
+    // 每次内容改变都重查当前后缀，不能把上一版 true 永久 OR 到后续正文。
+    final verdict = _hasBidiRisk(text, start, text.length);
     _riskText = text;
     _riskStart = start;
     _riskVerdict = verdict;
@@ -627,7 +595,7 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
   ///
   /// 保守判定：切块会引入多个 paragraph，RTL/bidi 段落状态不能证明与整段一致，因此一旦
   /// 命中就整体退回单个 [Text]（普通 LTR 正文、CJK 与补充平面非 RTL 字符不受影响）。
-  /// 流式下扫描的是未封存后缀（有界）；只有整体退回时才会每帧扫描整段，属明确代价，
+  /// 扫描当前未封存后缀；安全分块时它通常有界，无安全断点或整体退回时可以覆盖整段。
   /// 不做采样、不做哈希近似。
   static bool _hasBidiRisk(String text, int start, int end) {
     if (start > 0 &&
@@ -667,14 +635,6 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
   static bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
 
   static bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
-}
-
-/// 一个已封存、不再变化的纯文本块：文本 + 复用的 [Text] widget 实例。
-class _PlainBodyChunk {
-  const _PlainBodyChunk({required this.text, required this.widget});
-
-  final String text;
-  final Widget widget;
 }
 
 Future<void> _openTimelineWebLink(

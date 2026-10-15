@@ -50,8 +50,7 @@ class _StudioFatalError extends ConsumerWidget {
                     key: const ValueKey('runtime-fatal-retry'),
                     onPressed: () {
                       // 只清启动失败的 init future，不能重启仍在运行的旧 controller。
-                      FrbStudioBridgeDataSource.retryInitialization();
-                      ref.invalidate(studioBridgeProvider);
+                      unawaited(ref.read(appGraphProvider).retryStartup());
                     },
                     icon: const Icon(Icons.refresh),
                     label: Text(context.l10n.runtimeFatalRetry),
@@ -66,13 +65,13 @@ class _StudioFatalError extends ConsumerWidget {
   }
 }
 
-class _StartupRecoveryBanner extends StatelessWidget {
+class _StartupRecoveryBanner extends ConsumerWidget {
   const _StartupRecoveryBanner();
 
   @override
-  Widget build(BuildContext context) =>
+  Widget build(BuildContext context, WidgetRef ref) =>
       ValueListenableBuilder<StartupRecoveryReport?>(
-        valueListenable: FrbStudioBridgeDataSource.startupRecovery,
+        valueListenable: ref.read(appGraphProvider).startupRecovery,
         builder: (context, report, _) {
           if (report == null) return const SizedBox.shrink();
           return ColoredBox(
@@ -96,7 +95,7 @@ class _StartupRecoveryBanner extends StatelessWidget {
                   IconButton(
                     tooltip: context.l10n.recoveryArchiveDismiss,
                     onPressed: () =>
-                        FrbStudioBridgeDataSource.startupRecovery.value = null,
+                        ref.read(appGraphProvider).dismissStartupRecovery(),
                     icon: const Icon(Icons.close),
                   ),
                 ],
@@ -413,7 +412,7 @@ class _PersistenceStatusPanelState
               // 明细展开时两者同时可见也不会让 Driver 唯一 finder 失效。
               key: const ValueKey('persistence-diagnostics-refresh'),
               onPressed: () =>
-                  retryShellPersistenceQueue(ref.read(studioBridgeProvider)),
+                  retryShellPersistenceQueue(ref.read(anyworkClientProvider)),
               icon: const Icon(Icons.refresh, size: 16),
               label: Text(context.l10n.persistenceQueueRefresh),
             ),
@@ -637,7 +636,7 @@ class _PersistenceStatusPanelState
         key: StudioDriverKeys.persistenceQueueRefresh,
         tooltip: context.l10n.persistenceQueueRefresh,
         onPressed: () =>
-            retryShellPersistenceQueue(ref.read(studioBridgeProvider)),
+            retryShellPersistenceQueue(ref.read(anyworkClientProvider)),
         icon: const Icon(Icons.refresh, size: 17),
       ),
     ];
@@ -693,7 +692,10 @@ class _PersistenceStatusPanelState
   Future<void> _retry() async {
     setState(() => _retrying = true);
     try {
-      await ref.read(directoryCommandsProvider.notifier).retryPersistence();
+      await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .retryPersistence();
     } finally {
       if (mounted) setState(() => _retrying = false);
     }
@@ -706,7 +708,8 @@ class _PersistenceStatusPanelState
     setState(() => _retryingThreads.add(threadId));
     try {
       await ref
-          .read(directoryCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .directoryCommands
           .retryThreadHistory(threadId, faultGeneration);
       // 命令返回值不作为 wrapper snapshot：队列内容由 canonical 事件更新。
     } on Object catch (error) {
@@ -728,7 +731,8 @@ class _PersistenceStatusPanelState
     setState(() => _resumingThreads.add(threadId));
     try {
       await ref
-          .read(directoryCommandsProvider.notifier)
+          .read(anyworkClientProvider)
+          .directoryCommands
           .resumeThreadHistory(threadId, faultGeneration);
     } on Object catch (error) {
       if (mounted) {

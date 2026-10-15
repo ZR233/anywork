@@ -18,13 +18,18 @@
 桌面 bundle 同时携带预构建 Rust bridge 与独立 helper 资源；资源定位和消费属于 Rust
 宿主边界，不由 Dart 加载后传输。分发、校验与 worker 生命周期遵循 [22](./22-ssh-remote.md)。
 
-anywork 是 Flutter 桌面应用，使用 Material 3、Riverpod、go_router 与 typed FRB。UI 只能通过
-bridge 访问 Studio 运行时，不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo
-integration 验收，不能伪造原生 provider、文件系统或进程能力。
+anywork 是 Flutter 桌面应用，使用 Material 3、Riverpod、go_router 与 typed FRB。Rust 持有业务
+事实；每个应用实例的 AppGraph 持有独立纯 Dart `anywork_client`、FRB adapter 与展示 owner。
+Client 管理资源、只读镜像、草稿和命令；Riverpod 只适配观察，Connector 把不可变 props 与意图
+回调交给 View。依赖与状态契约遵循 [25](./25-frontend-state.md)，Client 不依赖 Flutter、
+Riverpod、FRB 或 `Ref`，feature 不导入 FRB、adapter、transport 或 Client 私有实现。
+UI 不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo integration 验收，不能
+伪造原生 provider、文件系统或进程能力。
 
-Dart 侧状态与数据流遵循 [25](./25-frontend-state.md)：Bridge 层唯一消费 FRB 流并按领域分发
-到 store，命令经 typed command lane 以响应 canonical 收敛，页面只消费职责内 ViewProvider；
-Widget 只负责展示与发命令。窗口关闭必须等待 typed shutdown 完成并回收 Flutter、DTD、
+Client 的各领域 reducer 是 Dart 镜像的唯一 writer；FRB adapter 只做 wire 转换、传输与 native
+句柄收束。命令回执、镜像观察、生效和持久化分别表达，成功后不以聚合状态回读补齐事实。
+Widget 只负责展示与发出意图，Driver 读取同一 Client 的可见投影和诊断，不维护平行业务状态。
+窗口关闭必须等待 AppGraph 幂等收束及 typed shutdown 完成并回收 Flutter、DTD、
 MCP/LSP 和本地 child process tree；远端 helper 在 GUI 退出或 SSH 失联后由心跳租约
 自行清理，窗口不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首次 close
 前独立武装，重复关闭或重试都不延长；到期强制结束本进程并以退出码 1，正常完成为退出码 0，
@@ -105,9 +110,11 @@ idle、无 pending interaction 时可用；旧活动 run 由 runtime 归档，�
 snapshot 恢复 UI。Thread Mode 不出现在普通 Skills 设置和按需调用列表；两个内置模式不可
 删除或覆盖（Mode 体系见 [11](./11-thread-mode.md)）。
 
-起始页的模型与思考强度 selector 显示 route 作用域草稿的当前意图，未显式选择时读取当前
+起始页的模型与思考强度 selector 显示 Client 起始草稿的当前意图，草稿按逻辑 draft/project
+身份保留，不随路由观察者销毁；未显式选择时读取当前
 草稿 Mode 的 `modeModelRoutes` 默认值；切换 Mode 立即展示该 Mode 最后保存的选择，草稿与
-canonical 的组合显示规则见 [25](./25-frontend-state.md) §25.6。已有 root Thread 的
+canonical 的组合显示规则见 [25](./25-frontend-state.md)。提交在首次 await 前冻结完整 route，
+不以先改默认设置、等待、再读缓存的方式构造新会话。已有 root Thread 的
 selector 只读取 Thread runtime 中的
 `modelRoute`，修改时同时更新该 Thread 与其当前 Mode 默认值，不改变其他 Thread。child Thread
 继续只读展示创建时冻结的 Profile route。路由 unavailable 时保留原 selector 并显示错误，
@@ -269,15 +276,24 @@ recovery preview 与 Agents 预览中呈现。
 无常驻边框的文字菜单，悬停与键盘聚焦提供反馈；发送、确认和保存承担主要操作强调。
 
 按钮菜单、设置选择字段和状态详情统一复用 Material 官方组件承载通用交互：交互菜单由
-`MenuAnchor` 与 `MenuItemButton` 组成，设置表单选择字段使用 `DropdownMenu`，状态与侧栏
-详情面板直接架设在 `MenuAnchor` 上（程序化打开不迁移输入焦点）。锚定定位（真实触发控件
+`MenuAnchor` 与 `MenuItemButton` 组成，设置表单选择字段使用 `DropdownMenu`；状态悬停读数
+使用 `Tooltip.richMessage`，显式展开的详情面板使用 `MenuAnchor`。
+菜单触发按钮与 `MenuAnchor.childFocusNode` 关联同一个节点，焦点转移和恢复由框架负责，
+不补充 `requestFocus`、自制焦点状态机或关闭后的恢复回调。锚定定位（真实触发控件
 的布局边界、文字方向起始边对齐、下方优先上方避让、按安全区域收敛、窗口边缘保留默认
-8px 边距、触发间距 6px 由 `alignmentOffset` 提供）、长内容在菜单面板内有界滚动并显示
-滚动条、键盘导航（触发器方向键进入、Tab 限域、Enter/Space 选择）、Escape 与外点关闭
-均为框架原生行为；Studio 不维护自定义菜单、锚定或焦点框架，定制只保留三部分：
-`MenuTheme`/`DropdownMenuTheme` 等组件主题中的外观令牌、菜单行内容与选择数据流，以及
-详情面板的悬停/钉住业务交互；输入框的提交、粘贴和停止快捷键由输入控件作用域内的
+8px 边距、需要的触发间距通过 `alignmentOffset` 配置）、长内容在菜单面板内有界滚动并显示
+滚动条、键盘导航（方向键遍历、Tab/Shift+Tab、Enter/Space 选择）、Escape 与外点关闭
+均为框架原生行为；优先使用组件默认行为。Studio 只配置 `MenuTheme`/`DropdownMenuTheme`
+等组件主题的外观令牌、内容、选择数据流和必要尺寸，不维护自定义菜单、锚定或焦点框架，
+也不维护详情悬停定时器、点击钉住与重新打开抑制状态。输入框的提交、粘贴和停止快捷键由输入控件作用域内的
 标准 `Shortcuts`/`Actions` 处理，其他全局和非输入控件快捷键不由 Studio 自建。
+文本编辑使用 `TextField`，设置导航使用 `TabBar` 或 `NavigationRail`，焦点与快捷键沿用官方
+`Focus`、`Shortcuts`、`Actions`。业务 `selected` 来自 Client projection，键盘 `focused` 属于
+框架交互状态，两者独立；Connector 负责提交意图，通用组件不维护备用模型选择、业务 retry 或
+第二份 canonical 值。
+焦点配置遵循官方 [MenuAnchor.childFocusNode 契约](https://api.flutter.dev/flutter/material/MenuAnchor/childFocusNode.html)
+与 [FocusNode 生命周期约定](https://docs.flutter.dev/ui/interactivity/focus#best-practices-for-creating-focusnode-objects)；
+组件已经提供的遍历、关闭和恢复行为不在应用层重复实现。
 定位依据实际布局，不以条目声明高度、选中项位置或条目数量估算弹层坐标；长模型目录与
 智能体列表不得因此远离触发器。侧栏项目与会话详情通过 `MenuStyle.alignment` 的侧向
 放置在文字方向的尾侧展开，空间不足时换到另一侧，并按实际可用侧空间与安全区域收敛
@@ -288,7 +304,8 @@ recovery preview 与 Agents 预览中呈现。
 菜单内容随所有者重建而刷新，打开期间的 canonical 更新直接反映在浮层中。菜单只负责
 展示、开关与选择事件，不拥有业务选择或保存状态。菜单保留选中提示（选中行背景与
 勾选图标），模型选择菜单打开时使选中项滚入可见；点击或键盘打开后的选择遵循 Material
-触发器焦点，外点关闭尊重新点击目标的焦点，悬停打开的详情面板不抢输入焦点。
+触发器焦点，外点关闭尊重新点击目标的焦点，悬停提示不抢输入焦点；查看完整内容或操作详情时
+显式打开菜单，长详情在菜单内滚动，悬停提示保持只读且不接管指针。
 表单选择字段随 `DropdownMenu` 保持受控值跟随、禁用状态与空值语义（可空值用显式
 “默认”条目表达），字段校验仍由所属表单承担；状态详情保留悬停、点击与打开期间的
 canonical 数据刷新。各入口继续使用稳定的交互标识，模型分组、智能体状态
@@ -358,20 +375,23 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 
 ### 页面与实时订阅生命周期
 
-产品流按 [18](./18-studio-state.md) §18.2.1 的 typed topic/作用域组合，由 data 层和
-可释放 provider/lease 拥有，组件不解析 raw JSON。Shell 只常驻导航目录、配置及诊断摘要，
-设置壳只持有导航/公共配置；当前可见标签页拥有其统计、Profiles、服务、技能或用量观察者。
-保留隐藏标签的 UI 状态不保留其后台订阅。可见会话组合自己的状态流、内容窗口与根会话费用，
-离开/切换后释放旧观察者；草稿与阅读锚点保持原生命周期。
+产品流按 [18](./18-studio-state.md) §18.2.1 的 typed topic/作用域组合，由 Client 的领域 owner
+管理订阅与 reducer，组件不解析 raw JSON。Shell 观察导航目录、配置及诊断摘要，设置壳只观察
+导航/公共配置；当前标签页通过 Connector 表达统计、Profiles、服务、技能或用量的可见需求。
+这些可见需求可在隐藏时释放，保留隐藏标签的 UI 状态不要求持续处理无关数据。
 
-每个 topic 的事件由 Bridge 层的单一分发点进入对应领域 store，页面只读取职责内 ViewProvider；
-`lagged`、失败或关闭只影响对应可见区域，并在重同步期间保留最后有效内容。设置中的 MCP、
-LSP、Skills、Provider usage、模型性能、持久化队列与 Profiles 是独立职责，不合并为隐藏的
-“services”订阅；只有当前可见标签页或明确的 Driver/诊断观察者才持有相应 lease。会话窗口、
-费用的订阅随其观察者建立与释放；导航不产生业务写入，快速切换不清除新窗口、滚动锚点或
-草稿（见 [25](./25-frontend-state.md) §25.8）。
+页面观察与业务资源寿命分开：provider 的 dispose、暂停和重建只取消它自己的观察订阅，不关闭
+当前 Session/ChatView，不清草稿或扫描附件。打开 Settings、切换设置标签和返回均保留当前
+Thread 的 Client owner、ChatView 与草稿身份；切换 Thread、关闭项目、显式放弃草稿和应用退出
+才由相应 action 改变资源需求。关闭 ChatView 只取消 View 子资源，不关闭 Rust Session、Turn
+writer 或可靠历史。快速切换的旧回调不能清除新窗口、锚点或草稿。
 
-共享同一 topic 的观察者复用一个订阅，最后一个释放时取消；重新进入先取得最新基线。
+每个 topic 只有一个 Client 分发点与对应领域 reducer；`lagged`、失败或关闭只影响对应资源，
+重同步期间保留最后有效内容。MCP、LSP、Skills、Provider usage、模型性能、持久化队列与
+Profiles 保持独立职责，不合并为隐藏的“services”订阅。Client 可为相同 topic 的逻辑需求复用
+transport 订阅，在最后一个需求释放时关闭该资源；Riverpod 观察者数量本身不决定会话寿命。
+显示观察同步注册并取得当前值，暂停期间每个观察者只保留最新显示快照；可靠有序事件不采用
+这种丢中间值策略。重新观察直接取得 Client 当前镜像，不另开内容窗口。
 初次无数据才使用骨架/整页等待；后续刷新、重连及失败保留已有内容、滚动、选择、过滤与
 编辑草稿，仅给局部进度/错误。selector 使用职责内数据、值相等及稳定条目身份，不能让
 模型统计牵动整个设置壳，也不以无关通知重置表单。统计 pending 在固定页头轻量展示，
@@ -502,7 +522,8 @@ Dart 设置页按领域单独组织，不以聚合页拼凑无关业务。页面
 和失败使用各自状态文案，不因工具名为 `view_image` 就宣称已读取成功；普通工具详情与
 用户上传附件的展示不受此约定影响。图片入口消费 canonical 工具输出中的 typed
 attachment，不由 Flutter 解析 opaque 工具载荷；实时、历史分页和会话恢复使用同一份媒体
-投影，字节通过 Thread 附件读取接口加载；本地与 SSH 项目共用此路径，不把远端路径交给
+投影，字节通过 Client 的 typed 附件查询并携带稳定 Thread 与 attachment 身份加载，feature
+不读取 FRB 或 adapter；本地与 SSH 项目共用此路径，不把远端路径交给
 本地文件系统或浏览器读取。图片展开、收起与异步加载遵循统一条目布局协调契约（§19.10），
 不拥有图片专用滚动路径；收起与再次展开继续复用缓存（投影与访问校验见
 [18](./18-studio-state.md)）。
@@ -547,18 +568,24 @@ Timeline 的唯一 body owner 是 ChatView：runtime 内部按 Thread 同时持�
 
 打开正在运行的 Thread 时窗口直接包含尚未保存的 pending 条目（可见即可读），不等待 writer
 保存水位、checkpoint 或数据库确认；保存只推进 `saved`/durable 水位，不改变身份、顺序、内容
-revision 与执行终态。重同步重新建立订阅并消费首帧（`epoch` 递增）以作废旧代次的窗口请求；
+revision 与执行终态。状态流重订阅以自己的 owner epoch 判定新旧；ChatView 重开使用新的 view
+身份与 attempt，不跨这两个版本域比较。新 view 必须接受自己的首个 Reset；旧 view 的
+`lastGood` 只供暂时显示，不能作为新 view 的 Patch baseline。旧 attempt 的晚到句柄由原 attempt
+关闭，不得装入当前绑定或清空新状态。
 显式跳到最新时由同一个 view 交付该 Thread 的权威窗口（`Reset`），不在 Dart 侧读 SQL `Latest`
 首窗再拼 overlay。阅读历史时实时事件只更新内容与新内容提示，不抢占当前阅读锚点或跟随底部状态。
 
-GUI 的历史与实时正文统一由唯一内容窗口的 `next` 出口交付（控制操作只返回回执，见
+GUI 的历史与实时正文统一由同一个 Client ChatChannel 消费：`initial` 作为首个 Reset 进入唯一
+reducer，然后始终只保留一个未完成的 `next`（控制操作只返回回执，见
 [07](./07-streaming.md) §7.4）；GUI 不再有只读 SQL 的 `Latest`/`before`/`after` 分页旁路，
 HTTP 侧的 `history.sqlite` keyset 只读分页保留给外部消费。增量事件按版本化封套
 （`epoch`/`base_revision`/`revision`）判连续；正文本身不由状态流交付，而是由**唯一内容窗口**
 交付：同一 item 的全部字段变化合批为一次 `UpdateItem`
 （`expected_revision` 一次基线校验、`revision` 一次内容版本提交，`omitted_bytes` 与保存水位
 `saved` 随批提交），字段按稳定 `ChatField` 身份输出 `Append`/`Replace`/`Remove`/`Unchanged`，
-正文按具体文本字段应用而不是向 JSON 字符串追加字节；缺口或 `lagged` 时重新订阅并从数据库窗口重建
+正文按具体文本字段应用而不是向 JSON 字符串追加字节。Patch 的 `from` 必须等于当前 view 已交付
+的版本，缺口只重同步该 view；不把其他 view、owner epoch 或窗口代次的 revision 当作连续基线。
+缺口或 `lagged` 时由对应 owner 从权威窗口重建
 （见 [07](./07-streaming.md) §7.4、[17](./17-studio-storage.md) §17.4）。
 
 ChatView 是 pending/live/history 的唯一 body owner：未落盘的流式条目与已落盘历史条目在同一个
@@ -569,13 +596,18 @@ canonical 条目集合里按 ordinal 排序，宿主只消费窗口差量，不�
 在窗口过期时拼接旧载荷。同一个 view 复用同一个 `Session`，因此回源不会另开实例、也不会读到别的
 Thread 的条目；请求已发出但正文尚未可读时条目保持可见并可重试，不当作身份缺席。
 
-Timeline 组件分两层：**连接组件**（如 `_AgentTimelineHost` 与 store 派生 provider）负责订阅、
-合成与命令派发；**纯显示组件**（`TimelineView` 及其以下）只接受构造输入，不内部订阅 provider，
-也不在构造参数与 provider 之间运行时选择事实来源。Widget 不直接查询 SQL、调用分页接口或轮询。
-Timeline 宿主对外提供按 `threadId` 生命周期管理的内容绑定：界面只消费当前打开会话的窗口帧，
-通过命令入口发送分页、聚焦、正文补齐和锚点操作，并在切换时关闭绑定。事件至少覆盖
-窗口 `Reset/Patch`、分页开始/完成/失败、正文补齐、运行态变化、流滞后和会话关闭；会话事件经过
-版本和身份校验后投影到 Flutter 状态，迟到事件不能写入新会话。
+Timeline 的具体展示 owner 是 AppGraph 持有的 `TimelineSessionOwner`，直接观察 Client selection
+与选中 Session，按 `threadId` 管理具体 `TimelineSession` 展示 lease。它只投影同一 Client 窗口，
+不另开 native view、正文缓存或会话事实源；切换 Thread 时显式关闭旧展示 lease，provider 只取消
+自己的观察。lease 提供事件、稳定目标命令派发与幂等关闭；暂停的展示事件订阅恢复时可用当前
+Reset 重建，不积压 token 事件，也不代替可靠历史通道。
+
+**连接组件**负责观察不可变窗口与行、向该 session 派发分页、聚焦、正文补齐和锚点意图；
+**纯显示组件**只接受 props 与回调，不在业务 provider 与同一份 props 之间选择来源。附件展示
+通过 Client 公共 query 读取字节，不取得 transport。Widget 不直接分页、查询 SQL 或轮询。
+列表观察顺序身份和分页能力，行按 `(threadId, itemId)` 观察不可变 projection 并使用稳定 key，
+不能以正文、随机数或时间生成身份。展示事件至少覆盖窗口 `Reset/Patch`、分页开始/完成/失败、
+正文补齐、运行态变化、流滞后和关闭；迟到事件不能写入新会话。
 
 四个事实互不替代：item 内容 `revision`、窗口 `version`、保存水位 `saved` 与执行终态
 `ChatLifecycle`。终态只由执行事实决定，迟到预览不能把终态条目拉回流式；保存确认只翻 `saved`，
@@ -588,6 +620,10 @@ Timeline 区分跟随最新、查看当前条目和主动浏览历史三种阅�
 把 canonical 窗口从 Latest 改成 Around；只有主动浏览历史的锚点授权历史聚焦。重连/重开
 查看条目时仍读取 Latest 窗口，锚点仍在窗口内则恢复原位置，已被新内容淘汰则回到最新；
 窗口快照交付不抹掉仍有效的查看锚点。此意图是 GUI 内存状态，不改变 bridge 或持久化协议。
+主动历史阅读返回或重连时，Client 会话 owner 在每个新 attempt 首帧前登记原条目的 focus
+恢复；先到的 Latest Reset 不改变保存的 item + pixel offset。锚点尚未进入初始窗口时保留
+恢复意图，等待 focus 内容帧和 typed receipt 收束；失败显示在历史边缘，用户可显式重试或
+跳到最新。普通 provider/Widget 重建不重新建立这些资源。
 最新端显式展开条目可暂停贴底，保持操作入口及新内容可读，但展开、收起和
 由此产生的尺寸变化不新造翻页方向或请求旧页。主动浏览历史只由外层真实滚轮、拖动或
 键盘滚动接管；历史中操作条目保留已有方向与窗口，不以局部尺寸变化替代读者翻页意图。
@@ -599,6 +635,9 @@ Timeline 区分跟随最新、查看当前条目和主动浏览历史三种阅�
 没有滚动范围或已抵达当前窗口边缘时，滚轮仍可表达翻页方向；不能因像素位置未改变而
 丢弃继续翻页或返回最新的意图。布局变化把手动阅读位置钳位到最新端时保持手动阅读，
 下一次向下滚轮才恢复 Latest 跟随，即使此时已无更新页或没有可滚动距离。
+当前已在实际底部时，向下滚轮可能不产生 `ScrollUpdateNotification`；外层通过
+`PointerSignalResolver` 在内层 Scrollable 之后登记意图，仅处理未被内层消费的底部事件，
+不能以没有位移为由丢掉恢复 Latest 的操作，也不能抢占详情内部的滚轮。
 用户上翻后才转为历史阅读，允许窗口向旧移动；无滚动范围时拖动同样可以选择翻页方向。
 向旧加载淘汰远端新条目，向新加载淘汰远端旧条目；可见条目与阅读锚点优先保留。失败保留正文，
 在对应边缘提供显式重试，另一方向不受影响；加载提示只由当前分页状态驱动，不使用定时器延迟或轮询。
@@ -610,6 +649,14 @@ Timeline 区分跟随最新、查看当前条目和主动浏览历史三种阅�
 用户上翻即暂停自动跟随，即使仍在底部阈值内也保持手动阅读；新输出、内容补齐、图片展开、
 分页和窗口缩放不能恢复跟随。只有用户向下滚回最新端或显式跳到最新，才同时恢复界面跟随
 与 ChatView 的 Latest 聚焦；锚点校正不得取消进行中的拖动。
+外层带 `dragDetails` 的 `ScrollStartNotification` 一到即保护已建立的拖动活动，不能等首个
+`ScrollUpdateNotification`；两者之间的行尺寸变化也不得触发 `jumpTo`。拖动结束后恢复帧末几何协调。
+每次滚动更新使旧 readingGeneration 失效后，须在新身份下重新登记几何发布与预取；不能因
+ScrollPosition listener 先于通知执行而让整段按住拖动只发布首步和抬起后的几何。
+Driver 的只读 `isScrolling` 直接投影 Flutter 滚动活动；锚点验收等待手势更新已交付且滚动空闲的
+布局帧，不能把手势中途缓存的位置当成稳定阅读锚点。
+原生 Driver 拖动先验证目标在所属 RenderView 的命中路径，再派发独立指针的触摸事件；
+记录 DragStart、逐步移动和抬起后的滚动诊断。命令不直接写滚动位置或阅读意图。
 滚轮、触控板与滚动条共用一个 Flutter 官方滚动位置。消息列采用
 `CustomScrollView` 与 `SliverList.builder` 构成正向、按需构建的可变高度列表，只布局视口及少量缓存区域；
 列表使用稳定行身份和 `findChildIndexCallback`，不维护自定义滚动位置、高度缓存或总高度估算，
@@ -634,10 +681,16 @@ owning 条目身份、阅读锚点与可选的操作入口屏幕位置；布局�
 被动变化（流式正文、正文补齐、异步图片、窗口及视口尺寸变化）复用同一帧末几何协调：
 最新态继续贴底，其余意图保持条目身份与条目内偏移；同帧多次变化合并，与窗口/预览恢复
 共用一个有效恢复意图，不建立各类条目的独立定位循环。计划详情继续使用现有侧面板。
-布局校正受 Thread、窗口和条目身份及用户接管代次约束；新的显式意图、用户滚动、切换
-会话或条目离窗使旧校正失效，不让迟到回调覆盖当前位置或取消进行中的拖动。
+viewport 控制器以 `FollowLatest`、`ReadHistory`、`InspectItem` 与 `itemId + pixel offset`
+表达阅读意图。帧末锚点发布、几何恢复和预取均捕获 `(threadId, viewId, windowEpoch,
+readingGeneration)`，执行前逐项校验，定位条目还须校验 item 身份与当前布局上下文。新的显式
+意图、用户滚动、view 重开、切换会话或条目离窗使旧校正失效；旧回调只能清理自己的调度记录，
+不能清空新调度、改写当前位置或取消进行中的拖动。
+行的长期观察按 thread、view 和 query 身份校验来源，不绑定某次手势的 reading generation；
+行正文独立更新时仍通知几何协调，并在调度校正时捕获当前代次，不要求重建整个列表。
 详情内部滚轮仅移动参数或结果，不改变外层阅读意图。
-跟随末尾由布局期边界修正合并执行；显式索引恢复仅在没有用户手势时进行，预览正文不足以
+跟随末尾在帧末按布局后的真实滚动边界合并校正，不能只更新跟随标记而停在旧位置；
+显式索引恢复仅在没有用户手势时进行，预览正文不足以
 表达目标时保留恢复意图，完整正文到位后完成恢复。拖动滑块时暂停预取，释放后再补页。
 用户主动滚动且已离开最新端时，行展示可暂缓采用新的内容版本，规范窗口仍持续接收增量；
 滚动空闲后一次采用最新版本，结构性分页和切换会话立即生效，不排队保存每个 token。
@@ -653,20 +706,28 @@ owning 条目身份、阅读锚点与可选的操作入口屏幕位置；布局�
 供应商识图结论；远程目录和测试连接名称随证据保留，便于复查。
 “跳到最新”的操作区保留布局空间，显隐不改变消息视口高度。
 位置由 item 身份、条目内偏移和跟随末尾状态表达。切回优先显示缓存，插入、淘汰、窗口
-变化和图片展开均按同一可见锚点校正，不根据总滚动高度差猜测。GUI 只保留当前窗口的可见页
-与前后少量预取页（pending 与尚未确认的终态同样由该窗口交付，Dart 不另存覆盖层）；非可见
-正文按窗口淘汰释放，远离窗口的页与非选中 Thread workspace 也可释放。历史浏览只提示新内容，
+变化和图片展开均按同一可见锚点校正，不根据总滚动高度差猜测。GUI 只保留当前有界 ChatView
+的显示镜像与必要行投影，预取仍改变同一个窗口，不另存前后历史页（pending 与尚未确认的终态
+同样由该窗口交付）；正文按窗口淘汰释放，旧展示 lease 关闭时释放其 projector 与附件展示缓存。
+Settings 往返不等于关闭这个 lease。历史浏览只提示新内容，
 流式末尾跟随按帧合并渲染，不逐 token 查询 SQL，也不反复
 启动动画。Markdown 展示可按内容版本复用，不改变原始文本。超长纯文本正文（单段也可能达
-数十万字符）在**有界测量窗**内按同一 style/宽度/`TextScaler`/方向/locale 量出的**真实行
-起点**切成有界块：已稳定的块复用同一个 `Text` 实例、只有仍在增长的尾块重新布局；复用前对
-已封存前缀**逐块逐字精确校验**，同 identity 的 Replace 改动任何位置都会重建，不做首尾采样
-也不做哈希近似。断点只取行起点、各块按顺序拼接仍等于原文，因此复制的文本与可见换行按 SDK
-契约（`getSelectedContent` 顺序拼接各 Selectable、不插分隔）不变，仍需实机确认。只有 `ltr`
+数十万字符）在固定的完整 **6144 字符测量窗**内按同一 style/宽度/`TextScaler`/方向/locale
+选择行起点，一次处理当前正文的全部可封存前缀，块长优先接近 4096 字符。尾部不足完整测量窗
+时不封存，使同一正文的分区不依赖追加批次、build 次数或重新打开；不能让巨型尾段在无关
+rebuild 中逐步切块。已稳定的块复用同一个 `Text` 实例，追加只布局新增块与尾块。
+复用须精确确认完整上一版正文是当前前缀；非追加 Replace（包括缩短或只改测量 lookahead）
+整体重算，不做首尾采样或哈希近似。原生验收曾测得相同声明样式的长短段落具有不同字符宽度，
+因此行起点测量本身不能证明不同段长的可见换行一致，阅读恢复须核对实际可见字符及其像素位置。
+各块按顺序拼接仍等于原文，复制依照 SDK `getSelectedContent` 顺序拼接各 Selectable、不插分隔
+的契约，并通过原生选择复制单独验证。只有 `ltr`
 且本次 canonical 正文无 RTL/bidi 控制字符时才启用，否则清掉已封存块、整体退回单个 `Text`；
 测量窗内量不出安全断点（超长无空白 run、CJK 无空格断行、缩进续行）时只是不再新增块，保留
-已封存前缀 + 单个尾块，仍以真实行起点分块而不是整体回退。收益是有条件的：逐帧追加时每帧只
-重排尾块，一次性换入超大正文的那一帧仍与整段布局同阶（与优化前同级），后续帧继续按批封存。
+已封存前缀 + 单个尾块。风险判定使用当前后缀，不能把暂时未配对代理字符的结果永久缓存到后续
+合法正文。收益是有条件的：普通追加只布局新增块与尾块，精确前缀比较仍随已有正文长度增长；
+首次打开与非追加替换须完成全部分块和排版，不承诺冷开性能或任意正文的尾块上限。
+候选边界测量不等同于覆盖 `Text` 的全部继承参数；bold/spacing overrides、THB、
+softWrap/maxLines/widthBasis 等配置下的单段排版等价性须独立验证，不由默认原生配置外推。
 不为指标切分普通短句，也不引入第二份正文事实源。
 
 ## 19.11 运行中发送消息
@@ -674,8 +735,14 @@ owning 条目身份、阅读锚点与可选的操作入口屏幕位置；布局�
 主会话运行时仍可编辑、添加附件和发送。输入区只有一个主按钮：运行中无草稿和附件时显示中性色停止按钮，
 有内容时切换为高对比强调色发送按钮，空闲无内容时为浅灰禁用态；提交中显示禁用进度。
 运行时发送显示“发送并继续”，输入区获得焦点时可按 Esc 停止并保留草稿；输入区不显示 Esc 停止提示，
-也不说明发送会打断当前执行。停止只暂停，不产生新输入。只有提交请求在途时禁用重复提交，受理后清空本次
-草稿并恢复编辑，不等待新 Turn 出现；失败保留草稿及附件。提交使用稳定 ID，网络重试不重复执行。
+也不说明发送会打断当前执行。停止只暂停，不产生新输入，并在点击时固定 `ThreadId + TurnId`。
+提交在首次 await 前同步冻结 `DraftStamp`、文本、完整 route、参数、项目/会话身份与附件 ID 集合，
+同一提交使用稳定 `OperationId`。只防止该冻结提交重复进入；用户继续编辑产生新的 revision，
+旧 ACK 只能清理仍由该提交拥有的冻结值，不能清掉新文本、route 或附件。不等待新 Turn 出现才
+允许编辑。失败保留草稿与附件；未知结果单独显示，不自动重放非幂等命令。受理、观察、生效与
+durable 不互相替代，附件只在明确 durable/ownership transfer、显式删除或放弃时清理。
+Client 的草稿身份不随 Settings、标签页或 provider 重建变化；TextEditingController 只持有选区、
+composing 等编辑状态，同一草稿输入不反复覆盖其 text。
 输入框回车提交：Enter 提交满足前置条件的当前草稿，语义与主按钮一致（运行中即“发送并继续”）；
 Shift+Enter 插入换行，多行草稿不受影响。
 普通 Composer 输入框聚焦且可编辑时，Ctrl+V、Cmd+V 与 Shift+Insert 优先读取系统剪贴板图片；
@@ -692,16 +759,19 @@ Provider、默认 provider、单个 Mode route 的 model、单个 Mode route 的
 其他设置使用独立 typed intent；可编辑的复合页在提交时按字段变化拆成最小 command，不把
 同页其它控件的旧值重新写回。它们共享一个 settings operation lane 以满足 CAS 顺序，但
 payload 不携带其他设置的完整旧副本；provider 编辑只有在重命名或删除确实需要迁移引用时才
-携带明确的 route migration。成功结果必须来自 Bridge canonical snapshot。
+携带明确的 route migration。确认的资源由 Rust typed response 或 owner frame 进入对应 Client
+reducer；不在成功后聚合回读 `StudioState`。route 命令保留双 CAS，响应只确认实际涉及的
+settings/default 资源，Thread route 仍由自己的 owner frame 观察。
 
 Model、Mode 和 reasoning selector 不保存完整 settings，也不捕获可变 `view`。回调只发送
-稳定的 project/thread/role identity 与用户意图，执行时由 repository 读取最新状态。selector
+稳定的 project/thread/role identity、expected revision 与用户意图，提交前由 Client 固定目标。selector
 projection 分为 canonical、pending、resolved、unavailable；pending 只提供即时展示，失败
 回滚到 canonical 并保留可重试错误。模型目录刷新按 provider 去重并使用独立 catalog 水位，
 不得触发设置页整棵重建或覆盖 route。
-新会话页面消费 route 作用域草稿控制器与起始页 ViewProvider，设置页消费按领域的
-ViewProvider；两者都只读 immutable projection。选择器菜单的异步命令在关闭菜单后继续由
-命令 lane 完成，快速 A→B→C 选择按 lane 串行语义收敛。
+新会话页面消费 Client 的 StartDraftStore 与起始页 projection，设置页消费按领域的只读观察；
+两者都只读 immutable projection。选择器菜单关闭后命令仍由 Client 完成。快速 A→B→C 选择的
+旧 operation 只能更新自己的真实结果，不能清除 C 的 latest intent 或 pending overlay；回执与
+帧的到达顺序不能决定是否成功，版本相等也不能推断 `NoChange`。
 
 模型选择器的可用性来自活动 Thread 的实时会话状态；持久化检查点不包含模型资源，不能用其默认
 不可用值覆盖实时路由。runtime 通知由同一投影 owner 从最新快照生成，仅状态变化时发布；
@@ -709,13 +779,13 @@ ViewProvider；两者都只读 immutable projection。选择器菜单的异步�
 
 ## 19.13 实时 projection 与同页更新
 
-UI 的 canonical state 由各领域 store 更新（[25](./25-frontend-state.md) §25.4），Widget 只订阅
-职责内不可变、值相等的 ViewProvider。状态栏、上下文和 throughput 只消费
+UI 的 canonical 镜像由 Client 各领域 read model 更新（[25](./25-frontend-state.md)），Riverpod
+只观察职责内不可变、值相等的 projection，Connector 再交给 View。状态栏、上下文和 throughput 只消费
 runtime/context/throughput projection；
 composer 只消费 composer projection；timeline、interaction、activity、storage、settings、
 usage、statistics 与 costs 分别消费对应 projection。高频 runtime 更新不得使完整
 `AgentWorkspaceView` 驱动 timeline、composer、表单或滚动状态重建；弹层打开期间也必须随
-canonical 更新，隐藏页面释放 lease，重新进入先恢复最新基线。
+canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子取得当前镜像；它不关闭跨路由资源。
 
 附件 admission 是同一 canonical composer draft 的两阶段更新：`admitAttachmentDrafts` 返回
 后先显示稳定 draft metadata，随后按相同 draft ID 异步补齐 preview bytes。补齐前必须重新读取

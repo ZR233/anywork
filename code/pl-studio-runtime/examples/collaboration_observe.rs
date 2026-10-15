@@ -166,6 +166,14 @@ async fn collect(
         seconds,
     } = observation;
     let project = runtime.open_project(workspace).await?;
+    let route = runtime
+        .read_settings()?
+        .config
+        .settings
+        .mode_model_routes
+        .into_iter()
+        .find(|route| route.mode_id == "mode.simple")
+        .context("simple mode route is unavailable")?;
     let created = runtime
         .create_thread_command(
             project.id,
@@ -177,6 +185,11 @@ async fn collect(
                     attachment_draft_ids: vec![],
                 },
                 mode: "mode.simple".into(),
+                route: pl_protocol::studio::NewThreadModelRoute {
+                    provider_id: route.provider_id,
+                    model: route.model,
+                    effort: route.effort,
+                },
                 workspace_mode,
             },
         )

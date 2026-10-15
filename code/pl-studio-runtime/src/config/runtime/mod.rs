@@ -215,7 +215,7 @@ impl ConfigRuntime {
         expected_revision: u64,
         profile_id: &str,
         profile: &super::UserAgentProfile,
-    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
         let _command = self
             .command_lock
             .lock()
@@ -223,7 +223,12 @@ impl ConfigRuntime {
         let current = self.read()?;
         ensure_revision(expected_revision, current.revision)?;
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
-        super::save_user_agent_profile(self.store.paths(), profile_id, profile, &current.config)?;
+        let changed = super::save_user_agent_profile(
+            self.store.paths(),
+            profile_id,
+            profile,
+            &current.config,
+        )?;
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
@@ -235,7 +240,7 @@ impl ConfigRuntime {
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok(next)
+        Ok((next, changed))
     }
 
     /// 使用 expected revision 原子保存完整 desired config。

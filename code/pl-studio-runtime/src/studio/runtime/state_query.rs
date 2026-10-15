@@ -47,6 +47,7 @@ impl StudioRuntime {
         }
         let (model_performance, session_costs) = self.model_performance.snapshot_and_costs().await;
         Ok(StudioStateSnapshot {
+            owner_epoch: self.owner_epoch.clone(),
             runtime,
             project_directory,
             thread_directory,

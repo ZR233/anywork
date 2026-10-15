@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';
@@ -22,10 +23,12 @@ Future<BridgeDeepSeekWebSearchSettingsDto> readDeepseekWebSearchSettings() =>
 
 /// Applies one typed settings field/resource mutation. Sibling values are
 /// resolved by the runtime from its canonical desired configuration.
-Future<BridgeSettingsStateResponse> applySettingsField({
+Future<BridgeSettingsCommandReply> applySettingsField({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required SettingsFieldInput input,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsApplySettingsField(
+  operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   input: input,
 );
@@ -45,36 +48,44 @@ Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({
   expectedSettingsRevision: expectedSettingsRevision,
 );
 
-Future<BridgeSettingsStateResponse> saveRuntimePermissionMode({
+Future<BridgeSettingsCommandReply> saveRuntimePermissionMode({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String mode,
 }) => RustLib.instance.api
     .crateApiStudioHandlersSettingsSaveRuntimePermissionMode(
+      operationId: operationId,
       expectedSettingsRevision: expectedSettingsRevision,
       mode: mode,
     );
 
-Future<BridgeSettingsStateResponse> saveProvider({
+Future<BridgeSettingsCommandReply> saveProvider({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required ProviderSettingsInput input,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsSaveProvider(
+  operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   input: input,
 );
 
-Future<BridgeSettingsStateResponse> setDefaultProvider({
+Future<BridgeSettingsCommandReply> setDefaultProvider({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String providerId,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsSetDefaultProvider(
+  operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   providerId: providerId,
 );
 
-Future<BridgeSettingsStateResponse> removeProvider({
+Future<BridgeSettingsCommandReply> removeProvider({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String providerId,
   required RemoveProviderInput input,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveProvider(
+  operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   providerId: providerId,
   input: input,

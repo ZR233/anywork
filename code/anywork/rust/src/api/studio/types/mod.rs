@@ -1,6 +1,7 @@
 pub mod agent_profile;
 pub mod attachment;
 pub mod chat;
+pub mod command;
 pub mod error;
 pub mod event;
 pub mod history;
@@ -17,6 +18,7 @@ pub mod updater;
 pub use agent_profile::*;
 pub use attachment::*;
 pub use chat::*;
+pub use command::*;
 pub use error::*;
 pub use event::*;
 pub use product_topic::*;

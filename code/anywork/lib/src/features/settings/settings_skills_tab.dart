@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../presentation/providers/client_provider.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
@@ -251,7 +252,10 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
 
   Future<void> _searchSkills(String query, int request) async {
     try {
-      final result = await readDirectoryCommands(ref).searchSkills(query);
+      final result = await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .searchSkills(query);
       if (!mounted || request != _searchRequest || result == null) {
         return;
       }
@@ -272,7 +276,9 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       setState(() => _saveError = null);
       final settings = ref.read(settingsSkillsViewProvider).settings;
       if (settings == null) return;
-      await readSettingsCommands(ref)
+      await ref
+          .read(anyworkClientProvider)
+          .settingsCommands
           .applySettingsField(SkillsDisabledCommand(disabled.toList()..sort()));
     } catch (error) {
       if (mounted) {
@@ -283,7 +289,10 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
 
   Future<void> _refreshSkillsState() async {
     try {
-      await readDirectoryCommands(ref).refreshSkillsState();
+      await ref
+          .read(anyworkClientProvider)
+          .directoryCommands
+          .refreshSkillsState();
     } catch (error) {
       if (mounted) {
         setState(() => _discoverError = error.toString());
@@ -297,7 +306,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       _discoverError = null;
     });
     try {
-      await readDirectoryCommands(ref).discoverSkills();
+      await ref.read(anyworkClientProvider).directoryCommands.discoverSkills();
     } catch (error) {
       if (mounted) {
         setState(() => _discoverError = error.toString());

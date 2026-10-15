@@ -1,7 +1,12 @@
+import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
+import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -9,41 +14,92 @@ import 'context_usage_readout.dart';
 import 'session_selectors.dart';
 import 'status_bar_item.dart';
 import 'status_detail_popover.dart';
-import 'status_view.dart';
 
-class ThreadStatusBar extends ConsumerWidget {
-  const ThreadStatusBar({
-    this.workspace,
-    this.view,
+/// Reads one stable Thread owner and passes a single frame to the pure View.
+class ThreadStatusConnector extends ConsumerWidget {
+  const ThreadStatusConnector({
+    super.key,
+    required this.threadId,
     this.showTodo = false,
     this.todoExpanded = false,
     this.onToggleTodo,
-    super.key,
-  }) : assert(workspace != null || view != null);
+  });
 
-  final AgentWorkspaceView? workspace;
-  final StatusBarView? view;
+  final String threadId;
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final workspace = view ?? StatusBarView.fromWorkspace(this.workspace!);
-    final runtimeProjection = ref.watch(statusRuntimeProjectionProvider);
-    final contextProjection = ref.watch(statusContextProjectionProvider);
-    final throughputProjection = ref.watch(statusThroughputProjectionProvider);
-    final runtime = runtimeProjection?.runtime ?? workspace.runtime;
-    final contextUsage =
-        contextProjection ??
-        StudioContextProjection.fromRuntime(
-          runtimeProjection?.threadId,
-          runtime,
-        );
-    final thread = workspace.thread;
+    final session = ref.watch(threadSessionStoreProvider(threadId));
+    final directory = ref.watch(threadDirectoryStoreProvider);
+    final settings = ref.watch(settingsStoreProvider);
+    final facts = ModelRouteQueries.threadStatus(
+      threadId: threadId,
+      directory: [...directory.window.threads, ...directory.overlayThreads],
+      runtime: session.runtime,
+    );
+    final thread = facts.thread;
+    if (thread == null) return const SizedBox(height: 38);
+    return ThreadStatusBar(
+      thread: thread,
+      runtime: facts.runtime,
+      providers: providersWithCatalogMetadata(
+        settings.canonical?.providers ?? const [],
+        settings.providerCatalog,
+      ),
+      lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
+      showTodo: showTodo,
+      todoExpanded: todoExpanded,
+      onToggleTodo: onToggleTodo,
+    );
+  }
+}
+
+class ThreadStatusBar extends StatelessWidget {
+  const ThreadStatusBar({
+    super.key,
+    required this.thread,
+    required this.runtime,
+    required this.providers,
+    required this.lspServers,
+    this.showTodo = false,
+    this.todoExpanded = false,
+    this.onToggleTodo,
+  });
+
+  final StudioThread thread;
+  final ThreadRuntimeView? runtime;
+  final List<ProviderSettingsView> providers;
+  final List<LspServerStateView> lspServers;
+  final bool showTodo;
+  final bool todoExpanded;
+  final VoidCallback? onToggleTodo;
+
+  @override
+  Widget build(BuildContext context) {
+    final runtime = this.runtime;
+    if (runtime == null) {
+      return SizedBox(
+        height: 38,
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            Text(thread.title),
+            const SizedBox(width: 12),
+            Text(context.l10n.settingsNotAvailable),
+          ],
+        ),
+      );
+    }
+    final contextUsage = StudioContextProjection.fromRuntime(
+      thread.id,
+      runtime,
+    );
     final capabilityLabel = _runtimeCapabilityLabel(context, runtime);
     final lspActiveServers = [
-      for (final server in ref.watch(statusLspServersProvider))
+      for (final server in lspServers)
         if (_lspActiveActivity(server) != null) server,
     ];
     return DecoratedBox(
@@ -62,11 +118,7 @@ class ThreadStatusBar extends ConsumerWidget {
                 final route = runtime.modelRoute;
                 final routeModel = route == null
                     ? null
-                    : modelForRoute(
-                        workspace.providers,
-                        route.providerId,
-                        route.model,
-                      );
+                    : modelForRoute(providers, route.providerId, route.model);
                 final hasOverflow =
                     (thread.isRoot &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
@@ -105,16 +157,16 @@ class ThreadStatusBar extends ConsumerWidget {
                           : '${thread.title} · ${context.threadStatusLabel(thread.status)}',
                       maxWidth: 96,
                     ),
-                    if (showModel &&
-                        thread.isAgent &&
-                        (route?.model.isNotEmpty ?? runtime.model.isNotEmpty))
+                    if (showModel && thread.isAgent)
                       _StatusReadout(
                         icon: Icons.smart_toy_outlined,
-                        label: route?.model ?? runtime.model,
+                        label: route?.model.isNotEmpty == true
+                            ? route!.model
+                            : context.l10n.settingsNotAvailable,
                         tooltip:
                             route?.unavailableReason ??
                             route?.model ??
-                            runtime.model,
+                            context.l10n.settingsNotAvailable,
                         maxWidth: 140,
                       ),
                     if (runtime.workflow?.currentRun case final run?)
@@ -123,12 +175,8 @@ class ThreadStatusBar extends ConsumerWidget {
                     _StatusReadout(
                       key: StudioDriverKeys.threadThroughput,
                       icon: Icons.speed_outlined,
-                      // A present projection owns the value, including an
-                      // intentional unknown while a live sample is partial.
-                      // Only fall back before that projection is available;
-                      // never pair the current live timing with an old turn.
                       label: context.tokenThroughputLabel(
-                        statusBarThroughput(throughputProjection, runtime),
+                        ModelRouteQueries.throughput(runtime),
                       ),
                       tooltip: context.l10n.statusCurrentAgentTokenSpeed,
                       maxWidth: 84,
