@@ -479,8 +479,12 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
     final menuHeight = (viewport.height - 96)
         .clamp(0.0, _agentMenuMaxHeight)
         .toDouble();
+    final selectedId = widget.state.selectedThreadId;
     return MenuAnchor(
       controller: _controller,
+      // 关闭官方 UnconstrainedBox 包装，让下方 MenuStyle 的宽度约束真正生效；
+      // 菜单宽度因此稳定、各行等宽，标题过长只做行内省略。
+      crossAxisUnconstrained: false,
       style: MenuStyle(
         minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
         maximumSize: WidgetStatePropertyAll(Size(menuWidth, menuHeight)),
@@ -488,71 +492,10 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
         for (final thread in threads)
-          MenuItemButton(
-            key: StudioDriverKeys.agentRow(thread.id),
-            overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(
-                ref
-                    .read(anyworkClientProvider)
-                    .directoryCommands
-                    .selectAgentThread(thread.id),
-              );
-            },
-            style: thread.id == widget.state.selectedThreadId
-                ? ButtonStyle(
-                    backgroundColor: WidgetStatePropertyAll(
-                      Theme.of(context).colorScheme.surfaceContainerHigh,
-                    ),
-                  )
-                : null,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                // 真实层级深度逐级缩进，不设固定深度上限；宽度不足时
-                // 先压缩间距、再整体缩放，任何有限正行宽都不产生
-                // RenderFlex overflow。
-                final indent = _agentDepth(thread, threads) * 12.0;
-                final width = constraints.maxWidth;
-                if (width.isFinite && width < _agentRowCompactFixedContent) {
-                  // 极窄：整行按紧凑最小宽整体缩放（缩放而非裁剪；
-                  // 此宽度下层级缩进让位给内容本身）。
-                  return FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: SizedBox(
-                      width: _agentRowCompactFixedContent,
-                      child: _agentRow(
-                        context,
-                        thread,
-                        threads,
-                        gap: 4,
-                        indent: 0,
-                      ),
-                    ),
-                  );
-                }
-                // 正常宽度用完整间距，紧凑区间把间距压到 4；图标、
-                // 正文、状态与选中勾全部保留，缩进只裁剪到行宽减去
-                // 对应固定内容预算，不产生负 padding。
-                final compact = width.isFinite && width < _agentRowFixedContent;
-                final gap = compact ? 4.0 : 12.0;
-                var budget = width.isFinite
-                    ? width -
-                          (compact
-                              ? _agentRowCompactFixedContent
-                              : _agentRowFixedContent)
-                    : indent;
-                if (budget < 0) {
-                  budget = 0;
-                }
-                return _agentRow(
-                  context,
-                  thread,
-                  threads,
-                  gap: gap,
-                  indent: indent > budget ? budget : indent,
-                );
-              },
-            ),
+          _agentRow(
+            thread,
+            depth: _agentDepth(thread, threads),
+            selected: thread.id == selectedId,
           ),
       ],
       child: TextButton(
@@ -578,76 +521,106 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
     );
   }
 
-  /// One agent row with parameterized in-row spacing, shared by the normal
-  /// and compact width branches of the row builder above.
+  /// 单个智能体行：层级缩进、状态图标、任务概要/角色、右侧状态与选中勾。
+  ///
+  /// 图标、正文与尾部件分别落在 [MenuItemButton] 的官方槽位上，行内空间由 Flex
+  /// 与行内省略分配；条目本身不读取约束、也不推导行宽预算，因此菜单面板的
+  /// intrinsic 测量不会失败。选中勾在所有行保留同宽占位，各行状态右边缘因此对齐。
   Widget _agentRow(
-    BuildContext context,
-    StudioThread thread,
-    List<StudioThread> threads, {
-    required double gap,
-    required double indent,
+    StudioThread thread, {
+    required int depth,
+    required bool selected,
   }) {
-    final hasError = _agentForThread(widget.state, thread.id)?.error != null;
-    return Row(
-      children: [
-        Padding(
-          padding: EdgeInsetsDirectional.only(start: indent),
-          child: Icon(
-            hasError ? Icons.error_outline : Icons.circle,
-            size: hasError ? 16 : 9,
-            color: hasError
-                ? Theme.of(context).colorScheme.error
-                : _statusColor(context, widget.state, thread),
-          ),
+    final error = _agentForThread(widget.state, thread.id)?.error;
+    final hasError = error != null;
+    final summary = _agentDisplayName(context, thread);
+    final status = error ?? _agentShortStatus(context, thread);
+    final secondaryStyle = Theme.of(context).textTheme.labelSmall
+        ?.copyWith(color: context.colors.onSurfaceVariant);
+    final role = thread.role.trim();
+    final roleLabel = role.isEmpty
+        ? null
+        : (thread.isRetiredAgent
+              ? context.l10n.agentRoleRetired
+              : context.roleLabel(role));
+    return MenuItemButton(
+      key: StudioDriverKeys.agentRow(thread.id),
+      onPressed: () {
+        unawaited(
+          ref
+              .read(anyworkClientProvider)
+              .directoryCommands
+              .selectAgentThread(thread.id),
+        );
+      },
+      // 选中背景走官方样式工厂；内边距、行高、悬浮与墨迹效果沿用
+      // MenuItemButton 的官方默认值。
+      style: MenuItemButton.styleFrom(
+        backgroundColor: selected
+            ? Theme.of(context).colorScheme.surfaceContainerHigh
+            : null,
+      ),
+      // 层级缩进按真实父子深度表达；Material 菜单项没有对应能力。
+      leadingIcon: Padding(
+        padding: EdgeInsetsDirectional.only(start: depth * _agentIndentStep),
+        child: Icon(
+          hasError ? Icons.error_outline : Icons.circle,
+          size: hasError ? 16 : 9,
+          color: hasError
+              ? Theme.of(context).colorScheme.error
+              : _statusColor(context, widget.state, thread),
         ),
-        SizedBox(width: gap),
-        Expanded(
-          // 正文与状态按固定比例分配行内空间，两者行内省略，
-          // 窄视口不再依赖固定像素宽度。
-          flex: 11,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Tooltip(
-                message: _agentDisplayName(context, thread),
-                child: Text(
-                  _agentDisplayName(context, thread),
-                  key: StudioDriverKeys.agentTaskSummary(thread.id),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+      ),
+      // 未选中行用官方 Visibility 保持同宽占位，状态列与指示列因此始终对齐。
+      trailingIcon: Visibility(
+        visible: selected,
+        maintainSize: true,
+        maintainAnimation: true,
+        maintainState: true,
+        child: const Icon(Icons.check, size: _agentCheckSize),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Flexible(
+            flex: 2,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Tooltip(
+                  message: summary,
+                  child: Text(
+                    summary,
+                    key: StudioDriverKeys.agentTaskSummary(thread.id),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
+                if (roleLabel != null)
+                  Text(
+                    roleLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: secondaryStyle,
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: _agentRowGap),
+          Flexible(
+            child: Tooltip(
+              message: status,
+              child: Text(
+                status,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: secondaryStyle,
               ),
-              if (thread.role.trim().isNotEmpty)
-                Text(
-                  thread.isRetiredAgent
-                      ? context.l10n.agentRoleRetired
-                      : context.roleLabel(thread.role),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.labelSmall
-                      ?.copyWith(color: context.colors.onSurfaceVariant),
-                ),
-            ],
+            ),
           ),
-        ),
-        SizedBox(width: gap),
-        Flexible(
-          flex: 9,
-          child: Text(
-            _agentForThread(widget.state, thread.id)?.error ??
-                _agentShortStatus(context, thread),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.labelSmall
-                ?.copyWith(color: context.colors.onSurfaceVariant),
-          ),
-        ),
-        if (thread.id == widget.state.selectedThreadId) ...[
-          SizedBox(width: gap),
-          const Icon(Icons.check, size: 18),
         ],
-      ],
+      ),
     );
   }
 }
@@ -655,20 +628,12 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
 /// `n agents` 菜单最多占用的高度，超出部分滚动查看。
 const double _agentMenuMaxHeight = 320;
 
-/// agent 行内固定内容的最小保留预算：状态图标（最大 16）＋两个 12 的
-/// 间距＋选中勾 18。极端层级深度把缩进裁剪到行宽减去该预算，保证
-/// 条目不溢出且正文仍由 flex/ellipsis 收敛；这不是深度上限，正常
-/// 深度完全按真实层级缩进。
-/// Widest fixed content an agent row can carry: the error icon (16), the
-/// spacing after the icon (12) and after the body (12), the spacing before
-/// the selected check mark (12) and the check itself (18). Selected normal
-/// rows only need 63; error rows with the check need the full 70.
-const double _agentRowFixedContent = 16 + 12 + 12 + 12 + 18;
+/// 任务概要与状态文本之间的行内间距。
+const double _agentRowGap = 12;
 
-/// Compact fixed-content budget once the real row width drops below
-/// [_agentRowFixedContent]: the same error icon (16) and check (18) with
-/// the three in-row gaps squeezed to 4.
-const double _agentRowCompactFixedContent = 16 + 4 + 4 + 4 + 18;
+/// 单层层级缩进的步长，以及行尾选中勾占位宽度。
+const double _agentIndentStep = 12;
+const double _agentCheckSize = 18;
 
 /// 宽屏顶栏 actions 最多占用的横向比例，其余横向空间留给会话标题。
 const double _headerActionsWidthFraction = 0.7;
@@ -770,10 +735,11 @@ bool _isFaultedAgentStatus(ThreadStatusView status) =>
 String _agentShortStatus(BuildContext context, StudioThread thread) =>
     context.threadStatusLabel(thread.status);
 
+/// 菜单条目主文案：所有者与子智能体都直接展示自己的任务概要，角色与状态
+/// 另行显示；没有概要时回退到角色标签，仍在运行的会话不暴露内部 ID。
 String _agentDisplayName(BuildContext context, StudioThread thread) {
-  if (!thread.isRoot && thread.title.trim().isNotEmpty) {
-    return thread.title.trim();
-  }
+  final title = thread.title.trim();
+  if (title.isNotEmpty) return title;
   if (thread.isRetiredAgent) return thread.id;
   final role = thread.role.trim();
   if (role.isEmpty) {
