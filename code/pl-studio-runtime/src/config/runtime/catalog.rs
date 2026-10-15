@@ -154,7 +154,7 @@ impl ConfigRuntime {
             Ok(cache) => {
                 // Validate the complete proposed observation before touching the previous durable file.
                 next.cache = Some(cache.clone());
-                let effective = model_catalog::effective(&desired, &next_observations)?;
+                let effective = effective_runtime_config(&desired, &next_observations)?;
                 effective.validate_declarations()?;
                 match cache.persist(self.store.paths(), &probe.provider, probe.query.identity()) {
                     Ok(()) => {

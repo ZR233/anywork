@@ -974,12 +974,6 @@ abstract class AppLocalizations {
   /// **'Stop'**
   String get composerStop;
 
-  /// No description provided for @permissionModeTooltip.
-  ///
-  /// In en, this message translates to:
-  /// **'Permission mode'**
-  String get permissionModeTooltip;
-
   /// No description provided for @compileModeSimple.
   ///
   /// In en, this message translates to:
@@ -991,24 +985,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Task'**
   String get compileModeTask;
-
-  /// No description provided for @permissionModeRequestApproval.
-  ///
-  /// In en, this message translates to:
-  /// **'Request'**
-  String get permissionModeRequestApproval;
-
-  /// No description provided for @permissionModeAutoReview.
-  ///
-  /// In en, this message translates to:
-  /// **'Review'**
-  String get permissionModeAutoReview;
-
-  /// No description provided for @permissionModeFullAccess.
-  ///
-  /// In en, this message translates to:
-  /// **'Full'**
-  String get permissionModeFullAccess;
 
   /// No description provided for @statusCost.
   ///
@@ -2156,7 +2132,7 @@ abstract class AppLocalizations {
   /// No description provided for @interactionPermissionFooterHint.
   ///
   /// In en, this message translates to:
-  /// **'The tool runs in the current working directory; adjust permission mode in the composer.'**
+  /// **'The tool runs in the current working directory.'**
   String get interactionPermissionFooterHint;
 
   /// No description provided for @interactionReject.
@@ -3014,7 +2990,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsSecurityModeSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Tool execution permission mode; changes apply immediately.'**
+  /// **'Tool execution permission is fixed to full access; workspace and worktree boundaries are not relaxed.'**
   String get settingsSecurityModeSubtitle;
 
   /// No description provided for @settingsCurrentMode.
@@ -4060,24 +4036,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Filter agents'**
   String get settingsFilterAgents;
-
-  /// No description provided for @settingsPermissionRequestDescription.
-  ///
-  /// In en, this message translates to:
-  /// **'Ask for approval when a tool operation requires it.'**
-  String get settingsPermissionRequestDescription;
-
-  /// No description provided for @settingsPermissionReviewDescription.
-  ///
-  /// In en, this message translates to:
-  /// **'Use automatic review to evaluate tool operations.'**
-  String get settingsPermissionReviewDescription;
-
-  /// No description provided for @settingsPermissionFullDescription.
-  ///
-  /// In en, this message translates to:
-  /// **'Run tools with full access under the configured runtime policy.'**
-  String get settingsPermissionFullDescription;
 
   /// No description provided for @timelineToolArguments.
   ///

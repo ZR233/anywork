@@ -277,7 +277,6 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     composerMode: thread.isAgent
         ? AgentComposerMode.runtimeDriven
         : AgentComposerMode.editable,
-    permissionMode: canonical?.permissionMode ?? PermissionMode.requestApproval,
     providers: providersWithCatalogMetadata(
       canonical?.providers ?? const <ProviderSettingsView>[],
       settings.providerCatalog,

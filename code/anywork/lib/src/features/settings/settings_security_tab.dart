@@ -1,23 +1,16 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
 
+/// 只读安全说明页。
+///
+/// 产品策略把工具执行固定为 `full-access`，Composer 与设置页都不再暴露权限
+/// 模式选择；本页只说明固定的执行权限策略与工作区边界。固定策略仅改变策略层
+/// 的放行判断，不影响 workspace/worktree 的 confined 边界。
 class SecurityTab extends StatelessWidget {
-  const SecurityTab({
-    super.key,
-    required this.mode,
-    required this.pending,
-    required this.onSelected,
-  });
-
-  final PermissionMode mode;
-  final bool pending;
-  final Future<void> Function(PermissionMode) onSelected;
+  const SecurityTab({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -28,47 +21,6 @@ class SecurityTab extends StatelessWidget {
       ),
       maxWidth: 880,
       children: [
-        RadioGroup<PermissionMode>(
-          groupValue: mode,
-          onChanged: (value) {
-            if (pending) return;
-            if (value != null) {
-              unawaited(_savePermissionMode(context, () => onSelected(value)));
-            }
-          },
-          child: Column(
-            children: [
-              for (final option in PermissionMode.values)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: RadioListTile<PermissionMode>(
-                    key: ValueKey('permission-choice-${option.name}'),
-                    value: option,
-                    enabled: !pending,
-                    title: Text(context.permissionModeLabel(option)),
-                    subtitle: Text(switch (option) {
-                      PermissionMode.requestApproval =>
-                        context.l10n.settingsPermissionRequestDescription,
-                      PermissionMode.autoReview =>
-                        context.l10n.settingsPermissionReviewDescription,
-                      PermissionMode.fullAccess =>
-                        context.l10n.settingsPermissionFullDescription,
-                    }),
-                    selected: option == mode,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    selectedTileColor: context.colors.surfaceContainer,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
         Text(
           context.l10n.settingsWorkspaceBoundary,
           style: context.text.bodySmall?.copyWith(
@@ -77,19 +29,5 @@ class SecurityTab extends StatelessWidget {
         ),
       ],
     );
-  }
-}
-
-Future<void> _savePermissionMode(
-  BuildContext context,
-  Future<void> Function() action,
-) async {
-  try {
-    await action();
-  } catch (error) {
-    if (!context.mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(SnackBar(content: Text(error.toString())));
   }
 }

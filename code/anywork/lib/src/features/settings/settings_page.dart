@@ -148,23 +148,6 @@ class _InstructionsSettingsTab extends ConsumerWidget {
   }
 }
 
-class _SecuritySettingsTab extends ConsumerWidget {
-  const _SecuritySettingsTab();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final view = ref.watch(settingsSecurityViewProvider);
-    return SecurityTab(
-      mode: view.mode,
-      pending: view.pending,
-      onSelected: ref
-          .read(anyworkClientProvider)
-          .settingsCommands
-          .setPermissionMode,
-    );
-  }
-}
-
 class _GeneralSettingsTab extends ConsumerWidget {
   const _GeneralSettingsTab();
 
@@ -258,7 +241,7 @@ class _SettingsScaffold extends StatelessWidget {
       LspTab(tabIndex: _SettingsTab.lsp.index),
       const SshTab(),
       StatisticsTab(tabIndex: _SettingsTab.statistics.index),
-      const _SecuritySettingsTab(),
+      const SecurityTab(),
       const _GeneralSettingsTab(),
     ];
     return LayoutBuilder(

@@ -154,49 +154,6 @@ final settingsInstructionsViewProvider =
       );
     }, name: 'settingsInstructionsViewProvider');
 
-class SettingsSecurityView {
-  const SettingsSecurityView({
-    required this.mode,
-    required this.pending,
-    required this.settingsRevision,
-  });
-
-  final PermissionMode mode;
-  final bool pending;
-  final int settingsRevision;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SettingsSecurityView &&
-          mode == other.mode &&
-          pending == other.pending &&
-          settingsRevision == other.settingsRevision;
-
-  @override
-  int get hashCode => Object.hash(mode, pending, settingsRevision);
-}
-
-final settingsSecurityViewProvider = Provider.autoDispose<SettingsSecurityView>(
-  (ref) {
-    final selected = ref.watch(
-      settingsStoreProvider.select(
-        (state) => (
-          mode: state.canonical?.permissionMode,
-          pending: state.commands['permission-mode']?.isPending ?? false,
-          revision: state.settingsRevision,
-        ),
-      ),
-    );
-    return SettingsSecurityView(
-      mode: selected.mode ?? PermissionMode.requestApproval,
-      pending: selected.pending,
-      settingsRevision: selected.revision,
-    );
-  },
-  name: 'settingsSecurityViewProvider',
-);
-
 class SettingsGeneralView {
   const SettingsGeneralView({
     required this.settings,

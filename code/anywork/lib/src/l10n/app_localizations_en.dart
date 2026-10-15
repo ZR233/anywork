@@ -509,22 +509,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerStop => 'Stop';
 
   @override
-  String get permissionModeTooltip => 'Permission mode';
-
-  @override
   String get compileModeSimple => 'Simple';
 
   @override
   String get compileModeTask => 'Task';
-
-  @override
-  String get permissionModeRequestApproval => 'Request';
-
-  @override
-  String get permissionModeAutoReview => 'Review';
-
-  @override
-  String get permissionModeFullAccess => 'Full';
 
   @override
   String get statusCost => 'Cost';
@@ -1219,7 +1207,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get interactionPermissionFooterHint =>
-      'The tool runs in the current working directory; adjust permission mode in the composer.';
+      'The tool runs in the current working directory.';
 
   @override
   String get interactionReject => 'Reject';
@@ -1691,7 +1679,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsSecurityModeSubtitle =>
-      'Tool execution permission mode; changes apply immediately.';
+      'Tool execution permission is fixed to full access; workspace and worktree boundaries are not relaxed.';
 
   @override
   String settingsCurrentMode(String mode) {
@@ -2270,18 +2258,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsFilterAgents => 'Filter agents';
-
-  @override
-  String get settingsPermissionRequestDescription =>
-      'Ask for approval when a tool operation requires it.';
-
-  @override
-  String get settingsPermissionReviewDescription =>
-      'Use automatic review to evaluate tool operations.';
-
-  @override
-  String get settingsPermissionFullDescription =>
-      'Run tools with full access under the configured runtime policy.';
 
   @override
   String get timelineToolArguments => 'Arguments';

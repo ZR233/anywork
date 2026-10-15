@@ -151,6 +151,7 @@ spawn receipt 返回模式、实际 root、canonical 可写目录；worktree 模
 base commit；review 模式返回被审 agentId 与采用的目标工作区事实。Local 与 SSH backend 的所有 Pure 内置文件 mutation（apply patch、
 write/delete/copy/move、项目 Skill 写入）都调用同一中央路径策略；该策略不因会话使用
 full-access 而关闭。读取不受 `writablePaths` 限制，项目外路径仍只由 Permission Mode 决定。
+当前版本该模式固定为 `full-access`（见 [04](./04-security.md)）。
 
 协作查询（包括 `list_agents`）只读取宿主授权范围内的快照，允许与普通读取工具出现在同一
 模型批次；该批次不承诺跨工具的联合事务快照。创建、发送消息、打断和关闭代理会改变协调

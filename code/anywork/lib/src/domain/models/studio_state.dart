@@ -139,7 +139,6 @@ class StudioState {
   WebSearchSettingsView get webSearch => settingsState.webSearch;
   DeepSeekWebSearchSettingsView get deepSeekWebSearch =>
       settingsState.deepSeekWebSearch;
-  PermissionMode get permissionMode => settingsState.permissionMode;
   List<StudioRecoveryIssue> get recoveryIssues => recoveryState.values;
   int get settingsRevision => settingsState.revision;
 
@@ -326,7 +325,6 @@ class StudioState {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      permissionMode: permissionMode,
       providers: providers,
       modeModelRoutes: modeModelRoutes,
       roles: roles,

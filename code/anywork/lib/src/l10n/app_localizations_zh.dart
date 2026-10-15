@@ -485,22 +485,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerStop => '停止';
 
   @override
-  String get permissionModeTooltip => '权限模式';
-
-  @override
   String get compileModeSimple => '简洁';
 
   @override
   String get compileModeTask => '任务';
-
-  @override
-  String get permissionModeRequestApproval => '请求授权';
-
-  @override
-  String get permissionModeAutoReview => '自动审查';
-
-  @override
-  String get permissionModeFullAccess => '完全访问';
 
   @override
   String get statusCost => '费用';
@@ -1151,7 +1139,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionPermissionSubtitle => '糊来帮希望调用以下工具';
 
   @override
-  String get interactionPermissionFooterHint => '工具将在当前工作目录执行；可在输入区调整权限模式。';
+  String get interactionPermissionFooterHint => '工具将在当前工作目录执行。';
 
   @override
   String get interactionReject => '拒绝';
@@ -1602,7 +1590,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSecuritySubtitle => '选择此工作区默认审批姿态。';
 
   @override
-  String get settingsSecurityModeSubtitle => '工具执行权限模式；修改会立即生效。';
+  String get settingsSecurityModeSubtitle =>
+      '工具执行权限固定为完全访问；工作区与 worktree 边界不因此放宽。';
 
   @override
   String settingsCurrentMode(String mode) {
@@ -2166,15 +2155,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsFilterAgents => '筛选智能体';
-
-  @override
-  String get settingsPermissionRequestDescription => '工具操作需要授权时请求确认。';
-
-  @override
-  String get settingsPermissionReviewDescription => '通过自动审查评估工具操作。';
-
-  @override
-  String get settingsPermissionFullDescription => '在已配置的运行时策略下，以完整访问权限执行工具。';
 
   @override
   String get timelineToolArguments => '参数';

@@ -115,7 +115,7 @@ impl ConfigRuntime {
     pub fn initialize(store: ConfigStore) -> ConfigRuntimeResult<Self> {
         let desired = store.load_for_startup()?;
         let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
-        let config = model_catalog::effective(&desired, &observations)?;
+        let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
@@ -289,7 +289,7 @@ impl ConfigRuntime {
         }
         let next_observations =
             model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
-        let effective = model_catalog::effective(&next_config, &next_observations)?;
+        let effective = effective_runtime_config(&next_config, &next_observations)?;
         effective.validate_declarations()?;
         validate_changed_selections(&desired, &effective)?;
 
@@ -344,7 +344,7 @@ impl ConfigRuntime {
             .clone();
         let next_observations =
             model_catalog::reconcile(self.store.paths(), &desired, &observations)?;
-        let config = model_catalog::effective(&desired, &next_observations)?;
+        let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths(), &config)?;
         let next = ConfigRuntimeSnapshot {
@@ -378,6 +378,18 @@ fn statuses(
         .iter()
         .map(|(id, observation)| (id.clone(), observation.status.clone()))
         .collect()
+}
+
+/// 构造执行路径与 settings 视图使用的 effective 配置。
+///
+/// 只应用目录 overlay 与产品固定策略；`canonical_config`/desired 仍是持久化事实源。
+fn effective_runtime_config(
+    desired: &StudioConfig,
+    observations: &BTreeMap<ProviderId, Observation>,
+) -> Result<StudioConfig> {
+    let mut config = model_catalog::effective(desired, observations)?;
+    config.runtime.enforce_fixed_permission_mode();
+    Ok(config)
 }
 
 fn invalidate_observations(

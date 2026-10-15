@@ -253,7 +253,6 @@ double? statusBarThroughput(
 class StudioStatusProjection {
   const StudioStatusProjection({
     required this.thread,
-    required this.permissionMode,
     required this.providers,
     required this.roles,
     required this.isBusy,
@@ -262,7 +261,6 @@ class StudioStatusProjection {
   factory StudioStatusProjection.fromState(StudioState state) {
     return StudioStatusProjection(
       thread: state.selectedThread,
-      permissionMode: state.permissionMode,
       providers: state.providers,
       roles: state.roles,
       isBusy: state.isBusy,
@@ -270,7 +268,6 @@ class StudioStatusProjection {
   }
 
   final StudioThread? thread;
-  final PermissionMode permissionMode;
   final List<ProviderSettingsView> providers;
   final List<RoleSettingsView> roles;
   final bool isBusy;
@@ -280,7 +277,6 @@ class StudioStatusProjection {
     return identical(this, other) ||
         other is StudioStatusProjection &&
             _threadEquals(thread, other.thread) &&
-            permissionMode == other.permissionMode &&
             _listEqualsBy(providers, other.providers, _providerEquals) &&
             _listEqualsBy(roles, other.roles, _roleEquals) &&
             isBusy == other.isBusy;
@@ -289,7 +285,6 @@ class StudioStatusProjection {
   @override
   int get hashCode => Object.hash(
     _threadHash(thread),
-    permissionMode,
     Object.hashAll(providers.map(_providerHash)),
     Object.hashAll(roles.map(_roleHash)),
     isBusy,
@@ -379,7 +374,6 @@ class StudioComposerProjection {
     required this.loadError,
     required this.composer,
     required this.composerMode,
-    required this.permissionMode,
     required this.providers,
     required this.modeModelRoutes,
     required this.roles,
@@ -404,7 +398,6 @@ class StudioComposerProjection {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      permissionMode: state.permissionMode,
       providers: state.providers,
       modeModelRoutes: state.modeModelRoutes,
       roles: state.roles,
@@ -424,7 +417,6 @@ class StudioComposerProjection {
       loadError: workspace.loadError,
       composer: workspace.composer,
       composerMode: workspace.composerMode,
-      permissionMode: workspace.permissionMode,
       providers: workspace.providers,
       modeModelRoutes: workspace.modeModelRoutes,
       roles: workspace.roles,
@@ -442,7 +434,6 @@ class StudioComposerProjection {
   final String? loadError;
   final ComposerThreadState composer;
   final AgentComposerMode composerMode;
-  final PermissionMode permissionMode;
   final List<ProviderSettingsView> providers;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
@@ -487,7 +478,6 @@ class StudioComposerProjection {
       activeInteraction: activeInteraction,
       composer: composer,
       composerMode: composerMode,
-      permissionMode: permissionMode,
       providers: providers,
       modeModelRoutes: modeModelRoutes,
       roles: roles,
@@ -505,7 +495,6 @@ class StudioComposerProjection {
             loadError == other.loadError &&
             composer == other.composer &&
             composerMode == other.composerMode &&
-            permissionMode == other.permissionMode &&
             _listEqualsBy(providers, other.providers, _providerEquals) &&
             _listEqualsBy(
               modeModelRoutes,
@@ -528,7 +517,6 @@ class StudioComposerProjection {
     loadError,
     composer,
     composerMode,
-    permissionMode,
     Object.hashAll(providers.map(_providerHash)),
     Object.hashAll(modeModelRoutes.map(_modeRouteHash)),
     Object.hashAll(roles.map(_roleHash)),

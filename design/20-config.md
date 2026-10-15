@@ -152,6 +152,7 @@ schema_version = 20
 disabled_system_agents = []
 
 [runtime]
+# 字段保留；当前版本执行路径固定 full-access，该值不影响执行（见 [04](./04-security.md)）。
 permission_mode = "request-approval"
 active_skills = ["rust", "git", "doc"]
 active_mcp_servers = ["github", "filesystem"]
@@ -298,8 +299,9 @@ source paths；已有 Thread 后续不会因配置或项目文档变化自动改
 ## 20.7 运行态声明
 
 `[runtime]` 保存本地 Studio 运行态展示所需的可选声明：`permission_mode`、
-`active_skills` 与 `active_mcp_servers`。`permission_mode` 是 Thread Turn 的默认权限模式，
-缺失时按 `request-approval` 处理；三值语义的唯一权威源见 [04](./04-security.md)。
+`active_skills` 与 `active_mcp_servers`。`permission_mode` 的字段与缺失时按
+`request-approval` 处理的语义按 [04](./04-security.md) 保留，但当前版本执行路径固定
+`full-access`：写入该字段不改变执行结果，GUI 也不提供读取或修改入口。
 `active_skills` 与 `active_mcp_servers` 只声明启动时预选项，不作为真实发现来源：MCP
 server 的用户启用意图来源为 `[mcp.servers.<id>].enabled`，真实可用性由进程内 registry
 探测，不写回配置；真实 skills 能力由 `[skills]` 配置和项目目录驱动，当前 Thread 的

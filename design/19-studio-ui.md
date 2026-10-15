@@ -272,7 +272,7 @@ recovery preview 与 Agents 预览中呈现。
 公共徽标按 neutral、brand、active、success、warning、error 语义展示。Markdown、代码、链接、
 弹层与状态控件也必须继承主题，不保留独立静态色板或明暗分支。内容图片和品牌资源保留
 原色。正常文字对比度至少 4.5:1，必要图形和焦点边界至少 3:1；装饰性眼眸蓝不能作为唯一
-状态提示。采用适中密度、细分隔和统一字级；模式、模型、推理强度、权限与代理切换使用
+状态提示。采用适中密度、细分隔和统一字级；模式、模型、推理强度与代理切换使用
 无常驻边框的文字菜单，悬停与键盘聚焦提供反馈；发送、确认和保存承担主要操作强调。
 
 按钮菜单、设置选择字段和状态详情统一复用 Material 官方组件承载通用交互：交互菜单由
@@ -369,9 +369,9 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 所有设置页采用固定页头、局部可滚动正文、稳定操作区；资源页以名称、状态、主要操作和
 可展开详情形成一致层级。模型服务用量保留独立查询，不能用模型统计替代。Agents 分开系统
 与用户 Profile；指令采用分区编辑；技能提供过滤与逐项启停；MCP/LSP 聚焦服务状态与恢复
-操作；SSH 分开连接管理、认证表单和目录浏览；统计区分模型汇总与历史；安全页逐项解释
-权限；通用页分开界面偏好、联网搜索和更新。窄窗口采用纵向布局，字段和操作不得溢出或
-消失。
+操作；SSH 分开连接管理、认证表单和目录浏览；统计区分模型汇总与历史；安全页只说明固定的
+工具执行权限策略与工作区边界，不提供权限模式选择；通用页分开界面偏好、联网搜索和更新。
+窄窗口采用纵向布局，字段和操作不得溢出或消失。
 
 ### 页面与实时订阅生命周期
 
@@ -473,7 +473,7 @@ token 速度统计按 provider 实例 ID、实际发送 model、请求期思考�
 
 聊天界面使用双栏布局：左侧项目/大会话栏和主聊天区，不展示右侧工具历史面板。主聊天区
 底部状态栏左侧展示当前 agent 身份、`Auto / Plan` 模式、当前模型和推理强度，右侧展示
-上下文使用量、按货币分组的费用估算与 Skill/MCP/LSP 数量；权限模式保留在 Composer。
+上下文使用量、按货币分组的费用估算与 Skill/MCP/LSP 数量；权限模式不在 Composer 暴露。
 Skill/MCP/LSP 默认只显示数量，悬浮、点击或键盘聚焦时展示当前 agent 的完整列表。状态栏
 不得显示 agent 数量或子代理列表；大会话下的 agent 数量、状态和切换只通过标题区唯一的
 `n agents` 菜单表达。状态栏响应式按聊天 footer 自身宽度折叠低频读数，并保证详情弹层
@@ -754,9 +754,12 @@ Timeline 和状态提示消费 canonical 输入与执行状态，区分已受理
 
 ## 19.12 配置 mutation 与 selector projection
 
+Composer 与设置 → 安全 页不提供权限模式选择：执行策略固定 `full-access`
+（见 [04](./04-security.md)），GUI 不读取或展示权限模式，`permission` 不是设置 mutation。
+
 Provider、默认 provider、单个 Mode route 的 model、单个 Mode route 的 reasoning effort、
-单个 Agent role 的 model、单个 Agent role 的 reasoning effort、permission、general、搜索和
-其他设置使用独立 typed intent；可编辑的复合页在提交时按字段变化拆成最小 command，不把
+单个 Agent role 的 model、单个 Agent role 的 reasoning effort、general、搜索和其他设置
+使用独立 typed intent；可编辑的复合页在提交时按字段变化拆成最小 command，不把
 同页其它控件的旧值重新写回。它们共享一个 settings operation lane 以满足 CAS 顺序，但
 payload 不携带其他设置的完整旧副本；provider 编辑只有在重命名或删除确实需要迁移引用时才
 携带明确的 route migration。确认的资源由 Rust typed response 或 owner frame 进入对应 Client

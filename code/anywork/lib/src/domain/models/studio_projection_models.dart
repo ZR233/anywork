@@ -118,7 +118,6 @@ abstract class StatusBarView with _$StatusBarView {
   const factory StatusBarView({
     required StudioThread thread,
     required ThreadRuntimeView runtime,
-    required PermissionMode permissionMode,
     required List<ProviderSettingsView> providers,
     required List<RoleSettingsView> roles,
     required bool isBusy,
@@ -128,7 +127,6 @@ abstract class StatusBarView with _$StatusBarView {
     return StatusBarView(
       thread: workspace.thread,
       runtime: workspace.runtime,
-      permissionMode: workspace.permissionMode,
       providers: workspace.providers,
       roles: workspace.roles,
       isBusy: workspace.isBusy,

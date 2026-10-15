@@ -186,7 +186,6 @@ class _StartPageComposerBodyState
               textController: _draft,
               targetDiagnostic: target,
               additionalDiagnostics: additional,
-              permissionMode: projection.permissionMode,
               enabled: projection.canSubmit,
               isBusy: false,
               clipboard: ref.read(clipboardImageReaderProvider),
@@ -494,7 +493,6 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
         _PromptComposerPanel(
           composer: view.composer,
           targetDiagnostic: view.targetDiagnostic,
-          permissionMode: view.permissionMode,
           enabled: widget.enabled,
           isBusy: view.isBusy,
           compact: widget.compact,
@@ -594,7 +592,6 @@ class _PromptComposerPanel extends StatefulWidget {
     required this.composer,
     this.targetDiagnostic,
     this.additionalDiagnostics = const [],
-    required this.permissionMode,
     required this.enabled,
     required this.isBusy,
     required this.clipboard,
@@ -616,7 +613,6 @@ class _PromptComposerPanel extends StatefulWidget {
   final ComposerThreadState composer;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
-  final PermissionMode permissionMode;
   final bool enabled;
   final bool isBusy;
   final ClipboardImageReader clipboard;
@@ -933,10 +929,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   spacing: 2,
                   runSpacing: 4,
-                  children: [
-                    _PermissionSelector(mode: widget.permissionMode),
-                    ?widget.selectorBar,
-                  ],
+                  children: [?widget.selectorBar],
                 ),
               ),
               const SizedBox(width: 8),
@@ -1083,103 +1076,6 @@ class _PasteComposerIntent extends Intent {
 
 class _StopComposerIntent extends Intent {
   const _StopComposerIntent();
-}
-
-class _PermissionSelector extends ConsumerStatefulWidget {
-  const _PermissionSelector({required this.mode});
-
-  final PermissionMode mode;
-
-  @override
-  ConsumerState<_PermissionSelector> createState() =>
-      _PermissionSelectorState();
-}
-
-class _PermissionSelectorState extends ConsumerState<_PermissionSelector> {
-  final MenuController _controller = MenuController();
-
-  @override
-  Widget build(BuildContext context) {
-    final mode = widget.mode;
-    return MenuAnchor(
-      controller: _controller,
-      alignmentOffset: const Offset(6, 6),
-      menuChildren: [
-        for (final option in PermissionMode.values)
-          MenuItemButton(
-            overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(
-                ref
-                    .read(anyworkClientProvider)
-                    .settingsCommands
-                    .setPermissionMode(option),
-              );
-            },
-            style: option == mode
-                ? ButtonStyle(
-                    backgroundColor: WidgetStatePropertyAll(
-                      Theme.of(context).colorScheme.surfaceContainerHigh,
-                    ),
-                  )
-                : null,
-            child: Semantics(
-              selected: option == mode,
-              child: SizedBox(
-                width: 136,
-                height: 36,
-                child: Row(
-                  children: [
-                    Icon(_permissionIcon(option), size: 18),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        context.permissionModeLabel(option),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-      ],
-      child: Tooltip(
-        message: context.l10n.permissionModeTooltip,
-        child: Semantics(
-          button: true,
-          label: context.l10n.permissionModeTooltip,
-          child: TextButton(
-            onPressed: () {
-              if (_controller.isOpen) {
-                _controller.close();
-              } else {
-                _controller.open();
-              }
-            },
-            style: TextButton.styleFrom(
-              padding: EdgeInsets.zero,
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(6),
-              ),
-              side: BorderSide.none,
-            ),
-            child: StudioMenuLabel(label: context.permissionModeLabel(mode)),
-          ),
-        ),
-      ),
-    );
-  }
-
-  IconData _permissionIcon(PermissionMode value) {
-    return switch (value) {
-      PermissionMode.requestApproval => Icons.verified_user_outlined,
-      PermissionMode.autoReview => Icons.rule_folder_outlined,
-      PermissionMode.fullAccess => Icons.lock_open_outlined,
-    };
-  }
 }
 
 class _InteractionDock extends StatelessWidget {

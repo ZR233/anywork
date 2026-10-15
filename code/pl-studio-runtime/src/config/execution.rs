@@ -27,4 +27,12 @@ impl RuntimeConfig {
             && self.active_mcp_servers.is_empty()
             && self.openai_compaction_mode.is_default()
     }
+
+    /// 本版本产品策略固定完全访问：Studio GUI 不再暴露权限模式选择，执行路径恒用 `full-access`。
+    ///
+    /// 保留 `permission_mode` 字段与三值语义以便将来恢复；这里只归一化 effective 运行时配置，
+    /// 不改写持久化的 desired/canonical 配置。
+    pub fn enforce_fixed_permission_mode(&mut self) {
+        self.permission_mode = PermissionMode::FullAccess;
+    }
 }

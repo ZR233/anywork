@@ -109,7 +109,6 @@ StatusBarView? statusBarView(Ref ref) {
   return StatusBarView(
     thread: thread,
     runtime: runtime,
-    permissionMode: canonical?.permissionMode ?? PermissionMode.requestApproval,
     providers: providersWithCatalogMetadata(
       canonical?.providers ?? const <ProviderSettingsView>[],
       settings.providerCatalog,

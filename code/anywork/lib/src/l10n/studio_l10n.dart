@@ -68,14 +68,6 @@ extension StudioLocalizationsX on BuildContext {
     };
   }
 
-  String permissionModeLabel(PermissionMode mode) {
-    return switch (mode) {
-      PermissionMode.requestApproval => l10n.permissionModeRequestApproval,
-      PermissionMode.autoReview => l10n.permissionModeAutoReview,
-      PermissionMode.fullAccess => l10n.permissionModeFullAccess,
-    };
-  }
-
   /// 固定活动条的准确阶段标签。
   ///
   /// 与 Timeline 的推理/工具组标签彼此独立：那里描述“历史上发生过什么”，这里只描述

@@ -59,7 +59,7 @@ final class StartPageComposerViewProvider
 }
 
 String _$startPageComposerViewHash() =>
-    r'a1f0b7d75c03bddeebfb361429f1fc1a7796db50';
+    r'326aa5a51c74d8e8999f3d5aaa368b89ea2d0823';
 
 @ProviderFor(composerDockView)
 final composerDockViewProvider = ComposerDockViewFamily._();
@@ -123,7 +123,7 @@ final class ComposerDockViewProvider
   }
 }
 
-String _$composerDockViewHash() => r'42b1db159d81a48811e171c0af7027daf7bd4082';
+String _$composerDockViewHash() => r'74f8618ba99339a8c4a826be7e8c3b6e496adef3';
 
 final class ComposerDockViewFamily extends $Family
     with $FunctionalFamilyOverride<ComposerDockView, String> {

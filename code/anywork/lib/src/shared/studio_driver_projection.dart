@@ -72,8 +72,6 @@ StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      permissionMode:
-          canonical?.permissionMode ?? PermissionMode.requestApproval,
       providers: providers,
       modeModelRoutes: canonical?.modeModelRoutes ?? const [],
       roles: canonical?.roles ?? const [],

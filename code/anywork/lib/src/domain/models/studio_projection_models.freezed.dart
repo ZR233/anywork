@@ -915,7 +915,7 @@ as List<PendingInteraction>,
 /// @nodoc
 mixin _$StatusBarView {
 
- StudioThread get thread; ThreadRuntimeView get runtime; PermissionMode get permissionMode; List<ProviderSettingsView> get providers; List<RoleSettingsView> get roles; bool get isBusy;
+ StudioThread get thread; ThreadRuntimeView get runtime; List<ProviderSettingsView> get providers; List<RoleSettingsView> get roles; bool get isBusy;
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -927,20 +927,20 @@ $StatusBarViewCopyWith<StatusBarView> get copyWith => _$StatusBarViewCopyWithImp
 @override
 bool operator ==(Object other) {
   final _this = this as StatusBarView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&(identical(other.permissionMode, _this.permissionMode) || other.permissionMode == _this.permissionMode)&&const DeepCollectionEquality().equals(other.providers, _this.providers)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&const DeepCollectionEquality().equals(other.providers, _this.providers)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StatusBarView;
-  return Object.hash(runtimeType,_this.thread,_this.runtime,_this.permissionMode,const DeepCollectionEquality().hash(_this.providers),const DeepCollectionEquality().hash(_this.roles),_this.isBusy);
+  return Object.hash(runtimeType,_this.thread,_this.runtime,const DeepCollectionEquality().hash(_this.providers),const DeepCollectionEquality().hash(_this.roles),_this.isBusy);
 }
 
 @override
 String toString() {
   final _this = this as StatusBarView;
-  return 'StatusBarView(thread: ${_this.thread}, runtime: ${_this.runtime}, permissionMode: ${_this.permissionMode}, providers: ${_this.providers}, roles: ${_this.roles}, isBusy: ${_this.isBusy})';
+  return 'StatusBarView(thread: ${_this.thread}, runtime: ${_this.runtime}, providers: ${_this.providers}, roles: ${_this.roles}, isBusy: ${_this.isBusy})';
 }
 
 
@@ -951,7 +951,7 @@ abstract mixin class $StatusBarViewCopyWith<$Res>  {
   factory $StatusBarViewCopyWith(StatusBarView value, $Res Function(StatusBarView) _then) = _$StatusBarViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread thread, ThreadRuntimeView runtime, PermissionMode permissionMode, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
+ StudioThread thread, ThreadRuntimeView runtime, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
 });
 
 
@@ -968,12 +968,11 @@ class _$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? thread = null,Object? runtime = null,Object? permissionMode = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? thread = null,Object? runtime = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
   return _then(StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
 as StudioThread,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
-as ThreadRuntimeView,permissionMode: null == permissionMode ? _self.permissionMode : permissionMode // ignore: cast_nullable_to_non_nullable
-as PermissionMode,providers: null == providers ? _self.providers : providers // ignore: cast_nullable_to_non_nullable
+as ThreadRuntimeView,providers: null == providers ? _self.providers : providers // ignore: cast_nullable_to_non_nullable
 as List<ProviderSettingsView>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,
@@ -1061,10 +1060,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  PermissionMode permissionMode,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
   return orElse();
 
 }
@@ -1082,10 +1081,10 @@ return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  PermissionMode permissionMode,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView():
-return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1102,10 +1101,10 @@ return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  ThreadRuntimeView runtime,  PermissionMode permissionMode,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
   return null;
 
 }
@@ -1117,12 +1116,11 @@ return $default(_that.thread,_that.runtime,_that.permissionMode,_that.providers,
 
 
 class _StatusBarView extends StatusBarView {
-  const _StatusBarView({required this.thread, required this.runtime, required this.permissionMode, required  List<ProviderSettingsView> providers, required  List<RoleSettingsView> roles, required this.isBusy}): _providers = providers,_roles = roles,super._();
+  const _StatusBarView({required this.thread, required this.runtime, required  List<ProviderSettingsView> providers, required  List<RoleSettingsView> roles, required this.isBusy}): _providers = providers,_roles = roles,super._();
 
 
 @override final  StudioThread thread;
 @override final  ThreadRuntimeView runtime;
-@override final  PermissionMode permissionMode;
  final  List<ProviderSettingsView> _providers;
 @override List<ProviderSettingsView> get providers {
   if (_providers is EqualUnmodifiableListView) return _providers;
@@ -1149,18 +1147,18 @@ _$StatusBarViewCopyWith<_StatusBarView> get copyWith => __$StatusBarViewCopyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.thread, thread) || other.thread == thread)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&(identical(other.permissionMode, permissionMode) || other.permissionMode == permissionMode)&&const DeepCollectionEquality().equals(other.providers, _providers)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.thread, thread) || other.thread == thread)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&const DeepCollectionEquality().equals(other.providers, _providers)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,thread,runtime,permissionMode,const DeepCollectionEquality().hash(_providers),const DeepCollectionEquality().hash(_roles),isBusy);
+    return Object.hash(runtimeType,thread,runtime,const DeepCollectionEquality().hash(_providers),const DeepCollectionEquality().hash(_roles),isBusy);
 }
 
 @override
 String toString() {
-    return 'StatusBarView(thread: $thread, runtime: $runtime, permissionMode: $permissionMode, providers: $providers, roles: $roles, isBusy: $isBusy)';
+    return 'StatusBarView(thread: $thread, runtime: $runtime, providers: $providers, roles: $roles, isBusy: $isBusy)';
 }
 
 
@@ -1171,7 +1169,7 @@ abstract mixin class _$StatusBarViewCopyWith<$Res> implements $StatusBarViewCopy
   factory _$StatusBarViewCopyWith(_StatusBarView value, $Res Function(_StatusBarView) _then) = __$StatusBarViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread thread, ThreadRuntimeView runtime, PermissionMode permissionMode, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
+ StudioThread thread, ThreadRuntimeView runtime, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
 });
 
 
@@ -1188,12 +1186,11 @@ class __$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? thread = null,Object? runtime = null,Object? permissionMode = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? thread = null,Object? runtime = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
   return _then(_StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
 as StudioThread,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
-as ThreadRuntimeView,permissionMode: null == permissionMode ? _self.permissionMode : permissionMode // ignore: cast_nullable_to_non_nullable
-as PermissionMode,providers: null == providers ? _self._providers : providers // ignore: cast_nullable_to_non_nullable
+as ThreadRuntimeView,providers: null == providers ? _self._providers : providers // ignore: cast_nullable_to_non_nullable
 as List<ProviderSettingsView>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,

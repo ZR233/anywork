@@ -42,7 +42,6 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
     project: project,
     providers: canonical?.providers ?? const [],
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
-    permissionMode: canonical?.permissionMode ?? PermissionMode.requestApproval,
     settingsLoaded: settings.configLoaded,
     canSubmit:
         project != null && selection.selectedThreadId == null && !blocked,
@@ -92,8 +91,6 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
         ? routeCommand?.error?.message
         : null,
     workflow: session.workflow,
-    permissionMode:
-        settings.canonical?.permissionMode ?? PermissionMode.requestApproval,
     providers: settings.canonical?.providers ?? const [],
     settingsLoaded: settings.configLoaded,
     requiresFunctionCalling: thread == null
@@ -111,7 +108,6 @@ class StartPageComposerProjection {
     required this.project,
     required this.providers,
     required this.modeModelRoutes,
-    required this.permissionMode,
     required this.settingsLoaded,
     required this.canSubmit,
     required this.commands,
@@ -125,7 +121,6 @@ class StartPageComposerProjection {
   final StudioProject? project;
   final List<ProviderSettingsView> providers;
   final List<ModeModelRouteView> modeModelRoutes;
-  final PermissionMode permissionMode;
   final bool settingsLoaded;
   final bool canSubmit;
   final Map<String, CommandStatus> commands;
@@ -175,7 +170,6 @@ class StartPageComposerProjection {
           project?.id == other.project?.id &&
           settingsLoaded == other.settingsLoaded &&
           canSubmit == other.canSubmit &&
-          permissionMode == other.permissionMode &&
           identical(providers, other.providers) &&
           identical(modeModelRoutes, other.modeModelRoutes) &&
           identical(commands, other.commands) &&
@@ -190,7 +184,6 @@ class StartPageComposerProjection {
     project?.id,
     settingsLoaded,
     canSubmit,
-    permissionMode,
     identityHashCode(providers),
     identityHashCode(modeModelRoutes),
     identityHashCode(commands),
@@ -215,7 +208,6 @@ class ComposerDockView {
     required this.routePending,
     required this.routeFailure,
     required this.workflow,
-    required this.permissionMode,
     required this.providers,
     required this.settingsLoaded,
     required this.requiresFunctionCalling,
@@ -234,7 +226,6 @@ class ComposerDockView {
   final bool routePending;
   final String? routeFailure;
   final WorkflowRuntimeView? workflow;
-  final PermissionMode permissionMode;
   final List<ProviderSettingsView> providers;
   final bool settingsLoaded;
   final bool? requiresFunctionCalling;
@@ -270,7 +261,6 @@ class ComposerDockView {
           routePending == other.routePending &&
           routeFailure == other.routeFailure &&
           workflow == other.workflow &&
-          permissionMode == other.permissionMode &&
           settingsLoaded == other.settingsLoaded &&
           requiresFunctionCalling == other.requiresFunctionCalling &&
           targetDiagnostic == other.targetDiagnostic &&
@@ -293,7 +283,6 @@ class ComposerDockView {
     routePending,
     routeFailure,
     workflow,
-    permissionMode,
     settingsLoaded,
     requiresFunctionCalling,
     targetDiagnostic,

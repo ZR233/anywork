@@ -6,6 +6,11 @@
 请求用户审批、请求 AI reviewer 审批或拒绝；直接放行也不会绕过工具自身 schema 校验、工作区写锁、
 超时、输出截断与 timeline 记录。本文是三值权限语义的唯一权威源。
 
+当前版本的产品策略把工具执行固定为 `full-access`：effective 运行时配置在唯一边界归一化
+权限模式，Composer 与设置页都不再暴露权限模式选择。`[runtime] permission_mode` 字段与
+下列三值语义保留供将来恢复；当前它不参与执行路径，UI 也不读取或展示它。固定策略只改变
+策略层的放行判断，本节后面的 confined 边界、workspace assignment 与工具自身约束都不因此放宽。
+
 - `request-approval`：默认模式。workspace 内文件读写、`apply_patch`、项目 skill 写入和 workspace
   cwd 的 `exec` 直接放行；访问 workspace 外路径或 workspace 外 cwd 时请求用户批准。
 - `auto-review`：workspace 内行为同 request-approval；访问 workspace 外时交给 reviewer 模型审批。
@@ -62,9 +67,9 @@ reviewer 可执行任意审查所需命令（含构建与测试），但不得�
 - 二进制读取返回明确错误。
 - `apply_patch` 直接改文件，不经 shell 转发。
 
-用户显式选择 full-access 时，本地文件 backend 与 `exec.cwd` 的 workspace 边界放宽：绝对路径与
-`..` 可以解析到 workspace 外，但仍要求目标自身或其最近存在父目录可解析。该模式只影响本地工具
-策略，不代表系统级完全隔离或提权；容器或远程 backend 可以继续拒绝越界路径。
+固定为 full-access 的执行策略下，本地文件 backend 与 `exec.cwd` 的 workspace 边界放宽：绝对
+路径与 `..` 可以解析到 workspace 外，但仍要求目标自身或其最近存在父目录可解析。该策略只影响
+本地工具放行判断，不代表系统级完全隔离或提权；容器或远程 backend 可以继续拒绝越界路径。
 
 SSH 远端 backend 始终拒绝 workspace 越界与符号链接入口，full-access 不放宽它。远端 helper 依据
 远端文件系统事实做 canonicalize；模型不得把远端 canonical root 传给 `exec.cwd`，runtime 也不
