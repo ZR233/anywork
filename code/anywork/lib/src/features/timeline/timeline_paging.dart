@@ -1,97 +1,31 @@
 part of 'timeline_view.dart';
 
 extension on _TimelineViewState {
-  Widget _buildRow(TimelineRow row, {required ThreadHistoryWindow body}) {
-    _builtRowIds.add(row.id);
-    final reasoningExpanded = _expandedReasoningGroups.contains(
-      row.reasoningGroup?.id,
-    );
-    final toolExpanded = _expandedToolGroups.contains(row.toolGroup?.id);
-    final version = row.renderVersion;
-    final bodyStates = _itemBodyStates(row, body);
-    final bodyState = _itemBodyCacheKey(bodyStates);
-    final cached = _rowWidgets[row.id];
-    final needsUpdate =
-        cached == null ||
-        cached.version != version ||
-        cached.expanded != reasoningExpanded ||
-        cached.toolExpanded != toolExpanded ||
-        cached.body != bodyState;
-    if (needsUpdate) {
-      _trackRowRebuild(row, cached, reasoningExpanded, toolExpanded, bodyState);
-      _rowWidgets[row.id] = (
-        version: version,
-        expanded: reasoningExpanded,
-        toolExpanded: toolExpanded,
-        body: bodyState,
-        child: _TimelineRowBlock(
-          key: ValueKey(row.id),
-          row: row,
-          isReasoningExpanded: reasoningExpanded,
-          onToggleReasoning: _toggleReasoning,
-          isToolGroupExpanded: toolExpanded,
-          onToggleToolGroup: _toggleToolGroup,
-          body: bodyStates,
-        ),
-      );
-    }
-    return KeyedSubtree(
-      key: ValueKey(row.id),
-      child: KeyedSubtree(
-        key: StudioDriverKeys.timelineBlock(row.id),
-        // SliverChildBuilderDelegate already inserts one RepaintBoundary per
-        // child (its default). Avoid nesting another boundary around every
-        // timeline row; the extra layer increases layer-tree and raster work
-        // while providing no additional isolation.
-        child: SizedBox(
-          key: _rowKeys.putIfAbsent(row.id, GlobalKey.new),
-          child: _layoutItem(
-            _anchorItemIdForRow(row),
-            _rowWidgets[row.id]!.child,
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 记录一次行 Widget 重建及其原因。
+  /// 构建一行：行外壳、气泡、头像与状态元信息条都由应用自己的内容组件承担。
   ///
-  /// 行缓存键包含 `renderVersion`、展开态与正文状态：任何一项变化都会重建该行。把命中的
-  /// 那一项写进事件，才能区分「流式正文更新」「用户展开」与「正文回源状态变化」这几种
-  /// 完全不同的视觉来源。
-  void _trackRowRebuild(
-    TimelineRow row,
-    ({
-      int version,
-      bool expanded,
-      bool toolExpanded,
-      String? body,
-      Widget child,
-    })?
-    cached,
-    bool reasoningExpanded,
-    bool toolExpanded,
-    String? bodyState,
-  ) {
-    final reasons = <String>[
-      if (cached == null) 'firstBuild',
-      if (cached != null && cached.version != row.renderVersion) 'version',
-      if (cached != null && cached.expanded != reasoningExpanded) 'expand',
-      if (cached != null && cached.toolExpanded != toolExpanded) 'toolExpand',
-      if (cached != null && cached.body != bodyState) 'body',
-    ];
-    ChatViewEvents.record(
-      ChatViewEventKind.rowRebuilt,
-      identity: {
-        ..._scrollIdentity,
-        'row': row.id,
-        'item': _anchorItemIdForRow(row),
-      },
-      details: {
-        'reason': reasons.join('+'),
-        'type': row.type.name,
-        'saved': row.saved,
-      },
+  /// 行 widget 不再由 Timeline 缓存：消息集合已经保证未变化的行复用同一 `Message`
+  /// 实例，只有真正变化的行才会走到这里（design/19 §19.10）。
+  Widget _buildRow(
+    TimelineRow row, {
+    required ThreadHistoryWindow body,
+    required bool reasoningExpanded,
+    required bool toolExpanded,
+  }) {
+    final block = _TimelineRowBlock(
+      key: ValueKey(row.id),
+      row: row,
+      isReasoningExpanded: reasoningExpanded,
+      onToggleReasoning: _toggleReasoning,
+      isToolGroupExpanded: toolExpanded,
+      onToggleToolGroup: _toggleToolGroup,
+      body: _itemBodyStates(row, body),
+    );
+    return KeyedSubtree(
+      key: StudioDriverKeys.timelineBlock(row.id),
+      child: SizedBox(
+        key: _rowKeys.putIfAbsent(row.id, GlobalKey.new),
+        child: _layoutItem(_anchorItemIdForRow(row), block),
+      ),
     );
   }
 
@@ -105,21 +39,6 @@ extension on _TimelineViewState {
         row.toolGroup?.items.firstOrNull?.id ??
         row.reasoningGroup?.parts.firstOrNull?.id ??
         row.id;
-  }
-
-  /// 行缓存键里的完整正文状态：载荷/加载/错误变化时重建该行，阅读位置不变。
-  ///
-  /// 键包含 canonical item id，因此分组行内某一底层条目回源完成/失败时，只有该行重建，
-  /// 折叠状态与阅读锚点都不受影响。
-  String? _itemBodyCacheKey(List<_ItemBodyState> states) {
-    if (states.isEmpty) return null;
-    return states
-        .map(
-          (state) =>
-              '${state.itemId}|${state.isPreviewed}|${state.isLoading}|'
-              '${state.isPending}|${state.isUnavailable}|${state.error ?? ''}',
-        )
-        .join(',');
   }
 
   /// 该行需要“回源完整正文”提示的底层条目；不需要时返回空列表。
@@ -142,39 +61,6 @@ extension on _TimelineViewState {
       if (state != null) states.add(state);
     }
     return states;
-  }
-
-  /// 一行底层承载的条目身份：单条/raw 行是自身条目，分组行是其全部成员条目。
-  ///
-  /// [isText] 标记该身份的正文由窗口按身份自动补齐：它不再需要“加载完整内容”入口。
-  List<({String id, String? label, bool isText})> _rowBodyCandidates(
-    TimelineRow row,
-  ) {
-    final isTextRow = switch (row.type) {
-      TimelineRowType.userMessage ||
-      TimelineRowType.parentAgentMessage ||
-      TimelineRowType.commentary ||
-      TimelineRowType.finalAnswer => true,
-      _ => false,
-    };
-    if (row.part case final part?) {
-      return <({String id, String? label, bool isText})>[
-        (id: part.id, label: null, isText: isTextRow),
-      ];
-    }
-    if (row.toolGroup case final group?) {
-      return <({String id, String? label, bool isText})>[
-        for (final item in group.items)
-          (id: item.id, label: item.name, isText: false),
-      ];
-    }
-    if (row.reasoningGroup case final group?) {
-      return <({String id, String? label, bool isText})>[
-        for (final part in group.parts)
-          (id: part.id, label: null, isText: false),
-      ];
-    }
-    return const [];
   }
 
   /// 单个底层条目的“回源完整正文”提示；不需要时返回 null。
@@ -206,9 +92,7 @@ extension on _TimelineViewState {
       isPending: pending,
       isUnavailable: unavailable,
       error: error,
-      onLoad: widget.onCommand == null
-          ? null
-          : () => _dispatch(TimelineExpandBody(itemId)),
+      onLoad: () => _dispatch(TimelineExpandBody(itemId)),
     );
   }
 
@@ -351,16 +235,9 @@ extension on _TimelineViewState {
                   ),
                   onPressed: older
                       ? (_followingBottom && !_detachedByUser
-                            ? (widget.onCommand == null
-                                  ? null
-                                  : () =>
-                                        _dispatch(const TimelineExtendLatest()))
-                            : (widget.onCommand == null
-                                  ? null
-                                  : () => _dispatch(const TimelineLoadOlder())))
-                      : (widget.onCommand == null
-                            ? null
-                            : () => _dispatch(const TimelineLoadNewer())),
+                            ? () => _dispatch(const TimelineExtendLatest())
+                            : () => _dispatch(const TimelineLoadOlder()))
+                      : () => _dispatch(const TimelineLoadNewer()),
                   icon: const Icon(Icons.refresh),
                   label: Text(context.l10n.timelineImageRetry),
                 ),

@@ -1,4 +1,13 @@
-import 'thread_models.dart';
+// Timeline 的命令/事件门面归应用侧所有：它只是「界面 → Client threadCommands」
+// 的类型化词汇表，不是第二份内容事实源。
+//
+// 混合归属说明：命令/事件类由应用侧自持，但其中**阅读锚点契约**直接复用 Client 类型——
+// `TimelineAnchor` / `TimelineDirection` 是窗口/锚点契约的一部分，`TimelineViewAction`
+// 更是 Client thread 命令 API（`updateTimelineAnchor(..., {viewAction})`）直接接收的参数
+// 类型。若在应用侧另建同名副本，就会形成两份完全同值的枚举，并在每个消费点被迫做一次
+// 恒等映射；因此这里只 `show` Client 的这三个符号，不再自建副本。
+import 'package:anywork_client/models.dart'
+    show TimelineAnchor, TimelineDirection, TimelineViewAction;
 
 /// Timeline 的唯一 UI 命令入口。
 ///
@@ -93,12 +102,6 @@ final class TimelineVisibleBodies extends TimelineCommand {
   const TimelineVisibleBodies(this.itemIds);
   final List<String> itemIds;
 }
-
-/// 阅读锚点上的一次**定位意图动作**；与锚点本身（持续状态）分开。
-///
-/// 只有真正的意图切换才带动作：进入历史阅读、显式查看某条目、跳回最新。普通滚动换顶行
-/// 只更新锚点，不改变后端窗口焦点。
-enum TimelineViewAction { enterHistory, inspectItem, backToLatest }
 
 final class TimelineAnchorChanged extends TimelineCommand {
   const TimelineAnchorChanged(this.anchor, {this.viewAction});

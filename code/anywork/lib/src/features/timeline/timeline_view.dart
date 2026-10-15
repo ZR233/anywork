@@ -6,17 +6,15 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 
-import 'package:anywork_client/models.dart';
-import 'package:anywork_client/anywork_client.dart' show Observation;
-
 import '../../presentation/providers/client_provider.dart';
-import '../../presentation/view_models/timeline_session_owner.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
 import '../../shared/studio_chrome.dart';
@@ -34,9 +32,9 @@ part 'timeline_plan_blocks.dart';
 part 'timeline_agent_blocks.dart';
 part 'timeline_remote_image_blocks.dart';
 part 'timeline_tool_blocks.dart';
+part 'timeline_chat_controller.dart';
 part 'timeline_paging.dart';
 part 'timeline_layout_changes.dart';
-part 'timeline_row_connector.dart';
 
 typedef TimelineRemoteImageProviderFactory = ImageProvider Function(String url);
 
@@ -54,55 +52,15 @@ final timelineRemoteImageProviderFactoryProvider =
 /// 之间运行时选择事实来源（design/25 §25.8）。订阅与命令派发由连接组件
 /// （`_AgentTimelineHost` 等）负责。
 class TimelineView extends StatelessWidget {
-  TimelineView({
+  const TimelineView({
     required this.threadId,
-    required List<TimelineRow> rows,
+    required this.rows,
+    required this.body,
     required this.turn,
     this.planConfirmation,
     this.planExpanded = false,
     this.onPlanToggle,
-    this.onCommand,
-    this.isLoadingOlder = false,
-    this.isLoadingNewer = false,
-    this.anchor,
-    this.olderError,
-    this.newerError,
-    this.hasOlder = false,
-    this.hasNewer = false,
-    this.canExtendLatest = false,
-    this.olderCursor,
-    this.newerCursor,
-    this.windowEpoch = 0,
-    this.viewId,
-    Set<String> previewedItemIds = const {},
-    Set<String> loadingItemIds = const {},
-    Map<String, String> itemBodyErrors = const {},
-    Set<String> pendingItemBodyIds = const {},
-    Set<String> unavailableItemIds = const {},
-    super.key,
-  }) : rowQuery = TimelineRowsQuery.snapshot(
-         rows,
-         body: ThreadHistoryWindow(
-           previewedItemIds: previewedItemIds,
-           loadingItemIds: loadingItemIds,
-           itemBodyErrors: itemBodyErrors,
-           pendingItemBodyIds: pendingItemBodyIds,
-           unavailableItemIds: unavailableItemIds,
-         ),
-       ),
-       orderedIds = List.unmodifiable([for (final row in rows) row.id]);
-
-  /// A list connector passes structure and its read-only row query. Each row
-  /// attaches only to its own immutable props; the viewport borrows queries for
-  /// geometry without subscribing to the whole content window.
-  TimelineView.observed({
-    required this.threadId,
-    required TimelineRowsQuery rows,
-    required this.turn,
-    this.planConfirmation,
-    this.planExpanded = false,
-    this.onPlanToggle,
-    this.onCommand,
+    required this.onCommand,
     this.isLoadingOlder = false,
     this.isLoadingNewer = false,
     this.anchor,
@@ -116,18 +74,18 @@ class TimelineView extends StatelessWidget {
     this.windowEpoch = 0,
     this.viewId,
     super.key,
-  }) : rowQuery = rows,
-       orderedIds = rows.orderedIds;
+  });
 
   final String? threadId;
-  final TimelineRowsQuery rowQuery;
-  final List<String> orderedIds;
-  List<TimelineRow> get rows => rowQuery.rows;
+  final List<TimelineRow> rows;
+
+  /// canonical 窗口交付的正文状态：预览、回源在途、待落盘、不可用与错误。
+  final ThreadHistoryWindow body;
   final StudioTurnView? turn;
   final PlanConfirmationView? planConfirmation;
   final bool planExpanded;
   final VoidCallback? onPlanToggle;
-  final ValueChanged<TimelineCommand>? onCommand;
+  final ValueChanged<TimelineCommand> onCommand;
   final bool isLoadingOlder;
   final bool isLoadingNewer;
   final TimelineAnchor? anchor;
@@ -146,8 +104,8 @@ class TimelineView extends StatelessWidget {
     return _TimelineSurface(
       key: key,
       threadId: threadId,
-      rowQuery: rowQuery,
-      orderedIds: orderedIds,
+      rows: rows,
+      body: body,
       turn: turn,
       planConfirmation: planConfirmation,
       planExpanded: planExpanded,
@@ -172,13 +130,13 @@ class TimelineView extends StatelessWidget {
 class _TimelineSurface extends StatefulWidget {
   const _TimelineSurface({
     required this.threadId,
-    required this.rowQuery,
-    required this.orderedIds,
+    required this.rows,
+    required this.body,
     required this.turn,
     this.planConfirmation,
     this.planExpanded = false,
     this.onPlanToggle,
-    this.onCommand,
+    required this.onCommand,
     this.isLoadingOlder = false,
     this.isLoadingNewer = false,
     this.anchor,
@@ -195,14 +153,13 @@ class _TimelineSurface extends StatefulWidget {
   });
 
   final String? threadId;
-  final TimelineRowsQuery rowQuery;
-  final List<String> orderedIds;
-  List<TimelineRow> get rows => rowQuery.rows;
+  final List<TimelineRow> rows;
+  final ThreadHistoryWindow body;
   final StudioTurnView? turn;
   final PlanConfirmationView? planConfirmation;
   final bool planExpanded;
   final VoidCallback? onPlanToggle;
-  final ValueChanged<TimelineCommand>? onCommand;
+  final ValueChanged<TimelineCommand> onCommand;
   final bool isLoadingOlder;
   final bool isLoadingNewer;
   final TimelineAnchor? anchor;
@@ -216,29 +173,18 @@ class _TimelineSurface extends StatefulWidget {
   final int windowEpoch;
   final String? viewId;
 
-  /// 页面只以预览返回的超大条目 ID：需要按 identity 回源完整正文。
-  Set<String> get previewedItemIds => rowQuery.bodyHistory.previewedItemIds;
-
-  /// 正在回源完整正文的条目 ID。
-  Set<String> get loadingItemIds => rowQuery.bodyHistory.loadingItemIds;
-
-  /// 回源失败的条目 ID 与其错误文案。
-  Map<String, String> get itemBodyErrors => rowQuery.bodyHistory.itemBodyErrors;
-
-  /// 回源已发出但完整正文尚未可取的条目 ID（例如历史事务尚未 durable）。
-  ///
-  /// 与 [unavailableItemIds] 不同：这是“在途”，入口继续可见可重试。
-  Set<String> get pendingItemBodyIds => rowQuery.bodyHistory.pendingItemBodyIds;
-
-  /// 数据源无法提供完整正文的条目 ID。
-  Set<String> get unavailableItemIds => rowQuery.bodyHistory.unavailableItemIds;
-
   @override
   State<_TimelineSurface> createState() => _TimelineViewState();
 }
 
 class _TimelineViewState extends State<_TimelineSurface> {
   static const _bottomThreshold = 80.0;
+
+  /// 向旧加载的触发阈值：滚动位置进入列表顶部 3% 时请求旧页。
+  static const _olderPaginationThreshold = 0.03;
+
+  /// 向新加载的触发阈值：滚动位置进入列表底部 3% 时请求新页。
+  static const _newerPaginationThreshold = 0.97;
 
   late final ScrollController _controller = ScrollController(
     keepScrollOffset: false,
@@ -247,18 +193,47 @@ class _TimelineViewState extends State<_TimelineSurface> {
   final Set<String> _expandedReasoningGroups = {};
   final Set<String> _expandedToolGroups = {};
   final _ThreadImageLoader _imageLoader = _ThreadImageLoader();
+
+  /// 行外壳的复用缓存：只有承载该行的 `Message` 实例或本行展开态变化时才重建子树。
+  ///
+  /// `Message` 实例在「行内容、正文状态」都未变化时被控制器复用，因此这个缓存与
+  /// 「未变化的行复用同一消息实例」是同一判据的两种用法：视图重建不会让未变化的行
+  /// 重新布局 Markdown、工具详情或图片（design/19 §19.10）。
+  final Map<String, _TimelineRowWidgetCache> _rowWidgets = {};
+
+  /// 应用侧唯一的窗口 → 消息集合写入者（design/19 §19.10「渲染组件与行模型」）。
+  late final TimelineChatController _chatController = TimelineChatController();
+
+  /// 上游组件需要的构建器。它们只捕获本 State，不读取业务 provider。
+  late final Builders _chatBuilders = Builders(
+    chatMessageBuilder: _buildChatMessage,
+    customMessageBuilder: (
+      context,
+      message,
+      index, {
+      isSentByMe = false,
+      groupStatus,
+    }) => const SizedBox.shrink(),
+    chatAnimatedListBuilder: _buildChatList,
+    composerBuilder: (context) => const SizedBox.shrink(),
+    // 「跳到最新」的操作区保留布局空间、显隐不改变消息视口高度（design/19 §19.10），
+    // 因此不使用上游浮动按钮，也不让加载提示占据列表高度：两者继续由外层承载。
+    scrollToBottomBuilder: (context, animation, onPressed) =>
+        const SizedBox.shrink(),
+    loadMoreBuilder: (context) => const SizedBox.shrink(),
+    emptyChatListBuilder: (context) => const _EmptyTimeline(),
+  );
+
   TimelineReadingIntent _readingIntent = TimelineReadingIntent.followLatest;
   bool get _followingBottom =>
       _readingIntent == TimelineReadingIntent.followLatest;
   bool get _detachedByUser => !_followingBottom;
-  bool get _canLoadOlder => widget.onCommand != null && widget.hasOlder;
-  bool get _canLoadNewer => widget.onCommand != null && widget.hasNewer;
-  bool get _canExtendLatest =>
-      widget.onCommand != null && widget.canExtendLatest;
+  bool get _canLoadOlder => widget.hasOlder;
+  bool get _canLoadNewer => widget.hasNewer;
+  bool get _canExtendLatest => widget.canExtendLatest;
 
   void _dispatch(TimelineCommand command) {
-    final onCommand = widget.onCommand;
-    onCommand?.call(command);
+    widget.onCommand(command);
   }
 
   int _readingGeneration = 0;
@@ -296,26 +271,11 @@ class _TimelineViewState extends State<_TimelineSurface> {
 
   final _viewportKey = GlobalKey();
   final Map<String, GlobalKey> _rowKeys = {};
-  final Map<
-    String,
-    ({
-      int version,
-      bool expanded,
-      bool toolExpanded,
-      String? body,
-      Widget child,
-    })
-  >
-  _rowWidgets = {};
 
   /// 上一帧进入布局的行身份，用于把「视觉异常」对应到具体的 mount/unmount。
   ///
-  /// 由 [_buildRow] 记录**本帧真正构建**的行（窗口里未被 sliver 构建的行不算），帧末在
-  /// [_syncTimelineGeometry] 里做一次集合差；只有身份集合真正变化才写事件，稳定输出不产生
-  /// 记录（design/25 §25.10）。
-  final Set<String> _builtRowIds = <String>{};
-
-  /// 已结算的上一帧行身份；null 表示还没有可比较的帧。
+  /// 帧末做一次集合差；只有身份集合真正变化才写事件，稳定输出不产生记录
+  /// （design/25 §25.10）。
   Set<String>? _mountedRowIds;
 
   /// 滚动事件的公共身份：thread 与窗口 epoch 一起限定一次校正的归属。
@@ -332,7 +292,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
       for (final entry in _rowKeys.entries)
         if (entry.value.currentContext?.mounted == true) entry.key,
     };
-    _builtRowIds.clear();
     final previous = _mountedRowIds;
     _mountedRowIds = next;
     if (previous == null) {
@@ -380,12 +339,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
   /// `maxScrollExtent` 钳位成更浅的位置。此时不能把钳位结果当成读者新的阅读位置——否则
   /// 完整正文到位、滚动范围变大后，读者会停在这个更浅的位置上（锚点被覆盖）。保持 `true`
   /// 直到目标能被布局表达；期间不据此判定“跟随最新”，也不重建/发布锚点。
-  ///
-  /// 意图建立时（[didUpdateWidget] / [_restoreThreadState]）
-  /// 一律先置 `true`，再由帧末的 [_refreshRestorePending] 按**每帧定稿后**的滚动范围复核：
-  /// 正文补齐是后续帧才把 sliver 撑高的，只在建立那一帧估算一次的话，之后范围变大也不会
-  /// 有人再看一眼（标记会停在“已表达”的假象上）。读者主动接管（拖动 / 滚轮 / 跳最新）
-  /// 会直接清掉它，因此待表达的意图不会把用户已经接管的位置拉回去。
   bool _restoreClamped = false;
 
   /// 最近一次非空选区的文本。
@@ -458,8 +411,8 @@ class _TimelineViewState extends State<_TimelineSurface> {
       _settledAnchor = null;
       _expandedReasoningGroups.clear();
       _expandedToolGroups.clear();
-      _rowWidgets.clear();
       _rowKeys.clear();
+      _rowWidgets.clear();
       _visibleItemBodySignature = null;
       _lastSelectedText = null;
       _imageLoader.clear();
@@ -533,8 +486,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
 
     // 贴在窗口末尾时，内容变化（追加 / 历史分页 / 窗口替换）都保持跟随：`hasNewer`
     // 只表示窗口之外还有更新条目（由「跳到最新」入口表达），不代表读者离开了末尾。
-    // 之前这里要求 `!hasNewer`，于是历史分页会把跟随态写成非跟随锚点，重开时又围绕
-    // 这条锚点重新取窗。
     if (!_detachedByUser && _followingBottom) {
       _pendingNewEvents = 0;
       // The frame-end geometry sync follows the newly laid out max extent.
@@ -550,33 +501,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
     }
   }
 
-  void _handleObservedRowChange() {
-    if (!mounted) return;
-    final currentIds = widget.rowQuery.orderedIds;
-    if (widget.orderedIds.length != currentIds.length ||
-        widget.orderedIds.indexed.any(
-          (entry) => entry.$2 != currentIds[entry.$1],
-        )) {
-      // A structural publication follows this transaction. Preserve the old
-      // layout snapshot until didUpdateWidget captures its reading anchor.
-      return;
-    }
-    final rows = widget.rows;
-    if (_detachedByUser && !_userScrollActive && !_keyboardScrolling) {
-      final anchor =
-          _pendingRestore.anchor ??
-          _settledAnchor ??
-          _captureAnchor(rows: _layoutRows);
-      if (anchor != null && _needsAnchorRebase(anchor, _layoutRows)) {
-        _prepareAnchorRestore(anchor);
-      }
-    }
-    _layoutRows = rows;
-    _contentVersion = _timelineContentVersion(rows, widget.planConfirmation);
-    _imageLoader.retainWindow(widget.threadId, rows);
-    _scheduleGeometrySync();
-  }
-
   @override
   void dispose() {
     _saveThreadState(widget.threadId);
@@ -584,6 +508,7 @@ class _TimelineViewState extends State<_TimelineSurface> {
     StudioDriverState.publishTimelineScroll(null);
     _controller.removeListener(_handleScrollPositionChanged);
     _controller.dispose();
+    _chatController.dispose();
     _imageLoader.clear();
     super.dispose();
   }
@@ -608,35 +533,19 @@ class _TimelineViewState extends State<_TimelineSurface> {
         !_canLoadNewer &&
         widget.olderError == null &&
         widget.newerError == null) {
+      _chatController.applyWindow(widget.rows, widget.body);
       return const _EmptyTimeline();
     }
+    _retainWindow(widget.rows);
+    // 窗口 → 消息集合只在这里对齐一次：未变化的行复用同一 `Message` 实例。
+    _chatController.applyWindow(
+      widget.rows,
+      widget.body,
+      expandedReasoningGroups: _expandedReasoningGroups,
+      expandedToolGroups: _expandedToolGroups,
+    );
     // 本帧结束后按实际几何做一次归一 + 诊断发布。
     _scheduleGeometrySync();
-    final rows = widget.rows;
-    final planSummary = widget.planConfirmation == null
-        ? null
-        : _layoutItem(
-            'plan:${widget.planConfirmation!.interactionId}',
-            TimelinePlanSummaryCard(
-              plan: widget.planConfirmation!,
-              expanded: widget.planExpanded,
-              onPressed: widget.onPlanToggle ?? () {},
-            ),
-          );
-    final activeIds = rows.map((row) => row.id).toSet();
-    _rowKeys.removeWhere((id, _) => !activeIds.contains(id));
-    _rowWidgets.removeWhere((id, _) => !activeIds.contains(id));
-    _imageLoader.retainWindow(widget.threadId, rows);
-    // 展开态按稳定分组身份保存，但只保留仍在窗口内的身份：历史分页淘汰/切回
-    // 不留下再也用不到的 id，避免集合无界增长。
-    _expandedReasoningGroups.retainAll({
-      for (final row in rows)
-        if (row.reasoningGroup case final group?) group.id,
-    });
-    _expandedToolGroups.retainAll({
-      for (final row in rows)
-        if (row.toolGroup case final group?) group.id,
-    });
     return PrimaryScrollController(
       controller: _controller,
       child: Actions(
@@ -664,7 +573,7 @@ class _TimelineViewState extends State<_TimelineSurface> {
                       ),
                       child: Column(
                         children: [
-                          Expanded(child: _buildViewport(rows, planSummary)),
+                          Expanded(child: _buildViewport()),
                           Visibility(
                             visible: _showJumpToLatest,
                             maintainSize: true,
@@ -698,7 +607,111 @@ class _TimelineViewState extends State<_TimelineSurface> {
     );
   }
 
-  Widget _buildViewport(List<TimelineRow> rows, Widget? planSummary) {
+  /// 行身份、展开意图与图片缓存的窗口保留：淘汰的窗口条目不再留下展示状态。
+  void _retainWindow(List<TimelineRow> rows) {
+    final activeIds = {for (final row in rows) row.id};
+    _rowKeys.removeWhere((id, _) => !activeIds.contains(id));
+    _rowWidgets.removeWhere((id, _) => !activeIds.contains(id));
+    _imageLoader.retainWindow(widget.threadId, rows);
+    // 展开态按稳定分组身份保存，但只保留仍在窗口内的身份：历史分页淘汰/切回
+    // 不留下再也用不到的 id，避免集合无界增长。
+    _expandedReasoningGroups.retainAll({
+      for (final row in rows)
+        if (row.reasoningGroup case final group?) group.id,
+    });
+    _expandedToolGroups.retainAll({
+      for (final row in rows)
+        if (row.toolGroup case final group?) group.id,
+    });
+  }
+
+  /// 上游列表的装配点：窗口消息集合交给 `ChatAnimatedList`。
+  ///
+  /// 应用侧只提供列表参数与方向回调：向旧由 `onEndReached` 表达、向新由
+  /// `onStartReached` 表达，两端能力只从 canonical 窗口读（design/19 §19.10）。
+  Widget _buildChatList(BuildContext context, ChatItem itemBuilder) {
+    final planConfirmation = widget.planConfirmation;
+    final planSummary = planConfirmation == null
+        ? null
+        : _layoutItem(
+            'plan:${planConfirmation.interactionId}',
+            TimelinePlanSummaryCard(
+              plan: planConfirmation,
+              expanded: widget.planExpanded,
+              onPressed: widget.onPlanToggle ?? () {},
+            ),
+          );
+    return ChatAnimatedList(
+      itemBuilder: itemBuilder,
+      scrollController: _controller,
+      topPadding: 0,
+      bottomPadding: 0,
+      handleSafeArea: false,
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+      physics: const AlwaysScrollableScrollPhysics(),
+      cacheExtent: 600,
+      insertAnimationDuration: Duration.zero,
+      removeAnimationDuration: Duration.zero,
+      scrollToEndAnimationDuration: Duration.zero,
+      shouldScrollToEndWhenSendingMessage: false,
+      shouldScrollToEndWhenAtBottom: false,
+      initialScrollToEndMode: InitialScrollToEndMode.none,
+      paginationThreshold: _olderPaginationThreshold,
+      startPaginationThreshold: _newerPaginationThreshold,
+      onEndReached: _handleOlderEdgeReached,
+      onStartReached: _handleNewerEdgeReached,
+      bottomSliver: SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: _TimelineTail(planSummary: planSummary),
+        ),
+      ),
+    );
+  }
+
+  /// 行外壳由应用渲染：不使用上游默认气泡、时间戳与对齐。
+  Widget _buildChatMessage(
+    BuildContext context,
+    Message message,
+    int index,
+    Animation<double> animation,
+    Widget child, {
+    bool? isRemoved,
+    required bool isSentByMe,
+    MessageGroupStatus? groupStatus,
+  }) {
+    final row = TimelineChatController.rowOf(message);
+    if (row == null) return const SizedBox.shrink();
+    final reasoningExpanded = _expandedReasoningGroups.contains(
+      row.reasoningGroup?.id,
+    );
+    final toolExpanded = _expandedToolGroups.contains(row.toolGroup?.id);
+    final cached = _rowWidgets[row.id];
+    if (cached != null &&
+        identical(cached.message, message) &&
+        cached.reasoningExpanded == reasoningExpanded &&
+        cached.toolExpanded == toolExpanded) {
+      return cached.child;
+    }
+    final built = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: _buildRow(
+        row,
+        body: TimelineChatController.bodyOf(message),
+        reasoningExpanded: reasoningExpanded,
+        toolExpanded: toolExpanded,
+      ),
+    );
+    _rowWidgets[row.id] = _TimelineRowWidgetCache(
+      message: message,
+      reasoningExpanded: reasoningExpanded,
+      toolExpanded: toolExpanded,
+      child: built,
+    );
+    return built;
+  }
+
+  Widget _buildViewport() {
     return LayoutBuilder(
       builder: (context, constraints) {
         if (_viewportWidth != null &&
@@ -709,14 +722,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
           if (anchor != null) _prepareAnchorRestore(anchor);
         }
         _viewportWidth = constraints.maxWidth;
-        // SliverChildBuilderDelegate may ask for the index of a mounted child
-        // while a window is being patched. Keep this lookup constant-time so
-        // a long history does not turn key reconciliation into repeated
-        // linear scans of the whole window.
-        final rowIndexById = <String, int>{};
-        for (var index = 0; index < widget.orderedIds.length; index += 1) {
-          rowIndexById.putIfAbsent(widget.orderedIds[index], () => index);
-        }
         return SizedBox(
           key: _viewportKey,
           child: NotificationListener<ScrollMetricsNotification>(
@@ -724,60 +729,25 @@ class _TimelineViewState extends State<_TimelineSurface> {
             child: NotificationListener<ScrollUpdateNotification>(
               onNotification: _handleScrollUpdate,
               child: NotificationListener<ScrollNotification>(
-                onNotification: (notification) {
-                  if (notification is ScrollStartNotification &&
-                      notification.depth == 0 &&
-                      notification.dragDetails != null) {
-                    // Flutter establishes the drag before its first scroll
-                    // update. Layout correction in that gap would cancel it.
-                    _userScrollActive = true;
-                    _cancelLayoutRestore();
-                  }
-                  if (notification is UserScrollNotification) {
-                    return _handleUserScroll(notification);
-                  }
-                  if (notification is ScrollEndNotification &&
-                      notification.depth == 0 &&
-                      !_programmaticScroll) {
-                    _keyboardScrolling = false;
-                    _userScrollActive = false;
-                    _saveThreadState(widget.threadId);
-                    _scheduleGeometrySync();
-                  }
-                  return false;
-                },
+                onNotification: _handleScrollNotification,
                 child: Listener(
                   onPointerSignal: _handleBottomWheel,
-                  child: Scrollbar(
-                    controller: _controller,
-                    thumbVisibility: true,
-                    child: CustomScrollView(
-                      scrollBehavior: ScrollConfiguration.of(context)
-                          .copyWith(scrollbars: false),
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      key: StudioDriverKeys.timeline,
+                  child: ScrollConfiguration(
+                    behavior: ScrollConfiguration.of(context)
+                        .copyWith(scrollbars: false),
+                    child: RawScrollbar(
                       controller: _controller,
-                      scrollCacheExtent: const ScrollCacheExtent.pixels(600),
-                      slivers: [
-                        SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          sliver: SliverList.builder(
-                            itemCount: widget.orderedIds.length + 1,
-                            addAutomaticKeepAlives: false,
-                            findChildIndexCallback: (key) {
-                              if (key is! ValueKey<(String?, String)> ||
-                                  key.value.$1 != widget.threadId) {
-                                return null;
-                              }
-                              return rowIndexById[key.value.$2];
-                            },
-                            itemBuilder: (context, index) =>
-                                index == widget.orderedIds.length
-                                ? _TimelineTail(planSummary: planSummary)
-                                : _buildObservedRow(widget.orderedIds[index]),
-                          ),
+                      thumbVisibility: true,
+                      child: KeyedSubtree(
+                        key: StudioDriverKeys.timeline,
+                        child: Chat(
+                          currentUserId: TimelineChatController.localAuthorId,
+                          resolveUser: _resolveChatUser,
+                          chatController: _chatController,
+                          backgroundColor: Colors.transparent,
+                          builders: _chatBuilders,
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
@@ -849,6 +819,55 @@ class _TimelineViewState extends State<_TimelineSurface> {
       if (!mounted || !_controller.hasClients) return;
       _jumpToLatest();
     });
+  }
+
+  /// 列表的向旧加载回调。能力只从 canonical 窗口读，且每个在途方向只请求一次。
+  Future<void> _handleOlderEdgeReached() async {
+    if (!_canLoadOlder ||
+        _olderLoadRequested ||
+        widget.olderError != null ||
+        widget.isLoadingOlder) {
+      return;
+    }
+    _olderLoadRequested = true;
+    ChatViewMetrics.prefetchLoadOlder += 1;
+    _dispatch(const TimelineLoadOlder());
+  }
+
+  /// 列表的向新加载回调。
+  Future<void> _handleNewerEdgeReached() async {
+    if (!_canLoadNewer ||
+        _newerLoadRequested ||
+        widget.newerError != null ||
+        widget.isLoadingNewer) {
+      return;
+    }
+    _newerLoadRequested = true;
+    ChatViewMetrics.prefetchLoadNewer += 1;
+    _dispatch(const TimelineLoadNewer());
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollStartNotification &&
+        notification.depth == 0 &&
+        notification.dragDetails != null) {
+      // Flutter establishes the drag before its first scroll
+      // update. Layout correction in that gap would cancel it.
+      _userScrollActive = true;
+      _cancelLayoutRestore();
+    }
+    if (notification is UserScrollNotification) {
+      return _handleUserScroll(notification);
+    }
+    if (notification is ScrollEndNotification &&
+        notification.depth == 0 &&
+        !_programmaticScroll) {
+      _keyboardScrolling = false;
+      _userScrollActive = false;
+      _saveThreadState(widget.threadId);
+      _scheduleGeometrySync();
+    }
+    return false;
   }
 
   bool _handleUserScroll(UserScrollNotification notification) {
@@ -1099,9 +1118,9 @@ class _TimelineViewState extends State<_TimelineSurface> {
   void _syncTimelineGeometry() {
     _trackMountedRows();
     _restoreVisibleAnchor();
-    // SliverList may refine the extent of a very tall lazily built row over
-    // several layouts. Keep followLatest attached to the real max extent;
-    // this is a layout event response, never a timer or polling loop.
+    // The lazy list may refine the extent of a very tall row over several
+    // layouts. Keep followLatest attached to the real max extent; this is a
+    // layout event response, never a timer or polling loop.
     if (_followingBottom &&
         !_detachedByUser &&
         !_userScrollActive &&
@@ -1140,9 +1159,9 @@ class _TimelineViewState extends State<_TimelineSurface> {
   /// 首窗）、**身份进入预览**与**补齐完成**都会重新上报一次，不需要读者滚动去触发补齐；
   /// 上报只在状态真正变化时发生，因此稳定的流式帧不会重复上报、不会自激。
   void _publishVisibleItemBodies() {
-    if (widget.onCommand == null) return;
     final viewport = _viewportKey.currentContext?.findRenderObject();
     if (viewport is! RenderBox || !viewport.hasSize) return;
+    final body = widget.body;
     final ids = <String>[];
     final signature = StringBuffer();
     for (final row in widget.rows) {
@@ -1164,9 +1183,9 @@ class _TimelineViewState extends State<_TimelineSurface> {
         // 补齐按身份发起：进入/离开预览、在途、待落盘都会改变签名而重新上报一次，
         // 因此运行中的流式正文补齐后不会因内容继续增长而反复重发同一请求。
         ..write(part.status)
-        ..write(widget.previewedItemIds.contains(part.id) ? '1' : '0')
-        ..write(widget.loadingItemIds.contains(part.id) ? '1' : '0')
-        ..write(widget.pendingItemBodyIds.contains(part.id) ? '1' : '0')
+        ..write(body.previewedItemIds.contains(part.id) ? '1' : '0')
+        ..write(body.loadingItemIds.contains(part.id) ? '1' : '0')
+        ..write(body.pendingItemBodyIds.contains(part.id) ? '1' : '0')
         ..write('|');
     }
     final next = signature.toString();
@@ -1409,6 +1428,21 @@ class _TimelineRestore {
   final _TimelineLayoutTarget? target;
 }
 
+/// 一行的行外壳子树及其有效性判据：承载它的消息实例与展开意图。
+class _TimelineRowWidgetCache {
+  const _TimelineRowWidgetCache({
+    required this.message,
+    required this.reasoningExpanded,
+    required this.toolExpanded,
+    required this.child,
+  });
+
+  final Message message;
+  final bool reasoningExpanded;
+  final bool toolExpanded;
+  final Widget child;
+}
+
 class _TimelineScrollSnapshot {
   const _TimelineScrollSnapshot({
     required this.anchor,
@@ -1479,3 +1513,7 @@ bool _hasNewTimelineEvent(
   // “有新内容”只由新条目/新计划决定。
   return newWidget.rows.any((row) => !oldIds.contains(row.id));
 }
+
+/// 上游 `Chat` 需要从任意 `authorId` 解析 `User`。应用侧行外壳完全自绘，
+/// 用户对象只用于上游内部路径，因此这里给出稳定且不访问网络的实现。
+Future<User?> _resolveChatUser(String id) async => User(id: id);

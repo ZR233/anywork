@@ -1,6 +1,8 @@
 import 'package:anywork_client/models.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
+import 'timeline_rows.dart';
+
 part 'agent_workspace_view.freezed.dart';
 
 enum AgentComposerMode { editable, runtimeDriven }

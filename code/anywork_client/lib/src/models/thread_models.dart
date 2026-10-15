@@ -1193,6 +1193,12 @@ class TimelineTurnView {
 /// Reading position and permission to move the canonical window are distinct.
 enum TimelineReadingIntent { followLatest, inspectItem, browseHistory }
 
+/// 阅读锚点上的一次**定位意图动作**；与锚点本身（持续状态）分开。
+///
+/// 只有真正的意图切换才带动作：进入历史阅读、显式查看某条目、跳回最新。普通滚动换顶行
+/// 只更新锚点，不改变后端窗口焦点。
+enum TimelineViewAction { enterHistory, inspectItem, backToLatest }
+
 class TimelineAnchor {
   const TimelineAnchor(
     this.itemId,

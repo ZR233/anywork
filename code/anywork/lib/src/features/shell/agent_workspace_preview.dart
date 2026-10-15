@@ -49,6 +49,7 @@ Widget _agentWorkspacePreview(StudioState state) {
           : TimelineView(
               threadId: workspace.threadId,
               rows: workspace.timelineRows,
+              body: const ThreadHistoryWindow(),
               turn: workspace.turn,
               onCommand: (_) {},
             ),

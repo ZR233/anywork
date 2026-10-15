@@ -49,9 +49,6 @@ enum ChatViewEventKind {
 
   /// 行离开布局集合。
   rowsUnmounted,
-
-  /// 行 Widget 被重建（版本、展开态或正文状态变化）。
-  rowRebuilt,
 }
 
 /// 单条事件记录。

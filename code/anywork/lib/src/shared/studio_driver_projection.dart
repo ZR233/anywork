@@ -1,6 +1,7 @@
 import 'package:anywork_client/studio_client.dart';
 
 import '../domain/models/agent_workspace_view.dart';
+import '../domain/models/timeline_rows.dart';
 import '../features/shell/shell_view.dart'
     show
         agentsForThreads,

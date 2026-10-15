@@ -130,14 +130,18 @@ ThreadWorkspace 首快照携带的 Thread 仅用于建立身份；标题、模�
 状态流快照不反写目录行；`updatedAt` 不充当跨资源版本，尤其同秒晚到快照不能覆盖已交付的
 目录终态。mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 
-正文窗口保留有界 orderedIds 与按身份索引的 immutable row。列表观察结构与分页能力；行按
-ThreadId + ItemId 观察本行；不把全局窗口 revision 注入所有行的相等性。未变化的行复用身份，
-移出窗口的行观察结束。TimelineSession 是具体显示 owner，拥有 events、dispatch 和 close；
-Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件。
+正文窗口保留有界 orderedIds 与按身份索引的 immutable row。列表只观察结构与分页能力，不把
+全局窗口 revision 注入所有行的相等性；行内容变化只表达为对应消息的原地更新，未变化的行
+复用同一身份与实例，移出窗口的行随之释放。Timeline 的展示 owner 由 AppGraph 持有，直接
+观察选中 Thread 的 ChatView 窗口，按 threadId 管理展示 lease，并向该 Thread 派发分页、聚焦、
+正文补齐与锚点意图；切换 Thread 时显式关闭旧 lease，关闭只释放自己的投影与附件展示缓存，
+不关闭 Session、ChatView 或草稿。行投影与消息集合是展示 owner 的内存态，不另开 native view、
+正文缓存或会话事实源。Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件；连接组件与纯显示
+组件的边界见 [19](./19-studio-ui.md)。
 
 Connector 读取查询并调用稳定目标 action，向纯 View 传不可变 props。同一份业务值不能同时
 经 props 与 provider fallback 读取。图像、菜单和输入法等平台依赖留在适配层或 UI controller。
-阅读位置按 thread/view/window/readingGeneration 校验，滚动与官方组件契约见 [19](./19-studio-ui.md)。
+阅读位置按 ThreadId、view 代次与窗口版本校验，滚动与渲染组件契约见 [19](./19-studio-ui.md)。
 
 ## 25.7 命令、观察与效果
 

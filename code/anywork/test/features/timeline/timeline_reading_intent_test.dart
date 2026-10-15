@@ -106,6 +106,7 @@ void main() {
               child: TimelineView(
                 threadId: threadId,
                 rows: rows,
+                body: const ThreadHistoryWindow(),
                 turn: null,
                 hasOlder: false,
                 hasNewer: false,
@@ -174,6 +175,7 @@ void main() {
                 child: TimelineView(
                   threadId: threadId,
                   rows: _rows(40),
+                  body: const ThreadHistoryWindow(),
                   turn: null,
                   hasOlder: false,
                   hasNewer: false,

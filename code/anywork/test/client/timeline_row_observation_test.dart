@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/timeline/timeline_session_view.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -10,6 +11,7 @@ import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,10 +19,216 @@ import 'support/recording_demo_transport.dart';
 import 'support/pump_client_future.dart';
 
 void main() {
+  group('窗口对齐契约（headless）', () {
+    test('Reset 整窗替换：旧身份全部淘汰，新身份一次区间插入', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow([
+        _textRow('first'),
+        _textRow('second'),
+      ], const ThreadHistoryWindow());
+      expect(ops, hasLength(1));
+      expect(ops.single.type, ChatOperationType.insertAll);
+      expect(ops.single.animated, isFalse);
+      expect(controller.lastDiff.inserts, 2);
+      expect(controller.lastDiff.operations, 1);
+
+      ops.clear();
+      controller.applyWindow([_textRow('third')], const ThreadHistoryWindow());
+      expect(ops.map((op) => op.type), [
+        ChatOperationType.remove,
+        ChatOperationType.remove,
+        ChatOperationType.insert,
+      ]);
+      expect(
+        ops.whereType<ChatOperation>().every((op) => !op.animated),
+        isTrue,
+      );
+      expect(controller.lastDiff.removes, 2);
+      expect(controller.lastDiff.inserts, 1);
+      expect(controller.lastDiff.isIdle, isFalse);
+      expect(
+        [for (final message in controller.messages) message.id],
+        ['third'],
+      );
+    });
+
+    test('Patch 增量：追加只发一次插入，未变化行不发任何操作', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final first = _textRow('first');
+      final second = _textRow('second');
+      controller.applyWindow([first], const ThreadHistoryWindow());
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow([first, second], const ThreadHistoryWindow());
+
+      expect(ops, hasLength(1));
+      expect(ops.single.type, ChatOperationType.insert);
+      expect(ops.single.index, 1);
+      expect(ops.single.animated, isFalse);
+      expect(controller.lastDiff.reused, 1);
+      expect(controller.lastDiff.removes, 0);
+      expect(controller.lastDiff.updates, 0);
+      expect(controller.lastDiff.operations, 1);
+      expect(
+        controller.lastDiff.comparisons,
+        lessThanOrEqualTo(2),
+        reason: '线性对齐一轮最多比较两侧行数之和',
+      );
+    });
+
+    test('未变化的行复用同一 Message 实例', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final rows = [_textRow('first'), _textRow('second')];
+      controller.applyWindow(rows, const ThreadHistoryWindow());
+      final before = controller.messages;
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow(rows, const ThreadHistoryWindow());
+
+      expect(ops, isEmpty);
+      expect(controller.lastDiff.isIdle, isTrue);
+      expect(controller.lastDiff.reused, 2);
+      expect(identical(controller.messages[0], before[0]), isTrue);
+      expect(identical(controller.messages[1], before[1]), isTrue);
+      expect(
+        TimelineChatController.rowOf(controller.messages[0]),
+        same(rows[0]),
+      );
+    });
+
+    test('流式正文只对变化行发一次原位更新', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final stable = _textRow('first');
+      controller.applyWindow([
+        stable,
+        _textRow('second', text: 'partial'),
+      ], const ThreadHistoryWindow());
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow([
+        stable,
+        _textRow('second', text: 'partial and more'),
+      ], const ThreadHistoryWindow());
+
+      expect(ops, hasLength(1));
+      final update = ops.single;
+      expect(update.type, ChatOperationType.update);
+      expect(update.index, 1);
+      expect(update.oldMessage!.id, 'second');
+      expect(update.message!.id, 'second');
+      expect(
+        identical(update.oldMessage, update.message),
+        isFalse,
+        reason: '内容变化的行必须给出新的消息实例',
+      );
+      expect(controller.lastDiff.updates, 1);
+      expect(controller.lastDiff.removes, 0);
+      expect(controller.lastDiff.inserts, 0);
+      expect(identical(controller.messages[0], update.oldMessage), isFalse);
+      expect(controller.lastDiff.reused, 1);
+    });
+
+    test('淘汰只发 remove，不产生区间插入或更新', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final retained = [_textRow('second'), _textRow('third')];
+      controller.applyWindow([
+        _textRow('first'),
+        ...retained,
+      ], const ThreadHistoryWindow());
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow(retained, const ThreadHistoryWindow());
+
+      expect(ops, hasLength(1));
+      expect(ops.single.type, ChatOperationType.remove);
+      expect(ops.single.index, 0);
+      expect(ops.single.animated, isFalse);
+      expect(controller.lastDiff.removes, 1);
+      expect(controller.lastDiff.inserts, 0);
+      expect(controller.lastDiff.updates, 0);
+      expect(controller.lastDiff.reused, 2);
+    });
+
+    test('正文状态变化只原位更新承载它的行', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final rows = [_textRow('first'), _textRow('second')];
+      controller.applyWindow(rows, const ThreadHistoryWindow());
+      final ops = _recordOperations(controller);
+
+      controller.applyWindow(
+        rows,
+        const ThreadHistoryWindow(previewedItemIds: {'second'}),
+      );
+
+      expect(ops, hasLength(1));
+      expect(ops.single.type, ChatOperationType.update);
+      expect(ops.single.message!.id, 'second');
+      expect(controller.lastDiff.reused, 1);
+      expect(
+        TimelineChatController.bodyOf(controller.messages[1]).previewedItemIds,
+        contains('second'),
+      );
+    });
+
+    test('窗口上限 96 行：一遍线性对齐，无重定位', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      final rows = [
+        for (var index = 0; index < 96; index += 1) _textRow('r$index'),
+      ];
+      controller.applyWindow(rows, const ThreadHistoryWindow());
+      final ops = _recordOperations(controller);
+
+      // 向旧加载一页：头部插入一条、尾部淘汰一条。
+      controller.applyWindow([
+        _textRow('newer'),
+        ...rows.take(95),
+      ], const ThreadHistoryWindow());
+
+      expect(controller.lastDiff.relocations, 0);
+      expect(controller.lastDiff.removes, 1);
+      expect(controller.lastDiff.inserts, 1);
+      expect(controller.lastDiff.updates, 0);
+      expect(controller.lastDiff.reused, 95);
+      expect(
+        controller.lastDiff.comparisons,
+        lessThanOrEqualTo(2 * 96),
+        reason: '每帧只允许一次线性对齐',
+      );
+      expect(controller.lastDiff.operations, 2);
+      expect(ops.map((op) => op.type), [
+        ChatOperationType.remove,
+        ChatOperationType.insert,
+      ]);
+      expect(controller.messages, hasLength(96));
+    });
+
+    test('整个列表转换被拒绝，且重复身份可诊断', () {
+      final controller = TimelineChatController();
+      addTearDown(controller.dispose);
+      expect(() => controller.setMessages(const []), throwsUnsupportedError);
+
+      final duplicate = _textRow('first');
+      controller.applyWindow([
+        duplicate,
+        duplicate,
+      ], const ThreadHistoryWindow());
+      expect(controller.failure, isA<StateError>());
+    });
+  });
+
   testWidgets('initial long streaming body follows the real layout bottom', (
     tester,
   ) async {
-    final harness = await _mountObservedTimeline(
+    final harness = await _mountTimeline(
       tester,
       secondText: _streamingParagraphs(80),
     );
@@ -33,18 +241,15 @@ void main() {
       reason:
           'followLatest must reach the actual bottom before any user scroll',
     );
-    expect(harness.listBuilds, 1);
-    await _closeObservedTimeline(tester, harness);
+    await _closeTimeline(tester, harness);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('row-only body growth follows the real layout bottom', (
+  testWidgets('row-only body growth keeps the window and follows the bottom', (
     tester,
   ) async {
-    final harness = await _mountObservedTimeline(tester);
+    final harness = await _mountTimeline(tester);
     final structure = harness.graph.timeline.source.value!;
-    final row = structure.rowQuery.row('second');
-    final listBuilds = harness.listBuilds;
     expect(_timelinePosition(tester).extentAfter, lessThanOrEqualTo(2));
 
     for (var version = 2; version <= 3; version++) {
@@ -57,12 +262,10 @@ void main() {
       await _pumpVersion(tester, harness.session, harness.window, version);
       await tester.pumpAndSettle(const Duration(milliseconds: 16));
 
-      expect(harness.graph.timeline.source.value, same(structure));
-      expect(structure.rowQuery.row('second'), same(row));
       expect(
-        harness.listBuilds,
-        listBuilds,
-        reason: 'the follow correction must work without rebuilding the list',
+        harness.graph.timeline.source.value!.orderedIds,
+        structure.orderedIds,
+        reason: '正文增量不改变窗口结构，只改变行的内容版本',
       );
       final position = _timelinePosition(tester);
       expect(position.maxScrollExtent, greaterThan(position.viewportDimension));
@@ -73,14 +276,14 @@ void main() {
             'row revision $version left followLatest above the actual bottom',
       );
     }
-    await _closeObservedTimeline(tester, harness);
+    await _closeTimeline(tester, harness);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('body growth after an upward drag preserves the reading anchor', (
     tester,
   ) async {
-    final harness = await _mountObservedTimeline(
+    final harness = await _mountTimeline(
       tester,
       secondText: _streamingParagraphs(80),
     );
@@ -97,8 +300,7 @@ void main() {
     expect(_timelinePosition(tester).extentAfter, greaterThan(80));
     final rowOffset = _rowViewportOffset(tester, before.itemId);
     expect(before.offset, closeTo(rowOffset, 2));
-    final listBuilds = harness.listBuilds;
-    final structure = harness.graph.timeline.source.value;
+    final structureIds = harness.graph.timeline.source.value!.orderedIds;
 
     harness.window.appendSecond(
       from: 1,
@@ -110,8 +312,7 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 16));
 
     final after = _lastPublishedAnchor(harness.commands);
-    expect(harness.graph.timeline.source.value, same(structure));
-    expect(harness.listBuilds, listBuilds);
+    expect(harness.graph.timeline.source.value!.orderedIds, structureIds);
     expect(after.readingIntent, TimelineReadingIntent.browseHistory);
     expect(after.itemId, before.itemId);
     expect(after.offset, closeTo(before.offset, 2));
@@ -121,7 +322,7 @@ void main() {
       reason: 'continued streaming must preserve the painted item and offset',
     );
     expect(_timelinePosition(tester).extentAfter, greaterThan(80));
-    await _closeObservedTimeline(tester, harness);
+    await _closeTimeline(tester, harness);
     expect(tester.takeException(), isNull);
   });
 
@@ -130,7 +331,7 @@ void main() {
     (tester) async {
       var dragStarts = 0;
       var dragUpdates = 0;
-      final harness = await _mountObservedTimeline(
+      final harness = await _mountTimeline(
         tester,
         secondText: _streamingParagraphs(80),
         onScrollNotification: (notification) {
@@ -148,8 +349,6 @@ void main() {
       final position = _timelinePosition(tester);
       expect(position.extentAfter, lessThanOrEqualTo(2));
       final originalMaxExtent = position.maxScrollExtent;
-      final listBuilds = harness.listBuilds;
-      final originalQuery = harness.graph.timeline.source.value!.rowQuery;
       final originalUserDragUpdates = _publishedUserDragUpdates();
       final gesture = await tester.startGesture(
         tester.getCenter(find.byKey(StudioDriverKeys.timeline)),
@@ -175,11 +374,6 @@ void main() {
         await _pumpVersion(tester, harness.session, harness.window, 2);
         await tester.pumpAndSettle(const Duration(milliseconds: 16));
         expect(_timelinePosition(tester), same(position));
-        expect(harness.listBuilds, listBuilds);
-        expect(
-          harness.graph.timeline.source.value!.rowQuery,
-          same(originalQuery),
-        );
         expect(position.maxScrollExtent, greaterThan(originalMaxExtent));
         expect(dragUpdates, 0);
         expect(_publishedScrollDiagnostic()['isScrolling'], isTrue);
@@ -211,7 +405,7 @@ void main() {
       } finally {
         if (!released) await gesture.up();
         await tester.pumpAndSettle(const Duration(milliseconds: 16));
-        await _closeObservedTimeline(tester, harness);
+        await _closeTimeline(tester, harness);
       }
       expect(tester.takeException(), isNull);
     },
@@ -220,7 +414,7 @@ void main() {
   testWidgets('every held drag step publishes its current geometry', (
     tester,
   ) async {
-    final harness = await _mountObservedTimeline(
+    final harness = await _mountTimeline(
       tester,
       secondText: _streamingParagraphs(80),
     );
@@ -249,7 +443,7 @@ void main() {
     } finally {
       await gesture.up();
       await tester.pumpAndSettle(const Duration(milliseconds: 16));
-      await _closeObservedTimeline(tester, harness);
+      await _closeTimeline(tester, harness);
     }
     expect(tester.takeException(), isNull);
   });
@@ -257,7 +451,7 @@ void main() {
   testWidgets('a downward wheel at the clamped bottom resumes following', (
     tester,
   ) async {
-    final harness = await _mountObservedTimeline(
+    final harness = await _mountTimeline(
       tester,
       secondText: _streamingParagraphs(80),
     );
@@ -315,7 +509,7 @@ void main() {
       expect(_publishedScrollDiagnostic()['followingBottom'], isTrue);
       expect(harness.commands.whereType<TimelineJumpToLatest>(), hasLength(1));
     } finally {
-      await _closeObservedTimeline(tester, harness);
+      await _closeTimeline(tester, harness);
     }
     expect(tester.takeException(), isNull);
   });
@@ -327,7 +521,7 @@ void main() {
         3000,
         (index) => 'body-${index.toString().padLeft(5, '0')} ${'W' * 20} ',
       ).join();
-      final harness = await _mountObservedTimeline(
+      final harness = await _mountTimeline(
         tester,
         secondText: text,
         textHeightBehavior: const TextHeightBehavior(
@@ -355,7 +549,7 @@ void main() {
           );
         }
       } finally {
-        await _closeObservedTimeline(tester, harness);
+        await _closeTimeline(tester, harness);
       }
       expect(tester.takeException(), isNull);
     },
@@ -372,7 +566,7 @@ void main() {
       applyHeightToFirstAscent: false,
       applyHeightToLastDescent: false,
     );
-    final harness = await _mountObservedTimeline(
+    final harness = await _mountTimeline(
       tester,
       secondText: text.substring(0, 5200),
       textHeightBehavior: heightBehavior,
@@ -425,14 +619,14 @@ void main() {
       expect(harness.session.state.items[1].text, replacement);
       replacedHeight = tester.getSize(body).height;
     } finally {
-      await _closeObservedTimeline(tester, harness);
+      await _closeTimeline(tester, harness);
     }
 
     for (final (canonical, expectedHeight) in [
       (text, streamedHeight),
       (replacement, replacedHeight),
     ]) {
-      final fresh = await _mountObservedTimeline(
+      final fresh = await _mountTimeline(
         tester,
         secondText: canonical,
         textHeightBehavior: heightBehavior,
@@ -447,224 +641,135 @@ void main() {
             .join();
         expect(rendered, canonical, reason: 'partitioning must preserve bytes');
       } finally {
-        await _closeObservedTimeline(tester, fresh);
+        await _closeTimeline(tester, fresh);
       }
     }
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'body updates rebuild only their row and eviction closes its query',
-    (tester) async {
-      final transport = RecordingDemoTransport();
-      final window = _ControlledWindow();
-      transport.chatWindowFactory = (threadId, demoWindow) async {
-        demoWindow.requestClose();
-        await demoWindow.close();
-        return window;
-      };
-      final graph = AppGraph(transport: transport, clientId: 'row-observation');
-      addTearDown(
-        () => pumpClientFuture(
-          tester,
-          graph.close(deadline: _deadline()),
-          'row teardown close',
-        ),
-      );
-      await pumpClientFuture(tester, graph.client.bootstrap(), 'row bootstrap');
-      await pumpClientFuture(
-        tester,
-        graph.client.directoryCommands.selectThread('thread-main'),
-        'row select',
-      );
-      final session = graph.client.existingSession('thread-main')!;
-      await _pumpVersion(tester, session, window, 1);
-      final structure = graph.timeline.source.value!;
-      final firstQuery = structure.rowQuery.row('first')!;
-      final secondQuery = structure.rowQuery.row('second')!;
-      final thirdQuery = structure.rowQuery.row('third')!;
-      final firstChanges = <TimelineRowSnapshot?>[];
-      final secondChanges = <TimelineRowSnapshot?>[];
-      final thirdChanges = <TimelineRowSnapshot?>[];
-      final firstWatch = firstQuery.watchLatest(firstChanges.add);
-      final secondWatch = secondQuery.watchLatest(secondChanges.add);
-      final thirdWatch = thirdQuery.watchLatest(thirdChanges.add);
-      addTearDown(firstWatch.observation.cancel);
-      addTearDown(secondWatch.observation.cancel);
-      addTearDown(thirdWatch.observation.cancel);
-      int rowObservers() => graph.client.budget.usage
-          .where(
-            (entry) =>
-                entry.kind == ResourceKind.observer &&
-                entry.owner.startsWith('timeline:thread-main:'),
-          )
-          .length;
-      expect(rowObservers(), 3);
-      var listBuilds = 0;
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [appGraphProvider.overrideWithValue(graph)],
-          child: MaterialApp(
-            locale: const Locale('en'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: Consumer(
-                builder: (context, ref, _) {
-                  final latest = ref.watch(timelineSessionWindowProvider)!;
-                  listBuilds++;
-                  return TimelineView.observed(
-                    threadId: latest.threadId,
-                    viewId: latest.viewId,
-                    rows: latest.rowQuery,
-                    turn: latest.turn,
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pump();
-      expect(rowObservers(), 6, reason: 'three mounted rows own three permits');
-      final buildsBeforePatch = listBuilds;
-      final originalFirst = firstQuery.value!.row;
-      final originalThird = thirdQuery.value!.row;
-
-      window.appendSecond(
-        from: 1,
-        to: 2,
-        expectedRevision: 1,
-        text: ' updated',
-      );
-      await _pumpVersion(tester, session, window, 2);
-
-      expect(find.text('second updated', findRichText: true), findsWidgets);
-      expect(
-        listBuilds,
-        buildsBeforePatch,
-        reason: 'body revisions must not invalidate the list observer',
-      );
-      expect(firstChanges, isEmpty);
-      expect(thirdChanges, isEmpty);
-      expect(firstQuery.value!.row, same(originalFirst));
-      expect(thirdQuery.value!.row, same(originalThird));
-      expect(secondChanges, hasLength(1));
-      expect(graph.timeline.source.value, same(structure));
-
-      secondWatch.observation.pause();
-      expect(
-        rowObservers(),
-        6,
-        reason: 'a paused latest buffer retains its permit',
-      );
-      window.appendSecond(from: 2, to: 3, expectedRevision: 2, text: ' once');
-      await _pumpVersion(tester, session, window, 3);
-      window.appendSecond(from: 3, to: 4, expectedRevision: 3, text: ' twice');
-      await _pumpVersion(tester, session, window, 4);
-      secondWatch.observation.resume();
-      expect(
-        secondChanges,
-        hasLength(2),
-        reason: 'paused display observation retains one latest row snapshot',
-      );
-      expect(secondChanges.last!.row.part!.text, 'second updated once twice');
-      expect(rowObservers(), 6);
-
-      window.emit(
-        const StudioChatPatch(
-          from: 4,
-          to: 5,
-          changes: [StudioViewSplice(index: 0, remove: 1, items: [])],
-          hasNewer: false,
-        ),
-      );
-      await _pumpVersion(tester, session, window, 5);
-      expect(graph.timeline.source.value!.orderedIds, ['second', 'third']);
-      expect(graph.timeline.source.value!.rowQuery.row('first'), isNull);
-      expect(firstQuery.value, isNull);
-      expect(firstChanges, [null]);
-      expect(firstWatch.observation.isCancelled, isTrue);
-      expect(rowObservers(), 4, reason: 'eviction releases both row observers');
-      expect(() => firstQuery.watchLatest((_) {}), throwsStateError);
-      expect(
-        graph.timeline.source.value!.rowQuery.row('second'),
-        same(secondQuery),
-      );
-      expect(find.text('first', findRichText: true), findsNothing);
-      expect(
-        find.text('second updated once twice', findRichText: true),
-        findsWidgets,
-      );
-
-      await tester.pumpWidget(const SizedBox.shrink());
-      await pumpClientFuture(
+  testWidgets('evicted rows leave the window and the mounted list', (
+    tester,
+  ) async {
+    final transport = RecordingDemoTransport();
+    final window = _ControlledWindow();
+    transport.chatWindowFactory = (threadId, demoWindow) async {
+      demoWindow.requestClose();
+      await demoWindow.close();
+      return window;
+    };
+    final graph = AppGraph(transport: transport, clientId: 'row-window');
+    addTearDown(
+      () => pumpClientFuture(
         tester,
         graph.close(deadline: _deadline()),
-        'row close',
-      );
-      expect(secondQuery.value, isNull);
-      expect(thirdQuery.value, isNull);
-      expect(secondWatch.observation.isCancelled, isTrue);
-      expect(thirdWatch.observation.isCancelled, isTrue);
-      expect(rowObservers(), 0);
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
-    'row observation budget failure is visible and explicitly retryable',
-    (tester) async {
-      final budget = ResourceBudget(capacities: {ResourceKind.observer: 1});
-      final rows = TimelineRowProjector().project([_item('first').item]);
-      final query = TimelineRowsQuery.snapshot(rows, budget: budget);
-      final held = query.row('first')!.watchLatest((_) {});
-      addTearDown(held.observation.cancel);
-      expect(budget.used(ResourceKind.observer), 1);
-      expect(
-        () => query.row('first')!.watchLatest((_) {}),
-        throwsA(isA<ResourceBudgetExceeded>()),
-      );
-      expect(
-        budget.used(ResourceKind.observer),
-        1,
-        reason: 'failed registration cannot leak another permit',
-      );
-      await tester.pumpWidget(
-        ProviderScope(
-          child: MaterialApp(
-            locale: const Locale('en'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: TimelineView.observed(
-                threadId: 'thread-main',
-                rows: query,
-                turn: null,
-              ),
+        'row teardown close',
+      ),
+    );
+    await pumpClientFuture(tester, graph.client.bootstrap(), 'row bootstrap');
+    await pumpClientFuture(
+      tester,
+      graph.client.directoryCommands.selectThread('thread-main'),
+      'row select',
+    );
+    final session = graph.client.existingSession('thread-main')!;
+    await _pumpVersion(tester, session, window, 1);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+        child: MaterialApp(
+          locale: const Locale('en'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: Consumer(
+              builder: (context, ref, _) {
+                final latest = ref.watch(timelineSessionWindowProvider)!;
+                return TimelineView(
+                  threadId: latest.threadId,
+                  viewId: latest.viewId,
+                  rows: latest.rows,
+                  body: latest.history,
+                  turn: latest.turn,
+                  onCommand: (_) {},
+                );
+              },
             ),
           ),
         ),
-      );
-      await tester.pump();
-      expect(find.textContaining('Resource budget exhausted:'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('timeline-row-observation-retry')),
-        findsOneWidget,
-      );
-      held.observation.cancel();
-      expect(budget.used(ResourceKind.observer), 0);
-      await tester.tap(
-        find.byKey(const ValueKey('timeline-row-observation-retry')),
-      );
-      await tester.pump();
-      expect(find.text('first', findRichText: true), findsWidgets);
-      expect(find.textContaining('Resource budget exhausted:'), findsNothing);
-      expect(budget.used(ResourceKind.observer), 1);
-      await tester.pumpWidget(const SizedBox.shrink());
-      expect(budget.used(ResourceKind.observer), 0);
-      expect(tester.takeException(), isNull);
-    },
+      ),
+    );
+    await tester.pump();
+    expect(find.text('first', findRichText: true), findsWidgets);
+
+    window.emit(
+      const StudioChatPatch(
+        from: 1,
+        to: 2,
+        changes: [StudioViewSplice(index: 0, remove: 1, items: [])],
+        hasNewer: false,
+      ),
+    );
+    await _pumpVersion(tester, session, window, 2);
+    await tester.pumpAndSettle();
+
+    expect(graph.timeline.source.value!.orderedIds, [
+      'second',
+      'third',
+    ], reason: '淘汰只由 canonical 窗口决定');
+    expect(find.text('first', findRichText: true), findsNothing);
+    expect(find.text('second', findRichText: true), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpClientFuture(
+      tester,
+      graph.close(deadline: _deadline()),
+      'row close',
+    );
+    expect(tester.takeException(), isNull);
+  });
+}
+
+/// 收集控制器发出的操作；订阅早于第一次 [TimelineChatController.applyWindow]。
+List<ChatOperation> _recordOperations(TimelineChatController controller) {
+  final records = <ChatOperation>[];
+  final subscription = controller.operationsStream.listen(records.add);
+  addTearDown(subscription.cancel);
+  return records;
+}
+
+TimelineRow _textRow(String id, {String? text}) {
+  final now = DateTime.utc(2026);
+  final body = text ?? id;
+  const turnId = 'turn';
+  final item = ThreadItemView(
+    id: id,
+    threadId: 'thread-main',
+    turnId: turnId,
+    ordinal: 0,
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+    state: ThreadTextItemStateView(
+      channel: ThreadTextChannel.user,
+      text: body,
+      attachments: const [],
+      lifecycle: CompletedThreadContentView(now),
+    ),
+  );
+  return TimelineRow.item(
+    item: item,
+    part: TimelineEntry(
+      id: id,
+      groupId: turnId,
+      threadId: 'thread-main',
+      turnId: turnId,
+      type: TimelineEntryType.text,
+      text: body,
+      textChannel: TimelineTextChannel.user,
+      createdAt: now,
+      updatedAt: now,
+    ),
+    type: TimelineRowType.userMessage,
   );
 }
 
@@ -777,8 +882,8 @@ StudioChatItem _item(String id, {String? text}) {
   );
 }
 
-final class _ObservedTimelineHarness {
-  _ObservedTimelineHarness({
+final class _TimelineHarness {
+  _TimelineHarness({
     required this.graph,
     required this.window,
     required this.session,
@@ -788,10 +893,9 @@ final class _ObservedTimelineHarness {
   final _ControlledWindow window;
   final StudioThreadSession session;
   final List<TimelineCommand> commands = [];
-  int listBuilds = 0;
 }
 
-Future<_ObservedTimelineHarness> _mountObservedTimeline(
+Future<_TimelineHarness> _mountTimeline(
   WidgetTester tester, {
   String secondText = 'second',
   ValueChanged<ScrollNotification>? onScrollNotification,
@@ -821,7 +925,7 @@ Future<_ObservedTimelineHarness> _mountObservedTimeline(
   );
   final session = graph.client.existingSession('thread-main')!;
   await _pumpVersion(tester, session, window, 1);
-  final harness = _ObservedTimelineHarness(
+  final harness = _TimelineHarness(
     graph: graph,
     window: window,
     session: session,
@@ -848,12 +952,12 @@ Future<_ObservedTimelineHarness> _mountObservedTimeline(
                   child: Consumer(
                     builder: (context, ref, _) {
                       final latest = ref.watch(timelineSessionWindowProvider)!;
-                      harness.listBuilds++;
-                      return TimelineView.observed(
+                      return TimelineView(
                         threadId: latest.threadId,
                         viewId: latest.viewId,
                         windowEpoch: latest.history.epoch,
-                        rows: latest.rowQuery,
+                        rows: latest.rows,
+                        body: latest.history,
                         turn: null,
                         onCommand: harness.commands.add,
                       );
@@ -871,9 +975,9 @@ Future<_ObservedTimelineHarness> _mountObservedTimeline(
   return harness;
 }
 
-Future<void> _closeObservedTimeline(
+Future<void> _closeTimeline(
   WidgetTester tester,
-  _ObservedTimelineHarness harness,
+  _TimelineHarness harness,
 ) async {
   // testWidgets checks its pending timers before addTearDown runs. Successful
   // journeys must finish their owner here; teardown remains a failure fallback.

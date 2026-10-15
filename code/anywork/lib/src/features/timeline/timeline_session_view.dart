@@ -6,12 +6,7 @@ import '../../presentation/providers/observe_client.dart';
 import '../../presentation/view_models/timeline_session_owner.dart';
 
 export '../../presentation/view_models/timeline_session_owner.dart'
-    show
-        TimelineSessionOwner,
-        TimelineSessionWindow,
-        TimelineRowsQuery,
-        TimelineRowQuery,
-        TimelineRowSnapshot;
+    show TimelineSessionOwner, TimelineSessionWindow;
 
 part 'timeline_session_view.g.dart';
 

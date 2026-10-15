@@ -136,10 +136,11 @@ class TimelineSessionConnector extends ConsumerWidget {
       content = null;
     } else {
       final history = matched.history;
-      content = TimelineView.observed(
+      content = TimelineView(
         threadId: threadId,
         viewId: matched.viewId,
-        rows: matched.rowQuery,
+        rows: matched.rows,
+        body: history,
         turn: matched.turn,
         planConfirmation: planConfirmation,
         planExpanded: planExpanded,

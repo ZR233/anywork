@@ -3,21 +3,8 @@ import 'thread_models.dart';
 import 'typed_json.dart';
 
 part 'timeline_agent_events.dart';
-part 'timeline_row_projection.dart';
 
 enum TimelineTextChannel { user, parentAgent, commentary, finalAnswer }
-
-enum TimelineRowType {
-  userMessage,
-  parentAgentMessage,
-  commentary,
-  toolGroup,
-  reasoningSummary,
-  skillActivation,
-  agentActivity,
-  finalAnswer,
-  turnOutcome,
-}
 
 class TimelineSkillActivation {
   const TimelineSkillActivation({
@@ -349,16 +336,63 @@ class TimelineEntry {
   final ThreadContextDisposition contextDisposition;
 }
 
-String _toolActivityText(TimelineToolPart? tool) {
-  if (tool == null) {
-    return '';
-  }
-  return [
-    _commandSummary(tool.arguments),
-    tool.workingDirectory,
-    tool.denialReason,
-    tool.result,
-  ].whereType<String>().where((value) => value.trim().isNotEmpty).join('\n');
+int _timelineRowRenderVersion(TimelineEntry part) {
+  final tool = part.tool;
+  return Object.hashAll([
+    part.id,
+    part.revision,
+    part.status,
+    _bodyFingerprint(part.text),
+    _bodyFingerprint(part.reasoningSummary.join()),
+    _bodyFingerprint(part.reasoningContent.join()),
+    part.skill?.name,
+    part.skill?.source,
+    part.skill?.providerId,
+    part.skill?.resourceBase.kind,
+    part.skill?.resourceBase.value,
+    part.skill?.cause.kind,
+    part.skill?.cause.id,
+    part.contextDisposition,
+    part.updatedAt?.millisecondsSinceEpoch,
+    part.error,
+    _bodyFingerprint(tool?.arguments),
+    tool?.taskId,
+    _bodyFingerprint(tool?.result),
+    tool?.exitCode,
+    tool?.timedOut,
+    tool?.denialReason,
+  ]);
+}
+
+/// 正文指纹：长度 + 有界尾部样本。
+///
+/// 渲染版本只需要"内容变了没有"；对整串取哈希会让大正文在每次投影/增量时都被
+/// 重新遍历。正文完整性由窗口决定，这里只用长度与定长样本（长度单调变
+/// 化，尾部样本捕捉等长滑动）。
+Object? _bodyFingerprint(String? text) {
+  if (text == null || text.isEmpty) return text;
+  final tail = text.length <= 256 ? text : text.substring(text.length - 256);
+  return Object.hash(text.length, tail);
+}
+
+bool _isActiveToolStatus(String status) {
+  return const {
+    'queued',
+    'started',
+    'streaming',
+    'approved',
+    'running',
+    'cancelling',
+  }.contains(status);
+}
+
+bool _isIssueToolStatus(String status) {
+  return const {
+    'failed',
+    'denied',
+    'cancelled',
+    'interrupted',
+  }.contains(status);
 }
 
 String? _commandSummary(String arguments) {

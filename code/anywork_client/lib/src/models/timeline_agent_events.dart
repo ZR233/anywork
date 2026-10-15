@@ -167,22 +167,6 @@ List<TimelineAgentEvent> latestTimelineAgentEvents(
   return latestByGroup.values.toList()..sort(compareTimelineAgentEvents);
 }
 
-int _timelineAgentEventRenderVersion(TimelineAgentEvent event) {
-  return Object.hashAll([
-    event.eventId,
-    event.sequence,
-    event.callId,
-    event.title,
-    event.text,
-    event.status,
-    event.payload.runtimeType,
-    if (event.payload case TimelineSubAgentActivity(:final timedOut)) timedOut,
-    if (event.payload case TimelineTodoListUpdate(:final items))
-      for (final item in items) ...[item.step, item.status],
-    event.createdAt.millisecondsSinceEpoch,
-  ]);
-}
-
 String _agentActivityText(Iterable<String?> parts) {
   return parts
       .whereType<String>()

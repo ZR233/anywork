@@ -1,5 +1,27 @@
-part of 'timeline_models.dart';
+// The row projection is app-owned: the Client no longer provides `TimelineRow`
+// or `TimelineRowProjector`.
+import 'package:anywork_client/models.dart';
 
+import '../../shared/typed_json.dart';
+
+/// 展示行的类型。行类型只描述「这一行是什么」，具体渲染由 feature 层的内容组件承担。
+enum TimelineRowType {
+  userMessage,
+  parentAgentMessage,
+  commentary,
+  toolGroup,
+  reasoningSummary,
+  skillActivation,
+  agentActivity,
+  finalAnswer,
+  turnOutcome,
+}
+
+/// 一条 Timeline 展示行。
+///
+/// 行是窗口条目的**显示投影**，不是第二份正文事实源：正文、状态与省略量都由 canonical
+/// 窗口条目携带。身份取自行身份（条目 id、分组合成 id、终态合成 id），不以正文、随机数或
+/// 时间生成。`renderVersion` 只表达「这一行的可见内容是否变化」，供消息集合判定原位更新。
 class TimelineRow {
   const TimelineRow._({
     required this.id,
@@ -31,7 +53,7 @@ class TimelineRow {
       createdAt: item.createdAt,
       order: item.ordinal,
       sequence: item.ordinal,
-      renderVersion: Object.hash(_timelineRowRenderVersion(part), item.saved),
+      renderVersion: Object.hash(timelineRowRenderVersion(part), item.saved),
       turnId: item.turnId,
       part: part,
       raw: item.state is ThreadRawItemStateView
@@ -44,7 +66,7 @@ class TimelineRow {
   }
 
   factory TimelineRow.turnOutcome(ThreadItemView item, int lastOrdinal) {
-    final part = _timelineEntryFromThreadItem(item);
+    final part = timelineEntryFromThreadItem(item);
     return TimelineRow._(
       id: 'turn-outcome:${item.id}',
       threadId: item.threadId,
@@ -52,7 +74,7 @@ class TimelineRow {
       createdAt: item.updatedAt,
       order: lastOrdinal + 1,
       sequence: lastOrdinal,
-      renderVersion: Object.hash(_timelineRowRenderVersion(part), item.saved),
+      renderVersion: Object.hash(timelineRowRenderVersion(part), item.saved),
       turnId: item.turnId,
       part: part,
       saved: item.saved,
@@ -67,7 +89,7 @@ class TimelineRow {
       createdAt: event.createdAt,
       order: 0,
       sequence: event.sequence,
-      renderVersion: _timelineAgentEventRenderVersion(event),
+      renderVersion: timelineAgentEventRenderVersion(event),
       agentEvent: event,
     );
   }
@@ -118,6 +140,15 @@ class TimelineRow {
   final bool isRolledBack;
   final bool saved;
 
+  bool get isPrompt =>
+      type == TimelineRowType.userMessage ||
+      type == TimelineRowType.parentAgentMessage;
+
+  bool get isCompactActivity =>
+      type == TimelineRowType.reasoningSummary ||
+      type == TimelineRowType.toolGroup ||
+      type == TimelineRowType.skillActivation;
+
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
@@ -158,21 +189,16 @@ List<TimelineRow> timelineRowsFromThreadItems(
 
 /// 把有界窗口条目投影成显示行，并按条目复用转换结果。
 ///
-/// 逐帧重算整窗投影的代价随窗口增长：流式增量只改变一条条目，但整窗重排、重新
-/// 构造 `TimelineEntry`（含把全部推理分块拼成一整段字符串）与重建分组都会跟着发生。
-/// 这里按条目身份 + 内容身份缓存转换结果：**只有真正变化的条目**重新转换，其余复用
-/// 上一步的对象。
-///
-/// 内容身份取自条目自身的 revision、updatedAt、保存水位与各字段列表**实例**：窗口按
-/// 稳定字段身份整体替换条目状态，因此列表实例变化等价于内容变化，且判定是 O(1) 而不是
-/// 重新遍历正文。投影在结构（身份序列）不变时直接复用上一步的行列表。
+/// 逐帧重算整窗投影的代价随窗口增长：流式增量只改变一条条目，但整窗重排、重新构造
+/// `TimelineEntry`（含把全部推理分块拼成一整段字符串）与重建分组都会跟着发生。
+/// 这里按条目身份 + 内容身份缓存转换结果：**只有真正变化的条目**重新转换，其余复用上一步的
+/// 对象。投影在结构（身份序列）不变时直接复用上一步的行列表。
 class TimelineRowProjector {
   TimelineRowProjector();
 
   final Map<String, _ProjectedEntry> _entries = {};
 
-  /// 行对象按 (身份, renderVersion) 驻留：版本没变就可以复用**同一个行对象**，下游
-  /// Widget 缓存与相等性判定因此不必重新计算。
+  /// 行对象按 (身份, renderVersion) 驻留：版本没变就复用**同一个行对象**。
   final Map<(String, int), TimelineRow> _rowsByVersion = {};
   List<String>? _lastIds;
   Map<String, TimelineTurnView>? _lastTurns;
@@ -181,8 +207,7 @@ class TimelineRowProjector {
   /// 把窗口条目投影成显示行。
   ///
   /// 身份序列与轮次事实都没变、且每条条目的内容身份一致时，直接复用上一次的行列表；
-  /// 否则只重新转换内容真正变化的条目，其余复用缓存对象（分组因此也只在成员或顺序变化
-  /// 时才重建）。
+  /// 否则只重新转换内容真正变化的条目，其余复用缓存对象。
   List<TimelineRow> project(
     List<ThreadItemView> source, {
     Map<String, TimelineTurnView> turns = const {},
@@ -231,15 +256,12 @@ class TimelineRowProjector {
     final cached = _entries[item.id];
     if (cached != null && cached.signature == signature) return cached;
     return _ProjectedEntry(
-      entry: _timelineEntryFromThreadItem(item),
+      entry: timelineEntryFromThreadItem(item),
       signature: signature,
     );
   }
 
   /// 条目内容身份：revision、状态实例、保存水位与各字段的有界指纹。
-  ///
-  /// 窗口按稳定字段身份整体替换条目状态，因此状态实例变化等价于字段变化；正文指纹只取
-  /// 长度与尾部样本，不重新遍历整段正文。
   static _EntrySignature _signature(ThreadItemView item) {
     return _EntrySignature(
       revision: item.revision,
@@ -274,11 +296,6 @@ class TimelineRowProjector {
       }
     }
     return row;
-  }
-
-  /// 单条行的渲染版本：与 `TimelineRow.item` 的算法一致，用于按版本驻留行对象。
-  static int _itemRowVersion(ThreadItemView item, TimelineEntry part) {
-    return Object.hash(_timelineRowRenderVersion(part), item.saved);
   }
 
   List<TimelineRow> _rowsFrom(
@@ -363,7 +380,7 @@ class TimelineRowProjector {
       rows.add(
         _interned(
           item.id,
-          _itemRowVersion(item, part),
+          Object.hash(timelineRowRenderVersion(part), item.saved),
           () => TimelineRow.item(
             item: item,
             part: part,
@@ -429,7 +446,8 @@ class TimelineRowProjector {
   }
 }
 
-TimelineEntry _timelineEntryFromThreadItem(ThreadItemView item) {
+/// 把一条窗口条目投影为渲染用的 `TimelineEntry`。
+TimelineEntry timelineEntryFromThreadItem(ThreadItemView item) {
   final text = switch (item.kind) {
     // 推理正文不做整段拼接：分块原样带给 `reasoningSummary`/`reasoningContent`，渲染与
     // 指纹都由分块列表给出。整窗投影每帧都会走到这里，把每次增量重新拼成一整段字符串
@@ -502,7 +520,8 @@ int _compareRows(TimelineRow left, TimelineRow right) {
   return left.id.compareTo(right.id);
 }
 
-int _timelineRowRenderVersion(TimelineEntry part) {
+/// 单条条目的渲染版本：与行对象的 `renderVersion` 使用同一算法。
+int timelineRowRenderVersion(TimelineEntry part) {
   final tool = part.tool;
   return Object.hashAll([
     part.id,
@@ -530,35 +549,59 @@ int _timelineRowRenderVersion(TimelineEntry part) {
   ]);
 }
 
+/// 一次智能体活动事件的渲染版本。
+int timelineAgentEventRenderVersion(TimelineAgentEvent event) {
+  return Object.hashAll([
+    event.eventId,
+    event.sequence,
+    event.callId,
+    event.title,
+    event.text,
+    event.status,
+    event.payload.runtimeType,
+    if (event.payload case TimelineSubAgentActivity(:final timedOut)) timedOut,
+    if (event.payload case TimelineTodoListUpdate(:final items))
+      for (final item in items) ...[item.step, item.status],
+    event.createdAt.millisecondsSinceEpoch,
+  ]);
+}
+
 /// 正文指纹：长度 + 有界尾部样本。
 ///
-/// 渲染版本只需要"内容变了没有"；对整串取哈希会让大正文在每次投影/增量时都被
-/// 重新遍历。正文完整性由窗口决定，这里只用长度与定长样本（长度单调变
-/// 化，尾部样本捕捉等长滑动）。
+/// 渲染版本只需要「内容变了没有」；对整串取哈希会让大正文在每次投影/增量时都被重新遍历。
 Object? _bodyFingerprint(String? text) {
   if (text == null || text.isEmpty) return text;
   final tail = text.length <= 256 ? text : text.substring(text.length - 256);
   return Object.hash(text.length, tail);
 }
 
-bool _isActiveToolStatus(String status) {
-  return const {
-    'queued',
-    'started',
-    'streaming',
-    'approved',
-    'running',
-    'cancelling',
-  }.contains(status);
+String? _commandSummary(String arguments) {
+  final json = decodeJsonObject(arguments);
+  final command = jsonStringValue(json['command']);
+  final path =
+      jsonStringValue(json['path']) ??
+      jsonStringValue(json['filePath']) ??
+      jsonStringValue(json['targetPath']) ??
+      jsonStringValue(json['workingDirectory']);
+  final query = jsonStringValue(json['query']);
+  final value = command?.isNotEmpty == true
+      ? command!.split('\n').first
+      : path?.isNotEmpty == true
+      ? path!
+      : query;
+  return value == null || value.isEmpty ? null : value;
 }
 
-bool _isIssueToolStatus(String status) {
-  return const {
-    'failed',
-    'denied',
-    'cancelled',
-    'interrupted',
-  }.contains(status);
+String _toolActivityText(TimelineToolPart? tool) {
+  if (tool == null) {
+    return '';
+  }
+  return [
+    _commandSummary(tool.arguments),
+    tool.workingDirectory,
+    tool.denialReason,
+    tool.result,
+  ].whereType<String>().where((value) => value.trim().isNotEmpty).join('\n');
 }
 
 /// 一次投影的产物与它的内容身份。

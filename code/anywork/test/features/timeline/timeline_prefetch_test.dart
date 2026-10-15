@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork_client/models.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 
@@ -19,6 +18,7 @@ void main() {
         TimelineView(
           threadId: 'thread-main',
           rows: [row],
+          body: const ThreadHistoryWindow(),
           turn: null,
           isLoadingOlder: loading,
           hasOlder: false,
@@ -51,6 +51,7 @@ void main() {
         TimelineView(
           threadId: 'thread-main',
           rows: [row],
+          body: const ThreadHistoryWindow(),
           turn: null,
           isLoadingOlder: loading,
           hasOlder: canExtend,

@@ -120,7 +120,9 @@ Widget _timeline(List<TimelineRow> rows) {
   return TimelineView(
     threadId: 'thread-main',
     rows: rows,
+    body: const ThreadHistoryWindow(),
     turn: null,
+    onCommand: (_) {},
     hasOlder: false,
     hasNewer: false,
     canExtendLatest: false,

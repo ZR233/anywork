@@ -1,6 +1,7 @@
 import 'package:anywork_client/models.dart';
 
 import 'agent_workspace_view.dart';
+import 'timeline_rows.dart';
 
 // Canonical workspace values are replaced by reducers. UI-only anchor/composer
 // changes must not rebuild all row projections; old entries are weakly held.

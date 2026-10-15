@@ -94,6 +94,25 @@ Future<void> main(List<String> args) async {
     Error.throwWithStackTrace(error, stackTrace);
   }
   var stage = 'connected';
+  // Expose the GUI native process identity to the external resident-memory
+  // sampler. The Driver's `pid` request is the only owner of that identity: the
+  // launcher chain above the app (cargo/xtask/flutter) is not the GUI, so the
+  // sampler consumes this file instead of guessing a process name. Missing this
+  // file is missing evidence, never a journey failure, and the request happens
+  // before `frame-start` so it cannot perturb the recorded frame window.
+  try {
+    final raw = await driver.requestData(
+      'pid',
+      timeout: const Duration(seconds: 15),
+    );
+    final decoded = jsonDecode(raw);
+    final guiPid = decoded is Map ? decoded['pid'] : null;
+    if (guiPid is int && guiPid > 0) {
+      await File('${output.path}/gui-pid.txt').writeAsString('$guiPid\n');
+    }
+  } on Object {
+    // Resident-memory sampling is optional evidence for the caller.
+  }
   // Records both the coordinator marker and the stage reported in the summary, so
   // a failure never reports a coarser stage than the marker file.
   Future<void> markStage(String value) async {

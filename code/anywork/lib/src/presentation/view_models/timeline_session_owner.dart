@@ -2,37 +2,19 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 
-/// Immutable list structure plus a read-only query for its bounded row mirror.
-/// Text and saved/body updates notify their row; they do not publish another
-/// list structure. View identity is independent from the history-window epoch.
-final class TimelineSessionWindow {
-  factory TimelineSessionWindow({
-    required String threadId,
-    required List<TimelineRow> rows,
-    required StudioTurnView? turn,
-    required ThreadHistoryWindow history,
-    required bool isLoadingOlder,
-    required bool isLoadingNewer,
-    String? viewId,
-  }) {
-    final query = _TimelineRowsStore('timeline-static:$threadId')
-      ..replace(rows, history);
-    return TimelineSessionWindow._(
-      threadId: threadId,
-      rowQuery: query,
-      orderedIds: query.orderedIds,
-      turn: turn,
-      history: _pageHistory(history),
-      isLoadingOlder: isLoadingOlder,
-      isLoadingNewer: isLoadingNewer,
-      viewId: viewId,
-    );
-  }
+import '../../domain/models/timeline_commands.dart';
+import '../../domain/models/timeline_rows.dart';
 
-  const TimelineSessionWindow._({
+/// 展示 owner 交给连接组件的窗口快照：行投影 + 窗口边界 + 正文状态。
+///
+/// 它不是第二份正文事实源：投影与行对象都属于应用侧的显示镜像，正文、状态与省略量仍由
+/// canonical 窗口条目携带（design/25 §25.6）。
+final class TimelineSessionWindow {
+  const TimelineSessionWindow({
     required this.threadId,
-    required this.rowQuery,
+    required this.rows,
     required this.orderedIds,
+    required this.rowVersions,
     required this.turn,
     required this.history,
     required this.isLoadingOlder,
@@ -42,12 +24,15 @@ final class TimelineSessionWindow {
 
   final String threadId;
   final String? viewId;
-  final TimelineRowsQuery rowQuery;
+  final List<TimelineRow> rows;
   final List<String> orderedIds;
 
-  /// Synchronous viewport/diagnostic query. The list observer never watches it.
-  List<TimelineRow> get rows => rowQuery.rows;
+  /// 行的内容版本序列。展示窗口的相等性必须包含它：正文增量只改变行的渲染版本，
+  /// 若只比较身份序列，窗口就不会重新交付，读者会停留在一份过期的正文上。
+  final List<int> rowVersions;
   final StudioTurnView? turn;
+
+  /// canonical 窗口交付的正文状态：预览、回源在途、待落盘、不可用与错误。
   final ThreadHistoryWindow history;
   final bool isLoadingOlder;
   final bool isLoadingNewer;
@@ -59,6 +44,7 @@ final class TimelineSessionWindow {
           threadId == other.threadId &&
           viewId == other.viewId &&
           _sameIds(orderedIds, other.orderedIds) &&
+          _sameVersions(rowVersions, other.rowVersions) &&
           turn == other.turn &&
           history == other.history &&
           isLoadingOlder == other.isLoadingOlder &&
@@ -69,6 +55,7 @@ final class TimelineSessionWindow {
     threadId,
     viewId,
     Object.hashAll(orderedIds),
+    Object.hashAll(rowVersions),
     turn,
     history,
     isLoadingOlder,
@@ -85,204 +72,13 @@ bool _sameIds(List<String> left, List<String> right) {
   return true;
 }
 
-ThreadHistoryWindow _pageHistory(ThreadHistoryWindow history) =>
-    history.copyWith(
-      previewedItemIds: const {},
-      loadingItemIds: const {},
-      itemBodyErrors: const {},
-      pendingItemBodyIds: const {},
-      unavailableItemIds: const {},
-    );
-
-/// Queries expose observation/cancellation without exposing a mirror writer.
-abstract interface class TimelineRowsQuery {
-  static TimelineRowsQuery snapshot(
-    List<TimelineRow> rows, {
-    ThreadHistoryWindow body = const ThreadHistoryWindow(),
-    ResourceBudget? budget,
-  }) =>
-      _TimelineRowsStore('timeline-static', budget: budget)
-        ..replace(rows, body);
-  List<String> get orderedIds;
-  List<TimelineRow> get rows;
-  ThreadHistoryWindow get bodyHistory;
-  TimelineRowQuery? row(String itemId);
-}
-
-final class TimelineRowSnapshot {
-  const TimelineRowSnapshot({required this.row, required this.body});
-  final TimelineRow row;
-
-  /// Only the underlying item IDs belonging to this projected row are retained.
-  final ThreadHistoryWindow body;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is TimelineRowSnapshot && row == other.row && body == other.body;
-
-  @override
-  int get hashCode => Object.hash(row, body);
-}
-
-final class TimelineRowQuery {
-  TimelineRowQuery._(TimelineRowSnapshot value, this._budget, this._owner)
-    : _source = LatestValue(value);
-  final LatestValue<TimelineRowSnapshot?> _source;
-  final ResourceBudget _budget;
-  final String _owner;
-  final Set<_TimelineRowObservation> _observations = {};
-  bool _closed = false;
-  TimelineRowSnapshot? get value => _source.value;
-  LatestWatch<TimelineRowSnapshot?> watchLatest(
-    void Function(TimelineRowSnapshot?) listener,
-  ) {
-    if (_closed) throw StateError('The Timeline row was evicted');
-    final permit = _budget.acquire(ResourceKind.observer, owner: _owner);
-    try {
-      final watched = _source.watchLatest(listener);
-      late final _TimelineRowObservation observation;
-      observation = _TimelineRowObservation(
-        watched.observation,
-        permit,
-        () => _observations.remove(observation),
-      );
-      _observations.add(observation);
-      return LatestWatch(value: watched.value, observation: observation);
-    } catch (_) {
-      permit.release();
-      rethrow;
-    }
+bool _sameVersions(List<int> left, List<int> right) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
   }
-
-  void _publish(TimelineRowSnapshot value) {
-    if (_source.value != value) _source.publish(value);
-  }
-
-  void _retire() {
-    if (_closed) return;
-    _closed = true;
-    _source.publish(null);
-    for (final observation in _observations.toList()) {
-      observation.cancel();
-    }
-    _source.close();
-  }
-}
-
-final class _TimelineRowObservation implements Observation {
-  _TimelineRowObservation(this._inner, this._permit, this._onCancel);
-  final Observation _inner;
-  final ResourcePermit _permit;
-  final void Function() _onCancel;
-  @override
-  bool get isCancelled => _inner.isCancelled;
-  @override
-  bool get isPaused => _inner.isPaused;
-  @override
-  void pause() => _inner.pause();
-  @override
-  void resume() => _inner.resume();
-  @override
-  void cancel() {
-    _inner.cancel();
-    _permit.release();
-    _onCancel();
-  }
-}
-
-/// One store per selected lease. No row or observation survives eviction.
-final class _TimelineRowsStore implements TimelineRowsQuery {
-  _TimelineRowsStore(this._owner, {ResourceBudget? budget})
-    : _budget = budget ?? ResourceBudget();
-  final ResourceBudget _budget;
-  final String _owner;
-  final Map<String, TimelineRowQuery> _rowById = {};
-  List<TimelineRow> _rows = const [];
-  List<String> _orderedIds = const [];
-  ThreadHistoryWindow _history = const ThreadHistoryWindow();
-
-  @override
-  List<TimelineRow> get rows => _rows;
-  @override
-  List<String> get orderedIds => _orderedIds;
-  @override
-  ThreadHistoryWindow get bodyHistory => _history;
-  @override
-  TimelineRowQuery? row(String itemId) => _rowById[itemId];
-
-  void replace(List<TimelineRow> rows, ThreadHistoryWindow history) {
-    final ids = [for (final row in rows) row.id];
-    final retained = ids.toSet();
-    final removed = _rowById.keys
-        .where((id) => !retained.contains(id))
-        .toList();
-    final updates = <(TimelineRowQuery, TimelineRowSnapshot)>[];
-    for (final row in rows) {
-      final snapshot = TimelineRowSnapshot(
-        row: row,
-        body: _rowHistory(row, history),
-      );
-      final current = _rowById[row.id];
-      if (current == null) {
-        _rowById[row.id] = TimelineRowQuery._(
-          snapshot,
-          _budget,
-          '$_owner:${row.id}',
-        );
-      } else if (current.value != snapshot) {
-        updates.add((current, snapshot));
-      }
-    }
-    _rows = List.unmodifiable(rows);
-    _history = history;
-    if (!_sameIds(_orderedIds, ids)) _orderedIds = List.unmodifiable(ids);
-    for (final id in removed) {
-      _rowById.remove(id)!._retire();
-    }
-    // All synchronous queries see the complete new window before row listeners
-    // run. Each listener can therefore capture a consistent viewport snapshot.
-    for (final (query, snapshot) in updates) {
-      query._publish(snapshot);
-    }
-  }
-
-  void clear() {
-    final rows = _rowById.values.toList();
-    _rowById.clear();
-    _rows = const [];
-    _orderedIds = const [];
-    _history = const ThreadHistoryWindow();
-    for (final row in rows) {
-      row._retire();
-    }
-  }
-}
-
-ThreadHistoryWindow _rowHistory(TimelineRow row, ThreadHistoryWindow history) {
-  final ids = <String>{
-    if (row.part case final part?) part.id,
-    for (final item in row.toolGroup?.items ?? const <TimelineToolGroupItem>[])
-      item.id,
-    for (final part in row.reasoningGroup?.parts ?? const <TimelineEntry>[])
-      part.id,
-  };
-  return ThreadHistoryWindow(
-    previewedItemIds: Set.unmodifiable(
-      history.previewedItemIds.intersection(ids),
-    ),
-    loadingItemIds: Set.unmodifiable(history.loadingItemIds.intersection(ids)),
-    itemBodyErrors: Map.unmodifiable({
-      for (final entry in history.itemBodyErrors.entries)
-        if (ids.contains(entry.key)) entry.key: entry.value,
-    }),
-    pendingItemBodyIds: Set.unmodifiable(
-      history.pendingItemBodyIds.intersection(ids),
-    ),
-    unavailableItemIds: Set.unmodifiable(
-      history.unavailableItemIds.intersection(ids),
-    ),
-  );
+  return true;
 }
 
 /// One per AppGraph. Selection and Client sources drive this owner even when
@@ -315,6 +111,7 @@ final class TimelineSessionOwner {
     if (_closed) return;
     final threadId = selection.needsOpen ? null : selection.selectedThreadId;
     if (_current?.threadId == threadId) return;
+    // 切换 Thread 时显式关闭旧 lease：不留下上一会话的行投影或展示状态。
     _current?.retire();
     _current = null;
     if (source.value != null) source.publish(null);
@@ -325,16 +122,13 @@ final class TimelineSessionOwner {
     if (session == null) return;
 
     late final _TimelineSessionLease lease;
-    lease = _TimelineSessionLease(
-      (command) => _dispatch(threadId, command),
-      (window) {
-        if (!_closed && identical(_current, lease)) {
-          source.publish(window);
-        }
-      },
-      threadId: threadId,
-      budget: _client.budget,
-    );
+    lease = _TimelineSessionLease((command) => _dispatch(threadId, command), (
+      window,
+    ) {
+      if (!_closed && identical(_current, lease)) {
+        source.publish(window);
+      }
+    }, threadId: threadId);
     _current = lease;
     final watched = session.source.watchLatest(lease.apply);
     if (_closed || !identical(_current, lease)) {
@@ -346,6 +140,7 @@ final class TimelineSessionOwner {
     lease.apply(watched.value);
   }
 
+  /// 命令门面直接使用 Client 的 threadCommands；展示 owner 不持有第二份会话事实源。
   Future<void> _dispatch(String threadId, TimelineCommand command) {
     final commands = _client.threadCommands;
     return switch (command) {
@@ -387,18 +182,13 @@ final class TimelineSessionOwner {
 /// A concrete TimelineSession. The lease owns only observation and projection;
 /// retiring it cannot stop the Rust Session, Turn, or Client mutation owner.
 final class _TimelineSessionLease implements TimelineSession {
-  _TimelineSessionLease(
-    this._dispatch,
-    this._publish, {
-    required this.threadId,
-    required ResourceBudget budget,
-  }) : _rows = _TimelineRowsStore('timeline:$threadId', budget: budget);
+  _TimelineSessionLease(this._dispatch, this._publish, {required this.threadId})
+    : _projector = TimelineRowProjector();
 
   final String threadId;
   final Future<void> Function(TimelineCommand) _dispatch;
   final void Function(TimelineSessionWindow?) _publish;
-  TimelineRowProjector? _projector = TimelineRowProjector();
-  final _TimelineRowsStore _rows;
+  TimelineRowProjector? _projector;
   Observation? _observation;
   ThreadSessionState? _state;
   TimelineSessionWindow? _window;
@@ -420,24 +210,23 @@ final class _TimelineSessionLease implements TimelineSession {
     if (!state.hasChatWindow && state.items.isEmpty) {
       if (_window != null) {
         _window = null;
-        _rows.clear();
         _publish(null);
       }
       return;
     }
     final history = state.history;
     if (_window != null && _window!.viewId != state.chatViewId) {
-      _rows.clear();
       _projector = TimelineRowProjector();
     }
-    _rows.replace(_projector!.project(state.items), history);
-    final next = TimelineSessionWindow._(
+    final rows = _projector!.project(state.items);
+    final next = TimelineSessionWindow(
       threadId: threadId,
       viewId: state.chatViewId,
-      rowQuery: _rows,
-      orderedIds: _rows.orderedIds,
+      rows: rows,
+      orderedIds: [for (final row in rows) row.id],
+      rowVersions: [for (final row in rows) row.renderVersion],
       turn: state.activeTurn,
-      history: _pageHistory(history),
+      history: history,
       isLoadingOlder:
           history.isLoading && history.direction == TimelineDirection.older,
       isLoadingNewer:
@@ -473,6 +262,9 @@ final class _TimelineSessionLease implements TimelineSession {
     }
   }
 
+  /// 窗口版本号：仅用于事件序号的去重，不作为内容事实源。
+  int? get _chatVersion => _state?.chatVersion;
+
   @override
   Stream<TimelineEvent> get events => Stream.multi((controller) {
     if (_closed) {
@@ -490,14 +282,14 @@ final class _TimelineSessionLease implements TimelineSession {
         // These are display notifications, not another content stream. A
         // resumed observer rereads the current complete projection instead of
         // buffering an unbounded series of stale window-version notifications.
-        final version = _state?.chatVersion;
+        final version = _chatVersion;
         if (version != null) {
           controller.addSync(TimelineWindowReset(threadId, version));
         }
       }
     };
     controller.onCancel = () => _observers.remove(observer);
-    final version = _state?.chatVersion;
+    final version = _chatVersion;
     if (version != null) {
       controller.addSync(TimelineWindowReset(threadId, version));
     }
@@ -528,7 +320,6 @@ final class _TimelineSessionLease implements TimelineSession {
     _observation?.cancel();
     _observation = null;
     _projector = null;
-    _rows.clear();
     _window = null;
     _state = null;
     for (final observer in List.of(_observers)) {
