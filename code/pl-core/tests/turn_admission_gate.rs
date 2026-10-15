@@ -475,3 +475,43 @@ async fn closed_admission_reconfigures_tools_without_discarding_queued_inputs() 
     assert_eq!(requests.lock().unwrap().len(), 1);
     thread.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn draining_a_named_turn_preserves_the_queue_and_ignores_stale_cancellation() {
+    let gate = TurnAdmissionGate::new();
+    let (entered, observed) = oneshot::channel();
+    let (_release, held) = oneshot::channel();
+    let calls = Arc::new(Mutex::new(0));
+    let thread = ThreadHandle::resume_with_turn_admission_gate(
+        "draining".into(),
+        Some(DynModelSession::new(HeldModel {
+            calls: calls.clone(),
+            entered: Some(entered),
+            release: Some(held),
+        })),
+        None,
+        gate.clone(),
+    )
+    .unwrap();
+    thread
+        .submit_input_and_run(queued_input("first"), options())
+        .await
+        .unwrap();
+    observed.await.unwrap();
+    let reason = gate.close();
+    thread
+        .submit_input_and_run(queued_input("second"), options())
+        .await
+        .unwrap();
+    let running = thread.snapshot().turns.last().unwrap().turn_id.clone();
+    assert!(thread.cancel_running_turn(running.clone()).await.unwrap());
+    wait_until(|| gate.admitted_turns() == 0 && blocked(&thread)).await;
+    assert!(!paused(&thread));
+    assert!(pending(&thread, "second"));
+    assert!(!thread.cancel_running_turn(running).await.unwrap());
+    assert!(pending(&thread, "second"));
+    assert_eq!(*calls.lock().unwrap(), 1);
+    drop(reason);
+    wait_until(|| consumed_and_finished(&thread, &gate, "second")).await;
+    thread.close().await.unwrap();
+}

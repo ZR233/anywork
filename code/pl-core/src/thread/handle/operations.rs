@@ -291,6 +291,21 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Cancels the named executing Turn while preserving the queue's paused/running policy.
+    /// A completed identity or an input waiting for admission returns false without cancelling
+    /// that pending admission. Hosts can therefore drain a closed Turn gate without losing inputs.
+    ///
+    /// # Errors
+    /// Returns task cleanup errors or `Closed` when the owner is no longer reachable.
+    pub async fn cancel_running_turn(&self, expected: String) -> Result<bool, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::CancelRunningTurn { expected, reply })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Cancels only the currently active execution generation without closing the Thread.
     /// Returns false when there is no active model/tool/Turn command.
     pub fn interrupt(&self) -> bool {

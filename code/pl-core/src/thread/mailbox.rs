@@ -54,6 +54,10 @@ pub(super) enum MailboxCommand {
         expected: Option<String>,
         reply: oneshot::Sender<Result<bool, ThreadError>>,
     },
+    CancelRunningTurn {
+        expected: String,
+        reply: oneshot::Sender<Result<bool, ThreadError>>,
+    },
     SubmitInput(
         input::InputSubmission,
         oneshot::Sender<Result<input::InputRecord, ThreadError>>,
@@ -241,6 +245,23 @@ impl Owner {
                 let _ = reply.send(result);
             }
 
+            MailboxCommand::CancelRunningTurn { expected, reply } => {
+                let running = self
+                    .state
+                    .turns
+                    .iter()
+                    .any(|turn| turn.state == TurnState::Running && turn.turn_id == expected);
+                let result = if running {
+                    self.interrupted_turn = Some(expected.clone());
+                    let result = self.cancel_turn_tasks(&expected);
+                    let interrupted = self.interrupt.interrupt();
+                    self.publish_snapshot();
+                    result.map(|()| interrupted)
+                } else {
+                    Ok(false)
+                };
+                let _ = reply.send(result);
+            }
             MailboxCommand::InterruptTurn { expected, reply } => {
                 let active = self
                     .state
