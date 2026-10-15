@@ -5,6 +5,70 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.13.0](https://github.com/ZR233/anywork/compare/v6.12.0...v6.13.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** anywork_client 不再导出 TimelineRow、TimelineRowType、TimelineRowProjector、 timelineRowsFromThreadItems、TimelineCommand、TimelineEvent、TimelineSession 及具体命令/事件 子类型；时间线行模型、命令与事件词汇表及渲染装配改由应用侧 anywork 提供。
+* **studio:** Dart 业务入口迁入 anywork_client 公共 API，旧 provider 命令与资源 owner 已删除。Rust/FRB 命令使用稳定操作身份、完整目标与 typed receipt，调用方须同步升级。
+* **studio:** 非输入界面不再提供 Studio 自建的 Ctrl+K、Ctrl+N、侧栏方向键和宽度方向键快捷键，菜单键盘遍历交由 Material 原生行为。
+* **studio:** GUI 内部交互契约破坏性重构，无兼容层。行为变化： agent 切换菜单不再 hover/聚焦自动打开；设置表单选择器变为可输入 过滤的 DropdownMenu 字段；长菜单不再自动滚动到选中行（模型菜单 除外）；timeline 分页加载不受影响（零依赖共享菜单框架）。
+* **studio:** FRB 契约移除 list_timeline_items/list_thread_turns/ read_timeline_item 与 ChatWindow 的 snapshot 语义；load/focus/ extend_latest/expand 返回 BridgeChatReceipt，窗口移动由 next 交付。 仓库外消费者按本说明迁移到唯一内容出口。
+* **studio:** 前端状态架构破坏性重构，Dart 侧数据流契约以 design/25-frontend-state.md 为准；旧 StudioController/selector/reducer 公开入口全部移除，18/19 号设计文档的 Dart 侧契约已同步修订。
+
+### Features
+
+* **pl-model:** 增加 xAI Grok 服务商 ([1bceabf](https://github.com/ZR233/anywork/commit/1bceabf39cfe7ef77c64a18ae7727684b6d1c1ae))
+* **studio:** 为聊天内容路径补逐事件观测与判定原因 ([2a0050b](https://github.com/ZR233/anywork/commit/2a0050b0731705492d8349f8c492f40a025f2abf))
+* **studio:** 供应商界面接入品牌 logo ([27c0608](https://github.com/ZR233/anywork/commit/27c0608dc93ddb5ee98ed80c63f453052c1e2127))
+* **studio:** 审查者采用被审代理工作区并允许 exec 审查 ([c529a6e](https://github.com/ZR233/anywork/commit/c529a6eac0fea99f069d378994e86c53b216f49a))
+
+
+### Bug Fixes
+
+* **studio:** 修复供应商 Logo 并清理重复焦点实现 ([440f3b6](https://github.com/ZR233/anywork/commit/440f3b6491df9d71d8fa0a0e09fd69c32e76aae5))
+* **studio:** 修复思考强度菜单打开时的页面切换 ([3433076](https://github.com/ZR233/anywork/commit/3433076d0fdc64d05ad5490ef3070b01ce566bf5))
+* **studio:** 修复新会话输入与选择器准入状态 ([39320e4](https://github.com/ZR233/anywork/commit/39320e4afd1f808e721adc1e6a15fb2564bb19c1))
+* **studio:** 修复智能体切换菜单不渲染并对齐菜单行 ([a65c7c6](https://github.com/ZR233/anywork/commit/a65c7c65ae6044ecb6d74c6adf9759f73e5a2ac0))
+* **studio:** 修复状态骨架审查问题 ([4bf2f90](https://github.com/ZR233/anywork/commit/4bf2f90e558e7ae3d2534f37ef3d60d279a2d32b))
+* **studio:** 修复菜单焦点与选中文案收敛 ([3434549](https://github.com/ZR233/anywork/commit/34345493f6347ac10e8b7238f8f89d0357ad641e))
+* **studio:** 修复菜单焦点与选中文案收敛 ([8581d10](https://github.com/ZR233/anywork/commit/8581d10174376bc5a8309aef65b7e1ad88327d4a))
+* **studio:** 修复设置返回后的模式与思考强度同步 ([67d90ff](https://github.com/ZR233/anywork/commit/67d90ffb6bb429bab559a37dcf7eca32fb6f0d19))
+* **studio:** 修复词元速度统计 ([a05c745](https://github.com/ZR233/anywork/commit/a05c745970167e82c1c54377765b8ef00ab0826d))
+* **studio:** 修复陈旧的 riverpod 生成源哈希 ([e264cfe](https://github.com/ZR233/anywork/commit/e264cfe7b989519319bf5d0b54672c3dacd8471a))
+* **studio:** 允许故障会话创建新的执行轮次 ([122cfac](https://github.com/ZR233/anywork/commit/122cfac43b838d3bfe71c604ba79af9f8e945f3d))
+* **studio:** 内容绑定候选安装并在无法推进时停止重开 ([bff7cee](https://github.com/ZR233/anywork/commit/bff7cee6dd066f5ed7a1e3f280b77f2a3e6f1d32))
+* **studio:** 分离阅读位置与窗口焦点并统一帧末校正调度 ([4e8bf3e](https://github.com/ZR233/anywork/commit/4e8bf3e512389a6c6b23a3a20412c349df730720))
+* **studio:** 删除桥接层残留死代码修复 clippy CI ([c910f6d](https://github.com/ZR233/anywork/commit/c910f6d4701131b1a7ea84b51b0b4002f016f894))
+* **studio:** 同步续接控制器生成文件 ([82fb97a](https://github.com/ZR233/anywork/commit/82fb97aee54bebc0d471c45453dc49bf09536f9f))
+* **studio:** 推理摘要与展开正文只从分块派生 ([a2c8883](https://github.com/ZR233/anywork/commit/a2c88835192a79cc0e3b1ef83e0df6eed3cfb8ad))
+* **studio:** 消除流式摘要闪动并稳定行状态几何 ([c55ba16](https://github.com/ZR233/anywork/commit/c55ba169c89af944a7577d32435f697d13afb8a7))
+* **studio:** 移除思考强度选项图标 ([61daceb](https://github.com/ZR233/anywork/commit/61daceba1040ddb7fe1248990a250fda44564414))
+* **studio:** 终止自动补页循环并隔离旧绑定清理 ([60d5652](https://github.com/ZR233/anywork/commit/60d5652c7b860156414ed8acb7e342fc92c8ff61))
+* **studio:** 绑定退休时确定收束在途窗口操作 ([21096d2](https://github.com/ZR233/anywork/commit/21096d2c47c89684c77f6bac14621d55d0f570a8))
+* **studio:** 让会话选择器验收脚本可运行并消除断言竞态 ([690c8f5](https://github.com/ZR233/anywork/commit/690c8f5c2d1eaeff4ad5a9ab03bdaecb49996309))
+* **studio:** 让模式与思考强度只由 canonical 帧收敛 ([11fd72b](https://github.com/ZR233/anywork/commit/11fd72b974255f5986980c32f3d17dae078a75a6))
+* **studio:** 让模式与思考强度由 canonical 事实收敛 ([ba995a8](https://github.com/ZR233/anywork/commit/ba995a8c277a3ff2de6044ad1bde31d3be89779d))
+* **studio:** 让窗口操作回执使用窗口交付版本 ([ca170c6](https://github.com/ZR233/anywork/commit/ca170c64c6129ac5e079dae567dbf62b2901764b))
+* **studio:** 防止会话租约抖动导致时间线闪烁 ([e696ebe](https://github.com/ZR233/anywork/commit/e696ebeb3e71c0902fc1e7babae814ef5fa3b01f))
+* **studio:** 隐藏会话权限选项并固定完全访问 ([b95d938](https://github.com/ZR233/anywork/commit/b95d938d18ccecb479c57dd88375aba02cd0b284))
+
+
+### Performance
+
+* **studio:** 行级复用显示投影并去掉推理全文拼接 ([6ad6641](https://github.com/ZR233/anywork/commit/6ad6641db9e2eae1d45e23942244d07460210016))
+
+
+### Refactoring
+
+* **studio:** 以 flutter_chat_ui 替换自研时间线渲染层 ([179da84](https://github.com/ZR233/anywork/commit/179da84b26cbeca7bf53dca3cc61bd3e7174b500))
+* **studio:** 将客户端资源与 FRB、Riverpod 解耦 ([919d3d5](https://github.com/ZR233/anywork/commit/919d3d5224d5d6bc0ffd90a5ec6a60db37b019b1))
+* **studio:** 搭建前端状态分层骨架 ([c7dbcb8](https://github.com/ZR233/anywork/commit/c7dbcb8499047a5c4d61bf59d3c55a321561c181))
+* **studio:** 界面菜单与表单选择全面切换 Material 原生组件 ([d29e8f3](https://github.com/ZR233/anywork/commit/d29e8f3ed573c76d1d50796b4c66d7a4c71a786c))
+* **studio:** 聊天内容收敛到唯一 ChatView 出口 ([5a8210f](https://github.com/ZR233/anywork/commit/5a8210f3525cc9eb7da7eb3f6f5dcf9815e14cef))
+* **studio:** 重构前端状态架构为 Bridge-store-lane 单向数据流 ([7cd1634](https://github.com/ZR233/anywork/commit/7cd16347bf58948fce3efd58107512fecf91440d))
+
 ## [6.12.0](https://github.com/ZR233/pure-lang/compare/v6.11.0...v6.12.0) (2026-10-11)
 
 
