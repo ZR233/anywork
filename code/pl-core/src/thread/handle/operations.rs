@@ -102,7 +102,7 @@ impl ThreadHandle {
         model: DynModelSession,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, Some(model), checkpoint)
+        Self::resume_with_model(id, Some(model), checkpoint, None)
     }
 
     /// Starts or resumes one owner without opening a physical model session.
@@ -110,13 +110,35 @@ impl ThreadHandle {
         id: String,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, None, checkpoint)
+        Self::resume_with_model(id, None, checkpoint, None)
+    }
+
+    /// Starts or resumes one owner with a Turn admission gate installed before any Turn can run.
+    ///
+    /// The gate is part of the incarnation instead of something installed later, which is what makes
+    /// it hold back the very Turn recovery would resume: no input can be admitted while the owner is
+    /// assembled, so the gate exists before any Turn can reach it. Passing `None` for `model` opens
+    /// no physical model session, exactly like [`Self::resume_without_model`].
+    ///
+    /// The gate starts open, and an owner assembled without one admits Turns unconditionally, so
+    /// this entry point only changes the behavior of consumers that ask for it.
+    ///
+    /// # Errors
+    /// Rejects an empty Thread identity or an unusable checkpoint before spawning the owner.
+    pub fn resume_with_turn_admission_gate(
+        id: String,
+        model: Option<DynModelSession>,
+        checkpoint: Option<ThreadCheckpoint>,
+        gate: admission::TurnAdmissionGate,
+    ) -> Result<Self, ThreadError> {
+        Self::resume_with_model(id, model, checkpoint, Some(gate))
     }
 
     fn resume_with_model(
         id: String,
         model: Option<DynModelSession>,
         checkpoint: Option<ThreadCheckpoint>,
+        turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
         if id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -155,6 +177,8 @@ impl ThreadHandle {
             } else {
                 input::InputDriver::Dormant
             },
+            turn_admission,
+            turn_admission_waiting: false,
             interrupt: interrupt.clone(),
             mailbox: mailbox_receiver,
             task_commands: mailbox.downgrade(),
@@ -252,6 +276,9 @@ impl ThreadHandle {
 
     /// Stops the current Turn after atomically checking its expected identity and pauses queued execution.
     /// Passing no identity stops whichever Turn the owner is currently executing.
+    /// A Turn still waiting at the admission gate has not started and has no Turn record, so it can
+    /// never be the Turn an expected identity names: such a stop cancels the pending admission and
+    /// answers `true`, and the queue stays paused, so the held Turn cannot start once the gate opens.
     ///
     /// # Errors
     /// Returns `InvalidIdentity` when another Turn is active, or `Closed` when the owner has exited.
@@ -963,6 +990,8 @@ impl ThreadHandle {
     }
 
     /// Runs a bounded model/tool loop without interleaving another submitted Turn.
+    /// The loop starts only once the Turn admission gate admits this Turn; while a gate reason is
+    /// held, this call stays pending without consuming input or creating a Turn record.
     ///
     /// # Errors
     /// Returns model/admission/cancellation errors; committed tool failures remain available to the next step.

@@ -264,7 +264,17 @@ impl Owner {
                     }
                     None => {
                         self.pause_inputs();
-                        Ok(false)
+                        // A Turn held at the admission gate has not been admitted yet, so there is
+                        // no Turn record to stop. Its execution generation is live all the same,
+                        // and stopping that generation is what stops the pending admission instead
+                        // of letting it start once the gate opens, which is what "stop the current
+                        // Turn" was asked for; the caller then learns that work was stopped.
+                        let stopped = self.turn_admission_waiting;
+                        if stopped {
+                            self.interrupt.interrupt();
+                        }
+                        self.publish_snapshot();
+                        Ok(stopped)
                     }
                 };
                 let _ = reply.send(result);

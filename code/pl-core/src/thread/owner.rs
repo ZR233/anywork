@@ -33,6 +33,18 @@ pub(super) struct Owner {
     pub(super) input_batch_through: Option<u64>,
     pub(super) interrupted_turn: Option<String>,
     pub(super) input_driver: input::InputDriver,
+    /// Turn admission gate installed for this incarnation, if the host supplied one.
+    ///
+    /// It is read at every Turn admission and never persisted, so a resumed Thread gets the gate its
+    /// assembly named and recovery cannot run a Turn before the gate exists. `None` leaves admission
+    /// ungated, which is what keeps every existing consumer's behavior unchanged.
+    pub(super) turn_admission: Option<admission::TurnAdmissionGate>,
+    /// Whether this owner is currently held at the admission gate.
+    ///
+    /// Live state only: it is what the published snapshot reports as
+    /// [`input::InputExecution::Blocked`], and what keeps an interrupt from treating a
+    /// not-yet-admitted Turn as "nothing to stop".
+    pub(super) turn_admission_waiting: bool,
     pub(super) uncommitted_tools:
         std::collections::BTreeMap<String, super::tool_execution::ToolExecutionCompletion>,
     pub(super) task_commands: mpsc::WeakSender<mailbox::MailboxCommand>,
@@ -475,6 +487,11 @@ impl Owner {
             input::InputExecution::Failed {
                 error: error.clone(),
             }
+        } else if self.turn_admission_waiting {
+            // A Turn that is being held at the admission gate is not running and has consumed
+            // nothing, so it is neither `Running` nor `Ready`: the queue is intact and the next
+            // Turn starts as soon as the gate admits it.
+            input::InputExecution::Blocked
         } else if let Some(turn_id) = &self.interrupted_turn {
             input::InputExecution::Interrupting {
                 turn_id: turn_id.clone(),

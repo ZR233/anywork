@@ -23,6 +23,8 @@ impl ThreadHandle {
 
     /// Enables actor-owned serial execution of queued inputs. Recovery leaves this disabled.
     /// Failures and interaction/step-limit stops pause execution until explicitly resumed.
+    /// Enabling execution does not bypass a held Turn admission gate: the next Turn stays pending
+    /// until the gate admits it.
     ///
     /// # Errors
     /// Returns a closed owner error without consuming queued input.
@@ -74,6 +76,8 @@ impl ThreadHandle {
     /// Admits input and requests actor-owned queue execution in the same mailbox operation.
     /// The receipt proves admission, not execution; a racing close preserves the pending input.
     /// Repeating a consumed identity does not restart execution.
+    /// A held Turn admission gate does not refuse the receipt either: the input is admitted and
+    /// stays pending until the gate admits the Turn that would consume it.
     ///
     /// # Errors
     /// Rejects input identity conflicts and admission failure before returning a receipt.
@@ -111,6 +115,8 @@ impl ThreadHandle {
 
     /// Drives the oldest pending input with fresh execution identities after host assembly.
     /// Recovery itself never calls this method. None means the queue is empty.
+    /// A held Turn admission gate delays this call instead of skipping the input: it stays pending
+    /// and this command completes once the gate admits its Turn.
     ///
     /// # Errors
     /// Returns execution or admission failure. Input stays pending until model-request admission.
