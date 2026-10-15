@@ -28,17 +28,24 @@ impl Owner {
                 actual: self.state.commit_sequence,
             });
         }
-        if !self.active_inputs.is_empty()
+        // A closed admission boundary has no executing Turn. Its queued input identities
+        // remain owned by this Thread while the host replaces generation-bound services.
+        let admission_boundary = self
+            .turn_admission
+            .as_ref()
+            .is_some_and(|gate| !gate.is_open() && gate.admitted_turns() == 0);
+        if (!self.active_inputs.is_empty() && !(admission_boundary && self.turn_admission_waiting))
             || self
                 .state
                 .turns
                 .iter()
                 .any(|turn| turn.state == TurnState::Running)
-            || self
-                .state
-                .inputs
-                .iter()
-                .any(|input| input.state == input::InputState::Pending)
+            || (!admission_boundary
+                && self
+                    .state
+                    .inputs
+                    .iter()
+                    .any(|input| input.state == input::InputState::Pending))
             || self
                 .state
                 .tasks

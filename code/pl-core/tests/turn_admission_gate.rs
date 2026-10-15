@@ -429,3 +429,49 @@ async fn a_resumed_owner_cannot_run_its_recovered_input_before_the_gate_opens() 
     assert_eq!(requests.lock().unwrap().len(), 1);
     thread.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn closed_admission_reconfigures_tools_without_discarding_queued_inputs() {
+    use pl_core::thread::IdleReconfiguration;
+
+    let gate = TurnAdmissionGate::new();
+    let hold = gate.close();
+    let (model, requests) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::resume_with_turn_admission_gate(
+        "gated-reconfiguration".into(),
+        Some(DynModelSession::new(model)),
+        None,
+        gate.clone(),
+    )
+    .unwrap();
+    thread
+        .submit_input_and_run(queued_input("preserved"), options())
+        .await
+        .unwrap();
+    wait_until(|| blocked(&thread)).await;
+    thread.flush().await.unwrap();
+    let snapshot = thread.snapshot();
+    let update = IdleReconfiguration {
+        expected_sequence: snapshot.commit_sequence,
+        application: pl_core::thread::extensions::ApplicationUpdate {
+            mutations: vec![],
+            facts: vec![],
+        },
+        context: None,
+        model_update: None,
+        replace_tools: true,
+        remove_tools: vec![],
+        tools: vec![],
+    };
+    thread
+        .reconfigure(update)
+        .await
+        .expect("a closed admission boundary must preserve queued inputs while replacing services");
+    assert!(pending(&thread, "preserved"));
+    assert_eq!(thread.snapshot().turns.len(), 0);
+    assert_eq!(requests.lock().unwrap().len(), 0);
+    drop(hold);
+    wait_until(|| consumed_and_finished(&thread, &gate, "preserved")).await;
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    thread.close().await.unwrap();
+}
