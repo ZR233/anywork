@@ -263,7 +263,7 @@ impl CommandProcessState {
             pending_stderr: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             output_revision: 0,
             capture_limit_bytes,
-            capture_charged_bytes: 0,
+            capture_charged_bytes: capture_committed_len,
             capture_refused_bytes: 0,
             model_output_bytes_cap,
             capture_committed_len,

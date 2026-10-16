@@ -130,7 +130,9 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
     anyhow::ensure!(appends > 0, "上限之前必须先有真正落盘的已接纳 chunk");
     anyhow::ensure!(
         snapshot.capture_charged_bytes
-            == appended_raw * FAKE_STORAGE_COPIES + appends * FAKE_FRAME_BYTES,
+            == facts.prepared_bytes.load(Ordering::SeqCst)
+                + appended_raw * FAKE_STORAGE_COPIES
+                + appends * FAKE_FRAME_BYTES,
         "落盘预算必须按存储成本计费（两份 + framing）：charged={} raw={} appends={}",
         snapshot.capture_charged_bytes,
         appended_raw,
@@ -165,8 +167,8 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
     );
     let disk_bytes = capture_files_len(root.path())?;
     anyhow::ensure!(
-        disk_bytes <= FAKE_CAPTURE_LIMIT_BYTES + 4096,
-        "声明上限必须真的覆盖磁盘占用（只允许捕获头部与 framing 的固定开销）：disk={disk_bytes}"
+        disk_bytes <= FAKE_CAPTURE_LIMIT_BYTES,
+        "声明上限必须覆盖头部与 framing 在内的全部磁盘占用：disk={disk_bytes}"
     );
     println!(
         "OK  成本计费：charged={} raw={} appends={} refused={} disk={disk_bytes}",
@@ -338,6 +340,7 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
 /// 一次运行的观察事实：由 backend 在真实落盘/取消时记录，供断言使用。
 #[derive(Debug, Default)]
 struct CaptureFacts {
+    prepared_bytes: AtomicU64,
     appended_raw: AtomicU64,
     appends: AtomicU64,
     repairs: AtomicU64,
@@ -470,9 +473,12 @@ impl<B: CommandBackend> CommandBackend for LowBudgetBackend<B> {
         command: &str,
         working_directory: &str,
     ) -> Result<u64, Self::Error> {
-        self.inner
+        let prepared = self
+            .inner
             .prepare_output(target, command, working_directory)
-            .await
+            .await?;
+        self.facts.prepared_bytes.store(prepared, Ordering::SeqCst);
+        Ok(prepared)
     }
 
     async fn append_output_chunk(
