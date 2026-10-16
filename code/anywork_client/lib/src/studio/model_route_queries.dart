@@ -105,14 +105,17 @@ abstract final class ModelRouteQueries {
   }
 
   /// A model selection keeps a supported effort, then uses the declared model
-  /// default, then the first supported effort, as the existing route action did.
+  /// default when it is still a candidate, then the first supported effort.
   static String? effortAfterModelSelection(
     ProviderModelView? model,
     String? candidate,
   ) {
     if (model?.reasoningEfforts.contains(candidate) == true) return candidate;
-    if (model?.defaultReasoningEffort.isNotEmpty == true) {
-      return model!.defaultReasoningEffort;
+    final declared = model?.defaultReasoningEffort;
+    if (declared != null &&
+        declared.isNotEmpty &&
+        model!.reasoningEfforts.contains(declared)) {
+      return declared;
     }
     return model?.reasoningEfforts.firstOrNull;
   }

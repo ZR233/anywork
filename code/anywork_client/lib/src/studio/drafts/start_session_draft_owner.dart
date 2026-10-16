@@ -51,15 +51,30 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     final next = StartSessionModelIntent(providerId: providerId, model: model);
     final previous = state.modelIntents[mode.id];
     if (next == previous) return;
+    final snapshot = _client.settings.state.canonical;
     final canonical = ModelRouteQueries.modeRoute(
-      _client.settings.state.canonical?.modeModelRoutes ?? const [],
+      snapshot?.modeModelRoutes ?? const [],
       mode,
     );
     final changed = previous != null
         ? previous != next
         : canonical?.providerId != providerId || canonical?.model != model;
     final efforts = {...state.effortIntents};
-    if (changed) efforts.remove(mode.id);
+    if (changed) {
+      final effort = ModelRouteQueries.effortAfterModelSelection(
+        ModelRouteQueries.model(
+          snapshot?.providers ?? const [],
+          providerId,
+          model,
+        ),
+        null,
+      );
+      if (effort != null && effort.isNotEmpty) {
+        efforts[mode.id] = effort;
+      } else {
+        efforts.remove(mode.id);
+      }
+    }
     state = state.copyWith(
       modelIntents: {...state.modelIntents, mode.id: next},
       effortIntents: efforts,

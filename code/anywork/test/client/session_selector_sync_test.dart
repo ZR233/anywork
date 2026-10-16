@@ -14,6 +14,7 @@ import 'package:anywork/src/presentation/providers/start_session_controller.dart
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
@@ -207,6 +208,18 @@ void main() {
         .displayRoute(initial.mode);
     expect(after?.providerId, next.providerId);
     expect(after?.model, next.model);
+    final expectedEffort = ModelRouteQueries.effortAfterModelSelection(
+      next.descriptor,
+      null,
+    );
+    expect(expectedEffort, isNotNull, reason: 'next 模型需要可归一化的思考强度');
+    expect(after?.effort, expectedEffort);
+    expect(find.text('缺失（不可用）'), findsNothing);
+    expect(
+      find.text(expectedEffort!),
+      findsOneWidget,
+      reason: '思考强度必须立即显示新模型的归一化候选，而不是空值',
+    );
 
     await tester.tap(trigger);
     await tester.pumpAndSettle();
@@ -339,17 +352,33 @@ class _ModelSelectorHost extends ConsumerWidget {
     final page = ref.watch(startPageComposerViewProvider);
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
-    return ModelRoleSelector(
-      providers: page.providers,
-      providerId: route.providerId,
-      model: route.model,
-      effort: route.effort,
-      onModelSelected: (providerId, model) {
-        ref
-            .read(anyworkClientProvider)
-            .startDraft
-            .setModelIntent(page.mode, providerId, model);
-      },
+    return Wrap(
+      children: [
+        ModelRoleSelector(
+          providers: page.providers,
+          providerId: route.providerId,
+          model: route.model,
+          effort: route.effort,
+          onModelSelected: (providerId, model) {
+            ref
+                .read(anyworkClientProvider)
+                .startDraft
+                .setModelIntent(page.mode, providerId, model);
+          },
+        ),
+        ReasoningEffortSelector(
+          providers: page.providers,
+          providerId: route.providerId,
+          model: route.model,
+          effort: route.effort,
+          onEffortSelected: (effort) {
+            ref
+                .read(anyworkClientProvider)
+                .startDraft
+                .setEffortIntent(page.mode, effort);
+          },
+        ),
+      ],
     );
   }
 }

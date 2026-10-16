@@ -142,6 +142,59 @@ void main() {
     );
     expect(ModelRouteQueries.throughput(complete), 40);
   });
+
+  test('model selection keeps a supported effort then a declared candidate default', () {
+    const model = ProviderModelView(
+      slug: 'observed-model',
+      displayName: 'Observed model',
+      reasoningEfforts: ['low', 'medium', 'high'],
+      defaultReasoningEffort: 'medium',
+    );
+    expect(ModelRouteQueries.effortAfterModelSelection(model, 'high'), 'high');
+    expect(ModelRouteQueries.effortAfterModelSelection(model, null), 'medium');
+
+    const emptyDefault = ProviderModelView(
+      slug: 'observed-model',
+      displayName: 'Observed model',
+      reasoningEfforts: ['low', 'high'],
+    );
+    expect(
+      ModelRouteQueries.effortAfterModelSelection(emptyDefault, null),
+      'low',
+    );
+
+    const mismatchedDefault = ProviderModelView(
+      slug: 'observed-model',
+      displayName: 'Observed model',
+      reasoningEfforts: ['low', 'high'],
+      defaultReasoningEffort: 'medium',
+    );
+    expect(
+      ModelRouteQueries.effortAfterModelSelection(mismatchedDefault, null),
+      'low',
+    );
+    expect(
+      ModelRouteQueries.effortAfterModelSelection(mismatchedDefault, 'medium'),
+      'low',
+      reason: 'undeclared candidate values must not be admitted',
+    );
+
+    const emptyCatalog = ProviderModelView(
+      slug: 'observed-model',
+      displayName: 'Observed model',
+      reasoningEfforts: [],
+      defaultReasoningEffort: 'medium',
+    );
+    expect(
+      ModelRouteQueries.effortAfterModelSelection(emptyCatalog, 'medium'),
+      isNull,
+    );
+    expect(
+      ModelRouteQueries.effortAfterModelSelection(emptyCatalog, null),
+      isNull,
+    );
+    expect(ModelRouteQueries.effortAfterModelSelection(null, 'high'), isNull);
+  });
 }
 
 const _provider = ProviderSettingsView(
