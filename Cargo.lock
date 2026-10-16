@@ -2700,6 +2700,7 @@ dependencies = [
  "fs4",
  "futures",
  "hex",
+ "pretty_assertions",
  "sea-orm",
  "serde",
  "serde_json",
