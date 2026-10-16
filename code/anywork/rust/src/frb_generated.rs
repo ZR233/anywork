@@ -1371,12 +1371,16 @@ fn wire__crate__api__studio__handlers__providers__check_provider_usage_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
                     (move || async move {
                         let output_ok =
-                            crate::api::studio::handlers::providers::check_provider_usage().await?;
+                            crate::api::studio::handlers::providers::check_provider_usage(
+                                api_provider_id,
+                            )
+                            .await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -7609,6 +7613,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeProviderSettingsDt
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_baseUrl = <String>::sse_decode(deserializer);
         let mut var_hasBearerToken = <bool>::sse_decode(deserializer);
+        let mut var_usageQueryRevision = <u64>::sse_decode(deserializer);
         let mut var_credentialRequired = <bool>::sse_decode(deserializer);
         let mut var_capabilitySource = <String>::sse_decode(deserializer);
         let mut var_hostedWebSearch = <bool>::sse_decode(deserializer);
@@ -7634,6 +7639,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeProviderSettingsDt
             name: var_name,
             base_url: var_baseUrl,
             has_bearer_token: var_hasBearerToken,
+            usage_query_revision: var_usageQueryRevision,
             credential_required: var_credentialRequired,
             capability_source: var_capabilitySource,
             hosted_web_search: var_hostedWebSearch,
@@ -17453,6 +17459,7 @@ impl flutter_rust_bridge::IntoDart
             self.name.into_into_dart().into_dart(),
             self.base_url.into_into_dart().into_dart(),
             self.has_bearer_token.into_into_dart().into_dart(),
+            self.usage_query_revision.into_into_dart().into_dart(),
             self.credential_required.into_into_dart().into_dart(),
             self.capability_source.into_into_dart().into_dart(),
             self.hosted_web_search.into_into_dart().into_dart(),
@@ -25291,6 +25298,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeProviderSettingsDt
         <String>::sse_encode(self.name, serializer);
         <String>::sse_encode(self.base_url, serializer);
         <bool>::sse_encode(self.has_bearer_token, serializer);
+        <u64>::sse_encode(self.usage_query_revision, serializer);
         <bool>::sse_encode(self.credential_required, serializer);
         <String>::sse_encode(self.capability_source, serializer);
         <bool>::sse_encode(self.hosted_web_search, serializer);

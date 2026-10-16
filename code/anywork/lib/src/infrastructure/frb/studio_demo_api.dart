@@ -91,6 +91,7 @@ class DemoStudioTransport extends StudioTransport
   int _attachmentSequence = 0;
   int _skillsRevision = 1;
   int _providerUsageRevision = 1;
+  final Map<String, ProviderUsageView> _providerUsages = {};
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -354,19 +355,19 @@ class DemoStudioTransport extends StudioTransport
     );
   }
 
-  ProviderUsageStateSnapshot _demoProviderUsageState() =>
-      ProviderUsageStateSnapshot.fromState(
-        state: _demoReadyResource(
-          _providerUsageRevision,
-          ProviderUsageStateData(
-            configFingerprint: 'demo',
-            usages: [
-              for (final provider in _providers ?? [_demoDefaultProvider()])
-                _demoProviderUsage(provider),
-            ],
-          ),
-        ),
-      );
+  ProviderUsageStateSnapshot _demoProviderUsageState() {
+    final providers = _providers ?? [_demoDefaultProvider()];
+    final usages = [
+      for (final provider in providers)
+        _providerUsages[provider.id] ?? _demoProviderUsage(provider),
+    ];
+    return ProviderUsageStateSnapshot.fromState(
+      state: _demoReadyResource(
+        _providerUsageRevision,
+        ProviderUsageStateData(configFingerprint: 'demo', usages: usages),
+      ),
+    );
+  }
 
   SessionCostsStateView _demoSessionCosts(String rootThreadId) =>
       SessionCostsStateView(
@@ -3086,7 +3087,18 @@ class DemoStudioTransport extends StudioTransport
       _demoSettingsState();
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage() async {
+  Future<ProviderUsageStateSnapshot> checkProviderUsage(
+    String providerId,
+  ) async {
+    final providers = _providers ?? [_demoDefaultProvider()];
+    final provider = providers
+        .where((item) => item.id == providerId)
+        .firstOrNull;
+    if (provider != null) {
+      _providerUsages[providerId] = _demoProviderUsage(provider);
+    } else {
+      _providerUsages.remove(providerId);
+    }
     _providerUsageRevision += 1;
     final state = _demoProviderUsageState();
     _publishProductPayload(ProviderUsageStateChangedPayload(state));

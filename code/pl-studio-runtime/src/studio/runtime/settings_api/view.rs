@@ -23,7 +23,7 @@ pub(crate) fn settings_config_snapshot(
     Ok(SettingsConfigSnapshot {
         revision: state.revision,
         updated_at: state.updated_at,
-        settings: settings_view(state.canonical_config())?,
+        settings: settings_view(state)?,
     })
 }
 
@@ -76,7 +76,8 @@ pub(crate) fn settings_state_response(
     })
 }
 
-fn settings_view(config: &crate::StudioConfig) -> Result<StudioSettings> {
+fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
+    let config = state.canonical_config();
     let providers = config
         .models
         .providers
@@ -106,6 +107,9 @@ fn settings_view(config: &crate::StudioConfig) -> Result<StudioSettings> {
                 name: provider.name.clone(),
                 base_url: provider.base_url.clone(),
                 has_bearer_token: provider.resolved_bearer_token().is_some(),
+                usage_query_revision: state
+                    .usage_query_revision(id)
+                    .context("provider usage query identity is missing")?,
                 credential_required: provider.adapter
                     != pl_model::provider::ProviderAdapterKind::OpenAiCompatible,
                 capability_source: match &provider.capabilities {

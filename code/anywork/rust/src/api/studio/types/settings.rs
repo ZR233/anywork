@@ -364,6 +364,7 @@ pub struct BridgeProviderSettingsDto {
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
+    pub usage_query_revision: u64,
     pub credential_required: bool,
     pub capability_source: String,
     pub hosted_web_search: bool,

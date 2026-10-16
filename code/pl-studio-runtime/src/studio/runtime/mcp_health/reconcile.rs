@@ -15,45 +15,46 @@ use super::health::{mcp_health_from_effective, mcp_server_checked_at};
 use super::state::McpReconcilePlan;
 
 impl StudioRuntime {
-    pub async fn reconcile_mcp_runtime(&self) -> Result<()> {
+    async fn reconcile_mcp_runtime(&self) -> Result<()> {
         let Some(plan) = self.prepare_mcp_reconcile().await? else {
             return Ok(());
         };
         self.complete_mcp_reconcile(plan).await
     }
 
-    pub(in crate::studio::runtime) async fn start_mcp_reconcile_background(&self) -> Result<()> {
-        let mut task = self.external_runtimes.mcp_startup_reconcile.lock().await;
+    pub(in crate::studio::runtime) async fn start_mcp_config_watcher(&self) -> Result<()> {
+        let mut task = self.external_runtimes.mcp_config_watcher.lock().await;
         if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return Ok(());
         }
-        let Some(plan) = self.prepare_mcp_reconcile().await? else {
-            task.take();
-            return Ok(());
-        };
+        let mut settings = self.settings_updates.subscribe();
         let runtime = self.clone();
         *task = Some(BackgroundTask::new(tokio::spawn(async move {
-            if let Err(error) = runtime.complete_mcp_reconcile(plan).await {
-                tracing::warn!(
-                    error_bytes = error.to_string().len(),
-                    "background MCP startup reconcile failed"
-                );
+            loop {
+                // Mark the input before preparing it: changes received while a
+                // connection is pending remain observable on the next iteration.
+                settings.borrow_and_update();
+                if let Err(error) = runtime.reconcile_mcp_runtime().await {
+                    tracing::warn!(
+                        error_bytes = error.to_string().len(),
+                        "background MCP configuration reconcile failed"
+                    );
+                }
+                if settings.changed().await.is_err() {
+                    break;
+                }
             }
         })));
         Ok(())
     }
 
-    pub(in crate::studio::runtime) async fn stop_mcp_startup_reconcile(&self) -> Result<()> {
-        background_task::stop(&self.external_runtimes.mcp_startup_reconcile)
+    pub(in crate::studio::runtime) async fn stop_mcp_config_watcher(&self) -> Result<()> {
+        background_task::stop(&self.external_runtimes.mcp_config_watcher)
             .await
-            .context("failed to join MCP startup reconcile")
+            .context("failed to join MCP configuration watcher")
     }
 
     async fn prepare_mcp_reconcile(&self) -> Result<Option<McpReconcilePlan>> {
-        let config = self.config_runtime.read()?.config;
-        let servers = effective_mcp_servers(&config);
-        let effective_fingerprint = effective_mcp_fingerprint(&servers);
-        let public_fingerprint = public_mcp_fingerprint(&servers);
         let command_guard = self
             .external_runtimes
             .mcp_state
@@ -61,6 +62,10 @@ impl StudioRuntime {
             .clone()
             .lock_owned()
             .await;
+        let config = self.config_runtime.read()?.config;
+        let servers = effective_mcp_servers(&config);
+        let effective_fingerprint = effective_mcp_fingerprint(&servers);
+        let public_fingerprint = public_mcp_fingerprint(&servers);
         let previous = self.external_runtimes.mcp_state.read().await;
         let effective_unchanged = self
             .external_runtimes
@@ -118,11 +123,11 @@ impl StudioRuntime {
             }
             pl_protocol::studio::McpResetRequest::All => pl_tool::mcp::McpResetScope::All,
         };
+        let _command = self.external_runtimes.mcp_state.command_lock.lock().await;
         let config = self.config_runtime.read()?.config;
         let servers = effective_mcp_servers(&config);
         let effective_fingerprint = effective_mcp_fingerprint(&servers);
         let public_fingerprint = public_mcp_fingerprint(&servers);
-        let _command = self.external_runtimes.mcp_state.command_lock.lock().await;
         let previous = self.external_runtimes.mcp_state.read().await;
         let desired_public_fingerprint = self
             .desired_mcp_fingerprint(&previous, &effective_fingerprint, public_fingerprint)
@@ -178,6 +183,7 @@ impl StudioRuntime {
     }
 
     async fn refresh_mcp_health_snapshot(&self) -> Result<()> {
+        let _command = self.external_runtimes.mcp_state.command_lock.lock().await;
         let previous = self.external_runtimes.mcp_state.read().await;
         let Some(mut data) = previous.state.value().cloned() else {
             return Ok(());

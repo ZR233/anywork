@@ -2022,10 +2022,12 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage() async {
+  Future<ProviderUsageStateSnapshot> checkProviderUsage(
+    String providerId,
+  ) async {
     await _ensureReady();
     return _providerUsageStateFromFrb(
-      await _bridgeCall(frb.checkProviderUsage),
+      await _bridgeCall(() => frb.checkProviderUsage(providerId: providerId)),
     );
   }
 

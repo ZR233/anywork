@@ -906,6 +906,7 @@ async fn remove_provider(
         state
             .runtime
             .remove_provider(request)
+            .await
             .map_err(ApiError::from)?,
     ))
 }
@@ -944,14 +945,15 @@ async fn read_provider_usage(State(state): State<AppState>) -> Result<impl IntoR
     Ok(Json(state.runtime.read_provider_usage_state().await))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/provider-usage/check", operation_id = "providerUsage.check", responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/runtime/provider-usage/{provider_id}/check", operation_id = "providerUsage.check", params(("provider_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
 async fn check_provider_usage(
     State(state): State<AppState>,
+    Path(provider_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .check_provider_usage()
+            .check_provider_usage(&provider_id)
             .await
             .map_err(ApiError::from)?,
     ))

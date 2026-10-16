@@ -260,7 +260,9 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiStudioHandlersUpdaterCancelStudioBackgroundUpdate();
 
   Future<BridgeProviderUsageStateSnapshot>
-  crateApiStudioHandlersProvidersCheckProviderUsage();
+  crateApiStudioHandlersProvidersCheckProviderUsage({
+    required String providerId,
+  });
 
   Future<BridgeUpdaterStateSnapshot>
   crateApiStudioHandlersUpdaterCheckStudioUpdate();
@@ -1849,11 +1851,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<BridgeProviderUsageStateSnapshot>
-  crateApiStudioHandlersProvidersCheckProviderUsage() {
+  crateApiStudioHandlersProvidersCheckProviderUsage({
+    required String providerId,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1866,7 +1871,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersProvidersCheckProviderUsageConstMeta,
-        argValues: [],
+        argValues: [providerId],
         apiImpl: this,
       ),
     );
@@ -1874,7 +1879,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta
   get kCrateApiStudioHandlersProvidersCheckProviderUsageConstMeta =>
-      const TaskConstMeta(debugName: "check_provider_usage", argNames: []);
+      const TaskConstMeta(
+        debugName: "check_provider_usage",
+        argNames: ["providerId"],
+      );
 
   @override
   Future<BridgeUpdaterStateSnapshot>
@@ -7652,8 +7660,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 18)
-      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    if (arr.length != 19)
+      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
     return BridgeProviderSettingsDto(
       pricingEnabled: dco_decode_bool(arr[0]),
       id: dco_decode_String(arr[1]),
@@ -7661,20 +7669,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       name: dco_decode_String(arr[3]),
       baseUrl: dco_decode_String(arr[4]),
       hasBearerToken: dco_decode_bool(arr[5]),
-      credentialRequired: dco_decode_bool(arr[6]),
-      capabilitySource: dco_decode_String(arr[7]),
-      hostedWebSearch: dco_decode_bool(arr[8]),
-      hostedWebSearchDialect: dco_decode_String(arr[9]),
-      standaloneWebSearch: dco_decode_opt_String(arr[10]),
-      promptCacheDialect: dco_decode_String(arr[11]),
-      responsesProgrammaticToolCalling: dco_decode_bool(arr[12]),
-      defaultModel: dco_decode_String(arr[13]),
-      customModels: dco_decode_list_bridge_custom_model_settings_dto(arr[14]),
+      usageQueryRevision: dco_decode_u_64(arr[6]),
+      credentialRequired: dco_decode_bool(arr[7]),
+      capabilitySource: dco_decode_String(arr[8]),
+      hostedWebSearch: dco_decode_bool(arr[9]),
+      hostedWebSearchDialect: dco_decode_String(arr[10]),
+      standaloneWebSearch: dco_decode_opt_String(arr[11]),
+      promptCacheDialect: dco_decode_String(arr[12]),
+      responsesProgrammaticToolCalling: dco_decode_bool(arr[13]),
+      defaultModel: dco_decode_String(arr[14]),
+      customModels: dco_decode_list_bridge_custom_model_settings_dto(arr[15]),
       modelConnectionModes:
-          dco_decode_list_bridge_model_connection_settings_dto(arr[15]),
+          dco_decode_list_bridge_model_connection_settings_dto(arr[16]),
       modelAutoCompactLimits:
-          dco_decode_list_bridge_model_auto_compact_settings_dto(arr[16]),
-      catalogId: dco_decode_opt_String(arr[17]),
+          dco_decode_list_bridge_model_auto_compact_settings_dto(arr[17]),
+      catalogId: dco_decode_opt_String(arr[18]),
     );
   }
 
@@ -15797,6 +15806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_name = sse_decode_String(deserializer);
     var var_baseUrl = sse_decode_String(deserializer);
     var var_hasBearerToken = sse_decode_bool(deserializer);
+    var var_usageQueryRevision = sse_decode_u_64(deserializer);
     var var_credentialRequired = sse_decode_bool(deserializer);
     var var_capabilitySource = sse_decode_String(deserializer);
     var var_hostedWebSearch = sse_decode_bool(deserializer);
@@ -15820,6 +15830,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       name: var_name,
       baseUrl: var_baseUrl,
       hasBearerToken: var_hasBearerToken,
+      usageQueryRevision: var_usageQueryRevision,
       credentialRequired: var_credentialRequired,
       capabilitySource: var_capabilitySource,
       hostedWebSearch: var_hostedWebSearch,
@@ -24878,6 +24889,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.name, serializer);
     sse_encode_String(self.baseUrl, serializer);
     sse_encode_bool(self.hasBearerToken, serializer);
+    sse_encode_u_64(self.usageQueryRevision, serializer);
     sse_encode_bool(self.credentialRequired, serializer);
     sse_encode_String(self.capabilitySource, serializer);
     sse_encode_bool(self.hostedWebSearch, serializer);

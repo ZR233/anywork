@@ -22,6 +22,7 @@ export 'src/studio/bridge/product_topic_registry.dart';
 export 'src/studio/bridge/studio_channels.dart';
 export 'src/studio/commands/command_lane.dart';
 export 'src/studio/commands/directory_commands.dart';
+export 'src/studio/commands/provider_usage_queries.dart';
 export 'src/studio/commands/settings_commands.dart';
 export 'src/studio/commands/thread_commands.dart';
 export 'src/studio/thread_session.dart';

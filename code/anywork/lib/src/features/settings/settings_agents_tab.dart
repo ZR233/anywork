@@ -18,7 +18,7 @@ import 'settings_worktree_recovery.dart';
 class AgentsTab extends ConsumerStatefulWidget {
   const AgentsTab({super.key, required this.tabIndex});
 
-  /// 本页在设置壳中的 tab 索引，用于「仅在可见时持有租约」。
+  /// 本页在设置壳中的 tab 索引，用于「仅在可见时做显示观察」。
   final int tabIndex;
 
   @override
@@ -53,7 +53,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
 
   @override
   Widget build(BuildContext context) {
-    // 只在 Agents tab 可见时租用 Agent Profiles topic；隐藏页不因 keep-alive 持租约。
+    // 只在 Agents tab 可见时观察 Agent Profiles topic；隐藏页不因 keep-alive 保持显示观察。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     if (visible) {
       watchSettingsScope(

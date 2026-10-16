@@ -192,12 +192,6 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     });
   });
 
-  Future<void> refreshProviderUsages() => _lane.run(() async {
-    final snapshot = await _api.checkProviderUsage();
-    if (_client.isClosed) return;
-    _client.providerUsage.apply(snapshot);
-  });
-
   Future<void> refreshSkillsState() => _lane.run(() async {
     final projectId = _client.selection.state.selectedProjectId;
     if (projectId == null) return;

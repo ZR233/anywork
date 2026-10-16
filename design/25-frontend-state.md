@@ -167,6 +167,25 @@ MutationBoard 分开保存每次真实结果与每个目标的 latest intent。�
 观察 predicate 原子检查当前镜像并注册，使帧先到和回执先到均不漏确认。观察水位只在相同
 owner epoch 和资源域合并。
 
+### 25.7.1 供应商用量需求
+
+供应商标签的 feature 状态负责自动加载策略，Client 查询 owner 负责按实例启动、去重、
+pending/error 和在途任务，额度事实仍只经 ProviderUsageStore 的唯一 reducer 接收 canonical
+响应或事件。Riverpod 展示适配只观察 Client，不直接调用 transport，不以另一份 AsyncValue
+缓存取代同一 canonical。焦点、筛选、选择、FormKey 和编辑草稿继续由局部 UI owner 管理。
+
+标签首次可见为每个当前查询身份发起一次检查；每个实例完成即发布，不等待其它实例。
+同 provider ID、同 `usageQueryRevision` 的重叠自动/手动检查合并，不同身份的旧结果不能清理
+新 pending 或覆盖新结果。查询身份由 Rust 所有，定义见 [18.2](./18-studio-state.md#182-公共-snapshot)。
+标签可见期间，新增或查询身份变化只补查对应实例；隐藏时停止产生新的自动请求，重新可见
+只补查未加载或失效身份。失败也计入本轮已尝试，不由重建、默认值变化或自动重试形成请求
+循环。页面状态真正重建允许再次加载，手动刷新可明确发起新尝试，刷新全部复用同一实例能力。
+
+页面只声明需求，不能在每次 Widget build 中创建请求，也不在保存回调中等待额度。已有在途
+请求由 Client 持有并在应用退出时 join，页面取消观察不丢弃任务；删除实例清理其需求及操作
+身份，迟到响应不得复活删除项。保留的标签状态往返不重复检查，不清当前 Thread/ChatView
+或草稿；跨 AppGraph 不共享请求、需求、加载集合或结果镜像。
+
 ## 25.8 草稿与附件
 
 StartDraft 与 ComposerDraft 有独立逻辑寿命，不随页面 observer 消失。freezeForSubmit 在

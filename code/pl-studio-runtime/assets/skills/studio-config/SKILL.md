@@ -33,6 +33,7 @@ Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories a
 - Unrecoverable global data corruption, unsupported versions and invalid references trigger one complete startup backup of `config.toml`, `agents/`, `v2/` and `studio/v2/` under `<home>/startup-backups/<unique-id>/original/`, followed by initialization with current defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery. The UI reports the backup location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures do not reset global data.
 - Explicit reload while Studio is running remains strict: it reports the invalid file instead of replacing it.
 - Saving from Settings writes atomically. External file edits are not picked up automatically; use explicit reload after editing a valid current-schema file.
+- Provider save replies confirm the credential/configuration transaction, not MCP readiness or usage API completion. All presets use the same save path; MCP follows canonical configuration in the background and reports its own status.
 
 ## Common Sections
 
@@ -55,6 +56,10 @@ Web search is not a single selection. Both search services are resolved independ
 ## Credentials
 
 Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `provider:<id>`). To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
+
+The four built-in Zhipu MCP servers only borrow a usable key from `preset = "zhipu-coding-plan"`. With multiple instances, the first usable key in stable provider-ID order wins. Ordinary `zhipu` presets and matching endpoint hosts are not credential fallbacks. A missing/blank key does not connect, discover or register callable tools; an explicit builtin disable remains disabled. They use the same generic MCP runtime and published-generation leases as user MCP servers, with no provider-specific Thread.
+
+The Providers tab automatically checks each instance when its page state first becomes visible, without waiting for all instances. Retained tab switches do not repeat completed attempts; new or query-changed instances are checked when visible, and manual per-instance/all refresh remains available. Saves do not wait for those checks. Failures are local to an instance and do not trigger polling or automatic retries. The read-only `usageQueryRevision` is a non-secret, runtime-owned query identity, not a TOML setting or secret fingerprint.
 
 ## Minimal Working Example
 

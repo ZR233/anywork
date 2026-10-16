@@ -61,12 +61,6 @@ impl StudioRuntime {
                 | SettingsFieldUpdate::SkillsDisabled { .. }
                 | SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { .. }
         );
-        let reconcile_mcp = matches!(
-            &request.update,
-            SettingsFieldUpdate::McpServerEnabled { .. }
-                | SettingsFieldUpdate::McpServerTransport { .. }
-                | SettingsFieldUpdate::McpServerEndpoint { .. }
-        );
         let effect = match &request.update {
             SettingsFieldUpdate::GeneralFollowActiveTurn { .. }
             | SettingsFieldUpdate::GeneralCompactTimeline { .. }
@@ -337,9 +331,6 @@ impl StudioRuntime {
         if mark_skills_stale {
             self.skills.mark_all_stale().await;
         }
-        if reconcile_mcp {
-            self.reconcile_mcp_runtime().await?;
-        }
         self.settings_command_reply(request.operation_id, &state, changed, effect)
     }
 
@@ -372,8 +363,7 @@ impl StudioRuntime {
         let state = self.config_runtime.reload_from_disk(expected_revision)?;
         self.publish_settings_state(state.clone())?;
         self.skills.mark_all_stale().await;
-        let _ = self.apply_provider_config(&state.config).await?;
-        self.reconcile_mcp_runtime().await?;
+        let _ = self.apply_provider_config().await?;
         self.read_settings_response(&state)
     }
 
@@ -389,8 +379,7 @@ impl StudioRuntime {
             .config_runtime
             .replace(request.expected_revision, next)?;
         self.publish_settings_state(state.clone())?;
-        let _ = self.apply_provider_config(&state.config).await?;
-        self.reconcile_mcp_runtime().await?;
+        let _ = self.apply_provider_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -457,7 +446,10 @@ impl StudioRuntime {
         )
     }
 
-    pub fn remove_provider(&self, request: RemoveProviderRequest) -> Result<SettingsCommandReply> {
+    pub async fn remove_provider(
+        &self,
+        request: RemoveProviderRequest,
+    ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let next = crate::config_editor::remove_provider(
@@ -469,6 +461,7 @@ impl StudioRuntime {
             .config_runtime
             .replace(request.expected_revision, next)?;
         self.publish_settings_state(state.clone())?;
+        self.apply_provider_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,

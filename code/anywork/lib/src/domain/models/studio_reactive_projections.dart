@@ -583,6 +583,7 @@ bool _providerEquals(ProviderSettingsView left, ProviderSettingsView right) {
       left.baseUrl == right.baseUrl &&
       left.bearerToken == right.bearerToken &&
       left.hasBearerToken == right.hasBearerToken &&
+      left.usageQueryRevision == right.usageQueryRevision &&
       left.credentialRequired == right.credentialRequired &&
       left.defaultModel == right.defaultModel &&
       _listEqualsBy(left.models, right.models, _providerModelEquals) &&
@@ -625,6 +626,7 @@ int _providerHash(ProviderSettingsView provider) => Object.hashAll([
   provider.baseUrl,
   provider.bearerToken,
   provider.hasBearerToken,
+  provider.usageQueryRevision,
   provider.credentialRequired,
   provider.defaultModel,
   Object.hashAll(provider.models.map(_providerModelHash)),

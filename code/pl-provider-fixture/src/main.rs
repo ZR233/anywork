@@ -118,6 +118,7 @@ async fn main() -> Result<()> {
         "call-lifecycle-recovery" => pl_provider_fixture::gui_call_lifecycle_recovery_script(),
         "web-search" => gui_web_search_script(),
         "shutdown" => gui_shutdown_script(),
+        "provider-usage" => gui_script(),
         value => bail!("unknown fixture scenario: {value}"),
     };
     let fault = match args.fault.as_deref() {
@@ -129,6 +130,7 @@ async fn main() -> Result<()> {
     };
     let options = FixtureOptions {
         web_search: (scenario == "web-search").then_some(WebSearchOptions { fault }),
+        provider_usage: scenario == "provider-usage",
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict

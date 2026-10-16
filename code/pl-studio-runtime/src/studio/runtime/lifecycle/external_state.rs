@@ -8,16 +8,15 @@ impl StudioRuntime {
         self.provider_usage.read().await
     }
 
-    pub async fn check_provider_usage(&self) -> Result<ProviderUsageStateSnapshot> {
-        let config = self.config_runtime.read()?.config;
-        self.provider_usage.check(&config).await
+    pub async fn check_provider_usage(
+        &self,
+        provider_id: &str,
+    ) -> Result<ProviderUsageStateSnapshot> {
+        self.provider_usage.check(provider_id).await
     }
 
-    pub async fn apply_provider_config(
-        &self,
-        config: &crate::StudioConfig,
-    ) -> Result<ProviderUsageStateSnapshot> {
-        self.provider_usage.apply_config(config).await
+    pub async fn apply_provider_config(&self) -> Result<ProviderUsageStateSnapshot> {
+        self.provider_usage.apply_config().await
     }
 
     pub async fn read_update_state(&self) -> StudioUpdateStateSnapshot {

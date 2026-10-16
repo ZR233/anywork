@@ -12,7 +12,7 @@ import 'settings_views.dart';
 class StatisticsTab extends ConsumerStatefulWidget {
   const StatisticsTab({required this.tabIndex, super.key});
 
-  /// 本页在设置壳中的 tab 索引，用于「仅在可见时持有租约」。
+  /// 本页在设置壳中的 tab 索引，用于「仅在可见时做显示观察」。
   final int tabIndex;
 
   @override
@@ -28,7 +28,7 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
 
   @override
   Widget build(BuildContext context) {
-    // 只在「统计」tab 可见时租用模型性能 topic；隐藏页不因 keep-alive 持租约。
+    // 只在「统计」tab 可见时观察模型性能 topic；隐藏页不因 keep-alive 保持显示观察。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     watchSettingsScope(
       ref,

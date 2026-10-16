@@ -16,7 +16,7 @@ use axum::{
     },
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -26,9 +26,16 @@ use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 mod context_replay_recovery;
+mod provider_usage;
 mod web_search;
 pub use context_replay_recovery::{
     ReplayExpectation, gui_context_replay_recovery_script, replay_output, replay_tool_arguments,
+};
+pub use provider_usage::{
+    DENIED_QUOTA_CATEGORY, DENIED_QUOTA_KEY, FAST_QUOTA_KEY, MCP_KEY as PROVIDER_USAGE_MCP_KEY,
+    MCP_PATH as PROVIDER_USAGE_MCP_PATH, MCP_TOOL_NAME as PROVIDER_USAGE_MCP_TOOL_NAME,
+    PLAN_QUOTA_KEY, ProviderUsageLiveState, RELEASE_PATH as PROVIDER_USAGE_RELEASE_PATH,
+    SLOW_QUOTA_KEY, STATE_PATH as PROVIDER_USAGE_STATE_PATH,
 };
 pub use web_search::{
     CHILD_PROFILE_ID, DEEPSEEK_MESSAGES_PATH, DEEPSEEK_SEARCH_KEY, MARK_CHILD_SEARCH,
@@ -58,7 +65,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 16] = [
+pub const GUI_SCENARIOS: [&str; 17] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -75,6 +82,7 @@ pub const GUI_SCENARIOS: [&str; 16] = [
     "call-lifecycle-recovery",
     "web-search",
     "shutdown",
+    "provider-usage",
 ];
 
 /// Native compaction exhausts its budget, then a fresh input succeeds and waits
@@ -1160,6 +1168,14 @@ struct StressProgress {
 }
 
 impl FixtureReport {
+    fn script_complete(&self) -> bool {
+        self.remaining_optional
+            && !self
+                .requests
+                .iter()
+                .any(provider_usage::is_unexpected_reject)
+    }
+
     pub fn verify(&self) -> Result<()> {
         if let Some(expected) = self.expected_stress_events {
             let actual = self
@@ -1170,12 +1186,18 @@ impl FixtureReport {
                 bail!("fixture stress stream incomplete: emitted {actual}/{expected} data events");
             }
         }
-        if !self.remaining_optional || self.requests.iter().any(|r| !r.accepted) {
+        let script_complete = self.script_complete();
+        if !script_complete {
             let accepted = self.requests.iter().filter(|r| r.accepted).count();
             let rejected = self.requests.len() - accepted;
+            let owned = self
+                .requests
+                .iter()
+                .filter(|request| provider_usage::is_owned_reject(request))
+                .count();
+            let unexpected = rejected - owned;
             bail!(
-                "fixture script consumed {}/{} steps with {accepted} accepted and \
-                 {rejected} rejected requests; {}",
+                "fixture script consumed {}/{} steps with {accepted} accepted,                  {rejected} rejected ({owned} owned, {unexpected} unexpected); {}",
                 self.consumed_steps,
                 self.expected_steps,
                 self.first_reject_detail()
@@ -1187,7 +1209,11 @@ impl FixtureReport {
     /// One-line reason for the first rejected request, or a summary when every
     /// request was accepted but steps were still unconsumed.
     fn first_reject_detail(&self) -> String {
-        let Some(request) = self.requests.iter().find(|request| !request.accepted) else {
+        let Some(request) = self
+            .requests
+            .iter()
+            .find(|request| provider_usage::is_unexpected_reject(request))
+        else {
             return "every request was accepted but the script did not reach its last step"
                 .to_owned();
         };
@@ -1238,7 +1264,13 @@ impl FixtureReport {
             .filter(|request| request.accepted)
             .count();
         let rejected = self.requests.len() - accepted;
-        let complete = rejected == 0 && self.remaining_optional;
+        let owned_rejected = self
+            .requests
+            .iter()
+            .filter(|request| provider_usage::is_owned_reject(request))
+            .count();
+        let unexpected_rejected = rejected - owned_rejected;
+        let complete = self.script_complete();
         let mut lines = vec![
             format!(
                 "fixture_status={}",
@@ -1246,6 +1278,8 @@ impl FixtureReport {
             ),
             format!("fixture_accepted={accepted}"),
             format!("fixture_rejected={rejected}"),
+            format!("fixture_owned_rejected={owned_rejected}"),
+            format!("fixture_unexpected_rejected={unexpected_rejected}"),
             format!(
                 "fixture_consumed_steps={}/{}",
                 self.consumed_steps, self.expected_steps
@@ -1273,7 +1307,11 @@ impl FixtureReport {
         lines.push(format!(
             "fixture_history_fault_step_millis={GUI_HISTORY_FAULT_STEP_MILLIS}"
         ));
-        if let Some(request) = self.requests.iter().find(|request| !request.accepted) {
+        if let Some(request) = self
+            .requests
+            .iter()
+            .find(|request| provider_usage::is_unexpected_reject(request))
+        {
             lines.push(format!("fixture_rejected_method={}", request.method));
             lines.push(format!("fixture_rejected_path={}", request.path));
             match &request.diagnostic {
@@ -1332,6 +1370,7 @@ struct AppState {
     stopping: CancellationToken,
     stress: Arc<Mutex<StressProgress>>,
     web_search: Arc<Mutex<web_search::WebSearchState>>,
+    provider_usage: provider_usage::ProviderUsageGates,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1340,6 +1379,8 @@ pub struct FixtureOptions {
     /// Serve the native web-search / MCP acceptance endpoints. `None` keeps the
     /// listener limited to the classic conversation surfaces.
     pub web_search: Option<WebSearchOptions>,
+    /// Serve quota, gated MCP and loopback control endpoints for `provider-usage`.
+    pub provider_usage: bool,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1360,6 +1401,7 @@ impl FixtureServer {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let web_search_enabled = options.web_search.is_some();
+        let provider_usage_enabled = options.provider_usage;
         let state = AppState {
             script: Arc::new(Mutex::new(ScriptState {
                 steps,
@@ -1370,6 +1412,7 @@ impl FixtureServer {
             web_search: Arc::new(Mutex::new(web_search::WebSearchState::new(
                 options.web_search.unwrap_or_default(),
             ))),
+            provider_usage: provider_usage::ProviderUsageGates::new(),
         };
         let responses_route = if web_search_enabled {
             post(web_search::responses)
@@ -1409,9 +1452,38 @@ impl FixtureServer {
                 post(web_search::mcp_post)
                     .get(web_search::mcp_get)
                     .fallback(unexpected_route),
+            );
+        let app = if provider_usage_enabled {
+            app.route(
+                "/user/balance",
+                get(provider_usage::deepseek_balance_get).fallback(unexpected_route),
             )
-            .fallback(unexpected_route)
-            .with_state(state.clone());
+            .route(
+                "/api/monitor/usage/quota/limit",
+                get(provider_usage::zhipu_quota_get).fallback(unexpected_route),
+            )
+            .route(
+                "/v1/models",
+                get(provider_usage::models_get).fallback(unexpected_route),
+            )
+            .route(
+                provider_usage::MCP_PATH,
+                post(provider_usage::mcp_post)
+                    .get(provider_usage::mcp_get)
+                    .fallback(unexpected_route),
+            )
+            .route(
+                provider_usage::STATE_PATH,
+                get(provider_usage::live_state).fallback(unexpected_route),
+            )
+            .route(
+                provider_usage::RELEASE_PATH,
+                post(provider_usage::release).fallback(unexpected_route),
+            )
+        } else {
+            app
+        };
+        let app = app.fallback(unexpected_route).with_state(state.clone());
         let (shutdown, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, app)

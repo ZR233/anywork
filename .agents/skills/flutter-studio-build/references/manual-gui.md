@@ -45,6 +45,24 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 等待，不重复启动。GUI ready 后才能交互。若启动迟迟未完成，检查本次进程树及其日志，
 区分构建中、VM Service 未就绪、显示失败与应用异常，不盲目重试。
 
+## 涉及系统凭据的隔离场景
+
+`ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `provider:<id>` account 不随数据根改变。
+预置实例优先使用唯一 ID；若验收必须通过真实 UI 新增供应商（由 UI 自动生成 preset ID），
+不能仅靠临时 home 就读写这些 account，也不能新增生产内存凭据开关绕过真实边界。
+
+Linux 可为该场景创建私有 D-Bus 会话，并把 `XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和
+`XDG_RUNTIME_DIR` 全部指向自有临时目录；runtime 目录权限为 `0700`，路径保持足够短以容纳
+Unix socket。移除继承的 `GNOME_KEYRING_CONTROL`，不复用用户 keyring 的 control socket。
+需要 Secret Service 时，在该隔离环境中前台启动 `gnome-keyring-daemon --unlock --components=secrets`，
+仅向新建测试 keyring 提供空的合成密码；使用 `gdbus wait` 等待服务注册，不以 sleep 猜测就绪。
+daemon 必须归属本次进程树，并在正常完成、失败和取消时停止、wait 和核对 PID；不能尝试解锁
+或清空用户已有 keyring。可参考现有 `pl-studio-acceptance` 的 `provider_usage` 场景封装。
+
+证据脱敏应保留当前场景的判定信息：安全的 HTTP method/path、凭据 alias、请求计数与错误
+类别，而不是 Authorization 或完整请求正文。通用日志投影可能只保留启动计时；扩展场景时
+核实实际失败原因也能落盘并传播退出码，不能因脱敏而把不同失败都变成不可诊断的空日志。
+
 ## Flutter Driver 操作与取证
 
 1. 使用 Flutter Driver，不用 Computer Use 覆盖 Driver 已支持的交互。优先复用

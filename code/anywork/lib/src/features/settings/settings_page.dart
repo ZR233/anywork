@@ -73,7 +73,7 @@ class _SettingsPageBody extends ConsumerWidget {
 
 /// 把设置壳的 [DefaultTabController] 当前索引同步到 [settingsVisibleTabProvider]。
 ///
-/// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察。
+/// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察，不接线 topic lease。
 /// provider 写入延到微任务，避免在 build/通知阶段直接改 provider。
 class _SettingsTabVisibilitySync extends ConsumerStatefulWidget {
   const _SettingsTabVisibilitySync({required this.child});

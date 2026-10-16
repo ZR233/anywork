@@ -18,6 +18,18 @@ owner。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服
 查询失败仍是本次观察的有效结果，不丢弃其他服务商的新结果，也不升级成所有卡片共享的
 命令错误；只有观察协调或持久化失败才使整个刷新命令失败。
 
+用量检查以必需的 provider ID 为目标，HTTP command 为
+`POST /api/v1/runtime/provider-usage/{provider_id}/check`；只读快照继续按领域查询。
+刷新全部是多个单实例检查的编排，不是等待所有供应商返回后才发布的整批检查。联网阶段
+不持全局配置或用量命令锁，结果在短提交边界合并当前快照，只更新所属实例。不同实例可
+并行并分别发布，同实例同查询身份的重叠检查合并；删除或改变查询输入后旧结果不得写回。
+
+供应商只读 descriptor 的 `usageQueryRevision` 是配置 owner 拥有的非密、按实例查询身份，
+仅在额度查询输入（包括服务地址、preset、有效凭据）改变时推进。该身份与 runtime owner
+epoch 一起解释，不是全局 Settings revision，不随名称、默认路由或在线模型目录观察推进，
+也不持久化为用户配置。不能以 secret 或 secret 哈希作为公开查询身份。自动加载和手动刷新
+均消费同一身份及结果 reducer，Client 需求合同见 [25.7.1](./25-frontend-state.md#2571-供应商用量需求)。
+
 Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由成功受理用户输入推进，
 与普通 `updatedAt` 分离。Rust protocol、FRB DTO、Dart domain 与目录增量均传递同一事实；
 运行观察、标题和配置变更保留该值，不因迟到快照回退。已接受排队输入计入，系统/代理输入、
@@ -121,8 +133,8 @@ topic；Skills 作用域始终携带当前 project identity。订阅生命周期
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
 持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls
 writer 进度；进程级保存诊断不能替代队列状态。年龄是通知时间基线的展示，不驱动接口轮询。
-Provider 用量等外部查询仍由显式检查命令触发，结果通过 canonical 事件/响应更新，不虚构
-第三方推送。
+Provider 用量等外部查询仍由 typed 检查命令触发；供应商标签的自动可见需求也通过该命令
+执行，不在查询或订阅基线中暗中联网。结果通过 canonical 事件/响应更新，不虚构第三方推送。
 
 ## 18.3 Activation
 

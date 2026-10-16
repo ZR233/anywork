@@ -15,7 +15,7 @@ import 'settings_views.dart';
 class SkillsTab extends ConsumerStatefulWidget {
   const SkillsTab({super.key, required this.tabIndex});
 
-  /// 本页在设置壳中的 tab 索引，用于「仅在可见时持有租约」。
+  /// 本页在设置壳中的 tab 索引，用于「仅在可见时做显示观察」。
   final int tabIndex;
 
   @override
@@ -40,7 +40,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     super.dispose();
   }
 
-  /// 变为可见时补一次显式读取；隐藏时释放租约（保留筛选/草稿 UI 状态）。
+  /// 变为可见时补一次显式读取；隐藏时停止显示观察（保留筛选/草稿 UI 状态）。
   void _syncVisibility(bool visible) {
     if (visible == _visibleCache) return;
     _visibleCache = visible;
@@ -55,7 +55,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
 
   @override
   Widget build(BuildContext context) {
-    // 只在 Skills tab 可见时租用当前 project 的 Skills topic；隐藏页不持租约。
+    // 只在 Skills tab 可见时观察当前 project 的 Skills topic；隐藏页不做显示观察。
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     _syncVisibility(visible);
     final selection = ref.watch(settingsSkillsViewProvider);

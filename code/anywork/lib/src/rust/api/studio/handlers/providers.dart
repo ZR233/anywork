@@ -17,8 +17,11 @@ Future<BridgeProviderUsageStateSnapshot> readProviderUsageState() => RustLib
     .api
     .crateApiStudioHandlersProvidersReadProviderUsageState();
 
-Future<BridgeProviderUsageStateSnapshot> checkProviderUsage() =>
-    RustLib.instance.api.crateApiStudioHandlersProvidersCheckProviderUsage();
+Future<BridgeProviderUsageStateSnapshot> checkProviderUsage({
+  required String providerId,
+}) => RustLib.instance.api.crateApiStudioHandlersProvidersCheckProviderUsage(
+  providerId: providerId,
+);
 
 Future<BridgeSkillsStateSnapshot> readSkillsState({
   required String projectId,

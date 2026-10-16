@@ -81,6 +81,10 @@ Programmatic 调用资格由具体工具的声明提供：LSP、只读 Git、已
 
 ## 9.6 MCP 能力声明与租约
 
+Thread 工具装配取得当前已发布 generation 的租约，不等待后台连接或目录准备。尚未完成的
+server 不进入本次冻结目录；新 generation 发布后通过通用热目录刷新更新后续请求。慢或失败
+MCP 不得阻塞创建 Thread、供应商保存或无关服务；此规则对系统与用户 MCP 相同。
+
 MCP resource façade 属于本轮冻结工具目录。Runtime 必须读取 server 在 initialize/discovery 中
 声明的 `resources` capability，只把支持该能力的 server 写入 lease 的 resource assignment；
 没有任何此类 server 时不向模型暴露 `list_mcp_resources`、`list_mcp_resource_templates` 或

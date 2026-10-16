@@ -189,6 +189,7 @@ ProviderSettingsView _providerSettingsFromFrb(
     bearerToken: '',
     hasBearerToken: value.hasBearerToken,
     credentialRequired: value.credentialRequired,
+    usageQueryRevision: value.usageQueryRevision.toInt(),
     defaultModel: value.defaultModel,
     models: models,
     customModels: customModels,

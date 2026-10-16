@@ -77,7 +77,7 @@ pub use provider_usage::{
     ProviderUsageCommand, ProviderUsageData, ProviderUsageRecord, ProviderUsageState,
     ProviderUsageTransitionDecision, ProviderUsageTransitionError, ReadyProviderUsage,
     UnsupportedProviderUsage, ZhipuCodingPlanUsage, ZhipuQuotaLimit, ZhipuQuotaWindow,
-    ZhipuToolUsageDetail, provider_usage_records, zhipu_limit_by_window,
+    ZhipuToolUsageDetail, zhipu_limit_by_window,
 };
 pub use studio::{
     AttachmentRecord, ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,

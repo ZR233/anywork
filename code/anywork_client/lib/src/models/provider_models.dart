@@ -230,6 +230,7 @@ class ProviderSettingsView {
     this.bearerToken = '',
     this.hasBearerToken = false,
     this.credentialRequired = true,
+    this.usageQueryRevision = 0,
     required this.defaultModel,
     required this.models,
     this.defaultModels = const [],
@@ -262,6 +263,7 @@ class ProviderSettingsView {
   final String bearerToken;
   final bool hasBearerToken;
   final bool credentialRequired;
+  final int usageQueryRevision;
   final String defaultModel;
   final List<ProviderModelView> models;
   final List<ProviderModelView> defaultModels;
@@ -327,6 +329,7 @@ class ProviderSettingsView {
     String? bearerToken,
     bool? hasBearerToken,
     bool? credentialRequired,
+    int? usageQueryRevision,
     String? defaultModel,
     List<ProviderModelView>? models,
     List<ProviderModelView>? defaultModels,
@@ -359,6 +362,7 @@ class ProviderSettingsView {
       bearerToken: bearerToken ?? this.bearerToken,
       hasBearerToken: hasBearerToken ?? this.hasBearerToken,
       credentialRequired: credentialRequired ?? this.credentialRequired,
+      usageQueryRevision: usageQueryRevision ?? this.usageQueryRevision,
       defaultModel: defaultModel ?? this.defaultModel,
       models: models ?? this.models,
       defaultModels: defaultModels ?? this.defaultModels,
@@ -472,6 +476,7 @@ class ProviderPresetView {
       baseUrl: baseUrl,
       bearerToken: '',
       hasBearerToken: false,
+      usageQueryRevision: 0,
       defaultModel: suggestedModel,
       models: models,
       defaultModels: models,

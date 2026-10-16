@@ -470,8 +470,13 @@ class _Probe {
 
     final state = await snapshot();
     final threadId = workspaceOf(state)?['threadId'];
+    final project = state['project'];
+    final projectId = project is Map ? project['id'] : null;
     if (threadId is! String || threadId.isEmpty) {
       throw StateError('canonical Thread id missing before saving observed');
+    }
+    if (projectId is! String || projectId.isEmpty) {
+      throw StateError('canonical project id missing before saving observed');
     }
     final settings = await searchSettings();
     _finalSettings = settings;
@@ -479,6 +484,7 @@ class _Probe {
     await _observed.writeAsString(
       jsonEncode({
         'threadId': threadId,
+        'projectId': projectId,
         'settings': settings,
         'settingsFingerprint': _settingsFingerprint(settings),
       }),
@@ -489,6 +495,16 @@ class _Probe {
     final observed =
         jsonDecode(await _observed.readAsString()) as Map<String, dynamic>;
     final threadId = observed['threadId'] as String;
+    final projectId = observed['projectId'] as String;
+    // A fresh shell intentionally starts without an opened project. Selecting
+    // its real row expands the directory before any Thread row can be found.
+    await _tap('project-row-$projectId');
+    await _waitUntil(
+      (state) =>
+          (state['navigation'] as Map?)?['selectedProjectId'] == projectId,
+      'restored-project-selection',
+      timeout: const Duration(seconds: 30),
+    );
     await _requireKey(
       'thread-row-$threadId',
       timeout: const Duration(seconds: 120),
@@ -1037,7 +1053,13 @@ class _Probe {
   /// The menu must expose the item key; the probe never dismisses a menu with a
   /// stray key to fall back to a stale value.
   Future<void> _selectOption(String fieldKey, String itemKey) async {
-    await _tapControl(fieldKey);
+    await _focus(fieldKey);
+    await _requireKey(fieldKey);
+    // The editable body only focuses the text field on Linux. Activate the
+    // real dropdown arrow, not its enclosing field's geometric center.
+    await driver.rawTap(
+      find.descendant(of: _key(fieldKey), matching: find.byType('IconButton')),
+    );
     await _requireKey(itemKey, timeout: const Duration(seconds: 15));
     await driver.rawTap(_key(itemKey));
     await Future<void>.delayed(const Duration(milliseconds: 300));

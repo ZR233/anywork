@@ -1262,7 +1262,7 @@ impl StudioRuntime {
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
-        background_task::signal(&self.external_runtimes.mcp_startup_reconcile).await;
+        background_task::signal(&self.external_runtimes.mcp_config_watcher).await;
         background_task::signal(&self.external_runtimes.mcp_health_watcher).await;
         background_task::signal(&self.external_runtimes.lsp_state_watcher).await;
         background_task::signal(&self.persistence_observer).await;
@@ -1390,7 +1390,7 @@ impl StudioRuntime {
             stage_order::MCP_STARTUP_RECONCILE,
             "mcpStartupReconcile",
             Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_mcp_startup_reconcile().await },
+            |runtime| async move { runtime.stop_mcp_config_watcher().await },
         ));
         remote_dependents.push(self.stage_branch(
             budget,

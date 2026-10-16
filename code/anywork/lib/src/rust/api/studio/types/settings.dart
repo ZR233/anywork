@@ -869,6 +869,7 @@ class BridgeProviderSettingsDto {
   final String name;
   final String baseUrl;
   final bool hasBearerToken;
+  final BigInt usageQueryRevision;
   final bool credentialRequired;
   final String capabilitySource;
   final bool hostedWebSearch;
@@ -889,6 +890,7 @@ class BridgeProviderSettingsDto {
     required this.name,
     required this.baseUrl,
     required this.hasBearerToken,
+    required this.usageQueryRevision,
     required this.credentialRequired,
     required this.capabilitySource,
     required this.hostedWebSearch,
@@ -911,6 +913,7 @@ class BridgeProviderSettingsDto {
       name.hashCode ^
       baseUrl.hashCode ^
       hasBearerToken.hashCode ^
+      usageQueryRevision.hashCode ^
       credentialRequired.hashCode ^
       capabilitySource.hashCode ^
       hostedWebSearch.hashCode ^
@@ -935,6 +938,7 @@ class BridgeProviderSettingsDto {
           name == other.name &&
           baseUrl == other.baseUrl &&
           hasBearerToken == other.hasBearerToken &&
+          usageQueryRevision == other.usageQueryRevision &&
           credentialRequired == other.credentialRequired &&
           capabilitySource == other.capabilitySource &&
           hostedWebSearch == other.hostedWebSearch &&

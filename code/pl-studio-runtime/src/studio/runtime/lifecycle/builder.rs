@@ -49,7 +49,11 @@ impl StudioRuntime {
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
-        let provider_usage = ProviderUsageRuntime::new(store.clone(), product_events.clone());
+        let provider_usage = ProviderUsageRuntime::new(
+            store.clone(),
+            config_runtime.clone(),
+            product_events.clone(),
+        );
         let updater = StudioUpdateRuntime::new(store.clone(), product_events.clone())?;
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
@@ -128,7 +132,7 @@ impl StudioRuntime {
             external_runtimes: StudioExternalRuntimes {
                 mcp,
                 mcp_state,
-                mcp_startup_reconcile: Default::default(),
+                mcp_config_watcher: Default::default(),
                 mcp_health_watcher: Default::default(),
                 lsp,
                 lsp_state,

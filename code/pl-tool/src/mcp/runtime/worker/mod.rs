@@ -7,13 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_protocol::{McpAvailabilityDescriptor, McpHealthSnapshot, PureError, Result};
 use rmcp::model::Tool;
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc};
 
 use super::{LeaseSnapshot, McpGeneration, McpResetScope, RuntimeCommand, ShutdownCompletion};
 use crate::mcp::McpConnector;
@@ -33,13 +32,6 @@ use server::{
     RuntimeGeneration, assign_tool_descriptors, reset_failed, server_fingerprint, unique_sessions,
 };
 use tools::{configured_startup_timeout, filter_tool_definitions};
-
-/// `AcquireLease` 等待进行中 MCP preparation 完成的有界上限。
-///
-/// 启动路径的 MCP reconcile 已在后台执行，turn 开始时若探测尚未完成，
-/// lease 请求最多等待该时长以拿到包含新工具的 generation；超时后回落
-/// 当前 generation，避免首个 turn 被慢 server 无限阻塞。
-const LEASE_ACQUIRE_WAIT: Duration = Duration::from_secs(20);
 
 pub(super) async fn run(
     connector: McpConnector,
@@ -61,8 +53,6 @@ struct RuntimeWorker {
     generations: BTreeMap<McpGeneration, RuntimeGeneration>,
     current: McpGeneration,
     next_generation: u64,
-    /// preparation 完成信号，用于 `AcquireLease` 的有界等待。
-    preparation_notify: Arc<Notify>,
     /// Single-owned closing completion shared with every runtime handle.
     shutdown_completion: ShutdownCompletion,
 }
@@ -106,7 +96,6 @@ impl RuntimeWorker {
                 .collect(),
             current,
             next_generation: 1,
-            preparation_notify: Arc::new(Notify::new()),
             shutdown_completion,
         }
     }
@@ -141,13 +130,11 @@ impl RuntimeWorker {
                         self.activate_generation(generation).await;
                         Ok(())
                     };
-                    self.preparation_notify.notify_waiters();
                     let _ = active.reply.send(result);
                 }
                 candidate = await_tool_refresh(&mut tool_refresh), if tool_refresh.is_some() => {
                     tool_refresh = None;
                     self.apply_tool_refresh(candidate, &mut pending_tool_refreshes).await;
-                    self.preparation_notify.notify_waiters();
                 }
                 command = self.receiver.recv() => {
                     let Some(command) = command else {
@@ -181,25 +168,9 @@ impl RuntimeWorker {
                     });
                 }
                 RuntimeCommand::AcquireLease { reply } => {
-                    if preparation.is_some()
-                        || tool_refresh.is_some()
-                        || !pending.is_empty()
-                        || !pending_tool_refreshes.is_empty()
-                    {
-                        let notify = self.preparation_notify.clone();
-                        let commands = self.commands.clone();
-                        tokio::spawn(async move {
-                            let _ =
-                                tokio::time::timeout(LEASE_ACQUIRE_WAIT, notify.notified()).await;
-                            let _ =
-                                commands.send(RuntimeCommand::AcquireLeaseImmediate { reply });
-                        });
-                    } else {
+                    // Preparation is independent of a Thread's admission. A later
+                    // generation update refreshes its tool directory when ready.
                         let _ = reply.send(self.acquire_lease());
-                    }
-                }
-                RuntimeCommand::AcquireLeaseImmediate { reply } => {
-                    let _ = reply.send(self.acquire_lease());
                 }
                 RuntimeCommand::ReleaseLease { generation } => {
                     self.release_lease(generation).await;

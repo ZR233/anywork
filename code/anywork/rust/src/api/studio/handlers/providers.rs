@@ -15,10 +15,12 @@ pub async fn read_provider_usage_state() -> Result<BridgeProviderUsageStateSnaps
     ))
 }
 
-pub async fn check_provider_usage() -> Result<BridgeProviderUsageStateSnapshot, BridgeError> {
+pub async fn check_provider_usage(
+    provider_id: String,
+) -> Result<BridgeProviderUsageStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(provider_usage_state(
-        bridge.studio.check_provider_usage().await?,
+        bridge.studio.check_provider_usage(&provider_id).await?,
     ))
 }
 

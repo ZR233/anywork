@@ -1,23 +1,27 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/provider_usage_queries.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
 import '../../l10n/studio_l10n.dart';
 import 'settings_provider_details.dart';
+import 'settings_provider_draft_save.dart';
 import 'settings_provider_drafts.dart';
 import 'settings_provider_editor.dart';
 import 'settings_provider_list.dart';
+import 'settings_provider_usage_demand.dart';
 import 'settings_scope.dart';
-import 'settings_usage_refresh.dart';
 import 'settings_views.dart';
 
 class ProvidersTab extends ConsumerStatefulWidget {
   const ProvidersTab({super.key, required this.tabIndex});
 
-  /// Tab visibility controls observations; Client retains its topic owner.
+  /// Tab visibility controls display observation; Client retains its topic owner.
   final int tabIndex;
 
   @override
@@ -30,13 +34,58 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   ProviderDraft? _draft;
   GlobalKey<FormState> _draftFormKey = GlobalKey<FormState>();
   bool _showDetails = false;
-  bool _saving = false;
   String? _draftError;
   String? _refreshingCatalog;
-  final SettingsUsageRefresh _usageRefresh = SettingsUsageRefresh();
+  final ProviderDraftSaveSession _saveSession = ProviderDraftSaveSession();
+  final ProviderUsageAutoDemand _usageDemand = ProviderUsageAutoDemand();
+  ProviderSubscription<bool>? _visibilitySubscription;
+  ProviderSubscription<ProviderUsageQueryIdentitySnapshot>?
+  _identitySubscription;
 
   SettingsProvidersView get _settings =>
       ref.read(settingsProvidersViewProvider);
+
+  bool get _visible => ref.read(settingsVisibleTabProvider) == widget.tabIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _visibilitySubscription = ref.listenManual<bool>(
+      settingsVisibleTabProvider.select((index) => index == widget.tabIndex),
+      (previous, next) => _scheduleUsageDemand(),
+      fireImmediately: true,
+    );
+    _identitySubscription = ref
+        .listenManual<ProviderUsageQueryIdentitySnapshot>(
+          settingsProviderUsageQueryIdentitiesProvider,
+          (previous, next) => _scheduleUsageDemand(),
+          fireImmediately: true,
+        );
+  }
+
+  @override
+  void dispose() {
+    _visibilitySubscription?.close();
+    _identitySubscription?.close();
+    super.dispose();
+  }
+
+  void _scheduleUsageDemand() {
+    scheduleMicrotask(_syncUsageDemand);
+  }
+
+  void _syncUsageDemand() {
+    if (!mounted) return;
+    final queries = ref.read(anyworkClientProvider).providerUsageQueries;
+    _usageDemand.apply(
+      visible: _visible,
+      providers: ref
+          .read(settingsProviderUsageQueryIdentitiesProvider)
+          .identities,
+      refresh: (providerId) =>
+          ignoreProviderUsageQueryErrors(queries.refresh(providerId)),
+    );
+  }
 
   Future<void> _refreshCatalog(String providerId) async {
     setState(() => _refreshingCatalog = providerId);
@@ -69,7 +118,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   @override
   Widget build(BuildContext context) {
-    // The Connector observes usage only while visible; the Client owns demand.
+    // Visibility only drives display observation; Client retains the topic.
     final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     watchSettingsScope(
       ref,
@@ -92,13 +141,9 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     final usageByProvider = {
       for (final usage in canonicalUsages) usage.providerId: usage,
     };
-    final usageErrorsByProviderId = _usageRefresh.state
-        .visibleErrorsByProviderId(
-          providerIds: _settings.providers.map((provider) => provider.id),
-          canonicalUsages: canonicalUsages,
-          storeRevision: usageView.revision,
-        );
-    final loadingProviderIds = _usageRefresh.state.loadingProviderIds;
+    final queryState = ref.watch(providerUsageQueriesProvider);
+    final usageErrorsByProviderId = queryState.errorsByProviderId;
+    final loadingProviderIds = queryState.loadingProviderIds;
     if (_draft != null) {
       return Padding(
         padding: const EdgeInsets.all(20),
@@ -114,9 +159,13 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
               formKey: _draftFormKey,
               draft: _draft!,
               presets: catalog.presets,
-              saving: _saving,
+              saving: _saveSession.isSaving,
               error: _draftError,
-              onCancel: () => setState(() => _draft = null),
+              onCancel: () => setState(() {
+                _saveSession.abandon();
+                _draft = null;
+                _draftError = null;
+              }),
               onSave: _saveDraft,
               onChangeTemplate: _changeDraftTemplate,
               onUpdate: _updateDraft,
@@ -144,7 +193,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
           : () => _refreshCatalog(selected.id),
       onRefreshUsage: selected == null
           ? null
-          : () => _refreshUsages(providerId: selected.id),
+          : () => unawaited(_refreshUsages(providerId: selected.id)),
     );
     final list = ProviderList(
       providers: filtered,
@@ -162,7 +211,8 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       }),
       onSetDefault: _setDefaultProvider,
       onRefreshAll: _refreshUsages,
-      onRefreshProvider: (provider) => _refreshUsages(providerId: provider.id),
+      onRefreshProvider: (provider) =>
+          unawaited(_refreshUsages(providerId: provider.id)),
       onEdit: _startEdit,
       onDelete: _settings.providers.length <= 1 ? null : _removeProvider,
     );
@@ -240,6 +290,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       return;
     }
     setState(() {
+      _saveSession.abandon();
       _selectedProviderId = id;
       _showDetails = false;
       _draft = draft;
@@ -250,6 +301,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   void _startEdit(ProviderSettingsView provider) {
     setState(() {
+      _saveSession.abandon();
       _selectedProviderId = provider.id;
       _showDetails = false;
       _draft = ProviderDraft.edit(provider);
@@ -396,17 +448,15 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   Future<void> _saveDraft() async {
     final current = _draft;
-    if (current == null || _saving) {
+    if (current == null || _saveSession.isSaving) {
       return;
     }
     // 无效阈值输入必须阻止保存并保留草稿，不得静默用旧值保存成功。
     if (_draftFormKey.currentState?.validate() == false) {
       return;
     }
-    setState(() {
-      _saving = true;
-      _draftError = null;
-    });
+    final epoch = _saveSession.begin();
+    setState(() => _draftError = null);
     try {
       final provider = ProviderCommandBuilder.normalizeProvider(
         current.provider,
@@ -437,6 +487,10 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
             .settingsCommands
             .setDefaultProvider(provider.id);
       }
+      if (!_saveSession.owns(epoch)) {
+        return;
+      }
+      _saveSession.succeed(epoch);
       if (mounted) {
         setState(() {
           _selectedProviderId = provider.id;
@@ -444,14 +498,12 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
           _showDetails = false;
         });
       }
-      await _refreshUsages(providerId: provider.id);
     } catch (error) {
-      if (mounted) {
-        setState(() => _draftError = error.toString());
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _saving = false);
+      if (_saveSession.owns(epoch)) {
+        _saveSession.fail(epoch);
+        if (mounted) {
+          setState(() => _draftError = error.toString());
+        }
       }
     }
   }
@@ -490,7 +542,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         }
       });
     }
-    await _refreshUsages();
+    ref.read(anyworkClientProvider).providerUsageQueries.forget(provider.id);
   }
 
   Future<void> _setDefaultProvider(ProviderSettingsView provider) async {
@@ -506,38 +558,15 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         'expected ${provider.id}.',
       );
     }
-    await _refreshUsages(providerId: provider.id);
   }
 
   Future<void> _refreshUsages({String? providerId}) async {
-    final providers = ref.read(settingsProvidersViewProvider).providers;
-    final providerIds = providerId == null
-        ? providers.map((provider) => provider.id).toSet()
-        : {providerId};
-    await _usageRefresh.refresh(
-      providerId: providerId,
-      providerIds: providerIds,
-      readStoreRevision: () => ref.read(settingsUsageViewProvider).revision,
-      readUsageRevisions: () {
-        final usages = ref.read(settingsUsageViewProvider).usages;
-        return {
-          for (final id in providerIds)
-            id:
-                usages
-                    .where((usage) => usage.providerId == id)
-                    .firstOrNull
-                    ?.revision ??
-                -1,
-        };
-      },
-      refreshCanonical: () => ref
-          .read(anyworkClientProvider)
-          .directoryCommands
-          .refreshProviderUsages(),
-      onChanged: () {
-        if (mounted) setState(() {});
-      },
-    );
+    final queries = ref.read(anyworkClientProvider).providerUsageQueries;
+    if (providerId == null) {
+      await queries.refreshAll();
+      return;
+    }
+    ignoreProviderUsageQueryErrors(queries.refresh(providerId));
   }
 
   List<ProviderSettingsView> get _canonicalProviders => _settings.providers;

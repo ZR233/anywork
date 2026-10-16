@@ -219,7 +219,7 @@ pub struct StudioRuntime {
 struct StudioExternalRuntimes {
     mcp: McpRuntimeHandle,
     mcp_state: mcp_health::McpStateRuntime,
-    mcp_startup_reconcile: background_task::BackgroundTaskSlot,
+    mcp_config_watcher: background_task::BackgroundTaskSlot,
     mcp_health_watcher: background_task::BackgroundTaskSlot,
     lsp: pl_lsp::runtime::LspRuntimeRegistry,
     lsp_state: lsp_state::LspStateRuntime,

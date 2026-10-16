@@ -66,6 +66,8 @@ pub struct StudioProviderSettings {
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
+    /// Owner-local, non-secret identity of this instance's usage query inputs.
+    pub usage_query_revision: u64,
     pub credential_required: bool,
     pub capability_source: String,
     pub hosted_web_search: bool,

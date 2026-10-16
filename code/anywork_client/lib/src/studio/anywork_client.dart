@@ -7,6 +7,7 @@ import '../../studio_ports.dart';
 import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
+import 'commands/provider_usage_queries.dart';
 import 'commands/settings_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
@@ -48,6 +49,7 @@ class AnyworkClient {
     mutations = MutationBoard(clientId: clientId, budget: this.budget);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
+    providerUsageQueries = ProviderUsageQueries(this);
     settingsCommands = SettingsCommands(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
@@ -98,6 +100,7 @@ class AnyworkClient {
   late final WorkspaceController workspace;
   late final StudioChannels channels;
   late final DirectoryCommands directoryCommands;
+  late final ProviderUsageQueries providerUsageQueries;
   late final SettingsCommands settingsCommands;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
@@ -590,6 +593,11 @@ class AnyworkClient {
       _joinOwner('drafts', draftWork, deadline),
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
+      _joinOwner(
+        'provider-usage-queries',
+        providerUsageQueries.close(),
+        deadline,
+      ),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),
       _joinOwner('queries', _queries.join(), deadline),

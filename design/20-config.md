@@ -71,6 +71,11 @@ Provider 编辑和已有 Thread 的 model route 是有意保留的资源级原�
 Mode 或 role 的旧快照。读响应可以为了减少往返同时返回 config/catalog 两个快照，但消费端必须
 按各自 revision 合并，读聚合不改变写入粒度。
 
+所有 provider preset 使用相同的配置提交边界：凭据与 desired config 提交、canonical 状态发布
+后即可返回，不等待 MCP 连接、模型发现或额度网络请求。后续服务可用性由相应领域 owner 独立
+发布，不把服务探测失败改报为已提交配置的保存失败；删除、设默认和显式重载同样不串联服务
+联网等待。供应商页自动额度查询的需求与失效规则见 [25](./25-frontend-state.md#2571-供应商用量需求)。
+
 ## 20.2 配置职责
 
 每个 provider 的模型目录独立保存按模型 slug 索引的压缩阈值覆盖值，bundled、附加与 explicit
@@ -319,19 +324,24 @@ transport 或 endpoint，也不允许新增 server）。
 `streamableHttp`）。stdio server 必须配置 `command`、`args`、`env`，可选 `cwd`；
 streamableHttp server 必须配置 `url` 与 `headers`，可选 `bearer_token_env_var`。
 
-启动后由 MCP runtime owner 显式 reconcile 启用且凭据完整的 server：连接建立由 connector
+启动后由 MCP runtime owner 观察 canonical 配置并后台 reconcile 启用且凭据完整的 server：连接建立由 connector
 负责，PL 统一维护配置 fingerprint、增量 reconcile、工具命名、冲突检查、健康状态和
 generation 原子替换；Studio 只负责组合配置。相同 effective fingerprint 的 reconcile 完全
 no-op；手动重连走独立的单 server/All reset；reset 候选失败时保留当前 live generation；
-shutdown 是不可恢复终止态。
+shutdown 是不可恢复终止态。配置观察覆盖启动、保存、删除、凭据清空/轮换与显式重载；
+在途准备期间的新变化可合并，但必须最终收敛到最新配置，不能因已有任务而漏掉变化。
+协调任务由 runtime 持有并参与停止与 join，失败只进入 MCP 领域的可观察状态。它不属于
+供应商保存事务，也不要求任何模型 Thread 存在或使用特定 provider。
 
 内置 Zhipu Coding Plan MCP server 固定为：`zhipu_search`、`zhipu_reader`、`zhipu_zread`
 （Streamable HTTP，官方对应 endpoint）与 `zhipu_vision`（stdio，经 npm 启动，Windows 运行
-时从标准 npm 安装布局解析 node + CLI，配置和状态中不写平台后缀）。这些内置 server 优先
-复用 Zhipu Coding Plan provider 的 bearer token 作为 Coding Plan key；若不存在 Coding
-Plan provider，则兼容回退到普通 Zhipu provider 的 token。缺少可用 token 时内置 server
-的配置状态为缺少凭据且不进入健康探测；检测到 token 时，未显式配置状态的内置 server
-默认启用并进入后台探测，已被用户禁用的保持禁用。
+时从标准 npm 安装布局解析 node + CLI，配置和状态中不写平台后缀）。这些内置 server
+只复用 `preset = zhipu-coding-plan` 的有效 bearer token 作为 Coding Plan key；
+存在多个实例时按 provider ID 稳定排序选择首个有有效凭据的实例，不从普通 Zhipu preset、
+域名或 Thread route 推断凭据来源。解析优先级遵循 20.11。缺少可用 token 时内置 server
+显示缺少凭据，不连接、不发现，也不向模型注册可调用工具；检测到 token 时，未显式配置
+状态的内置 server 默认启用并进入通用后台探测，已被用户禁用的保持禁用。系统 MCP 与用户
+MCP 共用同一运行时、健康、generation 和租约机制，不建立厂商专用 Thread 或搜索后端。
 
 模型可见的 MCP tool 名称形如 `mcp__{server_id}__{tool_name}`。PL 对 server id 和远端
 tool name 统一规范化，合成名称最长 64 个字符，冲突时追加稳定 hash 后缀；命名规则属于

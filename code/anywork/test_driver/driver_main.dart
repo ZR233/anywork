@@ -11,6 +11,7 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/l10n/studio_l10n.dart';
 
 import 'package:anywork/src/platform/error_log.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
@@ -232,6 +233,8 @@ Future<String> _handleDriverData(String? message) async {
       return _handleSearchSettings();
     case 'search-mcp-state':
       return _handleSearchMcpState();
+    case 'provider-usage-state':
+      return _providerUsageStateJson();
     case 'shutdown':
       try {
         final report = await (_shutdownTask ??= _runShutdown());
@@ -697,6 +700,74 @@ Future<String> _handleSearchSettings() async {
     },
   });
 }
+
+/// Read-only typed Client projection; no request, reducer or test write path.
+String _providerUsageStateJson() {
+  BuildContext? settingsContext;
+  final root = WidgetsBinding.instance.rootElement;
+  if (root != null) {
+    _visitElements(root, (element) {
+      if (element.widget.runtimeType.toString() == 'ProviderList' ||
+          element.widget.runtimeType.toString() == 'ProviderEditor') {
+        settingsContext = element;
+      }
+    });
+  }
+  final labels = settingsContext?.l10n;
+  final usage = _client.providerUsage.state.value;
+  final queries = _client.providerUsageQueries.state;
+  return jsonEncode({
+    'providers': [
+      for (final provider
+          in _client.settings.state.canonical?.providers ??
+              const <ProviderSettingsView>[])
+        {
+          'id': provider.id,
+          'name': provider.name,
+          'preset': provider.templateKind,
+          'usageQueryRevision': provider.usageQueryRevision,
+          'hasBearerToken': provider.hasBearerToken,
+        },
+    ],
+    'revision': usage?.revision,
+    'usages': [
+      for (final record in usage?.usages ?? const <ProviderUsageView>[])
+        {'id': record.providerId, ..._providerUsageJson(record.state)},
+    ],
+    'loadingProviderIds': queries.loadingProviderIds.toList(),
+    'errorsByProviderId': queries.errorsByProviderId,
+    if (labels != null)
+      'labels': {
+        'displayName': labels.settingsDisplayName,
+        'delete': labels.settingsDeleteProvider,
+        'setDefault': labels.settingsSetAsDefaultProvider,
+      },
+  });
+}
+
+Map<String, Object?> _providerUsageJson(ProviderUsageStateView state) =>
+    switch (state) {
+      UnsupportedProviderUsageView() => {'kind': 'unsupported'},
+      MissingCredentialProviderUsageView() => {'kind': 'missingCredential'},
+      FailedProviderUsageView(:final code, :final retryable) => {
+        'kind': 'failed',
+        'code': code,
+        'retryable': retryable,
+      },
+      ReadyProviderUsageView(:final data) => {
+        'kind': 'ready',
+        ...switch (data) {
+          DeepSeekBalanceProviderUsageView(:final balance) => {
+            'balances': [
+              for (final balance in balance.balances) balance.totalBalance,
+            ],
+          },
+          ZhipuCodingPlanProviderUsageView(:final codingPlan) => {
+            'windows': [for (final limit in codingPlan.limits) limit.window],
+          },
+        },
+      },
+    };
 
 Future<String> _handleSearchMcpState() async {
   final mcp = _client.mcp.state.value;

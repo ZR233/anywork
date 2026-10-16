@@ -76,8 +76,7 @@ const BUILTIN_MCP_SERVERS: &[BuiltinMcpServerDefinition] = &[
 ];
 
 const ZHIPU_CREDENTIAL: BuiltinMcpCredentialSource = BuiltinMcpCredentialSource::Provider {
-    preset_ids: &["zhipu-coding-plan", "zhipu"],
-    endpoint_hosts: &["open.bigmodel.cn"],
+    preset_ids: &["zhipu-coding-plan"],
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -193,12 +192,11 @@ pub fn effective_mcp_servers(
                 source_detail: Some(definition.source_detail.to_string()),
                 status_kind,
                 status_message: match status_kind {
-                    McpServerStatusKind::Enabled => Some(
-                        "Using the configured Zhipu Coding Plan or Zhipu provider token"
-                            .to_string(),
-                    ),
+                    McpServerStatusKind::Enabled => {
+                        Some("Using the configured Zhipu Coding Plan provider token".to_string())
+                    }
                     McpServerStatusKind::MissingCredential => Some(
-                        "Configure a Zhipu Coding Plan or Zhipu provider token to enable this server"
+                        "Configure a Zhipu Coding Plan provider token to enable this server"
                             .to_string(),
                     ),
                     McpServerStatusKind::Disabled => None,
@@ -249,18 +247,12 @@ struct BuiltinMcpServerDefinition {
 
 #[derive(Debug, Clone, Copy)]
 enum BuiltinMcpCredentialSource {
-    Provider {
-        preset_ids: &'static [&'static str],
-        endpoint_hosts: &'static [&'static str],
-    },
+    Provider { preset_ids: &'static [&'static str] },
 }
 
 impl BuiltinMcpCredentialSource {
     fn resolve(self, models: &pl_model::config::AgentModelConfig) -> Option<String> {
-        let Self::Provider {
-            preset_ids,
-            endpoint_hosts,
-        } = self;
+        let Self::Provider { preset_ids } = self;
         models
             .providers
             .values()
@@ -270,17 +262,6 @@ impl BuiltinMcpCredentialSource {
                     .is_some_and(|preset| preset_ids.contains(&preset.as_str()))
             })
             .find_map(pl_model::config::ProviderConfig::resolved_bearer_token)
-            .or_else(|| {
-                models.providers.values().find_map(|provider| {
-                    let matches_endpoint = reqwest::Url::parse(&provider.base_url)
-                        .ok()
-                        .and_then(|url| url.host_str().map(str::to_string))
-                        .is_some_and(|host| endpoint_hosts.contains(&host.as_str()));
-                    matches_endpoint
-                        .then(|| provider.resolved_bearer_token())
-                        .flatten()
-                })
-            })
     }
 }
 

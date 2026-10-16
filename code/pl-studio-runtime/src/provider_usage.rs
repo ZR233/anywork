@@ -10,13 +10,11 @@ pub use state::{
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use futures::future::join_all;
 use pl_model::provider::ProviderEndpoint;
 use pl_protocol::{PureError, StateError};
 use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::Value;
 
-use crate::config::StudioConfig;
 use crate::config_editor::provider_template_kind;
 use crate::studio::unix_seconds;
 use pl_model::config::ProviderConfig;
@@ -498,35 +496,11 @@ pub enum ProviderUsageData {
     ZhipuCodingPlan(ZhipuCodingPlanUsage),
 }
 
-pub async fn provider_usage_records(
-    config: &StudioConfig,
-    previous: &[ProviderUsageRecord],
-    operation_id: &str,
-) -> Result<Vec<ProviderUsageRecord>, ProviderUsageTransitionError> {
-    let previous = previous
-        .iter()
-        .map(|record| (record.provider_id.clone(), record.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let futures = config
-        .models
-        .providers
-        .iter()
-        .map(|(provider_id, provider)| {
-            let record = previous
-                .get(provider_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| ProviderUsageRecord::new(provider_id.to_string()));
-            provider_usage_record(record, provider.clone(), operation_id.to_string())
-        });
-    join_all(futures).await.into_iter().collect()
-}
-
-async fn provider_usage_record(
+pub(crate) async fn query_provider_usage(
     record: ProviderUsageRecord,
     provider: ProviderConfig,
     operation_id: String,
 ) -> Result<ProviderUsageRecord, ProviderUsageTransitionError> {
-    let observed_at = unix_seconds();
     let state = match provider_template_kind(&provider) {
         Ok(kind) => match kind.as_ref().map(|kind| kind.key()) {
             Some("deepseek") => provider_usage_data(provider, query_deepseek).await,
@@ -543,7 +517,7 @@ async fn provider_usage_record(
         .decide(ProviderUsageCommand::Observe {
             expected_revision: record.revision(),
             operation_id,
-            observed_at,
+            observed_at: unix_seconds(),
             state,
         })
         .map(|decision| decision.next_state)

@@ -141,12 +141,15 @@ pub async fn remove_provider(
     input: RemoveProviderInput,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(settings_command_reply(bridge.studio.remove_provider(
-        pl_protocol::studio::RemoveProviderRequest {
-            operation_id,
-            expected_revision: expected_settings_revision,
-            provider_id,
-            replacement_provider_id: input.replacement_provider_id,
-        },
-    )?))
+    Ok(settings_command_reply(
+        bridge
+            .studio
+            .remove_provider(pl_protocol::studio::RemoveProviderRequest {
+                operation_id,
+                expected_revision: expected_settings_revision,
+                provider_id,
+                replacement_provider_id: input.replacement_provider_id,
+            })
+            .await?,
+    ))
 }

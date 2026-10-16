@@ -49,11 +49,16 @@ pub struct ConfigRuntimeSnapshot {
     pub updated_at: i64,
     pub config: StudioConfig,
     canonical_config: StudioConfig,
+    usage_query_revisions: BTreeMap<ProviderId, u64>,
 }
 
 impl ConfigRuntimeSnapshot {
     pub(crate) fn canonical_config(&self) -> &StudioConfig {
         &self.canonical_config
+    }
+
+    pub(crate) fn usage_query_revision(&self, provider: &ProviderId) -> Option<u64> {
+        self.usage_query_revisions.get(provider).copied()
     }
 }
 
@@ -132,6 +137,13 @@ impl ConfigRuntime {
                     revision: 1,
                     updated_at: unix_seconds(),
                     config: config.clone(),
+                    usage_query_revisions: config
+                        .models
+                        .providers
+                        .keys()
+                        .cloned()
+                        .map(|id| (id, 1))
+                        .collect(),
                     canonical_config: desired,
                 },
                 catalog: ModelCatalogRuntimeSnapshot {
@@ -151,6 +163,22 @@ impl ConfigRuntime {
             .read()
             .map(|state| state.snapshot.clone())
             .map_err(|_| config_runtime_poisoned())
+    }
+
+    /// Commits an in-memory observation at the same boundary as input invalidation.
+    /// The callback must not await, perform IO, or re-enter this config owner.
+    pub(crate) fn if_usage_query_current(
+        &self,
+        provider: &ProviderId,
+        revision: u64,
+        commit: impl FnOnce(),
+    ) -> ConfigRuntimeResult<bool> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        if state.closing || state.snapshot.usage_query_revision(provider) != Some(revision) {
+            return Ok(false);
+        }
+        commit();
+        Ok(true)
     }
 
     /// 返回独立的模型目录 snapshot，不访问磁盘。
@@ -249,6 +277,7 @@ impl ConfigRuntime {
             updated_at: unix_seconds(),
             config: current.config,
             canonical_config: current.canonical_config,
+            usage_query_revisions: current.usage_query_revisions,
         };
         state.snapshot = next.clone();
         drop(state);
@@ -316,6 +345,7 @@ impl ConfigRuntime {
             updated_at: unix_seconds(),
             config: effective.clone(),
             canonical_config: next_config.clone(),
+            usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
             || effective.models.providers != current.config.models.providers;
@@ -367,6 +397,7 @@ impl ConfigRuntime {
             updated_at: unix_seconds(),
             config: config.clone(),
             canonical_config: desired.clone(),
+            usage_query_revisions: next_usage_query_revisions(&current, &config),
         };
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: current_catalog.revision.saturating_add(1),
@@ -384,6 +415,36 @@ impl ConfigRuntime {
         self.profiles.adopt_scan(self.store.paths(), &next.config);
         Ok(next)
     }
+}
+
+fn next_usage_query_revisions(
+    previous: &ConfigRuntimeSnapshot,
+    config: &StudioConfig,
+) -> BTreeMap<ProviderId, u64> {
+    config
+        .models
+        .providers
+        .iter()
+        .map(|(id, provider)| {
+            let unchanged = previous.config.models.providers.get(id).is_some_and(|old| {
+                old.adapter == provider.adapter
+                    && old.preset_id() == provider.preset_id()
+                    && old.base_url == provider.base_url
+                    && old.http_headers == provider.http_headers
+                    && old.resolved_bearer_token() == provider.resolved_bearer_token()
+            });
+            let revision = if unchanged {
+                previous
+                    .usage_query_revision(id)
+                    .unwrap_or(previous.revision)
+            } else {
+                // Use a fresh owner-local waterline also after delete/recreate,
+                // so an old request cannot match a new instance with the same id.
+                previous.revision.saturating_add(1)
+            };
+            (id.clone(), revision)
+        })
+        .collect()
 }
 
 fn statuses(

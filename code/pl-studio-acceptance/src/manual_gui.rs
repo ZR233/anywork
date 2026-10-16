@@ -1,5 +1,6 @@
 mod context_replay_recovery;
 mod model_catalog;
+mod provider_usage;
 mod shutdown;
 mod web_search;
 mod websocket_recovery;
@@ -445,6 +446,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "call-lifecycle-recovery"
             | "tool-scroll"
             | "web-search"
+            | "provider-usage"
             | "shutdown"
     ) {
         ensure!(
@@ -604,6 +606,23 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
     if let Some(fault) = &options.startup_fault {
         seed_startup_fault(&home, fault)?;
+    }
+
+    if options.scenario == "provider-usage" {
+        return provider_usage::run(
+            &provider_usage::Scenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+            &ready,
+        );
     }
 
     if options.scenario == "web-search" {
@@ -1447,6 +1466,9 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
 /// `shutdown` module) uses; the `web_search_fault` selector is only meaningful
 /// for the `web-search` scenario, so the other callers pass `None`.
 fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str>) -> Result<()> {
+    if ready.scenario == "provider-usage" {
+        return provider_usage::write_config(home, ready);
+    }
     if ready.scenario == "web-search" {
         let fault = match web_search_fault {
             None => web_search::WebSearchFault::None,

@@ -271,7 +271,7 @@ abstract class StudioTransport
 
   /// 重新读取 backend canonical settings 快照（不依赖本地缓存）。
   Future<SettingsStateSnapshot> readSettingsState();
-  Future<ProviderUsageStateSnapshot> checkProviderUsage();
+  Future<ProviderUsageStateSnapshot> checkProviderUsage(String providerId);
   Future<SkillsStateSnapshot> readSkillsState(String projectId);
   Future<SkillsStateSnapshot> discoverSkills(String projectId);
   Future<SkillSearchResultView> searchSkills(

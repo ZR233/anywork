@@ -19,7 +19,7 @@ export 'package:anywork_client/studio_client.dart' show BridgeSettingsScopeKind;
 
 /// 当前可见的设置 tab 索引（由设置壳的 TabController 驱动）。
 ///
-/// Visibility only changes observation; Client retains topic owners and drafts.
+/// Visibility only changes display observation; Client retains topic owners and drafts.
 final settingsVisibleTabProvider =
     NotifierProvider<SettingsVisibleTabNotifier, int>(
       SettingsVisibleTabNotifier.new,
@@ -35,7 +35,7 @@ class SettingsVisibleTabNotifier extends Notifier<int> {
   }
 }
 
-/// Visibility controls observations only. AppGraph owns the corresponding
+/// Visibility controls display observations only. AppGraph owns the corresponding
 /// topics throughout the application lifetime.
 void watchSettingsScope(
   WidgetRef ref, {

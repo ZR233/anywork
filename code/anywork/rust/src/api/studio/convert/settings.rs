@@ -81,6 +81,7 @@ pub(crate) fn bridge_settings(
                 name: provider.name,
                 base_url: provider.base_url,
                 has_bearer_token: provider.has_bearer_token,
+                usage_query_revision: provider.usage_query_revision,
                 credential_required: provider.credential_required,
                 capability_source: provider.capability_source,
                 hosted_web_search: provider.hosted_web_search,

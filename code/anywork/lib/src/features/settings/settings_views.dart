@@ -13,6 +13,8 @@ import '../../presentation/providers/thread_session_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
+import 'settings_provider_usage_demand.dart';
+
 /// 设置页是否已经有可渲染的配置 canonical。
 ///
 /// 传输失败只在尚无 last-known 快照时占位；已有快照后由各 tab 自己的 topic 状态提示。
@@ -117,6 +119,22 @@ final settingsProvidersViewProvider =
         providerCatalogRevision: store.providerCatalogRevision,
       );
     }, name: 'settingsProvidersViewProvider');
+
+/// 自动额度只消费 (id, usageQueryRevision)，不把 catalog/settings 全局水位当查询身份。
+final settingsProviderUsageQueryIdentitiesProvider =
+    Provider.autoDispose<ProviderUsageQueryIdentitySnapshot>((ref) {
+      return ref.watch(
+        settingsProvidersViewProvider.select((view) {
+          return ProviderUsageQueryIdentitySnapshot([
+            for (final provider in view.providers)
+              ProviderUsageQueryIdentity(
+                id: provider.id,
+                usageQueryRevision: provider.usageQueryRevision,
+              ),
+          ]);
+        }),
+      );
+    }, name: 'settingsProviderUsageQueryIdentitiesProvider');
 
 class SettingsInstructionsView {
   const SettingsInstructionsView({

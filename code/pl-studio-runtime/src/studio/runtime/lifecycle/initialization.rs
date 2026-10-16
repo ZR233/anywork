@@ -317,7 +317,7 @@ impl StudioRuntime {
         self.start_tool_refresh().await;
         self.start_mcp_health_watcher().await;
         self.start_lsp_state_watcher().await;
-        self.start_mcp_reconcile_background()
+        self.start_mcp_config_watcher()
             .await
             .map_err(|error| internal("start_mcp", error))?;
         check_cancelled(cancellation)?;
@@ -338,7 +338,7 @@ impl StudioRuntime {
             self.stop_recovery_scan(),
             self.stop_model_refresh(),
             self.stop_tool_refresh(),
-            self.stop_mcp_startup_reconcile(),
+            self.stop_mcp_config_watcher(),
             self.stop_mcp_health_watcher(),
             self.stop_lsp_state_watcher(),
             self.stop_agent_profiles_forwarder()
