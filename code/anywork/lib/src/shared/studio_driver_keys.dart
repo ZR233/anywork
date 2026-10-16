@@ -167,6 +167,7 @@ abstract final class StudioDriverKeys {
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');
   static const planSummary = ValueKey<String>('plan-summary');
+  static const statusPlanEntry = ValueKey<String>('status-plan-entry');
   static const planDetails = ValueKey<String>('plan-details');
   static const planDetailsScroll = ValueKey<String>('plan-details-scroll');
   static const planDetailsClose = ValueKey<String>('plan-details-close');

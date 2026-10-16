@@ -88,6 +88,14 @@ pub(in crate::studio) fn project_runtime(
                 .map(|state| pl_protocol::WorkflowRuntimeSnapshot::from(&state))
         })
         .transpose()?;
+    let plan = state
+        .extensions
+        .get(crate::plan_tool::PLAN_EXTENSION)
+        .map(|record| {
+            crate::plan_tool::decode_plan_state(&record.payload)
+                .map(|state| pl_protocol::AgentSessionPlanRuntimeSnapshot::from(&state))
+        })
+        .transpose()?;
     let active_skills = state
         .extensions
         .values()
@@ -119,6 +127,7 @@ pub(in crate::studio) fn project_runtime(
         turn_decode_millis: summary.turn_decode_millis,
         todo,
         workflow,
+        plan,
         active_skills,
         active_mcp_servers: Vec::new(),
         active_lsp_servers: Vec::new(),

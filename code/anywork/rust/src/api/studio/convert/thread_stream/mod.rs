@@ -6,6 +6,7 @@ pub(crate) use interaction::interaction as bridge_interaction;
 
 use anyhow::Result;
 use pl_protocol::{
+    AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
     McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadAgentState,
     ThreadAttachment, ThreadContentLifecycle, ThreadInferenceState, ThreadItem, ThreadItemState,
@@ -531,6 +532,7 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         progress: value.progress,
         mcp_health: value.mcp_health.map(mcp_health),
         workflow: value.workflow.map(workflow_runtime_snapshot),
+        plan: value.plan.map(plan_runtime_snapshot),
         updated_at: value.updated_at,
     }
 }
@@ -554,6 +556,32 @@ fn workflow_runtime_snapshot(value: WorkflowRuntimeSnapshot) -> BridgeWorkflowRu
     BridgeWorkflowRuntimeSnapshot {
         revision: value.revision,
         current_run: value.current_run.map(workflow_run),
+    }
+}
+
+fn plan_runtime_snapshot(value: AgentSessionPlanRuntimeSnapshot) -> BridgePlanRuntimeSnapshot {
+    BridgePlanRuntimeSnapshot {
+        revision: value.revision,
+        state: plan_phase(value.state),
+        document: value.document.map(plan_document),
+        updated_at: value.updated_at,
+    }
+}
+
+fn plan_document(value: AgentSessionPlanDocument) -> BridgePlanDocument {
+    BridgePlanDocument {
+        version: value.version,
+        markdown: value.markdown,
+        content_hash: value.content_hash,
+    }
+}
+
+fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
+    match value {
+        AgentSessionPlanPhase::Drafting => BridgePlanPhase::Drafting,
+        AgentSessionPlanPhase::AwaitingConfirmation => BridgePlanPhase::AwaitingConfirmation,
+        AgentSessionPlanPhase::RevisionRequested => BridgePlanPhase::RevisionRequested,
+        AgentSessionPlanPhase::Approved => BridgePlanPhase::Approved,
     }
 }
 

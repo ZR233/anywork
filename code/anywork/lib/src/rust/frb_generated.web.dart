@@ -323,6 +323,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_persistence_state_snapshot(dynamic raw);
 
   @protected
+  BridgePlanDocument dco_decode_box_autoadd_bridge_plan_document(dynamic raw);
+
+  @protected
+  BridgePlanRuntimeSnapshot dco_decode_box_autoadd_bridge_plan_runtime_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeProductTopic dco_decode_box_autoadd_bridge_product_topic(dynamic raw);
 
   @protected
@@ -1098,6 +1106,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgePersistenceStateSnapshot dco_decode_bridge_persistence_state_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgePlanDocument dco_decode_bridge_plan_document(dynamic raw);
+
+  @protected
+  BridgePlanPhase dco_decode_bridge_plan_phase(dynamic raw);
+
+  @protected
+  BridgePlanRuntimeSnapshot dco_decode_bridge_plan_runtime_snapshot(
     dynamic raw,
   );
 
@@ -1993,6 +2012,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_model_reasoning_descriptor(dynamic raw);
 
   @protected
+  BridgePlanDocument? dco_decode_opt_box_autoadd_bridge_plan_document(
+    dynamic raw,
+  );
+
+  @protected
+  BridgePlanRuntimeSnapshot?
+  dco_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(dynamic raw);
+
+  @protected
   BridgePromptPrefixChangedReason?
   dco_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(dynamic raw);
 
@@ -2511,6 +2539,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgePersistenceStateSnapshot
   sse_decode_box_autoadd_bridge_persistence_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePlanDocument sse_decode_box_autoadd_bridge_plan_document(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePlanRuntimeSnapshot sse_decode_box_autoadd_bridge_plan_runtime_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -3514,6 +3552,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgePersistenceStateSnapshot sse_decode_bridge_persistence_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePlanDocument sse_decode_bridge_plan_document(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePlanPhase sse_decode_bridge_plan_phase(SseDeserializer deserializer);
+
+  @protected
+  BridgePlanRuntimeSnapshot sse_decode_bridge_plan_runtime_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -4621,6 +4672,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgePlanDocument? sse_decode_opt_box_autoadd_bridge_plan_document(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePlanRuntimeSnapshot?
+  sse_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgePromptPrefixChangedReason?
   sse_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(
     SseDeserializer deserializer,
@@ -5243,6 +5305,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_persistence_state_snapshot(
     BridgePersistenceStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_plan_document(
+    BridgePlanDocument self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot self,
     SseSerializer serializer,
   );
 
@@ -6428,6 +6502,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_persistence_state_snapshot(
     BridgePersistenceStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_plan_document(
+    BridgePlanDocument self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_plan_phase(
+    BridgePlanPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot self,
     SseSerializer serializer,
   );
 
@@ -7763,6 +7855,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_model_reasoning_descriptor(
     BridgeModelReasoningDescriptor? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_plan_document(
+    BridgePlanDocument? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot? self,
     SseSerializer serializer,
   );
 

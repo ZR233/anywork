@@ -1163,6 +1163,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionPlanAwaitingConfirmation => '等待确认';
 
   @override
+  String get interactionPlanApproved => '已批准';
+
+  @override
+  String get statusPlanEntry => '计划';
+
+  @override
   String get interactionPlanViewDetails => '查看完整计划';
 
   @override

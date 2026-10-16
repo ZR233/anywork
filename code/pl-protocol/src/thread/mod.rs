@@ -206,6 +206,9 @@ pub struct ThreadRuntimeSnapshot {
     pub mcp_health: Option<McpHealthSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<crate::WorkflowRuntimeSnapshot>,
+    /// 派生自 canonical `studio.plan` Thread 扩展，仅供 GUI 只读展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::AgentSessionPlanRuntimeSnapshot>,
     pub updated_at: i64,
 }
 

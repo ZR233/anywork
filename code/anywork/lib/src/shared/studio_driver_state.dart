@@ -645,12 +645,15 @@ abstract final class StudioDriverState {
               'lastTurn': lastTurn == null ? null : _turnJson(lastTurn),
               'timelineProgress': _timelineProgress(workspace),
             },
-      // Workflow is the only lifecycle projection exposed to acceptance
+      // Workflow and Plan are the lifecycle projections exposed to acceptance
       // drivers. Product-specific orchestration payloads are intentionally not
       // serialized.
       'workflow': workspace?.runtime.workflow == null
           ? null
           : _workflowJson(workspace!.runtime.workflow!),
+      'plan': workspace?.runtime.plan == null
+          ? null
+          : _planJson(workspace!.runtime.plan!),
       // 固定活动条投影：阶段/摘要/并行工具数/完整详情身份。
       'conversationActivity': _conversationActivity == null
           ? null
@@ -706,6 +709,16 @@ abstract final class StudioDriverState {
             },
       ],
     });
+  }
+
+  static Map<String, Object?> _planJson(PlanRuntimeView plan) {
+    final document = plan.document;
+    return {
+      'state': plan.state.name,
+      'documentVersion': document?.version,
+      'contentHash': document?.contentHash,
+      'markdown': document?.markdown,
+    };
   }
 
   static Map<String, Object?> _workflowJson(WorkflowRuntimeView workflow) {

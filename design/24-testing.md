@@ -122,8 +122,11 @@ worktree 模式，经正常 Studio 创建命令派发 directory/worktree 执行�
 Plan 恢复使用显式 `plan-recovery` 原生 GUI 人工场景：在同一隔离数据根中提交真实计划
 确认、正常关闭并等待进程回收，再重启并打开原会话。分别观察批准与修改路径，比较恢复
 前后的计划正文与交互身份，并核对回答前无新增模型请求、回答后无重复 continuation、
-已回答计划不重新弹出。场景保存截图、快照、请求和生命周期日志，人工结论独立于脚本
-退出状态记录；不以直接写入数据库或伪造 UI 状态代替真实 `plan_submit`。
+已回答计划不重新弹出。批准路径还须在 Interaction resolved 后通过状态栏「更多」菜单的计划
+入口打开同一份当前计划文档，重启并打开原会话后仍可读到同一正文，且面板宽度可在会话可用
+宽度一半以内调整；未批准、无文档或 restart 清空后不得出现该入口。场景保存截图、快照、
+请求和生命周期日志，人工结论独立于脚本退出状态记录；不以直接写入数据库或伪造 UI 状态
+代替真实 `plan_submit`。
 
 应用关闭使用显式 `shutdown` 原生 GUI 人工场景（当前为 Linux 原生）。场景复用正常 bridge、
 隔离 `ANYWORK_HOME`、Flutter Driver 与进程所有权，按 phase 保存互不覆盖的证据，并由
@@ -446,7 +449,7 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 
 | 领域 | 可见字段/页面 | 生产触发与事件 | Dart mirror owner | selector/projection | Client 需求/页面观察 | 验收判据 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Thread runtime | context、total/input/output/cache/reasoning tokens、context window、throughput、model、workflow/run | runtime snapshot/update、live usage | Client RuntimeChannel ordered reducer | runtime/status/context/throughput | Client selected Thread owner；Settings 保留 | paced stream 同页多次变化 |
+| Thread runtime | context、total/input/output/cache/reasoning tokens、context window、throughput、model、workflow/run、plan（状态与当前计划文档） | runtime snapshot/update、live usage | Client RuntimeChannel ordered reducer | runtime/status/context/throughput | Client selected Thread owner；Settings 保留 | paced stream 同页多次变化 |
 | Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | turn/activity/storage notifications | 同一 Client RuntimeChannel reducer | turn/activity/storage | Session 逻辑寿命，独立于 provider | 阶段变化和保存故障即时可见 |
 | Timeline | 流式正文、分页、正文补齐、图片/工具预览 | Client ChatView `initial`/`next` 与 typed receipt | Client ChatReadModel；TimelineSessionOwner lease | Connector/View props | current `threadId/viewId` | 不切页、不重读、不重复；迟到回调按 tuple 丢弃 |
 | Composer | 文本、attachments、preview、pending/failure | Client DraftStore + admission result | Client canonical draft reducer | composer Connector/View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |

@@ -754,6 +754,8 @@ class _Footer extends StatelessWidget {
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
+    this.showPlanEntry = false,
+    this.onOpenPlan,
     required this.compact,
     this.contentKey,
   });
@@ -762,6 +764,8 @@ class _Footer extends StatelessWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
 
   /// 矮窗口紧凑布局：只收缩 composer 的留白与输入行数，不隐藏任何操作。
   final bool compact;
@@ -794,6 +798,8 @@ class _Footer extends StatelessWidget {
             showTodo: showTodo,
             todoExpanded: todoExpanded,
             onToggleTodo: onToggleTodo,
+            showPlanEntry: showPlanEntry,
+            onOpenPlan: onOpenPlan,
           ),
         ],
       ),
@@ -981,11 +987,15 @@ class _StatusBarHost extends ConsumerWidget {
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
+    this.showPlanEntry = false,
+    this.onOpenPlan,
   });
 
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -996,6 +1006,8 @@ class _StatusBarHost extends ConsumerWidget {
       showTodo: showTodo,
       todoExpanded: todoExpanded,
       onToggleTodo: onToggleTodo,
+      showPlanEntry: showPlanEntry,
+      onOpenPlan: onOpenPlan,
     );
   }
 }

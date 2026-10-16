@@ -425,6 +425,7 @@ class ThreadRuntimeView {
     this.turnDecodeMillis = 0,
     this.liveUsage,
     this.workflow,
+    this.plan,
     this.modelRoute,
   });
 
@@ -454,6 +455,7 @@ class ThreadRuntimeView {
   final int turnDecodeMillis;
   final ThreadRuntimeLiveUsageView? liveUsage;
   final WorkflowRuntimeView? workflow;
+  final PlanRuntimeView? plan;
   final ThreadModelRouteView? modelRoute;
 
   bool get hasActiveWorkflow => workflow?.isActive ?? false;
@@ -494,6 +496,7 @@ class ThreadRuntimeView {
             turnDecodeMillis == other.turnDecodeMillis &&
             liveUsage == other.liveUsage &&
             workflow == other.workflow &&
+            plan == other.plan &&
             modelRoute == other.modelRoute;
   }
 
@@ -525,6 +528,7 @@ class ThreadRuntimeView {
     turnDecodeMillis,
     liveUsage,
     workflow,
+    plan,
     modelRoute,
   ]);
 
@@ -555,6 +559,7 @@ class ThreadRuntimeView {
     int? turnDecodeMillis,
     Object? liveUsage = _threadRuntimeUnset,
     WorkflowRuntimeView? workflow,
+    Object? plan = _threadRuntimeUnset,
     ThreadModelRouteView? modelRoute,
   }) {
     return ThreadRuntimeView(
@@ -587,6 +592,9 @@ class ThreadRuntimeView {
           ? this.liveUsage
           : liveUsage as ThreadRuntimeLiveUsageView?,
       workflow: workflow ?? this.workflow,
+      plan: identical(plan, _threadRuntimeUnset)
+          ? this.plan
+          : plan as PlanRuntimeView?,
       modelRoute: modelRoute ?? this.modelRoute,
     );
   }
@@ -680,4 +688,88 @@ class WorkflowRunView {
 
   @override
   int get hashCode => Object.hash(runId, currentStateId, updatedAt);
+}
+
+enum PlanRuntimePhase {
+  drafting,
+  awaitingConfirmation,
+  revisionRequested,
+  approved,
+}
+
+class PlanDocumentView {
+  const PlanDocumentView({
+    required this.version,
+    required this.markdown,
+    required this.contentHash,
+  });
+
+  final int version;
+  final String markdown;
+  final String contentHash;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlanDocumentView &&
+          version == other.version &&
+          markdown == other.markdown &&
+          contentHash == other.contentHash;
+
+  @override
+  int get hashCode => Object.hash(version, markdown, contentHash);
+
+  PlanDocumentView copyWith({
+    int? version,
+    String? markdown,
+    String? contentHash,
+  }) {
+    return PlanDocumentView(
+      version: version ?? this.version,
+      markdown: markdown ?? this.markdown,
+      contentHash: contentHash ?? this.contentHash,
+    );
+  }
+}
+
+class PlanRuntimeView {
+  const PlanRuntimeView({
+    required this.revision,
+    required this.state,
+    required this.updatedAt,
+    this.document,
+  });
+
+  final int revision;
+  final PlanRuntimePhase state;
+  final PlanDocumentView? document;
+  final DateTime updatedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlanRuntimeView &&
+          revision == other.revision &&
+          state == other.state &&
+          document == other.document &&
+          updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode => Object.hash(revision, state, document, updatedAt);
+
+  PlanRuntimeView copyWith({
+    int? revision,
+    PlanRuntimePhase? state,
+    Object? document = _threadRuntimeUnset,
+    DateTime? updatedAt,
+  }) {
+    return PlanRuntimeView(
+      revision: revision ?? this.revision,
+      state: state ?? this.state,
+      document: identical(document, _threadRuntimeUnset)
+          ? this.document
+          : document as PlanDocumentView?,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 }

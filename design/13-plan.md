@@ -112,21 +112,32 @@ Mode 状态栏在整个计划确认期间持续显示 `planning`。`request_user
 Turn 模型上下文从当前 Thread Plan state 派生只读 `pl.plan` section，提供当前
 state/revision、文档 hash、修改意见和允许动作；完整计划正文独立按文档版本去重，压缩后重新补入当前版本。批准回复与完整正文也保留在 canonical tool/Interaction 状态。
 
-GUI 不新增 Plan 协议状态、持久化实体或第二套 reducer，而是从 pending `UserInput` 中稳定
-ID 为 `plan_confirmation` 的唯一问题派生只读展示：Timeline 尾部显示一张紧凑摘要卡，点击后
-在右侧打开完整 Markdown Plan，详情面板与 Timeline 分别保存滚动位置；宽窗口使用并排
-侧栏，窄窗口使用覆盖式侧栏；展开状态只属于当前 Thread 的临时 UI 状态，不写入 runtime 或
-store；Plan 详情打开时优先于 Todo 侧栏，关闭后 Todo 仍按自己的 UI 状态恢复。
+GUI 不新增 Plan 协议状态、持久化实体或第二套 reducer，也不在本地缓存或复制计划正文。只读
+展示有两个互斥来源：pending 期间取 pending `UserInput` 中稳定 ID 为 `plan_confirmation`
+的唯一问题；批准后取 Thread runtime snapshot 的计划投影（当前状态、revision 与当前文档）。
+Timeline 尾部显示一张紧凑摘要卡，点击后在右侧打开完整 Markdown Plan，详情面板与 Timeline
+分别保存滚动位置；宽窗口使用并排侧栏，窄窗口使用覆盖式侧栏；展开状态只属于当前 Thread 的
+临时 UI 状态，不写入 runtime 或 store；Plan 详情打开时优先于 Todo 侧栏，关闭后 Todo 仍按
+自己的 UI 状态恢复。
+
+计划投影为已批准且含当前文档时，聊天状态栏的「更多」菜单提供批准后唯一的只读入口；点击在
+同一右侧详情面板展示当前计划全文。该入口是显式打开动作，批准后不自动重开面板，也不提供
+第二份输入、确认或修改控件；未批准、无文档或 restart 清空后不显示该入口。摘要卡与 Plan
+专用反馈栏仍随 Interaction resolved 消失，普通 composer 恢复；批准后的计划阅读由该入口
+承担，不依赖 pending Interaction 或 GUI 本地副本。
+
 详情面板默认宽度为 560px，阅读者可以拖动其左边缘调整宽度，也可以聚焦分隔条后用方向键
 逐级调整、Home 恢复默认宽度。调整适用于并排与覆盖布局，仅保存在当前 GUI 的临时视图中；
-面板宽度须受窗口可用空间限制，并排时保留对话区的最小可用宽度，窗口变窄时回退为覆盖布局，
-不因用户调整而使对话正文或计划详情溢出窗口。
+宽度上限由布局约束求解保证：并排布局最多占会话可用宽度的一半，并同时保留对话区的最小可用
+宽度；窄窗口覆盖布局可占满可用宽度。不以固定像素硬上限或上层重复收敛替代该约束，也不因
+用户调整而使对话正文或计划详情溢出窗口。
 
 Plan confirmation pending 期间，普通 prompt composer 必须被 Plan 专用反馈栏替换，避免同时
 存在"普通消息"和"计划修改"两个输入语义。反馈栏始终直接提供修改意见输入、提交修改与确认
 计划三个能力，不先进入 Approve/Revise 二级选择；提交修改映射为同一 `plan_confirmation`
 answer 的 Revise 加非空反馈，确认映射为 Approve。右侧详情面板只负责阅读，不包含第二份
-输入或确认控件。Interaction resolved 后摘要、详情和反馈栏一起消失，普通 composer 恢复。
+输入或确认控件。Interaction resolved 后摘要卡与反馈栏一起消失，普通 composer 恢复；已批准
+计划仍可由状态栏「更多」菜单的计划入口按需打开同一只读详情。
 以上均响应同一个 durable Interaction，不能复制 Plan 正文、resolution 或生命周期状态。
 
 ## 压缩与恢复中的实施授权

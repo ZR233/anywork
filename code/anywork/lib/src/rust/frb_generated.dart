@@ -4705,6 +4705,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgePlanDocument dco_decode_box_autoadd_bridge_plan_document(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_plan_document(raw);
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot dco_decode_box_autoadd_bridge_plan_runtime_snapshot(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_plan_runtime_snapshot(raw);
+  }
+
+  @protected
   BridgeProductTopic dco_decode_box_autoadd_bridge_product_topic(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_product_topic(raw);
@@ -7150,6 +7164,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgePlanDocument dco_decode_bridge_plan_document(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return BridgePlanDocument(
+      version: dco_decode_u_64(arr[0]),
+      markdown: dco_decode_String(arr[1]),
+      contentHash: dco_decode_String(arr[2]),
+    );
+  }
+
+  @protected
+  BridgePlanPhase dco_decode_bridge_plan_phase(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgePlanPhase.values[raw as int];
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot dco_decode_bridge_plan_runtime_snapshot(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return BridgePlanRuntimeSnapshot(
+      revision: dco_decode_u_64(arr[0]),
+      state: dco_decode_bridge_plan_phase(arr[1]),
+      document: dco_decode_opt_box_autoadd_bridge_plan_document(arr[2]),
+      updatedAt: dco_decode_i_64(arr[3]),
+    );
+  }
+
+  @protected
   BridgeProductBaseline dco_decode_bridge_product_baseline(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
@@ -9174,8 +9223,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return BridgeThreadRuntimeSnapshot(
       threadId: dco_decode_String(arr[0]),
       modelRoute: dco_decode_opt_box_autoadd_bridge_thread_model_route_snapshot(
@@ -9198,7 +9247,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       workflow: dco_decode_opt_box_autoadd_bridge_workflow_runtime_snapshot(
         arr[12],
       ),
-      updatedAt: dco_decode_i_64(arr[13]),
+      plan: dco_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(arr[13]),
+      updatedAt: dco_decode_i_64(arr[14]),
     );
   }
 
@@ -10741,6 +10791,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgePlanDocument? dco_decode_opt_box_autoadd_bridge_plan_document(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_plan_document(raw);
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot?
+  dco_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_plan_runtime_snapshot(raw);
+  }
+
+  @protected
   BridgePromptPrefixChangedReason?
   dco_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -12021,6 +12090,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_persistence_state_snapshot(deserializer));
+  }
+
+  @protected
+  BridgePlanDocument sse_decode_box_autoadd_bridge_plan_document(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_plan_document(deserializer));
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot sse_decode_box_autoadd_bridge_plan_runtime_snapshot(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_plan_runtime_snapshot(deserializer));
   }
 
   @protected
@@ -15056,6 +15141,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgePlanDocument sse_decode_bridge_plan_document(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_version = sse_decode_u_64(deserializer);
+    var var_markdown = sse_decode_String(deserializer);
+    var var_contentHash = sse_decode_String(deserializer);
+    return BridgePlanDocument(
+      version: var_version,
+      markdown: var_markdown,
+      contentHash: var_contentHash,
+    );
+  }
+
+  @protected
+  BridgePlanPhase sse_decode_bridge_plan_phase(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgePlanPhase.values[inner];
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot sse_decode_bridge_plan_runtime_snapshot(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_revision = sse_decode_u_64(deserializer);
+    var var_state = sse_decode_bridge_plan_phase(deserializer);
+    var var_document = sse_decode_opt_box_autoadd_bridge_plan_document(
+      deserializer,
+    );
+    var var_updatedAt = sse_decode_i_64(deserializer);
+    return BridgePlanRuntimeSnapshot(
+      revision: var_revision,
+      state: var_state,
+      document: var_document,
+      updatedAt: var_updatedAt,
+    );
+  }
+
+  @protected
   BridgeProductBaseline sse_decode_bridge_product_baseline(
     SseDeserializer deserializer,
   ) {
@@ -17738,6 +17864,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_decode_opt_box_autoadd_bridge_workflow_runtime_snapshot(
           deserializer,
         );
+    var var_plan = sse_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+      deserializer,
+    );
     var var_updatedAt = sse_decode_i_64(deserializer);
     return BridgeThreadRuntimeSnapshot(
       threadId: var_threadId,
@@ -17753,6 +17882,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       progress: var_progress,
       mcpHealth: var_mcpHealth,
       workflow: var_workflow,
+      plan: var_plan,
       updatedAt: var_updatedAt,
     );
   }
@@ -19950,6 +20080,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgePlanDocument? sse_decode_opt_box_autoadd_bridge_plan_document(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_plan_document(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgePlanRuntimeSnapshot?
+  sse_decode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_plan_runtime_snapshot(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgePromptPrefixChangedReason?
   sse_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(
     SseDeserializer deserializer,
@@ -21516,6 +21675,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_persistence_state_snapshot(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_plan_document(
+    BridgePlanDocument self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_plan_document(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_plan_runtime_snapshot(self, serializer);
   }
 
   @protected
@@ -24086,6 +24263,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_plan_document(
+    BridgePlanDocument self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.version, serializer);
+    sse_encode_String(self.markdown, serializer);
+    sse_encode_String(self.contentHash, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_plan_phase(
+    BridgePlanPhase self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.revision, serializer);
+    sse_encode_bridge_plan_phase(self.state, serializer);
+    sse_encode_opt_box_autoadd_bridge_plan_document(self.document, serializer);
+    sse_encode_i_64(self.updatedAt, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_product_baseline(
     BridgeProductBaseline self,
     SseSerializer serializer,
@@ -26176,6 +26385,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.workflow,
       serializer,
     );
+    sse_encode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+      self.plan,
+      serializer,
+    );
     sse_encode_i_64(self.updatedAt, serializer);
   }
 
@@ -28016,6 +28229,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         self,
         serializer,
       );
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_plan_document(
+    BridgePlanDocument? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_plan_document(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_plan_runtime_snapshot(
+    BridgePlanRuntimeSnapshot? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_plan_runtime_snapshot(self, serializer);
     }
   }
 

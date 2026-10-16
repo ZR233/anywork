@@ -414,6 +414,8 @@
   "interactionPlanConfirmSubtitle": "确认计划，或直接写下调整要求",
   "interactionPlanReadyTitle": "实施计划已准备好",
   "interactionPlanAwaitingConfirmation": "等待确认",
+  "interactionPlanApproved": "已批准",
+  "statusPlanEntry": "计划",
   "interactionPlanViewDetails": "查看完整计划",
   "interactionPlanDetailsTitle": "实施计划",
   "interactionPlanComposerPausedHint": "普通消息输入已暂停，避免与计划反馈混淆。",

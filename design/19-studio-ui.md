@@ -151,10 +151,11 @@ snapshot，不执行本地乐观 transition。
 ## 19.3 通用 Interaction 与计划确认
 
 composer dock 只响应 `UserInput` 与 `ToolApproval`。任务计划由 `plan_submit` 通过固定 Plan
-状态机发起，协议上仍是通用 UserInput；GUI 从其中稳定 ID 为 `plan_confirmation` 的唯一问题
-派生 Plan 展示，不增加 Interaction kind、持久化状态或第二套 continuation。普通澄清仍由
+状态机发起，协议上仍是通用 UserInput；GUI 的 Plan 只读展示在 pending 期间从其中稳定 ID 为
+`plan_confirmation` 的唯一问题派生，批准后从 runtime snapshot 的 Plan 投影派生，两个来源
+互斥，不增加 Interaction kind、持久化状态或第二套 continuation。普通澄清仍由
 `request_user_input` 发起并使用既有分步问题 dock。完整派生 UI 合同（摘要卡、右侧详情、
-替换式反馈栏、宽窄窗口布局）见 [13](./13-plan.md)。
+批准后入口、替换式反馈栏、宽窄窗口布局）见 [13](./13-plan.md)。
 
 ## 19.4 Agents 设置
 
@@ -492,7 +493,10 @@ DeepSeek provider usage 遵循官方 [`/user/balance`](https://api-docs.deepseek
 Skill/MCP/LSP 默认只显示数量，悬浮、点击或键盘聚焦时展示当前 agent 的完整列表。状态栏
 不得显示 agent 数量或子代理列表；大会话下的 agent 数量、状态和切换只通过标题区唯一的
 `n agents` 菜单表达。状态栏响应式按聊天 footer 自身宽度折叠低频读数，并保证详情弹层
-不被状态栏滚动容器或窗口边界裁剪。聊天界面的 agent 目录属于 root Thread 的轻量产品
+不被状态栏滚动容器或窗口边界裁剪。除折叠的只读读数外，「更多」菜单还承载当前 Thread 的
+计划入口：计划投影为已批准且含当前文档时开放，点击在右侧只读面板展示计划全文；该入口不
+产生第二份计划状态，也不改变批准或 Interaction 语义（见 [13](./13-plan.md)）。
+聊天界面的 agent 目录属于 root Thread 的轻量产品
 状态，信息来自 Thread directory 的 product stream；`n agents` 菜单只展示 owner、父子
 关系、任务概要、角色和状态，不携带 timeline、Todo、interaction 或 context；菜单项按运行
 状态分组排序（执行中、失败、空闲、关闭中或已关闭），同组内保持 owner 与父子顺序及层级

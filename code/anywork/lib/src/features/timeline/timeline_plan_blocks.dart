@@ -124,7 +124,10 @@ class TimelinePlanSummaryCard extends StatelessWidget {
 
 class PlanDetailPanel extends StatelessWidget {
   const PlanDetailPanel({
-    required this.plan,
+    required this.identity,
+    required this.markdown,
+    required this.statusLabel,
+    required this.markdownStatus,
     required this.onClose,
     this.overlay = false,
     super.key,
@@ -136,7 +139,10 @@ class PlanDetailPanel extends StatelessWidget {
   /// 超过可用高度并触发 RenderFlex 溢出；此时整块退化为单一滚动容器，读法与锚点不变。
   static const double _minimumPinnedHeight = 260;
 
-  final PlanConfirmationView plan;
+  final String identity;
+  final String markdown;
+  final String statusLabel;
+  final String markdownStatus;
   final VoidCallback onClose;
   final bool overlay;
 
@@ -164,7 +170,7 @@ class PlanDetailPanel extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  context.l10n.interactionPlanAwaitingConfirmation,
+                  statusLabel,
                   style: context.text.labelSmall?.copyWith(
                     color: context.colors.onPrimaryContainer,
                   ),
@@ -183,9 +189,9 @@ class PlanDetailPanel extends StatelessWidget {
     );
     final divider = Divider(height: 1, color: context.colors.outlineVariant);
     final markdown = _AgentMarkdown(
-      id: 'plan:${plan.interactionId}',
-      status: 'pending',
-      text: plan.markdown,
+      id: 'plan:$identity',
+      status: markdownStatus,
+      text: this.markdown,
       surface: _MarkdownSurface.panel,
     );
     return Material(
@@ -230,9 +236,7 @@ class PlanDetailPanel extends StatelessWidget {
                     child: KeyedSubtree(
                       key: StudioDriverKeys.planDetailsScroll,
                       child: ListView(
-                        key: PageStorageKey<String>(
-                          'plan-details:${plan.interactionId}',
-                        ),
+                        key: PageStorageKey<String>('plan-details:$identity'),
                         primary: false,
                         padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
                         children: [markdown],

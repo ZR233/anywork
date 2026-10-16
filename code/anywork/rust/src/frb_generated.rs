@@ -6920,6 +6920,54 @@ impl SseDecode for crate::api::studio::types::response::BridgePersistenceStateSn
     }
 }
 
+impl SseDecode for crate::api::studio::types::thread_stream::BridgePlanDocument {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_version = <u64>::sse_decode(deserializer);
+        let mut var_markdown = <String>::sse_decode(deserializer);
+        let mut var_contentHash = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::thread_stream::BridgePlanDocument {
+            version: var_version,
+            markdown: var_markdown,
+            content_hash: var_contentHash,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::thread_stream::BridgePlanPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::thread_stream::BridgePlanPhase::Drafting,
+            1 => crate::api::studio::types::thread_stream::BridgePlanPhase::AwaitingConfirmation,
+            2 => crate::api::studio::types::thread_stream::BridgePlanPhase::RevisionRequested,
+            3 => crate::api::studio::types::thread_stream::BridgePlanPhase::Approved,
+            _ => unreachable!("Invalid variant for BridgePlanPhase: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_revision = <u64>::sse_decode(deserializer);
+        let mut var_state =
+            <crate::api::studio::types::thread_stream::BridgePlanPhase>::sse_decode(deserializer);
+        let mut var_document =
+            <Option<crate::api::studio::types::thread_stream::BridgePlanDocument>>::sse_decode(
+                deserializer,
+            );
+        let mut var_updatedAt = <i64>::sse_decode(deserializer);
+        return crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot {
+            revision: var_revision,
+            state: var_state,
+            document: var_document,
+            updated_at: var_updatedAt,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::product_topic::BridgeProductBaseline {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9854,6 +9902,9 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         let mut var_workflow = <Option<
             crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot,
         >>::sse_decode(deserializer);
+        let mut var_plan = <Option<
+            crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot,
+        >>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
         return crate::api::studio::types::thread_stream::BridgeThreadRuntimeSnapshot {
             thread_id: var_threadId,
@@ -9869,6 +9920,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
             progress: var_progress,
             mcp_health: var_mcpHealth,
             workflow: var_workflow,
+            plan: var_plan,
             updated_at: var_updatedAt,
         };
     }
@@ -12247,6 +12299,36 @@ impl SseDecode for Option<crate::api::studio::types::settings::BridgeModelReason
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::settings::BridgeModelReasoningDescriptor>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgePlanDocument> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::thread_stream::BridgePlanDocument>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot>::sse_decode(
                     deserializer,
                 ),
             );
@@ -16665,6 +16747,80 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::thread_stream::BridgePlanDocument
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.version.into_into_dart().into_dart(),
+            self.markdown.into_into_dart().into_dart(),
+            self.content_hash.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::thread_stream::BridgePlanDocument
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::thread_stream::BridgePlanDocument>
+    for crate::api::studio::types::thread_stream::BridgePlanDocument
+{
+    fn into_into_dart(self) -> crate::api::studio::types::thread_stream::BridgePlanDocument {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::thread_stream::BridgePlanPhase {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Drafting => 0.into_dart(),
+            Self::AwaitingConfirmation => 1.into_dart(),
+            Self::RevisionRequested => 2.into_dart(),
+            Self::Approved => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::thread_stream::BridgePlanPhase
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::thread_stream::BridgePlanPhase>
+    for crate::api::studio::types::thread_stream::BridgePlanPhase
+{
+    fn into_into_dart(self) -> crate::api::studio::types::thread_stream::BridgePlanPhase {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.revision.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+            self.document.into_into_dart().into_dart(),
+            self.updated_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot,
+    > for crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot
+{
+    fn into_into_dart(self) -> crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::product_topic::BridgeProductBaseline
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -19820,6 +19976,7 @@ impl flutter_rust_bridge::IntoDart
             self.progress.into_into_dart().into_dart(),
             self.mcp_health.into_into_dart().into_dart(),
             self.workflow.into_into_dart().into_dart(),
+            self.plan.into_into_dart().into_dart(),
             self.updated_at.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -24496,6 +24653,50 @@ impl SseEncode for crate::api::studio::types::response::BridgePersistenceStateSn
     }
 }
 
+impl SseEncode for crate::api::studio::types::thread_stream::BridgePlanDocument {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.version, serializer);
+        <String>::sse_encode(self.markdown, serializer);
+        <String>::sse_encode(self.content_hash, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::thread_stream::BridgePlanPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::thread_stream::BridgePlanPhase::Drafting => 0,
+                crate::api::studio::types::thread_stream::BridgePlanPhase::AwaitingConfirmation => {
+                    1
+                }
+                crate::api::studio::types::thread_stream::BridgePlanPhase::RevisionRequested => 2,
+                crate::api::studio::types::thread_stream::BridgePlanPhase::Approved => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.revision, serializer);
+        <crate::api::studio::types::thread_stream::BridgePlanPhase>::sse_encode(
+            self.state, serializer,
+        );
+        <Option<crate::api::studio::types::thread_stream::BridgePlanDocument>>::sse_encode(
+            self.document,
+            serializer,
+        );
+        <i64>::sse_encode(self.updated_at, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::product_topic::BridgeProductBaseline {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -26621,6 +26822,9 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         <Option<String>>::sse_encode(self.progress, serializer);
         <Option<crate::api::studio::types::thread_stream::BridgeThreadMcpHealthSnapshot>>::sse_encode(self.mcp_health, serializer);
         <Option<crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot>>::sse_encode(self.workflow, serializer);
+        <Option<crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot>>::sse_encode(
+            self.plan, serializer,
+        );
         <i64>::sse_encode(self.updated_at, serializer);
     }
 }
@@ -28412,6 +28616,30 @@ impl SseEncode for Option<crate::api::studio::types::settings::BridgeModelReason
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::settings::BridgeModelReasoningDescriptor>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgePlanDocument> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::thread_stream::BridgePlanDocument>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::thread_stream::BridgePlanRuntimeSnapshot>::sse_encode(
                 value, serializer,
             );
         }

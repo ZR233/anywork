@@ -27,8 +27,8 @@ Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由�
 服务端启动 snapshot 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
 recovery、MCP/LSP、provider usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
 Thread workspace 单独包含当前
-状态、pending Interaction、ThreadRuntimeView、workflow 投影和有界 Timeline 窗口；不存在
-taskDirectory。Client 只将聚合读取用于一次 typed bootstrap，拆入各自 read model；正常命令成功
+状态、pending Interaction、ThreadRuntimeView、workflow 投影、Plan 投影和有界 Timeline 窗口；
+不存在 taskDirectory。Client 只将聚合读取用于一次 typed bootstrap，拆入各自 read model；正常命令成功
 不重读聚合状态。runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
 epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner epoch。Thread 目录条目携带
 会话工作区模式（`local | worktree`）与会话工作区地址 `workspacePath`，只读投影为侧栏与会话
@@ -36,6 +36,11 @@ epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner e
 Settings snapshot 以 `modeModelRoutes` 暴露全局 Mode 默认 selector，并继续以 `roles` 暴露四个
 系统子代理 route；Thread runtime snapshot 另行暴露当前 Thread 的 typed `modelRoute`、revision
 与 available 状态。两者职责不同，GUI 不用 Mode 默认值覆盖已有 Thread 的 route。
+
+Thread runtime snapshot 同时派生只读 Plan 投影：当前状态、revision、当前计划文档（含内容
+hash）与更新时间，取自 canonical `studio.plan` Thread 扩展；扩展缺失即无计划投影，不物化
+默认状态、不写状态。该投影只供 GUI 只读展示已批准计划与状态栏计划入口，不新增 Plan 协议
+状态、持久化实体或第二个事实源（见 [13](./13-plan.md)）。
 
 已有 Thread 的模型切换请求携带 `expectedModelRouteRevision`，取自客户端已观察到的
 canonical `modelRoute.revision`。该令牌对应模型路由 extension 的版本，既不是订阅通知

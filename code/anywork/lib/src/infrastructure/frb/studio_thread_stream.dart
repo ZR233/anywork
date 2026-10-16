@@ -721,6 +721,30 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     workflow: value.workflow == null
         ? null
         : _workflowRuntimeFromFrb(value.workflow!),
+    plan: value.plan == null ? null : _planRuntimeFromFrb(value.plan!),
+  );
+}
+
+PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
+  final document = value.document;
+  return PlanRuntimeView(
+    revision: value.revision.toInt(),
+    state: switch (value.state) {
+      frb.BridgePlanPhase.drafting => PlanRuntimePhase.drafting,
+      frb.BridgePlanPhase.awaitingConfirmation =>
+        PlanRuntimePhase.awaitingConfirmation,
+      frb.BridgePlanPhase.revisionRequested =>
+        PlanRuntimePhase.revisionRequested,
+      frb.BridgePlanPhase.approved => PlanRuntimePhase.approved,
+    },
+    document: document == null
+        ? null
+        : PlanDocumentView(
+            version: document.version.toInt(),
+            markdown: document.markdown,
+            contentHash: document.contentHash,
+          ),
+    updatedAt: _dateFromUnix(value.updatedAt),
   );
 }
 

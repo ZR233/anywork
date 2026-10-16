@@ -23,12 +23,16 @@ class ThreadStatusConnector extends ConsumerWidget {
     this.showTodo = false,
     this.todoExpanded = false,
     this.onToggleTodo,
+    this.showPlanEntry = false,
+    this.onOpenPlan,
   });
 
   final String threadId;
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -53,6 +57,8 @@ class ThreadStatusConnector extends ConsumerWidget {
       showTodo: showTodo,
       todoExpanded: todoExpanded,
       onToggleTodo: onToggleTodo,
+      showPlanEntry: showPlanEntry,
+      onOpenPlan: onOpenPlan,
     );
   }
 }
@@ -67,6 +73,8 @@ class ThreadStatusBar extends StatelessWidget {
     this.showTodo = false,
     this.todoExpanded = false,
     this.onToggleTodo,
+    this.showPlanEntry = false,
+    this.onOpenPlan,
   });
 
   final StudioThread thread;
@@ -76,6 +84,8 @@ class ThreadStatusBar extends StatelessWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
 
   @override
   Widget build(BuildContext context) {
@@ -123,7 +133,8 @@ class ThreadStatusBar extends StatelessWidget {
                     (thread.isRoot &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
                     (!showCapabilities && capabilityLabel.isNotEmpty) ||
-                    (!showLspActivity && lspActiveServers.isNotEmpty);
+                    (!showLspActivity && lspActiveServers.isNotEmpty) ||
+                    showPlanEntry;
                 final rootEffort = thread.isRoot ? route?.effort?.trim() : null;
                 return Row(
                   children: [
@@ -200,6 +211,8 @@ class ThreadStatusBar extends StatelessWidget {
                         lspServers: showLspActivity
                             ? const <LspServerStateView>[]
                             : lspActiveServers,
+                        showPlanEntry: showPlanEntry,
+                        onOpenPlan: onOpenPlan,
                       ),
                     const Spacer(),
                     const SizedBox(width: 8),
@@ -464,26 +477,38 @@ String _runtimeCapabilityLabel(
   return parts.join(' · ');
 }
 
-class _StatusOverflow extends StatelessWidget {
+class _StatusOverflow extends StatefulWidget {
   const _StatusOverflow({
     required this.effort,
     required this.capabilities,
     required this.runtime,
     this.lspServers = const <LspServerStateView>[],
+    this.showPlanEntry = false,
+    this.onOpenPlan,
   });
 
   final String? effort;
   final String capabilities;
   final ThreadRuntimeView runtime;
   final List<LspServerStateView> lspServers;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
+
+  @override
+  State<_StatusOverflow> createState() => _StatusOverflowState();
+}
+
+class _StatusOverflowState extends State<_StatusOverflow> {
+  final MenuController _controller = MenuController();
 
   @override
   Widget build(BuildContext context) {
     return MenuAnchor(
       key: const ValueKey('status-overflow'),
+      controller: _controller,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        if (effort case final value?)
+        if (widget.effort case final value?)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Text(
@@ -492,27 +517,37 @@ class _StatusOverflow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-        if (capabilities.isNotEmpty)
+        if (widget.capabilities.isNotEmpty)
           MenuItemButton(
             overflowAxis: Axis.vertical,
             onPressed: () =>
                 _showDetail(context, _StatusOverflowAction.capabilities),
             child: Text(
-              capabilities,
+              widget.capabilities,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
           ),
-        if (lspServers.isNotEmpty)
+        if (widget.lspServers.isNotEmpty)
           MenuItemButton(
             key: StudioDriverKeys.lspActivityOverflow(),
             overflowAxis: Axis.vertical,
             onPressed: () => _showDetail(context, _StatusOverflowAction.lsp),
             child: Text(
-              _lspOverflowSummary(context, lspServers),
+              _lspOverflowSummary(context, widget.lspServers),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
+          ),
+        if (widget.showPlanEntry)
+          MenuItemButton(
+            key: StudioDriverKeys.statusPlanEntry,
+            overflowAxis: Axis.vertical,
+            onPressed: () {
+              _controller.close();
+              widget.onOpenPlan?.call();
+            },
+            child: Text(context.l10n.statusPlanEntry),
           ),
       ],
       builder: (context, controller, child) => IconButton(
@@ -532,8 +567,12 @@ class _StatusOverflow extends StatelessWidget {
 
   void _showDetail(BuildContext context, _StatusOverflowAction action) {
     final detail = switch (action) {
-      _StatusOverflowAction.capabilities => _CapabilityDetail(runtime: runtime),
-      _StatusOverflowAction.lsp => _LspActivityDetail(servers: lspServers),
+      _StatusOverflowAction.capabilities => _CapabilityDetail(
+        runtime: widget.runtime,
+      ),
+      _StatusOverflowAction.lsp => _LspActivityDetail(
+        servers: widget.lspServers,
+      ),
     };
     showDialog<void>(
       context: context,

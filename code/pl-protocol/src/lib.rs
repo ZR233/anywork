@@ -44,9 +44,9 @@ pub use agent_session::plan::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, AgentSessionPlanAvailableTransition,
     AgentSessionPlanConfirmationPurpose, AgentSessionPlanDocument,
     AgentSessionPlanMutationResponse, AgentSessionPlanOperation, AgentSessionPlanOperationReceipt,
-    AgentSessionPlanPhase, AgentSessionPlanResultCode, AgentSessionPlanSnapshot,
-    AgentSessionPlanState, AgentSessionPlanTransitionActor, AgentSessionPlanTransitionError,
-    AgentSessionPlanTransitionRecord,
+    AgentSessionPlanPhase, AgentSessionPlanResultCode, AgentSessionPlanRuntimeSnapshot,
+    AgentSessionPlanSnapshot, AgentSessionPlanState, AgentSessionPlanTransitionActor,
+    AgentSessionPlanTransitionError, AgentSessionPlanTransitionRecord,
 };
 pub use billing::{
     InferenceBillingAppend, InferenceBillingRecord, InferenceModelObservation,

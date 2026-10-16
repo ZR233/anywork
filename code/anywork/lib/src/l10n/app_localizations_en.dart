@@ -1232,6 +1232,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanAwaitingConfirmation => 'Awaiting confirmation';
 
   @override
+  String get interactionPlanApproved => 'Approved';
+
+  @override
+  String get statusPlanEntry => 'Plan';
+
+  @override
   String get interactionPlanViewDetails => 'View full plan';
 
   @override

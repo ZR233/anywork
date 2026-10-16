@@ -251,6 +251,7 @@ pub struct BridgeThreadRuntimeSnapshot {
     pub progress: Option<String>,
     pub mcp_health: Option<BridgeThreadMcpHealthSnapshot>,
     pub workflow: Option<BridgeWorkflowRuntimeSnapshot>,
+    pub plan: Option<BridgePlanRuntimeSnapshot>,
     pub updated_at: i64,
 }
 
@@ -305,6 +306,30 @@ pub struct BridgeWorkflowRun {
 pub enum BridgeWorkflowRunLifecycle {
     Active,
     Terminal,
+}
+
+/// 状态栏所需的 canonical Plan 投影。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgePlanRuntimeSnapshot {
+    pub revision: u64,
+    pub state: BridgePlanPhase,
+    pub document: Option<BridgePlanDocument>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgePlanDocument {
+    pub version: u64,
+    pub markdown: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgePlanPhase {
+    Drafting,
+    AwaitingConfirmation,
+    RevisionRequested,
+    Approved,
 }
 
 #[derive(Debug, Clone, PartialEq)]

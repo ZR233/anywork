@@ -149,6 +149,28 @@ pub struct AgentSessionPlanSnapshot {
     pub allowed_transitions: Vec<AgentSessionPlanAvailableTransition>,
 }
 
+/// Thread stream 向 GUI 暴露的当前 Plan 投影。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionPlanRuntimeSnapshot {
+    pub revision: u64,
+    pub state: AgentSessionPlanPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<AgentSessionPlanDocument>,
+    pub updated_at: i64,
+}
+
+impl From<&AgentSessionPlanState> for AgentSessionPlanRuntimeSnapshot {
+    fn from(state: &AgentSessionPlanState) -> Self {
+        Self {
+            revision: state.revision,
+            state: state.state,
+            document: state.document.clone(),
+            updated_at: state.updated_at,
+        }
+    }
+}
+
 /// Plan mutation 的稳定结果码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

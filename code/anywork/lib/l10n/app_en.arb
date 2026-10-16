@@ -711,6 +711,8 @@
   "interactionPlanConfirmSubtitle": "Confirm it, or describe what should change.",
   "interactionPlanReadyTitle": "Implementation plan ready",
   "interactionPlanAwaitingConfirmation": "Awaiting confirmation",
+  "interactionPlanApproved": "Approved",
+  "statusPlanEntry": "Plan",
   "interactionPlanViewDetails": "View full plan",
   "interactionPlanDetailsTitle": "Implementation plan",
   "interactionPlanComposerPausedHint": "Normal messages are paused to keep plan feedback unambiguous.",

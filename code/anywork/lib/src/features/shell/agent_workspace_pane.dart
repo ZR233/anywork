@@ -11,9 +11,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   static const _todoPanelWidth = 304.0;
   static const _defaultPlanPanelWidth = 560.0;
   static const _minimumPlanPanelWidth = 320.0;
-  static const _maximumPlanPanelWidth = 720.0;
   static const _minimumTimelineWidth = 560.0;
   static const _minimumPlanTimelineWidth = 600.0;
+  static const _planResizeStep = 24.0;
 
   /// footer 的高度上限 = 窗口高度 − 时间线**最小可视高度**。
   ///
@@ -44,8 +44,14 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final todo = workspace.todo;
-        final plan = workspace.activeInteraction?.planConfirmation;
-        if (plan == null) {
+        final pendingPlan = workspace.activeInteraction?.planConfirmation;
+        final approvedPlan = _approvedPlanPresentation(workspace.runtime.plan);
+        // pending 与 approved 互斥：确认中只用 interaction 正文，批准后才用投影文档。
+        final presentedPlan = pendingPlan != null
+            ? _WorkspacePlanPresentation.fromPending(pendingPlan)
+            : approvedPlan;
+        final planIdentity = presentedPlan?.identity;
+        if (_expandedPlanByThread[threadId] != planIdentity) {
           _expandedPlanByThread.remove(threadId);
         }
         // 覆盖与否只取决于窗口能否并排放置默认宽度面板与最小对话区，
@@ -54,14 +60,22 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             constraints.maxWidth <
             _defaultPlanPanelWidth + _minimumPlanTimelineWidth;
         final planExpanded =
-            plan != null &&
-            _expandedPlanByThread[threadId] == plan.interactionId;
-        // 并排保留对话区最小可用宽度；窄窗覆盖时面板可占满可用宽度。
+            planIdentity != null &&
+            _expandedPlanByThread[threadId] == planIdentity;
+        // 并排上限 = min(可用宽度 − 对话区最小宽度, 可用宽度 × 0.5)；
+        // 覆盖布局占满可用宽度。像素宽度只在 LayoutBuilder 内由可用宽度推导一次。
         final planMaximumWidth = planOverlaysTimeline
             ? constraints.maxWidth
-            : constraints.maxWidth - _minimumPlanTimelineWidth;
-        final planPanelWidth = _clampPlanPanelWidth(
+            : [
+                constraints.maxWidth - _minimumPlanTimelineWidth,
+                constraints.maxWidth * 0.5,
+              ].reduce((a, b) => a < b ? a : b);
+        final planMinimumWidth = planMaximumWidth < _minimumPlanPanelWidth
+            ? planMaximumWidth
+            : _minimumPlanPanelWidth;
+        final planPanelWidth = _normalizePlanPanelWidth(
           _planPanelWidth ?? _defaultPlanPanelWidth,
+          planMinimumWidth,
           planMaximumWidth,
         );
         final todoInDrawer =
@@ -70,19 +84,20 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         final footerMaxHeight = constraints.hasBoundedHeight
             ? _footerMaxHeight(constraints.maxHeight)
             : null;
-        if (plan != null &&
-            _autoOpenedPlanByThread[threadId] != plan.interactionId) {
-          _autoOpenedPlanByThread[threadId] = plan.interactionId;
+        if (pendingPlan != null &&
+            _autoOpenedPlanByThread[threadId] != pendingPlan.interactionId) {
+          _autoOpenedPlanByThread[threadId] = pendingPlan.interactionId;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             final current = ref.read(shellComposerWorkspaceProvider);
             if (current?.threadId != threadId ||
                 current?.activeInteraction?.planConfirmation?.interactionId !=
-                    plan.interactionId) {
+                    pendingPlan.interactionId) {
               return;
             }
             setState(
-              () => _expandedPlanByThread[threadId] = plan.interactionId,
+              () => _expandedPlanByThread[threadId] =
+                  'interaction:${pendingPlan.interactionId}',
             );
           });
         }
@@ -122,13 +137,13 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                                       Positioned.fill(
                                         child: _AgentTimelineHost(
                                           threadId: threadId,
-                                          planConfirmation: plan,
+                                          planConfirmation: pendingPlan,
                                           planExpanded: planExpanded,
-                                          onPlanToggle: plan == null
+                                          onPlanToggle: pendingPlan == null
                                               ? null
                                               : () => _togglePlan(
                                                   threadId,
-                                                  plan.interactionId,
+                                                  'interaction:${pendingPlan.interactionId}',
                                                 ),
                                         ),
                                       ),
@@ -174,18 +189,25 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                                           ),
                                         ),
                                       if (planOverlaysTimeline &&
-                                          plan != null &&
+                                          presentedPlan != null &&
                                           planExpanded)
                                         Positioned(
                                           top: 0,
                                           right: 0,
                                           bottom: 0,
                                           width: planPanelWidth,
-                                          child: _buildPlanPanel(
-                                            plan: plan,
-                                            threadId: threadId,
-                                            maximumWidth: planMaximumWidth,
-                                            overlay: true,
+                                          child: ConstrainedBox(
+                                            constraints: BoxConstraints(
+                                              minWidth: planMinimumWidth,
+                                              maxWidth: planMaximumWidth,
+                                            ),
+                                            child: _buildPlanPanel(
+                                              presentation: presentedPlan,
+                                              threadId: threadId,
+                                              minimumWidth: planMinimumWidth,
+                                              maximumWidth: planMaximumWidth,
+                                              overlay: true,
+                                            ),
                                           ),
                                         ),
                                     ],
@@ -210,20 +232,34 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                                             );
                                           }
                                         },
+                                  showPlanEntry: approvedPlan != null,
+                                  onOpenPlan: approvedPlan == null
+                                      ? null
+                                      : () => _openPlan(
+                                          threadId,
+                                          approvedPlan.identity,
+                                        ),
                                 ),
                               ],
                             ),
                           ),
                           if (!planOverlaysTimeline &&
-                              plan != null &&
+                              presentedPlan != null &&
                               planExpanded)
-                            SizedBox(
-                              width: planPanelWidth,
-                              child: _buildPlanPanel(
-                                plan: plan,
-                                threadId: threadId,
-                                maximumWidth: planMaximumWidth,
-                                overlay: false,
+                            ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minWidth: planMinimumWidth,
+                                maxWidth: planMaximumWidth,
+                              ),
+                              child: SizedBox(
+                                width: planPanelWidth,
+                                child: _buildPlanPanel(
+                                  presentation: presentedPlan,
+                                  threadId: threadId,
+                                  minimumWidth: planMinimumWidth,
+                                  maximumWidth: planMaximumWidth,
+                                  overlay: false,
+                                ),
                               ),
                             ),
                           if (!planExpanded &&
@@ -260,18 +296,34 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     ref.read(anyworkClientProvider).retrySession(threadId);
   }
 
-  void _togglePlan(String threadId, String interactionId) {
+  void _togglePlan(String threadId, String identity) {
     setState(() {
-      if (_expandedPlanByThread[threadId] == interactionId) {
+      if (_expandedPlanByThread[threadId] == identity) {
         _expandedPlanByThread.remove(threadId);
       } else {
-        _expandedPlanByThread[threadId] = interactionId;
+        _expandedPlanByThread[threadId] = identity;
       }
     });
   }
 
+  void _openPlan(String threadId, String identity) {
+    setState(() => _expandedPlanByThread[threadId] = identity);
+  }
+
   void _closePlan(String threadId) {
     setState(() => _expandedPlanByThread.remove(threadId));
+  }
+
+  static _WorkspacePlanPresentation? _approvedPlanPresentation(
+    PlanRuntimeView? plan,
+  ) {
+    final document = plan?.document;
+    if (plan == null ||
+        plan.state != PlanRuntimePhase.approved ||
+        document == null) {
+      return null;
+    }
+    return _WorkspacePlanPresentation.fromApproved(document);
   }
 
   /// footer 可用高度上限：先给时间线留下最小可视高度，剩余高度交给 footer。
@@ -285,8 +337,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   /// 计划详情面板：左边缘分隔条 + 内容。并排与覆盖共用，避免语义偏差。
   Widget _buildPlanPanel({
-    required PlanConfirmationView plan,
+    required _WorkspacePlanPresentation presentation,
     required String threadId,
+    required double minimumWidth,
     required double maximumWidth,
     required bool overlay,
   }) {
@@ -295,12 +348,19 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         _PlanResizeHandle(
           key: StudioDriverKeys.planResizeHandle,
           label: context.l10n.planResize,
-          onDelta: (delta) => _applyPlanPanelDelta(delta, maximumWidth),
+          onDelta: (delta) =>
+              _applyPlanPanelDelta(delta, minimumWidth, maximumWidth),
           onReset: _resetPlanPanelWidth,
+          step: _planResizeStep,
         ),
         Expanded(
           child: PlanDetailPanel(
-            plan: plan,
+            identity: presentation.identity,
+            markdown: presentation.markdown,
+            statusLabel: presentation.pending
+                ? context.l10n.interactionPlanAwaitingConfirmation
+                : context.l10n.interactionPlanApproved,
+            markdownStatus: presentation.pending ? 'pending' : 'approved',
             overlay: overlay,
             onClose: () => _closePlan(threadId),
           ),
@@ -312,13 +372,22 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   /// 在当前目标宽度基础上累计增量，而非从本次 build 的宽度重算：
   /// 先把当前状态收敛到当前限制，再加 delta 并再次收敛，确保连续拖拽或连按
   /// 方向键的增量逐步累加，不会相互覆盖。
-  void _applyPlanPanelDelta(double delta, double maximumWidth) {
+  void _applyPlanPanelDelta(
+    double delta,
+    double minimumWidth,
+    double maximumWidth,
+  ) {
     setState(() {
-      final base = _clampPlanPanelWidth(
+      final base = _normalizePlanPanelWidth(
         _planPanelWidth ?? _defaultPlanPanelWidth,
+        minimumWidth,
         maximumWidth,
       );
-      _planPanelWidth = _clampPlanPanelWidth(base + delta, maximumWidth);
+      _planPanelWidth = _normalizePlanPanelWidth(
+        base + delta,
+        minimumWidth,
+        maximumWidth,
+      );
     });
   }
 
@@ -326,16 +395,43 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     setState(() => _planPanelWidth = _defaultPlanPanelWidth);
   }
 
-  /// 将期望宽度收敛到 [最小值, 可用空间]；可用空间极小时直接填满，避免溢出窗口。
-  static double _clampPlanPanelWidth(double desired, double available) {
-    final maximum = available < _minimumPlanPanelWidth
-        ? available
-        : available.clamp(_minimumPlanPanelWidth, _maximumPlanPanelWidth);
-    final minimum = maximum < _minimumPlanPanelWidth
-        ? maximum
-        : _minimumPlanPanelWidth;
+  /// 用 LayoutBuilder 算出的同一 bounds 规范化目标宽度，避免拖拽死区。
+  static double _normalizePlanPanelWidth(
+    double desired,
+    double minimum,
+    double maximum,
+  ) {
+    if (maximum <= minimum) return maximum;
     return desired.clamp(minimum, maximum);
   }
+}
+
+class _WorkspacePlanPresentation {
+  const _WorkspacePlanPresentation({
+    required this.identity,
+    required this.markdown,
+    required this.pending,
+  });
+
+  factory _WorkspacePlanPresentation.fromPending(PlanConfirmationView plan) {
+    return _WorkspacePlanPresentation(
+      identity: 'interaction:${plan.interactionId}',
+      markdown: plan.markdown,
+      pending: true,
+    );
+  }
+
+  factory _WorkspacePlanPresentation.fromApproved(PlanDocumentView document) {
+    return _WorkspacePlanPresentation(
+      identity: 'approved:${document.version}',
+      markdown: document.markdown,
+      pending: false,
+    );
+  }
+
+  final String identity;
+  final String markdown;
+  final bool pending;
 }
 
 /// 计划详情面板左边缘分隔条（design/13-plan.md §13）。
@@ -349,6 +445,7 @@ class _PlanResizeHandle extends StatefulWidget {
     required this.label,
     required this.onDelta,
     required this.onReset,
+    required this.step,
     super.key,
   });
 
@@ -360,6 +457,9 @@ class _PlanResizeHandle extends StatefulWidget {
 
   /// 恢复到默认宽度。
   final VoidCallback onReset;
+
+  /// 方向键逐级调整的步长。
+  final double step;
 
   @override
   State<_PlanResizeHandle> createState() => _PlanResizeHandleState();
@@ -374,14 +474,39 @@ class _PlanResizeHandleState extends State<_PlanResizeHandle> {
     final color = active
         ? context.colors.primary.withValues(alpha: 0.6)
         : context.colors.outlineVariant.withValues(alpha: 0.5);
-    return Semantics(
-      label: widget.label,
-      child: Tooltip(
-        message: widget.label,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.resizeColumn,
-          onEnter: (_) => setState(() => _hovering = true),
-          onExit: (_) => setState(() => _hovering = false),
+    return FocusableActionDetector(
+      actions: {
+        _WidenPlanIntent: CallbackAction<_WidenPlanIntent>(
+          onInvoke: (_) {
+            widget.onDelta(widget.step);
+            return null;
+          },
+        ),
+        _NarrowPlanIntent: CallbackAction<_NarrowPlanIntent>(
+          onInvoke: (_) {
+            widget.onDelta(-widget.step);
+            return null;
+          },
+        ),
+        _ResetPlanWidthIntent: CallbackAction<_ResetPlanWidthIntent>(
+          onInvoke: (_) {
+            widget.onReset();
+            return null;
+          },
+        ),
+      },
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.arrowLeft): _WidenPlanIntent(),
+        SingleActivator(LogicalKeyboardKey.arrowRight): _NarrowPlanIntent(),
+        SingleActivator(LogicalKeyboardKey.home): _ResetPlanWidthIntent(),
+      },
+      onShowHoverHighlight: (hovering) => setState(() => _hovering = hovering),
+      mouseCursor: SystemMouseCursors.resizeColumn,
+      child: Semantics(
+        label: widget.label,
+        button: true,
+        child: Tooltip(
+          message: widget.label,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onHorizontalDragUpdate: (event) => widget.onDelta(-event.delta.dx),
@@ -392,6 +517,18 @@ class _PlanResizeHandleState extends State<_PlanResizeHandle> {
       ),
     );
   }
+}
+
+class _WidenPlanIntent extends Intent {
+  const _WidenPlanIntent();
+}
+
+class _NarrowPlanIntent extends Intent {
+  const _NarrowPlanIntent();
+}
+
+class _ResetPlanWidthIntent extends Intent {
+  const _ResetPlanWidthIntent();
 }
 
 /// footer 预算低于该值时启用紧凑布局：让 composer 适度收起留白与输入行数（保留操作），
@@ -414,6 +551,8 @@ class _AdaptiveFooter extends StatelessWidget {
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
+    this.showPlanEntry = false,
+    this.onOpenPlan,
   });
 
   final String threadId;
@@ -421,6 +560,8 @@ class _AdaptiveFooter extends StatelessWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool showPlanEntry;
+  final VoidCallback? onOpenPlan;
 
   @override
   Widget build(BuildContext context) {
@@ -430,6 +571,8 @@ class _AdaptiveFooter extends StatelessWidget {
         showTodo: showTodo,
         todoExpanded: todoExpanded,
         onToggleTodo: onToggleTodo,
+        showPlanEntry: showPlanEntry,
+        onOpenPlan: onOpenPlan,
         compact: false,
         contentKey: StudioDriverKeys.workspaceFooterScroll,
       );
@@ -444,6 +587,8 @@ class _AdaptiveFooter extends StatelessWidget {
           showTodo: showTodo,
           todoExpanded: todoExpanded,
           onToggleTodo: onToggleTodo,
+          showPlanEntry: showPlanEntry,
+          onOpenPlan: onOpenPlan,
           compact: constraints.maxHeight < _compactFooterBudget,
           // footer 区域的可定位句柄：内容不再整体滚动，但保持同一 key，便于驱动按区域定位。
           contentKey: StudioDriverKeys.workspaceFooterScroll,

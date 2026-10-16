@@ -2177,6 +2177,18 @@ abstract class AppLocalizations {
   /// **'Awaiting confirmation'**
   String get interactionPlanAwaitingConfirmation;
 
+  /// No description provided for @interactionPlanApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved'**
+  String get interactionPlanApproved;
+
+  /// No description provided for @statusPlanEntry.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan'**
+  String get statusPlanEntry;
+
   /// No description provided for @interactionPlanViewDetails.
   ///
   /// In en, this message translates to:

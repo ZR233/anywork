@@ -340,6 +340,10 @@ class PlanRecoveryJourney {
       priorUserRows,
     );
     await shot('restart-answered');
+    await _openApprovedPlanFromOverflow(
+      'restart_approved',
+      expectedMarkdown: _approvePlan,
+    );
 
     // Stage the Revise branch: a second session with its own pending Plan, so
     // the second normal shutdown also happens while a confirmation is pending.
@@ -468,6 +472,10 @@ class PlanRecoveryJourney {
       revisedUserRows,
     );
     await shot('recheck-answered');
+    await _openApprovedPlanFromOverflow(
+      'recheck_revised_approved',
+      expectedMarkdown: _revisedPlan,
+    );
 
     // Neither answered Plan may re-pop, in either reopened session.
     await _ensureThreadOpen(approveThreadId, 'recheck_approve_thread');
@@ -475,6 +483,10 @@ class PlanRecoveryJourney {
     checks['answeredApprovePlanNotRepop'] =
         activeInteractionOf(approveThread) == null;
     observations['recheckApproveThreadFinal'] = summarize(approveThread);
+    await _openApprovedPlanFromOverflow(
+      'recheck_approve_reopen',
+      expectedMarkdown: _approvePlan,
+    );
     await _ensureThreadOpen(threadId, 'recheck_revise_thread');
     final reviseThread = await _assertNoPendingPlan('recheck_revise_thread');
     checks['answeredRevisePlanNotRepop'] =
@@ -736,6 +748,84 @@ class PlanRecoveryJourney {
       checks['${label}ComposerReplaced'] = false;
     }
     return card;
+  }
+
+  /// Opens the approved Plan through the overflow menu and proves the same
+  /// document is still readable after confirmation has left the timeline.
+  Future<void> _openApprovedPlanFromOverflow(
+    String label, {
+    required String expectedMarkdown,
+  }) async {
+    await waitFor((snapshot) {
+      final plan = snapshot['plan'];
+      return plan is Map &&
+          plan['state'] == 'approved' &&
+          plan['markdown'] == expectedMarkdown;
+    }, '${label}_plan_projection');
+    await _tapForWidget(
+      'status-overflow',
+      'status-plan-entry',
+      '$label-overflow-open',
+      present: true,
+    );
+    await _tapForWidget(
+      'status-plan-entry',
+      'plan-details',
+      '$label-plan-entry',
+      present: true,
+    );
+    await driver.waitFor(
+      find.byValueKey('plan-details-scroll'),
+      timeout: const Duration(seconds: 30),
+    );
+    final opened = await snapshot();
+    final plan = opened['plan'];
+    checks['${label}PlanDetailsVisible'] = true;
+    checks['${label}PlanMarkdownMatches'] =
+        plan is Map && plan['markdown'] == expectedMarkdown;
+    checks['${label}PlanPanelRendersMarkdown'] = await _planPanelRendersHeading(
+      expectedMarkdown,
+    );
+    await shot('$label-approved-details');
+    await _tapForWidget(
+      'plan-details-close',
+      'plan-details',
+      '$label-details-close',
+      present: false,
+    );
+    checks['${label}PlanDetailsClosed'] = true;
+  }
+
+  /// Visible H1 of [markdown] after `_AgentMarkdown` / GptMarkdown strips `# `.
+  String _planHeadingText(String markdown) {
+    for (final line in markdown.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.startsWith('# ')) {
+        final heading = trimmed.substring(2).trim();
+        if (heading.isNotEmpty) return heading;
+      }
+    }
+    throw StateError('plan markdown has no H1 heading: $markdown');
+  }
+
+  /// Proves the open details panel itself rendered [expectedMarkdown]'s heading.
+  ///
+  /// The snapshot `plan.markdown` check only confirms the runtime projection.
+  /// Driver `getText` cannot read `Text.rich` (GptMarkdown H1), so presence of
+  /// a panel descendant whose plain text equals the heading is the evidence:
+  /// `find.text` matches `Text.textSpan.toPlainText()` when `Text.data` is null.
+  Future<bool> _planPanelRendersHeading(String expectedMarkdown) async {
+    final heading = _planHeadingText(expectedMarkdown);
+    final inPanel = find.descendant(
+      of: find.byValueKey('plan-details-scroll'),
+      matching: find.text(heading),
+    );
+    try {
+      await driver.waitFor(inPanel, timeout: const Duration(seconds: 10));
+      return true;
+    } on Object {
+      return false;
+    }
   }
 
   /// Opens and closes the read-only Plan details panel through the product UI.

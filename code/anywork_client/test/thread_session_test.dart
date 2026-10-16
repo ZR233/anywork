@@ -179,7 +179,7 @@ final class _RetryTimer implements Timer {
   void cancel() => isActive = false;
 }
 
-ThreadWorkspace _workspace({int revision = 1}) {
+ThreadWorkspace _workspace({int revision = 1, ThreadRuntimeView? runtime}) {
   final thread = StudioThread(
     id: 'thread',
     projectId: 'project',
@@ -193,15 +193,44 @@ ThreadWorkspace _workspace({int revision = 1}) {
     revision: revision,
     items: const [],
     interactions: const [],
-    runtime: const ThreadRuntimeView(
-      model: 'model',
-      contextTokens: 0,
-      contextWindow: 1,
-      totalTokens: 0,
-      costLabel: '',
-      activeSkills: [],
-      activeMcpServers: [],
-      activeLspServers: [],
+    runtime:
+        runtime ??
+        const ThreadRuntimeView(
+          model: 'model',
+          contextTokens: 0,
+          contextWindow: 1,
+          totalTokens: 0,
+          costLabel: '',
+          activeSkills: [],
+          activeMcpServers: [],
+          activeLspServers: [],
+        ),
+  );
+}
+
+ThreadRuntimeView _approvedPlanRuntime({
+  required String markdown,
+  required int version,
+  String contentHash = 'hash-v3',
+}) {
+  return ThreadRuntimeView(
+    model: 'model',
+    contextTokens: 0,
+    contextWindow: 1,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: const [],
+    activeMcpServers: const [],
+    activeLspServers: const [],
+    plan: PlanRuntimeView(
+      revision: 7,
+      state: PlanRuntimePhase.approved,
+      updatedAt: DateTime.utc(2026, 3, 1),
+      document: PlanDocumentView(
+        version: version,
+        markdown: markdown,
+        contentHash: contentHash,
+      ),
     ),
   );
 }
@@ -250,6 +279,76 @@ Future<void> _deliverSnapshot(
 }
 
 void main() {
+  test('runtime snapshot and updates expose approved plan markdown', () async {
+    final transport = _FakeTransport();
+    final session = _session(transport);
+    addTearDown(() async {
+      for (final open in transport.pendingOpens) {
+        if (!open.isCompleted) {
+          open.complete(_FakeWindow(initialSnapshot: _snapshot(1)));
+        }
+      }
+      await session.close();
+      await transport.close();
+    });
+    session.start();
+    final established = session.source.waitFor((value) => value.hasSnapshot);
+    transport.frames.add(
+      ThreadSnapshotFrame(
+        workspace: _workspace(
+          runtime: _approvedPlanRuntime(
+            markdown: '# Approved plan\n\nKeep the current document.',
+            version: 3,
+          ),
+        ),
+      ),
+    );
+    await established;
+    expect(session.state.runtime!.plan, isNotNull);
+    expect(session.state.runtime!.plan!.state, PlanRuntimePhase.approved);
+    expect(session.state.runtime!.plan!.document!.version, 3);
+    expect(
+      session.state.runtime!.plan!.document!.markdown,
+      '# Approved plan\n\nKeep the current document.',
+    );
+
+    transport.frames.add(
+      ThreadNotificationFrame(
+        threadId: 'thread',
+        epoch: 1,
+        baseRevision: 1,
+        revision: 2,
+        update: ThreadRuntimeUpdate(
+          runtime: _approvedPlanRuntime(
+            markdown: '# Revised approved plan\n\nUse the replacement body.',
+            version: 4,
+            contentHash: 'hash-v4',
+          ),
+          todo: null,
+        ),
+      ),
+    );
+    await session.source.waitFor(
+      (value) => value.runtime?.plan?.document?.version == 4,
+    );
+    expect(
+      session.state.runtime!.plan!.document!.markdown,
+      '# Revised approved plan\n\nUse the replacement body.',
+    );
+
+    transport.frames.add(
+      ThreadNotificationFrame(
+        threadId: 'thread',
+        epoch: 1,
+        baseRevision: 2,
+        revision: 3,
+        update: ThreadRuntimeUpdate(runtime: _runtimeUsage(1), todo: null),
+      ),
+    );
+    await session.source.waitFor((value) => value.runtime?.plan == null);
+    expect(session.state.runtime!.plan, isNull);
+  });
+
   test(
     'Chat capacity recovery keeps runtime synchronization independent',
     () async {
