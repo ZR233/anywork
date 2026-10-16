@@ -26,6 +26,11 @@ Riverpod、FRB 或 `Ref`，feature 不导入 FRB、adapter、transport 或 Clien
 UI 不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo integration 验收，不能
 伪造原生 provider、文件系统或进程能力。
 
+Windows 原生宿主显式选用 Skia，以规避 Impeller GLES 在高分辨率大窗口下的栅格化延迟。
+后端选择在 debug、profile 与 release 构建中保持一致。恢复 Impeller 前，须以同机普通窗口、
+最大化、还原及大尺寸窗口的帧耗时和实际显示、输入、滚动结果验证，单纯切换 GPU 或线程策略
+的改善不足以替代完整交互验证；Flutter 升级时同时核对原生后端配置接口。
+
 Client 的各领域 reducer 是 Dart 镜像的唯一 writer；FRB adapter 只做 wire 转换、传输与 native
 句柄收束。命令回执、镜像观察、生效和持久化分别表达，成功后不以聚合状态回读补齐事实。
 Widget 只负责展示与发出意图，Driver 读取同一 Client 的可见投影和诊断，不维护平行业务状态。
