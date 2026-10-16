@@ -437,6 +437,56 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSshIdentityHelper => 'Uses the ssh agent when left empty.';
 
   @override
+  String get settingsSshEditTitle => 'Edit SSH server';
+
+  @override
+  String get settingsSshPassword => 'Password (optional)';
+
+  @override
+  String get settingsSshPasswordHelper =>
+      'Saved in your system credential store, never written to ~/.ssh/config. Leave empty to use a key or prompt on connect.';
+
+  @override
+  String get settingsSshPasswordSavedHint =>
+      'Password saved — leave empty to keep';
+
+  @override
+  String get settingsSshPasswordClear => 'Clear saved password';
+
+  @override
+  String get settingsSshPasswordClearedHint =>
+      'Saved password will be cleared on save';
+
+  @override
+  String get settingsSshPasswordBadge => 'Password saved';
+
+  @override
+  String settingsSshKeyBadge(String path) {
+    return 'Key: $path';
+  }
+
+  @override
+  String get settingsSshAuthPromptTitle => 'Enter SSH password';
+
+  @override
+  String settingsSshAuthPromptSubtitle(String target) {
+    return 'Password authentication is required to connect to $target.';
+  }
+
+  @override
+  String get settingsSshAuthPasswordLabel => 'SSH password';
+
+  @override
+  String get settingsSshAuthPasswordRequired => 'Enter the SSH password';
+
+  @override
+  String get settingsSshAuthRememberPassword =>
+      'Save password in system credential store';
+
+  @override
+  String get settingsSshAuthConnect => 'Connect';
+
+  @override
   String get settingsSshReadOnlyEntry =>
       'Hand-written entry — edit it in ~/.ssh/config.';
 

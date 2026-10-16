@@ -6,8 +6,35 @@
 import '../../../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
+part 'ssh.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+class AuthenticateSshServerRequest {
+  final String alias;
+  final String password;
+  final bool rememberPassword;
+
+  const AuthenticateSshServerRequest({
+    required this.alias,
+    required this.password,
+    required this.rememberPassword,
+  });
+
+  @override
+  int get hashCode =>
+      alias.hashCode ^ password.hashCode ^ rememberPassword.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AuthenticateSshServerRequest &&
+          runtimeType == other.runtimeType &&
+          alias == other.alias &&
+          password == other.password &&
+          rememberPassword == other.rememberPassword;
+}
 
 class RemoteDirectoryEntryDto {
   final String name;
@@ -64,6 +91,7 @@ class SaveSshServerRequest {
   final int port;
   final String username;
   final String? identityFile;
+  final SshPasswordInput password;
 
   const SaveSshServerRequest({
     required this.alias,
@@ -71,6 +99,7 @@ class SaveSshServerRequest {
     required this.port,
     required this.username,
     this.identityFile,
+    required this.password,
   });
 
   @override
@@ -79,7 +108,8 @@ class SaveSshServerRequest {
       hostName.hashCode ^
       port.hashCode ^
       username.hashCode ^
-      identityFile.hashCode;
+      identityFile.hashCode ^
+      password.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -90,7 +120,8 @@ class SaveSshServerRequest {
           hostName == other.hostName &&
           port == other.port &&
           username == other.username &&
-          identityFile == other.identityFile;
+          identityFile == other.identityFile &&
+          password == other.password;
 }
 
 class SshConnectionSnapshotDto {
@@ -140,6 +171,16 @@ class SshConnectionSnapshotDto {
           errorMessage == other.errorMessage;
 }
 
+@freezed
+sealed class SshPasswordInput with _$SshPasswordInput {
+  const SshPasswordInput._();
+
+  const factory SshPasswordInput.preserve() = SshPasswordInput_Preserve;
+  const factory SshPasswordInput.replace({required String value}) =
+      SshPasswordInput_Replace;
+  const factory SshPasswordInput.clear() = SshPasswordInput_Clear;
+}
+
 class SshServerDto {
   final String alias;
   final String hostName;
@@ -149,6 +190,7 @@ class SshServerDto {
 
   /// 是否为 anywork 管理块；手写条目只读，不可编辑或删除。
   final bool managed;
+  final bool hasPassword;
 
   const SshServerDto({
     required this.alias,
@@ -157,6 +199,7 @@ class SshServerDto {
     required this.username,
     this.identityFile,
     required this.managed,
+    required this.hasPassword,
   });
 
   @override
@@ -166,7 +209,8 @@ class SshServerDto {
       port.hashCode ^
       username.hashCode ^
       identityFile.hashCode ^
-      managed.hashCode;
+      managed.hashCode ^
+      hasPassword.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -178,5 +222,6 @@ class SshServerDto {
           port == other.port &&
           username == other.username &&
           identityFile == other.identityFile &&
-          managed == other.managed;
+          managed == other.managed &&
+          hasPassword == other.hasPassword;
 }

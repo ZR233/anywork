@@ -78,10 +78,40 @@ abstract final class StudioDriverKeys {
   static const sshServerIdentityInput = ValueKey<String>(
     'ssh-server-identity-input',
   );
+  static const sshServerPasswordInput = ValueKey<String>(
+    'ssh-server-password-input',
+  );
+  static const sshServerPasswordClear = ValueKey<String>(
+    'ssh-server-password-clear',
+  );
   static const sshServerValidationError = ValueKey<String>(
     'ssh-server-validation-error',
   );
   static const sshServerSave = ValueKey<String>('ssh-server-save');
+  static const sshPasswordPromptDialog = ValueKey<String>(
+    'ssh-password-prompt-dialog',
+  );
+  static const sshPasswordPromptInput = ValueKey<String>(
+    'ssh-password-prompt-input',
+  );
+  static const sshPasswordPromptRemember = ValueKey<String>(
+    'ssh-password-prompt-remember',
+  );
+  static const sshPasswordPromptSubmit = ValueKey<String>(
+    'ssh-password-prompt-submit',
+  );
+  static const sshDeleteConfirm = ValueKey<String>('ssh-delete-confirm');
+  static const addProjectSourceLocal = ValueKey<String>(
+    'add-project-source-local',
+  );
+  static const addProjectSourceRemote = ValueKey<String>(
+    'add-project-source-remote',
+  );
+  static const addProjectContinue = ValueKey<String>('add-project-continue');
+  static const addProjectNewConnection = ValueKey<String>(
+    'add-project-new-connection',
+  );
+  static const addProjectConnect = ValueKey<String>('add-project-connect');
   static const sshDirectoryDialog = ValueKey<String>('ssh-directory-dialog');
   static const sshDirectoryList = ValueKey<String>('ssh-directory-list');
   static const sshOpenCurrentDirectory = ValueKey<String>(
@@ -198,6 +228,21 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> sshOpen(String id) =>
       ValueKey<String>('ssh-open-$id');
+
+  static ValueKey<String> sshEdit(String id) =>
+      ValueKey<String>('ssh-edit-$id');
+
+  static ValueKey<String> sshDelete(String id) =>
+      ValueKey<String>('ssh-delete-$id');
+
+  static ValueKey<String> addProjectConnectionRow(String alias) =>
+      ValueKey<String>('add-project-connection-$alias');
+
+  static ValueKey<String> addProjectConnectionEdit(String alias) =>
+      ValueKey<String>('add-project-connection-edit-$alias');
+
+  static ValueKey<String> addProjectConnectionDelete(String alias) =>
+      ValueKey<String>('add-project-connection-delete-$alias');
 
   static ValueKey<String> sshDirectoryCurrent(String path) =>
       ValueKey<String>('ssh-directory-current-$path');

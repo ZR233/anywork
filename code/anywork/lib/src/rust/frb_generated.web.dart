@@ -153,7 +153,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ArchiveThreadResult dco_decode_archive_thread_result(dynamic raw);
 
   @protected
+  AuthenticateSshServerRequest dco_decode_authenticate_ssh_server_request(
+    dynamic raw,
+  );
+
+  @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  AuthenticateSshServerRequest
+  dco_decode_box_autoadd_authenticate_ssh_server_request(dynamic raw);
 
   @protected
   BridgeAgentDirectoryData dco_decode_box_autoadd_bridge_agent_directory_data(
@@ -2188,6 +2197,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SshConnectionSnapshotDto dco_decode_ssh_connection_snapshot_dto(dynamic raw);
 
   @protected
+  SshPasswordInput dco_decode_ssh_password_input(dynamic raw);
+
+  @protected
   SshServerDto dco_decode_ssh_server_dto(dynamic raw);
 
   @protected
@@ -2317,7 +2329,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  AuthenticateSshServerRequest sse_decode_authenticate_ssh_server_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  AuthenticateSshServerRequest
+  sse_decode_box_autoadd_authenticate_ssh_server_request(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAgentDirectoryData sse_decode_box_autoadd_bridge_agent_directory_data(
@@ -4900,6 +4923,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SshPasswordInput sse_decode_ssh_password_input(SseDeserializer deserializer);
+
+  @protected
   SshServerDto sse_decode_ssh_server_dto(SseDeserializer deserializer);
 
   @protected
@@ -5054,7 +5080,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_authenticate_ssh_server_request(
+    AuthenticateSshServerRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_authenticate_ssh_server_request(
+    AuthenticateSshServerRequest self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_bridge_agent_directory_data(
@@ -8122,6 +8160,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_ssh_connection_snapshot_dto(
     SshConnectionSnapshotDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ssh_password_input(
+    SshPasswordInput self,
     SseSerializer serializer,
   );
 

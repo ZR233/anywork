@@ -322,6 +322,7 @@ SshServer _sshServerFromFrb(frb_ssh_types.SshServerDto server) {
     username: server.username,
     identityFile: server.identityFile,
     managed: server.managed,
+    hasPassword: server.hasPassword,
   );
 }
 

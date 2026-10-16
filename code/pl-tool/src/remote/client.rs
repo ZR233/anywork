@@ -61,6 +61,9 @@ pub enum RemoteClientError {
     /// The bounded transport request capacity is exhausted; no frame was admitted.
     #[error("remote request capacity is exhausted")]
     Backpressure,
+    /// SSH authentication failed (e.g. password required or rejected).
+    #[error("SSH authentication required or failed: {0}")]
+    AuthenticationFailed(String),
     #[error("remote helper protocol failed: {0}")]
     Protocol(String),
     #[error("remote helper rejected the request ({code:?}): {message}")]

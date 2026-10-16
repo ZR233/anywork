@@ -90,10 +90,20 @@ impl std::fmt::Debug for SshConnection {
     }
 }
 
+#[derive(Clone, Default)]
+struct SshPasswordStore(Arc<RwLock<HashMap<String, String>>>);
+
+impl std::fmt::Debug for SshPasswordStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SshPasswordStore(..)")
+    }
+}
+
 /// 系统 OpenSSH、helper bootstrap、远端 workspace 与自动重连的本地 owner。
 #[derive(Debug, Clone)]
 pub struct SshManager {
     servers: Arc<RwLock<HashMap<String, SshConfigEntry>>>,
+    passwords: SshPasswordStore,
     ssh_config: SshConfigFile,
     helper_assets: Option<Arc<dyn RemoteHelperAssets>>,
     connections: Arc<Mutex<HashMap<String, Arc<SshConnection>>>>,
@@ -133,6 +143,7 @@ impl SshManager {
     fn with_optional_helper_assets(helper_assets: Option<Arc<dyn RemoteHelperAssets>>) -> Self {
         Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
+            passwords: SshPasswordStore::default(),
             ssh_config: SshConfigFile::user_default().unwrap_or_else(|error| {
                 tracing::warn!(%error, "falling back to the default ssh config location");
                 SshConfigFile::default_location(".ssh/config")
@@ -149,6 +160,34 @@ impl SshManager {
             ready_revisions: watch::channel(BTreeMap::new()).0,
             desired_connections: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// 更新或清除指定服务器别名在当前进程内的 SSH 密码租约。
+    pub async fn set_server_password(&self, server_id: &str, password: Option<String>) {
+        let mut passwords = self.passwords.0.write().await;
+        match password.filter(|secret| !secret.is_empty()) {
+            Some(secret) => {
+                passwords.insert(server_id.to_string(), secret);
+            }
+            None => {
+                passwords.remove(server_id);
+            }
+        }
+    }
+
+    /// 读取当前进程内缓存的服务器 SSH 密码。
+    pub async fn server_password(&self, server_id: &str) -> Option<String> {
+        self.passwords.0.read().await.get(server_id).cloned()
+    }
+
+    /// 判断当前进程内是否持有该服务器的非空 SSH 密码。
+    pub async fn has_server_password(&self, server_id: &str) -> bool {
+        self.passwords
+            .0
+            .read()
+            .await
+            .get(server_id)
+            .is_some_and(|secret| !secret.is_empty())
     }
 
     /// 从 ssh config 文件重新加载服务器集合；文件是该数据的唯一事实源。
@@ -210,6 +249,7 @@ impl SshManager {
     pub async fn delete_server(&self, server_id: &str) -> Result<(), RemoteClientError> {
         self.ssh_config.remove_managed(server_id).await?;
         self.disconnect_server(server_id).await?;
+        self.passwords.0.write().await.remove(server_id);
         self.servers.write().await.remove(server_id);
         self.states.write().await.remove(server_id);
         self.connection_locks.lock().await.remove(server_id);
@@ -304,10 +344,14 @@ impl SshManager {
                 Ok(())
             }
             Err(error) => {
+                let code = match &error {
+                    RemoteClientError::AuthenticationFailed(_) => "sshAuthFailed",
+                    _ => "sshConnectionFailed",
+                };
                 self.set_state(
                     server_id,
                     SshConnectionState::Failed {
-                        code: "sshConnectionFailed".to_string(),
+                        code: code.to_string(),
                         message: error.to_string(),
                     },
                 )
@@ -451,7 +495,14 @@ impl SshManager {
         &self,
         profile: &SshServerProfile,
     ) -> Result<(SshConnection, RemoteHello), RemoteClientError> {
-        let platform = run_ssh_capture(profile, &self.ssh_config, "uname -s; uname -m").await?;
+        let password = self.server_password(&profile.alias).await;
+        let platform = run_ssh_capture(
+            profile,
+            &self.ssh_config,
+            password.as_deref(),
+            "uname -s; uname -m",
+        )
+        .await?;
         let target = RemoteHelperTarget::from_uname(&platform)?;
         let assets = self.helper_assets.clone().ok_or_else(|| {
             RemoteClientError::Protocol(format!(
@@ -460,8 +511,9 @@ impl SshManager {
             ))
         })?;
         let helper = load_helper(assets, target).await?;
-        let remote_path = upload_helper(profile, &self.ssh_config, &helper).await?;
-        let mut prepared = ssh_command(profile, &self.ssh_config).await?;
+        let remote_path =
+            upload_helper(profile, &self.ssh_config, password.as_deref(), &helper).await?;
+        let mut prepared = ssh_command(profile, &self.ssh_config, password.as_deref()).await?;
         prepared
             .command
             .command_mut()
@@ -503,6 +555,9 @@ impl SshManager {
                 // local SSH transport before reporting its bounded initialization diagnostic.
                 ssh::terminate_ssh_child(&mut child, "bootstrap").await?;
                 let diagnostic = ssh::initialization_diagnostic(child.stderr().take()).await?;
+                if ssh::is_ssh_auth_failure(&diagnostic) {
+                    return Err(RemoteClientError::AuthenticationFailed(diagnostic));
+                }
                 return Err(RemoteClientError::Protocol(format!(
                     "SSH helper initialization failed: {reason}; {diagnostic}"
                 )));

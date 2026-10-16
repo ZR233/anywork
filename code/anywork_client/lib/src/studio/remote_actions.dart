@@ -18,6 +18,9 @@ final class RemoteActions {
       _tasks.run(() => _transport.saveSshServer(command));
   Future<void> deleteSshServer(String alias) =>
       _tasks.run(() => _transport.deleteSshServer(alias));
+  Future<SshConnectionView> authenticateSshServer(
+    AuthenticateSshServerCommand command,
+  ) => _tasks.run(() => _transport.authenticateSshServer(command));
   Future<SshConnectionView> testSshConnection(String alias) =>
       _tasks.run(() => _transport.testSshConnection(alias));
   Future<SshConnectionView> reconnectSshServer(String alias) =>

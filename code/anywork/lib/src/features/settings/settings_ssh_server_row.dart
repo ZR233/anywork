@@ -36,91 +36,110 @@ class SshServerRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final ready = connection?.state == 'ready';
     final busy = operation != null;
+    final hasIdentity =
+        server.identityFile != null && server.identityFile!.trim().isNotEmpty;
+    final errorMessage = error ?? connection?.errorMessage;
+
     return SettingsResourceRow(
       title: server.alias,
+      subtitle: '${server.username}@${server.hostName}:${server.port}',
       icon: Icons.dns_outlined,
       status: _ConnectionChip(
         key: ready ? StudioDriverKeys.sshReady(server.alias) : null,
         connection: connection,
       ),
-      children: [
-        Text(
-          '${server.username}@${server.hostName}:${server.port}',
-          style: context.text.bodyMedium?.copyWith(
-            color: context.colors.onSurface,
-            fontFamily: 'monospace',
-          ),
+      actions: [
+        TextButton.icon(
+          key: StudioDriverKeys.sshTest(server.alias),
+          onPressed: busy ? null : onTest,
+          icon: operation == SshServerOperation.test
+              ? const SizedBox.square(
+                  dimension: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cable_outlined, size: 17),
+          label: Text(context.l10n.settingsSshTest),
         ),
-        const SizedBox(height: 6),
-        Text(
-          ready
-              ? '${connection!.architecture} · ${context.l10n.settingsSshRemoteHelper} ${connection!.helperVersion}'
-              : context.l10n.settingsSshManagedByCore,
-          style: context.text.bodySmall?.copyWith(
-            color: context.colors.onSurfaceVariant,
-          ),
+        TextButton.icon(
+          key: StudioDriverKeys.sshOpen(server.alias),
+          onPressed: busy ? null : onOpen,
+          icon: const Icon(Icons.folder_open_outlined, size: 17),
+          label: Text(context.l10n.settingsSshOpenProject),
         ),
-        if (!server.managed) ...[
-          const SizedBox(height: 6),
-          Text(
-            context.l10n.settingsSshReadOnlyEntry,
-            style: context.text.bodySmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
+        IconButton(
+          key: StudioDriverKeys.sshReconnect(server.alias),
+          tooltip:
+              '${context.l10n.settingsSshReconnect} — ${context.l10n.settingsSshReconnectHint}',
+          onPressed: busy ? null : onReconnect,
+          icon: operation == SshServerOperation.reconnect
+              ? const SizedBox.square(
+                  dimension: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh, size: 18),
+          visualDensity: VisualDensity.compact,
+        ),
+        if (server.managed) ...[
+          IconButton(
+            key: StudioDriverKeys.sshEdit(server.alias),
+            tooltip: context.l10n.settingsSshEdit,
+            onPressed: busy ? null : onEdit,
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            key: StudioDriverKeys.sshDelete(server.alias),
+            tooltip: context.l10n.settingsSshDelete,
+            onPressed: busy ? null : onDelete,
+            icon: Icon(
+              Icons.delete_outline,
+              size: 18,
+              color: busy ? null : context.colors.error,
             ),
+            visualDensity: VisualDensity.compact,
           ),
         ],
-        const SizedBox(height: 6),
-        Text(
-          context.l10n.settingsSshReconnectHint,
-          style: context.text.bodySmall,
-        ),
-        if ((error ?? connection?.errorMessage) case final message?)
-          SettingsInlineError(message: message),
-        const SizedBox(height: 14),
+      ],
+      children: [
         Wrap(
           spacing: 8,
-          runSpacing: 8,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            TextButton.icon(
-              key: StudioDriverKeys.sshTest(server.alias),
-              onPressed: busy ? null : onTest,
-              icon: operation == SshServerOperation.test
-                  ? const SizedBox.square(
-                      dimension: 15,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.cable_outlined, size: 17),
-              label: Text(context.l10n.settingsSshTest),
-            ),
-            TextButton.icon(
-              key: StudioDriverKeys.sshOpen(server.alias),
-              onPressed: busy ? null : onOpen,
-              icon: const Icon(Icons.folder_open_outlined, size: 17),
-              label: Text(context.l10n.settingsSshOpenProject),
-            ),
-            TextButton.icon(
-              key: StudioDriverKeys.sshReconnect(server.alias),
-              onPressed: busy ? null : onReconnect,
-              icon: operation == SshServerOperation.reconnect
-                  ? const SizedBox.square(
-                      dimension: 15,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 17),
-              label: Text(context.l10n.settingsSshReconnect),
-            ),
-            if (server.managed) ...[
-              TextButton(
-                onPressed: busy ? null : onEdit,
-                child: Text(context.l10n.settingsSshEdit),
+            if (server.hasPassword)
+              SettingsMiniMeta(
+                icon: Icons.password_outlined,
+                label: context.l10n.settingsSshPasswordBadge,
               ),
-              TextButton(
-                onPressed: busy ? null : onDelete,
-                child: Text(context.l10n.settingsSshDelete),
+            if (hasIdentity)
+              SettingsMiniMeta(
+                icon: Icons.vpn_key_outlined,
+                label: context.l10n.settingsSshKeyBadge(server.identityFile!),
               ),
-            ],
+            if (ready)
+              SettingsMiniMeta(
+                icon: Icons.memory_outlined,
+                label:
+                    '${connection!.architecture} · ${context.l10n.settingsSshRemoteHelper} ${connection!.helperVersion}',
+              )
+            else
+              Text(
+                context.l10n.settingsSshManagedByCore,
+                style: context.text.bodySmall?.copyWith(
+                  color: context.colors.onSurfaceVariant,
+                ),
+              ),
+            if (!server.managed)
+              SettingsMiniMeta(
+                icon: Icons.lock_outline,
+                label: context.l10n.settingsSshReadOnlyEntry,
+              ),
           ],
         ),
+        if (errorMessage != null) ...[
+          const SizedBox(height: 8),
+          SettingsInlineError(message: errorMessage),
+        ],
       ],
     );
   }

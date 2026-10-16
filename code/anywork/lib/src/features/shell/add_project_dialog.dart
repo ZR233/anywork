@@ -6,10 +6,11 @@ Future<void> showAddProjectDialog(BuildContext context) => showDialog<void>(
   builder: (_) => const _AddProjectDialog(),
 );
 
-enum _AddProjectStep { location, connections, configuration, directory }
+enum _AddProjectStep { location, connections, directory }
 
 class _AddProjectDialog extends ConsumerStatefulWidget {
   const _AddProjectDialog();
+
   @override
   ConsumerState<_AddProjectDialog> createState() => _AddProjectDialogState();
 }
@@ -22,10 +23,6 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
   String? _error;
   List<SshServer>? _servers;
   SshServer? _selected;
-  SshServer? _directoryServer;
-  SshServer? _saved;
-  bool _configurationVisited = false;
-  int _formGeneration = 0;
   final _search = TextEditingController();
 
   @override
@@ -37,7 +34,10 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
   Future<void> _continue() async {
     if (_busy || _remote == null) return;
     if (_remote!) {
-      setState(() => _step = _AddProjectStep.connections);
+      setState(() {
+        _step = _AddProjectStep.connections;
+        _error = null;
+      });
       await _loadServers();
       return;
     }
@@ -66,13 +66,19 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
       _error = null;
     });
     try {
-      // SSH 列表没有命令 lane。直接读 data source，不往 data/ 补方法。
       final servers = await ref
           .read(anyworkClientProvider)
           .remote
           .listSshServers();
       if (!mounted) return;
-      setState(() => _servers = servers);
+      setState(() {
+        _servers = servers;
+        if (_selected != null) {
+          _selected = servers
+              .where((item) => item.alias == _selected!.alias)
+              .firstOrNull;
+        }
+      });
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -80,104 +86,170 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
     }
   }
 
-  Future<void> _connect(SshServer server) async {
-    // SSH 测试没有命令 lane。直接读 data source，不往 data/ 补方法。
-    final connection = await ref
-        .read(anyworkClientProvider)
-        .remote
-        .testSshConnection(server.alias);
-    if (connection.state != 'ready') {
-      throw StateError(connection.errorMessage ?? connection.state);
-    }
+  Future<void> _openServerEditor([SshServer? server]) async {
+    if (_busy) return;
+    SshServer? savedServer;
+    final command = await showDialog<SaveSshServerCommand>(
+      context: context,
+      builder: (context) => SshServerDialog(
+        server: server,
+        onSave: (cmd) async {
+          savedServer = await ref
+              .read(anyworkClientProvider)
+              .remote
+              .saveSshServer(cmd);
+        },
+      ),
+    );
+    if (command == null || savedServer == null || !mounted) return;
+    await _loadServers();
     if (!mounted) return;
     setState(() {
-      _selected = server;
-      _directoryServer = server;
-      _error = null;
-      _step = _AddProjectStep.directory;
+      _selected =
+          _servers
+              ?.where((item) => item.alias == savedServer!.alias)
+              .firstOrNull ??
+          savedServer;
     });
   }
 
-  Future<void> _connectSelected() async {
-    if (_busy || _selected == null) return;
+  Future<void> _deleteServer(SshServer server) async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.l10n.settingsSshDeleteTitle),
+        content: Text(context.l10n.settingsSshDeleteBody(server.alias)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(context.l10n.settingsCancel),
+          ),
+          FilledButton(
+            key: StudioDriverKeys.sshDeleteConfirm,
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(context.l10n.settingsSshDelete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await _connect(_selected!);
+      await ref
+          .read(anyworkClientProvider)
+          .remote
+          .deleteSshServer(server.alias);
+      if (!mounted) return;
+      if (_selected?.alias == server.alias) {
+        _selected = null;
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    if (mounted) {
+      await _loadServers();
+    }
   }
 
-  Future<void> _save(SaveSshServerCommand command) async {
-    // SSH 保存没有命令 lane。直接读 data source，不往 data/ 补方法。
-    final saved = await ref
-        .read(anyworkClientProvider)
-        .remote
-        .saveSshServer(
-          SaveSshServerCommand(
-            alias: _saved?.alias ?? command.alias,
-            hostName: command.hostName,
-            port: command.port,
-            username: command.username,
-            identityFile: command.identityFile,
-          ),
-        );
-    if (!mounted) return;
-    _saved = saved;
-    _selected = saved;
-    _servers = [
-      for (final server in _servers ?? <SshServer>[])
-        if (server.alias != saved.alias) server,
-      saved,
-    ];
-    try {
-      await _connect(saved);
-    } catch (error) {
-      if (mounted) {
-        throw StateError('${context.l10n.sidebarConnectionSaved}\n$error');
+  Future<void> _connectSelected() async {
+    final selected = _selected;
+    if (_busy || selected == null) return;
+
+    final hasIdentity =
+        selected.identityFile != null &&
+        selected.identityFile!.trim().isNotEmpty;
+    var ready = false;
+
+    if (!selected.hasPassword && !hasIdentity) {
+      final snapshot = await showDialog<SshConnectionView>(
+        context: context,
+        builder: (context) => SshPasswordPromptDialog(server: selected),
+      );
+      if (snapshot == null || !mounted) return;
+      ready = snapshot.state == 'ready';
+      await _loadServers();
+      if (!mounted) return;
+    }
+
+    if (!ready) {
+      setState(() {
+        _busy = true;
+        _error = null;
+      });
+      try {
+        final connection = await ref
+            .read(anyworkClientProvider)
+            .remote
+            .testSshConnection(selected.alias);
+        if (connection.state != 'ready') {
+          throw StateError(connection.errorMessage ?? connection.state);
+        }
+        ready = true;
+      } catch (error) {
+        if (!mounted) return;
+        setState(() => _busy = false);
+        if (isSshAuthenticationError(error)) {
+          final snapshot = await showDialog<SshConnectionView>(
+            context: context,
+            builder: (context) => SshPasswordPromptDialog(
+              server: selected,
+              initialError: error.toString(),
+            ),
+          );
+          if (snapshot == null || !mounted) return;
+          ready = snapshot.state == 'ready';
+          await _loadServers();
+          if (!mounted) return;
+        } else {
+          setState(() => _error = error.toString());
+          return;
+        }
+      } finally {
+        if (mounted && _busy) setState(() => _busy = false);
       }
     }
+
+    if (!ready || !mounted) return;
+    final currentServer =
+        _servers?.where((item) => item.alias == selected.alias).firstOrNull ??
+        selected;
+    setState(() {
+      _selected = currentServer;
+      _step = _AddProjectStep.directory;
+      _error = null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        if (_configurationVisited)
-          Offstage(
-            offstage: _step != _AddProjectStep.configuration,
-            child: SshServerDialog(
-              key: ValueKey(_formGeneration),
-              server: _saved,
-              onSave: _save,
-              onBack: () => setState(() => _step = _AddProjectStep.connections),
-            ),
-          ),
-        if (_directoryServer != null)
-          Offstage(
-            offstage: _step != _AddProjectStep.directory,
-            child: RemoteDirectoryDialog(
-              key: ValueKey(_directoryServer!.alias),
-              server: _directoryServer!,
-              active: _step == _AddProjectStep.directory,
-              onBack: () => setState(() => _step = _AddProjectStep.connections),
-            ),
-          ),
-        if (_step == _AddProjectStep.location ||
-            _step == _AddProjectStep.connections)
-          _buildSelection(context),
-      ],
-    );
-  }
-
-  Widget _buildSelection(BuildContext context) {
+    if (_step == _AddProjectStep.directory && _selected != null) {
+      return RemoteDirectoryDialog(
+        key: ValueKey('remote-directory-${_selected!.alias}'),
+        server: _selected!,
+        showProjectNameField: true,
+        onBack: () => setState(() {
+          _step = _AddProjectStep.connections;
+          _error = null;
+        }),
+      );
+    }
     final location = _step == _AddProjectStep.location;
+    final servers = _servers;
+    final filteredServers = servers
+        ?.where(
+          (server) =>
+              '${server.alias} ${server.username}@${server.hostName}:${server.port}'
+                  .toLowerCase()
+                  .contains(_search.text.trim().toLowerCase()),
+        )
+        .toList(growable: false);
+
     return PopScope(
       canPop: !_busy,
       child: AlertDialog(
@@ -200,7 +272,7 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
           ],
         ),
         content: SizedBox(
-          width: 520,
+          width: 540,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -220,68 +292,50 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
                   context.l10n.sidebarRemoteHint,
                 ),
               ] else ...[
-                TextField(
-                  key: const ValueKey('add-project-connection-search'),
-                  controller: _search,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.search),
-                    hintText: context.l10n.sidebarSearchConnections,
-                  ),
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: 12),
-                if (_servers?.isEmpty ?? false)
-                  Text(context.l10n.sidebarNoConnections),
-                for (final server in _servers ?? <SshServer>[])
-                  if ('${server.alias} ${server.username}@${server.hostName}'
-                      .toLowerCase()
-                      .contains(_search.text.toLowerCase()))
-                    ListTile(
-                      key: ValueKey('add-project-connection-${server.alias}'),
-                      selected: _selected?.alias == server.alias,
-                      leading: Icon(
-                        _selected?.alias == server.alias
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const ValueKey('add-project-connection-search'),
+                        controller: _search,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.search, size: 18),
+                          hintText: context.l10n.sidebarSearchConnections,
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setState(() {}),
                       ),
-                      title: Text(server.alias),
-                      subtitle: Text(
-                        '${server.username}@${server.hostName}:${server.port}',
-                      ),
-                      onTap: _busy
-                          ? null
-                          : () => setState(() => _selected = server),
                     ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  key: const ValueKey('add-project-new-connection'),
-                  onPressed: _busy
-                      ? null
-                      : () => setState(() {
-                          if (_saved != null || !_configurationVisited) {
-                            _formGeneration++;
-                          }
-                          _saved = null;
-                          _configurationVisited = true;
-                          _step = _AddProjectStep.configuration;
-                        }),
-                  icon: const Icon(Icons.add),
-                  label: Text(context.l10n.sidebarNewConnection),
+                    const SizedBox(width: 12),
+                    FilledButton.tonalIcon(
+                      key: StudioDriverKeys.addProjectNewConnection,
+                      onPressed: _busy ? null : () => _openServerEditor(),
+                      icon: const Icon(Icons.add, size: 18),
+                      label: Text(context.l10n.sidebarNewConnection),
+                    ),
+                  ],
                 ),
-                if (_selected != null)
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () => setState(() {
-                            if (_saved?.alias != _selected?.alias ||
-                                !_configurationVisited) {
-                              _formGeneration++;
-                            }
-                            _saved = _selected;
-                            _configurationVisited = true;
-                            _step = _AddProjectStep.configuration;
-                          }),
-                    child: Text(context.l10n.settingsSshEdit),
+                const SizedBox(height: 12),
+                if (filteredServers != null && filteredServers.isEmpty)
+                  SettingsEmptyMessage(
+                    icon: Icons.dns_outlined,
+                    title: context.l10n.sidebarNoConnections,
+                    body: context.l10n.settingsSshManagedByCore,
+                  )
+                else if (filteredServers != null)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final server in filteredServers) ...[
+                            _buildServerTile(context, server),
+                            const SizedBox(height: 8),
+                          ],
+                        ],
+                      ),
+                    ),
                   ),
               ],
               if (_busy && !_picking)
@@ -289,18 +343,18 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
                   padding: EdgeInsets.only(top: 12),
                   child: LinearProgressIndicator(),
                 ),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    _error!,
-                    style: TextStyle(color: context.colors.error),
-                  ),
-                ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                SettingsInlineError(message: _error!),
+              ],
               if (!location && _servers == null && !_busy)
-                TextButton(
-                  onPressed: _loadServers,
-                  child: Text(context.l10n.sidebarRetry),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _loadServers,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: Text(context.l10n.sidebarRetry),
+                  ),
                 ),
             ],
           ),
@@ -323,7 +377,7 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
               location ? context.l10n.settingsCancel : context.l10n.sidebarBack,
             ),
           ),
-          FilledButton(
+          FilledButton.icon(
             key: !_busy && (location ? _remote != null : _selected != null)
                 ? const ValueKey('add-project-continue-ready')
                 : const ValueKey('add-project-continue'),
@@ -332,13 +386,107 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
                 : location
                 ? _continue
                 : _connectSelected,
-            child: Text(
+            icon: Icon(
+              location ? Icons.arrow_forward : Icons.cable_outlined,
+              size: 18,
+            ),
+            label: Text(
               location
                   ? context.l10n.sidebarContinue
                   : context.l10n.sidebarConnect,
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildServerTile(BuildContext context, SshServer server) {
+    final selected = _selected?.alias == server.alias;
+    final hasIdentity =
+        server.identityFile != null && server.identityFile!.trim().isNotEmpty;
+
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: selected
+              ? context.colors.primary
+              : context.colors.outlineVariant,
+        ),
+      ),
+      child: ListTile(
+        key: StudioDriverKeys.addProjectConnectionRow(server.alias),
+        selected: selected,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        leading: Icon(
+          selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+        ),
+        title: Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              server.alias,
+              style: context.text.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (server.hasPassword)
+              SettingsMiniMeta(
+                icon: Icons.password_outlined,
+                label: context.l10n.settingsSshPasswordBadge,
+              ),
+            if (hasIdentity)
+              SettingsMiniMeta(
+                icon: Icons.vpn_key_outlined,
+                label: context.l10n.settingsSshKeyBadge(server.identityFile!),
+              ),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            '${server.username}@${server.hostName}:${server.port}',
+            style: context.text.bodySmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ),
+        trailing: server.managed
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    key: StudioDriverKeys.addProjectConnectionEdit(
+                      server.alias,
+                    ),
+                    tooltip: context.l10n.settingsSshEdit,
+                    onPressed: _busy ? null : () => _openServerEditor(server),
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  IconButton(
+                    key: StudioDriverKeys.addProjectConnectionDelete(
+                      server.alias,
+                    ),
+                    tooltip: context.l10n.settingsSshDelete,
+                    onPressed: _busy ? null : () => _deleteServer(server),
+                    icon: Icon(
+                      Icons.delete_outline,
+                      size: 18,
+                      color: _busy ? null : context.colors.error,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              )
+            : null,
+        onTap: _busy ? null : () => setState(() => _selected = server),
       ),
     );
   }
@@ -361,10 +509,29 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
     ),
     child: ListTile(
       key: ValueKey(remote ? 'add-project-remote' : 'add-project-local'),
-      contentPadding: const EdgeInsets.all(16),
-      leading: Icon(icon),
-      title: Text(title),
-      subtitle: Text(subtitle),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      leading: Icon(
+        _remote == remote
+            ? Icons.radio_button_checked
+            : Icons.radio_button_unchecked,
+      ),
+      title: Row(
+        children: [
+          Icon(icon, size: 18, color: context.colors.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: context.text.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(subtitle),
+      ),
       selected: _remote == remote,
       onTap: _busy ? null : () => setState(() => _remote = remote),
     ),

@@ -50,6 +50,7 @@ pub use provider_usage::{ProviderUsageStateData, ProviderUsageStateSnapshot};
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;
 pub use skill_catalog::{SkillSearchResult, SkillsStateSnapshot};
+pub use ssh::{SshPasswordUpdate, SshServerRuntimeEntry};
 use thread_title::ThreadTitleTasks;
 pub(crate) use updater::StudioUpdateRuntime;
 pub use updater::*;
