@@ -29,6 +29,7 @@ pub struct CommandSpawnRequest {
     pub command: String,
     pub cwd: String,
     pub output_target: CommandOutputTarget,
+    pub capture_limit_bytes: u64,
 }
 
 pub type CommandReader = Pin<Box<dyn AsyncRead + Send>>;
@@ -73,6 +74,24 @@ impl std::fmt::Debug for CommandIo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandExit {
     pub exit_code: Option<i32>,
+    pub capture: Option<CommandCaptureReceipt>,
+}
+
+/// 实际捕获写入者交回的终态磁盘计量，拒绝量只包含实际观察到但未接纳的块。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandCaptureReceipt {
+    pub limit_bytes: u64,
+    /// 主捕获文件的确认偏移，与包含所有副本的计费成本分开。
+    pub committed_len: u64,
+    pub charged_bytes: u64,
+    pub refused_bytes: u64,
+}
+
+/// 唯一负责在真实写盘前执行预算的边界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCaptureOwnership {
+    Manager,
+    Producer,
 }
 
 pub struct ManagedCommand {
@@ -251,7 +270,10 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
         request: CommandSpawnRequest,
     ) -> impl std::future::Future<Output = std::result::Result<ManagedCommand, Self::Error>> + Send;
 
-    /// Prepares the capture fragment and returns the length it starts at.
+    /// 在写入任何头部前检查传入预算，并返回实际起始长度。
+    ///
+    /// Manager 写入者必须拒绝超预算头部，且不能创建文件或启动命令。Producer 只声明目标，
+    /// 在物理 owner 准备文件时执行相同检查；客户端等待其真实终态回执，不代算磁盘用量。
     ///
     /// The returned length is the backend-confirmed committed offset every later repair truncates back
     /// to, so a repair never depends on a length read that could fail and be mistaken for "nothing
@@ -261,6 +283,7 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
         target: &CommandOutputTarget,
         command: &str,
         working_directory: &str,
+        capture_limit_bytes: u64,
     ) -> impl std::future::Future<Output = std::result::Result<u64, Self::Error>> + Send;
 
     /// Appends one accepted chunk and returns the fragment's new confirmed length.
@@ -311,20 +334,19 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
-    /// 估算在**接纳前**把一个已读 chunk 落盘会给本后端带来多少存储成本（字节）。
+    /// 谁实际持有捕获文件并在每次写入前执行预算。Producer 必须在退出时返回计量回执。
+    fn capture_ownership(&self) -> CommandCaptureOwnership;
+
+    /// Manager 捕获的实际落盘成本；Producer 模式计量的是传输字节以限制客户端缓冲。
     ///
-    /// 默认等于 chunk 自身长度，即"一份输出只落一份文件"，保持既有语义。会把同一份数据同时
-    /// 写进多个文件的 backend 必须如实放大（例如合并输出与 per-stream 捕获各一份，再加每 chunk
-    /// 的 framing 字节），否则共享额度只约束了其中一份，真实磁盘占用会超出声明的上限。进程管理
-    /// 器用这个估算值计费，因此被拒的字节根本不会进入修复计划。
+    /// 必须包含所有副本、标签与补换行，不提供默认估计；内容可用于精确判断是否补换行。
+    /// Manager 在共享接纳锁内调用，必须为廉价、无阻塞、无 I/O 的纯计算；Producer 不调用。
     fn capture_storage_cost(
         &self,
-        _target: &CommandOutputTarget,
-        _stream: CommandCaptureStream,
-        _chunk_len: usize,
-    ) -> u64 {
-        _chunk_len as u64
-    }
+        target: &CommandOutputTarget,
+        stream: CommandCaptureStream,
+        chunk: &[u8],
+    ) -> u64;
 
     /// 本后端允许进入模型上下文的输出上限（**字节**）；`None` 表示沿用既有语义。
     ///
@@ -451,6 +473,7 @@ impl LocalCommandBackend {
                 };
                 result
                     .map(|termination| CommandExit {
+                        capture: None,
                         exit_code: match termination {
                             ProcessTermination::ExitCode(code) => Some(code),
                             ProcessTermination::Signal(_) => None,
@@ -464,6 +487,25 @@ impl LocalCommandBackend {
 
 impl CommandBackend for LocalCommandBackend {
     type Error = PureError;
+
+    fn capture_ownership(&self) -> CommandCaptureOwnership {
+        CommandCaptureOwnership::Manager
+    }
+
+    fn capture_storage_cost(
+        &self,
+        target: &CommandOutputTarget,
+        stream: CommandCaptureStream,
+        chunk: &[u8],
+    ) -> u64 {
+        let stream_copy = match stream {
+            CommandCaptureStream::Stdout => target.stdout_capture_file().is_some(),
+            CommandCaptureStream::Stderr => target.stderr_capture_file().is_some(),
+        };
+        (chunk.len() as u64) * (1 + u64::from(stream_copy))
+            + b"=== STDOUT ===\n".len() as u64
+            + u64::from(!chunk.ends_with(b"\n"))
+    }
 
     async fn resolve_cwd(
         &self,
@@ -549,6 +591,7 @@ impl CommandBackend for LocalCommandBackend {
                 result
                     .map(|status| CommandExit {
                         exit_code: status.code(),
+                        capture: None,
                     })
                     .map_err(|error| format!("failed to wait for local process: {error}"))
             },
@@ -560,7 +603,18 @@ impl CommandBackend for LocalCommandBackend {
         target: &CommandOutputTarget,
         command: &str,
         working_directory: &str,
+        capture_limit_bytes: u64,
     ) -> Result<u64> {
+        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
+        if header.len() as u64 > capture_limit_bytes {
+            return Err(command_error(
+                "exec",
+                format!(
+                    "capture header requires {} bytes, limit is {capture_limit_bytes}; process was not started",
+                    header.len()
+                ),
+            ));
+        }
         if let Some(parent) = target.capture_file().parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|error| {
                 command_error(
@@ -569,7 +623,6 @@ impl CommandBackend for LocalCommandBackend {
                 )
             })?;
         }
-        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
         tokio::fs::write(target.capture_file(), header.as_bytes())
             .await
             .map_err(|error| {

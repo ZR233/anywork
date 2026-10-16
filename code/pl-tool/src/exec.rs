@@ -1,4 +1,5 @@
 //! Command tool declarations and Thread-owned implementations.
+mod capture_retention;
 mod progress;
 mod thread;
 use schemars::JsonSchema;

@@ -1,11 +1,11 @@
 //! 通用 SQLite 冷存储必须独立于内存窗口保留任务完整结果。
 #![cfg(feature = "sqlite")]
 use pl_core::{
-    context::OpaquePayload,
+    context::{ContextContent, OpaquePayload, ResourceReference},
     persistence::SqliteSessionStore,
     thread::{
         ThreadEffectBatch, ToolDelivery, ToolDeliveryTarget, ToolOutcome,
-        cold::ColdStore,
+        cold::{ColdStore, OutputRepair},
         task::{TaskRecord, TaskStatus},
     },
     tool::ToolOutput,
@@ -112,4 +112,83 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
             .is_none()
     );
     reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn durable_task_includes_later_archive_repairs_once() {
+    let store = SqliteSessionStore::open_memory().await.unwrap();
+    let task = TaskRecord {
+        id: "task:repaired".into(),
+        call_id: "repaired".into(),
+        tool_id: "exec".into(),
+        turn_id: "turn".into(),
+        revision: 2,
+        status: TaskStatus::Failed,
+        cancel_requested: false,
+        acknowledgement: None,
+        started_sequence: Some(1),
+    };
+    let delivery = ToolDelivery {
+        target: ToolDeliveryTarget::CallResult,
+        call_id: task.call_id.clone(),
+        tool_id: task.tool_id.clone(),
+        output: ToolOutput::new(OpaquePayload::text("retained partial output"), vec![]),
+        delivered_context: vec![],
+        outcome: ToolOutcome::Failed(Arc::new(pl_core::tool::opaque::ToolError::new(
+            std::io::Error::other("archive write failed"),
+        ))),
+    };
+    let first = ThreadEffectBatch {
+        thread_id: "owner".into(),
+        sequence: 1,
+        tasks: Arc::from([task.clone()]),
+        deliveries: Arc::from([delivery.clone()]),
+        ..Default::default()
+    };
+    let reference = ResourceReference::new(
+        "archive".into(),
+        pl_core::context::content_hash(b"retained output"),
+        15,
+        "text/plain".into(),
+    )
+    .unwrap();
+    store
+        .register_resource(
+            "owner",
+            "thread-commit.00000000000000000001",
+            first.encode().unwrap(),
+        )
+        .unwrap();
+    for sequence in 2..=3 {
+        let repair = ThreadEffectBatch {
+            thread_id: "owner".into(),
+            sequence,
+            delivery_repairs: Arc::from([OutputRepair {
+                call_id: task.call_id.clone(),
+                reference: reference.clone(),
+            }]),
+            ..Default::default()
+        };
+        store
+            .register_resource(
+                "owner",
+                &format!("thread-commit.{sequence:020}"),
+                repair.encode().unwrap(),
+            )
+            .unwrap();
+    }
+    store.flush().await.unwrap();
+    let found = ColdStore::read_tool_task(&store, "owner", &task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut expected = delivery;
+    expected
+        .delivered_context
+        .push(ContextContent::Resource { reference });
+    assert_eq!(
+        serde_json::to_value((&found.task, found.delivery)).unwrap(),
+        serde_json::to_value((&task, Some(expected))).unwrap()
+    );
+    store.shutdown().await.unwrap();
 }

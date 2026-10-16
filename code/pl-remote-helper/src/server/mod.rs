@@ -276,9 +276,14 @@ async fn handle_request(
                 let cwd = workspaces
                     .resolve_existing(&request.workspace_id, &request.cwd)
                     .await?;
-                let capture = workspaces
-                    .resolve_for_write(&request.workspace_id, &request.capture_path)
-                    .await?;
+                let capture = match &request.capture {
+                    pl_protocol::remote::RemoteCapture::None => None,
+                    pl_protocol::remote::RemoteCapture::File { path, .. } => Some(
+                        workspaces
+                            .resolve_for_write(&request.workspace_id, path)
+                            .await?,
+                    ),
+                };
                 (cwd, capture)
             };
             let process_id = request.process_id.clone();

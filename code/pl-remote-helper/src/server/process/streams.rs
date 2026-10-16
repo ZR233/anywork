@@ -54,13 +54,18 @@ pub(super) struct Output<'a> {
     pub id: &'a str,
     pub stdout: Option<ChildStdout>,
     pub stderr: Option<ChildStderr>,
-    pub capture: tokio::fs::File,
+    pub capture: super::capture::Capture,
     pub writer: &'a Outbound,
     pub cancel: &'a watch::Sender<bool>,
     pub credit: &'a Semaphore,
 }
 
-pub(super) async fn output(mut output: Output<'_>) -> Option<RemoteError> {
+pub(super) struct CapturedOutput {
+    pub failure: Option<RemoteError>,
+    pub receipt: Option<pl_protocol::remote::RemoteCaptureReceipt>,
+}
+
+pub(super) async fn output(mut output: Output<'_>) -> CapturedOutput {
     let mut stdout_buffer = [0; REMOTE_OUTPUT_CHUNK_BYTES];
     let mut stderr_buffer = [0; REMOTE_OUTPUT_CHUNK_BYTES];
     let mut cancelled = output.cancel.subscribe();
@@ -101,24 +106,23 @@ pub(super) async fn output(mut output: Output<'_>) -> Option<RemoteError> {
             }
             continue;
         }
-        let (label, body) = match stream {
-            RemoteOutputStream::Stdout => ("=== STDOUT ===\n", &stdout_buffer[..count]),
-            RemoteOutputStream::Stderr => ("=== STDERR ===\n", &stderr_buffer[..count]),
+        let body = match stream {
+            RemoteOutputStream::Stdout => &stdout_buffer[..count],
+            RemoteOutputStream::Stderr => &stderr_buffer[..count],
         };
         if capture_open {
-            let result = async {
-                output.capture.write_all(label.as_bytes()).await?;
-                output.capture.write_all(body).await?;
-                if !body.ends_with(b"\n") {
-                    output.capture.write_all(b"\n").await?;
+            match output.capture.append(stream, body).await {
+                Ok(super::capture::Acceptance::Accepted) => {}
+                Ok(super::capture::Acceptance::Refused) => {
+                    output.cancel.send_replace(true);
+                    wire_open = false;
+                    continue;
                 }
-                Ok::<_, std::io::Error>(())
-            }
-            .await;
-            if let Err(error) = result {
-                failure.get_or_insert_with(|| io_error("capture process output", error));
-                capture_open = false;
-                output.cancel.send_replace(true);
+                Err(error) => {
+                    failure.get_or_insert(error);
+                    capture_open = false;
+                    output.cancel.send_replace(true);
+                }
             }
         }
         if wire_open && let Some(permit) = permit {
@@ -144,9 +148,12 @@ pub(super) async fn output(mut output: Output<'_>) -> Option<RemoteError> {
         }
     }
     if let Err(error) = output.capture.flush().await {
-        failure.get_or_insert_with(|| io_error("flush process capture", error));
+        failure.get_or_insert(error);
     }
-    failure
+    CapturedOutput {
+        failure,
+        receipt: output.capture.receipt(),
+    }
 }
 
 async fn read_stdout(

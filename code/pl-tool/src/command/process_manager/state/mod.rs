@@ -140,7 +140,7 @@ impl CommandCaptureFailure {
                 charged_bytes,
                 refused_bytes,
             } => format!(
-                "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of further output were refused"
+                "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
             ),
             Self::Write { message } => format!("command output capture failed: {message}"),
             Self::Read { message } => format!("command output stream could not be read: {message}"),
@@ -251,6 +251,7 @@ impl CommandProcessState {
         stderr_open: bool,
         capture_committed_len: u64,
         capture_limit_bytes: u64,
+        capture_ownership: crate::command::CommandCaptureOwnership,
         model_output_bytes_cap: Option<u64>,
     ) -> Self {
         Self {
@@ -263,6 +264,8 @@ impl CommandProcessState {
             pending_stderr: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             output_revision: 0,
             capture_limit_bytes,
+            capture_ownership,
+            producer_capture: None,
             capture_charged_bytes: capture_committed_len,
             capture_refused_bytes: 0,
             model_output_bytes_cap,
@@ -308,12 +311,16 @@ impl CommandProcessState {
         chunk: &[u8],
         storage_cost: u64,
     ) -> CaptureAcceptance {
+        // Producer 已在物理写入前执行预算；客户端仅排空已获接纳的有界传输流。
+        // 两个 HeadTailBuffer 与传输窗口约束驻留内存，不再以累计传输量代算磁盘用量。
+        if self.capture_ownership == crate::command::CommandCaptureOwnership::Producer {
+            return CaptureAcceptance::Accepted;
+        }
         if self.capture_write_failed || self.output_failure.is_some() {
             self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
             return CaptureAcceptance::Faulted;
         }
-        let next = self.capture_charged_bytes.saturating_add(storage_cost);
-        if next > self.capture_limit_bytes {
+        if storage_cost > self.capture_limit_bytes - self.capture_charged_bytes {
             self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
             return CaptureAcceptance::OutputLimitExceeded {
                 limit_bytes: self.capture_limit_bytes,
@@ -321,7 +328,7 @@ impl CommandProcessState {
                 refused_bytes: self.capture_refused_bytes,
             };
         }
-        self.capture_charged_bytes = next;
+        self.capture_charged_bytes += storage_cost;
         self.capture_pending.push_back(CaptureRepairChunk {
             stream,
             pending: Arc::from(chunk),
@@ -329,19 +336,49 @@ impl CommandProcessState {
         CaptureAcceptance::Accepted
     }
 
+    pub(super) fn complete_producer_capture(
+        &mut self,
+        receipt: crate::command::CommandCaptureReceipt,
+    ) -> Result<(), String> {
+        if self.capture_ownership != crate::command::CommandCaptureOwnership::Producer
+            || receipt.limit_bytes != self.capture_limit_bytes
+            || receipt.charged_bytes > receipt.limit_bytes
+            || receipt.committed_len > receipt.charged_bytes
+        {
+            return Err("producer capture receipt violates ownership or budget".into());
+        }
+        self.capture_committed_len = receipt.committed_len;
+        self.producer_capture = Some(receipt);
+        if receipt.refused_bytes > 0 {
+            let failure = CommandCaptureFailure::OutputLimitExceeded {
+                limit_bytes: receipt.limit_bytes,
+                charged_bytes: receipt.charged_bytes,
+                refused_bytes: receipt.refused_bytes,
+            };
+            self.record_capture_failure(failure.clone());
+            self.apply_transition(CommandProcessTransition::OutputFailed { failure });
+        }
+        Ok(())
+    }
+
     /// 本 operation 生效的单命令落盘上限。
     pub(super) fn capture_limit_bytes(&self) -> u64 {
         self.capture_limit_bytes
     }
 
-    /// 已接纳字节折算出的存储成本累计。
-    pub(super) fn capture_charged_bytes(&self) -> u64 {
-        self.capture_charged_bytes
-    }
-
-    /// 被拒绝接纳的输出折算成本累计。
-    pub(super) fn capture_refused_bytes(&self) -> u64 {
-        self.capture_refused_bytes
+    /// Manager 返回已接纳的存储成本；Producer 只返回实际写入者交回的事实。
+    pub(super) fn capture_usage(&self) -> Option<crate::command::CommandCaptureReceipt> {
+        match self.capture_ownership {
+            crate::command::CommandCaptureOwnership::Manager => {
+                Some(crate::command::CommandCaptureReceipt {
+                    limit_bytes: self.capture_limit_bytes,
+                    committed_len: self.capture_committed_len,
+                    charged_bytes: self.capture_charged_bytes,
+                    refused_bytes: self.capture_refused_bytes,
+                })
+            }
+            crate::command::CommandCaptureOwnership::Producer => self.producer_capture,
+        }
     }
 
     /// 本 operation 生效的模型可见输出字节上限；`None` 表示沿用既有截断语义。

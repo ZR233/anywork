@@ -58,18 +58,16 @@ async fn read_stream<R, B>(
                     StreamKind::Stdout => CommandCaptureStream::Stdout,
                     StreamKind::Stderr => CommandCaptureStream::Stderr,
                 };
-                let storage_cost =
-                    backend.capture_storage_cost(&entry.output_target, capture_stream, chunk.len());
-                // Accept the chunk into the operation's one bounded capture plan *before* publishing
-                // it. The guard from this temporary lock is dropped at the end of the statement, so
-                // the failure arms below can re-lock the state to record the fault without holding
-                // the scrutinee guard across the re-entrant lock.
-                let acceptance =
-                    entry
-                        .state
-                        .lock()
-                        .await
-                        .accept_capture(capture_stream, chunk, storage_cost);
+                // 使用启动时固定的所有权；同步计价无 I/O，接纳与发布沿用同一个共享计划。
+                let acceptance = {
+                    let mut state = entry.state.lock().await;
+                    let storage_cost = match state.capture_ownership {
+                        crate::command::CommandCaptureOwnership::Manager => backend
+                            .capture_storage_cost(&entry.output_target, capture_stream, chunk),
+                        crate::command::CommandCaptureOwnership::Producer => 0,
+                    };
+                    state.accept_capture(capture_stream, chunk, storage_cost)
+                };
                 match acceptance {
                     CaptureAcceptance::Accepted => {}
                     CaptureAcceptance::OutputLimitExceeded {

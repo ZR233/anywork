@@ -13,7 +13,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    pub(super) fn from_outcome(outcome: &ToolOutcome) -> Self {
+    pub(crate) fn from_outcome(outcome: &ToolOutcome) -> Self {
         match outcome {
             ToolOutcome::Succeeded => Self::Succeeded,
             ToolOutcome::Failed(_) => Self::Failed,

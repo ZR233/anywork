@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use pl_protocol::remote::RemoteSpawnRequest;
+use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
 use pl_protocol::{PureError, Result};
 use serde_json::Value;
 
 use crate::command::{
-    CommandBackend, CommandCaptureStream, CommandExit, CommandIo, CommandOutputSizes,
-    CommandOutputTarget, CommandSpawnRequest, ManagedCommand, command_output_model_path,
+    CommandBackend, CommandCaptureOwnership, CommandCaptureReceipt, CommandCaptureStream,
+    CommandExit, CommandIo, CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest,
+    ManagedCommand, command_output_model_path,
 };
 
 use super::RemoteClient;
@@ -25,43 +26,31 @@ impl RemoteCommandBackend {
             workspace_id,
         }
     }
-}
-
-impl CommandBackend for RemoteCommandBackend {
-    type Error = PureError;
-
-    async fn resolve_cwd(
+    /// 常驻协议进程仅传输 stdin/stdout，不创建命令捕获或消费一次性命令额度。
+    pub(super) async fn spawn_stream(
         &self,
-        cwd: Option<&Path>,
-        _allow_workspace_escape: bool,
-    ) -> Result<String> {
-        normalize_cwd(cwd)
+        process_id: String,
+        command: String,
+        cwd: String,
+    ) -> Result<ManagedCommand> {
+        self.spawn_remote(RemoteSpawnRequest {
+            process_id,
+            workspace_id: self.workspace_id.clone(),
+            command,
+            cwd,
+            environment: BTreeMap::new(),
+            capture: RemoteCapture::None,
+        })
+        .await
     }
 
-    async fn output_target(
-        &self,
-        session_id: &str,
-        tool_id: &str,
-        _call_id: &str,
-        _command: &str,
-    ) -> Result<CommandOutputTarget> {
-        let model_file = command_output_model_path(session_id, tool_id);
-        Ok(CommandOutputTarget::new(model_file.clone(), model_file))
-    }
-
-    async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
+    async fn spawn_remote(&self, request: RemoteSpawnRequest) -> Result<ManagedCommand> {
         let process_id = request.process_id.clone();
+        let expects_capture = matches!(request.capture, RemoteCapture::File { .. });
         let client = self.client.clone();
         let transport = self
             .client
-            .spawn_process(RemoteSpawnRequest {
-                process_id: request.process_id,
-                workspace_id: self.workspace_id.clone(),
-                command: request.command,
-                cwd: request.cwd,
-                environment: BTreeMap::new(),
-                capture_path: path_to_posix(request.output_target.capture_file())?,
-            })
+            .spawn_process(request)
             .await
             .map_err(remote_exec_error)?;
         let mut exit = transport.exit;
@@ -83,12 +72,78 @@ impl CommandBackend for RemoteCommandBackend {
                 };
                 result
                     .map_err(|_| "remote process exit channel closed".to_string())?
-                    .map(|exit| CommandExit {
-                        exit_code: exit.exit_code,
+                    .and_then(|exit| {
+                        if exit.capture.is_some() != expects_capture {
+                            return Err(super::RemoteClientError::Protocol(
+                                "capture receipt does not match spawn policy".into(),
+                            ));
+                        }
+                        Ok(CommandExit {
+                            exit_code: exit.exit_code,
+                            capture: exit.capture.map(|receipt| CommandCaptureReceipt {
+                                limit_bytes: receipt.limit_bytes,
+                                // helper File 策略只写这一份文件，其精确成本等于文件长度。
+                                committed_len: receipt.charged_bytes,
+                                charged_bytes: receipt.charged_bytes,
+                                refused_bytes: receipt.refused_bytes,
+                            }),
+                        })
                     })
                     .map_err(|error| error.to_string())
             },
         ))
+    }
+}
+
+impl CommandBackend for RemoteCommandBackend {
+    type Error = PureError;
+
+    fn capture_ownership(&self) -> CommandCaptureOwnership {
+        CommandCaptureOwnership::Producer
+    }
+
+    fn capture_storage_cost(
+        &self,
+        _target: &CommandOutputTarget,
+        _stream: CommandCaptureStream,
+        chunk: &[u8],
+    ) -> u64 {
+        // Producer 不调用该计价入口；磁盘预算由 helper 执行，客户端仅受传输窗口约束。
+        chunk.len() as u64
+    }
+
+    async fn resolve_cwd(
+        &self,
+        cwd: Option<&Path>,
+        _allow_workspace_escape: bool,
+    ) -> Result<String> {
+        normalize_cwd(cwd)
+    }
+
+    async fn output_target(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+        _call_id: &str,
+        _command: &str,
+    ) -> Result<CommandOutputTarget> {
+        let model_file = command_output_model_path(session_id, tool_id);
+        Ok(CommandOutputTarget::new(model_file.clone(), model_file))
+    }
+
+    async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
+        self.spawn_remote(RemoteSpawnRequest {
+            process_id: request.process_id,
+            workspace_id: self.workspace_id.clone(),
+            command: request.command,
+            cwd: request.cwd,
+            environment: BTreeMap::new(),
+            capture: RemoteCapture::File {
+                path: path_to_posix(request.output_target.capture_file())?,
+                limit_bytes: request.capture_limit_bytes,
+            },
+        })
+        .await
     }
 
     async fn prepare_output(
@@ -96,6 +151,7 @@ impl CommandBackend for RemoteCommandBackend {
         _target: &CommandOutputTarget,
         _command: &str,
         _working_directory: &str,
+        _capture_limit_bytes: u64,
     ) -> Result<u64> {
         // The remote helper owns the capture beside the remote workspace and streams it to the live
         // observer; there is no local fragment, so the local committed length starts at zero.

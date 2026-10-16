@@ -52,7 +52,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap();
     db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite, "UPDATE thread_checkpoints SET schema_version=3,envelope=?,payload_hash='damaged' WHERE thread_id='v10'", vec![encoded.clone().into()])).await.unwrap();
-    db.execute_unprepared("PRAGMA user_version=10")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=10")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -372,7 +372,7 @@ async fn sqlite_v8_migration_backfills_checkpoint_usage_from_saved_effects() {
     ))
     .await
     .unwrap();
-    db.execute_unprepared("PRAGMA user_version=8")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=8")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -609,7 +609,7 @@ async fn deleting_a_session_requires_an_exclusive_lease_and_preserves_other_thre
 }
 
 #[tokio::test]
-async fn thread_effect_queries_reject_mismatched_ownership() {
+async fn thread_effect_writes_reject_mismatched_ownership_atomically() {
     let store = SqliteSessionStore::open_memory().await.unwrap();
     let effect = ThreadEffectBatch {
         thread_id: "other".into(),
@@ -623,21 +623,30 @@ async fn thread_effect_queries_reject_mismatched_ownership() {
             effect.encode().unwrap(),
         )
         .unwrap();
-    store.flush().await.unwrap();
-    assert!(store.read_thread_effect("claimed", 1).await.is_err());
+    assert!(store.flush().await.is_err());
+    assert!(
+        store
+            .read_thread_effect("claimed", 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         store
             .query_thread_effects(
                 "claimed",
                 ThreadEffectQuery {
                     before_sequence: None,
-                    limit: 1,
+                    limit: 1
                 }
             )
             .await
-            .is_err()
+            .unwrap()
+            .effects
+            .is_empty()
     );
-    store.shutdown().await.unwrap();
+    // 故障批次被保留，shutdown 必须诚实报告尚未落盘，不能声称成功。
+    assert!(store.shutdown().await.is_err());
 }
 
 #[tokio::test]
@@ -983,7 +992,7 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
 
     // 退回 schema 7：删除新表并复位版本，保留已验证的 effect/entry/history 数据。
     tamper(&options, "DROP TABLE thread_checkpoints").await;
-    tamper(&options, "PRAGMA user_version=7").await;
+    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=7").await;
 
     // 迁移前 open 必须拒绝版本 7，而不是静默重建或迁移。
     assert!(matches!(

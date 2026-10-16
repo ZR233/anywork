@@ -10,7 +10,8 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{
-    CommandBackend, CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest, CommandWriter,
+    CommandBackend, CommandCaptureOwnership, CommandCaptureReceipt, CommandOutputSizes,
+    CommandOutputTarget, CommandSpawnRequest, CommandWriter,
 };
 use super::head_tail_buffer::HeadTailBuffer;
 use crate::tool_error;
@@ -22,7 +23,7 @@ mod state;
 mod stream_io;
 
 use lifecycle::{CommandLifecycle, spawn_lifecycle_task, wait_for_process_activity};
-use snapshot::{limit_model_output, message_for_state, truncate_text};
+use snapshot::message_for_state;
 use state::CommandProcessTransition;
 pub use state::{
     CaptureRepair, CaptureRepairChunk, CommandCaptureFailure, CommandProcessFailure,
@@ -122,6 +123,8 @@ struct CommandProcessState {
     output_revision: u64,
     /// 本 operation 的落盘上限（字节），启动时由 backend 声明或取 PL 默认值。
     capture_limit_bytes: u64,
+    capture_ownership: CommandCaptureOwnership,
+    producer_capture: Option<CommandCaptureReceipt>,
     /// 已接纳 chunk 按 backend 估算折出来的存储成本累计；stdout 与 stderr 共享这一个额度。
     capture_charged_bytes: u64,
     /// 因额度耗尽或已失败而被拒绝接纳的 chunk 折算成本累计。
@@ -227,10 +230,11 @@ pub struct CommandOutputSnapshot {
     /// 它是 backend 声明的值，没有声明时是 [`MAX_CAPTURE_BYTES`]，因此快照能自证"这次上限是多少"，
     /// 调用方不需要回读 backend 配置。
     pub capture_limit_bytes: u64,
-    /// 已接纳字节按 backend 估算折出的存储成本累计，stdout 与 stderr 共享。
-    pub capture_charged_bytes: u64,
-    /// 被拒绝接纳的输出折算成本累计；被拒字节从不进入修复计划。
-    pub capture_refused_bytes: u64,
+    /// 唯一预算执行者确认的存储用量；Producer 回执尚未到达时为 `None`。
+    ///
+    /// Manager 的 charged 是已接纳的精确写入成本，可能尚在写队列；Producer 的 charged
+    /// 来自物理写入者终态回执。`None` 不表示零字节，也不由客户端接收量估算。
+    pub capture_usage: Option<CommandCaptureReceipt>,
     /// 本 operation 生效的模型可见输出上限（字节）；`None` 表示沿用既有截断语义。
     ///
     /// 它只约束模型可见正文（stdout/stderr 截断结果之和），不约束工具结果的元数据，
@@ -396,17 +400,27 @@ where
             )
             .await
             .map_err(|error| tool_error("exec", error))?;
-        let capture_committed_len = self
-            .backend
-            .prepare_output(&output_target, &request.command, &working_directory)
-            .await
-            .map_err(|error| tool_error("exec", error))?;
-        // 上限在启动时定一次：backend 声明的值优先，没有声明就用 PL 默认值。此后每个 chunk 都在
-        // 接纳**之前**按 backend 估算的存储成本计费，因此超限的字节不会进入修复计划。
         let capture_limit_bytes = self
             .backend
             .capture_limit_bytes()
             .unwrap_or(MAX_CAPTURE_BYTES);
+        let capture_ownership = self.backend.capture_ownership();
+        let capture_committed_len = self
+            .backend
+            .prepare_output(
+                &output_target,
+                &request.command,
+                &working_directory,
+                capture_limit_bytes,
+            )
+            .await
+            .map_err(|error| tool_error("exec", error))?;
+        if capture_committed_len > capture_limit_bytes {
+            return Err(tool_error(
+                "exec",
+                "backend prepared capture beyond its declared budget",
+            ));
+        }
         // 模型可见字节上限同样在启动时定一次；backend 没声明就是 `None`（既有语义）。
         let model_output_bytes_cap = self.backend.model_output_bytes_cap();
 
@@ -431,6 +445,7 @@ where
                 command: request.command,
                 cwd: working_directory,
                 output_target: output_target.clone(),
+                capture_limit_bytes,
             })
             .await;
         let mut child = match child {
@@ -460,6 +475,7 @@ where
                 stderr_open,
                 capture_committed_len,
                 capture_limit_bytes,
+                capture_ownership,
                 model_output_bytes_cap,
             )),
             notify: Notify::new(),
@@ -680,52 +696,66 @@ impl CommandProcessEntry {
             stdout_bytes: state.stdout.total_bytes() as u64,
             stderr_bytes: state.stderr.total_bytes() as u64,
         };
-        let (stdout_text, stderr_text) = if state.lifecycle.is_final() {
-            (state.stdout.display_text(), state.stderr.display_text())
+        let (stdout_excerpt, stderr_excerpt) = if state.lifecycle.is_final() {
+            (state.stdout.excerpt(), state.stderr.excerpt())
         } else {
             (
-                state.pending_stdout.take_display_text(),
-                state.pending_stderr.take_display_text(),
+                state.pending_stdout.take_excerpt(),
+                state.pending_stderr.take_excerpt(),
             )
         };
-        let mut stdout = truncate_text(&stdout_text, max_output_chars);
-        let mut stderr = truncate_text(&stderr_text, max_output_chars);
+        let mut stdout_budget = max_output_chars.min(stdout_excerpt.display_len());
+        let mut stderr_budget = max_output_chars.min(stderr_excerpt.display_len());
         let model_output_bytes_cap = state.model_output_bytes_cap();
         if let Some(cap_bytes) = model_output_bytes_cap {
-            // backend 声明的上限按**字节**计，而不是 Unicode 字符：两个流的可见正文合起来不超过它。
-            // 按已投影正文的长度分配两流预算，再连同省略标记一起裁剪；不放宽调用者自己的
-            // 单流显示限制。预算不足以容纳标记时，仍由结构化字段保留截断事实。
             let cap_bytes = usize::try_from(cap_bytes).unwrap_or(usize::MAX);
-            let visible_bytes = stdout.content.len().saturating_add(stderr.content.len());
-            if visible_bytes > cap_bytes {
-                let stdout_share = cap_bytes.saturating_mul(stdout.content.len()) / visible_bytes;
-                let stderr_share = cap_bytes.saturating_sub(stdout_share);
-                stdout = limit_model_output(stdout, stdout_share);
-                stderr = limit_model_output(stderr, stderr_share);
+            let total = stdout_budget.saturating_add(stderr_budget);
+            if total > cap_bytes {
+                // 乘法在 u128 中进行，不能因饱和乘法把大预算错误分配给某一流。
+                stdout_budget =
+                    ((cap_bytes as u128 * stdout_budget as u128) / total as u128) as usize;
+                stderr_budget = cap_bytes - stdout_budget;
             }
         }
         let capture_plan = state.capture_repair();
         let capture_committed_len = state.capture_committed_len;
         let capture_limit_bytes = state.capture_limit_bytes();
-        let capture_charged_bytes = state.capture_charged_bytes();
-        let capture_refused_bytes = state.capture_refused_bytes();
+        let capture_usage = state.capture_usage();
+        let lifecycle = state.lifecycle.clone();
+        let output_revision = state.output_revision;
+        let output_failure = state.output_failure.as_ref().map(|failure| match failure {
+            CommandCaptureFailure::OutputLimitExceeded { .. } => match state.capture_ownership {
+                CommandCaptureOwnership::Manager => CommandCaptureFailure::OutputLimitExceeded {
+                    limit_bytes: capture_limit_bytes,
+                    charged_bytes: state.capture_charged_bytes,
+                    refused_bytes: state.capture_refused_bytes,
+                },
+                // Producer 的载荷已经是唯一写入者的终态回执，不由客户端累加重写。
+                CommandCaptureOwnership::Producer => failure.clone(),
+            },
+            CommandCaptureFailure::Read { .. } | CommandCaptureFailure::Write { .. } => {
+                failure.clone()
+            }
+        });
+        drop(state);
+        let stdout = stdout_excerpt.project(stdout_budget);
+        let stderr = stderr_excerpt.project(stderr_budget);
         (
             CommandOutputSnapshot {
-                state: state.lifecycle.clone(),
+                state: lifecycle,
                 process_id,
                 stdout,
                 stderr,
                 output_file: self.output_target.model_file().to_path_buf(),
                 capture_file: self.output_target.capture_file().to_path_buf(),
                 message,
-                output_revision: state.output_revision,
+                output_revision,
                 output_artifacts: Vec::new(),
-                output_failure: state.output_failure.clone(),
+                output_failure,
                 capture_plan,
                 capture_committed_len,
                 capture_limit_bytes,
-                capture_charged_bytes,
-                capture_refused_bytes,
+                capture_usage,
                 model_output_bytes_cap,
             },
             sizes,

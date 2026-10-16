@@ -286,7 +286,7 @@ canonical 结果与归档输出由各自的 cap/文件机制负责，可靠保�
 `completed` 不重复扣、替换后继续追加不漏扣；参数迟到或失败只保留已接收 partial receipt 供诊断，
 **不执行**未闭合参数、也不构造不完整 JSON。命令 operation 的 stdout/stderr 合流捕获另有独立的单命令
 落盘上限：backend 用 `capture_limit_bytes` 声明自己的上限（没声明时用 PL 默认的 `MAX_CAPTURE_BYTES`），
-并用自己的 `capture_storage_cost` 在**接纳前**估算每个 chunk 会给它带来多少落盘成本——把同一份输出
+并用自己的 `capture_storage_cost` 在**接纳前**计算每个 chunk 会给它带来多少落盘成本——把同一份输出
 同时写进合并文件与 per-stream 捕获的 backend 因此为两份都计费，只约束其中一份的额度不算上限。两流
 各自只按读取序把 chunk 接纳进**同一个有界有序修复计划**并通知
 operation 生命周期内的**唯一** writer 任务，reader 永不等待磁盘，plan 满即拒绝新 chunk（被拒字节从不
@@ -303,6 +303,10 @@ operation 生命周期内的**唯一** writer 任务，reader 永不等待磁盘
 单位是**字节**而不是 Unicode 字符，覆盖两个流的可见正文之和——多字节正文不会因为按字符计数而放大上下文；
 工具结果自身的元数据（状态、进程/路径、artifact 说明）不计入这条上限，它约束的是会进入模型上下文的正文。
 省略标记也计入正文预算；预算不足以容纳标记时只保留能容纳的 UTF-8 前缀，由结构化截断字段保留事实。
+模型投影先根据两个流的实际保留长度、调用者单流限额与宿主总限额分配最终字节预算，再由
+`pl-output` 对保留的头尾各投影一次；省略行的实际字节长度计入预算，不预留魔数，也不
+对已经带省略行的结果二次截断。原始捕获长度和截断事实独立于正文预算保留；省略行不重复
+输出字节计量，避免将 lossy UTF-8 解码后的展示长度冒充原始字节数。
 捕获写/flush 或归档
 未落盘这类**可靠输出存储故障**另带
 一个 `OutputRetryObligation`：producer 在失败当下经运行中调用的可靠通道上报，立即阻断并行
@@ -314,6 +318,15 @@ model/tool 准入；显式重试按稳定身份保存**同一份**已接收字�
 单投影 owner 先按原 call 身份读回**已经提交**的正文并折回自身表，再补充交付；canonical 条目与内容版本
 始终由该 owner 决定，writer 只做纯保存确认（只补 durable delivery 事实，不发明条目版本、不回读正在写的
 effect 正文）。因此窗口淘汰不会把已提交身份判成缺口，也不让观察窗口决定一次可靠保存是否成立。
+
+捕获责任通过 `CommandCaptureOwnership` 明确：Manager 负责接纳与唯一 writer 的后端必须给出
+真实 chunk 成本，`prepare_output` 同样在写任何头部前检查传入预算。Producer 负责写盘的 SSH
+helper 在 spawn 协议中接收同一上限，逐块在写标签、正文和补换行之前计费；触顶停止捕获并终止
+进程，后续管道只作物理排空。终态携带实际计费回执，由 adapter 转成同一 typed 容量终止。
+客户端以传输窗口和有界头尾缓冲约束内存，不再执行第二套累计磁盘额度；快照 `capture_usage`
+在 Producer 回执到达前为 `None`，最终磁盘事实只接受 producer 回执，不能用流接收量代算。
+LSP 与 Git/worktree 的内部执行没有归档读者，显式使用 `RemoteCapture::None`，不创建命令日志
+或消费一次性 exec 的磁盘额度。协议升级要求配套新 helper，不保留旧协议路径。
 
 ## 7.5 Product stream
 

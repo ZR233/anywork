@@ -51,7 +51,7 @@ const FAKE_CAPTURE_LIMIT_BYTES: u64 = 64 * 1024;
 /// 假后端按"合并输出 + per-stream 捕获"两份计费，与 Mai 容器的真实落盘一致。
 const FAKE_STORAGE_COPIES: u64 = 2;
 /// 每 chunk 的 framing 折算（`=== STDOUT ===\n` 之类）。
-const FAKE_FRAME_BYTES: u64 = 16;
+const FAKE_FRAME_BYTES: u64 = 15;
 /// 假后端声明的模型可见字节上限。
 ///
 /// 取一个能被多字节正文明显区分的值：同一个上限按字符计会放进 256 个汉字（768 字节），
@@ -66,9 +66,41 @@ const MULTIBYTE_PATTERN: &str = "汉字捕获上限";
 async fn main() -> anyhow::Result<()> {
     println!("== 命令捕获上限验证（手工入口）==");
 
+    for (head, tail, gap) in [
+        (
+            "汉字边界".as_bytes()[..4].to_vec(),
+            "汉字边界".as_bytes()[4..].to_vec(),
+            0,
+        ),
+        (b"head".repeat(1000), b"tail".repeat(1000), 1_000_000),
+        (vec![0xff, 0xfe, b'a'], vec![0xff, b'z'], 100),
+    ] {
+        let raw_length = head.len() + tail.len() + gap;
+        let excerpt = pl_output::OutputExcerpt::from_parts(head, tail, gap);
+        for cap in 0..=128 {
+            let visible = excerpt.clone().project(cap);
+            anyhow::ensure!(visible.content.len() <= cap && visible.original_length == raw_length);
+            anyhow::ensure!(visible.content.matches("[output omitted]").count() <= 1);
+        }
+    }
+    println!("OK  0..128 字节预算、原始长度、跨片段 UTF-8 与唯一省略行");
     limit_is_charged_as_storage_cost_and_terminates().await?;
     write_failure_keeps_its_retry_obligation().await?;
     model_output_cap_counts_bytes_not_chars().await?;
+    let (mut producer, _root) = scripted_backend(
+        Arc::new(CaptureFacts::default()),
+        ScriptedBehavior::finite_multibyte(),
+        None,
+    )?;
+    // 故意违反 Producer 的终态回执契约：不能拿本地 header 冒充完整远端捕获。
+    producer.capture_ownership = pl_tool::command::CommandCaptureOwnership::Producer;
+    let archive = Arc::new(FixedArchive::default());
+    let error = run_exec_tool(producer, archive.clone())
+        .await
+        .expect_err("missing producer receipt must fail");
+    anyhow::ensure!(error.source.downcast_ref::<ExecFailure>().is_some());
+    anyhow::ensure!(archive.calls.load(Ordering::SeqCst) == 0);
+    println!("OK  Producer 缺少回执时不归档未确认捕获");
 
     if std::env::var("PURE_PL_COMMAND_REAL_BACKEND").as_deref() == Ok("1") {
         real_backend_limit_terminates_process().await?;
@@ -129,17 +161,17 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
     let appends = facts.appends.load(Ordering::SeqCst);
     anyhow::ensure!(appends > 0, "上限之前必须先有真正落盘的已接纳 chunk");
     anyhow::ensure!(
-        snapshot.capture_charged_bytes
+        snapshot.capture_usage.expect("manager usage").charged_bytes
             == facts.prepared_bytes.load(Ordering::SeqCst)
                 + appended_raw * FAKE_STORAGE_COPIES
                 + appends * FAKE_FRAME_BYTES,
         "落盘预算必须按存储成本计费（两份 + framing）：charged={} raw={} appends={}",
-        snapshot.capture_charged_bytes,
+        snapshot.capture_usage.expect("manager usage").charged_bytes,
         appended_raw,
         appends
     );
     anyhow::ensure!(
-        snapshot.capture_charged_bytes <= FAKE_CAPTURE_LIMIT_BYTES,
+        snapshot.capture_usage.expect("manager usage").charged_bytes <= FAKE_CAPTURE_LIMIT_BYTES,
         "已接纳成本不得超过声明上限"
     );
     anyhow::ensure!(
@@ -172,7 +204,10 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
     );
     println!(
         "OK  成本计费：charged={} raw={} appends={} refused={} disk={disk_bytes}",
-        snapshot.capture_charged_bytes, appended_raw, appends, limit.refused_bytes
+        snapshot.capture_usage.expect("manager usage").charged_bytes,
+        appended_raw,
+        appends,
+        limit.refused_bytes
     );
 
     // 再在真实 exec 工具边界确认 typed 结果与"不是存储故障"。
@@ -182,7 +217,9 @@ async fn limit_is_charged_as_storage_cost_and_terminates() -> anyhow::Result<()>
         ScriptedBehavior::endless_until_cancelled(),
         Some(FAKE_MODEL_OUTPUT_BYTES as u64),
     )?;
-    let error = run_exec_tool(backend).await.expect_err("超限必须失败");
+    let error = run_exec_tool(backend, Arc::new(FixedArchive::default()))
+        .await
+        .expect_err("超限必须失败");
     anyhow::ensure!(
         error.source.downcast_ref::<OutputStorageFault>().is_none(),
         "预期容量终止不得伪装成可靠存储故障：{error}"
@@ -214,7 +251,9 @@ async fn write_failure_keeps_its_retry_obligation() -> anyhow::Result<()> {
         ScriptedBehavior::failing_first_append(),
         None,
     )?;
-    let error = run_exec_tool(backend).await.expect_err("写失败必须失败");
+    let error = run_exec_tool(backend, Arc::new(FixedArchive::default()))
+        .await
+        .expect_err("写失败必须失败");
     let fault = error
         .source
         .downcast_ref::<OutputStorageFault>()
@@ -326,8 +365,6 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
     let inner = pl_tool::command::LocalCommandBackend::new(root.path().to_path_buf());
     let backend = LowBudgetBackend::new(
         inner,
-        // 真实本地后端只写一份合并捕获，因此这里如实只按一份 + framing 计费。
-        1,
         FAKE_CAPTURE_LIMIT_BYTES,
         None,
         Arc::new(CaptureFacts::default()),
@@ -356,6 +393,57 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
         "真实后端触顶不得报成功"
     );
     println!("OK  真实进程后端：低自定义预算触顶后命令被取消并等到终态");
+    let root = tempfile::tempdir()?;
+    let local = pl_tool::command::LocalCommandBackend::new(root.path().to_path_buf());
+    let target = local
+        .output_target("tiny", "header", "call", "touch must-not-start")
+        .await?;
+    anyhow::ensure!(
+        local
+            .prepare_output(
+                &target,
+                "touch must-not-start",
+                &root.path().display().to_string(),
+                1
+            )
+            .await
+            .is_err()
+    );
+    anyhow::ensure!(
+        !target.capture_file().exists() && !root.path().join("must-not-start").exists()
+    );
+    let manager = CommandProcessManager::new(Arc::new(LowBudgetBackend::new(
+        local,
+        1024 * 1024,
+        Some(32 * 1024),
+        Arc::new(CaptureFacts::default()),
+    )));
+    let mut request = start_request();
+    request.command =
+        "python3 -c 'import os; os.write(1,b\"h\"*262144); os.write(2,b\"e\"*196608)'".into();
+    let snapshot = manager.run_task("task-real-rollover", request).await?;
+    anyhow::ensure!(matches!(
+        snapshot.state.final_result(),
+        Some(CommandProcessFinalResult::Succeeded { .. })
+    ));
+    anyhow::ensure!(
+        snapshot.stdout.original_length == 262144 && snapshot.stderr.original_length == 196608
+    );
+    anyhow::ensure!(snapshot.stdout.content.len() + snapshot.stderr.content.len() <= 32 * 1024);
+    for stream in [&snapshot.stdout, &snapshot.stderr] {
+        anyhow::ensure!(
+            stream.was_truncated && stream.content.matches("[output omitted]").count() == 1
+        );
+    }
+    let disk = tokio::fs::metadata(&snapshot.capture_file).await?.len();
+    anyhow::ensure!(
+        snapshot
+            .capture_usage
+            .expect("local budget usage")
+            .charged_bytes
+            == disk
+    );
+    println!("OK  本地头部预检与双流滚动窗口：原始长度准确、一次投影、计费等于磁盘长度");
     Ok(())
 }
 
@@ -408,25 +496,25 @@ impl ScriptedBehavior {
 /// 只声明低预算与显式存储成本的装饰 backend：其余语义全部委托给内层真实实现。
 struct LowBudgetBackend<B> {
     inner: B,
-    storage_copies: u64,
     capture_limit_bytes: u64,
     model_output_bytes_cap: Option<u64>,
+    capture_ownership: pl_tool::command::CommandCaptureOwnership,
     facts: Arc<CaptureFacts>,
 }
 
-impl<B> LowBudgetBackend<B> {
+impl<B: CommandBackend> LowBudgetBackend<B> {
     fn new(
         inner: B,
-        storage_copies: u64,
         capture_limit_bytes: u64,
         model_output_bytes_cap: Option<u64>,
         facts: Arc<CaptureFacts>,
     ) -> Self {
+        let capture_ownership = inner.capture_ownership();
         Self {
             inner,
-            storage_copies,
             capture_limit_bytes,
             model_output_bytes_cap,
+            capture_ownership,
             facts,
         }
     }
@@ -436,7 +524,6 @@ impl<B: std::fmt::Debug> std::fmt::Debug for LowBudgetBackend<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LowBudgetBackend")
             .field("inner", &self.inner)
-            .field("storage_copies", &self.storage_copies)
             .field("capture_limit_bytes", &self.capture_limit_bytes)
             .field("model_output_bytes_cap", &self.model_output_bytes_cap)
             .finish_non_exhaustive()
@@ -450,15 +537,17 @@ impl<B: CommandBackend> CommandBackend for LowBudgetBackend<B> {
         Some(self.capture_limit_bytes)
     }
 
+    fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
+        self.capture_ownership
+    }
+
     fn capture_storage_cost(
         &self,
-        _target: &CommandOutputTarget,
-        _stream: CommandCaptureStream,
-        chunk_len: usize,
+        target: &CommandOutputTarget,
+        stream: CommandCaptureStream,
+        chunk: &[u8],
     ) -> u64 {
-        (chunk_len as u64)
-            .saturating_mul(self.storage_copies)
-            .saturating_add(FAKE_FRAME_BYTES)
+        self.inner.capture_storage_cost(target, stream, chunk)
     }
 
     fn model_output_bytes_cap(&self) -> Option<u64> {
@@ -494,10 +583,11 @@ impl<B: CommandBackend> CommandBackend for LowBudgetBackend<B> {
         target: &CommandOutputTarget,
         command: &str,
         working_directory: &str,
+        capture_limit_bytes: u64,
     ) -> Result<u64, Self::Error> {
         let prepared = self
             .inner
-            .prepare_output(target, command, working_directory)
+            .prepare_output(target, command, working_directory, capture_limit_bytes)
             .await?;
         self.facts.prepared_bytes.store(prepared, Ordering::SeqCst);
         Ok(prepared)
@@ -567,6 +657,19 @@ impl ScriptedBackend {
 impl CommandBackend for ScriptedBackend {
     type Error = std::io::Error;
 
+    fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
+        pl_tool::command::CommandCaptureOwnership::Manager
+    }
+
+    fn capture_storage_cost(
+        &self,
+        _target: &CommandOutputTarget,
+        _stream: CommandCaptureStream,
+        chunk: &[u8],
+    ) -> u64 {
+        chunk.len() as u64 * FAKE_STORAGE_COPIES + FAKE_FRAME_BYTES
+    }
+
     async fn resolve_cwd(
         &self,
         _cwd: Option<&Path>,
@@ -614,7 +717,10 @@ impl CommandBackend for ScriptedBackend {
                     cancellation.cancelled().await;
                 }
                 facts.process_cancelled.store(true, Ordering::SeqCst);
-                Ok(CommandExit { exit_code: Some(0) })
+                Ok(CommandExit {
+                    exit_code: Some(0),
+                    capture: None,
+                })
             },
         ))
     }
@@ -624,7 +730,12 @@ impl CommandBackend for ScriptedBackend {
         target: &CommandOutputTarget,
         command: &str,
         working_directory: &str,
+        capture_limit_bytes: u64,
     ) -> Result<u64, Self::Error> {
+        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
+        if header.len() as u64 > capture_limit_bytes {
+            return Err(std::io::Error::other("capture header exceeds budget"));
+        }
         if let Some(parent) = target.capture_file().parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -633,7 +744,6 @@ impl CommandBackend for ScriptedBackend {
                 tokio::fs::create_dir_all(parent).await?;
             }
         }
-        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
         tokio::fs::write(target.capture_file(), header.as_bytes()).await?;
         Ok(header.len() as u64)
     }
@@ -744,7 +854,10 @@ impl tokio::io::AsyncRead for FixedPatternReader {
 }
 
 /// 假的输出归档：只验证"命令捕获上限"这条路径，不落真实资源。
-struct FixedArchive;
+#[derive(Default)]
+struct FixedArchive {
+    calls: AtomicU64,
+}
 
 impl std::fmt::Debug for FixedArchive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -758,6 +871,7 @@ impl CommandOutputArchive for FixedArchive {
         _thread_id: &str,
         snapshot: &CommandOutputSnapshot,
     ) -> Result<ResourceReference, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let byte_len = snapshot.capture_committed_len;
         ResourceReference::new(
             "pl-tool://command-capture-limit-validation".to_string(),
@@ -772,12 +886,9 @@ impl CommandOutputArchive for FixedArchive {
 /// 用真实 `ThreadExecTool` 驱动一次 exec 调用，返回它的 typed 错误。
 async fn run_exec_tool<B: CommandBackend + 'static>(
     backend: B,
+    archive: Arc<FixedArchive>,
 ) -> Result<pl_core::tool::ToolOutput, ToolError> {
-    let tool = ThreadExecTool::new(
-        Arc::new(backend),
-        Arc::new(FixedArchive),
-        CommandAccess::WorkspaceOnly,
-    );
+    let tool = ThreadExecTool::new(Arc::new(backend), archive, CommandAccess::WorkspaceOnly);
     let input = ExecInput {
         command: "while :; do printf '0123456789abcdef'; done".to_string(),
         cwd: None,
@@ -800,8 +911,7 @@ async fn run_exec_tool<B: CommandBackend + 'static>(
         extension_sequence: 0,
         history_fence: 0,
     };
-    // 兜底超时：已经落定的调用不会走这里，只有"上限没生效"之类的不收敛才会把用例判失败，
-    // 而不是让整个验证入口挂住。
+    // 超时仅用于将不收敛的实现判为失败；成功由终态、实际回执与存储事实断言决定。
     tokio::time::timeout(
         Duration::from_secs(90),
         pl_core::tool::opaque::Tool::execute(&tool, payload, call),
@@ -844,7 +954,6 @@ fn scripted_backend(
     Ok((
         LowBudgetBackend::new(
             inner,
-            FAKE_STORAGE_COPIES,
             FAKE_CAPTURE_LIMIT_BYTES,
             model_output_bytes_cap,
             facts,

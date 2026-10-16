@@ -4416,8 +4416,14 @@ mod storage_fault_tests {
             "capture",
         )
         .await?;
-        pl_tool::command::CommandBackend::prepare_output(&backend, &target, "capture", "/tmp")
-            .await?;
+        pl_tool::command::CommandBackend::prepare_output(
+            &backend,
+            &target,
+            "capture",
+            "/tmp",
+            pl_tool::command::MAX_CAPTURE_BYTES,
+        )
+        .await?;
         let capture_file = target.capture_file().to_path_buf();
         let committed = b"committed line\n".to_vec();
         let committed_len = pl_tool::command::CommandBackend::append_output_chunk(
@@ -4540,6 +4546,18 @@ mod storage_fault_tests {
     impl pl_tool::command::CommandBackend for ScriptedCaptureBackend {
         type Error = pl_protocol::PureError;
 
+        fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
+            self.inner.capture_ownership()
+        }
+        fn capture_storage_cost(
+            &self,
+            target: &pl_tool::command::CommandOutputTarget,
+            stream: pl_tool::command::CommandCaptureStream,
+            chunk: &[u8],
+        ) -> u64 {
+            self.inner.capture_storage_cost(target, stream, chunk)
+        }
+
         async fn resolve_cwd(
             &self,
             cwd: Option<&std::path::Path>,
@@ -4576,7 +4594,10 @@ mod storage_fault_tests {
                 },
                 move |_cancellation| async move {
                     exit.notified().await;
-                    Ok(pl_tool::command::CommandExit { exit_code: Some(0) })
+                    Ok(pl_tool::command::CommandExit {
+                        exit_code: Some(0),
+                        capture: None,
+                    })
                 },
             ))
         }
@@ -4586,9 +4607,10 @@ mod storage_fault_tests {
             target: &pl_tool::command::CommandOutputTarget,
             command: &str,
             working_directory: &str,
+            capture_limit_bytes: u64,
         ) -> Result<u64, Self::Error> {
             self.inner
-                .prepare_output(target, command, working_directory)
+                .prepare_output(target, command, working_directory, capture_limit_bytes)
                 .await
         }
 

@@ -55,25 +55,21 @@ impl HeadTailBuffer {
         self.push_to_tail(chunk.to_vec());
     }
 
-    pub(super) fn display_text(&self) -> String {
-        let mut bytes = Vec::with_capacity(self.head_bytes.saturating_add(self.tail_bytes));
+    pub(super) fn excerpt(&self) -> pl_output::OutputExcerpt {
+        let mut head = Vec::with_capacity(self.head_bytes);
+        let mut tail = Vec::with_capacity(self.tail_bytes);
         for chunk in &self.head {
-            bytes.extend_from_slice(chunk);
-        }
-        if self.omitted_bytes > 0 {
-            let omitted = self.omitted_bytes;
-            bytes
-                .extend_from_slice(format!("\n\n... [{omitted} bytes omitted] ...\n\n").as_bytes());
+            head.extend_from_slice(chunk);
         }
         for chunk in &self.tail {
-            bytes.extend_from_slice(chunk);
+            tail.extend_from_slice(chunk);
         }
-        String::from_utf8_lossy(&bytes).to_string()
+        pl_output::OutputExcerpt::from_parts(head, tail, self.omitted_bytes)
     }
 
-    pub(super) fn take_display_text(&mut self) -> String {
+    pub(super) fn take_excerpt(&mut self) -> pl_output::OutputExcerpt {
         let replacement = Self::new(self.max_bytes);
-        std::mem::replace(self, replacement).display_text()
+        std::mem::replace(self, replacement).excerpt()
     }
 
     pub(super) fn total_bytes(&self) -> usize {

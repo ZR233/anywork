@@ -5,9 +5,11 @@ pub mod migration;
 mod repository;
 mod session_delete;
 mod sqlite;
+mod task_index_migration;
 mod thread_checkpoint;
 mod thread_history;
 mod thread_journal;
+mod tool_task_index;
 mod tool_tasks;
 mod writer;
 
@@ -18,7 +20,7 @@ mod writer;
 /// effect rows that are the durable history query contract. Older data is upgraded only through the
 /// explicit [`migration::migrate_to_current`] path; opening a database never converts or discards
 /// it.
-pub const SESSION_SCHEMA_VERSION: i64 = 11;
+pub const SESSION_SCHEMA_VERSION: i64 = 12;
 
 use std::sync::Arc;
 

@@ -181,29 +181,34 @@ async fn initialize(db: &DatabaseConnection) -> Result<(), SessionStoreError> {
     if version == super::SESSION_SCHEMA_VERSION {
         return Ok(());
     }
-    db.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS session_entries (
+    // 空库的结构、索引与版本号一起提交，初始化中断不会留下不可重开的半份结构。
+    let tx = db.begin().await?;
+    tx.execute_unprepared(
+        "CREATE TABLE session_entries (
             session_id TEXT NOT NULL, id TEXT NOT NULL, type_id TEXT NOT NULL,
             ordinal INTEGER NOT NULL, turn_id TEXT, envelope TEXT NOT NULL CHECK(json_valid(envelope)), payload_hash TEXT NOT NULL,
             PRIMARY KEY(session_id,id));
-         CREATE INDEX IF NOT EXISTS session_entries_kind ON session_entries(session_id,type_id,ordinal,id);
-         CREATE INDEX IF NOT EXISTS session_entries_turn ON session_entries(session_id,turn_id,type_id,ordinal);
-         CREATE TABLE IF NOT EXISTS session_entry_history (
+         CREATE INDEX session_entries_kind ON session_entries(session_id,type_id,ordinal,id);
+         CREATE INDEX session_entries_turn ON session_entries(session_id,turn_id,type_id,ordinal);
+         CREATE TABLE session_entry_history (
             session_id TEXT NOT NULL, sequence INTEGER NOT NULL,
             envelope TEXT NOT NULL, payload_hash TEXT NOT NULL,
             PRIMARY KEY(session_id,sequence));
-         CREATE TABLE IF NOT EXISTS session_history_heads (
+         CREATE TABLE session_history_heads (
             session_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, payload_hash TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS thread_checkpoints (
+         CREATE TABLE thread_checkpoints (
             thread_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL,
             state_revision INTEGER NOT NULL, history_fence INTEGER NOT NULL,
             envelope TEXT NOT NULL CHECK(json_valid(envelope)), payload_hash TEXT NOT NULL);"
     ).await?;
-    db.execute_unprepared(&format!(
+    tx.execute_unprepared(super::tool_task_index::SCHEMA)
+        .await?;
+    tx.execute_unprepared(&format!(
         "PRAGMA user_version={}",
         super::SESSION_SCHEMA_VERSION
     ))
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -372,6 +377,24 @@ pub(super) async fn apply(
                 )));
             }
         } else if let Some(saved) = put(&tx, entry).await? {
+            if saved.id.starts_with("pl.resource.thread-commit.") {
+                let payload = crate::context::OpaquePayload::new(
+                    saved.type_id.clone(),
+                    saved.schema_version,
+                    saved.payload.clone(),
+                )
+                .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+                let effect = crate::thread::ThreadEffectBatch::decode(&payload)
+                    .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
+                if effect.thread_id != saved.session_id
+                    || saved.id != format!("pl.resource.thread-commit.{:020}", effect.sequence)
+                {
+                    return Err(SessionStoreError::Invalid(
+                        "任务 effect 所有权或序号不一致".into(),
+                    ));
+                }
+                super::tool_task_index::apply(&tx, &effect).await?;
+            }
             super::history::append(
                 &tx,
                 &entry.session_id,

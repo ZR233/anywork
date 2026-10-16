@@ -17,7 +17,7 @@ use super::{DEFAULT_TIMEOUT_SECS, ExecInput, MAX_MODEL_OUTPUT_BYTES};
 use crate::command::{
     CommandBackend,
     process_manager::{
-        CaptureRepair, CommandCaptureFailure, CommandOutputSnapshot, CommandProcessFinalResult,
+        CommandCaptureFailure, CommandOutputSnapshot, CommandProcessFinalResult,
         CommandProcessManager, CommandStartRequest,
     },
 };
@@ -121,7 +121,6 @@ struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
     thread_id: String,
     call_id: String,
     snapshot: CommandOutputSnapshot,
-    repair: Option<CaptureRepair>,
     kind: StorageFaultKind,
 }
 
@@ -134,16 +133,12 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
         snapshot: CommandOutputSnapshot,
         kind: StorageFaultKind,
     ) -> Self {
-        // The repair is taken from the snapshot itself: it names exactly the accepted bytes the failed
-        // append could not write, at the offset the fragment was at before it tried.
-        let repair = snapshot.capture_repair().cloned();
         Self {
             archive,
             backend,
             thread_id: thread_id.to_owned(),
             call_id: call_id.to_owned(),
             snapshot,
-            repair,
             kind,
         }
     }
@@ -161,35 +156,16 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
     }
     fn retry(&self) -> OutputRetryFuture<'_> {
         Box::pin(async move {
-            // Re-materialize every accepted chunk the failed capture did not store, in acceptance
-            // order, before archiving: one truncation back to the confirmed offset, then each chunk
-            // re-appended with its own framing. So the archive stores exactly the bytes that were
-            // accepted — including the other stream's chunk the first failing append never saw —
-            // instead of a short fragment.
-            if let Some(repair) = &self.repair {
-                let mut committed_len = repair.committed_len;
-                for chunk in &repair.chunks {
-                    committed_len = self
-                        .backend
-                        .repair_output_chunk(
-                            &self.snapshot.capture_file,
-                            chunk.stream,
-                            committed_len,
-                            &chunk.pending,
-                        )
-                        .await
-                        .map_err(|error| ColdStoreError {
-                            source: Box::new(std::io::Error::other(error.to_string())),
-                        })?;
-                }
-            }
-            let reference = self
-                .archive
-                .retain(&self.thread_id, &self.snapshot)
-                .await
-                .map_err(|error| ColdStoreError {
-                    source: Box::new(error),
-                })?;
+            let reference = super::capture_retention::retain(
+                &*self.backend,
+                &*self.archive,
+                &self.thread_id,
+                &self.snapshot,
+            )
+            .await
+            .map_err(|error| ColdStoreError {
+                source: Box::new(error),
+            })?;
             // The stored reference belongs to the already-committed tool result of this same call:
             // name that identity so the owner attaches the reference to it instead of leaving an
             // orphan blob the UI and cold recovery can never locate.
@@ -307,7 +283,7 @@ pub enum ExecFailure {
     /// 这是预期内的容量终止，不是可靠保存故障：它不欠任何可靠保存义务，进程管理器也不会为它
     /// 挂 `OutputRetryObligation`，因此不会触发无限 repair。
     #[error(
-        "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of further output were refused"
+        "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
     )]
     OutputLimitExceeded {
         /// 本 operation 生效的落盘上限（字节）。
@@ -418,7 +394,13 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         if let Some(fault) = &capture_fault {
             report_output_storage_fault(context.tasks.as_ref(), fault).await;
         }
-        let retained = self.retain_capture(&context.thread_id, &snapshot).await;
+        let retained = super::capture_retention::retain(
+            &*self.processes.backend(),
+            &*self.archive,
+            &context.thread_id,
+            &snapshot,
+        )
+        .await;
         let output = projection(&snapshot, retained.as_ref().ok())?;
         if let Err(error) = retained {
             // The archive itself could not store the capture: keep the retriable obligation on the
@@ -482,53 +464,6 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                 Err(ToolError::new(ExecFailure::Process(snapshot.message)).with_output(output))
             }
         }
-    }
-}
-
-impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
-    /// Archives the accepted capture, re-materializing any bytes the failed capture did not store.
-    ///
-    /// A failed capture append may have left the fragment short of the bytes already accepted and
-    /// published live, and the other stream's reader may already have accepted a following chunk.
-    /// Repairing first — truncating back to the backend-confirmed offset and re-appending every
-    /// accepted chunk in order through the same backend — makes the archive store the exact accepted
-    /// bytes under their stable identity instead of a short fragment it would report as `Stored`. A
-    /// repair that itself cannot write is reported as a typed output-storage fault, so the obligation
-    /// (which repeats the whole repair) stays owed and the short fragment is never archived as whole.
-    async fn retain_capture(
-        &self,
-        thread_id: &str,
-        snapshot: &CommandOutputSnapshot,
-    ) -> Result<ResourceReference, ToolError> {
-        if let Some(repair) = snapshot.capture_repair() {
-            let mut committed_len = repair.committed_len;
-            for chunk in &repair.chunks {
-                committed_len = self
-                    .processes
-                    .backend()
-                    .repair_output_chunk(
-                        &snapshot.capture_file,
-                        chunk.stream,
-                        committed_len,
-                        &chunk.pending,
-                    )
-                    .await
-                    .map_err(|error| {
-                        let source = ColdStoreError {
-                            source: Box::new(std::io::Error::other(format!(
-                                "command output capture repair failed: {error}"
-                            ))),
-                        };
-                        ToolError::new(OutputStorageFault::new(
-                            StorageFaultKind::WriteFailed,
-                            Arc::new(source),
-                        ))
-                    })?;
-            }
-        }
-        let reference = self.archive.retain(thread_id, snapshot).await?;
-        reference.validate().map_err(ToolError::new)?;
-        Ok(reference)
     }
 }
 
