@@ -312,6 +312,11 @@ home 重启后再次读取。取证保存设置页截图、快照、调用库计
 人工填写。统计读写缺口不得误判为没有调用；不把模拟服务商验收外推为线上供应商兼容。
 实时 projection 的 live output/decode 两个字段按成对样本判定：只注入其中一个字段时，
 状态栏不得将它与上一份 authoritative 字段混算；应成对采用 authoritative 或保持未知。
+状态栏还必须单独验证显示保持边界：同一 Thread 首次显示有效速度后，收到不含新 throughput
+observation 的 runtime 更新仍显示最近快照；新 turn/attempt 的 partial、零值或无效 observation
+不得借用旧值，Thread 切换或 readout 重建后也不得泄漏旧会话值。该判据使用稳定
+`thread-throughput` key、最小 typed runtime snapshot 与前后截图/界面树记录，不能用外层
+`??` 或延迟等待制造通过。
 
 压力场景在 Flutter profile/AOT 模式及优化 Rust bridge 下按固定提示词从本地供应商以约 5,000 token/s 返回约 20,000 个混合消息事件；
 采集请求耗时、事件完成数、GUI 帧/操作探针、窗口大小、截图、快照、未处理错误和进程回收；
@@ -449,6 +454,8 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 revision、资源 stamp/attempt 与失败恢复结果。不得用延迟等待、切页、重进或前端轮询替代事件证据。
 Thread runtime 的 paced stream 应在同一 attempt 完成前观察多次 live 变化并在完成后收敛
 authoritative；无法提供 partial token 的能力显示 unknown，不得显示以字符数或字节数计算的假值。
+状态栏的显示保持测试与 canonical throughput 计算测试分开：前者证明组件的短暂显示生命周期，
+后者继续证明成对样本和 unknown 语义。
 
 Driver snapshot 只暴露必要 typed 诊断，不暴露图片 bytes、凭据、raw payload 或内部数据库。
 粘贴回归使用 Driver-only `ClipboardImageReader` override：先断言当前 composer 出现准入 draft

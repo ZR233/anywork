@@ -829,6 +829,13 @@ usage、statistics 与 costs 分别消费对应 projection。高频 runtime 更�
 `AgentWorkspaceView` 驱动 timeline、composer、表单或滚动状态重建；弹层打开期间也必须随
 canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子取得当前镜像；它不关闭跨路由资源。
 
+状态栏 throughput 使用一个独立的 readout 组件承载显示保持，而不是由 Connector 在每帧重算后
+追加外层 fallback。该组件以 Thread identity 和稳定的 Driver/widget identity 管理自己的短暂
+展示状态：同一 Thread 没有新的 throughput observation 时可继续显示最近一次已确认值；发现
+新 turn/attempt 的 partial 或 invalid live observation 时必须回到 unknown；Thread 切换、关闭
+或组件释放时清除展示状态。这个 readout 不是 canonical runtime 的第二份事实，不能把保持的数值
+回写 Client、Rust、Bridge 或历史统计，也不能用它参与任何派生计算。
+
 附件 admission 是同一 canonical composer draft 的两阶段更新：`admitAttachmentDrafts` 返回
 后先显示稳定 draft metadata，随后按相同 draft ID 异步补齐 preview bytes。补齐前必须重新读取
 最新 state 并校验 project/thread、submission revision、attachment generation；失败保留已准入

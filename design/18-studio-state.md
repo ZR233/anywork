@@ -465,7 +465,13 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
 时长是两个可独立未知的字段，消费者只有在二者同一观察代次同时存在时才计算实时速度；
 没有 live 观察时才可成对使用 authoritative 的同一组计数；live 观察已存在但任一字段
 缺失时保持未知，直到该 attempt 的成对 usage 与计时都成立。禁止把 live 与 authoritative
-的分子、分母交叉配对，也不以旧 attempt 的速度替代当前 pending 样本。
+的分子、分母交叉配对，也不以旧 attempt 的速度替代当前 pending 样本。状态栏的速度 readout
+另有显示保持语义：它只在同一 Thread 收到没有新 throughput observation 的 runtime 帧时，
+保留最近一次已经按上述规则成立的显示快照；这不是新的 runtime 事实，也不参与任何计算、
+计费或历史汇总。新 turn/attempt 的 live partial、零值或无效 observation 必须清除该显示快照
+并显示未知，直到当前 observation 自身成对成立；同一 turn/attempt 的后续不完整帧仍属于
+“没有新的可显示速度事实”，可以继续显示该 attempt 最近一次已确认值。Thread 切换、关闭
+或 readout 生命周期结束不得跨会话复用快照。
 
 工具附件投影：Studio 从持久化工具媒体通过格式所有者的 typed 解码生成工具输出附件，
 实时与历史恢复共用同一投影。附件身份沿用归档引用，MIME、字节数与可用尺寸必须对应

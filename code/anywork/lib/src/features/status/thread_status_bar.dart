@@ -172,14 +172,10 @@ class ThreadStatusBar extends StatelessWidget {
                     if (runtime.workflow?.currentRun case final run?)
                       _WorkflowRuntimeReadout(run: run),
                     ContextUsageReadout(projection: contextUsage),
-                    _StatusReadout(
+                    ThreadThroughputReadout(
                       key: StudioDriverKeys.threadThroughput,
-                      icon: Icons.speed_outlined,
-                      label: context.tokenThroughputLabel(
-                        ModelRouteQueries.throughput(runtime),
-                      ),
-                      tooltip: context.l10n.statusCurrentAgentTokenSpeed,
-                      maxWidth: 84,
+                      threadId: thread.id,
+                      runtime: runtime,
                     ),
                     if (showLspActivity && lspActiveServers.isNotEmpty)
                       _LspActivityReadout(servers: lspActiveServers),
@@ -216,6 +212,110 @@ class ThreadStatusBar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Owns the status-bar display lifetime for the current Thread's throughput.
+///
+/// The runtime remains canonical and [ModelRouteQueries.throughput] remains a
+/// pure same-sample calculation. This component only keeps the last value that
+/// was already valid when a later frame has no new throughput observation.
+class ThreadThroughputReadout extends StatefulWidget {
+  const ThreadThroughputReadout({
+    required this.threadId,
+    required this.runtime,
+    super.key,
+  });
+
+  final String threadId;
+  final ThreadRuntimeView runtime;
+
+  @override
+  State<ThreadThroughputReadout> createState() =>
+      _ThreadThroughputReadoutState();
+}
+
+class _ThreadThroughputReadoutState extends State<ThreadThroughputReadout> {
+  _ThroughputSnapshot? _snapshot;
+
+  @override
+  void initState() {
+    super.initState();
+    _acceptRuntime();
+  }
+
+  @override
+  void didUpdateWidget(covariant ThreadThroughputReadout oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId) _snapshot = null;
+    _acceptRuntime();
+  }
+
+  void _acceptRuntime() {
+    final tokensPerSecond = ModelRouteQueries.throughput(widget.runtime);
+    final live = widget.runtime.liveUsage;
+    if (tokensPerSecond != null) {
+      _snapshot = _ThroughputSnapshot(
+        threadId: widget.threadId,
+        source: _ThroughputSource.fromLive(live),
+        tokensPerSecond: tokensPerSecond,
+      );
+      return;
+    }
+
+    final previous = _snapshot;
+    if (previous == null || live == null || previous.source.matchesLive(live)) {
+      return;
+    }
+    // A new live turn/attempt is an explicit invalidation. Do not show the
+    // previous turn's speed while this new sample is incomplete.
+    _snapshot = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokensPerSecond = _snapshot?.threadId == widget.threadId
+        ? _snapshot?.tokensPerSecond
+        : null;
+    return _StatusReadout(
+      icon: Icons.speed_outlined,
+      label: context.tokenThroughputLabel(tokensPerSecond),
+      tooltip: context.l10n.statusCurrentAgentTokenSpeed,
+      maxWidth: 84,
+    );
+  }
+}
+
+/// Identity of the live turn/attempt that produced the last valid value.
+///
+/// A missing live observation is deliberately not treated as a new speed
+/// sample: the status bar keeps its last confirmed display until a new live
+/// turn/attempt is actually observed or a replacement speed is available.
+class _ThroughputSource {
+  const _ThroughputSource({this.turnId, this.attemptId});
+
+  factory _ThroughputSource.fromLive(ThreadRuntimeLiveUsageView? live) =>
+      _ThroughputSource(turnId: live?.turnId, attemptId: live?.attemptId);
+
+  final String? turnId;
+  final String? attemptId;
+
+  bool matchesLive(ThreadRuntimeLiveUsageView live) =>
+      turnId != null &&
+      attemptId != null &&
+      turnId == live.turnId &&
+      attemptId == live.attemptId;
+}
+
+class _ThroughputSnapshot {
+  const _ThroughputSnapshot({
+    required this.threadId,
+    required this.source,
+    required this.tokensPerSecond,
+  });
+
+  final String threadId;
+  final _ThroughputSource source;
+  final double? tokensPerSecond;
 }
 
 class _LspActivityReadout extends StatelessWidget {
