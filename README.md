@@ -1,497 +1,146 @@
-# Pure-Lang
+<div align="center">
+  <img src="design/assets/anywork-app-icon.png" alt="糊来帮 (anywork)" width="128" />
+  <h1>糊来帮 · anywork</h1>
+  <p><strong>把自然语言想法，变成清晰计划与可靠交付的桌面智能体工作台</strong></p>
+  <p>
+    多模型供应商混搭 · 双模式任务流 · 交互式计划确认 · 多智能体团队与 Worktree 隔离 · 本地/SSH 全栈工具箱 · 项目级技能
+  </p>
+</div>
 
-桌面应用中文名为 **糊来帮**，英文名为 **anywork**，使用 `~/.anywork` 保存用户数据，API token 保存在系统凭据库。
+---
 
-Linux 构建后可运行 `python3 dist/anywork-release/install-desktop-entry.py` 登记应用菜单图标；移动 bundle 后需重新运行。
+**糊来帮（anywork）** 是一款专为开发者与知识工作者打造的原生桌面智能体工作台。它不止是一个聊天窗口，而是一支支持多家主流模型服务商混搭、懂你项目上下文、先对齐计划再动手执行，并能在独立工作树或远程服务器上自主验证交付的智能体协作团队。
 
-自然语言编译器 — 将用户的自然语言需求整理为可执行导向的编译计划、代码生成意图和后续动作建议。
+<div align="center">
+  <img src="design/assets/readme-demo-flow.gif" alt="糊来帮实机任务流转演示" width="96%" />
+  <p><em>实机录制：从新建任务、切换模式、流式思考推理、终端命令执行到生成结构化交付结果</em></p>
+</div>
 
-## 项目概览
+---
 
-Pure-Lang 是一个**自然语言编译器**：接收用户的自然语言需求，将其编译为可执行的计划、代码生成意图和后续动作建议。项目采用模块化单体架构，核心编译引擎基于 Rust 实现；提供 Windows 优先的 Flutter + flutter_rust_bridge 桌面端，以及共享业务运行时的独立 HTTP 宿主。
+## ✨ 为什么选择糊来帮？
 
-> 📖 详细设计文档见 [`design/`](./design/) 目录
+### 1. 🧭 先对齐、再动手：双模式工作流与交互式计划
 
-## 架构
+在糊来帮中，你可以根据任务复杂度随时切换工作方式：
+- **简洁模式**：即问即答、干净利落，适合日常问答、代码解释与轻量修改。
+- **任务模式**：面对复杂特性或跨模块重构，智能体不会“收到一句话就盲目改代码”，而是先调研现场并起草一份结构化的**实施计划**。
 
-```mermaid
-flowchart LR
-  App[anywork] --> Client[anywork_client]
-  Client --> Ports[Typed transport ports]
-  App --> Adapter[FRB adapter]
-  Adapter -.实现.-> Ports
-  Adapter --> Bridge[pl-studio-bridge]
-  HTTP --> Server[pl-studio-server]
-  Bridge --> Runtime[pl-studio-runtime]
-  Server --> Runtime
-  Runtime --> Core[pl-core]
-  Runtime --> Model[pl-model]
-  Runtime --> Tool[pl-tool]
-  Runtime --> Trace[pl-trace]
-  Runtime --> Protocol[pl-protocol]
-  Model --> Core
-  Tool --> Core
-  Trace --> Core
-```
+计划生成后，工作台会并排展开**实施计划审阅面板**。你可以对照代码与验收清单，一键**确认并执行**，或直接在下方输入调整意见让智能体重新打磨方案——始终把方向盘握在自己手里。
 
-箭头表示依赖方向。core 定义独立的 Thread、Model/Tool 契约、上下文与可选存储；
-model 实现供应商协议与模型路由，tool 消费 model 已解释的 provider 能力（crate 依赖的唯一
-权威源见 [design/02](design/02-crates.md)）。Studio 拥有配置、项目、Mode/Plan/workflow、
-子代理协调和统一装配；FRB 与 HTTP 适配同一业务 runtime。应用实例的纯 Dart Client 拥有
-显示镜像、草稿、命令和资源生命周期，Riverpod 只适配观察；契约见 [design/25](design/25-frontend-state.md)。
+<div align="center">
+  <img src="design/assets/readme-plan-confirmation.png" alt="并排计划审阅与交互确认" width="96%" />
+  <p><em>实施计划并排审阅面板：支持对照完整 Markdown 方案一键批准执行，或直接输入修改意见</em></p>
+</div>
 
-### Workspace 与 Flutter 客户端
+---
 
-| 包 | 路径 | 职责 |
-|-------|------|------|
-| `pl-protocol` | `code/pl-protocol/` | 跨 crate 协议类型：消息、事件、错误、权限 |
-| `pl-trace` | `code/pl-trace/` | 通用 Thread 日志的只读诊断和用量投影 |
-| `pl-model` | `code/pl-model/` | LLM provider 抽象与适配：OpenAI 兼容 API、SSE 流式、模型元数据管理 |
-| `pl-provider-fixture` | `code/pl-provider-fixture/` | 本地固定请求/流的模拟供应商与 GUI 压力场景 |
-| `pl-lsp` | `code/pl-lsp/` | LSP 客户端：rust-analyzer 支持、代码智能查询 |
-| `pl-output` | `code/pl-output/` | 工具输出截断与模型可见投影算法 |
-| `pl-patch` | `code/pl-patch/` | apply-patch 语法、匹配与 backend 契约 |
-| `pl-skill-core` | `code/pl-skill-core/` | Skill frontmatter 与路径安全规则 |
-| `pl-core` | `code/pl-core/` | 产品无关的 Thread、Session/ChatView 有界时间线、模型/工具端口与可选 SQLite |
-| `pl-tool` | `code/pl-tool/` | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索与交互等工具实现 |
-| `pl-remote-helper` | `code/pl-remote-helper/` | Linux 本地进程监督与 SSH 远端助手，共用物理进程协议 |
-| `pl-studio-runtime` | `code/pl-studio-runtime/` | Studio 产品 SQLite、项目、配置、恢复与产品事件的唯一业务 façade |
-| `pl-studio-server` | `code/pl-studio-server/` | 独立 HTTP/OpenAPI/SSE transport 宿主 |
-| `pl-studio-bridge` | `code/anywork/rust/` | Flutter Rust Bridge v2 transport 适配器 |
-| `anywork_client`（非 Cargo 成员） | `code/anywork_client/` | SDK-only Dart Client：read models、唯一 ChatView reducer、命令回执、草稿/附件与资源预算 |
-| `anywork`（非 Cargo 成员） | `code/anywork/` | Flutter 桌面应用：AppGraph 装配 Client 与 FRB adapter，Riverpod 适配只读观察，Connector/View 呈现有界镜像 |
-| `pl-xtask` | `xtask/` | GUI 生成、验证、运行、构建与发布编排入口 |
-| `pl-studio-acceptance` | `code/pl-studio-acceptance/` | 按需编译的隔离 GUI 验收工具，保留全部模拟与故障场景 |
-| `pl-dev-support` | `code/pl-dev-support/` | 工程工具共享的轻量路径、命令和进程树支持 |
+### 2. 🤝 主从协同的智能体团队，原生 Git Worktree 隔离
 
-`cargo xtask manual-gui` 只在执行验收时编译并调用 `pl-studio-acceptance`；验收场景与参数
-在独立工具内维护。普通 xtask、Flutter/Dart 包装命令不再链接 Studio runtime、模型、
-模拟供应商和 SeaORM。GUI 构建显式构建 bridge，以及全 workspace 检查，仍会正常编译
-所需 runtime；这与 xtask 自身的编译依赖解耦是不同阶段。
+复杂工程不再由单个上下文硬扛到底。糊来帮内置主从分工的智能体协作体系：
+- **主智能体**：负责与你沟通意图、拆解计划、统筹全局并汇报最终结果。
+- **探索者（Explorer）**：只读深入代码库与文档，快速摸清模块边界与现场事实。
+- **执行者（Executor）**：在受控的项目目录内落实边界明确的修改与验证。
+- **工作树执行者（Worktree Executor）**：在**独立的 Git Worktree 工作树**中并行实施修改与运行测试，物理隔离、互不踩踏，绝不污染你正在编辑的主工作区。
+- **审查者（Reviewer）**：独立审查代码改动、测试结果与潜在风险，严把交付质量关。
 
-### 依赖规则
+你还可以在设置中自定义专属角色，并在主工作台顶部随时切换查看任意子智能体的实时进度。
 
-core 不依赖 model、tool、trace、protocol、output 或 Studio，包括测试依赖。
-Provider 配置与目录从 model 导入，具体工具从 tool 导入，产品 wire 从 protocol 导入；
-不经过 core 转发。tool 组合 LSP、输出、patch、Skill 与远程 helper 等物理能力。
+<div align="center">
+  <img src="design/assets/readme-workspace-overview.png" alt="主工作台与多智能体实时切换" width="96%" />
+  <p><em>主工作台全景：顶部一键切换主从智能体视图、实时显示多币种费用与工作区入口，时间线流畅呈现思考、工具调用与 Markdown 正文</em></p>
+</div>
 
-core 默认纯内存，SQLite 通过 `sqlite` feature 显式启用。独立用法见
-[`minimal_thread.rs`](./code/pl-core/examples/minimal_thread.rs)：实现 ModelSession 和 Tool，
-注册后执行模型/工具循环，并纯重放不透明日志。
+<div align="center">
+  <img src="design/assets/readme-agents-collaboration.png" alt="多智能体角色与工作树隔离配置" width="96%" />
+  <p><em>智能体团队配置：为不同职能的子智能体独立配置工作区隔离策略（不受限 / 目录 / Git 工作树）、模型与思考强度</em></p>
+</div>
 
-## 快速开始
+---
 
-### 前置条件
+### 3. 🌐 开放的多模型供应商支持，按角色灵活混搭
 
-- [Rust](https://rustup.rs/)（版本由 `rust-toolchain.toml` 固定；项目使用 2024 版语言标准）
-- [Flutter](https://docs.flutter.dev/get-started/install) 3.47.1 或兼容版本（`flutter` 需在 PATH 中，内含 Dart）
-- Git、PowerShell（Windows）或 Bash（Linux/macOS）
-- 一个受支持的桌面开发环境：Windows、Linux 或 macOS
+糊来帮不绑定单一厂商，支持同时配置多个模型服务商实例，并能**按会话模式**（简洁 / 任务）或**按智能体角色**（主智能体、探索者、执行者、审查者）分别指派最合适的供应商、模型与思考强度——例如让强推理模型负责架构规划与代码审查，让高吞吐模型负责快速代码检索，兼顾质量、速度与成本。
 
-`cargo xtask` 是本仓库统一的构建入口。不要直接在 Flutter 或 Rust 的安装目录执行项目命令；
-所有命令都应从仓库根目录运行。
+当前内置开箱即用的模型服务商支持包括：
 
-### 编译环境准备
+| 供应商 / 预设 | 支持说明与特色 |
+| :--- | :--- |
+| **OpenAI** | 官方 Responses API 接入，支持 GPT 全系推理与编程模型、多模态输入及原生联网搜索 |
+| **DeepSeek（深度求索）** | 官方推理与编程模型接入，支持思考强度调节、文件上传、多轮前缀缓存与原生联网搜索 |
+| **xAI** | 官方 xAI Grok 系列模型接入，支持 Responses 协议与思考强度调节 |
+| **智谱（Zhipu / Zhipu Coding Plan）** | 同时提供 **Zhipu BigModel API** 与 **Zhipu Coding Plan（编程套餐）** 两种官方预设，支持 GLM 系列文本与多模态视觉模型 |
+| **小米 MiMo（MiMo API / MiMo Token Plan）** | 同时提供 **MiMo API** 与 **MiMo Token Plan** 两种官方预设，支持小米 MiMo 系列模型 |
+| **OpenAI API 兼容（自定义供应商）** | 支持接入任意兼容 OpenAI `Chat Completions` 或 `Responses` 协议的第三方云平台、企业内部模型网关，或本地推理服务（如 Ollama、vLLM、LM Studio 等） |
 
-#### 所有桌面系统都需要的 Rust 目标
+---
 
-普通的桌面构建会同时打包两个 Linux SSH 远程助手资源，因此首次准备时安装这两个 Rust 目标：
+### 4. 🛠️ 本地与 SSH 远程无缝衔接，开箱即用的全栈工具箱
 
-```powershell
-rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
-rustup component add rustfmt clippy
-```
+无论项目在本地磁盘，还是在远端开发机、算力服务器或嵌入式构建主机上，糊来帮都提供一致的原生体验：
+- **SSH 远程项目直连**：在设置中配好 SSH 服务器，即可像打开本地文件夹一样浏览并打开远端项目，所有文件读写与命令执行均在远端原生完成。
+- **代码智能与终端闭环**：内置文件读写、精准补丁修改、全文检索、**LSP 代码语义导航**（跳转定义、查找引用、悬停类型与实时诊断）以及终端命令执行，让智能体改完代码后自己跑通编译与测试。
+- **联网搜索与 MCP 扩展**：原生支持 DeepSeek 与 OpenAI 联网搜索，实时获取最新文档与资讯；同时支持接入自定义 **MCP（Model Context Protocol）** 扩展服务，无限延展工具边界。
+- **外部编辑器一键联动**：在会话顶部随时用 VS Code、Zed 或系统终端打开当前会话所在的工作目录（包括独立的 Git Worktree 目录）。
 
-生成 Flutter/Rust 桥接代码还需要与仓库依赖一致的代码生成器：
+---
 
-```powershell
-cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
-```
+### 5. 📚 越用越懂你的项目级技能体系（Skills）
 
-远程助手推荐使用 [Zig](https://ziglang.org/) 与
-[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) 交叉编译。Zig 提供目标架构的 C 编译器和 `musl` 系统库，
-Rust 最终链接默认使用当前工具链随附的 `rust-lld`，无需分别安装两种 musl GCC，
-也不改写 Rust 的优化参数；显式指定目标链接器时仍以指定值为准：
+糊来帮内置开箱即用的丰富技能库，并能随着你的使用不断进化：
+- **预置办公与设计技能**：自带 Word（`.docx`）、PDF、PowerPoint（`.pptx`）、Excel（`.xlsx`）文档处理以及前端界面与画布设计等实用技能。
+- **自动沉淀项目经验**：当智能体与你携手攻克复杂的调试、构建或架构任务后，可将验证有效的工作流提炼为当前项目的专属技能。下次遇到同类任务时自动按章办事，无需反复交代团队习惯。
 
-```powershell
-# Windows：安装 Zig 后重新打开终端，使 PATH 生效
-winget install --id zig.zig --exact --accept-source-agreements --accept-package-agreements
-cargo install cargo-zigbuild --locked
-```
+---
 
-如果本机已有 Python，也可以用一条命令安装 `cargo-zigbuild` 及其 Zig 依赖：
+### 6. 🐾 温润克制的暹罗猫桌面美学与全景透明掌控
 
-```powershell
-py -m pip install --upgrade cargo-zigbuild
-```
+<div align="center">
+  <img src="design/assets/anywork-startup-cat.gif" alt="糊来帮暹罗猫启动画面" width="160" />
+</div>
 
-安装后请确认 `zig version` 与 `cargo zigbuild --version` 均能执行。
+- **暹罗猫奶油暖棕主题**：专为长时间沉浸阅读与编码设计的暖米色界面与深海豹棕操作焦点，温润护眼、层次分明；流式输出代码块与表格不跳动，并支持精准的富文本与代码块框选复制。
+- **成本与性能全景透明**：底部状态栏与统计面板实时展示上下文容量占用、多币种会话费用估算、缓存命中率、供应商账户用量，以及各模型在不同思考强度下的 **首字延迟（TTFT）** 与 **生成速度（词元/秒）**。
+- **断线与重启无损恢复**：无论是关闭窗口还是重启应用，正在推进的会话、待确认的实施计划与独立工作树现场都能原样恢复，随时接着往下干。
 
-Linux/macOS 请从 [Zig 官方下载页](https://ziglang.org/download/) 安装与本机架构匹配的版本，
-再执行相同的 `cargo install` 命令。项目会在检测到 `cargo-zigbuild` 位于 PATH，且 `zig` 位于
-PATH 或由 `CARGO_ZIGBUILD_ZIG_PATH` 指定时，自动使用 `cargo zigbuild`，不必设置构建器变量。
-持续集成当前锁定 Zig 0.14.1 与
-`cargo-zigbuild` 0.23.3；需要完全复现持续集成时，请安装这两个版本：
+<div align="center">
+  <img src="design/assets/readme-settings-observability.png" alt="模型性能统计与调用观测" width="96%" />
+  <p><em>统计面板：按服务商、模型与思考强度汇总真实输出速度（词元/秒）、平均首字延迟（TTFT）与完整调用历史</em></p>
+</div>
+
+---
+
+## 🚀 快速开始
+
+### 1. 启动桌面端
+
+在仓库根目录下，通过一条命令即可构建并启动当前系统的原生桌面端（支持 Windows 与 Linux）：
 
 ```bash
-cargo install cargo-zigbuild --version 0.23.3 --locked
-```
-
-如果 Zig 不在 PATH，可只为 `cargo-zigbuild` 指定绝对路径：
-
-```powershell
-$env:CARGO_ZIGBUILD_ZIG_PATH = "C:\path\to\zig.exe"
-```
-
-若需要明确指定构建器，可设置：
-
-```powershell
-$env:PURE_REMOTE_HELPER_BUILDER = "zigbuild"
-# 或强制使用系统 musl GCC
-$env:PURE_REMOTE_HELPER_BUILDER = "cargo"
-```
-
-如果已有完整的目标专用交叉工具链，也可以直接指定每个目标的链接器（目标专用 Clang 或
-musl GCC 均可）：
-
-```powershell
-$env:CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "C:\path\to\aarch64-linux-musl-clang.exe"
-$env:CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "C:\path\to\x86_64-linux-musl-clang.exe"
-$env:PURE_REMOTE_HELPER_BUILDER = "cargo"
-```
-
-这里的 Clang 必须已经包含对应目标的启动文件和 `musl` 系统库；普通桌面 Clang 不满足这个条件。
-
-若已从持续集成或其他机器取得两个已校验的助手文件，也可以跳过本机交叉编译：
-
-```powershell
-$env:PURE_REMOTE_HELPER_PREBUILT_DIR = "C:\path\to\dist\remote-helper"
-cargo xtask build-gui
-```
-
-不推荐把普通主机 `clang` 直接设置为 musl 链接器。Clang 只是编译器驱动，仍需要目标架构的
-启动文件、`musl` 系统库和正确的目标参数；没有完整的目标系统根目录时会在链接阶段失败。Linux 桌面
-图形界面的 Clang 预检与远程助手的 musl 交叉链接是两条独立链路。
-
-#### Windows
-
-- Visual Studio 2022 或 Build Tools，勾选“使用 C++ 的桌面开发”和 Windows 10/11 SDK；
-- Windows 桌面支持：`cargo flutter config --enable-windows-desktop`；
-- Rust 使用与 `rust-toolchain.toml` 同版的 `x86_64-pc-windows-msvc` 工具链；
-- CMake（Visual Studio 安装器可选装）应位于 PATH；
-- 运行 `cargo xtask build-gui` 还需要前文的 Zig、`cargo-zigbuild` 和两个 musl Rust 目标。
-
-检查环境：
-
-```powershell
-cargo flutter doctor -v
-rustc -Vv
-zig version
-cargo zigbuild --version
-rustup target list --installed
-cargo xtask build-remote-helper --all-targets
-cargo xtask build-gui
-```
-
-如果只需要验证 Rust 工作区，不构建桌面端，可跳过 Flutter、桌面编译器和远程助手准备，直接
-运行 `cargo test -p pl-model` 与 `cargo test -p pl-core --features sqlite`。如果 `build-gui` 报告缺少 musl 链接器，优先检查 `zig version`
-与 `cargo zigbuild --version` 是否都能执行；两者都在 PATH 后，xtask 会自动切换到 Zig 构建器。
-
-#### Linux
-
-Flutter 的 Linux 桌面构建需要 Clang、CMake、Ninja、pkg-config、GTK 3 开发文件和 C++ 标准
-库；无图形会话进行原生 GUI 人工验收还需要 Xvfb。Debian/Ubuntu 可一次安装：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y clang cmake ninja-build pkg-config build-essential libgtk-3-dev xvfb
-cargo flutter config --enable-linux-desktop
-cargo flutter doctor -v
-```
-
-xtask 会在构建前使用 PATH 中发现的真实工具链编译并链接最小 GTK/C++ 探针；不会写死编译器版本、
-系统库路径，也不会注入 `LIBRARY_PATH` 或 `CPLUS_INCLUDE_PATH`。
-
-使用外部 helper 模式、单独运行 Studio server 时，Linux 仍需要安装同一生产 worker：
-
-```bash
-cargo install --path code/pl-remote-helper --locked
-```
-
-确保安装目录位于 PATH。`exec` 不使用裸 shell 后备路径；桌面 xtask 构建将压缩 worker 与元数据
-打包到可执行文件旁的 `data/remote-helper/`，不再嵌入 Rust bridge。运行桌面应用时必须保留完整
-bundle；helper 资源缺失或损坏会明确报错，不会改用 PATH 中的程序。仅 helper 资源变化不再
-触发 bridge 重编译；共享 Rust 源码、依赖或协议变化仍会正常重建。
-
-#### macOS
-
-- 安装 Xcode，并执行 `xcode-select --install`；
-- `cargo flutter config --enable-macos-desktop`；
-- 接受 Xcode 许可：`sudo xcodebuild -license`；
-- 运行 `cargo flutter doctor -v`，确保 CocoaPods（若项目依赖插件需要）可用。
-
-#### Windows 正式发布（可选）
-
-只有执行 `cargo xtask release-gui stage`/`finalize` 时才需要额外工具：
-
-- Inno Setup 6（`ISCC.exe`，可通过 `ISCC_PATH` 指定路径）；
-- `finalize` 需要 `minisign` 以及 `MINISIGN_SECRET_KEY_FILE`、`MINISIGN_PASSWORD`；
-- 若启用安装包代码签名，需要 Windows SDK 的 `signtool.exe`，并设置 `WINDOWS_SIGNTOOL_PATH`、
-  `WINDOWS_CERTIFICATE_PATH` 和 `WINDOWS_CERTIFICATE_PASSWORD`。
-
-### 启动 anywork 桌面应用
-
-```powershell
-# 当前 Windows/Linux/macOS 桌面目标（Flutter + flutter_rust_bridge v2）
-cargo xtask run-gui
-```
-
-Flutter 端通过 `pl-studio-bridge` 调用同一个 `pl-studio-runtime`。打开聊天窗口先取得 core
-的有界 `ChatView` 首帧，再订阅批量差量；分页、跳转和回到最新由 core 统一处理。关闭窗口
-不取消 Thread 执行或待保存历史。MCP/LSP health、配置和项目列表等低频事件走全局产品流。
-
-首次启动后，在 anywork 设置页面配置 LLM Provider。配置保存在：
-
-```text
-~/.anywork/config.toml                             # 全局 provider、模型与角色配置
-~/.anywork/studio/v2/studio.sqlite                  # 本版本产品数据库
-~/.anywork/v2/catalog.toml                          # 本版本会话目录
-~/.anywork/v2/sessions/<storage-key>/state.toml     # 单会话 checkpoint
-~/.anywork/v2/sessions/<storage-key>/history.sqlite # 单会话历史
-~/.anywork/v2/calls/calls.sqlite                    # 尽力而为的调用统计
-```
-
-旧会话库保留在原位置，本次大版本不导入旧会话；供应商配置与凭据关联沿用原配置。
-
-DeepSeek V4 的 Responses route 支持服务端原生联网搜索；Studio 默认启用
-`[deepseek_web_search]`，当前 DeepSeek route 满足凭据、transport 和模型能力门控时优先使用，
-否则回退到 `[web_search]` 配置的 OpenAI 搜索。模型保持 `tool_choice = auto`，并可同时使用普通函数、
-MCP、LSP、文件和命令工具。
-
-### 项目结构
-
-```
-pure-lang/
-├── code/
-│   ├── pl-protocol/          # 公共协议层
-│   ├── pl-trace/             # 内部 trace 事件
-│   ├── pl-model/             # LLM provider 适配
-│   ├── pl-provider-fixture/  # 本地模拟供应商
-│   ├── pl-lsp/               # LSP 客户端（rust-analyzer 支持）
-│   ├── pl-output/            # 输出截断算法
-│   ├── pl-patch/             # apply-patch 引擎
-│   ├── pl-skill-core/        # Skill 核心规则
-│   ├── pl-core/              # 通用 Thread、context/model/tool/storage
-│   ├── pl-tool/              # 显式装配的工具与物理服务
-│   ├── pl-remote-helper/     # 本地进程监督与 SSH 远端助手
-│   ├── pl-studio-runtime/    # Studio 业务 runtime
-│   ├── pl-studio-server/     # HTTP/OpenAPI/SSE server
-│   ├── pl-studio-acceptance/ # 独立按需 GUI 验收工具
-│   ├── pl-dev-support/       # 轻量工程路径与进程支持
-│   ├── anywork_client/    # SDK-only Dart Client 与公开行为测试
-│   └── anywork/           # Flutter 桌面应用与 FRB crate
-├── design/                   # 架构设计文档及原型/视觉资产
-├── .cargo/config.toml        # Cargo 配置
-├── xtask/                    # pl-xtask 轻量开发任务入口
-└── AGENTS.md                 # 项目协作与工程规范
-```
-
-## 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 桌面框架 | Flutter + flutter_rust_bridge v2 |
-| 后端语言 | Rust（edition 2024） |
-| 异步运行时 | tokio |
-| 数据库 | SQLite via SeaORM（SQLx 后端） |
-| 序列化 | serde + serde_json + toml |
-| 客户端状态与生命周期 | 纯 Dart anywork_client，AppGraph 实例所有权 |
-| Flutter 观察适配 | Riverpod |
-| Flutter 路由 | go_router |
-| LLM 集成 | 共享 OpenAI 协议、供应商 backend、reqwest 与 Responses WebSocket |
-| LSP 客户端 | lsp-types + 自研 JSON-RPC framing（rust-analyzer 支持） |
-| 流式解析 | eventsource-stream 分帧与自有 typed 协议事件解码 |
-
-## 核心概念
-
-| 概念 | 说明 |
-|------|------|
-| **Thread** | 一个 agent 独占的对话、输入队列、会话工具任务与持久历史 |
-| **Turn** | Thread 中一次由明确输入启动的模型执行；结束不丢弃已受理的会话任务 |
-| **Item** | Studio 从已提交日志投影的消息、推理、工具、计划等内容单元 |
-| **Tool** | 不透明 `Tool` 接口；Registration 转移实例给 Thread，每步冻结声明与执行租约 |
-| **ToolTask** | 会话拥有的工具调用任务，以 `taskId` 查询、输入、取消与读取完整结果 |
-| **LSP** | Language Server Protocol 客户端，支持代码智能查询（定义跳转、引用查找等） |
-| **Agent** | 拥有独立 Thread 的执行身份，root 与 child 共用同一框架 |
-| **Skill** | 带元数据与资源的可复用指令包，由运行时发现与激活 |
-| **Studio** | 管理项目、配置与产品事件，由桌面和 HTTP 宿主共享 |
-| **Provider** | LLM Provider 抽象（OpenAI、DeepSeek、xAI、智谱等） |
-| **ThreadModeId** | root Thread 的 Mode 身份（例如 `mode.simple` / `mode.task`） |
-
-### 内置工具
-
-下列为主要工具类别；实际可见集合取决于能力配置、Profile、Thread Mode、Skill 与 MCP/LSP 状态：
-
-| 分类 | 工具 |
-|------|------|
-| Shell | `exec`, `write_stdin`（内容搜索用 `rg`，文件搜索用 `rg --files`） |
-| 文件读取 | `read_file`, `list_files`, `stat_path` |
-| 文件写入 | `write_file`, `create_directory`, `delete_path`, `copy_path`, `move_path` |
-| 补丁 | `apply_patch` |
-| 代码智能 | `lsp_capabilities`, `lsp_query` |
-| 子代理 | `spawn_agent`, `send_message`, `interrupt_agent`, `list_agents`, `list_agent_profiles`, `read_agent_session`, `close_agent` |
-| 会话任务与事件 | `wait`, `sleep`, `list_tool_tasks`, `get_tool_task`, `cancel_tool_task` |
-| 用户交互 | `request_user_input` |
-| 技能 | `skills_list`, `skill_view`, `skill_manage` |
-| MCP | 动态注册（`mcp__<server>__<tool>`） |
-| 联网搜索 | OpenAI Responses hosted/standalone search；DeepSeek 通过 function tool 使用 standalone search |
-
-### 在其他应用中注册工具
-
-宿主实现 `pl_core::model::ModelSession`，通过 `ThreadHandle` 创建 owner。工具实现
-`pl_core::tool::opaque::Tool`，用 Registration 转移实例；完整 payload 和模型上下文分别保存，
-工具自行解释格式与参数。core 不安装默认工具、不解析业务 JSON，也不代理 provider 配置。
-
-Studio 用同一装配入口创建 root、child 和恢复 Thread，显式组合 pl-model/pl-tool 及产品工具。
-动态目录只更新同一 Thread 注册表，已冻结调用持有原 executor 租约。扩展 CAS、交互和结束 Turn
-使用显式注册授权，正文中的同名字段不能触发控制。
-
-普通工具超过交付窗口后转为 Thread 后台任务，结果与消息一起提交，下一模型请求准入时消费。
-历史使用当时保存的实际模型正文；资源关闭失败或保存失败保留 owner 和重试入口。
-详见[工具运行时](./design/09-tool-runtime.md)和[后台任务交付](./design/14-runtime-host.md)。
-
-## 开发
-
-### Rust 后端
-
-```bash
-# 与 CI 一致的 Rust 门禁
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p pl-model
-cargo test -p pl-core --features sqlite
-cargo test -p pl-studio-runtime
-
-# 按需检查 core 的可选特性边界
-cargo check -p pl-core --no-default-features --all-targets
-cargo check -p pl-core --no-default-features --features sqlite --all-targets
-```
-
-### Flutter 开发
-
-Linux 原生构建需要可用的 C/C++ 工具链、CMake、Ninja、pkg-config 与 GTK 3 开发文件；无图形
-会话的原生 GUI 人工验收还需要 Xvfb。Debian/Ubuntu 可安装：
-
-```bash
-sudo apt-get install -y clang cmake ninja-build pkg-config build-essential libgtk-3-dev xvfb
-```
-
-xtask 会在 Flutter 构建前用当前 PATH 中的真实工具链编译、链接最小 GTK/C++ 探针。缺少命令、
-C++ 标准库头文件或 GTK 链接库时会报告实际命令和原始输出，不依赖固定 Clang/GCC 版本，也不
-注入机器专用的 include/library 路径。
-
-```powershell
-# 从仓库根目录执行一般 Flutter/Dart 命令，参数原样透传
-cargo flutter analyze
-cargo dart format lib
-
-# 纯 Dart Client、FRB/Riverpod/路由适配契约与 AST 边界门禁
-cargo xtask verify-client
-
-# 从仓库根目录检查生成产物、格式与静态分析
-cargo xtask verify-gui
-
-# 隔离 Studio home 与本地模拟供应商，启动原生 GUI 并收集人工验收证据
-cargo xtask manual-gui
-
-# 固定快速/流式响应、统计页自动刷新及重启后的隔离数据验收
-cargo xtask manual-gui --scenario statistics
-
-# 20,000 条混合事件、约 5,000 token/s 的原生 profile/AOT 压力证据
-cargo xtask manual-gui --scenario stress
-
-# 使用用户已有配置，人工观察真实供应商（不修改用户配置）
-cargo xtask run-gui --driver
-
-# 显式使用已安装配置、真实 provider/model 与 API credential 验收统一工作流
-cargo run -p pl-studio-runtime --features live-tests --example collaboration_observe
-
-# 从仓库根目录运行 GUI
+# 启动糊来帮桌面端
 cargo xtask run-gui
 
-# 从仓库根目录构建当前 OS 的 release 产物
-cargo xtask build-gui
-
-# 启动已有发布目录，不重新构建
-cargo xtask run-gui --release
-```
-
-`cargo xtask build-gui` 基于已提交的 `Cargo.lock` 和 `code/anywork/pubspec.lock` 确定性构建。
-构建前允许下载缺失的远程包，但只执行 Flutter `pub get --enforce-lockfile` 和 Cargo
-`--locked`，不会更新 lockfile、重新解析版本或修改源码；`cargo xtask` 包装命令本身也以
-`--locked` 编译。依赖升级时先手动运行对应的依赖更新命令，审查并提交新的 lockfile。
-
-Markdown/timeline 视觉检查可以使用本地 demo 数据启动，不连接 runtime：
-
-```powershell
+# 若想在不配置 API Key 的情况下快速预览界面与交互演示
 cargo xtask run-gui --demo
 ```
 
-项目自有常规自动化行为测试仅在 `pl-model` 和 `pl-core` 的公开 API 边界；Studio 历史
-保存另有小范围 SQLite 专项测试。模拟供应商服务严格按
-固定提示词返回固定 HTTP/SSE 或 WebSocket 消息流，未知请求明确失败。`manual-gui` 运行
-非 demo 原生桥：在 GUI 中发送 `Reply with exactly: fixture ready`，在终端逐行记录
-动作代码，输入 `done` 后采集脱敏请求、截图、快照和日志；运行完成不构成人工通过结论。
-`--scenario statistics` 使用隔离的调用库与真实 GUI Bridge 检查统计待写、落库后刷新、
-缺失计时显示及重启读取；证据的人工结论仍默认为待评审。
-本地模拟不能证明真实供应商接口兼容，也不再自动覆盖 Studio、工具、远端进程或发布流程行为。
+### 2. 配置模型并开始第一个任务
 
-`collaboration_observe` 使用现有 provider、model、effort 和凭据解析，在隔离 Studio home
-及临时项目中采集完整事件和快照，会产生真实模型调用费用，不进入默认 CI。
-`ANYWORK_OBSERVATION_PROMPT` 可指定任务文件，`ANYWORK_OBSERVATION_SECONDS` 设置观察时长，
-`ANYWORK_WORKFLOW_ARTIFACT_DIR` 设置保存目录；另可设置 `ANYWORK_WIRE_CAPTURE_DIR` 保存请求记录。
-采集结束不代表任务通过：阅读实际报告、终态与产物作出验收结论，不使用交付口令或固定工具顺序。
-HTTP/SSE 观察可使用 `pl-studio-server` 的隔离 `--studio-home` 与空闲 loopback 端口。
-GUI 布局与交互由原生人工验收核对；`verify-gui` 仅负责静态与生成一致性检查。
+1. 点击左下角 **设置 → 模型服务商**，选择内置供应商预设（**OpenAI**、**DeepSeek**、**xAI**、**Zhipu / Zhipu Coding Plan**、**MiMo API / MiMo Token Plan** 或 **OpenAI API 兼容**自定义入口）并填入 API Key。
+2. 点击左侧边栏 **+ 添加项目**，选择本地代码仓库或通过 **SSH** 打开远程服务器上的项目目录。
+3. 在输入框底部选择 **简洁** 或 **任务** 模式，以及是否启用 **独立工作树（Worktree）**，输入你的想法即可开始协作！
 
-本仓库要求 Flutter 端使用 `flutter_rust_bridge` v2.13.0；本机 codegen 版本必须与 Dart/Rust 依赖一致。
+### 3. 打包发行版
 
-## 设计文档
+```bash
+cargo xtask build-gui
+```
 
-项目完整的架构决策和设计说明收录在 [`design/`](./design/) 目录，分组索引与阅读顺序见
-[design/README.md](./design/README.md)：
+---
 
-| 文档 | 内容 |
-|------|------|
-| [01-overview.md](./design/01-overview.md) | 系统总览与定位 |
-| [02-crates.md](./design/02-crates.md) | Crate 设计与端口-适配器架构 |
-| [03-pipeline.md](./design/03-pipeline.md) | Thread / Turn / Item 流程 |
-| [04-security.md](./design/04-security.md) | 安全与权限模型 |
-| [05-conventions.md](./design/05-conventions.md) | 通用约定 |
-| [06-model.md](./design/06-model.md) | 模型与 Provider 设计 |
-| [07-streaming.md](./design/07-streaming.md) | Thread 实时流 |
-| [08-extension.md](./design/08-extension.md) | 扩展点索引 |
-| [09-tool-runtime.md](./design/09-tool-runtime.md) | 工具调用运行时与 Thread 边界 |
-| [10-skills.md](./design/10-skills.md) | 技能系统设计 |
-| [11-thread-mode.md](./design/11-thread-mode.md) | Thread Mode 与预设工作流 |
-| [12-collaboration.md](./design/12-collaboration.md) | Agent Profile 与协作编排 |
-| [13-plan.md](./design/13-plan.md) | Thread 内的 Plan 状态机 |
-| [14-runtime-host.md](./design/14-runtime-host.md) | Thread Runtime 宿主与后台任务 |
-| [15-session-storage.md](./design/15-session-storage.md) | 会话条目存储与无副作用重放 |
-| [16-core-contracts.md](./design/16-core-contracts.md) | Core 内核契约 |
-| [17-studio-storage.md](./design/17-studio-storage.md) | Studio 存储与诊断 |
-| [18-studio-state.md](./design/18-studio-state.md) | Studio 状态查询与领域生命周期 |
-| [19-studio-ui.md](./design/19-studio-ui.md) | Studio UI 设计 |
-| [20-config.md](./design/20-config.md) | 配置系统 |
-| [21-lsp.md](./design/21-lsp.md) | LSP 运行时 |
-| [22-ssh-remote.md](./design/22-ssh-remote.md) | SSH 远程开发与宿主能力 |
-| [23-release-update.md](./design/23-release-update.md) | 发布与应用内升级 |
-| [24-testing.md](./design/24-testing.md) | 两库公开 API 集成测试与 GUI 人工验收 |
+## 📖 延伸阅读
 
-## 项目规范
+如果你希望深入了解糊来帮的内部设计或参与项目开发，欢迎查阅：
 
-详细的编码约定和协作规则见 [`AGENTS.md`](./AGENTS.md)。
-
-## License
-
-Apache-2.0
+- **[架构与设计文档索引（design/README.md）](design/README.md)**：了解完整产品契约、运行时设计、存储结构与界面细节。
+- **[项目协作与开发规范（AGENTS.md）](AGENTS.md)**：查看日常开发命令、构建要求与贡献指南。
