@@ -1,17 +1,69 @@
 //! OpenSSH argv 与一次性命令边界。
 //!
 //! 连接参数（端口、用户、私钥、代理）由 `~/.ssh/config` 的 Host 别名解析，
-//! 这里只传别名本身；BatchMode 固定关闭交互认证与提示。
+//! 这里只传别名本身；无密码时 BatchMode 固定关闭交互认证与提示，有密码时通过受控本地
+//! `SSH_ASKPASS` 单次注入本地 OpenSSH 子进程环境。
+
+use std::path::Path;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
+use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::SshServerProfile;
 use crate::remote::RemoteClientError;
 use pl_remote_helper::process::wrap_parent_bound_command;
 
+const SSH_ASKPASS_SECRET_ENV: &str = "ANYWORK_SSH_ASKPASS_SECRET";
+
 pub(super) struct PreparedSshCommand {
     pub(super) command: CommandWrap,
+    pub(super) _askpass_dir: Option<TempDir>,
+}
+
+pub(super) fn is_ssh_auth_failure(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("permission denied")
+        || lower.contains("authentication failed")
+        || lower.contains("too many authentication failures")
+}
+
+pub(super) fn classify_ssh_stderr(prefix: &str, stderr: &str) -> RemoteClientError {
+    let trimmed = stderr.trim();
+    if is_ssh_auth_failure(trimmed) {
+        RemoteClientError::AuthenticationFailed(trimmed.to_string())
+    } else {
+        RemoteClientError::Protocol(format!("{prefix}: {trimmed}"))
+    }
+}
+
+fn write_ssh_askpass_script(dir: &Path) -> Result<std::path::PathBuf, RemoteClientError> {
+    #[cfg(windows)]
+    {
+        let script_path = dir.join("anywork-ssh-askpass.cmd");
+        let content = format!("@echo off\r\necho %{SSH_ASKPASS_SECRET_ENV}%\r\n");
+        std::fs::write(&script_path, content).map_err(|error| {
+            RemoteClientError::Protocol(format!("failed to write ssh askpass script: {error}"))
+        })?;
+        Ok(script_path)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script_path = dir.join("anywork-ssh-askpass.sh");
+        let content = format!("#!/bin/sh\nprintf '%s\\n' \"${SSH_ASKPASS_SECRET_ENV}\"\n");
+        std::fs::write(&script_path, content).map_err(|error| {
+            RemoteClientError::Protocol(format!("failed to write ssh askpass script: {error}"))
+        })?;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                RemoteClientError::Protocol(format!(
+                    "failed to set ssh askpass script permissions: {error}"
+                ))
+            },
+        )?;
+        Ok(script_path)
+    }
 }
 
 pub(super) fn validate_profile(profile: &SshServerProfile) -> Result<(), RemoteClientError> {
@@ -40,6 +92,7 @@ pub(super) fn validate_profile(profile: &SshServerProfile) -> Result<(), RemoteC
 pub(super) async fn ssh_command(
     profile: &SshServerProfile,
     ssh_config: &super::super::ssh_config::SshConfigFile,
+    password: Option<&str>,
 ) -> Result<PreparedSshCommand, RemoteClientError> {
     let mut command = Command::new("ssh");
     command
@@ -54,15 +107,42 @@ pub(super) async fn ssh_command(
             "ServerAliveInterval=15",
             "-o",
             "ServerAliveCountMax=3",
-            "-o",
-            "BatchMode=yes",
         ]);
+    let askpass_dir = match password.filter(|secret| !secret.is_empty()) {
+        Some(secret) => {
+            let temp_dir = tempfile::tempdir().map_err(|error| {
+                RemoteClientError::Protocol(format!(
+                    "failed to create ssh askpass directory: {error}"
+                ))
+            })?;
+            let script_path = write_ssh_askpass_script(temp_dir.path())?;
+            command
+                .args([
+                    "-o",
+                    "BatchMode=no",
+                    "-o",
+                    "NumberOfPasswordPrompts=1",
+                    "-o",
+                    "PreferredAuthentications=publickey,keyboard-interactive,password",
+                ])
+                .env("SSH_ASKPASS", &script_path)
+                .env("SSH_ASKPASS_REQUIRE", "force")
+                .env("DISPLAY", "anywork:0")
+                .env(SSH_ASKPASS_SECRET_ENV, secret);
+            Some(temp_dir)
+        }
+        None => {
+            command.args(["-o", "BatchMode=yes"]);
+            None
+        }
+    };
     if ssh_config.is_explicit() {
         command.arg("-F").arg(ssh_config.path());
     }
     command.arg("--").arg(&profile.alias);
     Ok(PreparedSshCommand {
         command: wrap_parent_bound_command(command),
+        _askpass_dir: askpass_dir,
     })
 }
 
@@ -74,9 +154,10 @@ pub(super) fn posix_remote_command(script: &str) -> String {
 pub(super) async fn run_ssh_capture(
     profile: &SshServerProfile,
     ssh_config: &super::super::ssh_config::SshConfigFile,
+    password: Option<&str>,
     remote_command: &str,
 ) -> Result<String, RemoteClientError> {
-    let mut prepared = ssh_command(profile, ssh_config).await?;
+    let mut prepared = ssh_command(profile, ssh_config, password).await?;
     prepared
         .command
         .command_mut()
@@ -89,10 +170,8 @@ pub(super) async fn run_ssh_capture(
     )
     .await?;
     if !output.status.success() {
-        return Err(RemoteClientError::Protocol(format!(
-            "ssh command failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(classify_ssh_stderr("ssh command failed", &stderr));
     }
     String::from_utf8(output.stdout)
         .map_err(|error| RemoteClientError::Protocol(format!("ssh output is not UTF-8: {error}")))

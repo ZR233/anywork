@@ -164,6 +164,34 @@
   "settingsSshPort": "端口",
   "settingsSshIdentityFile": "私钥文件（可选）",
   "settingsSshIdentityHelper": "留空时使用 ssh-agent。",
+  "settingsSshEditTitle": "编辑 SSH 服务器",
+  "settingsSshPassword": "密码（可选）",
+  "settingsSshPasswordHelper": "保存在系统凭据库，不会写入 ~/.ssh/config；留空则使用密钥或连接时输入。",
+  "settingsSshPasswordSavedHint": "已保存密码，留空保持不变",
+  "settingsSshPasswordClear": "清除已保存密码",
+  "settingsSshPasswordClearedHint": "保存后将清除已保存的密码",
+  "settingsSshPasswordBadge": "已配置密码",
+  "settingsSshKeyBadge": "密钥：{path}",
+  "@settingsSshKeyBadge": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsSshAuthPromptTitle": "输入 SSH 密码",
+  "settingsSshAuthPromptSubtitle": "连接到 {target} 需要密码认证。",
+  "@settingsSshAuthPromptSubtitle": {
+    "placeholders": {
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsSshAuthPasswordLabel": "SSH 密码",
+  "settingsSshAuthPasswordRequired": "请输入 SSH 密码",
+  "settingsSshAuthRememberPassword": "保存密码到系统凭据库",
+  "settingsSshAuthConnect": "连接",
   "settingsSshReadOnlyEntry": "手写条目——请直接编辑 ~/.ssh/config。",
   "settingsSshSave": "保存",
   "settingsSshAliasRequired": "请输入别名",

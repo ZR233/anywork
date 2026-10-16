@@ -419,6 +419,53 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSshIdentityHelper => '留空时使用 ssh-agent。';
 
   @override
+  String get settingsSshEditTitle => '编辑 SSH 服务器';
+
+  @override
+  String get settingsSshPassword => '密码（可选）';
+
+  @override
+  String get settingsSshPasswordHelper =>
+      '保存在系统凭据库，不会写入 ~/.ssh/config；留空则使用密钥或连接时输入。';
+
+  @override
+  String get settingsSshPasswordSavedHint => '已保存密码，留空保持不变';
+
+  @override
+  String get settingsSshPasswordClear => '清除已保存密码';
+
+  @override
+  String get settingsSshPasswordClearedHint => '保存后将清除已保存的密码';
+
+  @override
+  String get settingsSshPasswordBadge => '已配置密码';
+
+  @override
+  String settingsSshKeyBadge(String path) {
+    return '密钥：$path';
+  }
+
+  @override
+  String get settingsSshAuthPromptTitle => '输入 SSH 密码';
+
+  @override
+  String settingsSshAuthPromptSubtitle(String target) {
+    return '连接到 $target 需要密码认证。';
+  }
+
+  @override
+  String get settingsSshAuthPasswordLabel => 'SSH 密码';
+
+  @override
+  String get settingsSshAuthPasswordRequired => '请输入 SSH 密码';
+
+  @override
+  String get settingsSshAuthRememberPassword => '保存密码到系统凭据库';
+
+  @override
+  String get settingsSshAuthConnect => '连接';
+
+  @override
   String get settingsSshReadOnlyEntry => '手写条目——请直接编辑 ~/.ssh/config。';
 
   @override

@@ -28,6 +28,8 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
+import '../settings/settings_common.dart';
+import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';
 import '../interaction/composer_dock.dart';

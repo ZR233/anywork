@@ -1052,6 +1052,14 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SshServer> saveSshServer(SaveSshServerCommand command) async {
+    final existing = _sshServers
+        .where((item) => item.alias == command.alias)
+        .firstOrNull;
+    final hasPassword = switch (command.password.action) {
+      SshPasswordAction.preserve => existing?.hasPassword ?? false,
+      SshPasswordAction.replace => true,
+      SshPasswordAction.clear => false,
+    };
     final server = SshServer(
       alias: command.alias,
       hostName: command.hostName,
@@ -1059,6 +1067,7 @@ class DemoStudioTransport extends StudioTransport
       username: command.username,
       identityFile: command.identityFile,
       managed: true,
+      hasPassword: hasPassword,
     );
     _sshServers.removeWhere((item) => item.alias == server.alias);
     _sshServers.add(server);
@@ -1068,6 +1077,26 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<void> deleteSshServer(String alias) async {
     _sshServers.removeWhere((server) => server.alias == alias);
+  }
+
+  @override
+  Future<SshConnectionView> authenticateSshServer(
+    AuthenticateSshServerCommand command,
+  ) async {
+    final index = _sshServers.indexWhere((item) => item.alias == command.alias);
+    if (index != -1 && command.rememberPassword) {
+      final current = _sshServers[index];
+      _sshServers[index] = SshServer(
+        alias: current.alias,
+        hostName: current.hostName,
+        port: current.port,
+        username: current.username,
+        identityFile: current.identityFile,
+        managed: current.managed,
+        hasPassword: true,
+      );
+    }
+    return testSshConnection(command.alias);
   }
 
   @override

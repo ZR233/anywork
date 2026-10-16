@@ -240,6 +240,34 @@
   "settingsSshPort": "Port",
   "settingsSshIdentityFile": "Identity file (optional)",
   "settingsSshIdentityHelper": "Uses the ssh agent when left empty.",
+  "settingsSshEditTitle": "Edit SSH server",
+  "settingsSshPassword": "Password (optional)",
+  "settingsSshPasswordHelper": "Saved in your system credential store, never written to ~/.ssh/config. Leave empty to use a key or prompt on connect.",
+  "settingsSshPasswordSavedHint": "Password saved — leave empty to keep",
+  "settingsSshPasswordClear": "Clear saved password",
+  "settingsSshPasswordClearedHint": "Saved password will be cleared on save",
+  "settingsSshPasswordBadge": "Password saved",
+  "settingsSshKeyBadge": "Key: {path}",
+  "@settingsSshKeyBadge": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsSshAuthPromptTitle": "Enter SSH password",
+  "settingsSshAuthPromptSubtitle": "Password authentication is required to connect to {target}.",
+  "@settingsSshAuthPromptSubtitle": {
+    "placeholders": {
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsSshAuthPasswordLabel": "SSH password",
+  "settingsSshAuthPasswordRequired": "Enter the SSH password",
+  "settingsSshAuthRememberPassword": "Save password in system credential store",
+  "settingsSshAuthConnect": "Connect",
   "settingsSshReadOnlyEntry": "Hand-written entry — edit it in ~/.ssh/config.",
   "settingsSshSave": "Save",
   "settingsSshAliasRequired": "Enter an alias",

@@ -72,6 +72,9 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     {
         return studio_error;
     }
+    if let Some(error) = error.downcast_ref::<pl_tool::remote::RemoteClientError>() {
+        return remote_client_error(error);
+    }
     if let Some(error) = error.downcast_ref::<PureError>() {
         return pure_error(error);
     }
@@ -85,6 +88,34 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         "unclassified Studio runtime failure"
     );
     studio_error
+}
+
+fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioError {
+    use pl_tool::remote::RemoteClientError;
+
+    match error {
+        RemoteClientError::AuthenticationFailed(reason) => StudioError::new(
+            StudioErrorCode::PermissionDenied,
+            format!("SSH authentication required or failed: {reason}"),
+            true,
+        )
+        .with_details(serde_json::json!({
+            "sshErrorKind": "authenticationFailed",
+        })),
+        RemoteClientError::Disconnected
+        | RemoteClientError::Backpressure
+        | RemoteClientError::ManagerClosing => {
+            StudioError::new(StudioErrorCode::Unavailable, error.to_string(), true)
+        }
+        RemoteClientError::Protocol(reason) => {
+            StudioError::new(StudioErrorCode::InvalidArgument, reason.clone(), false)
+        }
+        RemoteClientError::Remote { code, message } => StudioError::new(
+            StudioErrorCode::Unavailable,
+            format!("{code:?}: {message}"),
+            false,
+        ),
+    }
 }
 
 /// Maps the prompt-admission failures of a Thread to their public category.

@@ -3,12 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../presentation/providers/client_provider.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_remote_directory_dialog.dart';
+import 'settings_ssh_password_dialog.dart';
 import 'settings_ssh_server_dialog.dart';
 import 'settings_ssh_server_row.dart';
 
@@ -73,23 +74,23 @@ class _SshTabState extends ConsumerState<SshTab> {
             body: context.l10n.settingsSshManagedByCore,
           )
         else
-          for (final server in servers) ...[
+          for (var i = 0; i < servers.length; i++) ...[
+            if (i > 0) const Divider(height: 1),
             SshServerRow(
-              server: server,
-              connection: _connections[server.alias],
-              operation: _operations[server.alias],
-              error: _serverErrors[server.alias],
-              onTest: () => _test(server),
-              onReconnect: () => _reconnect(server),
-              onOpen: () => _openWorkspace(server),
+              server: servers[i],
+              connection: _connections[servers[i].alias],
+              operation: _operations[servers[i].alias],
+              error: _serverErrors[servers[i].alias],
+              onTest: () => _test(servers[i]),
+              onReconnect: () => _reconnect(servers[i]),
+              onOpen: () => _openWorkspace(servers[i]),
               onEdit: () => _runServerOperation(
-                server,
+                servers[i],
                 SshServerOperation.edit,
-                () => _editServer(server),
+                () => _editServer(servers[i]),
               ),
-              onDelete: () => _deleteServer(server),
+              onDelete: () => _deleteServer(servers[i]),
             ),
-            const SizedBox(height: 10),
           ],
       ],
     );
@@ -117,42 +118,75 @@ class _SshTabState extends ConsumerState<SshTab> {
     }
   }
 
+  Future<SshConnectionView?> _promptPassword(
+    SshServer server, {
+    String? initialError,
+  }) async {
+    if (!mounted) return null;
+    final snapshot = await showDialog<SshConnectionView>(
+      context: context,
+      builder: (context) =>
+          SshPasswordPromptDialog(server: server, initialError: initialError),
+    );
+    if (snapshot != null && mounted) {
+      setState(() => _connections[server.alias] = snapshot);
+      await _reload();
+    }
+    return snapshot;
+  }
+
   Future<void> _test(SshServer server) =>
       _runServerOperation(server, SshServerOperation.test, () async {
         setState(() => _connections.remove(server.alias));
-        final snapshot = await ref
-            .read(anyworkClientProvider)
-            .remote
-            .testSshConnection(server.alias);
-        if (mounted) setState(() => _connections[server.alias] = snapshot);
+        try {
+          final snapshot = await ref
+              .read(anyworkClientProvider)
+              .remote
+              .testSshConnection(server.alias);
+          if (mounted) setState(() => _connections[server.alias] = snapshot);
+        } catch (error) {
+          if (isSshAuthenticationError(error)) {
+            await _promptPassword(server);
+            return;
+          }
+          rethrow;
+        }
       });
 
   Future<void> _reconnect(SshServer server) =>
       _runServerOperation(server, SshServerOperation.reconnect, () async {
         setState(() => _connections.remove(server.alias));
-        final snapshot = await ref
-            .read(anyworkClientProvider)
-            .remote
-            .reconnectSshServer(server.alias);
-        if (mounted) setState(() => _connections[server.alias] = snapshot);
+        try {
+          final snapshot = await ref
+              .read(anyworkClientProvider)
+              .remote
+              .reconnectSshServer(server.alias);
+          if (mounted) setState(() => _connections[server.alias] = snapshot);
+        } catch (error) {
+          if (isSshAuthenticationError(error)) {
+            await _promptPassword(server);
+            return;
+          }
+          rethrow;
+        }
       });
 
   Future<void> _editServer([SshServer? server]) async {
     final command = await showDialog<SaveSshServerCommand>(
       context: context,
-      builder: (context) => SshServerDialog(server: server),
+      builder: (context) => SshServerDialog(
+        server: server,
+        onSave: (command) async {
+          await ref.read(anyworkClientProvider).remote.saveSshServer(command);
+        },
+      ),
     );
     if (command == null || !mounted) return;
     setState(() => _error = null);
-    try {
-      await ref.read(anyworkClientProvider).remote.saveSshServer(command);
-      if (server != null && mounted) {
-        setState(() => _connections.remove(server.alias));
-      }
-      await _reload();
-    } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+    if (server != null && mounted) {
+      setState(() => _connections.remove(server.alias));
     }
+    await _reload();
   }
 
   Future<void> _deleteServer(SshServer server) =>
@@ -168,6 +202,7 @@ class _SshTabState extends ConsumerState<SshTab> {
                 child: Text(context.l10n.settingsCancel),
               ),
               FilledButton(
+                key: StudioDriverKeys.sshDeleteConfirm,
                 onPressed: () => Navigator.pop(context, true),
                 child: Text(context.l10n.settingsSshDelete),
               ),
@@ -183,11 +218,22 @@ class _SshTabState extends ConsumerState<SshTab> {
         await _reload();
       });
 
-  Future<void> _openWorkspace(SshServer server) =>
-      _runServerOperation(server, SshServerOperation.open, () async {
-        await showDialog<String>(
-          context: context,
-          builder: (context) => RemoteDirectoryDialog(server: server),
-        );
-      });
+  Future<void> _openWorkspace(SshServer server) => _runServerOperation(
+    server,
+    SshServerOperation.open,
+    () async {
+      final hasIdentity =
+          server.identityFile != null && server.identityFile!.trim().isNotEmpty;
+      final isReady = _connections[server.alias]?.state == 'ready';
+      if (!isReady && !server.hasPassword && !hasIdentity) {
+        final snapshot = await _promptPassword(server);
+        if (snapshot == null || !mounted) return;
+      }
+      if (!mounted) return;
+      await showDialog<String>(
+        context: context,
+        builder: (context) => RemoteDirectoryDialog(server: server),
+      );
+    },
+  );
 }

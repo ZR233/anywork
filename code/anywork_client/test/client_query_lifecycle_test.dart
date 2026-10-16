@@ -18,6 +18,36 @@ final class _QueryTransport implements StudioTransport {
     return reply.future;
   }
 
+  final List<SaveSshServerCommand> savedServers = [];
+  final List<AuthenticateSshServerCommand> authCommands = [];
+
+  @override
+  Future<SshServer> saveSshServer(SaveSshServerCommand command) async {
+    savedServers.add(command);
+    return SshServer(
+      alias: command.alias,
+      hostName: command.hostName,
+      port: command.port,
+      username: command.username,
+      identityFile: command.identityFile,
+      managed: true,
+      hasPassword: command.password.action == SshPasswordAction.replace,
+    );
+  }
+
+  @override
+  Future<SshConnectionView> authenticateSshServer(
+    AuthenticateSshServerCommand command,
+  ) async {
+    authCommands.add(command);
+    return SshConnectionView(
+      alias: command.alias,
+      state: 'ready',
+      helperVersion: '0.1.0',
+      architecture: 'x86_64',
+    );
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unused query capability: ${invocation.memberName}',
@@ -25,6 +55,59 @@ final class _QueryTransport implements StudioTransport {
 }
 
 void main() {
+  test(
+    'remote actions forward SSH password updates and session authentication',
+    () async {
+      final transport = _QueryTransport();
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'remote-ssh',
+      );
+      addTearDown(() => client.close());
+
+      final saved = await client.remote.saveSshServer(
+        const SaveSshServerCommand(
+          alias: 'lab-node',
+          hostName: '192.168.100.12',
+          port: 22,
+          username: 'tester',
+          password: SshPasswordUpdate.replace('secret-pass'),
+        ),
+      );
+      expect(saved.hasPassword, isTrue);
+      expect(
+        transport.savedServers.single.password.action,
+        SshPasswordAction.replace,
+      );
+      expect(transport.savedServers.single.password.value, 'secret-pass');
+
+      final connection = await client.remote.authenticateSshServer(
+        const AuthenticateSshServerCommand(
+          alias: 'lab-node',
+          password: 'session-pass',
+          rememberPassword: false,
+        ),
+      );
+      expect(connection.state, 'ready');
+      expect(transport.authCommands.single.alias, 'lab-node');
+      expect(transport.authCommands.single.password, 'session-pass');
+      expect(transport.authCommands.single.rememberPassword, isFalse);
+
+      expect(
+        isSshAuthenticationError(
+          StateError(
+            'SSH authentication required or failed: Permission denied',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isSshAuthenticationError(StateError('network unreachable')),
+        isFalse,
+      );
+    },
+  );
+
   test(
     'synchronous transport reentry cannot escape the query close join',
     () async {

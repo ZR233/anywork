@@ -2,28 +2,85 @@
 
 use anyhow::Result;
 use pl_protocol::remote::RemoteDirectoryListing;
-use pl_tool::remote::{SshConfigEntry, SshConnectionSnapshot, SshServerProfile};
+use pl_tool::remote::{SshConnectionSnapshot, SshServerProfile};
 
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
 
 use super::StudioRuntime;
 
+/// SSH 服务器密码更新语义，与供应商 API Key 更新保持一致。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshPasswordUpdate {
+    Preserve,
+    Replace { value: String },
+    Clear,
+}
+
+/// Studio 暴露的 SSH 服务器运行时条目（不携带密码明文，只暴露 `has_password`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshServerRuntimeEntry {
+    pub profile: SshServerProfile,
+    pub managed: bool,
+    pub has_password: bool,
+}
+
 impl StudioRuntime {
     pub(super) async fn hydrate_ssh_servers(&self) -> Result<()> {
         self.ssh_manager
             .reload_servers()
             .await
-            .map_err(|error| anyhow::anyhow!(error))
+            .map_err(|error| anyhow::anyhow!(error))?;
+        for entry in self.ssh_manager.list_servers().await {
+            self.ensure_ssh_password_hydrated(&entry.profile.alias)
+                .await;
+        }
+        Ok(())
     }
 
-    pub async fn list_ssh_servers(&self) -> Result<Vec<SshConfigEntry>> {
+    async fn ensure_ssh_password_hydrated(&self, alias: &str) {
+        if self.ssh_manager.has_server_password(alias).await {
+            return;
+        }
+        if let Ok(Some(password)) = self.config_runtime.load_ssh_password(alias) {
+            self.ssh_manager
+                .set_server_password(alias, Some(password))
+                .await;
+        }
+    }
+
+    pub async fn list_ssh_servers(&self) -> Result<Vec<SshServerRuntimeEntry>> {
         // 以文件为唯一事实源；每次列表都重新解析，拾取手工编辑。
         self.hydrate_ssh_servers().await?;
-        Ok(self.ssh_manager.list_servers().await)
+        let entries = self.ssh_manager.list_servers().await;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let has_password = self
+                .ssh_manager
+                .has_server_password(&entry.profile.alias)
+                .await;
+            out.push(SshServerRuntimeEntry {
+                profile: entry.profile,
+                managed: entry.managed,
+                has_password,
+            });
+        }
+        Ok(out)
     }
 
-    pub async fn save_ssh_server(&self, profile: SshServerProfile) -> Result<SshServerProfile> {
+    pub async fn save_ssh_server(
+        &self,
+        profile: SshServerProfile,
+        password: SshPasswordUpdate,
+    ) -> Result<SshServerRuntimeEntry> {
+        if let SshPasswordUpdate::Replace { ref value } = password
+            && value.trim().is_empty()
+        {
+            return Err(pl_protocol::studio::StudioError::invalid_argument(
+                "SSH password must not be empty",
+            )
+            .into());
+        }
         let previous = self
             .ssh_manager
             .list_servers()
@@ -36,11 +93,42 @@ impl StudioRuntime {
             .save_server(profile)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        if previous.as_ref() != Some(&profile) {
+        let password_changed = match password {
+            SshPasswordUpdate::Preserve => {
+                self.ensure_ssh_password_hydrated(&profile.alias).await;
+                false
+            }
+            SshPasswordUpdate::Replace { value } => {
+                self.config_runtime
+                    .save_ssh_password(&profile.alias, &value)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                self.ssh_manager
+                    .set_server_password(&profile.alias, Some(value))
+                    .await;
+                let _ = self.ssh_manager.disconnect_server(&profile.alias).await;
+                true
+            }
+            SshPasswordUpdate::Clear => {
+                self.config_runtime
+                    .delete_ssh_password(&profile.alias)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                self.ssh_manager
+                    .set_server_password(&profile.alias, None)
+                    .await;
+                let _ = self.ssh_manager.disconnect_server(&profile.alias).await;
+                true
+            }
+        };
+        if previous.as_ref() != Some(&profile) || password_changed {
             self.thread_factory.invalidate_ssh_bindings(&profile.alias);
             self.tool_catalog_updates.notify_one();
         }
-        Ok(profile)
+        let has_password = self.ssh_manager.has_server_password(&profile.alias).await;
+        Ok(SshServerRuntimeEntry {
+            profile,
+            managed: true,
+            has_password,
+        })
     }
 
     pub async fn delete_ssh_server(&self, alias: &str) -> Result<()> {
@@ -48,12 +136,46 @@ impl StudioRuntime {
             .delete_server(alias)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
+        let _ = self.config_runtime.delete_ssh_password(alias);
         self.thread_factory.invalidate_ssh_bindings(alias);
         self.tool_catalog_updates.notify_one();
         Ok(())
     }
 
+    pub async fn authenticate_ssh_server(
+        &self,
+        alias: &str,
+        password: String,
+        remember_password: bool,
+    ) -> Result<SshConnectionSnapshot> {
+        if password.trim().is_empty() {
+            return Err(pl_protocol::studio::StudioError::invalid_argument(
+                "SSH password must not be empty",
+            )
+            .into());
+        }
+        let previous = self.ssh_manager.server_password(alias).await;
+        self.ssh_manager
+            .set_server_password(alias, Some(password.clone()))
+            .await;
+        match self.ssh_manager.test_connection(alias).await {
+            Ok(snapshot) => {
+                if remember_password {
+                    self.config_runtime
+                        .save_ssh_password(alias, &password)
+                        .map_err(|error| anyhow::anyhow!(error))?;
+                }
+                Ok(snapshot)
+            }
+            Err(error) => {
+                self.ssh_manager.set_server_password(alias, previous).await;
+                Err(anyhow::anyhow!(error))
+            }
+        }
+    }
+
     pub async fn test_ssh_connection(&self, alias: &str) -> Result<SshConnectionSnapshot> {
+        self.ensure_ssh_password_hydrated(alias).await;
         self.ssh_manager
             .test_connection(alias)
             .await
@@ -61,6 +183,7 @@ impl StudioRuntime {
     }
 
     pub async fn reconnect_ssh_server(&self, alias: &str) -> Result<SshConnectionSnapshot> {
+        self.ensure_ssh_password_hydrated(alias).await;
         self.ssh_manager
             .reconnect_server(alias)
             .await
@@ -73,6 +196,7 @@ impl StudioRuntime {
         alias: &str,
         path: Option<String>,
     ) -> Result<RemoteDirectoryListing> {
+        self.ensure_ssh_password_hydrated(alias).await;
         self.ssh_manager
             .browse_directories(alias, path)
             .await
@@ -80,6 +204,7 @@ impl StudioRuntime {
     }
 
     pub async fn open_remote_project(&self, alias: &str, path: String) -> Result<ProjectRecord> {
+        self.ensure_ssh_password_hydrated(alias).await;
         let workspace = self
             .ssh_manager
             .open_workspace(alias, path)

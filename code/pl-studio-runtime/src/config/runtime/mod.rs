@@ -176,6 +176,21 @@ impl ConfigRuntime {
         self.profiles.subscribe()
     }
 
+    /// 读取系统凭据库或当前进程租约中的 SSH 主机密码。
+    pub fn load_ssh_password(&self, alias: &str) -> Result<Option<String>> {
+        self.store.load_ssh_password(alias)
+    }
+
+    /// 将 SSH 主机密码保存到系统凭据库。
+    pub fn save_ssh_password(&self, alias: &str, secret: &str) -> Result<()> {
+        self.store.save_ssh_password(alias, secret)
+    }
+
+    /// 从系统凭据库删除指定 SSH 主机密码。
+    pub fn delete_ssh_password(&self, alias: &str) -> Result<()> {
+        self.store.delete_ssh_password(alias)
+    }
+
     /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
     ///
     /// # Errors

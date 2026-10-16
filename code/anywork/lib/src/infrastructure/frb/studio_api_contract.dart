@@ -1105,6 +1105,15 @@ class FrbStudioTransport
           port: command.port,
           username: command.username,
           identityFile: command.identityFile,
+          password: switch (command.password.action) {
+            SshPasswordAction.preserve =>
+              const frb_ssh_types.SshPasswordInput.preserve(),
+            SshPasswordAction.replace => frb_ssh_types.SshPasswordInput.replace(
+              value: command.password.value!,
+            ),
+            SshPasswordAction.clear =>
+              const frb_ssh_types.SshPasswordInput.clear(),
+          },
         ),
       ),
     );
@@ -1115,6 +1124,32 @@ class FrbStudioTransport
   Future<void> deleteSshServer(String alias) async {
     await _ensureReady();
     await _bridgeCall(() => frb_ssh.deleteSshServer(alias: alias));
+  }
+
+  @override
+  Future<SshConnectionView> authenticateSshServer(
+    AuthenticateSshServerCommand command,
+  ) async {
+    await _ensureReady();
+    final snapshot = await _bridgeCall(
+      () => frb_ssh.authenticateSshServer(
+        request: frb_ssh_types.AuthenticateSshServerRequest(
+          alias: command.alias,
+          password: command.password,
+          rememberPassword: command.rememberPassword,
+        ),
+      ),
+    );
+    return SshConnectionView(
+      alias: snapshot.alias,
+      state: snapshot.state,
+      helperVersion: snapshot.helperVersion,
+      architecture: snapshot.architecture,
+      attempt: snapshot.attempt,
+      delaySeconds: snapshot.delaySeconds?.toInt(),
+      errorCode: snapshot.errorCode,
+      errorMessage: snapshot.errorMessage,
+    );
   }
 
   @override

@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../presentation/providers/client_provider.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
+import 'settings_ssh_password_dialog.dart';
 
 class RemoteDirectoryDialog extends ConsumerStatefulWidget {
   const RemoteDirectoryDialog({
@@ -17,11 +18,13 @@ class RemoteDirectoryDialog extends ConsumerStatefulWidget {
     required this.server,
     this.onBack,
     this.active = true,
+    this.showProjectNameField = false,
   });
 
   final SshServer server;
   final VoidCallback? onBack;
   final bool active;
+  final bool showProjectNameField;
 
   @override
   ConsumerState<RemoteDirectoryDialog> createState() =>
@@ -37,13 +40,16 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
   final _projectName = TextEditingController();
   bool _nameEdited = false;
 
+  bool get _hasProjectNameField =>
+      widget.showProjectNameField || widget.onBack != null;
+
   bool get _busy => _browsing || _opening;
 
   bool get _canOpen =>
       !_busy &&
       _listing != null &&
       _pathController.text.trim() == _listing!.path &&
-      (widget.onBack == null || _projectName.text.trim().isNotEmpty);
+      (!_hasProjectNameField || _projectName.text.trim().isNotEmpty);
 
   @override
   void initState() {
@@ -113,6 +119,21 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       });
     } catch (error) {
       if (!mounted) return;
+      if (isSshAuthenticationError(error)) {
+        setState(() => _browsing = false);
+        final snapshot = await showDialog<SshConnectionView>(
+          context: context,
+          builder: (context) => SshPasswordPromptDialog(
+            server: widget.server,
+            initialError: error.toString(),
+          ),
+        );
+        if (!mounted) return;
+        if (snapshot != null && snapshot.state == 'ready') {
+          await _load(path);
+          return;
+        }
+      }
       setState(() {
         _browsing = false;
         _error = error.toString();
@@ -136,7 +157,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
           .openRemoteProject(
             widget.server.alias,
             path,
-            name: widget.onBack == null ? null : _projectName.text.trim(),
+            name: _hasProjectNameField ? _projectName.text.trim() : null,
           );
     } on Object {
       // Controller failures are normally converted to false; retain the same
@@ -210,7 +231,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
               _buildCurrentPathRow(context, listing, busy),
               const Divider(),
               _buildListingBody(listing, busy),
-              if (widget.onBack != null) ...[
+              if (_hasProjectNameField) ...[
                 const SizedBox(height: 16),
                 TextField(
                   key: const ValueKey('add-project-name'),
@@ -219,6 +240,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
                   maxLength: 80,
                   decoration: InputDecoration(
                     labelText: context.l10n.settingsSshProjectName,
+                    prefixIcon: const Icon(Icons.workspaces_outlined, size: 18),
                   ),
                   onChanged: (_) => setState(() => _nameEdited = true),
                 ),
@@ -230,9 +252,9 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
           TextButton(
             onPressed: _opening ? null : _cancel,
             child: Text(
-              widget.onBack == null
-                  ? context.l10n.settingsCancel
-                  : context.l10n.sidebarBack,
+              _hasProjectNameField
+                  ? context.l10n.sidebarBack
+                  : context.l10n.settingsCancel,
             ),
           ),
           FilledButton.icon(
@@ -245,9 +267,9 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
                   )
                 : const Icon(Icons.folder_open_outlined, size: 17),
             label: Text(
-              widget.onBack == null
-                  ? context.l10n.settingsSshOpenThisDirectory
-                  : context.l10n.sidebarAddProject,
+              _hasProjectNameField
+                  ? context.l10n.sidebarAddProject
+                  : context.l10n.settingsSshOpenThisDirectory,
             ),
           ),
         ],
@@ -263,7 +285,10 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       );
     }
     if (listing == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 24),
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
     if (listing.entries.isEmpty) {
       return SettingsEmptyMessage(
@@ -276,7 +301,10 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
     // 目录浏览只在 body 内滚动，整体溢出由 AlertDialog(scrollable: true)
     // 处理；使用 box-backed scrolling content 以兼容 AlertDialog 的 intrinsic 测量。
     return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: _directoryBodyMaxHeight(context)),
+      constraints: BoxConstraints(
+        minHeight: 200,
+        maxHeight: _directoryBodyMaxHeight(context),
+      ),
       child: SingleChildScrollView(
         key: StudioDriverKeys.sshDirectoryList,
         child: Column(
@@ -308,11 +336,6 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
 
   /// 路径输入与 Go 在窄视口/放大文本下可换行堆叠，宽视口保持单行。
   Widget _buildPathFieldRow(BuildContext context, bool busy) {
-    // `AlertDialog(scrollable: true)` measures its content intrinsically;
-    // LayoutBuilder cannot participate in that pass on Flutter 3.47.1.
-    // The dialog width is derived from the same viewport constraint, so it is
-    // also sufficient to select the narrow layout without a second layout
-    // pass.
     final stack = _dialogContentWidth(context) < 420;
     final field = TextField(
       key: StudioDriverKeys.sshDirectoryPathInput,
@@ -320,12 +343,10 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       decoration: InputDecoration(
         labelText: context.l10n.settingsSshDirectoryPathLabel,
         hintText: context.l10n.settingsSshDirectoryPathHint,
+        prefixIcon: const Icon(Icons.route_outlined, size: 18),
       ),
       textInputAction: TextInputAction.go,
       onChanged: (_) {
-        // Browse failures keep their retry prompt while no canonical
-        // listing exists; an existing listing can safely clear stale
-        // open/validation errors as the input changes.
         setState(() {
           if (_listing != null) _error = null;
         });
@@ -333,7 +354,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       onSubmitted: (_) => _go(),
       enabled: !busy,
     );
-    final go = TextButton(
+    final go = FilledButton.tonal(
       key: StudioDriverKeys.sshDirectoryGo,
       onPressed: busy ? null : _go,
       child: Text(context.l10n.settingsSshGo),
@@ -391,6 +412,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
             key: listing == null
                 ? null
                 : StudioDriverKeys.sshDirectoryCurrent(listing.path),
+            style: context.text.bodyMedium?.copyWith(fontFamily: 'monospace'),
           ),
         ),
       ],
@@ -407,9 +429,6 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
   /// 内容宽度受 viewport 约束：窄窗口收缩，宽桌面保持合理宽度。
   double _dialogContentWidth(BuildContext context) {
     final viewport = MediaQuery.sizeOf(context);
-    // AlertDialog 默认左右 inset 各 40px；按可用宽度计算，避免窄窗口中
-    // SizedBox 的固定宽度突破 dialog 约束。这里不设置固定最小宽度，
-    // 让极窄 viewport 仍由父约束决定可用宽度。
     return clampDouble(viewport.width - 80.0, 0.0, 640.0);
   }
 }

@@ -136,6 +136,7 @@ pub(super) async fn load_helper(
 pub(super) async fn upload_helper(
     profile: &SshServerProfile,
     ssh_config: &super::super::ssh_config::SshConfigFile,
+    password: Option<&str>,
     bytes: &[u8],
 ) -> Result<String, RemoteClientError> {
     let digest = hex::encode(Sha256::digest(bytes));
@@ -146,14 +147,18 @@ pub(super) async fn upload_helper(
     );
     let path = format!("{directory}/{HELPER_NAME}");
     let probe = format!("if test -x {path}; then printf present; fi");
-    if run_ssh_capture(profile, ssh_config, &probe).await?.trim() == "present" {
+    if run_ssh_capture(profile, ssh_config, password, &probe)
+        .await?
+        .trim()
+        == "present"
+    {
         return Ok(path);
     }
     let temporary = format!("{path}.tmp");
     let script = format!(
         "umask 077; mkdir -p {directory} && cat > {temporary} && chmod 700 {temporary} && mv -f {temporary} {path}"
     );
-    let mut prepared = ssh_command(profile, ssh_config).await?;
+    let mut prepared = ssh_command(profile, ssh_config, password).await?;
     prepared
         .command
         .command_mut()
@@ -169,10 +174,11 @@ pub(super) async fn upload_helper(
     )
     .await?;
     if !output.status.success() {
-        return Err(RemoteClientError::Protocol(format!(
-            "helper upload failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(super::ssh::classify_ssh_stderr(
+            "helper upload failed",
+            &stderr,
+        ));
     }
     Ok(path)
 }

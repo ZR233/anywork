@@ -118,6 +118,9 @@ abstract class StudioTransport
   Future<List<SshServer>> listSshServers();
   Future<SshServer> saveSshServer(SaveSshServerCommand command);
   Future<void> deleteSshServer(String alias);
+  Future<SshConnectionView> authenticateSshServer(
+    AuthenticateSshServerCommand command,
+  );
   Future<SshConnectionView> testSshConnection(String alias);
   Future<SshConnectionView> reconnectSshServer(String alias);
   Future<RemoteDirectoryListing> browseRemoteDirectories(

@@ -10,7 +10,7 @@ import '../types/ssh.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `connection_dto`, `managed_server_dto`, `server_dto`
+// These functions are ignored because they are not marked as `pub`: `connection_dto`, `server_dto`
 
 Future<List<SshServerDto>> listSshServers() =>
     RustLib.instance.api.crateApiStudioHandlersSshListSshServers();
@@ -22,6 +22,12 @@ Future<SshServerDto> saveSshServer({required SaveSshServerRequest request}) =>
 
 Future<void> deleteSshServer({required String alias}) =>
     RustLib.instance.api.crateApiStudioHandlersSshDeleteSshServer(alias: alias);
+
+Future<SshConnectionSnapshotDto> authenticateSshServer({
+  required AuthenticateSshServerRequest request,
+}) => RustLib.instance.api.crateApiStudioHandlersSshAuthenticateSshServer(
+  request: request,
+);
 
 Future<SshConnectionSnapshotDto> testSshConnection({required String alias}) =>
     RustLib.instance.api.crateApiStudioHandlersSshTestSshConnection(

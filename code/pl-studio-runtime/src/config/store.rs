@@ -70,14 +70,14 @@ impl ConfigStore {
     pub fn default_app() -> Result<Self> {
         Ok(Self::with_credential_store(
             ConfigPaths::for_current_user()?,
-            Arc::new(SystemCredentialStore),
+            Arc::new(SystemCredentialStore::default()),
         ))
     }
 
     pub fn for_studio_home(studio_home: impl Into<PathBuf>) -> Self {
         Self::with_credential_store(
             ConfigPaths::from_config_dir(studio_home),
-            Arc::new(SystemCredentialStore),
+            Arc::new(SystemCredentialStore::default()),
         )
     }
 
@@ -94,6 +94,20 @@ impl ConfigStore {
 
     pub fn paths(&self) -> &ConfigPaths {
         &self.paths
+    }
+
+    pub fn load_ssh_password(&self, alias: &str) -> Result<Option<String>> {
+        self.credentials
+            .load_ssh(alias)
+            .map(|secret| secret.filter(|value| !value.trim().is_empty()))
+    }
+
+    pub fn save_ssh_password(&self, alias: &str, secret: &str) -> Result<()> {
+        self.credentials.save_ssh(alias, secret)
+    }
+
+    pub fn delete_ssh_password(&self, alias: &str) -> Result<()> {
+        self.credentials.delete_ssh(alias)
     }
 
     /// 判断 `config.toml` 是否真实缺失。

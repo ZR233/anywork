@@ -842,6 +842,90 @@ abstract class AppLocalizations {
   /// **'Uses the ssh agent when left empty.'**
   String get settingsSshIdentityHelper;
 
+  /// No description provided for @settingsSshEditTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit SSH server'**
+  String get settingsSshEditTitle;
+
+  /// No description provided for @settingsSshPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Password (optional)'**
+  String get settingsSshPassword;
+
+  /// No description provided for @settingsSshPasswordHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved in your system credential store, never written to ~/.ssh/config. Leave empty to use a key or prompt on connect.'**
+  String get settingsSshPasswordHelper;
+
+  /// No description provided for @settingsSshPasswordSavedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Password saved — leave empty to keep'**
+  String get settingsSshPasswordSavedHint;
+
+  /// No description provided for @settingsSshPasswordClear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear saved password'**
+  String get settingsSshPasswordClear;
+
+  /// No description provided for @settingsSshPasswordClearedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved password will be cleared on save'**
+  String get settingsSshPasswordClearedHint;
+
+  /// No description provided for @settingsSshPasswordBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Password saved'**
+  String get settingsSshPasswordBadge;
+
+  /// No description provided for @settingsSshKeyBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Key: {path}'**
+  String settingsSshKeyBadge(String path);
+
+  /// No description provided for @settingsSshAuthPromptTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter SSH password'**
+  String get settingsSshAuthPromptTitle;
+
+  /// No description provided for @settingsSshAuthPromptSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Password authentication is required to connect to {target}.'**
+  String settingsSshAuthPromptSubtitle(String target);
+
+  /// No description provided for @settingsSshAuthPasswordLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'SSH password'**
+  String get settingsSshAuthPasswordLabel;
+
+  /// No description provided for @settingsSshAuthPasswordRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the SSH password'**
+  String get settingsSshAuthPasswordRequired;
+
+  /// No description provided for @settingsSshAuthRememberPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Save password in system credential store'**
+  String get settingsSshAuthRememberPassword;
+
+  /// No description provided for @settingsSshAuthConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect'**
+  String get settingsSshAuthConnect;
+
   /// No description provided for @settingsSshReadOnlyEntry.
   ///
   /// In en, this message translates to:

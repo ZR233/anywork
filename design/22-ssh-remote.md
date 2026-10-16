@@ -130,8 +130,9 @@ SSH 连接、平台探测、helper 上传和协议握手都通过统一后台进
 backend / worker 仍持有原始 client，因此 transport 关闭不能与依赖抢跑，否则会先切断通信、把
 健康远端资源的正常退出误判为失败；SSH 回收仍与写入链等无关资源并发，不等持久化 / 数据库提交，
 依赖停止超时或失败时有界降级并仍请求回收。SSH 通道只承载标准输入
-输出协议，因此固定关闭伪终端与 X11 转发，不打开交互式终端或图形会话；SSH 以 BatchMode
-运行，只接受 ssh-agent 与密钥等非交互认证，不注入密码或 askpass。
+输出协议，因此固定关闭伪终端与 X11 转发，不打开交互式终端或图形会话；未配置或未提供密码时
+SSH 以 BatchMode 运行快速探测免密密钥与 ssh-agent，存在可用密码时通过受控本地 `SSH_ASKPASS`
+非终端注入密码（单次提示，不在终端阻塞等待输入）。
 
 上述非交互与进程回收约定只适用于 Studio 管理的 helper transport。会话顶栏的外部「终端」
 入口是用户主动启动的独立交互 SSH 会话，复用同一 Host 别名与用户 SSH 安全设置，进入会话
@@ -162,8 +163,13 @@ Project 源，默认项目目录为远端 workspace 下的 `.agents/skills`；�
 ## 22.4 凭据、路径与持久化
 
 Pure 调用 PATH 中的系统 OpenSSH，复用 ssh config、known_hosts、ProxyJump、ssh-agent 和
-用户显式配置的 agent forwarding。认证仅支持 ssh-agent 与密钥；凭据不得进入 SQLite、DTO、
-日志、helper 参数、helper 环境或远端协议，也不维护进程内密码 lease 或 askpass 注入。
+用户显式配置的 agent forwarding。认证支持 ssh-agent、密钥以及可选 SSH 密码：密码与供应商
+API Key 采用同一套系统凭据库（`CredentialStore`，账号键 `ssh:<alias>`，编辑语义为
+`Preserve` / `Replace` / `Clear`）或当前进程内存会话租约，绝不写入 `~/.ssh/config`、
+SQLite、DTO、日志、helper 参数、helper 环境或远端协议；删除受管主机时同步清除对应系统凭据。
+本地 OpenSSH 子进程仅在存在可用密码时通过受控临时 `SSH_ASKPASS` 脚本（`SSH_ASKPASS_REQUIRE=force`）
+读取本地子进程专属环境变量完成非交互密码认证；未配置密码或认证失败返回可识别的认证失败错误，
+供前端弹出密码输入弹窗（支持单次会话认证或同时保存到凭据库）。
 首次主机身份核验沿用用户 ssh 的 known_hosts 语义，不自动信任新主机或已变更的主机密钥。
 provider token 不得转发；远端 Git 只使用服务器原生配置与凭据。shell descriptor 不是
 login shell 配置，也不携带完整环境变量。

@@ -65,13 +65,15 @@ class SettingsResourceRow extends StatelessWidget {
                   ),
                 ],
               );
+              final wide = constraints.maxWidth >= 650;
               final controls = Wrap(
                 spacing: 8,
                 runSpacing: 6,
+                alignment: wide ? WrapAlignment.end : WrapAlignment.start,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [?status, ...actions],
               );
-              if (constraints.maxWidth < 650) {
+              if (!wide) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -90,7 +92,7 @@ class SettingsResourceRow extends StatelessWidget {
                     const SizedBox(width: 16),
                     ConstrainedBox(
                       constraints: BoxConstraints(
-                        maxWidth: constraints.maxWidth * 0.5,
+                        maxWidth: constraints.maxWidth * 0.62,
                       ),
                       child: controls,
                     ),
