@@ -1340,6 +1340,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsUsageBalanceUnavailable => '余额不可用';
 
   @override
+  String get settingsUsageBalanceSufficient => '余额充足';
+
+  @override
+  String get settingsUsageBalanceInsufficient => '余额不足';
+
+  @override
+  String get settingsUsageTotalBalance => '总可用余额';
+
+  @override
+  String get settingsUsageGrantedBalance => '赠金余额';
+
+  @override
+  String get settingsUsageToppedUpBalance => '充值余额';
+
+  @override
   String settingsUsageGranted(String amount) {
     return '赠送 $amount';
   }

@@ -472,6 +472,12 @@ token 速度统计按 provider 实例 ID、实际发送 model、请求期思考�
 性能统计是不同信息，不能互相替代：列表保留用量摘要与刷新，详情保留全部分组读数和
 原有状态；没有实时查询结果时显示 canonical 不可用/错误状态，不将配置完整伪装成在线。
 设置页打开时只展示 last-known state；只有手动"检查额度"命令访问网络，不做后台定时轮询。
+DeepSeek provider usage 遵循官方 [`/user/balance`](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)
+语义：`total_balance` 是包含赠金与充值余额的总可用余额，`granted_balance` 是未过期赠金余额，
+`topped_up_balance` 是充值余额；三项只展示 canonical 返回值，不在前端相加、换算或推导。
+`balance_infos` 返回的每个币种都保持独立分组（不把 CNY/USD 合并），列表摘要与详情读数使用同一
+标签和顺序；`is_available` 只显示为账户余额是否足以调用 API 的状态，不作为模型连通性或凭据
+有效性的证明。窄窗口下余额分组允许换行，但不得裁切金额或隐藏任一已返回的币种。
 
 聊天界面使用双栏布局：左侧项目/大会话栏和主聊天区，不展示右侧工具历史面板。主聊天区
 底部状态栏左侧展示当前 agent 身份、`Auto / Plan` 模式、当前模型和推理强度，右侧展示

@@ -1414,6 +1414,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsUsageBalanceUnavailable => 'Balance unavailable';
 
   @override
+  String get settingsUsageBalanceSufficient => 'Balance sufficient';
+
+  @override
+  String get settingsUsageBalanceInsufficient => 'Insufficient balance';
+
+  @override
+  String get settingsUsageTotalBalance => 'Total available';
+
+  @override
+  String get settingsUsageGrantedBalance => 'Granted balance';
+
+  @override
+  String get settingsUsageToppedUpBalance => 'Topped-up balance';
+
+  @override
   String settingsUsageGranted(String amount) {
     return 'Granted $amount';
   }

@@ -95,7 +95,7 @@ class ProviderUsagePanel extends StatelessWidget {
               ReadyProviderUsageView(
                 data: DeepSeekBalanceProviderUsageView(:final balance),
               ) =>
-                _DeepSeekUsage(usage: balance),
+                DeepSeekBalanceReadout(usage: balance),
               ReadyProviderUsageView(
                 data: ZhipuCodingPlanProviderUsageView(:final codingPlan),
               ) =>
@@ -121,71 +121,206 @@ class ProviderUsagePanel extends StatelessWidget {
   }
 }
 
-class _DeepSeekUsage extends StatelessWidget {
-  const _DeepSeekUsage({required this.usage});
+/// Displays the canonical DeepSeek balance fields without recalculating them.
+///
+/// DeepSeek returns one balance record per currency. The same readout is used
+/// in the provider detail view and in the compact provider list card so both
+/// surfaces keep the provider's terminology and ordering aligned.
+class DeepSeekBalanceReadout extends StatelessWidget {
+  const DeepSeekBalanceReadout({
+    super.key,
+    required this.usage,
+    this.compact = false,
+  });
 
   final DeepSeekBalanceUsageView usage;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    final primary =
-        usage.balances
-            .where((item) => item.currency.toUpperCase() == 'CNY')
-            .firstOrNull ??
-        usage.balances.firstOrNull;
-    if (primary == null) {
+    final balances = _orderedDeepSeekBalances(usage.balances);
+    if (balances.isEmpty) {
       return ProviderUsageMessage(
         icon: Icons.info_outline,
         message: context.l10n.settingsUsageUnavailable,
         tone: UsageTone.muted,
       );
     }
-    final colors = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                usage.isAvailable
-                    ? context.l10n.settingsUsageAvailableBalance
-                    : context.l10n.settingsUsageBalanceUnavailable,
-                style: Theme.of(context).textTheme.labelMedium
-                    ?.copyWith(color: colors.onSurfaceVariant),
-              ),
-            ),
-            Text(
-              '${primary.currency} ${primary.totalBalance}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ],
+        StudioPill(
+          icon: usage.isAvailable
+              ? Icons.check_circle_outline
+              : Icons.warning_amber_outlined,
+          label: usage.isAvailable
+              ? context.l10n.settingsUsageBalanceSufficient
+              : context.l10n.settingsUsageBalanceInsufficient,
+          tone: usage.isAvailable ? StudioTone.success : StudioTone.warning,
         ),
         const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
+        for (var index = 0; index < balances.length; index++) ...[
+          _DeepSeekCurrencyBalanceCard(
+            balance: balances[index],
+            compact: compact,
+          ),
+          if (index < balances.length - 1) const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+List<DeepSeekBalanceInfoView> _orderedDeepSeekBalances(
+  List<DeepSeekBalanceInfoView> balances,
+) {
+  final ordered = List<DeepSeekBalanceInfoView>.of(balances);
+  final cnyIndex = ordered.indexWhere(
+    (item) => item.currency.toUpperCase() == 'CNY',
+  );
+  if (cnyIndex > 0) {
+    final cny = ordered.removeAt(cnyIndex);
+    ordered.insert(0, cny);
+  }
+  return ordered;
+}
+
+class _DeepSeekCurrencyBalanceCard extends StatelessWidget {
+  const _DeepSeekCurrencyBalanceCard({
+    required this.balance,
+    required this.compact,
+  });
+
+  final DeepSeekBalanceInfoView balance;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final metricWidth = compact ? 132.0 : 160.0;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: context.colors.surfaceContainerLowest,
+        border: Border.all(color: context.colors.outlineVariant),
+        borderRadius: BorderRadius.circular(StudioRadii.sm),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(compact ? 9 : 11),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SettingsInfoPill(
-              icon: Icons.card_giftcard_outlined,
-              label: context.l10n.settingsUsageGranted(primary.grantedBalance),
+            Row(
+              children: [
+                Icon(
+                  Icons.account_balance_wallet_outlined,
+                  size: compact ? 15 : 16,
+                  color: context.colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  balance.currency,
+                  style: context.text.labelLarge?.copyWith(
+                    color: context.colors.onSurface,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
             ),
-            SettingsInfoPill(
-              icon: Icons.payments_outlined,
-              label: context.l10n.settingsUsageToppedUp(
-                primary.toppedUpBalance,
-              ),
+            const SizedBox(height: 9),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth < metricWidth
+                    ? constraints.maxWidth
+                    : metricWidth;
+                return Wrap(
+                  spacing: compact ? 14 : 18,
+                  runSpacing: 10,
+                  children: [
+                    SizedBox(
+                      width: width,
+                      child: _DeepSeekBalanceMetric(
+                        label: context.l10n.settingsUsageTotalBalance,
+                        value: '${balance.currency} ${balance.totalBalance}',
+                        prominent: true,
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _DeepSeekBalanceMetric(
+                        label: context.l10n.settingsUsageGrantedBalance,
+                        value: '${balance.currency} ${balance.grantedBalance}',
+                        icon: Icons.card_giftcard_outlined,
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _DeepSeekBalanceMetric(
+                        label: context.l10n.settingsUsageToppedUpBalance,
+                        value: '${balance.currency} ${balance.toppedUpBalance}',
+                        icon: Icons.payments_outlined,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
-            for (final item in usage.balances.where(
-              (item) => item.currency != primary.currency,
-            ))
-              SettingsInfoPill(
-                icon: Icons.account_balance_wallet_outlined,
-                label: '${item.currency} ${item.totalBalance}',
-              ),
           ],
         ),
-      ],
+      ),
+    );
+  }
+}
+
+class _DeepSeekBalanceMetric extends StatelessWidget {
+  const _DeepSeekBalanceMetric({
+    required this.label,
+    required this.value,
+    this.icon,
+    this.prominent = false,
+  });
+
+  final String label;
+  final String value;
+  final IconData? icon;
+  final bool prominent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '$label: $value',
+      value: value,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 13, color: context.colors.onSurfaceVariant),
+                const SizedBox(width: 4),
+              ],
+              Flexible(
+                child: Text(
+                  label,
+                  style: context.text.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            softWrap: true,
+            style:
+                (prominent ? context.text.titleSmall : context.text.bodySmall)
+                    ?.copyWith(
+                      color: context.colors.onSurface,
+                      fontWeight: prominent ? FontWeight.w700 : FontWeight.w600,
+                    ),
+          ),
+        ],
+      ),
     );
   }
 }

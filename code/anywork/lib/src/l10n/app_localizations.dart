@@ -2519,6 +2519,36 @@ abstract class AppLocalizations {
   /// **'Balance unavailable'**
   String get settingsUsageBalanceUnavailable;
 
+  /// No description provided for @settingsUsageBalanceSufficient.
+  ///
+  /// In en, this message translates to:
+  /// **'Balance sufficient'**
+  String get settingsUsageBalanceSufficient;
+
+  /// No description provided for @settingsUsageBalanceInsufficient.
+  ///
+  /// In en, this message translates to:
+  /// **'Insufficient balance'**
+  String get settingsUsageBalanceInsufficient;
+
+  /// No description provided for @settingsUsageTotalBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Total available'**
+  String get settingsUsageTotalBalance;
+
+  /// No description provided for @settingsUsageGrantedBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Granted balance'**
+  String get settingsUsageGrantedBalance;
+
+  /// No description provided for @settingsUsageToppedUpBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Topped-up balance'**
+  String get settingsUsageToppedUpBalance;
+
   /// No description provided for @settingsUsageGranted.
   ///
   /// In en, this message translates to:

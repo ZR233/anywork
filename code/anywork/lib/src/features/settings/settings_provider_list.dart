@@ -349,6 +349,11 @@ class ProviderListUsage extends StatelessWidget {
       );
     }
     if (usage.state case ReadyProviderUsageView(
+      data: DeepSeekBalanceProviderUsageView(:final balance),
+    )) {
+      return DeepSeekBalanceReadout(usage: balance, compact: true);
+    }
+    if (usage.state case ReadyProviderUsageView(
       data: ZhipuCodingPlanProviderUsageView(:final codingPlan),
     )) {
       return _ProviderQuotaList(limits: codingPlan.limits);

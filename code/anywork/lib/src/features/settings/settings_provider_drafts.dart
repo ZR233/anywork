@@ -165,7 +165,15 @@ String _readyProviderUsageSummary(
         balance.balances.firstOrNull;
     return primary == null
         ? context.l10n.settingsUsageUnavailable
-        : '${primary.currency} ${primary.totalBalance}';
+        : balance.balances
+              .map(
+                (item) => [
+                  '${item.currency} ${item.totalBalance}',
+                  '${context.l10n.settingsUsageGrantedBalance}: ${item.grantedBalance}',
+                  '${context.l10n.settingsUsageToppedUpBalance}: ${item.toppedUpBalance}',
+                ].join(' · '),
+              )
+              .join(' · ');
   }
   if (data case ZhipuCodingPlanProviderUsageView(:final codingPlan)) {
     final fiveHour = findQuotaLimit(codingPlan.limits, 'fiveHour');
