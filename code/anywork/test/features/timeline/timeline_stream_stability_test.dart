@@ -91,6 +91,82 @@ void main() {
     expect(_pendingSaveIconCount(saved.id), 0);
     expect(after, before, reason: '保存确认改变了行几何，会触发额外的滚动补偿');
   });
+
+  testWidgets('切换会话后第一帧不保留旧会话行', (tester) async {
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final rowsByThread = <String, List<TimelineRow>>{
+      'thread-a': _threadRows('thread-a', 0),
+      'thread-b': _threadRows('thread-b', 0),
+    };
+
+    Widget view(String threadId, int revision) {
+      final rows = revision == 0
+          ? rowsByThread[threadId]!
+          : _threadRows(threadId, revision);
+      return _harness(
+        TimelineView(
+          threadId: threadId,
+          viewId: 'view-$threadId',
+          rows: rows,
+          body: const ThreadHistoryWindow(),
+          turn: null,
+          onCommand: (_) {},
+        ),
+      );
+    }
+
+    Future<void> show(String threadId, int revision) async {
+      await tester.pumpWidget(view(threadId, revision));
+      final otherThread = threadId == 'thread-a' ? 'thread-b' : 'thread-a';
+      final screen = Offset.zero & tester.view.physicalSize;
+      for (var frame = 0; frame < 2; frame++) {
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: 'thread=$threadId revision=$revision frame=$frame',
+        );
+        for (final row in rowsByThread[otherThread]!) {
+          final finder = find.byKey(StudioDriverKeys.timelineRow(row.id));
+          if (finder.evaluate().isEmpty) continue;
+          expect(
+            tester.getRect(finder).overlaps(screen),
+            isFalse,
+            reason: '旧会话行 ${row.id} 在新会话首帧仍可见',
+          );
+        }
+        expect(
+          rowsByThread[threadId]!.any(
+            (row) => find
+                .byKey(StudioDriverKeys.timelineRow(row.id))
+                .evaluate()
+                .isNotEmpty,
+          ),
+          isTrue,
+          reason: '新会话在首帧没有挂载任何行',
+        );
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+    }
+
+    await show('thread-a', 0);
+    await tester.drag(
+      find.byKey(StudioDriverKeys.timeline),
+      const Offset(0, 280),
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(tester.takeException(), isNull, reason: 'initial scroll');
+
+    await show('thread-b', 1);
+    await show('thread-b', 2);
+    await show('thread-a', 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull, reason: 'dispose');
+  });
 }
 
 /// 该行内可见的摘要文本数量（推理摘要 + 工具摘要共用同一层）。
@@ -203,11 +279,16 @@ TimelineRow _toolGroupRow(List<String> commands) {
   );
 }
 
-TimelineRow _textRow(String id, String text, {bool saved = true}) {
+TimelineRow _textRow(
+  String id,
+  String text, {
+  bool saved = true,
+  String threadId = 'thread-main',
+}) {
   final now = DateTime.utc(2026, 1, 1);
   final item = ThreadItemView(
     id: id,
-    threadId: 'thread-main',
+    threadId: threadId,
     turnId: 'turn-1',
     ordinal: 0,
     revision: 1,
@@ -228,7 +309,7 @@ TimelineRow _textRow(String id, String text, {bool saved = true}) {
       groupId: 'turn-1',
       type: TimelineEntryType.text,
       text: text,
-      threadId: 'thread-main',
+      threadId: threadId,
       turnId: 'turn-1',
       textChannel: TimelineTextChannel.finalAnswer,
       createdAt: now,
@@ -236,4 +317,16 @@ TimelineRow _textRow(String id, String text, {bool saved = true}) {
     ),
     type: TimelineRowType.finalAnswer,
   );
+}
+
+List<TimelineRow> _threadRows(String threadId, int revision) {
+  return [
+    for (var index = 0; index < 32; index += 1)
+      _textRow(
+        '$threadId/item-$index',
+        '$threadId row $index revision $revision\n\n'
+            '正文包含中文、`code` 和多段文本。',
+        threadId: threadId,
+      ),
+  ];
 }

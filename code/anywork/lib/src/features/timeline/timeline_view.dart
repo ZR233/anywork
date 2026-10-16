@@ -102,7 +102,13 @@ class TimelineView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _TimelineSurface(
-      key: key,
+      // ChatAnimatedList keeps removed children in an outgoing subtree even
+      // when its remove duration is zero. The list controller and its render
+      // objects therefore belong to one ChatView identity, not just to the
+      // StatelessWidget element that receives the next window.
+      // Replacing this key disposes the old sliver before a new thread/view
+      // can reuse its children or layout offsets.
+      key: ValueKey<(String?, String?)>((threadId, viewId)),
       threadId: threadId,
       rows: rows,
       body: body,
