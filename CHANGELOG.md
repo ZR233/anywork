@@ -5,6 +5,27 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.14.0](https://github.com/ZR233/anywork/compare/v6.13.0...v6.14.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** CommandBackend 明确捕获所有权、精确成本和固定预算；快照及退出携带捕获回执。core SQLite schema 12 需显式离线迁移，SSH 客户端与 protocol 8 helper 需同步升级。
+
+### Features
+
+* **core:** 增加 Turn 准入租约与有界命令捕获 ([#86](https://github.com/ZR233/anywork/issues/86)) ([de4ad60](https://github.com/ZR233/anywork/commit/de4ad6095ace79eed68d5fc32f106f7f39971034))
+
+
+### Bug Fixes
+
+* **studio:** 优化 DeepSeek 余额卡片 ([500d605](https://github.com/ZR233/anywork/commit/500d605ce33dbfe9adbf2131ecc88c4421df4dba))
+* **studio:** 保持会话词元速度快照 ([7b0ed2e](https://github.com/ZR233/anywork/commit/7b0ed2e3250d6b1435073092ccdcf1f793336a6b))
+* **studio:** 修复 Windows 大窗口渲染卡顿 ([8501175](https://github.com/ZR233/anywork/commit/85011757db7d1f372f65a48b5fe4f906b61c3346))
+* **studio:** 切换模型时自动选择思考强度 ([82e75c9](https://github.com/ZR233/anywork/commit/82e75c9bd967165ef617a1c7d226cf69e1d6d82a))
+* **studio:** 将会话归档移入更多菜单 ([136c1c5](https://github.com/ZR233/anywork/commit/136c1c5ce972de34380aa2d7062f3697c9d14e9e))
+* **studio:** 隔离 Timeline 会话渲染子树 ([85c1285](https://github.com/ZR233/anywork/commit/85c128557ddbde55e1fa83aebd70b78ff396553b))
+
 ## [6.13.0](https://github.com/ZR233/anywork/compare/v6.12.0...v6.13.0) (2026-10-15)
 
 
