@@ -208,7 +208,7 @@ title 通过 `ThreadDirectoryChanged` 更新，两处始终从同一个 StudioSt
 不显示独立的"正在命名"状态，也不在本地维护第二份 title（生成与提交流程见
 [18](./18-studio-state.md)）。
 
-Thread tile 在悬停时提供详情与快捷操作，rename 保存对话框提交 typed rename command；
+Thread tile 在悬停时提供详情与快捷操作，行内快捷操作只包含置顶与更多菜单；归档从更多菜单进入确认对话框，确认后提交 typed archive command。rename 保存对话框提交 typed rename command；
 空标题和超过 80 个字符的输入在 UI 与 runtime 两侧都拒绝。展开侧栏和窄屏抽屉中的项目与
 Thread 标题在悬停时显示 canonical name/title 的完整文本；截断只影响行内渲染，
 不改变提示内容。项目路径在按需详情展示；项目或 Thread 存在 recovery issue

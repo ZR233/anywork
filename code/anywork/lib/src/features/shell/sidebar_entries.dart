@@ -210,8 +210,8 @@ class _ProjectTile extends ConsumerWidget {
 }
 
 /// 侧栏会话行：紧凑单行标题，右侧固定状态区（会话工作树标识与行级
-/// canonical 运行状态），悬停或聚焦时出现置顶、归档快捷操作与更多
-/// 菜单，并展示完整标题、项目、环境、会话工作区路径与状态时间的悬浮
+/// canonical 运行状态），悬停或聚焦时出现置顶快捷操作与更多菜单，并展示
+/// 完整标题、项目、环境、会话工作区路径与状态时间的悬浮
 /// 详情。每行的状态只读自己的 [StudioThread.status]。
 class _ThreadTile extends ConsumerWidget {
   const _ThreadTile({
@@ -245,8 +245,8 @@ class _ThreadTile extends ConsumerWidget {
     final zedAvailable = ref.watch(zedAvailabilityProvider).value ?? false;
     final terminalAvailable =
         ref.watch(terminalAvailabilityProvider).value ?? false;
-    // 三个会话操作共享同一槽位与图标尺寸：桌面收紧视觉间距，触控仍保留
-    // 44px 命中区；菜单触发器也复用同一尺寸，避免第三个图标显得偏大。
+    // 会话操作共享同一槽位与图标尺寸：桌面收紧视觉间距，触控仍保留
+    // 44px 命中区；菜单触发器也复用同一尺寸，保持操作区密度一致。
     final actionTarget = touchMode ? 44.0 : 30.0;
     // 会话级打开入口的完整目标：本地用工作区路径，远端带 Host 别名前缀。
     final alias = project.sshAlias;
@@ -318,16 +318,6 @@ class _ThreadTile extends ConsumerWidget {
                 threadId: thread.id,
               );
             },
-          ),
-          _tileIconButton(
-            key: StudioDriverKeys.archiveThread(thread.id),
-            tooltip: context.l10n.sidebarArchiveSession,
-            icon: Icons.archive_outlined,
-            iconSize: 18,
-            minTarget: actionTarget,
-            onPressed: !blocked
-                ? () => _archiveThreadFromSidebar(context, ref, thread.id)
-                : null,
           ),
           _ThreadMenuButton(
             thread: thread,
@@ -691,9 +681,7 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
             child: Text(context.l10n.sidebarRenameSession),
           ),
           MenuItemButton(
-            // 菜单内的归档入口使用独立 literal key：行内常驻归档按钮复用
-            // StudioDriverKeys.archiveThread（唯一随行存在的 Driver 标识），
-            // 两者同时可见时不会让 Driver 唯一 finder 失效。
+            // 归档只从更多菜单进入，使用独立 key 供 Driver 精确定位菜单项。
             key: ValueKey('thread-menu-archive-${thread.id}'),
             overflowAxis: Axis.vertical,
             onPressed: widget.blocked ? null : () => _select('archive'),
