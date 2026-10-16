@@ -27,9 +27,14 @@ command -v script xvfb-run Xvfb xauth
 隔离虚拟显示器，不占用用户桌面，也不绕开 xtask：
 
 ```bash
-xvfb-run -a -s '-screen 0 1440x1000x24' \
+GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
   script -q -e -c 'cargo xtask manual-gui' /dev/null
 ```
+
+`xvfb-run` 只设置 X11 显示，不强制 GTK 选择该后端；即使 `WAYLAND_DISPLAY` 为空，
+也不能仅凭进程的 `DISPLAY` 认定窗口在 Xvfb 上。隔离 X11 验收显式设置
+`GDK_BACKEND=x11`，并核对本次显示上的窗口及 `_NET_WM_PID`。若 Driver 截图正常但
+所属 X11 显示没有窗口，先排查显示后端，不修改产品或绕过窗口归属检查。
 
 需要固定证据目录时，给内部命令增加 `--output target/manual-gui/<本次唯一目录名>`，
 目录必须尚不存在；不要删除旧证据来复用路径。已有可用显示会话时按需要只用 `script`。
@@ -63,8 +68,14 @@ xvfb-run -a -s '-screen 0 1440x1000x24' \
 
    包装命令实际 cwd 为 `code/anywork`；脚本的文件输出路径也须据此计算，或显式传入
    已确认的路径。不在 SDK 目录运行项目命令，不直接调用单个 GUI 生成器。
+   独立 Driver 进程需要调用 Xlib 调整窗口时，启动它也须使用已核实的本次 GUI
+   `DISPLAY` 与 `XAUTHORITY`；窗口枚举子进程成功不代表当前进程的 `XOpenDisplay`
+   已获得授权。不使用 `xhost +` 等放宽访问控制的办法。
 5. 对关键状态分别保存截图、界面树、必要的最小快照，并实际打开截图核对。检查日志异常、
    布局溢出、菜单边界、禁用态与键盘可访问性；按需求覆盖长名称、窄窗口、空数据及无效选择。
+   菜单尺寸同时核对外框与真实菜单项几何，不能以外框收窄证明内容未溢出。使用
+   `MenuAnchor` 的受控宽度时，核对官方 `crossAxisUnconstrained` 契约；默认允许横轴
+   自然尺寸，单独设置 `MenuStyle.maximumSize` 不保证内部长内容受限，不另套布局兜底。
    保存行为必须观察 bridge canonical 状态，必要时重新打开验证；仅点击当前值不能证明
    更换值后的持久化。只有一个 fixture 模型时，明确记录覆盖不足。
 6. 不把临时原始快照/界面树当作已脱敏产物；可能包含正文、配置与路径。只收集需要的字段，

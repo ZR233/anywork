@@ -1,8 +1,8 @@
 part of 'studio_shell.dart';
 
 /// 侧栏项目行：折叠箭头、文件夹、项目名、真实本地/SSH 标识、常驻新建
-/// 与更多菜单。完整路径不再常驻占用辅助行，悬停项目名时在浮层
-/// 详情中查看与复制；存在 recovery issue 时诊断提示优先。
+/// 与更多菜单。完整路径不再常驻占用辅助行，悬停时在只读浮层中查看，
+/// 通过更多菜单复制；存在 recovery issue 时诊断提示优先。
 class _ProjectTile extends ConsumerWidget {
   const _ProjectTile({
     required this.project,
@@ -31,28 +31,16 @@ class _ProjectTile extends ConsumerWidget {
       // 诊断提示优先：存在 recovery issue 时只保留名称区 Tooltip，不展示详情卡。
       return _buildRow(context, ref, nameTooltip: issue.detail);
     }
-    // 详情宿主锚定**整行**：卡片贴在完整项目行边界外侧，不再覆盖同项目的
-    // 新建/更多按钮和相邻会话行的状态/操作槽。
+    // 只读详情锚定整行；浮层忽略指针，不挡住新建/更多按钮。
     return _SidebarHoverDetail(
       detailBuilder: (_) => _projectDetailCard(context),
-      childBuilder: (context, onMenuOpenChanged, onMenuBeforeOpen) => _buildRow(
-        context,
-        ref,
-        onMenuOpenChanged: onMenuOpenChanged,
-        onMenuBeforeOpen: onMenuBeforeOpen,
-      ),
+      child: _buildRow(context, ref),
     );
   }
 
   /// 构建整行（折叠箭头、名称、常驻新建与更多菜单）。详情宿主/诊断 Tooltip
   /// 由调用方决定，本方法只返回行内控件与 `projectRow` 键。
-  Widget _buildRow(
-    BuildContext context,
-    WidgetRef ref, {
-    ValueChanged<bool>? onMenuOpenChanged,
-    VoidCallback? onMenuBeforeOpen,
-    String? nameTooltip,
-  }) {
+  Widget _buildRow(BuildContext context, WidgetRef ref, {String? nameTooltip}) {
     final general = ref.watch(shellGeneralProvider);
     final nameArea = _buildProjectNameArea(context, ref);
     return KeyedSubtree(
@@ -97,8 +85,6 @@ class _ProjectTile extends ConsumerWidget {
             child: _ProjectMenuButton(
               menuKey: StudioDriverKeys.projectMenu(project.id),
               pinned: general.pinnedProjectIds.contains(project.id),
-              onBeforeOpen: onMenuBeforeOpen,
-              onOpenChanged: onMenuOpenChanged,
               onAction: (action) async {
                 if (action == 'pin') {
                   await _saveSidebarPreferences(
@@ -198,11 +184,6 @@ class _ProjectTile extends ConsumerWidget {
             color: context.colors.onSurfaceVariant,
           ),
           value: project.path,
-          trailing: _detailCopyButton(
-            context,
-            project.path,
-            touchMode ? 44 : 32,
-          ),
         ),
       ],
     );
@@ -283,10 +264,7 @@ class _ThreadTile extends ConsumerWidget {
       mainAxisSize: MainAxisSize.min,
       children: statusIndicators,
     );
-    Widget tile({
-      ValueChanged<bool>? onMenuOpenChanged,
-      VoidCallback? onMenuBeforeOpen,
-    }) => _SidebarTile(
+    Widget tile() => _SidebarTile(
       selected: selected,
       title: thread.title,
       onTap: !blocked
@@ -330,8 +308,6 @@ class _ThreadTile extends ConsumerWidget {
             zedAvailable: zedAvailable,
             terminalAvailable: terminalAvailable,
             minTarget: actionTarget,
-            onBeforeOpen: onMenuBeforeOpen,
-            onOpenChanged: onMenuOpenChanged,
             onAction: (action) async {
               if (action == 'retry') {
                 await ref
@@ -387,11 +363,7 @@ class _ThreadTile extends ConsumerWidget {
           ? _SidebarHoverDetail(
               detailBuilder: (detailContext) =>
                   _threadDetailCard(detailContext),
-              childBuilder: (context, onMenuOpenChanged, onMenuBeforeOpen) =>
-                  tile(
-                    onMenuOpenChanged: onMenuOpenChanged,
-                    onMenuBeforeOpen: onMenuBeforeOpen,
-                  ),
+              child: tile(),
             )
           : Tooltip(message: issue.detail, child: tile()),
     );
@@ -438,11 +410,6 @@ class _ThreadTile extends ConsumerWidget {
             color: context.colors.onSurfaceVariant,
           ),
           value: thread.workspacePath,
-          trailing: _detailCopyButton(
-            context,
-            thread.workspacePath,
-            touchMode ? 44 : 32,
-          ),
         ),
         _SidebarDetailRow(
           leading: DecoratedBox(
@@ -496,36 +463,19 @@ Widget _tileIconButton({
   );
 }
 
-/// 详情卡中的复制路径按钮，与项目菜单的复制动作一致；桌面 32px、
-/// 触控 44px 真实命中区，IconButton 自身可聚焦、Enter/Space 可触发。
-Widget _detailCopyButton(BuildContext context, String value, double minTarget) {
-  return IconButton(
-    tooltip: context.l10n.sidebarCopyPath,
-    icon: const Icon(Icons.copy, size: 16),
-    visualDensity: VisualDensity.standard,
-    style: const ButtonStyle(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-    padding: EdgeInsets.zero,
-    constraints: BoxConstraints(minWidth: minTarget, minHeight: minTarget),
-    onPressed: () => Clipboard.setData(ClipboardData(text: value)),
-  );
-}
-
 /// 侧栏项目行的更多菜单：Material [MenuAnchor] + [IconButton] 触发器，
-/// 锚定与键盘交互为框架行为；打开前先收起行详情宿主，避免浮层互相遮挡。
+/// 锚定与键盘交互为框架行为。触发按钮与 [MenuAnchor.childFocusNode]
+/// 共用同一 [FocusNode]，焦点转移和恢复交给框架。
 class _ProjectMenuButton extends StatefulWidget {
   const _ProjectMenuButton({
     required this.menuKey,
     required this.pinned,
     required this.onAction,
-    this.onBeforeOpen,
-    this.onOpenChanged,
   });
 
   final Key menuKey;
   final bool pinned;
   final FutureOr<void> Function(String action) onAction;
-  final VoidCallback? onBeforeOpen;
-  final ValueChanged<bool>? onOpenChanged;
 
   @override
   State<_ProjectMenuButton> createState() => _ProjectMenuButtonState();
@@ -533,14 +483,20 @@ class _ProjectMenuButton extends StatefulWidget {
 
 class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
   final MenuController _controller = MenuController();
+  final FocusNode _triggerFocus = FocusNode(debugLabel: 'project-menu-trigger');
 
   void _open() {
-    widget.onBeforeOpen?.call();
     if (_controller.isOpen) {
       _controller.close();
     } else {
       _controller.open();
     }
+  }
+
+  @override
+  void dispose() {
+    _triggerFocus.dispose();
+    super.dispose();
   }
 
   void _select(String action) {
@@ -553,9 +509,8 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
     return MenuAnchor(
       key: widget.menuKey,
       controller: _controller,
+      childFocusNode: _triggerFocus,
       alignmentOffset: const Offset(6, 6),
-      onOpen: () => widget.onOpenChanged?.call(true),
-      onClose: () => widget.onOpenChanged?.call(false),
       menuChildren: [
         MenuItemButton(
           overflowAxis: Axis.vertical,
@@ -579,6 +534,7 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
       child: IconButton(
         tooltip: context.l10n.sidebarProjects,
         onPressed: _open,
+        focusNode: _triggerFocus,
         visualDensity: VisualDensity.standard,
         style: const ButtonStyle(
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -594,6 +550,7 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
 /// 会话级打开入口（VS Code、Zed、终端；不可用时禁用并说明原因），并保留
 /// recovery issue 的重试入口。Material [MenuAnchor] 承载锚定与键盘交互，
 /// 与页眉菜单共用同一套打开实现，不新增后端能力。
+/// 触发按钮与 [MenuAnchor.childFocusNode] 共用同一 [FocusNode]。
 class _ThreadMenuButton extends StatefulWidget {
   const _ThreadMenuButton({
     required this.thread,
@@ -607,8 +564,6 @@ class _ThreadMenuButton extends StatefulWidget {
     required this.terminalAvailable,
     required this.minTarget,
     required this.onAction,
-    this.onBeforeOpen,
-    this.onOpenChanged,
   });
 
   final StudioThread thread;
@@ -622,8 +577,6 @@ class _ThreadMenuButton extends StatefulWidget {
   final bool terminalAvailable;
   final double minTarget;
   final FutureOr<void> Function(String action) onAction;
-  final VoidCallback? onBeforeOpen;
-  final ValueChanged<bool>? onOpenChanged;
 
   @override
   State<_ThreadMenuButton> createState() => _ThreadMenuButtonState();
@@ -631,14 +584,20 @@ class _ThreadMenuButton extends StatefulWidget {
 
 class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
   final MenuController _controller = MenuController();
+  final FocusNode _triggerFocus = FocusNode(debugLabel: 'thread-menu-trigger');
 
   void _open() {
-    widget.onBeforeOpen?.call();
     if (_controller.isOpen) {
       _controller.close();
     } else {
       _controller.open();
     }
+  }
+
+  @override
+  void dispose() {
+    _triggerFocus.dispose();
+    super.dispose();
   }
 
   void _select(String action) {
@@ -654,9 +613,13 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
       child: MenuAnchor(
         key: StudioDriverKeys.threadMenu(thread.id),
         controller: _controller,
+        childFocusNode: _triggerFocus,
+        // 受控紧凑宽度需要约束横轴；默认 UnconstrainedBox 会让长路径撑开内容。
+        crossAxisUnconstrained: false,
+        style: const MenuStyle(
+          maximumSize: WidgetStatePropertyAll(Size(360, double.infinity)),
+        ),
         alignmentOffset: const Offset(6, 6),
-        onOpen: () => widget.onOpenChanged?.call(true),
-        onClose: () => widget.onOpenChanged?.call(false),
         menuChildren: [
           if (widget.canRetryRecovery && widget.recoveryIssueId != null)
             MenuItemButton(
@@ -727,6 +690,7 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
         ],
         child: IconButton(
           onPressed: _open,
+          focusNode: _triggerFocus,
           visualDensity: VisualDensity.standard,
           style: const ButtonStyle(
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
