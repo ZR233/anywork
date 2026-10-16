@@ -35,7 +35,6 @@ pub(super) fn stage(workspace_root: &Path, release_dir: &Path, version: &Version
     .context("failed to add third-party notices to release bundle")?;
 
     sign_bundle_if_configured(&bundle_dir)?;
-    create_portable_zip(release_dir, &bundle_dir, version)?;
     build_installer(workspace_root, release_dir, &bundle_dir, version)?;
     sign_installer_if_configured(release_dir, version)?;
     fs::remove_dir_all(&bundle_dir)
@@ -100,23 +99,6 @@ fn copy_filtered_dir(source: &Path, destination: &Path) -> Result<()> {
 fn is_excluded(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdb"))
-}
-
-fn create_portable_zip(release_dir: &Path, bundle_dir: &Path, version: &Version) -> Result<()> {
-    let output = release_dir.join(asset_name(version, "portable.zip"));
-    let args = [
-        OsString::from("-a"),
-        OsString::from("-c"),
-        OsString::from("-f"),
-        output.as_os_str().to_owned(),
-        OsString::from("-C"),
-        bundle_dir.as_os_str().to_owned(),
-        OsString::from("."),
-    ];
-    let display = process::display_command("tar", &args);
-    let mut command = Command::new("tar");
-    command.args(args);
-    process::run_checked(&mut command, &display)
 }
 
 fn build_installer(

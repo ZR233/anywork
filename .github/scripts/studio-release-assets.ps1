@@ -37,12 +37,9 @@ function Get-StudioReleaseAssetNames {
     }
 
     $setup = "anywork-$Version-windows-x86_64-setup.exe"
-    $portable = "anywork-$Version-windows-x86_64-portable.zip"
     return @(
         $setup
         "$setup.minisig"
-        $portable
-        "$portable.minisig"
         'latest.json'
         'SHA256SUMS.txt'
     )

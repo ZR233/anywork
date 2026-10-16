@@ -57,8 +57,10 @@ job 使用写权限但只执行读取；构建 job 保持只读，只有最终 p
 Release 状态修改。解析 draft 时，其页面必须是同仓库生成的 untagged URL；取消 draft 后
 必须严格切换为对应 tag URL。
 
-稳定 Release 固定包含：Windows 安装器与便携包、各自的 `.minisig` 签名、`latest.json`
-更新清单与 `SHA256SUMS.txt`。发布不执行 crate 发布，GitHub Release 是唯一正式分发渠道。
+稳定 Release 固定包含：Windows per-user 安装器、其 `.minisig` 签名、`latest.json` 更新清单与
+`SHA256SUMS.txt`；anywork 只分发安装器，不提供便携分发包。发布不执行 crate 发布，GitHub
+Release 是唯一正式分发渠道。资产名称集合由当前发布合同固定，合同变更前发布的 Release 保留
+其既有资产，不属于当前 publisher 的名称对账范围。
 Flutter 版本由 workflow 固定；Rust toolchain 由仓库统一固定，本地构建、质量检查、RC 与正式
 发布使用同一版本，Flutter 检查中的 Rust 生成工具也遵循该约束。第三方 Action 固定到完整
 commit SHA，并使用最小 token 权限、单实例 concurrency 与 build provenance attestation。
@@ -67,22 +69,20 @@ commit SHA，并使用最小 token 权限、单实例 concurrency 与 build prov
 
 正式打包入口命令（stage / finalize / verify，参数为规范 `x.y.z`）严格要求版本与 pubspec
 完全一致，不接受带 `v`、prerelease 或 build metadata 的形式。stage 复用 GUI 构建生成
-per-user Inno Setup 安装器和便携 zip；安装器使用稳定 AppId，默认安装到 LocalAppData，
+per-user Inno Setup 安装器；安装器使用稳定 AppId，默认安装到 LocalAppData，
 声明 CloseApplications/RestartApplications。打包输入排除 PDB，包含 LICENSE 与第三方声明。
 打包的第三方声明读取 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 并放入 bundle 根目录；
 该源码文件与预置技能一起维护，不要求仓库根目录存在第二份声明。
 安装器的标准安装向导、错误提示与卸载界面支持英语和简体中文；首次安装根据系统界面语言
 选择默认语言，用户可以手动切换，后续安装沿用已保存的语言选择。简体中文资源随源码固定，
 本地与发布构建使用同一份翻译，不依赖编译器安装目录是否附带中文资源。
-便携版只供手动分发；便携用户执行应用内升级时进入正式安装版，不对当前运行目录做原地
-覆盖。
 
 快捷方式、WER 配置和卸载清理仅管理 anywork；更新资产以 anywork 为前缀，版本序列、
 签名信任根与更新清单共同约束发布身份。升级后的用户数据和配置分别遵循
 [17](./17-studio-storage.md) 与 [20](./20-config.md) 的版本迁移契约；迁移能力的实现状态
 见 [17.7](./17-studio-storage.md#177-迁移实现状态与剩余边界)，安装成功不代表数据迁移已通过验收。
 
-安装器与便携包排除 PDB；Windows 构建必须同时产生独立、带 release version、commit SHA
+发布的安装器不包含 PDB；Windows 构建必须同时产生独立、带 release version、commit SHA
 与 session protocol version 映射的 symbols artifact，收集 runner 和 Rust bridge 的匹配
 PDB。symbols artifact 只用于崩溃分析，不作为公开更新资产，也不能被安装器加载。
 

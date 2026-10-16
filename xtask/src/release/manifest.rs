@@ -44,9 +44,7 @@ struct UpdateAsset {
 pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
     ensure_staged_assets(release_dir, version)?;
     let setup_name = asset_name(version, "setup.exe");
-    let portable_name = asset_name(version, "portable.zip");
     let setup_path = release_dir.join(&setup_name);
-    let portable_path = release_dir.join(&portable_name);
     let setup_hash = sha256_file(&setup_path)?;
 
     let secret_key = env::var_os("MINISIGN_SECRET_KEY_FILE")
@@ -56,7 +54,6 @@ pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Vers
         .context("MINISIGN_PASSWORD is required for release-gui finalize")?;
     let password_input = minisign_password_input(&password)?;
     sign_file(&secret_key, &setup_path, version, &password_input)?;
-    sign_file(&secret_key, &portable_path, version, &password_input)?;
 
     let manifest = manifest_for(
         version,
@@ -122,14 +119,9 @@ pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Versio
 }
 
 fn ensure_staged_assets(release_dir: &Path, version: &Version) -> Result<()> {
-    for name in [
-        asset_name(version, "setup.exe"),
-        asset_name(version, "portable.zip"),
-    ] {
-        let path = release_dir.join(name);
-        if !path.is_file() {
-            bail!("release asset not found: {}", path.display());
-        }
+    let path = release_dir.join(asset_name(version, "setup.exe"));
+    if !path.is_file() {
+        bail!("release asset not found: {}", path.display());
     }
     Ok(())
 }
@@ -204,19 +196,13 @@ fn verify_sums(release_dir: &Path, version: &Version) -> Result<()> {
 }
 
 fn payload_names(version: &Version) -> Vec<String> {
-    vec![
-        asset_name(version, "setup.exe"),
-        asset_name(version, "portable.zip"),
-    ]
+    vec![asset_name(version, "setup.exe")]
 }
 
 fn expected_files(version: &Version) -> Vec<String> {
     let setup = asset_name(version, "setup.exe");
-    let portable = asset_name(version, "portable.zip");
     let mut files = vec![
         "SHA256SUMS.txt".to_string(),
-        format!("{portable}.minisig"),
-        portable,
         format!("{setup}.minisig"),
         setup,
         "latest.json".to_string(),
