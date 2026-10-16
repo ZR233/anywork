@@ -29,11 +29,12 @@ UI 不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo i
 Client 的各领域 reducer 是 Dart 镜像的唯一 writer；FRB adapter 只做 wire 转换、传输与 native
 句柄收束。命令回执、镜像观察、生效和持久化分别表达，成功后不以聚合状态回读补齐事实。
 Widget 只负责展示与发出意图，Driver 读取同一 Client 的可见投影和诊断，不维护平行业务状态。
-窗口关闭必须等待 AppGraph 幂等收束及 typed shutdown 完成并回收 Flutter、DTD、
+退出应用必须等待 AppGraph 幂等收束及 typed shutdown 完成并回收 Flutter、DTD、
 MCP/LSP 和本地 child process tree；远端 helper 在 GUI 退出或 SSH 失联后由心跳租约
-自行清理，窗口不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首次 close
-前独立武装，重复关闭或重试都不延长；到期强制结束本进程并以退出码 1，正常完成为退出码 0，
-清理不依赖 Dart 或 bridge 是否返回，写日志也不得延误该期限。
+自行清理，退出不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首个退出请求
+前独立武装，重复退出请求或重试都不延长；到期强制结束本进程并以退出码 1，正常完成为退出码 0，
+清理不依赖 Dart 或 bridge 是否返回，写日志也不得延误该期限。窗口关闭请求何时构成退出请求
+见 §19.14。
 
 bridge 以 `BridgeShutdownReport`、`BridgeShutdownOutcome`、`BridgePendingPersistence`、
 `BridgeShutdownIssue` 镜像 runtime 的 typed 报告（形状权威源见
@@ -47,17 +48,17 @@ bridge 侧彼此独立的 owner 组（bridge 持有的订阅与其他在途更�
 第二套 cleanup。
 在 Dart 侧取消之前另有轻量的早期退出入口 `begin_runtime_exit(remaining_ms)`：它同步封闭 Rust
 准入并广播 runtime 独立取消，但不触发初始化、不做真正 stop/join、不发布 `Stopped`；native
-首次 close 先调用它，同一 runtime 的 join 与 finalize 仍由 `shutdown_runtime` 的同一编排完成。
+首个退出请求先调用它，同一 runtime 的 join 与 finalize 仍由 `shutdown_runtime` 的同一编排完成。
 诊断收尾独立于 runtime 初始化状态，`finish_shutdown_diagnostics` 在安全 dispose 之前或退出
 之前调用，使 runtime 从未安装或安装失败时也能回收诊断资源。
 
 启动期第二实例无法取得实例锁时，界面提示「已有实例在运行」；启动失败的错误码集合
 （`instanceBusy`、`cancellationTooLate`、`overloaded` 等）在 Dart 侧以穷尽 switch 映射为稳定的
 本地化文案与诊断编号，不得因未知变体抛出解析异常而覆盖原始 typed 错误。shutdown 失败不再
-取消本次关窗去等待用户确认：失败阶段聚合成带 `code` 与 `correlation_id` 的脱敏诊断后继续关闭，
+取消本次退出请求去等待用户确认：失败阶段聚合成带 `code` 与 `correlation_id` 的脱敏诊断后继续关闭，
 不阻塞在用户确认上，也不提供无限重试；剩余期限只用于完成安全收束与退出，不延长总期限。
 
-关窗前 Dart 先进入早期退出入口 `begin_runtime_exit(remaining_ms)` 封闭 Rust 准入：它与退出闩
+退出前 Dart 先进入早期退出入口 `begin_runtime_exit(remaining_ms)` 封闭 Rust 准入：它与退出闩
 的封闭原子地观察已发布 runtime（关闭胜出后不再安装、安装先胜出必被收束）、固定同一首个绝对
 期限，并在既定 runtime 上同步封闭 domain 准入、向包含活动 Turn/模型/工具的彼此独立在途 owner
 广播一次取消；同时预先广播 bridge 侧内容订阅与更新操作取消，其真实错误进入同一 collector。这
@@ -830,3 +831,31 @@ canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子�
 slug、模型胶囊或 `+N` 清单；模型详情保留在详情、编辑和模型选择器。所有用户可见实时值都应
 能沿 owner→event/snapshot→reducer→watermark→projection→visible lease 链路追踪，不能靠切页
 或重进掩盖 stale 状态。
+
+## 19.14 桌面窗口与托盘
+
+窗口关闭请求由 native 宿主按托盘宿主的可用性统一路由，Dart 不维护第二套窗口或退出状态：
+
+- 托盘宿主可用时，用户关闭窗口（标题栏关闭按钮、Alt+F4 或任务栏关闭）表示**隐藏到托盘**：
+  窗口从屏幕与任务栏隐藏，进程继续运行，不产生退出请求。
+- 托盘宿主不可用时，关闭请求构成退出请求，避免窗口消失后既无托盘入口也无退出通道。
+
+托盘是应用在通知区域中的常驻入口，启动后即注册，窗口销毁时移除；左键或双击恢复并前置主
+窗口，右键菜单提供恢复主窗口与退出。菜单「退出」构成退出请求，进入
+[18](./18-studio-state.md) §18.5 的同一编排，与托盘不可用时关闭窗口享有同一条总期限、同一份
+typed 报告与同一退出码语义，不维护第二套 cleanup。托盘使用与窗口相同的应用图标，不新增
+独立图标资产；托盘文案跟随窗口标题的宿主语言规则，不在 Dart 侧维护第二份托盘文案。
+
+托盘契约是平台宿主能力，其接口形状为：
+
+```text
+StudioTrayLabels     菜单文案：恢复主窗口、退出
+StudioTrayCallbacks  菜单命令：恢复主窗口、退出
+StudioTray           安装(labels, callbacks) -> bool | 移除() | 已安装() -> bool
+StudioTraySupported() -> bool
+CreateStudioTray()   -> StudioTray?
+```
+
+Windows 实现真实通知区域宿主；Linux 仅保留同一契约而不实现宿主，能力查询为否、创建返回空，
+因此 Linux 的窗口关闭仍直接构成退出请求。窗口隐藏不是关闭：隐藏期间应用资源、会话与保存
+语义不变，操作系统终止会话（例如注销或关机）不经过窗口关闭路径，各平台既有终止处理不变。

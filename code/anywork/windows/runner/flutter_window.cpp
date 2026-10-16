@@ -348,6 +348,8 @@ bool FlutterWindow::OnCreate() {
     }
   });
 
+  InstallTray();
+
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -362,7 +364,60 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+bool FlutterWindow::InstallTray() {
+  if (!anywork::StudioTraySupported()) {
+    LogNativeLifecycleEvent("TRAY_INSTALL_FAILED");
+    return false;
+  }
+  tray_ = anywork::CreateStudioTray();
+  if (!tray_) {
+    LogNativeLifecycleEvent("TRAY_INSTALL_FAILED");
+    return false;
+  }
+  anywork::StudioTrayLabels labels;
+  labels.show_window = HostUiPrefersChinese() ? "显示主窗口" : "Show window";
+  labels.exit_app = HostUiPrefersChinese() ? "退出" : "Exit";
+  anywork::StudioTrayCallbacks callbacks;
+  callbacks.show_window = [this]() { ShowFromTray(); };
+  callbacks.exit_app = []() {
+    LogNativeLifecycleEvent("TRAY_EXIT_REQUESTED");
+    anywork::StudioHostLifecycle::Instance().RequestExit();
+  };
+  if (!tray_->Install(labels, std::move(callbacks))) {
+    tray_.reset();
+    LogNativeLifecycleEvent("TRAY_INSTALL_FAILED");
+    return false;
+  }
+  LogNativeLifecycleEvent("TRAY_INSTALL_OK");
+  return true;
+}
+
+void FlutterWindow::HideToTray() {
+  LogNativeLifecycleEvent("WM_CLOSE_HIDE_TO_TRAY");
+  HWND window = GetHandle();
+  if (window != nullptr) {
+    ShowWindow(window, SW_HIDE);
+  }
+}
+
+void FlutterWindow::ShowFromTray() {
+  LogNativeLifecycleEvent("TRAY_SHOW_WINDOW");
+  HWND window = GetHandle();
+  if (window == nullptr) {
+    return;
+  }
+  ShowWindow(window, SW_SHOW);
+  if (IsIconic(window)) {
+    ShowWindow(window, SW_RESTORE);
+  }
+  SetForegroundWindow(window);
+}
+
 void FlutterWindow::OnDestroy() {
+  if (tray_) {
+    tray_->Remove();
+    tray_.reset();
+  }
   // Clear the native close callback before the channel disappears; the deadline
   // thread keeps running so engine/window teardown cannot disarm the exit bound.
   anywork::StudioHostLifecycle::Instance().ClearExitRequestCallback();
@@ -387,9 +442,20 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  // Intercept the close request before Flutter handles it: arm the native
-  // deadline and hand the close back to the same Dart exit coordinator.
+  // Intercept the close request before Flutter handles it. A live tray host
+  // hides the window; otherwise retry install once, then fall back to the
+  // existing Dart exit coordinator.
   if (message == WM_CLOSE) {
+    LogNativeLifecycleEvent("WM_CLOSE", message, wparam, lparam);
+    if (tray_ != nullptr && tray_->installed()) {
+      HideToTray();
+      return 0;
+    }
+    if (InstallTray()) {
+      HideToTray();
+      return 0;
+    }
+    LogNativeLifecycleEvent("WM_CLOSE_EXIT_FALLBACK", message, wparam, lparam);
     anywork::StudioHostLifecycle::Instance().RequestExit();
     return 0;
   }

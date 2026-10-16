@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "studio_tray.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -38,6 +39,12 @@ class FlutterWindow : public Win32Window {
   // Hosts the native-host lifecycle channel: exit deadline + redacted diagnostics.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       lifecycle_channel_;
+
+  std::unique_ptr<anywork::StudioTray> tray_;
+
+  bool InstallTray();
+  void HideToTray();
+  void ShowFromTray();
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

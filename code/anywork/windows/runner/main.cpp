@@ -125,9 +125,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   const wchar_t* title =
-      PRIMARYLANGID(::GetUserDefaultUILanguage()) == LANG_CHINESE
-          ? L"\u7cca\u6765\u5e2e"
-          : L"anywork";
+      HostUiPrefersChinese() ? L"\u7cca\u6765\u5e2e" : L"anywork";
   if (!window.Create(title, origin, size)) {
     return EXIT_FAILURE;
   }

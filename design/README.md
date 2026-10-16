@@ -31,7 +31,7 @@
 | 17 | [Studio 存储与诊断](./17-studio-storage.md) | 轻量目录、每会话状态与历史库、滚动日志、迁移与诊断 |
 | 18 | [Studio 状态查询](./18-studio-state.md) | CQS、公共 snapshot、activation、shutdown、title、产品投影 |
 | 六、Studio 产品 | | |
-| 19 | [anywork UI](./19-studio-ui.md) | UI 边界、模式与状态、主题、设置页组织、Timeline、历史阅读 |
+| 19 | [anywork UI](./19-studio-ui.md) | UI 边界、桌面窗口与托盘、模式与状态、主题、设置页组织、Timeline、历史阅读 |
 | 20 | [Studio 持久化配置](./20-config.md) | 配置 schema、provider/model、提示词、MCP/Skills/LSP、凭据 |
 | 21 | [LSP Runtime](./21-lsp.md) | catalog 与 driver、registry CQS、状态模型、工具能力 |
 | 22 | [SSH 远程开发](./22-ssh-remote.md) | helper 能力代理、最小协议、连接管理、凭据与路径、helper 随包资源 |

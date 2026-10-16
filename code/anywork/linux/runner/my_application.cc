@@ -30,6 +30,8 @@ static void request_exit_cb() {
   }
 }
 
+// 托盘契约在 Linux 为预留（见 studio_tray_linux.cc）：尚未实现宿主，
+// 窗口关闭仍直接进入既有退出编排。
 // Intercept the window close before Dart: arm the native deadline and hand the
 // close back to the same Dart exit coordinator (which calls finishExit).
 static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event,

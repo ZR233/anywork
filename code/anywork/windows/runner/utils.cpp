@@ -2,6 +2,9 @@
 
 #include <windows.h>
 
+#include <climits>
+#include <cstdio>
+
 std::vector<std::string> GetCommandLineArguments() {
   // Convert the UTF-16 command line arguments to UTF-8 for the Engine to use.
   int argc;
@@ -47,4 +50,70 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string) {
     return std::string();
   }
   return utf8_string;
+}
+
+std::wstring Utf16FromUtf8(const std::string& utf8) {
+  if (utf8.empty()) {
+    return std::wstring();
+  }
+  if (utf8.size() > static_cast<size_t>(INT_MAX)) {
+    return std::wstring();
+  }
+  const int input_length = static_cast<int>(utf8.size());
+  const int target_length = ::MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), input_length, nullptr, 0);
+  std::wstring utf16;
+  if (target_length <= 0 ||
+      static_cast<size_t>(target_length) > utf16.max_size()) {
+    return std::wstring();
+  }
+  utf16.resize(static_cast<size_t>(target_length));
+  const int converted = ::MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), input_length, utf16.data(),
+      target_length);
+  if (converted <= 0) {
+    return std::wstring();
+  }
+  return utf16;
+}
+
+bool HostUiPrefersChinese() {
+  return PRIMARYLANGID(::GetUserDefaultUILanguage()) == LANG_CHINESE;
+}
+
+void LogNativeLifecycleEvent(const char* event, unsigned int message,
+                             uintptr_t wparam, intptr_t lparam) {
+  if (event == nullptr) {
+    return;
+  }
+  wchar_t path[32768];
+  const DWORD length = ::GetEnvironmentVariableW(
+      L"ANYWORK_NATIVE_LIFECYCLE_LOG", path,
+      static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
+  if (length == 0 || length >= sizeof(path) / sizeof(path[0])) {
+    return;
+  }
+
+  HANDLE file = ::CreateFileW(path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  SYSTEMTIME timestamp;
+  ::GetSystemTime(&timestamp);
+  char line[256];
+  const int bytes = sprintf_s(
+      line,
+      "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ pid=%lu tid=%lu event=%s "
+      "message=%u wparam=%llu lparam=%lld\r\n",
+      timestamp.wYear, timestamp.wMonth, timestamp.wDay, timestamp.wHour,
+      timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds,
+      ::GetCurrentProcessId(), ::GetCurrentThreadId(), event, message,
+      static_cast<unsigned long long>(wparam), static_cast<long long>(lparam));
+  if (bytes > 0) {
+    DWORD written = 0;
+    ::WriteFile(file, line, static_cast<DWORD>(bytes), &written, nullptr);
+  }
+  ::CloseHandle(file);
 }
