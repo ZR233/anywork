@@ -13,9 +13,7 @@ pub use terminating::TerminatingCommandProcess;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::{
-    CommandProcessState, HeadTailBuffer, INTERNAL_BUFFER_BYTES, MAX_CAPTURE_BYTES, StreamKind,
-};
+use super::{CommandProcessState, HeadTailBuffer, INTERNAL_BUFFER_BYTES, StreamKind};
 use crate::command::CommandCaptureStream;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,11 +61,11 @@ pub(super) enum CommandProcessHealth {
 pub enum CommandTerminationReason {
     TimedOut,
     Cancelled,
-    /// The operation's durable output capture could not continue.
+    /// 该 operation 的捕获不再继续。
     ///
-    /// Either the bounded capture capacity was exhausted or a capture write failed; the process is
-    /// terminated, the bytes already written stay on disk, and the failure is reported as an output
-    /// failure rather than a user cancellation.
+    /// 既可能是命中了声明的单命令落盘上限（预期终止），也可能是捕获写/flush 或读取失败；
+    /// 两种情况都会终止进程树、保留已写字节，并按输出事件报告而不是当成用户取消。二者的区别由
+    /// [`CommandCaptureFailure`] 的类别携带，调用方不解析诊断文本。
     OutputFailed,
 }
 
@@ -100,14 +98,24 @@ pub struct CaptureRepair {
     pub chunks: Vec<CaptureRepairChunk>,
 }
 
-/// Why a running command's durable output capture could not continue.
+/// 一条运行中的命令为什么不再继续捕获。
 ///
-/// The category is a value the reader already has, so a caller reporting the failure to a storage
-/// boundary never has to parse the diagnostic text to decide what happened.
+/// 类别是 reader 手里已有的值，调用方不需要解析诊断文本就能把它交给自己的存储边界或工具结果，
+/// 也正因为类别是值，**预期的容量终止**（[`Self::OutputLimitExceeded`]）与**可靠保存故障**
+/// （[`Self::Write`]、[`Self::Read`]）才不会被混为一谈。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandCaptureFailure {
-    /// The operation's shared stdout/stderr capture budget was exhausted.
-    Exhausted { limit: u64 },
+    /// 输出触及本 operation 声明的单命令落盘上限：命令被终止，已写字节保留。
+    ///
+    /// 这是预期内的容量终止，不是落盘故障：它不欠任何可靠保存义务，也不要求显式恢复。
+    OutputLimitExceeded {
+        /// 本 operation 生效的落盘上限（字节）。
+        limit_bytes: u64,
+        /// 已被接纳（因此已保留、最终由归档保存）的存储成本。
+        charged_bytes: u64,
+        /// 被拒绝接纳的存储成本；这些字节从未进入修复计划。
+        refused_bytes: u64,
+    },
     /// A capture write or flush to disk failed.
     ///
     /// The accepted bytes the failed append could not store are named by the snapshot's
@@ -124,12 +132,16 @@ pub enum CommandCaptureFailure {
 }
 
 impl CommandCaptureFailure {
-    /// Human-readable reason surfaced in the command result.
+    /// 出现在命令结果里的可读原因。
     pub fn message(&self) -> String {
         match self {
-            Self::Exhausted { limit } => {
-                format!("command output capture exceeded the {limit}-byte operation budget")
-            }
+            Self::OutputLimitExceeded {
+                limit_bytes,
+                charged_bytes,
+                refused_bytes,
+            } => format!(
+                "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of further output were refused"
+            ),
             Self::Write { message } => format!("command output capture failed: {message}"),
             Self::Read { message } => format!("command output stream could not be read: {message}"),
         }
@@ -146,8 +158,15 @@ impl CommandCaptureFailure {
 pub(super) enum CaptureAcceptance {
     /// The chunk joined the bounded plan and is now published and queued for the single writer.
     Accepted,
-    /// The operation's shared capture budget is exhausted; the chunk is refused.
-    Exhausted,
+    /// 本 operation 的落盘上限已满；该 chunk 被拒绝，不进入修复计划。
+    ///
+    /// 载荷把"上限是多少、已保留多少、被拒多少"一并交回，让终止原因与返回快照都能完整说明
+    /// 这次容量终止，而不是只留下"计划满了"这一句。
+    OutputLimitExceeded {
+        limit_bytes: u64,
+        charged_bytes: u64,
+        refused_bytes: u64,
+    },
     /// A capture fault already stopped admission; the chunk is refused.
     Faulted,
 }
@@ -221,7 +240,19 @@ impl CommandProcessState {
     /// `capture_committed_len` is that confirmed length (the prepared header before any chunk), so a
     /// later repair truncates back to a fact the backend reported instead of a length read that could
     /// fail and be mistaken for "nothing written".
-    pub(super) fn new(stdout_open: bool, stderr_open: bool, capture_committed_len: u64) -> Self {
+    ///
+    /// `capture_limit_bytes` 是本 operation 生效的单命令落盘上限，启动时由 backend 声明或取 PL
+    /// 默认值；此后不再变化，因此快照与终止原因都引用同一个事实。
+    ///
+    /// `model_output_bytes_cap` 是同一个 backend 声明的模型可见输出字节上限；`None` 表示沿用
+    /// 既有截断语义。两者是不同的边界：前者约束**磁盘**，后者约束进入模型上下文的**正文**。
+    pub(super) fn new(
+        stdout_open: bool,
+        stderr_open: bool,
+        capture_committed_len: u64,
+        capture_limit_bytes: u64,
+        model_output_bytes_cap: Option<u64>,
+    ) -> Self {
         Self {
             lifecycle: CommandProcessLifecycle::Running(RunningCommandProcess::healthy()),
             stdout_open,
@@ -231,7 +262,10 @@ impl CommandProcessState {
             pending_stdout: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             pending_stderr: HeadTailBuffer::new(INTERNAL_BUFFER_BYTES),
             output_revision: 0,
-            capture_bytes: 0,
+            capture_limit_bytes,
+            capture_charged_bytes: capture_committed_len,
+            capture_refused_bytes: 0,
+            model_output_bytes_cap,
             capture_committed_len,
             capture_pending: std::collections::VecDeque::new(),
             capture_write_failed: false,
@@ -259,31 +293,60 @@ impl CommandProcessState {
         self.output_revision
     }
 
-    /// Accepts one read chunk into the operation's bounded, shared, ordered capture plan.
+    /// 把一个已读 chunk 接纳进本 operation 有界、共享、有序的捕获计划。
     ///
-    /// The plan is the serialization point for both streams: the chunk joins it in the exact order it
-    /// was read, before it is published live, so any byte the observer saw is already retained even if
-    /// the other stream's append fails first. A chunk read after the first fault is refused, and a
-    /// chunk that would exceed [`MAX_CAPTURE_BYTES`] is refused without joining the plan, so the plan
-    /// is bounded by the same budget as the capture file.
+    /// 计划是两个流唯一的序列化点：chunk 按读取顺序在**发布之前**入队，因此观察者已经看到的字节
+    /// 一定已保留，即使另一个流的 append 先失败。首个故障之后读到的 chunk 一律拒绝。
+    ///
+    /// `storage_cost` 是 backend 对"把这个 chunk 落盘"的估算（见
+    /// [`CommandBackend::capture_storage_cost`](crate::command::CommandBackend::capture_storage_cost)），
+    /// 在接纳**之前**计入共享额度：会超出本 operation 上限的 chunk 根本不入队，因此计划与
+    /// 磁盘占用被同一个上限约束。这里只拒绝而不写盘，所以容量终止不会被伪装成 IO 失败。
     pub(super) fn accept_capture(
         &mut self,
         stream: CommandCaptureStream,
         chunk: &[u8],
+        storage_cost: u64,
     ) -> CaptureAcceptance {
         if self.capture_write_failed || self.output_failure.is_some() {
+            self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
             return CaptureAcceptance::Faulted;
         }
-        let next = self.capture_bytes.saturating_add(chunk.len() as u64);
-        if next > MAX_CAPTURE_BYTES {
-            return CaptureAcceptance::Exhausted;
+        let next = self.capture_charged_bytes.saturating_add(storage_cost);
+        if next > self.capture_limit_bytes {
+            self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
+            return CaptureAcceptance::OutputLimitExceeded {
+                limit_bytes: self.capture_limit_bytes,
+                charged_bytes: self.capture_charged_bytes,
+                refused_bytes: self.capture_refused_bytes,
+            };
         }
-        self.capture_bytes = next;
+        self.capture_charged_bytes = next;
         self.capture_pending.push_back(CaptureRepairChunk {
             stream,
             pending: Arc::from(chunk),
         });
         CaptureAcceptance::Accepted
+    }
+
+    /// 本 operation 生效的单命令落盘上限。
+    pub(super) fn capture_limit_bytes(&self) -> u64 {
+        self.capture_limit_bytes
+    }
+
+    /// 已接纳字节折算出的存储成本累计。
+    pub(super) fn capture_charged_bytes(&self) -> u64 {
+        self.capture_charged_bytes
+    }
+
+    /// 被拒绝接纳的输出折算成本累计。
+    pub(super) fn capture_refused_bytes(&self) -> u64 {
+        self.capture_refused_bytes
+    }
+
+    /// 本 operation 生效的模型可见输出字节上限；`None` 表示沿用既有截断语义。
+    pub(super) fn model_output_bytes_cap(&self) -> Option<u64> {
+        self.model_output_bytes_cap
     }
 
     /// The accepted chunk at the front of the plan, without removing it.

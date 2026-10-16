@@ -8,6 +8,7 @@ mod sqlite;
 mod thread_checkpoint;
 mod thread_history;
 mod thread_journal;
+mod tool_tasks;
 mod writer;
 
 /// Current SQLite cold-history format. Unsupported formats are never automatically reset.

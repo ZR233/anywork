@@ -221,6 +221,10 @@ pub enum InputExecution {
     #[default]
     Paused,
     Ready,
+    /// The owner already took the next Turn (or its message wake-up) out of the queue, but the Turn
+    /// admission gate is closed, so the Turn has not started: nothing was consumed and no Turn
+    /// record exists yet. Releasing the gate admits exactly this Turn.
+    Blocked,
     Interrupting {
         turn_id: String,
     },

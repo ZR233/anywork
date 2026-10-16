@@ -301,6 +301,42 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
         target: &CommandOutputTarget,
         sizes: CommandOutputSizes,
     ) -> impl std::future::Future<Output = std::result::Result<Vec<Value>, Self::Error>> + Send;
+
+    /// 单条命令落盘捕获的硬上限（字节）；`None` 表示沿用 PL 默认
+    /// [`MAX_CAPTURE_BYTES`](crate::command::MAX_CAPTURE_BYTES)。
+    ///
+    /// 生产者按自己的落盘策略声明这个上限：显式设置表示"这就是本后端可接受的单命令落盘总量"；
+    /// 默认不设置，普通消费者因此保持 PL 既有语义。
+    fn capture_limit_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    /// 估算在**接纳前**把一个已读 chunk 落盘会给本后端带来多少存储成本（字节）。
+    ///
+    /// 默认等于 chunk 自身长度，即"一份输出只落一份文件"，保持既有语义。会把同一份数据同时
+    /// 写进多个文件的 backend 必须如实放大（例如合并输出与 per-stream 捕获各一份，再加每 chunk
+    /// 的 framing 字节），否则共享额度只约束了其中一份，真实磁盘占用会超出声明的上限。进程管理
+    /// 器用这个估算值计费，因此被拒的字节根本不会进入修复计划。
+    fn capture_storage_cost(
+        &self,
+        _target: &CommandOutputTarget,
+        _stream: CommandCaptureStream,
+        _chunk_len: usize,
+    ) -> u64 {
+        _chunk_len as u64
+    }
+
+    /// 本后端允许进入模型上下文的输出上限（**字节**）；`None` 表示沿用既有语义。
+    ///
+    /// 单位是字节而不是 Unicode 字符：多字节字符按它在 `String` 里的实际长度计入，因此
+    /// 同样的上限不会因为正文语言不同而变成三倍上下文。上限覆盖**两个流的模型可见正文之和**，
+    /// 工具结果自身的元数据（状态、进程/路径、artifact 说明）不计入。
+    ///
+    /// 默认不设置：普通消费者的截断行为与从前完全一致，只有显式声明字节上限的后端
+    /// （例如把一份输出同时落进容器与宿主的宿主）才会额外收紧。
+    fn model_output_bytes_cap(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// anywork 使用的本地 workspace 命令后端。

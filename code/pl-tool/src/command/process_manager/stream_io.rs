@@ -6,16 +6,28 @@ use super::lifecycle::apply_transition;
 use super::state::CaptureAcceptance;
 use super::{
     CommandCaptureFailure, CommandOutputStream, CommandProcessEntry, CommandProcessTransition,
-    MAX_CAPTURE_BYTES, StreamKind,
+    StreamKind,
 };
 use crate::command::{CommandBackend, CommandCaptureStream, CommandReader};
 
-pub(super) async fn read_stdout(entry: Arc<CommandProcessEntry>, stdout: CommandReader) {
-    read_stream(entry, stdout, StreamKind::Stdout).await;
+pub(super) async fn read_stdout<B>(
+    entry: Arc<CommandProcessEntry>,
+    backend: Arc<B>,
+    stdout: CommandReader,
+) where
+    B: CommandBackend,
+{
+    read_stream(entry, backend, stdout, StreamKind::Stdout).await;
 }
 
-pub(super) async fn read_stderr(entry: Arc<CommandProcessEntry>, stderr: CommandReader) {
-    read_stream(entry, stderr, StreamKind::Stderr).await;
+pub(super) async fn read_stderr<B>(
+    entry: Arc<CommandProcessEntry>,
+    backend: Arc<B>,
+    stderr: CommandReader,
+) where
+    B: CommandBackend,
+{
+    read_stream(entry, backend, stderr, StreamKind::Stderr).await;
 }
 
 /// Reads one command stream, accepting every chunk into the shared bounded plan.
@@ -24,9 +36,17 @@ pub(super) async fn read_stderr(entry: Arc<CommandProcessEntry>, stderr: Command
 /// and wakes the writer task. A slow disk therefore cannot stall this stream, the other stream, or the
 /// live preview; both readers keep accepting up to the shared budget while the single writer appends
 /// at its own pace.
-async fn read_stream<R>(entry: Arc<CommandProcessEntry>, mut reader: R, stream: StreamKind)
-where
+///
+/// `backend` 只在接纳前估算落盘存储成本：额度按 backend 真实要落的字节计费，因此"一份输出被写进
+/// 两个文件"的后端不会被低估。
+async fn read_stream<R, B>(
+    entry: Arc<CommandProcessEntry>,
+    backend: Arc<B>,
+    mut reader: R,
+    stream: StreamKind,
+) where
     R: tokio::io::AsyncRead + Unpin,
+    B: CommandBackend,
 {
     let mut buffer = [0_u8; 8192];
     loop {
@@ -38,22 +58,31 @@ where
                     StreamKind::Stdout => CommandCaptureStream::Stdout,
                     StreamKind::Stderr => CommandCaptureStream::Stderr,
                 };
+                let storage_cost =
+                    backend.capture_storage_cost(&entry.output_target, capture_stream, chunk.len());
                 // Accept the chunk into the operation's one bounded capture plan *before* publishing
                 // it. The guard from this temporary lock is dropped at the end of the statement, so
                 // the failure arms below can re-lock the state to record the fault without holding
                 // the scrutinee guard across the re-entrant lock.
-                let acceptance = entry
-                    .state
-                    .lock()
-                    .await
-                    .accept_capture(capture_stream, chunk);
+                let acceptance =
+                    entry
+                        .state
+                        .lock()
+                        .await
+                        .accept_capture(capture_stream, chunk, storage_cost);
                 match acceptance {
                     CaptureAcceptance::Accepted => {}
-                    CaptureAcceptance::Exhausted => {
+                    CaptureAcceptance::OutputLimitExceeded {
+                        limit_bytes,
+                        charged_bytes,
+                        refused_bytes,
+                    } => {
                         fail_capture(
                             &entry,
-                            CommandCaptureFailure::Exhausted {
-                                limit: MAX_CAPTURE_BYTES,
+                            CommandCaptureFailure::OutputLimitExceeded {
+                                limit_bytes,
+                                charged_bytes,
+                                refused_bytes,
                             },
                         )
                         .await;

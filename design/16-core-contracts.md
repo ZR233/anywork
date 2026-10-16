@@ -364,6 +364,31 @@ Studio 将 Interrupted 映射为取消展示的强类型原因 interrupted；没
 Thread effect，checkpoint 按生产者格式只保留最新一份，不加入模型上下文。宿主按 effect 水位
 折叠计量，禁止让自动审批费用只存在于可丢的调用日志。
 
+## 16.9 Turn 准入 gate
+
+Thread 可以安装一个产品无关的 Turn 准入 gate（`TurnAdmissionGate`）。它把“下一条 Turn 是否
+可以开始”从输入受理、队列驱动暂停和存储准入里独立出来：core 只回答这个准入问题，不解释宿主
+持有它的原因，也不为任何宿主动作增加分支。没有安装 gate 的 Thread 准入行为与从前完全一致，
+既有消费者不需要改动。
+
+关闭以原因持有表达：每次 `close()` 取得一个 RAII hold（`TurnAdmissionHold`），drop 即释放该
+原因。多个原因可以同时关闭同一个 gate，释放其中一个不会重开仍被其他原因关闭的 gate，因此不
+存在“旧 release 重开新 hold”。准入成功返回 permit（`TurnAdmissionPermit`）；gate 同时暴露
+`is_open`、`is_clear`、存活 hold 数与已准入 Turn 数。宿主持有关闭原因时，以
+`admitted_turns() == 0` 确认旧 Turn 已排空且下一条 Turn 必须等待；`is_clear` 为真表示 gate
+已开放且没有仍在执行的已准入 Turn，关闭原因仍存活时始终为假。
+
+准入点唯一且在 Turn 真正开始之前：owner 在任何 Turn 记录、任何输入消费之前检查 gate；
+`submit_input_and_run`、`run_next_input`、driver、inbox 与内部 continuation 都走同一条 owner
+路径，不存在第二个调度器，也不是“每个模型步骤检查一次”。已准入 Turn 持有 permit 直到该 Turn
+结束，期间新出现的 hold 只影响下一条 Turn。等待期间 owner 继续服务邮箱，close、取消、flush 与
+存储恢复照常收束；等待不消费输入、不创建 Turn 记录，因此被挡住的 Turn 在队列里的状态与等待前
+一致，快照以 `InputExecution::Blocked` 报告该状态。
+
+gate 在 owner 装配期安装（`ThreadHandle::resume_with_turn_admission_gate`），先于恢复后的任何
+续跑：恢复流不可能绕过尚未安装的 gate。gate 是运行时能力而不是持久状态，不进入 checkpoint、
+不参与会话身份；恢复后的 Thread 使用装配时给出的 gate。未安装 gate 时准入不增加任何等待。
+
 ## 冻结准备与会话隔离
 
 上下文准备前冻结本步输入、消息消费水位、工具租约、上下文版本和扩展版本。请求同时提供完整预览及已提交上下文；压缩不能提前消费输入。准备候选中的当前事实、上下文替换和成功回执须在同一状态中验证并提交。取消、失败和版本冲突不推进业务状态；已产生费用作为独立失败计量保留，计量提交依据当前账本版本，不因执行候选的过期版本丢失。冲突最多重新冻结一次，输入不会重复消费。
