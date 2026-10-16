@@ -7,7 +7,6 @@ use pl_lsp::host::{
     LspHostSpawnRequest,
 };
 
-use crate::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
 use crate::shell::shell_quote_word;
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadBytesRequest};
 
@@ -97,18 +96,9 @@ impl LspHostBackend for RemoteWorkspaceHost {
                 .collect::<Vec<_>>()
                 .join(" ");
             let cwd = self.relative_path(&request.cwd)?;
-            let capture_path = PathBuf::from(".anywork")
-                .join("remote")
-                .join("lsp")
-                .join(format!("{}.log", request.process_id));
             let mut process = self
                 .commands
-                .spawn(CommandSpawnRequest {
-                    process_id: request.process_id.clone(),
-                    command,
-                    cwd,
-                    output_target: CommandOutputTarget::new(capture_path.clone(), capture_path),
-                })
+                .spawn_stream(request.process_id.clone(), command, cwd)
                 .await
                 .map_err(host_error)?;
             let stdin = process.take_stdin();

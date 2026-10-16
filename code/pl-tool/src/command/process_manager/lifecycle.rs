@@ -74,6 +74,28 @@ pub(super) fn spawn_lifecycle_task(
         }
         match wait_result {
             Ok(status) => {
+                {
+                    let mut state = entry.state.lock().await;
+                    let result = match (state.capture_ownership, status.capture) {
+                        (crate::command::CommandCaptureOwnership::Producer, Some(receipt)) => {
+                            state.complete_producer_capture(receipt)
+                        }
+                        (crate::command::CommandCaptureOwnership::Manager, None) => Ok(()),
+                        (crate::command::CommandCaptureOwnership::Producer, None)
+                        | (crate::command::CommandCaptureOwnership::Manager, Some(_)) => {
+                            Err("capture receipt does not match declared owner".into())
+                        }
+                    };
+                    drop(state);
+                    if let Err(error) = result {
+                        apply_transition(
+                            &entry,
+                            CommandProcessTransition::ProcessWaitFailed { error },
+                        )
+                        .await;
+                        return;
+                    }
+                }
                 apply_transition(
                     &entry,
                     CommandProcessTransition::ProcessExited {

@@ -5,7 +5,6 @@ use pl_protocol::remote::{
     RemoteError, RemoteErrorCode, RemoteEvent, RemoteMessage, RemoteProcessExit,
     RemoteShellDescriptor, RemoteShellDialect, RemoteSpawnRequest,
 };
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use super::super::outbound::Outbound;
@@ -19,7 +18,7 @@ use crate::path::{io_error, remote_error};
 pub(super) struct Launch {
     pub request: RemoteSpawnRequest,
     pub cwd: PathBuf,
-    pub capture: PathBuf,
+    pub capture: Option<PathBuf>,
     pub shell: RemoteShellDescriptor,
     pub writer: Outbound,
     pub cancel: watch::Sender<bool>,
@@ -56,7 +55,7 @@ pub(super) async fn run(mut launch: Launch) {
         finished.send_replace(true);
         result
     };
-    let (result, output_error, ()) = tokio::join!(
+    let (result, output, ()) = tokio::join!(
         wait,
         streams::output(streams::Output {
             id: &launch.request.process_id,
@@ -70,8 +69,8 @@ pub(super) async fn run(mut launch: Launch) {
         streams::input(stdin, launch.incoming, stopped),
     );
     let (exit_code, signal, failure) = match result {
-        Ok(ProcessTermination::ExitCode(code)) => (Some(code), None, output_error),
-        Ok(ProcessTermination::Signal(signal)) => (None, Some(signal), output_error),
+        Ok(ProcessTermination::ExitCode(code)) => (Some(code), None, output.failure),
+        Ok(ProcessTermination::Signal(signal)) => (None, Some(signal), output.failure),
         Err(error) => (
             None,
             None,
@@ -88,33 +87,24 @@ pub(super) async fn run(mut launch: Launch) {
                 exit_code,
                 signal,
                 failure,
+                capture: output.receipt,
             })),
             &[],
         )
         .await;
 }
 
-async fn prepare(launch: &Launch) -> Result<(ManagedWorker, tokio::fs::File), RemoteError> {
+async fn prepare(launch: &Launch) -> Result<(ManagedWorker, super::capture::Capture), RemoteError> {
     if *launch.cancelled.borrow() {
         return Err(super::closed());
     }
-    if let Some(parent) = launch.capture.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| io_error("create capture directory", error))?;
-    }
-    let mut capture = tokio::fs::File::create(&launch.capture)
-        .await
-        .map_err(|error| io_error("create capture file", error))?;
-    let header = format!(
-        "=== COMMAND ===\n{}\n\n=== CWD ===\n{}\n\n",
-        launch.request.command,
-        launch.cwd.display()
-    );
-    capture
-        .write_all(header.as_bytes())
-        .await
-        .map_err(|error| io_error("write capture header", error))?;
+    let capture = super::capture::Capture::prepare(
+        &launch.request.capture,
+        launch.capture.as_deref(),
+        &launch.request.command,
+        &launch.cwd,
+    )
+    .await?;
     let option = match launch.shell.dialect {
         RemoteShellDialect::Bash | RemoteShellDialect::Sh => "-c",
         RemoteShellDialect::Pwsh | RemoteShellDialect::PowerShell => "-Command",

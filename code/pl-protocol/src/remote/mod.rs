@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 7;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 8;
 pub const REMOTE_OUTPUT_WINDOW: usize = 8;
 pub const REMOTE_OUTPUT_CHUNK_BYTES: usize = 8192;
 pub const REMOTE_MAX_HEADER_BYTES: usize = 64 * 1024;
@@ -213,7 +213,7 @@ pub struct RemoteSpawnRequest {
     pub command: String,
     pub cwd: String,
     pub environment: BTreeMap<String, String>,
-    pub capture_path: String,
+    pub capture: RemoteCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +266,29 @@ pub struct RemoteProcessExit {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub failure: Option<RemoteError>,
+    pub capture: Option<RemoteCaptureReceipt>,
+}
+
+/// 命令归档与常驻协议进程分别声明捕获策略，LSP 不写命令日志。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum RemoteCapture {
+    None,
+    File { path: String, limit_bytes: u64 },
+}
+
+/// 由实际写盘的 helper 在物理进程和两路输出收束后交回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCaptureReceipt {
+    pub limit_bytes: u64,
+    pub charged_bytes: u64,
+    /// 实际读到但因预算拒绝写入的成本，不估算尚未读取的内核缓冲。
+    pub refused_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +301,7 @@ pub struct RemoteError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteErrorCode {
+    OutputLimitExceeded,
     InvalidRequest,
     ProtocolMismatch,
     WorkspaceNotFound,

@@ -33,6 +33,8 @@ impl SqliteSessionStore {
             let tx = store.owner.shared.db.begin().await?;
             let mut deleted = false;
             for (table, identity) in [
+                ("thread_tool_task_resources", "thread_id"),
+                ("thread_tool_tasks", "thread_id"),
                 ("thread_checkpoints", "thread_id"),
                 ("session_entries", "session_id"),
                 ("session_entry_history", "session_id"),

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pl_protocol::remote::RemoteSpawnRequest;
+use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
@@ -47,7 +47,6 @@ impl ExecutionBackend for RemoteExecutionBackend {
             .map(|part| shell_quote_word(&part))
             .collect::<Vec<_>>()
             .join(" ");
-        let capture_path = format!(".anywork/remote/execution/{process_id}.log");
         let transport = self
             .client
             .spawn_process(RemoteSpawnRequest {
@@ -56,7 +55,7 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 command,
                 cwd,
                 environment: request.env,
-                capture_path,
+                capture: RemoteCapture::None,
             })
             .await
             .map_err(|error| error.to_string())?;
@@ -103,6 +102,9 @@ async fn collect_process_output(
     let exit = exit
         .map_err(|_| "remote process exit channel closed".to_string())?
         .map_err(|error| error.to_string())?;
+    if exit.capture.is_some() {
+        return Err("stream-only execution returned an unexpected capture receipt".into());
+    }
     Ok(ExecutionOutput {
         status: exit.exit_code.unwrap_or(-1),
         stdout: String::from_utf8_lossy(&stdout?).into_owned(),

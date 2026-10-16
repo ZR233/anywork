@@ -1,5 +1,6 @@
 //! The existing SSH physical registry owns resource jobs, not Thread or model task state.
 
+mod capture;
 mod owner;
 mod resource;
 mod streams;
@@ -20,7 +21,7 @@ enum Request {
     Spawn {
         request: RemoteSpawnRequest,
         cwd: PathBuf,
-        capture: PathBuf,
+        capture: Option<PathBuf>,
         reply: Reply,
     },
     Input {
@@ -70,7 +71,7 @@ impl ProcessRegistry {
         &self,
         request: RemoteSpawnRequest,
         cwd: PathBuf,
-        capture: PathBuf,
+        capture: Option<PathBuf>,
     ) -> Result<(), RemoteError> {
         let (reply, received) = oneshot::channel();
         self.send(Request::Spawn {

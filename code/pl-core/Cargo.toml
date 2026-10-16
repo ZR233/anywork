@@ -23,6 +23,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
+pretty_assertions.workspace = true
 tempfile = { workspace = true }
 # `test-util` (dev only) provides the paused clock (`start_paused` / `time::advance`) the window
 # tests use to prove the coalescing deadline is fixed deterministically instead of with real sleeps.

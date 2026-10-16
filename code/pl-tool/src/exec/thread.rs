@@ -13,11 +13,11 @@ use pl_core::tool::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{DEFAULT_TIMEOUT_SECS, ExecInput, MAX_MODEL_OUTPUT_CHARS};
+use super::{DEFAULT_TIMEOUT_SECS, ExecInput, MAX_MODEL_OUTPUT_BYTES};
 use crate::command::{
     CommandBackend,
     process_manager::{
-        CaptureRepair, CommandCaptureFailure, CommandOutputSnapshot, CommandProcessFinalResult,
+        CommandCaptureFailure, CommandOutputSnapshot, CommandProcessFinalResult,
         CommandProcessManager, CommandStartRequest,
     },
 };
@@ -121,7 +121,6 @@ struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
     thread_id: String,
     call_id: String,
     snapshot: CommandOutputSnapshot,
-    repair: Option<CaptureRepair>,
     kind: StorageFaultKind,
 }
 
@@ -134,16 +133,12 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
         snapshot: CommandOutputSnapshot,
         kind: StorageFaultKind,
     ) -> Self {
-        // The repair is taken from the snapshot itself: it names exactly the accepted bytes the failed
-        // append could not write, at the offset the fragment was at before it tried.
-        let repair = snapshot.capture_repair().cloned();
         Self {
             archive,
             backend,
             thread_id: thread_id.to_owned(),
             call_id: call_id.to_owned(),
             snapshot,
-            repair,
             kind,
         }
     }
@@ -161,35 +156,16 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
     }
     fn retry(&self) -> OutputRetryFuture<'_> {
         Box::pin(async move {
-            // Re-materialize every accepted chunk the failed capture did not store, in acceptance
-            // order, before archiving: one truncation back to the confirmed offset, then each chunk
-            // re-appended with its own framing. So the archive stores exactly the bytes that were
-            // accepted — including the other stream's chunk the first failing append never saw —
-            // instead of a short fragment.
-            if let Some(repair) = &self.repair {
-                let mut committed_len = repair.committed_len;
-                for chunk in &repair.chunks {
-                    committed_len = self
-                        .backend
-                        .repair_output_chunk(
-                            &self.snapshot.capture_file,
-                            chunk.stream,
-                            committed_len,
-                            &chunk.pending,
-                        )
-                        .await
-                        .map_err(|error| ColdStoreError {
-                            source: Box::new(std::io::Error::other(error.to_string())),
-                        })?;
-                }
-            }
-            let reference = self
-                .archive
-                .retain(&self.thread_id, &self.snapshot)
-                .await
-                .map_err(|error| ColdStoreError {
-                    source: Box::new(error),
-                })?;
+            let reference = super::capture_retention::retain(
+                &*self.backend,
+                &*self.archive,
+                &self.thread_id,
+                &self.snapshot,
+            )
+            .await
+            .map_err(|error| ColdStoreError {
+                source: Box::new(error),
+            })?;
             // The stored reference belongs to the already-committed tool result of this same call:
             // name that identity so the owner attaches the reference to it instead of leaving an
             // orphan blob the UI and cold recovery can never locate.
@@ -271,8 +247,8 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
                 yield_time: Duration::ZERO,
                 max_output_chars: input
                     .max_output_chars
-                    .unwrap_or(MAX_MODEL_OUTPUT_CHARS)
-                    .min(MAX_MODEL_OUTPUT_CHARS),
+                    .unwrap_or(MAX_MODEL_OUTPUT_BYTES)
+                    .min(MAX_MODEL_OUTPUT_BYTES),
             })
             .await
             .map_err(ToolError::new)?;
@@ -280,8 +256,12 @@ impl<B: CommandBackend> Tool for ThreadWriteStdinTool<B> {
     }
 }
 
+/// `exec`/`write_stdin` 在进程语义之外的结构化失败原因。
+///
+/// 生产者把结构化事实报成 typed 错误而不是只拼一段文本，调用方因此能把"命令按自己声明的输出
+/// 上限被终止"与"退出码失败、超时、取消"分开处理，而不必解析诊断文本。
 #[derive(Debug, thiserror::Error)]
-enum ExecFailure {
+pub enum ExecFailure {
     #[error(
         "stdin task {task_id} is not a running exec task: status={status:?}, cancelRequested={cancelled}"
     )]
@@ -298,6 +278,21 @@ enum ExecFailure {
     InvalidLimit,
     #[error("command did not complete successfully: {0}")]
     Process(String),
+    /// 命令输出触及本 operation 的单命令落盘上限：命令已被终止，已写出的部分保留并照常归档。
+    ///
+    /// 这是预期内的容量终止，不是可靠保存故障：它不欠任何可靠保存义务，进程管理器也不会为它
+    /// 挂 `OutputRetryObligation`，因此不会触发无限 repair。
+    #[error(
+        "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
+    )]
+    OutputLimitExceeded {
+        /// 本 operation 生效的落盘上限（字节）。
+        limit_bytes: u64,
+        /// 已接纳（因此已保留）的存储成本。
+        charged_bytes: u64,
+        /// 被拒绝接纳的存储成本。
+        refused_bytes: u64,
+    },
 }
 
 impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
@@ -316,8 +311,8 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         let task_id = safe_identity(&context.call_id);
         let max_output_chars = input
             .max_output_chars
-            .unwrap_or(MAX_MODEL_OUTPUT_CHARS)
-            .min(MAX_MODEL_OUTPUT_CHARS);
+            .unwrap_or(MAX_MODEL_OUTPUT_BYTES)
+            .min(MAX_MODEL_OUTPUT_BYTES);
         let (observer, previews, failures) = super::progress::ExecOutputObserver::channel();
         let execution = self.processes.run_task(
             &task_id,
@@ -363,15 +358,16 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                     else {
                         continue;
                     };
-                    let fault = capture_output_fault(
+                    if let Some(fault) = capture_output_fault(
                         &failure,
                         archive.clone(),
                         processes.backend(),
                         &thread_id,
                         &call_id,
                         &snapshot,
-                    );
-                    report_output_storage_fault(tasks.as_ref(), &fault).await;
+                    ) {
+                        report_output_storage_fault(tasks.as_ref(), &fault).await;
+                    }
                 }
             }
         });
@@ -382,9 +378,10 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         // Build the typed output fault the moment the capture failed and report it through the running
         // call's reliable channel *before* the archive and projection, so other model/tool admission is
         // blocked immediately instead of only when this call unwinds. A write or read failure keeps its
-        // retriable obligation (re-save the accepted capture); a bounded-capture truncation does not,
-        // because its accepted bytes are retained in the fragment and the reliable writer saves them.
-        let capture_fault = snapshot.output_failure.clone().map(|failure| {
+        // retriable obligation (re-save the accepted capture). 命中声明的单命令捕获上限不算可靠保存
+        // 故障，因此这里不产出存储故障：已接纳字节留在捕获里走正常归档，工具结果给出 typed 的容量
+        // 终止，准入照常继续。
+        let capture_fault = snapshot.output_failure.clone().and_then(|failure| {
             capture_output_fault(
                 &failure,
                 self.archive.clone(),
@@ -397,7 +394,13 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         if let Some(fault) = &capture_fault {
             report_output_storage_fault(context.tasks.as_ref(), fault).await;
         }
-        let retained = self.retain_capture(&context.thread_id, &snapshot).await;
+        let retained = super::capture_retention::retain(
+            &*self.processes.backend(),
+            &*self.archive,
+            &context.thread_id,
+            &snapshot,
+        )
+        .await;
         let output = projection(&snapshot, retained.as_ref().ok())?;
         if let Err(error) = retained {
             // The archive itself could not store the capture: keep the retriable obligation on the
@@ -437,6 +440,22 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                 let fault = capture_fault.expect("checked to be present");
                 Err(ToolError::new((*fault).clone()).with_output(output))
             }
+            // 命中单命令落盘上限是一条预期终止：命令是按自己声明的上限被停下的，已写出的部分照常
+            // 保留并归档，但它有自己的 typed 结果，不与 timeout、退出码失败或模型输出截断共用分类，
+            // 也不走可靠保存故障的那条暂停/义务路径。
+            Some(CommandProcessFinalResult::Failed { .. })
+                if snapshot.output_limit_exceeded().is_some() =>
+            {
+                let limit = snapshot
+                    .output_limit_exceeded()
+                    .expect("checked to be present");
+                Err(ToolError::new(ExecFailure::OutputLimitExceeded {
+                    limit_bytes: limit.limit_bytes,
+                    charged_bytes: limit.charged_bytes,
+                    refused_bytes: limit.refused_bytes,
+                })
+                .with_output(output))
+            }
             Some(CommandProcessFinalResult::Succeeded { .. }) => Ok(output),
             Some(
                 CommandProcessFinalResult::Failed { .. } | CommandProcessFinalResult::TimedOut,
@@ -448,61 +467,16 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
     }
 }
 
-impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
-    /// Archives the accepted capture, re-materializing any bytes the failed capture did not store.
-    ///
-    /// A failed capture append may have left the fragment short of the bytes already accepted and
-    /// published live, and the other stream's reader may already have accepted a following chunk.
-    /// Repairing first — truncating back to the backend-confirmed offset and re-appending every
-    /// accepted chunk in order through the same backend — makes the archive store the exact accepted
-    /// bytes under their stable identity instead of a short fragment it would report as `Stored`. A
-    /// repair that itself cannot write is reported as a typed output-storage fault, so the obligation
-    /// (which repeats the whole repair) stays owed and the short fragment is never archived as whole.
-    async fn retain_capture(
-        &self,
-        thread_id: &str,
-        snapshot: &CommandOutputSnapshot,
-    ) -> Result<ResourceReference, ToolError> {
-        if let Some(repair) = snapshot.capture_repair() {
-            let mut committed_len = repair.committed_len;
-            for chunk in &repair.chunks {
-                committed_len = self
-                    .processes
-                    .backend()
-                    .repair_output_chunk(
-                        &snapshot.capture_file,
-                        chunk.stream,
-                        committed_len,
-                        &chunk.pending,
-                    )
-                    .await
-                    .map_err(|error| {
-                        let source = ColdStoreError {
-                            source: Box::new(std::io::Error::other(format!(
-                                "command output capture repair failed: {error}"
-                            ))),
-                        };
-                        ToolError::new(OutputStorageFault::new(
-                            StorageFaultKind::WriteFailed,
-                            Arc::new(source),
-                        ))
-                    })?;
-            }
-        }
-        let reference = self.archive.retain(thread_id, snapshot).await?;
-        reference.validate().map_err(ToolError::new)?;
-        Ok(reference)
-    }
-}
-
 /// Builds the typed storage fault for one capture failure, with its retriable obligation when owed.
 ///
-/// The category travels as a value, so core never parses the diagnostic text to classify it. A
-/// bounded-capture truncation with every accepted chunk on disk keeps no obligation: its accepted
-/// bytes are retained in the fragment and the reliable pause releases once the durability fence lands.
-/// A write or read failure, or any failure that left accepted chunks the capture did not store, carries
-/// the obligation that re-materializes the exact plan — so a fault that also kept a repair is never
-/// classified as a plain budget stop that could archive a short fragment as whole.
+/// The category travels as a value, so core never parses the diagnostic text to classify it. A write or
+/// read failure carries the obligation that re-materializes the exact accepted plan, so the Thread's
+/// pause is only released once those bytes are really stored.
+///
+/// 命中所声明的单命令落盘上限是**预期容量终止**，不是可靠保存故障：命令是按自己的上限被有意停下
+/// 的，已接纳字节仍在捕获里由正常归档路径保存，因此这里不产出 `OutputStorageFault`，也就不挂
+/// `OutputRetryObligation`、不暂停准入、不会因为同一条上限反复重试而 repair 不止。容量终止由
+/// [`CommandCaptureFailure::OutputLimitExceeded`] 与 [`ExecFailure::OutputLimitExceeded`] 表达。
 fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
     failure: &CommandCaptureFailure,
     archive: Arc<A>,
@@ -510,30 +484,27 @@ fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
     thread_id: &str,
     call_id: &str,
     snapshot: &CommandOutputSnapshot,
-) -> Arc<OutputStorageFault> {
-    let owes_repair = snapshot.capture_repair().is_some();
+) -> Option<Arc<OutputStorageFault>> {
     let kind = match failure {
-        CommandCaptureFailure::Exhausted { .. } if !owes_repair => StorageFaultKind::QueueFull,
-        _ => StorageFaultKind::WriteFailed,
+        CommandCaptureFailure::OutputLimitExceeded { .. } => return None,
+        CommandCaptureFailure::Write { .. } | CommandCaptureFailure::Read { .. } => {
+            StorageFaultKind::WriteFailed
+        }
     };
     let source = ColdStoreError {
         source: Box::new(std::io::Error::other(failure.message())),
     };
     let fault = OutputStorageFault::new(kind, Arc::new(source));
-    if matches!(failure, CommandCaptureFailure::Exhausted { .. }) && !owes_repair {
-        Arc::new(fault)
-    } else {
-        Arc::new(
-            fault.with_obligation(Arc::new(ArchiveRetentionObligation::new(
-                archive,
-                backend,
-                thread_id,
-                call_id,
-                snapshot.clone(),
-                kind,
-            ))),
-        )
-    }
+    Some(Arc::new(fault.with_obligation(Arc::new(
+        ArchiveRetentionObligation::new(
+            archive,
+            backend,
+            thread_id,
+            call_id,
+            snapshot.clone(),
+            kind,
+        ),
+    ))))
 }
 
 /// Attaches the archive's retriable obligation to an archive failure that named it.

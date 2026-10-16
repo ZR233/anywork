@@ -28,6 +28,18 @@ fn storage_fault_kind(error: &super::SessionStoreError) -> crate::thread::cold::
 }
 
 impl ColdStore for SqliteSessionStore {
+    async fn read_tool_task(
+        &self,
+        thread_id: &str,
+        task_id: &str,
+    ) -> Result<Option<crate::thread::cold::DurableToolTask>, ColdStoreError> {
+        super::tool_tasks::read(self, thread_id, task_id)
+            .await
+            .map_err(|source| ColdStoreError {
+                source: Box::new(source),
+            })
+    }
+
     fn fold_usage(
         &self,
         summary: &mut crate::thread::UsageSummary,

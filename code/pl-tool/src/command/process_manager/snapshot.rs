@@ -1,10 +1,12 @@
-use pl_output::{OutputTruncation, TruncatedOutput, TruncationStrategy};
+use pl_output::OutputTruncation;
 
 use super::{
     CommandOutputSnapshot, CommandProcessFailure, CommandProcessFinalResult,
     CommandProcessLifecycle, CommandProcessState, CommandTerminationReason,
 };
 
+/// 一条截断指示行在可见正文里占用的字节上界。
+///
 pub(super) fn message_for_state(
     state: &CommandProcessState,
     process_id: Option<&str>,
@@ -55,12 +57,6 @@ fn failure_message(failure: &CommandProcessFailure) -> String {
             message.clone()
         }
     }
-}
-
-pub(super) fn truncate_text(text: &str, max_output_chars: usize) -> TruncatedOutput {
-    let head = max_output_chars / 2;
-    let tail = max_output_chars.saturating_sub(head);
-    TruncationStrategy::new(head, tail).truncate(text)
 }
 
 impl CommandTerminationReason {

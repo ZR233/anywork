@@ -1,0 +1,71 @@
+[
+  {
+    "check": "fmt",
+    "result": "passed",
+    "log": "final-fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "check": "clippy",
+    "result": "passed",
+    "log": "clippy-final.log",
+    "sha256": "508c59ce9fd238bc6bf89bb25791a5482484cfcf407f42fde6689436e313d227"
+  },
+  {
+    "check": "core_sqlite",
+    "result": "passed",
+    "log": "core-atomic-init.log",
+    "sha256": "6b0c7414248d9c2cd4952dbbd6019f58ee5e02d2293740ccfaaaf35165c3b9b0",
+    "rust_tests_passed": 165
+  },
+  {
+    "check": "model",
+    "result": "passed",
+    "log": "final-model.log",
+    "sha256": "c19ef7992baba39c02637361e3ff93036bb94b35773e6b2a51558b70b207e782",
+    "rust_tests_passed": 136
+  },
+  {
+    "check": "studio",
+    "result": "passed",
+    "log": "final-studio.log",
+    "sha256": "2fe9fcfccbfc9aa7c75f27c93c206262b9feec1eabf8ec3e4bc1868642587e03",
+    "rust_tests_passed": 64
+  },
+  {
+    "check": "client",
+    "result": "passed",
+    "log": "final-client.log",
+    "sha256": "53bd49a8bfabc3818e494225e96cad65455a79685fff00cc654ce4552bfb35fd"
+  },
+  {
+    "check": "gui",
+    "result": "passed",
+    "log": "final-gui.log",
+    "sha256": "84863fc77a35a8a541711e2fa1a64c4b073021f8c3351774db3862e930e044cf"
+  },
+  {
+    "check": "core_no_default",
+    "result": "passed",
+    "log": "core-no-default.log",
+    "sha256": "b237f6f43dffd0cc0ff1ed6409bdc8de8e78f7b70aa8d80de7da19a8923ecf04"
+  },
+  {
+    "check": "local_capture",
+    "result": "passed",
+    "log": "capture-final.log",
+    "sha256": "605fa20431e22b90a7ba43c57a8e2a7b68e5b4ae99414b3fe1bca3bf20b67555"
+  },
+  {
+    "check": "helper",
+    "result": "passed",
+    "log": "helper-final.log",
+    "sha256": "4dce979af7e0875440e3381468fe7c7d9115cd5c0082b6d9af8387f26ce70bed"
+  },
+  {
+    "check": "ssh",
+    "result": "passed",
+    "log": "ssh-final.log",
+    "sha256": "8a08c595ff48396b1f7366e8492549564af58fd8d6328e4dd49665ae6e906c3a"
+  }
+]

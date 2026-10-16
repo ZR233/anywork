@@ -22,6 +22,10 @@ impl Owner {
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
         }
+        // The Turn admission gate is the one place new Turns are held back, and it is checked before
+        // this Turn owns anything: while the owner waits here no Turn record exists and no input is
+        // consumed, so a held Turn leaves the queue exactly as it found it.
+        let _admitted = self.await_turn_admission(&input.cancellation).await?;
         let started = tokio::time::Instant::now();
         let turn_id = input.turn_id.clone();
         let mut turns = self.state.turns.to_vec();
@@ -84,6 +88,59 @@ impl Owner {
         self.state.turns = turns.into();
         self.publish();
         result
+    }
+
+    /// Holds this Turn at the admission gate until the gate is open, and claims its permit.
+    ///
+    /// Every way a Turn can start reaches this method through [`Self::run_turn`] — a direct
+    /// `run_turn`, the queued-input driver, an inbox wake-up and an internal continuation — so this
+    /// is the single admission point and no second scheduler (and no per-model-step check) is
+    /// needed. While it waits the owner keeps servicing its mailbox, so close, cancellation, flush
+    /// and storage recovery still settle; the wait itself consumes no input and creates no Turn
+    /// record.
+    async fn await_turn_admission(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<admission::TurnAdmissionPermit, ThreadError> {
+        let Some(gate) = self.turn_admission.clone() else {
+            return Ok(admission::TurnAdmissionPermit::ungated());
+        };
+        // Subscribe before reading the state: a release that lands between the read and the wait
+        // must still wake this owner instead of leaving it waiting for an already open gate.
+        let mut transitions = gate.subscribe();
+        if let Some(permit) = gate.try_admit() {
+            return Ok(permit);
+        }
+        self.turn_admission_waiting = true;
+        self.publish_snapshot();
+        let outcome = loop {
+            if cancellation.is_cancelled() || self.interrupt.is_closing() {
+                break Err(ThreadError::Cancelled);
+            }
+            if self.state.lifecycle != ThreadLifecycle::Open {
+                break Err(ThreadError::Closed);
+            }
+            let transitioned = self
+                .await_with_mailbox(async {
+                    tokio::select! {
+                        () = cancellation.cancelled() => None,
+                        changed = transitions.changed() => Some(changed),
+                    }
+                })
+                .await;
+            match transitioned {
+                None => break Err(ThreadError::Cancelled),
+                // The last gate handle is gone, so nothing can ever open admission for this Turn.
+                Some(false) => break Err(ThreadError::Closed),
+                Some(true) => {}
+            }
+            if let Some(permit) = gate.try_admit() {
+                break Ok(permit);
+            }
+        };
+        self.turn_admission_waiting = false;
+        self.publish_snapshot();
+        outcome
     }
 
     pub(super) fn cancel_pending_calls(

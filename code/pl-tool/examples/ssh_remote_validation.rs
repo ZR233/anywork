@@ -33,7 +33,10 @@ async fn main() -> anyhow::Result<()> {
         aarch64.is_some() || x86_64.is_some(),
         "provide a remote helper artifact"
     );
-    let manager = SshManager::new(aarch64, x86_64);
+    let isolated_config = tempfile::tempdir()?;
+    let manager = SshManager::new(aarch64, x86_64).with_ssh_config(
+        pl_tool::remote::SshConfigFile::at(isolated_config.path().join("ssh_config")),
+    );
     let profile = SshServerProfile {
         alias: "validation".to_string(),
         host_name: host,
@@ -184,6 +187,52 @@ async fn main() -> anyhow::Result<()> {
             "configured remote tool must be discoverable"
         );
     }
+    let budget = processes
+        .run_task(
+            "task-remote-budget",
+            CommandStartRequest {
+                command: "head -c 20000000 /dev/zero".into(),
+                cwd: None,
+                allow_workspace_escape: false,
+                timeout: Duration::from_secs(30),
+                yield_time: Duration::ZERO,
+                max_output_chars: 256,
+                session_id: "budget".into(),
+                tool_id: "exec".into(),
+                call_id: "remote-budget".into(),
+                cancellation_token: None,
+                output_observer: None,
+            },
+        )
+        .await?;
+    let limit = budget
+        .output_limit_exceeded()
+        .expect("remote manager must return typed capacity termination");
+    let usage = budget.capture_usage.expect("final producer receipt");
+    let disk = files
+        .stat(WorkspaceFileStatRequest {
+            path: budget.capture_file.to_string_lossy().into_owned(),
+            cwd: None,
+        })
+        .await?;
+    anyhow::ensure!(
+        limit.charged_bytes == usage.charged_bytes && Some(usage.charged_bytes) == disk.len
+    );
+    anyhow::ensure!(usage.charged_bytes <= usage.limit_bytes && usage.refused_bytes > 0);
+    anyhow::ensure!(budget.capture_repair().is_none());
+    println!("remote capacity termination={limit:?}, disk={:?}", disk.len);
+
+    // Git/worktree 没有归档读者，直传结果不应继承 exec 的磁盘额度。
+    let large = run_remote(
+        &host.git,
+        vec![
+            "sh".into(),
+            "-c".into(),
+            "head -c 20000000 /dev/zero".into(),
+        ],
+    )
+    .await?;
+    anyhow::ensure!(large.status == 0 && large.stdout.len() == 20_000_000);
     validate_git(&host.git, files.as_ref()).await?;
     validate_skills(files.clone()).await?;
     validate_image_bytes(files.as_ref()).await?;
@@ -240,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
         ".agents/skills",
         ".git",
         ".anywork",
+        "target",
         "pixel.png",
         "fixture.py",
         "lsp_fixture.py",

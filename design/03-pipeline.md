@@ -12,6 +12,11 @@ Studio 用户输入统一提交：空闲时启动，运行时先受理输入，�
 effect 投影 user Item 并写入历史库，实际 Turn 和模型上下文在执行准入时关联。只有 presentation 为 visible 的
 输入生成 user Item，受理不表示模型已开始执行。
 
+Thread 可安装产品无关的 Turn 准入 gate（见 [16](./16-core-contracts.md) §16.9）：它在输入受理与
+驱动暂停之外独立决定下一条 Turn 能否开始。gate 关闭时，已受理的输入保持 pending，在下一条 Turn
+开始前停在准入点，既不消费输入也不创建 Turn 记录；已准入 Turn 持有 permit 直到结束，不受新 hold
+影响，只有下一条 Turn 等待。
+
 MessagePresentation（visible / hidden）是所有消息共用的协议属性，不属于 Plan、Interaction 或
 mailbox 特例：visible 是省省略时的默认值；hidden 消息仍是 canonical Thread 上下文，必须持久化并
 完整发送给 provider，但产品 projector 不为它产生 GUI Item 或 notification。presentation 在输入

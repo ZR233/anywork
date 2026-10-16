@@ -267,9 +267,13 @@ core 在 Thread/进程任一达到 64/256 MiB 时进入准入暂停，只有两�
 调用身份的已计费高水位先计费，等长权威 `completed` 不重复计费、替换后继续追加也不漏计，因此一个响应
 不能同时无限堆积正文和工具参数。工具参数在 `ToolInputCompleted` 之后迟到或失败时，只保留已接收的
 partial receipt 供诊断，**不执行**未闭合的参数、不构造不完整 JSON；可靠队列已满则以 typed `QueueFull`
-拒绝新准入。一次命令 operation 的 stdout/stderr 合流捕获也单独受限（`MAX_CAPTURE_BYTES`，与 core 单
-operation 输出上限同量级）：共享额度按字节先接纳再落盘，触顶或落盘/flush 失败即终止该 operation 的
-进程树，**保留**已写部分和有界观察视图，并以 typed 输出压力失败报告而不是静默截断后称成功。两个流各自
+拒绝新准入。一次命令 operation 的 stdout/stderr 合流捕获也单独受限：backend 用 `capture_limit_bytes`
+声明自己的单命令落盘上限（没声明时是默认的 `MAX_CAPTURE_BYTES`，与 core 单 operation 输出上限同量级；
+Mai 显式声明自己更宽的上限），并用 `capture_storage_cost` 在**接纳前**按真实落盘成本计费——合并文件与
+per-stream 捕获各写一份的 backend 必须为两份都计费，否则额度只约束了其中一份。触顶或落盘/flush 失败都
+终止该 operation 的进程树并等待其真实结束，**保留**已写部分和有界观察视图，而不是静默截断后称成功；
+两者按类别分开——触顶是预期容量终止（typed `OutputLimitExceeded`，带上限、已保留与被拒字节），必须与
+32 KiB 级模型输出截断、timeout 和退出码失败区分，且**不**产出可靠输出存储故障。两个流各自
 只把 chunk 按读取序接纳进同一个有界有序修复计划并通知唯一 writer，reader 不等待磁盘；writer 是
 operation 生命周期内的任务，只有它把已接纳字节写盘、或把未落盘者作为同一修复计划保留后，operation 才
 发布终态（终态不早于 writer 收束），首个 append 失败后不再接纳新 chunk，但此前已接纳/排队的两流 chunk
@@ -368,6 +372,12 @@ owner 的串行提交边界同时产出可持久化的幂等回执，使重复�
   `(thread_id, call_id)`（或 `task:{call_id}`）主键可读取任务身份与状态而不加载正文；终态工具
   交付按同一身份读取完整正文。可读条件是事实已 durable 且属于该 Thread：非终态、跨 Thread
   或未知身份返回"无此事实"，调用方必须显式报告，不能当作已完成结果或新工作受理。
+
+通用 SQLite 后端在 effect 的同一事务维护 `(thread_id, task_id)` 任务身份索引、
+完整交付所在 effect 的定位及后续资源补充。任务元数据与引用有完整性摘要；交付正文仍只存在于
+原始不可变 effect，按定位读取一条，不复制成另一份历史。未知或旧身份查询不分页扫描无关
+effect，也不因索引未命中转去扫描。schema 升级仅在显式离线迁移中按提交顺序有界回填，
+普通打开拒绝未升级的库；版本标记、索引和回填在同一事务完成。删除会话同时删除索引。
 
 在 owner 仍驻留时，重复命令由 effect window 中最新提交直接回答；一旦对应批次 durable 并离开
 窗口，同一查询改由上述 history 身份索引 / 终端事实回执与任务 by-id 读取回答，两者语义一致，
