@@ -5,6 +5,24 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.15.0](https://github.com/ZR233/anywork/compare/v6.14.0...v6.15.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** provider usage checks now require a provider ID across HTTP, FRB and Client. Replace POST /api/v1/runtime/provider-usage/check with POST /api/v1/runtime/provider-usage/{provider_id}/check and use AnyworkClient.providerUsageQueries for refresh actions.
+
+### Features
+
+* **studio:** 完善 SSH 远程主机配置、密码凭据保存与连接认证流程 ([#90](https://github.com/ZR233/anywork/issues/90)) ([f6499a5](https://github.com/ZR233/anywork/commit/f6499a5fd9e049a166267a7ca462670871c6dc43))
+* **studio:** 支持查看已批准计划全文 ([59d6cd0](https://github.com/ZR233/anywork/commit/59d6cd0d2419bea0cb6dc911d88b5e49daff1295))
+
+
+### Bug Fixes
+
+* **studio:** 修复侧栏更多菜单无法打开 ([71e7836](https://github.com/ZR233/anywork/commit/71e78362b721e4218d8adcdba9145327d57fe71d))
+* **studio:** 解耦供应商保存、MCP 与自动用量查询 ([36c1fcd](https://github.com/ZR233/anywork/commit/36c1fcdb584755e91800deb687e67af0f00e2296))
+
 ## [6.14.0](https://github.com/ZR233/anywork/compare/v6.13.0...v6.14.0) (2026-10-16)
 
 
