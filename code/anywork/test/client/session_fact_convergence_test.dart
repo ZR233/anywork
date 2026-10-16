@@ -11,7 +11,7 @@ import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 
-/// 用户可见症状的收敛证据：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
+/// AppGraph/Riverpod 适配契约：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
 /// canonical 事实流收敛**——mode 走目录增量，运行时 route 走 Thread 有序流。
 ///
 /// 这里用 AppGraph/Client owner 与只读 Riverpod adapter，只把

@@ -48,7 +48,7 @@ jobs:
           if ($env:GITHUB_REF -cne 'refs/heads/main') {
             throw "Studio publisher must run from main, not $env:GITHUB_REF"
           }
-          if ($env:GITHUB_REPOSITORY -cne 'ZR233/pure-lang') {
+          if ($env:GITHUB_REPOSITORY -cne 'ZR233/anywork') {
             throw "Studio publisher cannot run for repository $env:GITHUB_REPOSITORY"
           }
           if ($env:RELEASE_ID -notmatch '^[1-9]\d*$') {

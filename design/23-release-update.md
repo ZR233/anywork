@@ -95,6 +95,10 @@ CI secrets；私钥轮换必须先通过仍受旧密钥信任的应用版本发�
 
 ## 23.3 更新清单
 
+publisher 按当前 GitHub 仓库名 `ZR233/anywork` 校验发布身份；更新 URL 维持已发布客户端
+信任的 `ZR233/pure-lang` 路径，由 GitHub 仓库更名重定向解析到同一发布仓库。仓库更名
+不隐含变更客户端的 URL 信任契约。
+
 稳定检查地址固定为仓库 Releases 的 `latest.json`。清单是 camelCase typed JSON：
 
 ```json

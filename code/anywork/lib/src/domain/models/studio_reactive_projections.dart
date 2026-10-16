@@ -183,36 +183,6 @@ class StudioThroughputProjection {
     required this.decodeMillis,
   });
 
-  factory StudioThroughputProjection.fromState(StudioState state) {
-    final runtime = state.runtime;
-    final live = runtime.liveUsage;
-    // Live output and decode counters have independent presence: a provider may
-    // report one before the other. They must stay one sample, otherwise a new
-    // attempt's short decode window can be paired with the previous attempt's
-    // output total and display a bogus multi-thousand throughput.
-    final liveOutputTokens = live?.completionTokens;
-    final liveDecodeMillis = live?.decodeMillis;
-    final hasCompleteLiveSample =
-        liveOutputTokens != null &&
-        liveOutputTokens > 0 &&
-        liveDecodeMillis != null &&
-        liveDecodeMillis > 0;
-    final hasLiveObservation = live != null;
-    return StudioThroughputProjection(
-      threadId: state.selectedThreadId,
-      completionTokens: hasCompleteLiveSample
-          ? liveOutputTokens
-          : hasLiveObservation
-          ? 0
-          : runtime.turnCompletionTokens,
-      decodeMillis: hasCompleteLiveSample
-          ? liveDecodeMillis
-          : hasLiveObservation
-          ? 0
-          : runtime.turnDecodeMillis,
-    );
-  }
-
   final String? threadId;
   final int completionTokens;
   final int decodeMillis;
@@ -232,20 +202,6 @@ class StudioThroughputProjection {
 
   @override
   int get hashCode => Object.hash(threadId, completionTokens, decodeMillis);
-}
-
-/// Selects the status-bar value without treating an established unknown projection as absent.
-///
-/// A null projection means the fine-grained selector has not produced a value yet and may use the
-/// runtime fallback. Once a projection exists, its nullable throughput owns the result, including
-/// the deliberate unknown state while a live sample is incomplete.
-double? statusBarThroughput(
-  StudioThroughputProjection? projection,
-  ThreadRuntimeView runtime,
-) {
-  return projection == null
-      ? runtime.turnTokensPerSecond
-      : projection.tokensPerSecond;
 }
 
 /// Stable status inputs. Runtime/context/throughput are intentionally not part

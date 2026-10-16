@@ -16,6 +16,10 @@ Driver 旅程、native FRB 或平台 UI 验收。其他 Flutter widget/integrati
 测试与 Driver 场景不因本次重构加入自动门禁。Client 所有权与接口见
 [25](./25-frontend-state.md)，内容传输见 [07](./07-streaming.md)。
 
+Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Riverpod 的 canonical
+事实收敛放在应用 adapter 测试集；不在 Flutter 应用侧重复维护这些纯 Client 契约，
+也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。
+
 `pl-core` 仅使用测试侧的脚本化模型、工具和按锚点查询的临时历史后端，证明 Thread 的执行、
 并发、取消、恢复、effect、有界 ChatView 窗口及可选持久化契约，不依赖模型供应商适配。
 ChatView 测试覆盖新旧 revision 保存确认竞争（旧确认不得把较新的内容标记为已保存、确认对已

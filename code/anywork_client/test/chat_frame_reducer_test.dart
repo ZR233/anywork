@@ -1,4 +1,4 @@
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -23,6 +23,7 @@ void main() {
     );
     expect(delivered.outcome, ChatFrameOutcome.irrelevant);
     expect(delivered.reason, ChatFrameRejectReason.patchAlreadyDelivered);
+    expect(delivered.state, same(state));
 
     final gap = applyChatFrameState(
       state,
@@ -47,6 +48,7 @@ void main() {
     );
     expect(result.outcome, ChatFrameOutcome.resync);
     expect(result.reason, ChatFrameRejectReason.patchNonIncreasing);
+    expect(result.state, same(state));
   });
 
   test('splice 越界与窗口外 item 各自给出原因', () {

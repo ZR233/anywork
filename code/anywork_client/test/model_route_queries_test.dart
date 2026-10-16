@@ -1,5 +1,5 @@
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   test('pending model intent cannot fabricate an observed route revision', () {
@@ -90,7 +90,7 @@ void main() {
     expect(unconfigured.hasConfiguredRoute, isFalse);
   });
 
-  test('partial live throughput cannot borrow the previous Turn sample', () {
+  test('throughput uses only a complete sample from the current Turn', () {
     const runtime = ThreadRuntimeView(
       model: 'observed-model',
       contextTokens: 0,
@@ -104,16 +104,32 @@ void main() {
       turnDecodeMillis: 1000,
     );
     expect(ModelRouteQueries.throughput(runtime), 1000);
-    final partial = runtime.copyWith(
-      liveUsage: const ThreadRuntimeLiveUsageView(
-        turnId: 'next-turn',
-        attemptId: 'next-attempt',
-        completionTokens: 20,
-        state: ThreadRuntimeUsageState.live,
-        observationSequence: 1,
-      ),
+    expect(
+      ModelRouteQueries.throughput(runtime.copyWith(turnCompletionTokens: 0)),
+      isNull,
     );
-    expect(ModelRouteQueries.throughput(partial), isNull);
+    for (final sample in [
+      (tokens: 20, millis: null),
+      (tokens: null, millis: 500),
+      (tokens: 0, millis: 500),
+      (tokens: 20, millis: 0),
+    ]) {
+      final partial = runtime.copyWith(
+        liveUsage: ThreadRuntimeLiveUsageView(
+          turnId: 'next-turn',
+          attemptId: 'next-attempt',
+          completionTokens: sample.tokens,
+          decodeMillis: sample.millis,
+          state: ThreadRuntimeUsageState.live,
+          observationSequence: 1,
+        ),
+      );
+      expect(
+        ModelRouteQueries.throughput(partial),
+        isNull,
+        reason: 'incomplete live sample $sample must not borrow old counters',
+      );
+    }
     final complete = runtime.copyWith(
       liveUsage: const ThreadRuntimeLiveUsageView(
         turnId: 'next-turn',

@@ -73,8 +73,7 @@ StudioThroughputProjection? statusThroughputProjection(Ref ref) {
   final live = runtime.liveUsage;
   // Live 输出与解码计数独立出现：一个 provider 可能先报其一。两者必须保持
   // 同一样本，否则新一次尝试的短解码窗口会与上一次尝试的输出总数交叉配对，
-  // 显示出虚假的数千 tokens/s（design/18 §18.8.1，对齐
-  // `StudioThroughputProjection.fromState` 的配对语义）。
+  // 显示出虚假的数千 tokens/s（design/18 §18.8.1）。
   final liveOutputTokens = live?.completionTokens;
   final liveDecodeMillis = live?.decodeMillis;
   final hasCompleteLiveSample =
