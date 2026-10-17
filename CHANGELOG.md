@@ -5,6 +5,17 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.16.0](https://github.com/ZR233/anywork/compare/v6.15.0...v6.16.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 删除旧时间线分组和智能体事件类型、聊天控制器及 loadLatestHistory 接口。调用方使用类型化展示行与 Client 选择生命周期建立首窗。
+
+### Bug Fixes
+
+* **studio:** 修复时间线竞争并统一思考与工具折叠 ([0f9146b](https://github.com/ZR233/anywork/commit/0f9146ba9f36a72f4e2ff84a7decdd49a92847d9))
+
 ## [6.15.0](https://github.com/ZR233/anywork/compare/v6.14.0...v6.15.0) (2026-10-16)
 
 
