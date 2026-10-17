@@ -14,16 +14,23 @@ factory dispatch 或兼容 wrapper。
 
 ## 前置确认
 
-以下信息先从用户需求、现有配置和供应商文档核实，不是逐项向用户审批；仅在无法核实且影响
-实现选择时按根 `AGENTS.md` 询问。已授权的新增工作连续完成到相应验证与交付。
+以下信息先从用户需求、现有配置、工作区依赖和供应商官方文档核实，并按项目组件选型规则完成
+组件与 codec 选型调研，不把自研实现作为默认方案。已授权的新增工作连续完成到相应验证与
+交付；若调研后必须走自研路线，仍须先取得用户明确选择。
 
 1. 确定 wire API：Responses 或 Chat Completions。
 2. 确定模型 transport：Responses 可声明 HTTP/WS；Chat 只允许 HTTP。
 3. 确定 endpoint：base URL、headers、凭据、tool wire policy 与服务能力。
 4. 确定模型目录：slug、能力、价格、上下文、request profile、参数 wire 和基础指令。
 5. 确定是否只是新增 preset。共享同一 endpoint 形态和 catalog 的产品套餐通常只需新 preset。
-6. 只有现有 OpenAI-compatible codec 无法表达 wire 时，才设计第二种 typed codec；先同步
-   `design/06-model.md` 与 `design/20-config.md`。
+6. 只有现有 OpenAI-compatible codec、官方 SDK 或已调研的成熟第三方方案都无法表达 wire 时，
+   才提出第二种 typed codec；先在计划或总结中记录候选、来源、排除理由、自研范围、维护与兼容
+   成本，并询问用户。用户明确选择后，再同步 `design/06-model.md` 与
+   `design/20-config.md` 并实施。
+
+在用户明确选择自研前，不新增 provider-specific codec、wrapper、fallback 或兼容分支。适配层
+只有在承载本项目领域语义或必要边界转换时才保留，并应复用底层组件的生命周期、错误和取消
+契约，不在上层重复实现其已有能力。
 
 ## 修改清单
 
