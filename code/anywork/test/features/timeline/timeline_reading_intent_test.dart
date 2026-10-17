@@ -232,7 +232,6 @@ void main() {
                 turn: null,
                 hasOlder: false,
                 hasNewer: false,
-                canExtendLatest: false,
                 windowEpoch: epoch,
                 viewId: '$threadId:$epoch',
                 onCommand: (command) =>
@@ -301,7 +300,6 @@ void main() {
                   turn: null,
                   hasOlder: false,
                   hasNewer: false,
-                  canExtendLatest: false,
                   onCommand: (command) {
                     if (command is TimelineAnchorChanged) {
                       unawaited(

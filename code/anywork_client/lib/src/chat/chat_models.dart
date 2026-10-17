@@ -39,7 +39,6 @@ final class ChatSnapshot<T> {
     this.focusedItemId,
     this.hasOlder = false,
     this.hasNewer = false,
-    this.canExtendLatest = false,
   }) : items = List.unmodifiable(items);
 
   final ViewStamp stamp;
@@ -47,7 +46,6 @@ final class ChatSnapshot<T> {
   final String? focusedItemId;
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
 }
 
 sealed class ChatFrame<T> {
@@ -65,11 +63,15 @@ final class ChatPatch<T> extends ChatFrame<T> {
     required this.to,
     required Iterable<ChatChange<T>> changes,
     required this.hasNewer,
+    this.focusedItemId,
+    this.hasOlder = false,
   }) : changes = List.unmodifiable(changes);
 
   final ViewStamp from;
   final ViewStamp to;
   final List<ChatChange<T>> changes;
+  final String? focusedItemId;
+  final bool hasOlder;
   final bool hasNewer;
 }
 
@@ -126,6 +128,8 @@ final class ChatSnapshotReducer<T>
         :final from,
         :final to,
         :final changes,
+        :final focusedItemId,
+        :final hasOlder,
         :final hasNewer,
       ):
         if (from != current.stamp ||
@@ -159,10 +163,9 @@ final class ChatSnapshotReducer<T>
           ChatSnapshot(
             stamp: to,
             items: items,
-            focusedItemId: current.focusedItemId,
-            hasOlder: current.hasOlder,
+            focusedItemId: focusedItemId,
+            hasOlder: hasOlder,
             hasNewer: hasNewer,
-            canExtendLatest: current.canExtendLatest,
           ),
         );
     }

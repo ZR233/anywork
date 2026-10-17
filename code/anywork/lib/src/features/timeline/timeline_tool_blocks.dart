@@ -41,10 +41,11 @@ class _ActivityGroupPart extends StatelessWidget {
       controller: controller,
       initiallyExpanded: controller.isExpanded,
       maintainState: false,
-      minTileHeight: 32,
+      showTrailingIcon: false,
+      minTileHeight: 28,
       dense: true,
       tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(left: 14, bottom: 6),
+      childrenPadding: const EdgeInsets.only(left: 7, bottom: 6),
       shape: const Border(),
       collapsedShape: const Border(),
       onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
@@ -54,11 +55,7 @@ class _ActivityGroupPart extends StatelessWidget {
             : _TimelineLayoutChangeKind.collapse,
       ),
       title: _TimelineActivitySummary(
-        icon: issue
-            ? Icons.error_outline
-            : group.hasReasoning
-            ? Icons.psychology_alt_outlined
-            : Icons.build_outlined,
+        icon: _activityGroupIcon(group, issue: issue),
         label: issue
             ? '${context.toolStatusLabel(firstIssue.status)} · $label'
             : label,
@@ -73,7 +70,7 @@ class _ActivityGroupPart extends StatelessWidget {
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.only(left: 10),
+            padding: const EdgeInsets.only(left: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -89,6 +86,42 @@ class _ActivityGroupPart extends StatelessWidget {
       ],
     );
   }
+}
+
+IconData _activityGroupIcon(
+  TimelineActivityGroup group, {
+  required bool issue,
+}) {
+  if (issue) return Icons.error_outline;
+  if (group.toolCount == 0) return Icons.psychology_alt_outlined;
+  final toolParts = group.parts
+      .where((part) => part.type == TimelineEntryType.tool)
+      .toList(growable: false);
+  if (toolParts.length == 1) {
+    final name = toolParts.first.tool?.name;
+    return switch (name) {
+      'exec_command' ||
+      'run_command' ||
+      'write_stdin' => Icons.terminal_outlined,
+      'apply_patch' ||
+      'write_file' ||
+      'edit_file' ||
+      'replace_file_content' ||
+      'write_to_file' => Icons.edit_outlined,
+      'web_search' ||
+      'read_file' ||
+      'view_file' ||
+      'grep_search' ||
+      'find_by_name' ||
+      'list_dir' ||
+      'lsp_query' ||
+      'lsp_capabilities' => Icons.travel_explore_outlined,
+      _ => Icons.build_outlined,
+    };
+  }
+  return group.hasReasoning
+      ? Icons.psychology_alt_outlined
+      : Icons.build_outlined;
 }
 
 class _ToolActivity extends StatelessWidget {
@@ -446,6 +479,7 @@ class _ToolDetails extends StatelessWidget {
               ? _TimelineLayoutChangeKind.expand
               : _TimelineLayoutChangeKind.collapse,
         ),
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
         shape: const Border(),
@@ -484,11 +518,15 @@ class _ToolDetails extends StatelessWidget {
               maxHeight: 280,
               margin: const EdgeInsets.only(top: 8),
             ),
-          if (item.part.error?.isNotEmpty == true)
-            Text(
-              item.part.error!,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.error,
+          if (item.part.error?.isNotEmpty == true &&
+              output?.trim() != item.part.error?.trim())
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                item.part.error!,
+                style: context.text.bodySmall?.copyWith(
+                  color: context.colors.error,
+                ),
               ),
             ),
         ],

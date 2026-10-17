@@ -201,7 +201,6 @@ Widget _timeline(List<TimelineRow> rows) {
     onCommand: (_) {},
     hasOlder: false,
     hasNewer: false,
-    canExtendLatest: false,
   );
 }
 

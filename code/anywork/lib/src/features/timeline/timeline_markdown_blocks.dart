@@ -179,8 +179,8 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
               : scheme.surfaceContainerLow,
           // 只用轻底色区分，去掉描边和加粗，避免打断中文阅读基线。
           borderWidth: 0,
-          borderRadius: Radius.circular(3),
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+          borderRadius: Radius.circular(5),
+          padding: const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
         ),
         // VS Code 预览引用：常规左侧线 + 低对比背景，无垂直外边距
         // （块间空行已承担节奏），内边距 0 16 0 10、小圆角。
@@ -226,7 +226,7 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             padding: const EdgeInsets.all(16),
             backgroundColor: codeBackground,
             borderColor: scheme.outlineVariant,
-            borderRadius: const Radius.circular(3),
+            borderRadius: const Radius.circular(StudioRadii.sm),
             textStyle: bodyStyle?.copyWith(
               color: surface == _MarkdownSurface.reasoning
                   ? context.colors.onSurfaceVariant

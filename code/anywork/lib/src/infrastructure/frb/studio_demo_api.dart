@@ -3519,7 +3519,6 @@ class _DemoChatWindow implements StudioChatWindow {
       ]),
       hasOlder: false,
       hasNewer: false,
-      canExtendLatest: false,
     );
   }
 
@@ -3584,7 +3583,9 @@ class _DemoChatWindow implements StudioChatWindow {
     return StudioChatPatch(
       from: from,
       to: to,
+      focusedItemId: _focusId,
       changes: changes,
+      hasOlder: false,
       hasNewer: false,
     );
   }
@@ -3627,7 +3628,9 @@ class _DemoChatWindow implements StudioChatWindow {
       if (update == null) return null;
       if (update.fields.isNotEmpty ||
           update.expectedRevision != update.revision ||
-          previous.saved != next.saved) {
+          previous.saved != next.saved ||
+          previous.executionTerminal != next.executionTerminal ||
+          update.itemShell != null) {
         changes.add(update);
       }
     }
@@ -3646,6 +3649,15 @@ class _DemoChatWindow implements StudioChatWindow {
       revision: next.revision,
       omittedUnits: next.bodyOmittedUnits,
       saved: next.saved,
+      lifecycle: next.executionTerminal
+          ? StudioChatLifecycle.terminal
+          : StudioChatLifecycle.streaming,
+      itemShell:
+          previous.state.runtimeType != next.state.runtimeType ||
+              previous.updatedAt != next.updatedAt ||
+              previous.isTerminal != next.isTerminal
+          ? next
+          : null,
       fields: fields,
     );
   }
@@ -3819,9 +3831,6 @@ class _DemoChatWindow implements StudioChatWindow {
   @override
   Future<StudioChatReceipt> load(TimelineDirection direction) async =>
       _receipt();
-
-  @override
-  Future<StudioChatReceipt> extendLatest() async => _receipt();
 
   @override
   Future<StudioChatReceipt> focus(String? itemId) async {

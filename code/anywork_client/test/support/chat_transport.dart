@@ -115,8 +115,6 @@ final class TestHandle implements ChatHandle<TestSnapshot, TestFrame, int> {
   @override
   Future<int> load(ChatDirection direction) => _control();
   @override
-  Future<int> extendLatest() => _control();
-  @override
   Future<int> focus(String? itemId) => _control();
   @override
   Future<int> expand(String itemId) => _control();

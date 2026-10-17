@@ -380,11 +380,11 @@ return patch(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeChatSnapshot snapshot)?  reset,TResult Function( BigInt from,  BigInt to,  List<BridgeViewChange> changes,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeChatSnapshot snapshot)?  reset,TResult Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeChatUpdate_Reset() when reset != null:
 return reset(_that.snapshot);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that.from,_that.to,_that.changes,_that.hasNewer,_that.priority);case _:
+return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);case _:
   return orElse();
 
 }
@@ -402,11 +402,11 @@ return patch(_that.from,_that.to,_that.changes,_that.hasNewer,_that.priority);ca
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeChatSnapshot snapshot)  reset,required TResult Function( BigInt from,  BigInt to,  List<BridgeViewChange> changes,  bool hasNewer,  BridgeUpdatePriority priority)  patch,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeChatSnapshot snapshot)  reset,required TResult Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)  patch,}) {final _that = this;
 switch (_that) {
 case BridgeChatUpdate_Reset():
 return reset(_that.snapshot);case BridgeChatUpdate_Patch():
-return patch(_that.from,_that.to,_that.changes,_that.hasNewer,_that.priority);}
+return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -420,11 +420,11 @@ return patch(_that.from,_that.to,_that.changes,_that.hasNewer,_that.priority);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeChatSnapshot snapshot)?  reset,TResult? Function( BigInt from,  BigInt to,  List<BridgeViewChange> changes,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeChatSnapshot snapshot)?  reset,TResult? Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,}) {final _that = this;
 switch (_that) {
 case BridgeChatUpdate_Reset() when reset != null:
 return reset(_that.snapshot);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that.from,_that.to,_that.changes,_that.hasNewer,_that.priority);case _:
+return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);case _:
   return null;
 
 }
@@ -504,11 +504,12 @@ as BridgeChatSnapshot,
 
 
 class BridgeChatUpdate_Patch extends BridgeChatUpdate {
-  const BridgeChatUpdate_Patch({required this.from, required this.to, required  List<BridgeViewChange> changes, required this.hasNewer, required this.priority}): _changes = changes,super._();
+  const BridgeChatUpdate_Patch({required this.from, required this.to, required this.focus, required  List<BridgeViewChange> changes, required this.hasOlder, required this.hasNewer, required this.priority}): _changes = changes,super._();
 
 
  final  BigInt from;
  final  BigInt to;
+ final  BridgeChatFocus focus;
  final  List<BridgeViewChange> _changes;
  List<BridgeViewChange> get changes {
   if (_changes is EqualUnmodifiableListView) return _changes;
@@ -516,6 +517,7 @@ class BridgeChatUpdate_Patch extends BridgeChatUpdate {
   return EqualUnmodifiableListView(_changes);
 }
 
+ final  bool hasOlder;
  final  bool hasNewer;
  final  BridgeUpdatePriority priority;
 
@@ -529,18 +531,18 @@ $BridgeChatUpdate_PatchCopyWith<BridgeChatUpdate_Patch> get copyWith => _$Bridge
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatUpdate_Patch&&(identical(other.from, from) || other.from == from)&&(identical(other.to, to) || other.to == to)&&const DeepCollectionEquality().equals(other.changes, _changes)&&(identical(other.hasNewer, hasNewer) || other.hasNewer == hasNewer)&&(identical(other.priority, priority) || other.priority == priority));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatUpdate_Patch&&(identical(other.from, from) || other.from == from)&&(identical(other.to, to) || other.to == to)&&(identical(other.focus, focus) || other.focus == focus)&&const DeepCollectionEquality().equals(other.changes, _changes)&&(identical(other.hasOlder, hasOlder) || other.hasOlder == hasOlder)&&(identical(other.hasNewer, hasNewer) || other.hasNewer == hasNewer)&&(identical(other.priority, priority) || other.priority == priority));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,from,to,const DeepCollectionEquality().hash(_changes),hasNewer,priority);
+    return Object.hash(runtimeType,from,to,focus,const DeepCollectionEquality().hash(_changes),hasOlder,hasNewer,priority);
 }
 
 @override
 String toString() {
-    return 'BridgeChatUpdate.patch(from: $from, to: $to, changes: $changes, hasNewer: $hasNewer, priority: $priority)';
+    return 'BridgeChatUpdate.patch(from: $from, to: $to, focus: $focus, changes: $changes, hasOlder: $hasOlder, hasNewer: $hasNewer, priority: $priority)';
 }
 
 
@@ -551,11 +553,11 @@ abstract mixin class $BridgeChatUpdate_PatchCopyWith<$Res> implements $BridgeCha
   factory $BridgeChatUpdate_PatchCopyWith(BridgeChatUpdate_Patch value, $Res Function(BridgeChatUpdate_Patch) _then) = _$BridgeChatUpdate_PatchCopyWithImpl;
 @useResult
 $Res call({
- BigInt from, BigInt to, List<BridgeViewChange> changes, bool hasNewer, BridgeUpdatePriority priority
+ BigInt from, BigInt to, BridgeChatFocus focus, List<BridgeViewChange> changes, bool hasOlder, bool hasNewer, BridgeUpdatePriority priority
 });
 
 
-
+$BridgeChatFocusCopyWith<$Res> get focus;
 
 }
 /// @nodoc
@@ -568,18 +570,29 @@ class _$BridgeChatUpdate_PatchCopyWithImpl<$Res>
 
 /// Create a copy of BridgeChatUpdate
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? from = null,Object? to = null,Object? changes = null,Object? hasNewer = null,Object? priority = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? from = null,Object? to = null,Object? focus = null,Object? changes = null,Object? hasOlder = null,Object? hasNewer = null,Object? priority = null,}) {
   return _then(BridgeChatUpdate_Patch(
 from: null == from ? _self.from : from // ignore: cast_nullable_to_non_nullable
 as BigInt,to: null == to ? _self.to : to // ignore: cast_nullable_to_non_nullable
-as BigInt,changes: null == changes ? _self._changes : changes // ignore: cast_nullable_to_non_nullable
-as List<BridgeViewChange>,hasNewer: null == hasNewer ? _self.hasNewer : hasNewer // ignore: cast_nullable_to_non_nullable
+as BigInt,focus: null == focus ? _self.focus : focus // ignore: cast_nullable_to_non_nullable
+as BridgeChatFocus,changes: null == changes ? _self._changes : changes // ignore: cast_nullable_to_non_nullable
+as List<BridgeViewChange>,hasOlder: null == hasOlder ? _self.hasOlder : hasOlder // ignore: cast_nullable_to_non_nullable
+as bool,hasNewer: null == hasNewer ? _self.hasNewer : hasNewer // ignore: cast_nullable_to_non_nullable
 as bool,priority: null == priority ? _self.priority : priority // ignore: cast_nullable_to_non_nullable
 as BridgeUpdatePriority,
   ));
 }
 
+/// Create a copy of BridgeChatUpdate
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeChatFocusCopyWith<$Res> get focus {
 
+  return $BridgeChatFocusCopyWith<$Res>(_self.focus, (value) {
+    return _then(_self.copyWith(focus: value));
+  });
+}
 }
 
 /// @nodoc
@@ -1472,11 +1485,11 @@ return updateItem(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  List<BridgeFieldUpdate> fields)?  updateItem,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)?  updateItem,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeViewChange_Splice() when splice != null:
 return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.fields);case _:
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case _:
   return orElse();
 
 }
@@ -1494,11 +1507,11 @@ return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omitt
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)  splice,required TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  List<BridgeFieldUpdate> fields)  updateItem,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)  splice,required TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)  updateItem,}) {final _that = this;
 switch (_that) {
 case BridgeViewChange_Splice():
 return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem():
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.fields);}
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1512,11 +1525,11 @@ return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omitt
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult? Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  List<BridgeFieldUpdate> fields)?  updateItem,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult? Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)?  updateItem,}) {final _that = this;
 switch (_that) {
 case BridgeViewChange_Splice() when splice != null:
 return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.fields);case _:
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case _:
   return null;
 
 }
@@ -1606,7 +1619,7 @@ as List<BridgeChatItem>,
 
 
 class BridgeViewChange_UpdateItem extends BridgeViewChange {
-  const BridgeViewChange_UpdateItem({required this.itemId, required this.expectedRevision, required this.revision, required this.omittedBytes, required this.saved, required  List<BridgeFieldUpdate> fields}): _fields = fields,super._();
+  const BridgeViewChange_UpdateItem({required this.itemId, required this.expectedRevision, required this.revision, required this.omittedBytes, required this.saved, required this.lifecycle, this.itemShell, required  List<BridgeFieldUpdate> fields}): _fields = fields,super._();
 
 
  final  String itemId;
@@ -1614,6 +1627,8 @@ class BridgeViewChange_UpdateItem extends BridgeViewChange {
  final  BigInt revision;
  final  BigInt omittedBytes;
  final  bool saved;
+ final  BridgeChatLifecycle lifecycle;
+ final  BridgeThreadItem? itemShell;
  final  List<BridgeFieldUpdate> _fields;
  List<BridgeFieldUpdate> get fields {
   if (_fields is EqualUnmodifiableListView) return _fields;
@@ -1632,18 +1647,18 @@ $BridgeViewChange_UpdateItemCopyWith<BridgeViewChange_UpdateItem> get copyWith =
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeViewChange_UpdateItem&&(identical(other.itemId, itemId) || other.itemId == itemId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.omittedBytes, omittedBytes) || other.omittedBytes == omittedBytes)&&(identical(other.saved, saved) || other.saved == saved)&&const DeepCollectionEquality().equals(other.fields, _fields));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeViewChange_UpdateItem&&(identical(other.itemId, itemId) || other.itemId == itemId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.omittedBytes, omittedBytes) || other.omittedBytes == omittedBytes)&&(identical(other.saved, saved) || other.saved == saved)&&(identical(other.lifecycle, lifecycle) || other.lifecycle == lifecycle)&&(identical(other.itemShell, itemShell) || other.itemShell == itemShell)&&const DeepCollectionEquality().equals(other.fields, _fields));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,itemId,expectedRevision,revision,omittedBytes,saved,const DeepCollectionEquality().hash(_fields));
+    return Object.hash(runtimeType,itemId,expectedRevision,revision,omittedBytes,saved,lifecycle,itemShell,const DeepCollectionEquality().hash(_fields));
 }
 
 @override
 String toString() {
-    return 'BridgeViewChange.updateItem(itemId: $itemId, expectedRevision: $expectedRevision, revision: $revision, omittedBytes: $omittedBytes, saved: $saved, fields: $fields)';
+    return 'BridgeViewChange.updateItem(itemId: $itemId, expectedRevision: $expectedRevision, revision: $revision, omittedBytes: $omittedBytes, saved: $saved, lifecycle: $lifecycle, itemShell: $itemShell, fields: $fields)';
 }
 
 
@@ -1654,7 +1669,7 @@ abstract mixin class $BridgeViewChange_UpdateItemCopyWith<$Res> implements $Brid
   factory $BridgeViewChange_UpdateItemCopyWith(BridgeViewChange_UpdateItem value, $Res Function(BridgeViewChange_UpdateItem) _then) = _$BridgeViewChange_UpdateItemCopyWithImpl;
 @useResult
 $Res call({
- String itemId, BigInt expectedRevision, BigInt revision, BigInt omittedBytes, bool saved, List<BridgeFieldUpdate> fields
+ String itemId, BigInt expectedRevision, BigInt revision, BigInt omittedBytes, bool saved, BridgeChatLifecycle lifecycle, BridgeThreadItem? itemShell, List<BridgeFieldUpdate> fields
 });
 
 
@@ -1671,14 +1686,16 @@ class _$BridgeViewChange_UpdateItemCopyWithImpl<$Res>
 
 /// Create a copy of BridgeViewChange
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? itemId = null,Object? expectedRevision = null,Object? revision = null,Object? omittedBytes = null,Object? saved = null,Object? fields = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? itemId = null,Object? expectedRevision = null,Object? revision = null,Object? omittedBytes = null,Object? saved = null,Object? lifecycle = null,Object? itemShell = freezed,Object? fields = null,}) {
   return _then(BridgeViewChange_UpdateItem(
 itemId: null == itemId ? _self.itemId : itemId // ignore: cast_nullable_to_non_nullable
 as String,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
 as BigInt,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
 as BigInt,omittedBytes: null == omittedBytes ? _self.omittedBytes : omittedBytes // ignore: cast_nullable_to_non_nullable
 as BigInt,saved: null == saved ? _self.saved : saved // ignore: cast_nullable_to_non_nullable
-as bool,fields: null == fields ? _self._fields : fields // ignore: cast_nullable_to_non_nullable
+as bool,lifecycle: null == lifecycle ? _self.lifecycle : lifecycle // ignore: cast_nullable_to_non_nullable
+as BridgeChatLifecycle,itemShell: freezed == itemShell ? _self.itemShell : itemShell // ignore: cast_nullable_to_non_nullable
+as BridgeThreadItem?,fields: null == fields ? _self._fields : fields // ignore: cast_nullable_to_non_nullable
 as List<BridgeFieldUpdate>,
   ));
 }

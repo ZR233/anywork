@@ -42,7 +42,6 @@ pub struct BridgeChatSnapshot {
     pub items: Vec<BridgeChatItem>,
     pub has_older: bool,
     pub has_newer: bool,
-    pub can_extend_latest: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,17 +51,19 @@ pub enum BridgeViewChange {
         remove: u64,
         items: Vec<BridgeChatItem>,
     },
-    /// 同一身份的全部内容字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
+    /// 同一身份的全部内容与状态字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
     ///
     /// 应用条件：本地该 `itemId` 的 content revision 等于 `expectedRevision`；否则按宿主策略重同步。
-    /// 全部字段应用完成后**一次**提交 `revision`、`omittedBytes` 与保存水位 `saved`——即使字段全为
-    /// `unchanged`（仅版本推进、仅保存确认）也必须提交，不能当成空 Patch 丢弃。
+    /// 全部字段应用完成后**一次**提交 `revision`、`omittedBytes`、保存水位 `saved` 与执行终态 `lifecycle`。
+    /// 当静态结构或状态发生迁移时，`itemShell` 携带不含动态正文的最新条目骨架。
     UpdateItem {
         item_id: String,
         expected_revision: u64,
         revision: u64,
         omitted_bytes: u64,
         saved: bool,
+        lifecycle: BridgeChatLifecycle,
+        item_shell: Option<Box<BridgeThreadItem>>,
         fields: Vec<BridgeFieldUpdate>,
     },
 }
@@ -105,7 +106,9 @@ pub enum BridgeChatUpdate {
     Patch {
         from: u64,
         to: u64,
+        focus: BridgeChatFocus,
         changes: Vec<BridgeViewChange>,
+        has_older: bool,
         has_newer: bool,
         priority: BridgeUpdatePriority,
     },

@@ -1243,12 +1243,6 @@ fn remember_terminal(state: &mut TimelineState, item_id: &str, order: u64, revis
     }
 }
 
-#[derive(Clone, Copy)]
-enum PageLoad {
-    Browse(Direction),
-    ExtendLatest,
-}
-
 struct Window {
     focus: ChatFocus,
     items: Vec<ChatItem>,
@@ -1266,12 +1260,6 @@ struct Window {
     has_older: bool,
     has_newer: bool,
     generation: u64,
-}
-
-impl Window {
-    fn can_extend_latest(&self) -> bool {
-        self.focus == ChatFocus::Latest && self.has_older && self.items.len() < WINDOW_ITEMS
-    }
 }
 
 #[derive(Clone)]
@@ -1298,8 +1286,6 @@ pub struct ChatSnapshot {
     pub items: Vec<ChatItem>,
     pub has_older: bool,
     pub has_newer: bool,
-    /// Whether another older page can be added without leaving Latest or evicting its tail.
-    pub can_extend_latest: bool,
 }
 
 /// The result of one control operation at its authoritative window commit point.
@@ -1386,20 +1372,11 @@ pub enum ViewChange {
         remove: usize,
         items: Vec<ChatItem>,
     },
-    /// Every content change of one identity, committed in a single step.
+    /// Every content and state change of one identity, committed in a single step.
     ///
     /// The item's content version advances exactly once per delivered change: a consumer validates
-    /// its local item against one `expected_revision`, applies every field delta, and only then
-    /// commits `revision` and `omitted_bytes`. Several fields that changed together therefore never
-    /// need a per-change revision bump. `expected_revision` and `revision` are content versions and
-    /// are independent of the save or execution watermark. An `Append` is produced only while the
-    /// consumer's delivered block is still on the field's shared prefix chain; when the chain was
-    /// replaced (an authoritative body change, or a bounded baseline the producer extended past) the
-    /// whole block is delivered instead, so a stale baseline never appends onto a body that changed
-    /// under it. `omitted_bytes` reports the item's new bounded status, so a same-revision
-    /// preview-to-complete upgrade updates it instead of leaving it stale. `saved` reports the item's
-    /// new save watermark, so a save acknowledgement arrives as a typed update instead of an empty
-    /// patch that would leave the consumer's watermark stale.
+    /// its local item against one `expected_revision`, applies any updated `meta` shell and every
+    /// field delta, and only then commits `revision`, `omitted_bytes`, `saved`, and `lifecycle`.
     UpdateItem {
         item_id: String,
         expected_revision: u64,
@@ -1407,6 +1384,10 @@ pub enum ViewChange {
         omitted_bytes: u64,
         /// Save watermark of the item after this change, independent of `revision` and `lifecycle`.
         saved: bool,
+        /// Execution terminal fact of the item after this change.
+        lifecycle: ChatLifecycle,
+        /// Updated static metadata when `previous.meta != next.meta`; `None` when unchanged.
+        meta: Option<Arc<[u8]>>,
         fields: Vec<FieldUpdate>,
     },
 }
@@ -1431,7 +1412,9 @@ pub enum ChatUpdate {
     Patch {
         from: u64,
         to: u64,
+        focus: ChatFocus,
         changes: Vec<ViewChange>,
+        has_older: bool,
         has_newer: bool,
         /// Priority fact for this frame; `Reset` is always [`ChatUpdatePriority::Immediate`].
         priority: ChatUpdatePriority,
@@ -1607,13 +1590,23 @@ impl ChatUpdates {
         }
         self.seen = next.version;
         // A `Reset` is always a real structural change. A `Patch` is deliverable when it carries a
-        // field change, or when the new-content hint (`has_newer`) first flips so the host can show
-        // it; an empty patch with an unchanged hint is an unrelated update this window does not show.
+        // content/splice change or when a window boundary (`focus`, `has_older`, `has_newer`)
+        // moved; an empty patch with unchanged boundaries is an unrelated update this window does
+        // not show.
         let deliver = match &update {
             ChatUpdate::Reset(_) => true,
             ChatUpdate::Patch {
-                changes, has_newer, ..
-            } => !changes.is_empty() || *has_newer != self.baseline.has_newer,
+                focus,
+                changes,
+                has_older,
+                has_newer,
+                ..
+            } => {
+                !changes.is_empty()
+                    || *focus != self.baseline.focus
+                    || *has_older != self.baseline.has_older
+                    || *has_newer != self.baseline.has_newer
+            }
         };
         if deliver {
             self.baseline = next;
@@ -1649,19 +1642,28 @@ impl ChatUpdates {
     /// [`ChatUpdates::take`], which also decides whether the frame is visible to this window.
     fn frame(&self) -> (ChatUpdate, ChatSnapshot, ChatUpdatePriority) {
         let next = self.view.snapshot();
-        if next.focus != self.baseline.focus
-            || next.has_older != self.baseline.has_older
-            || next.can_extend_latest != self.baseline.can_extend_latest
-            || next.version < self.baseline.version
+        if next.version < self.baseline.version
+            || ((next.focus != self.baseline.focus || next.has_older != self.baseline.has_older)
+                && !windows_overlap(&self.baseline.items, &next.items))
         {
             let update = ChatUpdate::Reset(next.clone());
             return (update, next, ChatUpdatePriority::Immediate);
         }
-        let (changes, priority) = diff(&self.baseline.items, &next.items);
+        let (changes, diff_priority) = diff(&self.baseline.items, &next.items);
+        let priority = if next.focus != self.baseline.focus
+            || next.has_older != self.baseline.has_older
+            || next.has_newer != self.baseline.has_newer
+        {
+            ChatUpdatePriority::Immediate
+        } else {
+            diff_priority
+        };
         let update = ChatUpdate::Patch {
             from: self.baseline.version,
             to: next.version,
+            focus: next.focus.clone(),
             changes,
+            has_older: next.has_older,
             has_newer: next.has_newer,
             priority,
         };
@@ -1765,7 +1767,6 @@ impl ChatView {
             items: window.items.clone(),
             has_older: window.has_older,
             has_newer: window.has_newer,
-            can_extend_latest: window.can_extend_latest(),
         }
     }
 
@@ -1784,7 +1785,9 @@ impl ChatView {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let same_focus = match &focus {
-                ChatFocus::Latest => window.focus == ChatFocus::Latest,
+                ChatFocus::Latest => {
+                    window.focus == ChatFocus::Latest && window.items.len() <= INITIAL_ITEMS
+                }
                 ChatFocus::Around(id) => {
                     window.focus == focus && window.items.iter().any(|item| &item.item_id == id)
                 }
@@ -1889,22 +1892,15 @@ impl ChatView {
         Ok(self.finish_control(&mut state, &mut window, changed))
     }
 
+    /// Loads one adjacent page in `direction`.
+    ///
+    /// While `window.focus == ChatFocus::Latest` and `Direction::Older` does not exceed
+    /// [`WINDOW_ITEMS`], the window stays in `ChatFocus::Latest` (`has_newer == false`) so live
+    /// tail items continue arriving in place. Once `Direction::Older` exceeds [`WINDOW_ITEMS`] and
+    /// truncates the tail, `has_newer` becomes `true` and `focus` switches to
+    /// [`ChatFocus::Around`] on the new tail item. Conversely, when `Direction::Newer` reaches the
+    /// latest tail (`!has_newer`), `focus` automatically restores [`ChatFocus::Latest`].
     pub async fn load(&self, direction: Direction) -> Result<ChatControlReceipt, ChatError> {
-        self.load_page(PageLoad::Browse(direction)).await
-    }
-
-    /// Adds one older page to a latest window without changing its reading intent.
-    /// Stops at the bounded capacity instead of evicting the live tail. A concurrent focus or
-    /// boundary change discards the read; cancellation before publication leaves the window intact.
-    pub async fn extend_latest(&self) -> Result<ChatControlReceipt, ChatError> {
-        self.load_page(PageLoad::ExtendLatest).await
-    }
-
-    async fn load_page(&self, intent: PageLoad) -> Result<ChatControlReceipt, ChatError> {
-        let direction = match intent {
-            PageLoad::Browse(direction) => direction,
-            PageLoad::ExtendLatest => Direction::Older,
-        };
         let (anchor, focus, generation) = {
             let mut state = self
                 .session
@@ -1916,9 +1912,6 @@ impl ChatView {
                 .window
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if matches!(intent, PageLoad::ExtendLatest) && !window.can_extend_latest() {
-                return Ok(self.finish_control(&mut state, &mut window, false));
-            }
             let anchor = match direction {
                 Direction::Older => window.items.first().map(|item| item.order),
                 Direction::Newer => window.items.last().map(|item| item.order),
@@ -1963,26 +1956,18 @@ impl ChatView {
         let before = WindowContents::capture(&window);
         let had_newer = window.has_newer;
         let had_older = window.has_older;
-        if direction == Direction::Older
-            && matches!(intent, PageLoad::Browse(_))
-            && focus == ChatFocus::Latest
-            && !addition.is_empty()
-            && let Some(last) = window.items.last()
-        {
-            window.focus = ChatFocus::Around(last.item_id.clone());
-        }
         let addition = refresh_window_items(&state, addition);
         window.items = merge_items(window.items.drain(..).chain(addition));
         let mut older_removed = false;
         let mut newer_removed = false;
         if window.items.len() > WINDOW_ITEMS {
-            match intent {
-                PageLoad::ExtendLatest | PageLoad::Browse(Direction::Newer) => {
+            match direction {
+                Direction::Newer => {
                     let excess = window.items.len() - WINDOW_ITEMS;
                     window.items.drain(..excess);
                     older_removed = true;
                 }
-                PageLoad::Browse(Direction::Older) => {
+                Direction::Older => {
                     window.items.truncate(WINDOW_ITEMS);
                     newer_removed = true;
                 }
@@ -1994,10 +1979,34 @@ impl ChatView {
             had_older || older_removed
         };
         window.has_newer = if direction == Direction::Newer {
-            page.has_newer || newer_removed
+            page.has_newer
+                || newer_removed
+                || window.items.last().is_some_and(|last| {
+                    state
+                        .recent
+                        .back()
+                        .is_some_and(|item| item.order > last.order)
+                        || state
+                            .unsaved_order
+                            .range((
+                                std::ops::Bound::Excluded(last.order),
+                                std::ops::Bound::Unbounded,
+                            ))
+                            .next()
+                            .is_some()
+                })
         } else {
             had_newer || newer_removed
         };
+        if !window.has_newer && direction == Direction::Newer {
+            window.focus = ChatFocus::Latest;
+        } else if window.has_newer
+            && (window.focus == ChatFocus::Latest
+                || matches!(&window.focus, ChatFocus::Around(id) if !window.items.iter().any(|item| &item.item_id == id)))
+            && let Some(last) = window.items.last()
+        {
+            window.focus = ChatFocus::Around(last.item_id.clone());
+        }
         overlay_complete(&mut window);
         let changed = !before.matches(&window);
         Ok(self.finish_control(&mut state, &mut window, changed))
@@ -2312,14 +2321,41 @@ fn same_frame(left: &ChatItem, right: &ChatItem) -> bool {
         })
 }
 
-/// Whether two aligned items keep the same row identity: identity, order, terminal lifecycle and
-/// static metadata. Such a row may be updated in place; anything else is a structural splice.
+/// Whether two aligned items keep the same row identity and turn binding.
+///
+/// Lifecycle and static `meta` changes are carried in-place by [`ViewChange::UpdateItem`], so a
+/// streaming-to-terminal transition or tool state update updates the existing row in place instead
+/// of splicing it out and back in.
 fn same_row(left: &ChatItem, right: &ChatItem) -> bool {
     left.item_id == right.item_id
         && left.order == right.order
-        && left.lifecycle == right.lifecycle
-        && left.turn_id == right.turn_id
-        && left.meta == right.meta
+        && (left.turn_id.is_empty() || left.turn_id == right.turn_id)
+}
+
+fn windows_overlap(previous: &[ChatItem], next: &[ChatItem]) -> bool {
+    previous
+        .iter()
+        .any(|old| next.iter().any(|new| same_row(old, new)))
+}
+
+fn find_sliding_overlap(previous: &[ChatItem], next: &[ChatItem]) -> Option<(usize, usize, usize)> {
+    let (prev_start, next_start) = previous.iter().enumerate().find_map(|(pi, old)| {
+        next.iter()
+            .position(|new| same_row(old, new))
+            .map(|ni| (pi, ni))
+    })?;
+    if prev_start != 0 && next_start != 0 {
+        return None;
+    }
+    let overlap_len = (previous.len() - prev_start).min(next.len() - next_start);
+    if overlap_len == 0 {
+        return None;
+    }
+    let contiguous = previous[prev_start..prev_start + overlap_len]
+        .iter()
+        .zip(&next[next_start..next_start + overlap_len])
+        .all(|(old, new)| same_row(old, new));
+    contiguous.then_some((prev_start, next_start, overlap_len))
 }
 
 /// Batched content change for one item that kept its row identity, or `None` when nothing changed.
@@ -2327,8 +2363,8 @@ fn same_row(left: &ChatItem, right: &ChatItem) -> bool {
 /// Every field delta of the identity travels under one `expected_revision` / `revision` commit, and
 /// a version-only or bounded-status-only change still produces a (field-delta-free) update so a
 /// consumer never keeps a stale revision or omitted status. The returned flag marks a boundary: the
-/// execution lifecycle or save watermark changed, or a field was removed or authoritatively
-/// replaced rather than appended.
+/// execution lifecycle, save watermark, or static metadata changed, or a field was removed or
+/// authoritatively replaced rather than appended.
 fn item_update(previous: &ChatItem, next: &ChatItem) -> Option<(ViewChange, bool)> {
     if same_frame(previous, next) {
         return None;
@@ -2358,8 +2394,11 @@ fn item_update(previous: &ChatItem, next: &ChatItem) -> Option<(ViewChange, bool
             });
         }
     }
+    let meta =
+        (previous.meta != next.meta || previous.turn_id != next.turn_id).then(|| next.meta.clone());
     let boundary = previous.lifecycle != next.lifecycle
         || previous.saved != next.saved
+        || meta.is_some()
         || fields
             .iter()
             .any(|delta| matches!(&delta.change, FieldChange::Remove | FieldChange::Replace(_)));
@@ -2369,6 +2408,8 @@ fn item_update(previous: &ChatItem, next: &ChatItem) -> Option<(ViewChange, bool
         revision: next.revision,
         omitted_bytes: next.omitted_bytes,
         saved: next.saved,
+        lifecycle: next.lifecycle,
+        meta,
         fields,
     };
     Some((change, boundary))
@@ -2380,17 +2421,31 @@ fn item_update(previous: &ChatItem, next: &ChatItem) -> Option<(ViewChange, bool
 /// authoritative replacement or a field removal — are delivered immediately. Only ordinary
 /// already-started text (appends, or re-versioned fields that are otherwise unchanged) coalesces.
 fn diff(previous: &[ChatItem], next: &[ChatItem]) -> (Vec<ViewChange>, ChatUpdatePriority) {
-    // A window of the same length usually changed only in place, so emit one batched item update per
-    // advanced identity instead of a whole splice.
-    if previous.len() == next.len()
-        && previous
-            .iter()
-            .zip(next)
-            .all(|(old, new)| same_row(old, new))
-    {
+    if let Some((prev_start, next_start, overlap_len)) = find_sliding_overlap(previous, next) {
         let mut changes = Vec::new();
         let mut boundary = false;
-        for (old, new) in previous.iter().zip(next) {
+        if prev_start > 0 || next_start > 0 {
+            boundary = true;
+            changes.push(ViewChange::Splice {
+                index: 0,
+                remove: prev_start,
+                items: next[..next_start].to_vec(),
+            });
+        }
+        let prev_tail_remove = previous.len() - prev_start - overlap_len;
+        let next_tail_insert = next.len() - next_start - overlap_len;
+        if prev_tail_remove > 0 || next_tail_insert > 0 {
+            boundary = true;
+            changes.push(ViewChange::Splice {
+                index: next_start + overlap_len,
+                remove: prev_tail_remove,
+                items: next[next_start + overlap_len..].to_vec(),
+            });
+        }
+        for (old, new) in previous[prev_start..prev_start + overlap_len]
+            .iter()
+            .zip(&next[next_start..next_start + overlap_len])
+        {
             if let Some((change, is_boundary)) = item_update(old, new) {
                 boundary |= is_boundary;
                 changes.push(change);

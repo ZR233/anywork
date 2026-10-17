@@ -107,7 +107,6 @@ class BridgeChatSnapshot {
   final List<BridgeChatItem> items;
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
 
   const BridgeChatSnapshot({
     required this.focus,
@@ -115,7 +114,6 @@ class BridgeChatSnapshot {
     required this.items,
     required this.hasOlder,
     required this.hasNewer,
-    required this.canExtendLatest,
   });
 
   @override
@@ -124,8 +122,7 @@ class BridgeChatSnapshot {
       version.hashCode ^
       items.hashCode ^
       hasOlder.hashCode ^
-      hasNewer.hashCode ^
-      canExtendLatest.hashCode;
+      hasNewer.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -136,8 +133,7 @@ class BridgeChatSnapshot {
           version == other.version &&
           items == other.items &&
           hasOlder == other.hasOlder &&
-          hasNewer == other.hasNewer &&
-          canExtendLatest == other.canExtendLatest;
+          hasNewer == other.hasNewer;
 }
 
 @freezed
@@ -149,7 +145,9 @@ sealed class BridgeChatUpdate with _$BridgeChatUpdate {
   const factory BridgeChatUpdate.patch({
     required BigInt from,
     required BigInt to,
+    required BridgeChatFocus focus,
     required List<BridgeViewChange> changes,
+    required bool hasOlder,
     required bool hasNewer,
     required BridgeUpdatePriority priority,
   }) = BridgeChatUpdate_Patch;
@@ -220,17 +218,19 @@ sealed class BridgeViewChange with _$BridgeViewChange {
     required List<BridgeChatItem> items,
   }) = BridgeViewChange_Splice;
 
-  /// 同一身份的全部内容字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
+  /// 同一身份的全部内容与状态字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
   ///
   /// 应用条件：本地该 `itemId` 的 content revision 等于 `expectedRevision`；否则按宿主策略重同步。
-  /// 全部字段应用完成后**一次**提交 `revision`、`omittedBytes` 与保存水位 `saved`——即使字段全为
-  /// `unchanged`（仅版本推进、仅保存确认）也必须提交，不能当成空 Patch 丢弃。
+  /// 全部字段应用完成后**一次**提交 `revision`、`omittedBytes`、保存水位 `saved` 与执行终态 `lifecycle`。
+  /// 当静态结构或状态发生迁移时，`itemShell` 携带不含动态正文的最新条目骨架。
   const factory BridgeViewChange.updateItem({
     required String itemId,
     required BigInt expectedRevision,
     required BigInt revision,
     required BigInt omittedBytes,
     required bool saved,
+    required BridgeChatLifecycle lifecycle,
+    BridgeThreadItem? itemShell,
     required List<BridgeFieldUpdate> fields,
   }) = BridgeViewChange_UpdateItem;
 }

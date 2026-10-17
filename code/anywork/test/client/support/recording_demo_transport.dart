@@ -65,9 +65,6 @@ class RecordingChatWindow implements StudioChatWindow {
       inner.load(direction);
 
   @override
-  Future<StudioChatReceipt> extendLatest() => inner.extendLatest();
-
-  @override
   Future<StudioChatReceipt> focus(String? itemId) {
     focusRequests.add(itemId);
     return inner.focus(itemId);

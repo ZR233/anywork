@@ -76,8 +76,6 @@ final class _FakeWindow implements StudioChatWindow {
   Future<StudioChatReceipt> load(TimelineDirection direction) =>
       loadResult.future;
   @override
-  Future<StudioChatReceipt> extendLatest() => loadResult.future;
-  @override
   Future<StudioChatReceipt> focus(String? itemId) {
     focusRequests.add(itemId);
     if (!focusEntered.isCompleted) focusEntered.complete();
@@ -268,7 +266,6 @@ StudioChatSnapshot _snapshot(
   items: items,
   hasOlder: true,
   hasNewer: false,
-  canExtendLatest: false,
 );
 
 StudioThreadSession _session(_FakeTransport transport) => StudioThreadSession(
@@ -387,6 +384,7 @@ void main() {
                 revision: 1,
                 omittedUnits: 0,
                 saved: true,
+                lifecycle: StudioChatLifecycle.terminal,
                 fields: [
                   StudioFieldUpdateView(
                     field: ThreadTextFieldView(),
@@ -891,6 +889,7 @@ void main() {
                 revision: 2,
                 omittedUnits: 0,
                 saved: true,
+                lifecycle: StudioChatLifecycle.streaming,
                 fields: [
                   const StudioFieldUpdateView(
                     field: ThreadTextFieldView(),

@@ -10,7 +10,6 @@ abstract interface class ChatHandle<S, F, R> {
   Future<S> initial();
   Future<F?> next();
   Future<R> load(ChatDirection direction);
-  Future<R> extendLatest();
   Future<R> focus(String? itemId);
   Future<R> expand(String itemId);
   void requestClose();

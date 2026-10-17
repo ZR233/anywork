@@ -18,9 +18,9 @@
 //! 重置”（换焦点/方向、按需重读当前窗口、镜像失同步）都重新 `subscribe()`，让 core 的差量基线与
 //! 交付出去的窗口是同一次读取。
 //!
-//! 控制操作（`focus`/`load`/`extend_latest`/`expand`）只返回**操作回执**，不直接交付窗口：core 在
+//! 控制操作（`focus`/`load`/`expand`）只返回**操作回执**，不直接交付窗口：core 在
 //! 焦点/翻页完成时推进版本并立即唤醒，消费者下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口
-//! 移动表达成权威 `Reset`（或大 splice `Patch`）。因此“已交付给客户端”的基线只由 `next`/`take`
+//! 移动表达成连续 `Patch`（或无交集跳转时的权威 `Reset`）。因此“已交付给客户端”的基线只由 `next`/`take`
 //! 推进，控制调用无法私自推进交付基线。`expand` 在可见全文升级时由 core 推进版本并通知，完整
 //! 正文仍由下一次 `take` 从唯一出口交付；条目已离开窗口时 core 不 retain、不通知。
 
@@ -37,7 +37,7 @@ use pl_protocol::{
 };
 
 use super::StudioRuntime;
-use super::chat_item::{TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, canonical_item};
+use super::chat_item::{TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, canonical_item, item_shell};
 
 /// 同一个 view 的**锁外**句柄：按身份读取不经过窗口锁，也不参与窗口差量基线。
 ///
@@ -191,8 +191,8 @@ impl ChatWindowStream {
     /// 按请求（锚点 + 方向）重建窗口，返回操作回执。
     ///
     /// 控制操作**不**重置订阅基线、也不直接交付窗口：core 在焦点/翻页完成时推进版本并立即唤醒，
-    /// 消费者的下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口移动表达成权威 `Reset`（或大
-    /// splice `Patch`），仍以消费者自己的交付基线为 `from`。「已交付给客户端」的水位只由
+    /// 消费者的下一次 `take` 由 [`ChatUpdates`] 自己的帧判定把窗口移动表达成权威 `Reset`（或连续
+    /// `Patch`），仍以消费者自己的交付基线为 `from`。「已交付给客户端」的水位只由
     /// `next`/`take` 推进。
     pub async fn focus(&mut self, query: &ChatWindowQuery) -> Result<ChatWindowReceipt> {
         let mut committed = self
@@ -227,12 +227,6 @@ impl ChatWindowStream {
         Ok(receipt(committed, true))
     }
 
-    /// 按页扩充 Latest，保持最新端；历史阅读或容量已满时返回明确 NoChange，不等待另一帧。
-    pub async fn extend_latest(&mut self) -> Result<ChatWindowReceipt> {
-        let committed = self.view.extend_latest().await?;
-        Ok(receipt(committed, true))
-    }
-
     /// 按 identity 读一条条目（同 view，内存优先）。
     pub async fn read_item(&self, item_id: &str) -> Result<Option<ChatWindowItem>> {
         self.handle().read_item(item_id).await
@@ -250,7 +244,9 @@ impl ChatWindowStream {
             ChatUpdate::Patch {
                 from,
                 to,
+                focus,
                 changes,
+                has_older,
                 has_newer,
                 priority,
             } => {
@@ -274,6 +270,8 @@ impl ChatWindowStream {
                             revision,
                             omitted_bytes,
                             saved,
+                            lifecycle,
+                            meta,
                             fields,
                         } => {
                             let Some(fields) = field_updates(&fields) else {
@@ -281,12 +279,18 @@ impl ChatWindowStream {
                                 // 绝不静默丢弃结构化数据。
                                 return self.resync();
                             };
+                            let item_shell = meta
+                                .as_deref()
+                                .map(|bytes| item_shell(bytes, revision).map(Box::new))
+                                .transpose()?;
                             converted.push(ChatWindowChange::UpdateItem {
                                 item_id,
                                 expected_revision,
                                 revision,
                                 omitted_bytes,
                                 saved,
+                                lifecycle: lifecycle_of(lifecycle),
+                                item_shell,
                                 fields,
                             });
                         }
@@ -295,7 +299,9 @@ impl ChatWindowStream {
                 ChatWindowUpdate::Patch {
                     from,
                     to,
+                    focus: window_focus(focus),
                     changes: converted,
+                    has_older,
                     has_newer,
                     priority: priority_of(priority),
                 }
@@ -407,13 +413,24 @@ fn priority_of(priority: pl_core::chat::ChatUpdatePriority) -> ChatWindowPriorit
     }
 }
 
+fn window_focus(focus: ChatFocus) -> ChatWindowFocus {
+    match focus {
+        ChatFocus::Latest => ChatWindowFocus::Latest,
+        ChatFocus::Around(item_id) => ChatWindowFocus::Around { item_id },
+    }
+}
+
+fn lifecycle_of(lifecycle: ChatLifecycle) -> ChatWindowLifecycle {
+    match lifecycle {
+        ChatLifecycle::Streaming => ChatWindowLifecycle::Streaming,
+        ChatLifecycle::Terminal => ChatWindowLifecycle::Terminal,
+    }
+}
+
 fn window_snapshot(thread_id: &str, window: ChatSnapshot) -> Result<ChatWindowSnapshot> {
     Ok(ChatWindowSnapshot {
         thread_id: thread_id.to_owned(),
-        focus: match window.focus {
-            ChatFocus::Latest => ChatWindowFocus::Latest,
-            ChatFocus::Around(item_id) => ChatWindowFocus::Around { item_id },
-        },
+        focus: window_focus(window.focus),
         version: window.version,
         items: window
             .items
@@ -422,20 +439,15 @@ fn window_snapshot(thread_id: &str, window: ChatSnapshot) -> Result<ChatWindowSn
             .collect::<Result<_>>()?,
         has_older: window.has_older,
         has_newer: window.has_newer,
-        can_extend_latest: window.can_extend_latest,
     })
 }
 
 /// 一条 core typed 条目 → wire 条目：结构化字段由 [`canonical_item`] 在交付边界如实组装。
 fn window_item(item: ChatItem) -> Result<ChatWindowItem> {
-    let lifecycle = match item.lifecycle {
-        ChatLifecycle::Streaming => ChatWindowLifecycle::Streaming,
-        ChatLifecycle::Terminal => ChatWindowLifecycle::Terminal,
-    };
     Ok(ChatWindowItem {
         item: canonical_item(&item)?,
         saved: item.saved,
-        lifecycle,
+        lifecycle: lifecycle_of(item.lifecycle),
         omitted_bytes: item.omitted_bytes,
     })
 }

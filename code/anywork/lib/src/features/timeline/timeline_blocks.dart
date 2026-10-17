@@ -155,7 +155,13 @@ class _TimelineRowBlock extends StatelessWidget {
     final isCompactActivity = row.isCompactActivity;
     return Padding(
       key: StudioDriverKeys.timelineRow(row.id),
-      padding: EdgeInsets.only(bottom: isCompactActivity ? 12 : 24),
+      padding: EdgeInsets.only(
+        bottom: isCompactActivity
+            ? 6
+            : isPrompt
+            ? 14
+            : 12,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: isPrompt
@@ -188,19 +194,20 @@ class _TimelineRowBlock extends StatelessWidget {
                             ?.copyWith(color: context.colors.onSurfaceVariant),
                       ),
                     ),
-                  Opacity(
-                    opacity: row.isRolledBack ? 0.52 : 1,
-                    child: _RowCard(key: ValueKey(row.id), row: row),
-                  ),
-                  // 行状态（等待保存 / 已回退）占据固定高度的元信息条：状态切换只改变
-                  // 图标可见性，不改变行高，正文几何与滚动锚点因此不受影响。
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        SizedBox.square(
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Opacity(
+                        opacity: row.isRolledBack ? 0.52 : 1,
+                        child: _RowCard(key: ValueKey(row.id), row: row),
+                      ),
+                      // 等待保存状态以内联角标附着在行块角落：状态切换只改变
+                      // 图标可见性，不额外撑高行底部，正文几何与滚动锚点因此不受影响。
+                      Positioned(
+                        right: isPrompt ? 6 : null,
+                        left: isPrompt ? null : 0,
+                        bottom: 2,
+                        child: SizedBox.square(
                           dimension: 16,
                           child: Center(
                             child: Visibility(
@@ -212,42 +219,44 @@ class _TimelineRowBlock extends StatelessWidget {
                                 message: context.l10n.timelinePendingSave,
                                 child: Icon(
                                   Icons.cloud_upload_outlined,
-                                  size: 14,
-                                  color: context.colors.onSurfaceVariant,
+                                  size: 13,
+                                  color: context.colors.onSurfaceVariant
+                                      .withValues(alpha: 0.72),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                        if (row.isRolledBack) ...[
-                          const SizedBox(width: 6),
-                          DecoratedBox(
-                            key: StudioDriverKeys.timelineRolledBack(row.id),
-                            decoration: BoxDecoration(
-                              color: context.colors.surfaceContainer,
-                              border: Border.all(
-                                color: context.colors.outlineVariant,
-                              ),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
-                              ),
-                              child: Text(
-                                context.l10n.timelineRolledBack,
-                                style: Theme.of(context).textTheme.labelSmall
-                                    ?.copyWith(
-                                      color: context.colors.onSurfaceVariant,
-                                    ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                  if (row.isRolledBack)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: DecoratedBox(
+                        key: StudioDriverKeys.timelineRolledBack(row.id),
+                        decoration: BoxDecoration(
+                          color: context.colors.surfaceContainer,
+                          border: Border.all(
+                            color: context.colors.outlineVariant,
+                          ),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          child: Text(
+                            context.l10n.timelineRolledBack,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
+                          ),
+                        ),
+                      ),
+                    ),
                   // 分组行的展开只放大已截断文本；完整正文按底层条目身份单独回源。
                   for (final state in body) _ItemBodyNotice(state: state),
                 ],
@@ -626,14 +635,15 @@ class _TimelineActivitySummary extends StatelessWidget {
         ? Theme.of(context).colorScheme.error
         : context.colors.onSurfaceVariant;
     return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 32),
+      constraints: const BoxConstraints(minHeight: 28),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+        padding: const EdgeInsets.symmetric(vertical: 4),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 16, color: color.withValues(alpha: 0.76)),
+            Icon(icon, size: 15, color: color.withValues(alpha: 0.78)),
             const SizedBox(width: 8),
-            Expanded(
+            Flexible(
               // 摘要是持续追加的文本，不是一次性出现的内容：这里必须是普通 Text。
               // 用 AnimatedSwitcher + label-key 会让每次增量都重新开始一段淡入淡出，
               // 持续输出时多个旧文本同时退场，表现为摘要忽明忽暗、叠影。
@@ -648,6 +658,12 @@ class _TimelineActivitySummary extends StatelessWidget {
                   height: 1.25,
                 ),
               ),
+            ),
+            const SizedBox(width: 4),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 15,
+              color: color.withValues(alpha: 0.72),
             ),
           ],
         ),

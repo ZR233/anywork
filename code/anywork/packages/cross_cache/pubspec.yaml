@@ -1,0 +1,20 @@
+name: cross_cache
+version: 1.1.1
+publish_to: 'none'
+description: >
+  Cross-platform cache manager for Flutter (upstream flyerhq/flutter_chat_ui
+  cross_cache 1.1.1 adapted for cross_file ^0.4.0 XFile.fileSystem).
+
+environment:
+  sdk: ^3.13.5
+  flutter: '>=3.47.7'
+
+dependencies:
+  cross_file: ^0.4.0
+  crypto: ^3.0.7
+  dio: ^5.9.0
+  flutter:
+    sdk: flutter
+  idb_shim: ^2.6.7+1
+  path_provider: ^2.1.5
+

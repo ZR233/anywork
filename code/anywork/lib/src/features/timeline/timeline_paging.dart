@@ -1,6 +1,12 @@
 part of 'timeline_view.dart';
 
 extension on _TimelineViewState {
+  Widget _buildChatMessageRow(Message message) {
+    final row = message.metadata?['row'] as TimelineRow?;
+    if (row == null) return const SizedBox.shrink();
+    return _buildRow(row, body: widget.body);
+  }
+
   /// 构建一行：行外壳、气泡、头像与状态元信息条都由应用自己的内容组件承担。
   ///
   /// 行由官方列表按稳定身份管理，投影只复用当前窗口内未变化的不可变数据。
@@ -157,16 +163,15 @@ extension on _TimelineViewState {
           ? widget.rows.isEmpty
           : position.maxScrollExtent - position.minScrollExtent < 1;
       if (_followingBottom && !_detachedByUser) {
-        // Filling a latest viewport must not change focus or evict the live tail.
-        // The backend owns capacity; a full bounded window never falls through to browsing.
+        // Filling a latest viewport preserves Latest focus while prepending older items.
         if (underfull &&
             !widget.hasNewer &&
-            _canExtendLatest &&
+            _canLoadOlder &&
             widget.olderError == null &&
             !_olderLoadRequested) {
           _olderLoadRequested = true;
-          ChatViewMetrics.prefetchExtendLatest += 1;
-          _dispatch(const TimelineExtendLatest());
+          ChatViewMetrics.prefetchLoadOlder += 1;
+          _dispatch(const TimelineLoadOlder());
         }
         return;
       }
@@ -219,9 +224,7 @@ extension on _TimelineViewState {
                     older ? 'timeline-history-retry' : 'timeline-newer-retry',
                   ),
                   onPressed: older
-                      ? (_followingBottom && !_detachedByUser
-                            ? () => _dispatch(const TimelineExtendLatest())
-                            : () => _dispatch(const TimelineLoadOlder()))
+                      ? () => _dispatch(const TimelineLoadOlder())
                       : () => _dispatch(const TimelineLoadNewer()),
                   icon: const Icon(Icons.refresh),
                   label: Text(context.l10n.timelineImageRetry),

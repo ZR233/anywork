@@ -311,7 +311,6 @@ ChatFrameResult _applyReset(
   final history = current.history.copyWith(
     hasOlder: snapshot.hasOlder,
     hasNewer: snapshot.hasNewer,
-    canExtendLatest: snapshot.canExtendLatest,
     olderCursor: items.firstOrNull?.id,
     newerCursor: items.lastOrNull?.id,
   );
@@ -383,10 +382,12 @@ ChatFrameResult _applyPatch(
         :final revision,
         :final omittedUnits,
         :final saved,
+        :final lifecycle,
+        :final itemShell,
         :final fields,
       ):
         // 整组字段在**一次**提交里原子应用：本地 revision 必须等于 expectedRevision，
-        // 应用完再一次性提交 revision/omitted/saved。终态条目拒绝迟到流式字段，
+        // 应用完再一次性提交 revision/omitted/saved/lifecycle。终态条目拒绝迟到流式字段，
         // 只接受保存/版本帧；任一条不成立就重开权威窗口，绝不把片段当正文。
         // 字段身份只由 typed discriminator 决定（如 thinkingContent 的 chunkIndex），
         // 不解析 JSON、不按字符串形状推断。
@@ -407,7 +408,8 @@ ChatFrameResult _applyPatch(
           revision: revision,
           omittedUnits: omittedUnits,
           saved: saved,
-          terminal: visible[index].executionTerminal,
+          terminal: lifecycle == StudioChatLifecycle.terminal,
+          itemShell: itemShell,
         );
         if (nextItem == null) {
           return ChatFrameResult(
@@ -421,6 +423,7 @@ ChatFrameResult _applyPatch(
   }
   final next = workspace.copyWith(items: List.unmodifiable(visible));
   final history = current.history.copyWith(
+    hasOlder: patch.hasOlder,
     hasNewer: patch.hasNewer,
     olderCursor: visible.firstOrNull?.id,
     newerCursor: visible.lastOrNull?.id,
@@ -452,9 +455,18 @@ ThreadSessionState releaseThreadHistoryState(ThreadSessionState current) {
 }
 
 ThreadSessionState jumpTimelineToLatestState(ThreadSessionState current) {
-  // 跳回最新是阅读意图切换：本地只推进 epoch 失效旧锚点恢复，正文镜像保留，
-  // 由权威窗口的 focus(latest) 交付的 Reset 替换，不渲染中间空窗。
-  final history = ThreadHistoryWindow(epoch: current.history.epoch + 1);
+  // 跳回最新是阅读意图切换：本地只推进 epoch 失效旧锚点恢复，正文镜像与当前窗口边界保留，
+  // 若权威窗口的 focus(latest) 发生收缩或重定位则由后续帧更新，不渲染中间空窗。
+  final history = current.history.copyWith(
+    anchor: null,
+    detached: false,
+    hasNewer: false,
+    isLoading: false,
+    direction: null,
+    errorMessage: null,
+    newerError: null,
+    epoch: current.history.epoch + 1,
+  );
   if (history == current.history) return current;
   return current.copyWith(history: history);
 }
@@ -570,7 +582,6 @@ bool _sameIds(Set<String> left, Set<String> right) =>
 bool _historyTouched(ThreadHistoryWindow window) {
   return window.hasOlder ||
       window.hasNewer ||
-      window.canExtendLatest ||
       window.olderCursor != null ||
       window.newerCursor != null ||
       window.errorMessage != null ||

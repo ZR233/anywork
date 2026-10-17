@@ -42,10 +42,6 @@ abstract class BridgeChatView implements RustOpaqueInterface {
   /// 不可得：调用方保留预览与重试入口，不伪造正文。
   Future<BridgeChatReceipt> expand({required String itemId});
 
-  /// Fill a short latest viewport without detaching from live content; returns the operation
-  /// receipt (`extend_latest` 的 no-op 分支明确返回 NoChange）。Closing cancels the read.
-  Future<BridgeChatReceipt> extendLatest();
-
   /// 换焦点的操作回执：窗口由下一次 `next` 以权威 `Reset` 交付。
   Future<BridgeChatReceipt> focus({required BridgeChatFocus focus});
 
@@ -53,7 +49,7 @@ abstract class BridgeChatView implements RustOpaqueInterface {
   /// A closed view rejects this call rather than returning a stale baseline.
   Future<BridgeChatSnapshot> initial();
 
-  /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、换出相反方向的一页）。
+  /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、必要时换出相反方向的一页）。
   ///
   /// 窗口移动由下一次 `next` 交付；`close` 会取消正在等待 history 的翻页。
   Future<BridgeChatReceipt> load({required BridgeChatDirection direction});

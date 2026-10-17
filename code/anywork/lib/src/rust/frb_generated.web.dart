@@ -704,6 +704,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeThreadActivity dco_decode_box_bridge_thread_activity(dynamic raw);
 
   @protected
+  BridgeThreadItem dco_decode_box_bridge_thread_item(dynamic raw);
+
+  @protected
   BridgeThreadNotificationEnvelope
   dco_decode_box_bridge_thread_notification_envelope(dynamic raw);
 
@@ -2128,6 +2131,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeThreadActivity? dco_decode_opt_box_bridge_thread_activity(dynamic raw);
 
   @protected
+  BridgeThreadItem? dco_decode_opt_box_bridge_thread_item(dynamic raw);
+
+  @protected
   BridgeThreadStorageState? dco_decode_opt_box_bridge_thread_storage_state(
     dynamic raw,
   );
@@ -3034,6 +3040,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeThreadActivity sse_decode_box_bridge_thread_activity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadItem sse_decode_box_bridge_thread_item(
     SseDeserializer deserializer,
   );
 
@@ -4834,6 +4845,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadItem? sse_decode_opt_box_bridge_thread_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadStorageState? sse_decode_opt_box_bridge_thread_storage_state(
     SseDeserializer deserializer,
   );
@@ -5874,6 +5890,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_bridge_thread_activity(
     BridgeThreadActivity self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_thread_item(
+    BridgeThreadItem self,
     SseSerializer serializer,
   );
 
@@ -8046,6 +8068,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_bridge_thread_activity(
     BridgeThreadActivity? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_bridge_thread_item(
+    BridgeThreadItem? self,
     SseSerializer serializer,
   );
 

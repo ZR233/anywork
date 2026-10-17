@@ -54,7 +54,7 @@ void main() {
       expect(transport.windows.single.nextCalls, 1);
       // The returned facades can differ, but both belong to the same ready attempt.
       expect(
-        (await views.first!.extendLatest()).disposition,
+        (await views.first!.load(TimelineDirection.older)).disposition,
         StudioChatDisposition.noChange,
       );
     },
