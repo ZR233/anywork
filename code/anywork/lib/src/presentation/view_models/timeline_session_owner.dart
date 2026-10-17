@@ -146,7 +146,6 @@ final class TimelineSessionOwner {
     return switch (command) {
       TimelineLoadOlder() => commands.loadOlderHistory(threadId),
       TimelineLoadNewer() => commands.loadNewerHistory(threadId),
-      TimelineExtendLatest() => commands.extendLatestHistory(threadId),
       TimelineJumpToLatest() => commands.jumpToLatest(threadId),
       TimelineExpandBody(:final itemId) => commands.loadItemBody(
         threadId,

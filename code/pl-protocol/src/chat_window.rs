@@ -99,8 +99,6 @@ pub struct ChatWindowSnapshot {
     pub items: Vec<ChatWindowItem>,
     pub has_older: bool,
     pub has_newer: bool,
-    /// 是否可向旧扩充 Latest 窗口而不淘汰最新端；容量由 core 决定。
-    pub can_extend_latest: bool,
 }
 
 /// 一帧是否需要立即交付，还是普通文本可以合帧。
@@ -132,7 +130,9 @@ pub enum ChatWindowUpdate {
     Patch {
         from: u64,
         to: u64,
+        focus: ChatWindowFocus,
         changes: Vec<ChatWindowChange>,
+        has_older: bool,
         has_newer: bool,
         priority: ChatWindowPriority,
     },
@@ -196,18 +196,21 @@ pub enum ChatWindowChange {
         remove: u64,
         items: Vec<ChatWindowItem>,
     },
-    /// 同一身份的全部内容字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
+    /// 同一身份的全部内容与状态字段，在**一次** `expectedRevision`/`revision` 提交里原子应用。
     ///
     /// 应用条件：本地该 `item_id` 的 content revision 等于 `expected_revision`；否则基线不连续，按宿主
     /// 策略重同步（**不是**逐字段升 revision）。全部字段应用完成后**一次**提交 `revision`、
-    /// `omitted_bytes` 与保存水位 `saved`——即使字段全为 `Unchanged`（仅版本推进、仅保存确认）也必须
-    /// 提交，不能当成空 Patch 丢弃。`saved` 与内容 revision、执行终态都相互独立。
+    /// `omitted_bytes`、保存水位 `saved` 与执行终态 `lifecycle`。当静态结构或状态发生迁移时，
+    /// `item_shell` 携带不含动态正文的最新条目骨架，由客户端保留当前动态正文基线后再应用 `fields`。
     UpdateItem {
         item_id: String,
         expected_revision: u64,
         revision: u64,
         omitted_bytes: u64,
         saved: bool,
+        lifecycle: ChatWindowLifecycle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_shell: Option<Box<ThreadItem>>,
         fields: Vec<ThreadFieldUpdate>,
     },
 }

@@ -134,7 +134,6 @@ final class _DraftWindow implements StudioChatWindow {
     items: [],
     hasOlder: false,
     hasNewer: false,
-    canExtendLatest: false,
   );
 
   @override
@@ -523,6 +522,7 @@ void main() {
             revision: 2,
             omittedUnits: 0,
             saved: true,
+            lifecycle: StudioChatLifecycle.terminal,
             fields: [],
           ),
         ],

@@ -296,7 +296,7 @@ class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
     }
 
     return Padding(
-      padding: const EdgeInsets.only(top: 3),
+      padding: const EdgeInsets.only(top: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -312,17 +312,16 @@ class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
                 borderRadius: BorderRadius.circular(StudioRadii.xs),
                 onTap: toggle,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 5,
-                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        Icons.collections_outlined,
-                        size: 17,
-                        color: context.colors.onSurfaceVariant,
+                        Icons.image_outlined,
+                        size: 15,
+                        color: context.colors.onSurfaceVariant.withValues(
+                          alpha: 0.78,
+                        ),
                       ),
                       const SizedBox(width: 8),
                       Flexible(
@@ -342,8 +341,10 @@ class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
                         expanded
                             ? Icons.keyboard_arrow_down_rounded
                             : Icons.chevron_right_rounded,
-                        size: 17,
-                        color: context.colors.onSurfaceVariant,
+                        size: 15,
+                        color: context.colors.onSurfaceVariant.withValues(
+                          alpha: 0.72,
+                        ),
                       ),
                     ],
                   ),
@@ -353,7 +354,7 @@ class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
           ),
           if (expanded)
             Padding(
-              padding: const EdgeInsets.only(left: 4, top: 6, bottom: 4),
+              padding: const EdgeInsets.only(top: 6, bottom: 4),
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -414,13 +415,13 @@ class _ThreadToolImageThumbnailState
     return Tooltip(
       message: _attachmentDescription(context, widget.entry.attachment),
       child: Container(
-        width: 120,
-        height: 120,
+        width: 112,
+        height: 84,
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: context.colors.surface,
           border: Border.all(color: context.colors.outlineVariant),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(StudioRadii.sm),
         ),
         child: _ThreadImageFuture(
           presentationId: widget.entry.entryId,

@@ -28,9 +28,9 @@ use pl_studio_runtime::{ChatWindowHandle, ChatWindowStream};
 /// 水位。等待期间不持有窗口锁，因此一个挂起的取帧不会挡住 `load`/`focus`/读正文；`close` 靠 select 的
 /// cancel 分支立刻结束等待。
 ///
-/// 内容交付只有一个出口 `next`：`load`/`focus`/`extend_latest`/`expand` 只返回操作回执
+/// 内容交付只有一个出口 `next`：`load`/`focus`/`expand` 只返回操作回执
 /// （`BridgeChatReceipt`），不交付窗口——core 在这些操作完成时推进版本并立即唤醒，下一次 `next` 把
-/// 窗口移动表达成权威 `Reset`（或大 splice `Patch`），始终以客户端自己的交付基线为 `from`。
+/// 窗口移动表达成连续 `Patch`（或无交集跳转时的权威 `Reset`），始终以客户端自己的交付基线为 `from`。
 pub struct BridgeChatView {
     /// 串行化所有接触窗口的操作；取帧只在短临界区里持锁（见结构体文档）。
     window: Mutex<Option<ChatWindowStream>>,
@@ -151,7 +151,7 @@ impl BridgeChatView {
             })
     }
 
-    /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、换出相反方向的一页）。
+    /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、必要时换出相反方向的一页）。
     ///
     /// 窗口移动由下一次 `next` 交付；`close` 会取消正在等待 history 的翻页。
     pub async fn load(
@@ -165,21 +165,6 @@ impl BridgeChatView {
             biased;
             () = self.cancel.cancelled() => Err(view_closed()),
             result = window.load(chat_window::direction(direction)) => {
-                Ok(chat_window::receipt(result?, operation_id))
-            }
-        }
-    }
-
-    /// Fill a short latest viewport without detaching from live content; returns the operation
-    /// receipt (`extend_latest` 的 no-op 分支明确返回 NoChange）。Closing cancels the read.
-    pub async fn extend_latest(&self) -> Result<BridgeChatReceipt, BridgeError> {
-        let _call = self.begin_call()?;
-        let operation_id = self.next_operation_id()?;
-        let mut window = self.lock_window().await?;
-        tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => Err(view_closed()),
-            result = window.extend_latest() => {
                 Ok(chat_window::receipt(result?, operation_id))
             }
         }

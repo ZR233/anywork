@@ -85,10 +85,6 @@ final class TimelineLoadNewer extends TimelineCommand {
   const TimelineLoadNewer();
 }
 
-final class TimelineExtendLatest extends TimelineCommand {
-  const TimelineExtendLatest();
-}
-
 final class TimelineJumpToLatest extends TimelineCommand {
   const TimelineJumpToLatest();
 }

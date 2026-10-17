@@ -9,7 +9,7 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('不足一屏且没有可加载历史时，不反复发出 extendLatest', (tester) async {
+  testWidgets('不足一屏且没有可加载历史时，不反复发出 loadOlder', (tester) async {
     final commands = <TimelineCommand>[];
     final row = _textRow('item-1', '短消息');
 
@@ -23,7 +23,6 @@ void main() {
           isLoadingOlder: loading,
           hasOlder: false,
           hasNewer: false,
-          canExtendLatest: false,
           onCommand: commands.add,
         ),
       );
@@ -46,7 +45,7 @@ void main() {
     final commands = <TimelineCommand>[];
     final row = _textRow('item-1', '短消息');
 
-    Widget view({required bool loading, required bool canExtend}) {
+    Widget view({required bool loading, required bool hasOlder}) {
       return _harness(
         TimelineView(
           threadId: 'thread-main',
@@ -54,35 +53,31 @@ void main() {
           body: const ThreadHistoryWindow(),
           turn: null,
           isLoadingOlder: loading,
-          hasOlder: canExtend,
+          hasOlder: hasOlder,
           hasNewer: false,
-          canExtendLatest: canExtend,
           onCommand: commands.add,
         ),
       );
     }
 
-    await tester.pumpWidget(view(loading: false, canExtend: true));
+    await tester.pumpWidget(view(loading: false, hasOlder: true));
     await tester.pump();
-    expect(_paging(commands), const [TimelineExtendLatest()]);
+    expect(_paging(commands), const [TimelineLoadOlder()]);
 
-    await tester.pumpWidget(view(loading: true, canExtend: true));
+    await tester.pumpWidget(view(loading: true, hasOlder: true));
     await tester.pump();
-    await tester.pumpWidget(view(loading: false, canExtend: true));
+    await tester.pumpWidget(view(loading: false, hasOlder: true));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 16));
 
-    expect(_paging(commands), const [TimelineExtendLatest()]);
+    expect(_paging(commands), const [TimelineLoadOlder()]);
   });
 }
 
 List<TimelineCommand> _paging(List<TimelineCommand> commands) {
   return [
     for (final command in commands)
-      if (command is TimelineExtendLatest ||
-          command is TimelineLoadOlder ||
-          command is TimelineLoadNewer)
-        command,
+      if (command is TimelineLoadOlder || command is TimelineLoadNewer) command,
   ];
 }
 

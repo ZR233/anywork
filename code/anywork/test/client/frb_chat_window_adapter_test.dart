@@ -23,7 +23,6 @@ void main() {
       expect(initial.focusedItemId, 'item-text');
       expect(initial.hasOlder, isTrue);
       expect(initial.hasNewer, isFalse);
-      expect(initial.canExtendLatest, isFalse);
       final first = initial.items.single;
       expect(first.item.id, 'item-text');
       expect(first.item.threadId, 'thread-A');
@@ -50,6 +49,7 @@ void main() {
         dto.BridgeChatUpdate.patch(
           from: BigInt.from(41),
           to: BigInt.from(45),
+          focus: const dto.BridgeChatFocus.around(itemId: 'item-text'),
           changes: [
             dto.BridgeViewChange.updateItem(
               itemId: 'item-text',
@@ -57,6 +57,8 @@ void main() {
               revision: BigInt.from(9),
               omittedBytes: BigInt.zero,
               saved: true,
+              lifecycle: dto.BridgeChatLifecycle.terminal,
+              itemShell: null,
               fields: const [
                 dto.BridgeFieldUpdate(
                   field: dto.BridgeContentField.text(),
@@ -70,6 +72,7 @@ void main() {
               items: [_wireItem(id: 'item-next', terminal: false, saved: true)],
             ),
           ],
+          hasOlder: false,
           hasNewer: true,
           priority: dto.BridgeUpdatePriority.immediate,
         ),
@@ -77,6 +80,8 @@ void main() {
       final patch = (await pending) as StudioChatPatch;
       expect(patch.from, 41);
       expect(patch.to, 45, reason: 'consolidated patches may skip versions');
+      expect(patch.focusedItemId, 'item-text');
+      expect(patch.hasOlder, isFalse);
       expect(patch.hasNewer, isTrue);
       expect(patch.changes, hasLength(2));
       final update = patch.changes.first as StudioViewItemUpdate;
@@ -85,6 +90,7 @@ void main() {
       expect(update.revision, 9);
       expect(update.omittedUnits, 0);
       expect(update.saved, isTrue);
+      expect(update.lifecycle, StudioChatLifecycle.terminal);
       expect(update.fields.single.field, isA<ThreadTextFieldView>());
       expect(
         (update.fields.single.change as AppendThreadFieldChangeView).text,
@@ -136,7 +142,7 @@ void main() {
         disposition: dto.BridgeChatDisposition.noChange,
         version: 41,
       );
-      final noChange = await window.extendLatest();
+      final noChange = await window.load(TimelineDirection.newer);
       expect(noChange.operationId, 102);
       expect(noChange.version, 41);
       expect(noChange.disposition, StudioChatDisposition.noChange);
@@ -242,7 +248,6 @@ dto.BridgeChatSnapshot _snapshot({int version = 41}) => dto.BridgeChatSnapshot(
   items: [_wireItem()],
   hasOlder: true,
   hasNewer: false,
-  canExtendLatest: false,
 );
 
 dto.BridgeChatItem _wireItem({
@@ -337,9 +342,6 @@ class _GeneratedChatView implements wire.BridgeChatView {
     loadDirections.add(direction);
     return receipt;
   }
-
-  @override
-  Future<dto.BridgeChatReceipt> extendLatest() async => receipt;
 
   @override
   Future<dto.BridgeChatReceipt> focus({

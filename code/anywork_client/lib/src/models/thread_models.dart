@@ -834,34 +834,62 @@ class ThreadItemView {
     required int omittedUnits,
     required bool saved,
     required bool terminal,
+    ThreadItemView? itemShell,
   }) {
     if (this.revision != expectedRevision) return null;
-    if (terminal) {
-      final unchangedOnly = fields.every(
-        (update) => update.change is UnchangedThreadFieldChangeView,
-      );
-      // 仅保存确认帧：正文、revision 与省略量都不变，只翻转保存水位。
-      final savedOnly =
-          unchangedOnly &&
-          revision == this.revision &&
-          omittedUnits == bodyOmittedUnits;
-      // 一次性的显示完整性升级：同 revision、省略量严格减少、只用权威 Replace 携带完整正文。
-      final completenessUpgrade =
-          revision == this.revision &&
-          omittedUnits < bodyOmittedUnits &&
-          fields.any(
-            (update) => update.change is ReplaceThreadFieldChangeView,
-          ) &&
-          fields.every(
-            (update) =>
-                update.change is ReplaceThreadFieldChangeView ||
-                update.change is UnchangedThreadFieldChangeView,
-          );
-      if (!savedOnly && !completenessUpgrade) return null;
+    if (executionTerminal) {
+      if (!terminal || revision < this.revision) return null;
+      if (revision == this.revision) {
+        if (itemShell != null) return null;
+        final unchangedOnly = fields.every(
+          (update) => update.change is UnchangedThreadFieldChangeView,
+        );
+        // 仅保存确认帧：正文、revision 与省略量都不变，只翻转保存水位。
+        final savedOnly = unchangedOnly && omittedUnits == bodyOmittedUnits;
+        // 一次性的显示完整性升级：同 revision、省略量严格减少、只用权威 Replace 携带完整正文。
+        final completenessUpgrade =
+            omittedUnits < bodyOmittedUnits &&
+            fields.any(
+              (update) => update.change is ReplaceThreadFieldChangeView,
+            ) &&
+            fields.every(
+              (update) =>
+                  update.change is ReplaceThreadFieldChangeView ||
+                  update.change is UnchangedThreadFieldChangeView,
+            );
+        if (!savedOnly && !completenessUpgrade) return null;
+      } else {
+        // 权威终态修订（如已接受输入绑定 turnId、或终态工具补充资源引用）：
+        // revision 严格递增，且不得对终态条目继续 Append 流式增量。
+        final authoritativeOnly = fields.every(
+          (update) => update.change is! AppendThreadFieldChangeView,
+        );
+        if (!authoritativeOnly) return null;
+      }
     }
     var nextState = state;
+    if (itemShell != null) {
+      if (itemShell.id != id ||
+          itemShell.ordinal != ordinal ||
+          (turnId.isNotEmpty && itemShell.turnId != turnId)) {
+        return null;
+      }
+      final seeded = _seedDynamicFieldsFromCurrent(state, itemShell.state);
+      if (seeded == null) return null;
+      nextState = seeded;
+    }
     var nextOmitted = omittedUnits;
     for (final update in fields) {
+      if (itemShell != null &&
+          update.field is ThreadToolResultFieldView &&
+          update.change is RemoveThreadFieldChangeView &&
+          nextState is ThreadToolItemStateView &&
+          nextState.lifecycle is! RunningThreadToolView &&
+          nextState.lifecycle is! CancellingThreadToolView) {
+        // Running/Cancelling -> Succeeded/Failed removes the streaming
+        // tool.result field while itemShell already carries the terminal output.
+        continue;
+      }
       final applied = _applyFieldChange(
         nextState,
         update.field,
@@ -873,12 +901,85 @@ class ThreadItemView {
       nextOmitted = applied.omittedUnits;
     }
     return copyWith(
+      turnId: itemShell?.turnId,
       revision: revision,
+      updatedAt: itemShell?.updatedAt,
       state: nextState,
+      contextDisposition: itemShell?.contextDisposition,
       bodyOmittedUnits: nextOmitted,
       saved: saved,
       executionTerminal: terminal,
     );
+  }
+
+  ThreadItemStateView? _seedDynamicFieldsFromCurrent(
+    ThreadItemStateView current,
+    ThreadItemStateView shell,
+  ) {
+    return switch ((current, shell)) {
+      (
+        ThreadTextItemStateView(:final text),
+        ThreadTextItemStateView(
+          :final channel,
+          :final attachments,
+          :final lifecycle,
+        ),
+      ) =>
+        ThreadTextItemStateView(
+          channel: channel,
+          text: text,
+          attachments: attachments,
+          lifecycle: lifecycle,
+        ),
+      (
+        ThreadThinkingItemStateView(
+          :final summary,
+          :final content,
+          :final summaryChunkBase,
+          :final contentChunkBase,
+        ),
+        ThreadThinkingItemStateView(:final lifecycle),
+      ) =>
+        ThreadThinkingItemStateView(
+          summary: summary,
+          content: content,
+          summaryChunkBase: summaryChunkBase,
+          contentChunkBase: contentChunkBase,
+          lifecycle: lifecycle,
+        ),
+      (
+        ThreadToolItemStateView(
+          invocation: final currentInvocation,
+          lifecycle: final currentLifecycle,
+        ),
+        ThreadToolItemStateView(
+          invocation: final shellInvocation,
+          lifecycle: final shellLifecycle,
+        ),
+      ) =>
+        ThreadToolItemStateView(
+          invocation: shellInvocation.withArguments(
+            currentInvocation.arguments,
+          ),
+          lifecycle: switch ((currentLifecycle, shellLifecycle)) {
+            (
+              RunningThreadToolView(:final streamedOutput) ||
+                  CancellingThreadToolView(:final streamedOutput),
+              RunningThreadToolView(),
+            ) =>
+              RunningThreadToolView(streamedOutput),
+            (
+              RunningThreadToolView(:final streamedOutput) ||
+                  CancellingThreadToolView(:final streamedOutput),
+              CancellingThreadToolView(),
+            ) =>
+              CancellingThreadToolView(streamedOutput),
+            _ => shellLifecycle,
+          },
+        ),
+      _ when current.runtimeType == shell.runtimeType => shell,
+      _ => null,
+    };
   }
 
   /// 把一个 typed 字段变化落进当前条目状态；返回 null 表示字段身份与条目不匹配（重同步）。
@@ -972,6 +1073,7 @@ class ThreadItemView {
   }
 
   ThreadItemView copyWith({
+    String? turnId,
     int? ordinal,
     int? revision,
     DateTime? updatedAt,
@@ -984,7 +1086,7 @@ class ThreadItemView {
     return ThreadItemView(
       id: id,
       threadId: threadId,
-      turnId: turnId,
+      turnId: turnId ?? this.turnId,
       ordinal: ordinal ?? this.ordinal,
       revision: revision ?? this.revision,
       createdAt: createdAt,
@@ -1216,7 +1318,6 @@ class ThreadHistoryWindow {
   const ThreadHistoryWindow({
     this.hasOlder = false,
     this.hasNewer = false,
-    this.canExtendLatest = false,
     this.olderCursor,
     this.newerCursor,
     this.isLoading = false,
@@ -1234,7 +1335,6 @@ class ThreadHistoryWindow {
   });
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
   final String? olderCursor;
   final String? newerCursor;
   final bool isLoading;
@@ -1269,7 +1369,6 @@ class ThreadHistoryWindow {
         other is ThreadHistoryWindow &&
             hasOlder == other.hasOlder &&
             hasNewer == other.hasNewer &&
-            canExtendLatest == other.canExtendLatest &&
             olderCursor == other.olderCursor &&
             newerCursor == other.newerCursor &&
             isLoading == other.isLoading &&
@@ -1290,7 +1389,6 @@ class ThreadHistoryWindow {
   int get hashCode => Object.hash(
     hasOlder,
     hasNewer,
-    canExtendLatest,
     olderCursor,
     newerCursor,
     isLoading,
@@ -1315,7 +1413,6 @@ class ThreadHistoryWindow {
   ThreadHistoryWindow copyWith({
     bool? hasOlder,
     bool? hasNewer,
-    bool? canExtendLatest,
     Object? olderCursor = _workspaceUnset,
     Object? newerCursor = _workspaceUnset,
     bool? isLoading,
@@ -1333,7 +1430,6 @@ class ThreadHistoryWindow {
   }) => ThreadHistoryWindow(
     hasOlder: hasOlder ?? this.hasOlder,
     hasNewer: hasNewer ?? this.hasNewer,
-    canExtendLatest: canExtendLatest ?? this.canExtendLatest,
     olderCursor: identical(olderCursor, _workspaceUnset)
         ? this.olderCursor
         : olderCursor as String?,

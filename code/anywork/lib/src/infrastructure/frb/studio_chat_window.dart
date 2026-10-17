@@ -30,7 +30,6 @@ class FrbChatWindow implements StudioChatWindow {
       items: List.unmodifiable(snapshot.items.map(_item)),
       hasOlder: snapshot.hasOlder,
       hasNewer: snapshot.hasNewer,
-      canExtendLatest: snapshot.canExtendLatest,
     );
     // 只读内容交付计数（仅 Driver 启用时统计；不是 FRB 物理 wire 字节）。
     StudioDriverState.recordChatWindowReset(next.items.length);
@@ -58,6 +57,8 @@ class FrbChatWindow implements StudioChatWindow {
         :final revision,
         :final omittedBytes,
         :final saved,
+        :final lifecycle,
+        :final itemShell,
         :final fields,
       ) =>
         StudioViewItemUpdate(
@@ -66,6 +67,10 @@ class FrbChatWindow implements StudioChatWindow {
           revision: _frbInt(revision),
           omittedUnits: _frbInt(omittedBytes),
           saved: saved,
+          lifecycle: lifecycle == frb_chat_types.BridgeChatLifecycle.terminal
+              ? StudioChatLifecycle.terminal
+              : StudioChatLifecycle.streaming,
+          itemShell: itemShell == null ? null : _threadItemFromFrb(itemShell),
           fields: [
             for (final update in fields)
               StudioFieldUpdateView(
@@ -95,17 +100,21 @@ class FrbChatWindow implements StudioChatWindow {
       frb_chat_types.BridgeChatUpdate_Patch(
         :final from,
         :final to,
+        :final focus,
         :final changes,
+        :final hasOlder,
         :final hasNewer,
       ) =>
-        _patch(from, to, changes, hasNewer),
+        _patch(from, to, focus, changes, hasOlder, hasNewer),
     };
   }
 
   StudioChatFrame _patch(
     BigInt from,
     BigInt to,
+    frb_chat_types.BridgeChatFocus focus,
     List<frb_chat_types.BridgeViewChange> changes,
+    bool hasOlder,
     bool hasNewer,
   ) {
     final projected = [for (final change in changes) _change(change)];
@@ -126,7 +135,9 @@ class FrbChatWindow implements StudioChatWindow {
     return StudioChatPatch(
       from: _frbInt(from),
       to: _frbInt(to),
+      focusedItemId: focus.when(latest: () => null, around: (itemId) => itemId),
       changes: List.unmodifiable(projected),
+      hasOlder: hasOlder,
       hasNewer: hasNewer,
     );
   }
@@ -183,12 +194,6 @@ class FrbChatWindow implements StudioChatWindow {
         },
       ),
     );
-  }
-
-  @override
-  Future<StudioChatReceipt> extendLatest() async {
-    if (_closed) throw StateError('Chat window is closed');
-    return _receipt(await _view.extendLatest());
   }
 
   @override

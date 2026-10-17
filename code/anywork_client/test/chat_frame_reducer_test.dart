@@ -78,6 +78,7 @@ void main() {
             revision: 2,
             omittedUnits: 0,
             saved: true,
+            lifecycle: StudioChatLifecycle.terminal,
             fields: [],
           ),
         ],
@@ -102,6 +103,7 @@ void main() {
             revision: 100,
             omittedUnits: 0,
             saved: true,
+            lifecycle: StudioChatLifecycle.terminal,
             fields: [],
           ),
         ],
@@ -109,6 +111,92 @@ void main() {
     );
     expect(mismatch.outcome, ChatFrameOutcome.resync);
     expect(mismatch.reason, ChatFrameRejectReason.itemCommitMismatch);
+  });
+
+  test('终态条目支持递增 revision 的权威壳层修订与 turnId 绑定，但拒绝终态 Append', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final later = DateTime.utc(2026, 1, 1, 0, 1);
+    final pendingInput = ThreadItemView(
+      id: 'input-1',
+      threadId: 'thread-main',
+      turnId: '',
+      ordinal: 0,
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+      executionTerminal: true,
+      saved: true,
+      state: ThreadTextItemStateView(
+        channel: ThreadTextChannel.user,
+        text: 'hello',
+        attachments: const [],
+        lifecycle: CompletedThreadContentView(now),
+      ),
+    );
+    final baseState = _state(version: 3).copyWith(
+      workspace: _state(version: 3).workspace!.copyWith(items: [pendingInput]),
+    );
+    final consumedShell = pendingInput.copyWith(
+      turnId: 'turn-1',
+      revision: 0,
+      updatedAt: later,
+    );
+    final applied = applyChatFrameState(
+      baseState,
+      StudioChatPatch(
+        from: 3,
+        to: 4,
+        hasNewer: false,
+        changes: [
+          StudioViewItemUpdate(
+            itemId: 'input-1',
+            expectedRevision: 1,
+            revision: 2,
+            omittedUnits: 0,
+            saved: true,
+            lifecycle: StudioChatLifecycle.terminal,
+            itemShell: consumedShell,
+            fields: const [
+              StudioFieldUpdateView(
+                field: ThreadTextFieldView(),
+                change: UnchangedThreadFieldChangeView(),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    expect(applied.outcome, ChatFrameOutcome.applied);
+    expect(applied.state.items.single.turnId, 'turn-1');
+    expect(applied.state.items.single.revision, 2);
+    expect(applied.state.items.single.updatedAt, later);
+
+    final rejectedAppend = applyChatFrameState(
+      applied.state,
+      const StudioChatPatch(
+        from: 4,
+        to: 5,
+        hasNewer: false,
+        changes: [
+          StudioViewItemUpdate(
+            itemId: 'input-1',
+            expectedRevision: 2,
+            revision: 3,
+            omittedUnits: 0,
+            saved: true,
+            lifecycle: StudioChatLifecycle.terminal,
+            fields: [
+              StudioFieldUpdateView(
+                field: ThreadTextFieldView(),
+                change: AppendThreadFieldChangeView(' more'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    expect(rejectedAppend.outcome, ChatFrameOutcome.resync);
+    expect(rejectedAppend.reason, ChatFrameRejectReason.itemCommitMismatch);
   });
 }
 
@@ -173,7 +261,6 @@ StudioChatSnapshot _snapshot({required int version}) {
     items: const [],
     hasOlder: false,
     hasNewer: false,
-    canExtendLatest: false,
     focusedItemId: null,
   );
 }

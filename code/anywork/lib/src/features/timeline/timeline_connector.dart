@@ -152,7 +152,6 @@ class TimelineSessionConnector extends ConsumerWidget {
         anchor: history.anchor,
         hasOlder: history.hasOlder,
         hasNewer: history.hasNewer,
-        canExtendLatest: history.canExtendLatest,
         olderCursor: history.olderCursor,
         newerCursor: history.newerCursor,
         windowEpoch: history.epoch,

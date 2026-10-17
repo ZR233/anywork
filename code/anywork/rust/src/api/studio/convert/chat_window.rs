@@ -46,7 +46,6 @@ pub(crate) fn snapshot(value: ChatWindowSnapshot) -> Result<BridgeChatSnapshot, 
             .collect::<Result<_, _>>()?,
         has_older: value.has_older,
         has_newer: value.has_newer,
-        can_extend_latest: value.can_extend_latest,
     })
 }
 
@@ -58,13 +57,17 @@ pub(crate) fn update(value: ChatWindowUpdate) -> Result<BridgeChatUpdate, Bridge
         ChatWindowUpdate::Patch {
             from,
             to,
+            focus: patch_focus,
             changes,
+            has_older,
             has_newer,
             priority,
         } => BridgeChatUpdate::Patch {
             from,
             to,
+            focus: focus(patch_focus),
             changes: changes.into_iter().map(change).collect::<Result<_, _>>()?,
+            has_older,
             has_newer,
             priority: priority_dto(priority),
         },
@@ -117,6 +120,8 @@ fn change(value: ChatWindowChange) -> Result<BridgeViewChange, BridgeError> {
             revision,
             omitted_bytes,
             saved,
+            lifecycle,
+            item_shell,
             fields,
         } => BridgeViewChange::UpdateItem {
             item_id,
@@ -124,6 +129,10 @@ fn change(value: ChatWindowChange) -> Result<BridgeViewChange, BridgeError> {
             revision,
             omitted_bytes,
             saved,
+            lifecycle: lifecycle_dto(lifecycle),
+            item_shell: item_shell
+                .map(|shell| bridge_chat_thread_item(*shell).map(Box::new))
+                .transpose()?,
             fields: fields.into_iter().map(field_update).collect(),
         },
     })

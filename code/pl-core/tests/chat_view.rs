@@ -375,12 +375,18 @@ impl ClientRow {
 
 #[derive(Clone, Debug)]
 struct Client {
+    focus: ChatFocus,
+    has_older: bool,
+    has_newer: bool,
     rows: Vec<ClientRow>,
 }
 
 impl Client {
     fn new(snapshot: &ChatSnapshot) -> Self {
         Self {
+            focus: snapshot.focus.clone(),
+            has_older: snapshot.has_older,
+            has_newer: snapshot.has_newer,
             rows: snapshot.items.iter().map(ClientRow::from_item).collect(),
         }
     }
@@ -388,9 +394,21 @@ impl Client {
     fn apply(&mut self, update: &ChatUpdate) {
         match update {
             ChatUpdate::Reset(snapshot) => {
+                self.focus = snapshot.focus.clone();
+                self.has_older = snapshot.has_older;
+                self.has_newer = snapshot.has_newer;
                 self.rows = snapshot.items.iter().map(ClientRow::from_item).collect();
             }
-            ChatUpdate::Patch { changes, .. } => {
+            ChatUpdate::Patch {
+                focus,
+                changes,
+                has_older,
+                has_newer,
+                ..
+            } => {
+                self.focus = focus.clone();
+                self.has_older = *has_older;
+                self.has_newer = *has_newer;
                 for change in changes {
                     match change {
                         ViewChange::Splice {
@@ -407,6 +425,8 @@ impl Client {
                             revision,
                             omitted_bytes,
                             saved,
+                            lifecycle,
+                            meta,
                             fields,
                         } => {
                             let row = self
@@ -441,6 +461,10 @@ impl Client {
                             row.revision = *revision;
                             row.omitted_bytes = *omitted_bytes;
                             row.saved = *saved;
+                            row.lifecycle = *lifecycle;
+                            if let Some(meta) = meta {
+                                row.meta = meta.clone();
+                            }
                         }
                     }
                 }
@@ -449,6 +473,9 @@ impl Client {
     }
 
     fn assert_matches(&self, snapshot: &ChatSnapshot) {
+        assert_eq!(self.focus, snapshot.focus, "focus");
+        assert_eq!(self.has_older, snapshot.has_older, "has_older");
+        assert_eq!(self.has_newer, snapshot.has_newer, "has_newer");
         assert_eq!(self.rows.len(), snapshot.items.len(), "row count");
         for (row, item) in self.rows.iter().zip(&snapshot.items) {
             assert_eq!(row.item_id, item.item_id, "identity");
@@ -489,6 +516,8 @@ fn expect_update(update: &ChatUpdate) -> (&str, u64, u64, u64, &[FieldUpdate]) {
                     revision,
                     omitted_bytes,
                     saved: _,
+                    lifecycle: _,
+                    meta: _,
                     fields,
                 },
             ] => (
@@ -1430,8 +1459,14 @@ async fn a_pending_wait_does_not_block_focus_or_load() {
         "focus must proceed while a wait is pending"
     );
     assert!(
-        matches!(update, Some(ChatUpdate::Reset(_))),
-        "the focus change wakes the pending wait as a reset"
+        matches!(
+            update,
+            Some(ChatUpdate::Patch {
+                focus: ChatFocus::Around(ref id),
+                ..
+            }) if id == "item-40"
+        ),
+        "focusing an already-visible item wakes the pending wait with a continuous patch"
     );
 
     // The same holds for a history page load: the wait must not hold a lock that blocks it.
@@ -1857,7 +1892,8 @@ async fn coalesced_window_versions_arrive_as_one_patch() {
 }
 
 #[tokio::test]
-async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading_intent() {
+async fn load_older_from_latest_fills_capacity_before_entering_around_and_load_newer_restores_latest()
+ {
     let session = Session::new(Stored {
         items: (1..=100)
             .map(|order| (order, item(order, 1, "stored", true)))
@@ -1866,62 +1902,96 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
     let (initial, mut updates) = view.subscribe();
     let mut client = Client::new(&initial);
-    assert!(initial.can_extend_latest);
+    assert_eq!(initial.focus, ChatFocus::Latest);
+    assert!(initial.has_older);
+    assert!(!initial.has_newer);
 
+    // Loading older while <= 96 items keeps ChatFocus::Latest and delivers a head-insert Patch.
     for expected in [64, 96] {
-        view.extend_latest().await.unwrap();
+        view.load(Direction::Older).await.unwrap();
         let snapshot = view.snapshot();
         assert_eq!(snapshot.focus, ChatFocus::Latest);
         assert_eq!(snapshot.items.len(), expected);
         assert_eq!(snapshot.items.last().unwrap().order, 100);
         assert!(!snapshot.has_newer);
         let update = apply_next(&mut client, &mut updates, &view).await;
-        if expected == 96 {
-            assert!(matches!(update, ChatUpdate::Reset(snapshot) if !snapshot.can_extend_latest));
-        }
+        assert!(matches!(
+            update,
+            ChatUpdate::Patch {
+                focus: ChatFocus::Latest,
+                has_older: true,
+                has_newer: false,
+                ..
+            }
+        ));
     }
-    let full = view.snapshot();
-    assert!(!full.can_extend_latest);
-    assert!(full.has_older);
-    assert_eq!(
-        view.extend_latest().await.unwrap().disposition,
-        ChatControlDisposition::NoChange,
-    );
-    assert_eq!(view.snapshot(), full);
-    assert!(
-        updates.take().is_none(),
-        "capacity must not create a reload loop"
-    );
 
+    // Live item arrives while at capacity (96 items) in ChatFocus::Latest: slides window by 1 via Patch.
     session.publish(item(101, 1, "still live", false)).unwrap();
-    apply_next(&mut client, &mut updates, &view).await;
+    let live_update = apply_next(&mut client, &mut updates, &view).await;
+    assert!(matches!(
+        live_update,
+        ChatUpdate::Patch {
+            focus: ChatFocus::Latest,
+            has_older: true,
+            has_newer: false,
+            ..
+        }
+    ));
     let live = view.snapshot();
     assert_eq!(live.focus, ChatFocus::Latest);
     assert_eq!(live.items.len(), 96);
     assert_eq!(live.items.first().unwrap().order, 6);
     assert_eq!(live.items.last().unwrap().order, 101);
 
+    // Loading older beyond 96 items truncates the tail and switches focus to ChatFocus::Around.
     view.load(Direction::Older).await.unwrap();
-
+    let history_update = apply_next(&mut client, &mut updates, &view).await;
+    assert!(matches!(
+        history_update,
+        ChatUpdate::Patch {
+            focus: ChatFocus::Around(_),
+            has_older: false,
+            has_newer: true,
+            ..
+        }
+    ));
     let history = view.snapshot();
     assert!(matches!(history.focus, ChatFocus::Around(_)));
-    assert!(!history.can_extend_latest);
+    assert!(!history.has_older);
+    assert!(history.has_newer);
+    assert_eq!(history.items.first().unwrap().order, 1);
+    assert_eq!(history.items.last().unwrap().order, 96);
     assert_eq!(
-        view.extend_latest().await.unwrap().disposition,
+        view.load(Direction::Older).await.unwrap().disposition,
         ChatControlDisposition::NoChange,
     );
     assert_eq!(view.snapshot(), history);
+
     session
         .publish(item(102, 1, "outside reading window", false))
         .unwrap();
     assert_eq!(view.snapshot().items, history.items);
     assert!(view.snapshot().has_newer);
+    assert!(updates.take().is_none());
 
-    view.focus(ChatFocus::Latest).await.unwrap();
-    assert!(view.snapshot().can_extend_latest);
-    assert_eq!(view.snapshot().items.last().unwrap().order, 102);
+    // Loading newer until !has_newer automatically restores ChatFocus::Latest.
+    view.load(Direction::Newer).await.unwrap();
+    let restored_update = apply_next(&mut client, &mut updates, &view).await;
+    assert!(matches!(
+        restored_update,
+        ChatUpdate::Patch {
+            focus: ChatFocus::Latest,
+            has_older: true,
+            has_newer: false,
+            ..
+        }
+    ));
+    let restored = view.snapshot();
+    assert_eq!(restored.focus, ChatFocus::Latest);
+    assert_eq!(restored.items.last().unwrap().order, 102);
 
-    // Exhausting real history before capacity is equally terminal, including an empty session.
+    // Exhausting real history before capacity is terminal and stays in ChatFocus::Latest.
     for count in [0, 40] {
         let short = Session::new(Stored {
             items: (1..=count)
@@ -1929,14 +1999,15 @@ async fn extending_latest_fills_capacity_without_losing_the_live_tail_or_reading
                 .collect(),
         });
         let view = short.open_chat(ChatFocus::Latest).await.unwrap();
-        view.extend_latest().await.unwrap();
+        if count > 32 {
+            view.load(Direction::Older).await.unwrap();
+        }
         let filled = view.snapshot();
         assert_eq!(filled.focus, ChatFocus::Latest);
         assert_eq!(filled.items.len(), count as usize);
-        assert!(!filled.can_extend_latest);
         assert!(!filled.has_older);
         assert_eq!(
-            view.extend_latest().await.unwrap().disposition,
+            view.load(Direction::Older).await.unwrap().disposition,
             ChatControlDisposition::NoChange,
         );
         assert_eq!(view.snapshot(), filled);

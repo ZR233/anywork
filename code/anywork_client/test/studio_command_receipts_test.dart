@@ -222,7 +222,6 @@ final class _RouteConflictWindow implements StudioChatWindow {
     items: [],
     hasOlder: false,
     hasNewer: false,
-    canExtendLatest: false,
   );
 
   @override

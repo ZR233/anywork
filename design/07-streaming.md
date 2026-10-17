@@ -199,17 +199,22 @@ Timeline workspace 的正文只有一个 owner：这份单列视图就是该 Thr
 `Latest` 首窗加 overlay 合并，磁盘写入与 flush 也不进入状态流。
 
 窗口内容交付只有**一个出口** `next`：首帧 `initial`（Reset），之后 Reset/Patch。控制操作
-（`load`/`focus`/`extend_latest`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`、
+（`load`/`focus`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`、
 权威 `Applied | NoChange` 与操作提交的窗口版本；`expand` 另带正文是否成功保留），不直接交付
 窗口，也不重置订阅基线。disposition 在窗口 owner 的提交边界裁决，不能由消费者读两次快照推断。
-`extend_latest` 在已到头、容量已满或不在 Latest 时合法 no-op：版本不变、不发内容帧。
+向上与向下分页统一通过 `load(Older)` / `load(Newer)` 驱动：当窗口处于 `Latest` 且向旧加载后总条数
+未超过有界窗口上限（`WINDOW_ITEMS`）时，不淘汰尾部条目、保持 `Latest` 聚焦与 `has_newer = false`，
+使实时流式尾部在向上翻阅近期历史时继续追加；仅当向旧加载超出窗口容量并裁剪尾部时才切换为
+`Around` 历史滑窗并置 `has_newer = true`；历史滑窗向新加载抵达最新尾部时自动恢复 `Latest` 聚焦。
+在已达历史边界时 `load` 为合法 no-op：版本不变、不发内容帧。
 相同 Latest 焦点，或窗口内仍可见的同一 Around 身份，focus 为 no-op：不推进 generation、不通知。
-core 在真正改变窗口的操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定把窗口移动
-表达成权威 `Reset`（或大 splice `Patch`），`from` 始终等于客户端最后收到的版本。因此
-「已交付给客户端」的水位只由 `next`/`take` 推进；GUI 不再有 load/focus 直接返回快照的第二条
-交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手读取的会话进度不是必须在内容帧
-出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。回执版本未超过当前已交付版本，只能
-证明观察屏障到达；Applied 的帧先于回包到达时版本也会相等，不能因此改判 NoChange。
+core 在真正改变窗口的操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定：
+仅当窗口与已交付基线无重叠身份或版本回退时发出权威 `Reset`，存在重叠身份的分页、扩窗、滑窗淘汰、
+边界标志（`focus`/`has_older`/`has_newer`）变化均通过携带最新窗口边界元数据的 `Patch` 增量交付，
+`from` 始终等于客户端最后收到的版本。因此「已交付给客户端」的水位只由 `next`/`take` 推进；GUI
+不再有 load/focus 直接返回快照的第二条交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手
+读取的会话进度不是必须在内容帧出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。回执版本未超过
+当前已交付版本，只能证明观察屏障到达；Applied 的帧先于回包到达时版本也会相等，不能因此改判 NoChange。
 Client ChatChannel 把 initial 作为新 attempt 的首个 Reset，和后续帧送入同一个 reducer；
 同一 view 同时至多一个未完成的 `next`，
 reduce 完上一帧后再取下一帧。连续性缺口（`from` 不匹配本地版本、目标 item 不在窗口、
@@ -221,9 +226,11 @@ ViewStamp 与 ResourceStamp 的版本域、attempt 关闭和 provider 观察边�
 core `pl-core::chat` 窗口是这一单列视图的唯一内容窗口：它以稳定的 `ChatField` 为内容身份，
 `Body`、带 provider part 身份的 `Part` 与宿主定义的 opaque `Host` key（例如工具 arguments 与
 result 两个不同域）都只是字段身份，core 不从正文推断协议字段。正文是共享不可变 `ContentBlock`，
-向宿主产出 typed 结果：同一 item 的全部字段变化合批为一次 `UpdateItem`（`expected_revision`
-一次基线校验、`revision` 一次版本提交，`omitted_bytes` 与保存水位 `saved` 随批一次提交），结构
-变化为 `Splice`；字段删除、仅版本推进、仅保存确认、同版本预览升级为完整正文都有完整可应用语义，
+向宿主产出基于 `(order, item_id)` 归并对齐的 typed 差量：窗口头尾的插入或滑窗裁剪表达为结构
+`Splice`，重叠区间内同一 item 的全部变化合批为一次原位 `UpdateItem`（`expected_revision`
+一次基线校验、`revision` 一次版本提交，`omitted_bytes`、保存水位 `saved`、执行生命周期
+`lifecycle` 与可选静态元数据壳 `meta` 随批一次提交），流式终态收敛或工具状态变更不重传已交付正文；
+字段删除、仅版本推进、仅保存确认、同版本预览升级为完整正文都有完整可应用语义，
 宿主不向 JSON 字符串追加字节、也不在每 token 解码或编码全文。四个事实互不替代：item 内容
 `revision`、窗口 `version`（patch 的 `from`/`to`）、保存水位 `saved`、执行终态 `ChatLifecycle`。
 `confirm_saved` 只翻 `saved`，不改变身份、顺序、revision、正文或执行终态，所以终态条目可以尚未

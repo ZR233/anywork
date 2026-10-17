@@ -395,6 +395,12 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     final result = applyChatFrameState(current, frame);
     switch (result.outcome) {
       case ChatFrameOutcome.applied:
+        if (_viewFocus.request == null) {
+          _viewFocus.itemId = switch (frame) {
+            StudioChatReset(:final snapshot) => snapshot.focusedItemId,
+            StudioChatPatch(:final focusedItemId) => focusedItemId,
+          };
+        }
         state = result.state;
         _itemBodyRequests.removeWhere(
           (id, _) => !state.history.previewedItemIds.contains(id),
@@ -405,9 +411,12 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
       case ChatFrameOutcome.resync:
         throw ChatProtocolError(result.reason.name);
     }
-    final reset = frame is StudioChatReset ? frame.snapshot : null;
+    final focusedItemId = switch (frame) {
+      StudioChatReset(:final snapshot) => snapshot.focusedItemId,
+      StudioChatPatch(:final focusedItemId) => focusedItemId,
+    };
     return StudioChatSnapshot(
-      focusedItemId: reset?.focusedItemId ?? _viewFocus.itemId,
+      focusedItemId: focusedItemId ?? _viewFocus.itemId,
       version: state.chatVersion!,
       items: List.unmodifiable([
         for (final item in state.items)
@@ -421,7 +430,6 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
       ]),
       hasOlder: state.history.hasOlder,
       hasNewer: state.history.hasNewer,
-      canExtendLatest: state.history.canExtendLatest,
     );
   }
 
@@ -608,6 +616,20 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     return token;
   }
 
+  Future<HistoryOperationOutcome> waitForHistoryOp(int token) {
+    final operation = _windowOperation;
+    if (operation == null || operation.token != token) {
+      final latest = historyOperation.value;
+      if (latest != null && latest.token == token) {
+        return Future<HistoryOperationOutcome>.value(latest.outcome);
+      }
+      return Future<HistoryOperationOutcome>.value(
+        HistoryOperationOutcome.retired,
+      );
+    }
+    return operation.settled.future;
+  }
+
   void observeHistoryOp(int token, StudioChatReceipt receipt) {
     final operation = _windowOperation;
     if (operation == null || operation.token != token) return;
@@ -647,6 +669,9 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
       error: message,
     );
     setHistoryError(operation.direction, message);
+    if (!operation.settled.isCompleted) {
+      operation.settled.complete(HistoryOperationOutcome.failed);
+    }
   }
 
   void _completeHistoryOpIfObserved() {
@@ -672,6 +697,9 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     _publishHistoryOperation(operation, outcome);
     if (state.history.isLoading) {
       state = state.copyWith(history: state.history.copyWith(isLoading: false));
+    }
+    if (!operation.settled.isCompleted) {
+      operation.settled.complete(outcome);
     }
   }
 
@@ -880,8 +908,6 @@ final class _StudioChatHandle
         : TimelineDirection.newer,
   );
   @override
-  Future<StudioChatReceipt> extendLatest() => window.extendLatest();
-  @override
   Future<StudioChatReceipt> focus(String? itemId) => window.focus(itemId);
   @override
   Future<StudioChatReceipt> expand(String itemId) => window.expandItem(itemId);
@@ -928,9 +954,6 @@ final class _SessionChatFacade implements StudioChatWindow {
           : ChatDirection.newer,
     ),
   );
-  @override
-  Future<StudioChatReceipt> extendLatest() =>
-      _control((view) => view.extendLatest());
   @override
   Future<StudioChatReceipt> focus(String? itemId) =>
       _control((view) => view.focus(itemId));
@@ -986,6 +1009,7 @@ final class _WindowOperation {
   final int token;
   final AttemptId? attempt;
   final TimelineDirection direction;
+  final Completer<HistoryOperationOutcome> settled = Completer();
   int? targetVersion;
   StudioChatDisposition? disposition;
   StudioChatReceipt? receipt;

@@ -91,9 +91,11 @@ initial 必须形成新 view 自己的首个 Reset，和后续 Reset/Patch 进�
 新 view 的 Patch baseline。同一 view 同时最多一个未完成 next，reduce 完后才取下一帧。
 Patch.from 必须等于当前已交付版本，to 必须前进；缺口只 resync 当前 view。
 
-load、focus、extendLatest、expand 返回 typed receipt，不直接替换 Dart baseline。
+load、focus、expand 返回 typed receipt，不直接替换 Dart baseline。
 Applied / NoChange 来自后端操作本身。已观察到 receipt 的目标版本只表示观察完成；
-帧先到和回执先到都必须收束，旧 attempt 的回包不能完成新 attempt 的操作。
+帧先到和回执先到都必须收束，旧 attempt 的回包不能完成新 attempt 的操作。分页命令返回的
+Future 等待该次操作收束（Applied 时等待对应目标版本的帧经 reducer 消化）后才完成，以便直接
+驱动 `flutter_chat_ui` 的异步分页回调与锚点恢复。
 
 正文补齐请求由 Session 关联当前 attempt 与独立请求身份。绑定退役后，旧请求的成功、
 失败和清理只能结束自身，不修改新绑定同一条目的加载、等待或失败状态；内容仍由当前
@@ -137,14 +139,14 @@ ThreadWorkspace 首快照携带的 Thread 仅用于建立身份；标题、模�
 状态流快照不反写目录行；`updatedAt` 不充当跨资源版本，尤其同秒晚到快照不能覆盖已交付的
 目录终态。mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 
-正文窗口保留有界 orderedIds 与按身份索引的 immutable row。列表只观察结构与分页能力，不把
-全局窗口 revision 注入所有行的相等性；行内容变化只表达为对应消息的原地更新，未变化的行
-复用同一身份与实例，移出窗口的行随之释放。Timeline 的展示 owner 由 AppGraph 持有，直接
-观察选中 Thread 的 ChatView 窗口，按 threadId 管理展示 lease，并向该 Thread 派发分页、聚焦、
-正文补齐与锚点意图；切换 Thread 时显式关闭旧 lease，关闭只释放自己的投影与附件展示缓存，
-不关闭 Session、ChatView 或草稿。行投影是展示 owner 的内存态，不另开 native view、
-正文缓存、消息操作流或会话事实源。Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件；连接组件与纯显示
-组件的边界见 [19](./19-studio-ui.md)。
+正文窗口保留有界 orderedIds 与按身份索引的 immutable row，并由 Timeline 展示 owner 驱动
+`TimelineChatController`（实现 `flutter_chat_core` 的 `ChatController`）：窗口壳层只观察会话身份、
+Turn 状态、分页边界与错误态，行内容变化通过 `ChatController.updateMessage` 原位更新对应消息子树，
+结构增删通过无动画的 `insertAllMessages`/`insertMessage`/`removeMessage` 驱动 `ChatAnimatedList`，
+移出窗口的行随之释放。Timeline 的展示 owner 由 AppGraph 持有，直接观察选中 Thread 的 ChatView
+窗口，按 threadId 管理展示 lease，并向该 Thread 派发分页、聚焦、正文补齐与锚点意图；切换 Thread
+时显式关闭旧 lease，关闭只释放自己的投影、控制器与附件展示缓存，不关闭 Session、ChatView 或草稿。
+Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件；连接组件与纯显示组件的边界见 [19](./19-studio-ui.md)。
 
 Connector 读取查询并调用稳定目标 action，向纯 View 传不可变 props。同一份业务值不能同时
 经 props 与 provider fallback 读取。图像、菜单和输入法等平台依赖留在适配层或 UI controller。

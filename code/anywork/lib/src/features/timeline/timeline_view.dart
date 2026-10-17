@@ -6,6 +6,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:scrollview_observer/scrollview_observer.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -25,6 +27,7 @@ import '../../shared/typed_json.dart';
 import 'markdown_repair.dart';
 
 part 'timeline_blocks.dart';
+part 'timeline_chat_controller.dart';
 part 'timeline_image_blocks.dart';
 part 'timeline_markdown_blocks.dart';
 part 'timeline_plan_blocks.dart';
@@ -66,7 +69,6 @@ class TimelineView extends StatelessWidget {
     this.newerError,
     this.hasOlder = false,
     this.hasNewer = false,
-    this.canExtendLatest = false,
     this.olderCursor,
     this.newerCursor,
     this.windowEpoch = 0,
@@ -91,7 +93,6 @@ class TimelineView extends StatelessWidget {
   final String? newerError;
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
   final String? olderCursor;
   final String? newerCursor;
   final int windowEpoch;
@@ -116,7 +117,6 @@ class TimelineView extends StatelessWidget {
       newerError: newerError,
       hasOlder: hasOlder,
       hasNewer: hasNewer,
-      canExtendLatest: canExtendLatest,
       olderCursor: olderCursor,
       newerCursor: newerCursor,
       windowEpoch: windowEpoch,
@@ -142,7 +142,6 @@ class _TimelineSurface extends StatefulWidget {
     this.newerError,
     this.hasOlder = false,
     this.hasNewer = false,
-    this.canExtendLatest = false,
     this.olderCursor,
     this.newerCursor,
     this.windowEpoch = 0,
@@ -165,7 +164,6 @@ class _TimelineSurface extends StatefulWidget {
   final String? newerError;
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
   final String? olderCursor;
   final String? newerCursor;
   final int windowEpoch;
@@ -180,6 +178,10 @@ class _TimelineViewState extends State<_TimelineSurface> {
 
   late final ScrollController _controller = ScrollController(
     keepScrollOffset: false,
+  );
+  late final TimelineChatController _chatController = TimelineChatController(
+    rows: widget.rows,
+    body: widget.body,
   );
   final Map<String, ExpansibleController> _expansion = {};
   final _ThreadImageLoader _imageLoader = _ThreadImageLoader();
@@ -196,7 +198,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
   bool get _detachedByUser => !_followingBottom;
   bool get _canLoadOlder => widget.hasOlder;
   bool get _canLoadNewer => widget.hasNewer;
-  bool get _canExtendLatest => widget.canExtendLatest;
 
   void _dispatch(TimelineCommand command) {
     widget.onCommand(command);
@@ -341,11 +342,11 @@ class _TimelineViewState extends State<_TimelineSurface> {
       _cancelLayoutRestore();
     }
     _retainExpandedGroupOverlaps(oldRows);
+    _chatController.syncWindow(widget.rows, widget.body);
     if (oldWidget.windowEpoch != widget.windowEpoch ||
         (oldWidget.olderCursor ?? oldRows.firstOrNull?.id) !=
             (widget.olderCursor ?? widget.rows.firstOrNull?.id) ||
-        oldWidget.hasOlder != widget.hasOlder ||
-        oldWidget.canExtendLatest != widget.canExtendLatest) {
+        oldWidget.hasOlder != widget.hasOlder) {
       _olderLoadRequested = false;
     }
 
@@ -405,6 +406,7 @@ class _TimelineViewState extends State<_TimelineSurface> {
     // 诊断投影随视图一起失效，避免驱动快照残留已销毁视图的几何。
     StudioDriverState.publishTimelineScroll(null);
     _controller.removeListener(_handleScrollPositionChanged);
+    _chatController.dispose();
     _controller.dispose();
     for (final controller in _expansion.values) {
       controller.dispose();
@@ -525,56 +527,93 @@ class _TimelineViewState extends State<_TimelineSurface> {
   }
 
   Widget _buildMessageList() {
-    final rows = widget.rows;
-    final indexes = {for (final entry in rows.indexed) entry.$2.id: entry.$1};
     final plan = widget.planConfirmation;
-    return SliverViewObserver(
-      controller: _observer,
-      sliverContexts: () => [?_sliverContext],
-      child: CustomScrollView(
-        controller: _controller,
-        physics: const AlwaysScrollableScrollPhysics(),
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
-        scrollCacheExtent: const ScrollCacheExtent.pixels(600),
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            sliver: Builder(
-              builder: (context) {
-                _sliverContext = context;
-                return SliverList.builder(
-                  itemCount: rows.length,
-                  findChildIndexCallback: (key) =>
-                      key is ValueKey<String> ? indexes[key.value] : null,
-                  itemBuilder: (context, index) {
-                    final row = rows[index];
-                    return KeyedSubtree(
-                      key: ValueKey(row.id),
-                      child: _buildRow(row, body: widget.body),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: _TimelineTail(
-                planSummary: plan == null
-                    ? null
-                    : _layoutItem(
-                        'plan:${plan.interactionId}',
-                        TimelinePlanSummaryCard(
-                          plan: plan,
-                          expanded: widget.planExpanded,
-                          onPressed: widget.onPlanToggle ?? () {},
+    return Chat(
+      currentUserId: _timelineUserAuthorId,
+      resolveUser: (id) async => User(id: id),
+      chatController: _chatController,
+      backgroundColor: Colors.transparent,
+      builders: Builders(
+        chatAnimatedListBuilder: (context, itemBuilder) {
+          return ChatAnimatedList(
+            itemBuilder: itemBuilder,
+            scrollController: _controller,
+            physics: const AlwaysScrollableScrollPhysics(),
+            cacheExtent: 600,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+            topPadding: 0,
+            bottomPadding: 0,
+            handleSafeArea: false,
+            insertAnimationDuration: Duration.zero,
+            removeAnimationDuration: Duration.zero,
+            scrollToEndAnimationDuration: Duration.zero,
+            initialScrollToEndMode: InitialScrollToEndMode.none,
+            shouldScrollToEndWhenSendingMessage: false,
+            shouldScrollToEndWhenAtBottom: false,
+            bottomSliver: SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: _TimelineTail(
+                  planSummary: plan == null
+                      ? null
+                      : _layoutItem(
+                          'plan:${plan.interactionId}',
+                          TimelinePlanSummaryCard(
+                            plan: plan,
+                            expanded: widget.planExpanded,
+                            onPressed: widget.onPlanToggle ?? () {},
+                          ),
                         ),
-                      ),
+                ),
               ),
             ),
-          ),
-        ],
+          );
+        },
+        chatMessageBuilder:
+            (
+              context,
+              message,
+              index,
+              animation,
+              child, {
+              bool? isRemoved,
+              required bool isSentByMe,
+              MessageGroupStatus? groupStatus,
+            }) {
+              if (isRemoved == true) {
+                return const SizedBox.shrink();
+              }
+              _sliverContext = SliverAnimatedList.maybeOf(context)?.context;
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: child,
+              );
+            },
+        textMessageBuilder: (
+          context,
+          message,
+          index, {
+          required bool isSentByMe,
+          MessageGroupStatus? groupStatus,
+        }) => _buildChatMessageRow(message),
+        textStreamMessageBuilder: (
+          context,
+          message,
+          index, {
+          required bool isSentByMe,
+          MessageGroupStatus? groupStatus,
+        }) => _buildChatMessageRow(message),
+        customMessageBuilder: (
+          context,
+          message,
+          index, {
+          required bool isSentByMe,
+          MessageGroupStatus? groupStatus,
+        }) => _buildChatMessageRow(message),
+        composerBuilder: (context) => const SizedBox.shrink(),
+        scrollToBottomBuilder: (context, animation, onPressed) =>
+            const SizedBox.shrink(),
+        emptyChatListBuilder: (context) => const SizedBox.shrink(),
       ),
     );
   }
@@ -1167,6 +1206,7 @@ class _TimelineViewState extends State<_TimelineSurface> {
       await _observer.jumpTo(
         index: index,
         sliverContext: _sliverContext,
+        renderSliverType: ObserverRenderSliverType.list,
         onPrepareScrollToIndex: (_) async => !isCurrent(),
       );
     } finally {
@@ -1224,9 +1264,6 @@ class _TimelineViewState extends State<_TimelineSurface> {
       if (!mounted || token != _correctionToken || _restoreClamped) return;
       final anchor = _captureAnchor();
       if (anchor == null) return;
-      // 「要改后端焦点」是一次意图动作，不是消息里的状态：`browseHistory` 是持续意图，
-      // 滚动每定稿一次都会重新发布锚点；按状态判断会让窗口内继续滚动每次都换后端焦点，
-      // 而后端焦点变化会让内容流交付整窗 Reset。进入历史阅读只发一次 focus 意图。
       final action = _browseFocusPending
           ? TimelineViewAction.enterHistory
           : null;

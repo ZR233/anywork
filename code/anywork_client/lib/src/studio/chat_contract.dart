@@ -25,7 +25,6 @@ class StudioChatSnapshot {
     required this.items,
     required this.hasOlder,
     required this.hasNewer,
-    required this.canExtendLatest,
   });
 
   final String? focusedItemId;
@@ -33,7 +32,6 @@ class StudioChatSnapshot {
   final List<StudioChatItem> items;
   final bool hasOlder;
   final bool hasNewer;
-  final bool canExtendLatest;
 }
 
 /// 一次同 item 的原子字段提交：全部字段应用完后一次提交 revision/omitted/saved。
@@ -68,7 +66,9 @@ class StudioViewItemUpdate extends StudioViewChange {
     required this.revision,
     required this.omittedUnits,
     required this.saved,
+    required this.lifecycle,
     required this.fields,
+    this.itemShell,
   });
 
   final String itemId;
@@ -76,12 +76,14 @@ class StudioViewItemUpdate extends StudioViewChange {
   final int revision;
   final int omittedUnits;
   final bool saved;
+  final StudioChatLifecycle lifecycle;
+  final ThreadItemView? itemShell;
   final List<StudioFieldUpdateView> fields;
 }
 
 /// 唯一内容出口交付的一帧权威内容。
 ///
-/// `Reset` 是权威整窗替换（窗口建立、换焦点/翻页的窗口移动、宿主回退）；
+/// `Reset` 是权威整窗替换（窗口建立、远距换焦点的窗口重建、宿主回退）；
 /// `Patch` 是相对消费者自己交付基线的 typed 差量。transport 只做 DTO 投影，
 /// 不保存第二份 baseline，也不在此应用差量——应用只属于 read model 的唯一 reducer。
 sealed class StudioChatFrame {
@@ -106,11 +108,15 @@ class StudioChatPatch extends StudioChatFrame {
     required this.to,
     required this.changes,
     required this.hasNewer,
+    this.focusedItemId,
+    this.hasOlder = false,
   });
 
   final int from;
   final int to;
+  final String? focusedItemId;
   final List<StudioViewChange> changes;
+  final bool hasOlder;
   final bool hasNewer;
 }
 
@@ -141,13 +147,12 @@ class StudioChatReceipt {
 /// 一个有界、独立定位的权威内容窗口。
 ///
 /// 唯一内容出口是 [next]：首帧 [initial]，之后 Reset/Patch。控制操作（[load]/[focus]/
-/// [extendLatest]/[expandItem]）只返回回执，不交付窗口；「已交付给客户端」的基线只由
+/// [expandItem]）只返回回执，不交付窗口；「已交付给客户端」的基线只由
 /// `next` 推进。同一 view 同时至多一个未完成的 `next`——消费方 reduce 完上一帧后再取下一帧。
 abstract interface class StudioChatWindow {
   Future<StudioChatSnapshot> initial();
   Future<StudioChatFrame?> next();
   Future<StudioChatReceipt> load(TimelineDirection direction);
-  Future<StudioChatReceipt> extendLatest();
   Future<StudioChatReceipt> focus(String? itemId);
 
   /// 按 identity 请求一条窗口条目的完整正文。

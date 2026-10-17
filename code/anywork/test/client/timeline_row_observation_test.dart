@@ -368,7 +368,6 @@ void main() {
               version: 4,
               hasOlder: false,
               hasNewer: false,
-              canExtendLatest: false,
               items: [
                 for (var i = 0; i < 24; i++)
                   entry(
@@ -741,6 +740,7 @@ void main() {
               revision: 2,
               omittedUnits: 0,
               saved: false,
+              lifecycle: StudioChatLifecycle.streaming,
               fields: const [
                 StudioFieldUpdateView(
                   field: ThreadTextFieldView(),
@@ -871,6 +871,7 @@ void main() {
               revision: version + 1,
               omittedUnits: 0,
               saved: false,
+              lifecycle: StudioChatLifecycle.streaming,
               fields: [
                 StudioFieldUpdateView(
                   field: const ThreadTextFieldView(),
@@ -1019,7 +1020,6 @@ class _ControlledWindow implements StudioChatWindow {
         ],
     hasOlder: false,
     hasNewer: false,
-    canExtendLatest: false,
   );
 
   @override
@@ -1054,6 +1054,7 @@ class _ControlledWindow implements StudioChatWindow {
           revision: expectedRevision + 1,
           omittedUnits: 0,
           saved: false,
+          lifecycle: StudioChatLifecycle.streaming,
           fields: [
             StudioFieldUpdateView(
               field: const ThreadTextFieldView(),

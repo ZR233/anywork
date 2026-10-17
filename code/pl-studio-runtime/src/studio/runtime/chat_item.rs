@@ -177,6 +177,13 @@ pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
     ))
 }
 
+/// 从静态 `meta` 还原不含动态正文的条目骨架，并填入当前权威 `revision`。
+pub(crate) fn item_shell(meta: &[u8], revision: u64) -> Result<ThreadItem> {
+    let mut shell: ThreadItem = serde_json::from_slice(meta)?;
+    shell.revision = revision;
+    Ok(shell)
+}
+
 fn text_of(item: &ChatItem, field: &ChatField) -> String {
     item.field(field)
         .map_or_else(String::new, |block| block.text())

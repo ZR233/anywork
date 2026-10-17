@@ -393,43 +393,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   Future<void> loadNewerHistory(String threadId) =>
       _track(() => _loadWindow(threadId, TimelineDirection.newer));
 
-  /// 运行中窗口追新：向旧扩充操作；loading 落在 older 边，与 timeline 上边缘的重试指示对齐。
-  Future<void> extendLatestHistory(String threadId) =>
-      _track(() => _extendLatestHistory(threadId));
-
-  Future<void> _extendLatestHistory(String threadId) async {
-    final session = _client.session(threadId).state;
-    if (!session.history.canExtendLatest || session.history.isLoading) return;
-    final store = _client.session(threadId);
-    final token = store.beginHistoryOp(TimelineDirection.older);
-    if (token == null) return;
-    try {
-      final window = await store.chatView();
-      if (window == null || !!_client.isClosed) {
-        store.failHistoryOp(token, 'Chat window is unavailable');
-        return;
-      }
-      final latest = _client.session(threadId).state;
-      if (!latest.history.canExtendLatest) {
-        store.observeHistoryOp(
-          token,
-          StudioChatReceipt(
-            operationId: token,
-            version: latest.chatVersion ?? 0,
-            retained: true,
-            disposition: StudioChatDisposition.noChange,
-          ),
-        );
-        return;
-      }
-      final receipt = await window.extendLatest();
-      if (!_client.isClosed) store.observeHistoryOp(token, receipt);
-    } catch (error) {
-      if (!_client.isClosed) store.failHistoryOp(token, error.toString());
-    }
-  }
-
-  /// 跳回实时底部：清锚点后聚焦权威窗口的 Latest；Reset 仍由内容泵交付。
+  /// 跳回实时底部：清锚点后聚焦权威窗口的 Latest；Reset/Patch 仍由内容泵交付。
   Future<void> jumpToLatest(String threadId) =>
       _track(() => _jumpToLatest(threadId));
 
@@ -545,15 +509,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     }
   }
 
-  /// 窗口内按方向翻一页：控制操作只取回执，窗口移动由内容泵以 Reset/Patch 交付。
+  /// 窗口内按方向翻一页：控制操作取回执并等待内容泵交付对应帧后完成。
   Future<void> _loadWindow(String threadId, TimelineDirection direction) async {
     final session = _client.session(threadId).state;
     final history = session.history;
     final older = direction == TimelineDirection.older;
     final canPage = older ? history.hasOlder : history.hasNewer;
     if (!session.hasSnapshot || history.isLoading || !canPage) return;
-    if (older) {
-    } else {}
     final store = _client.session(threadId);
     final token = store.beginHistoryOp(direction);
     if (token == null) return;
@@ -578,7 +540,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         return;
       }
       final receipt = await window.load(direction);
-      if (!_client.isClosed) store.observeHistoryOp(token, receipt);
+      if (!_client.isClosed) {
+        store.observeHistoryOp(token, receipt);
+        await store.waitForHistoryOp(token);
+      }
     } catch (error) {
       if (!_client.isClosed) store.failHistoryOp(token, error.toString());
     }
