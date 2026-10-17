@@ -5,6 +5,23 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.18.0](https://github.com/ZR233/anywork/compare/v6.17.0...v6.18.0) (2026-10-17)
+
+
+### Features
+
+* **studio:** 优化模型上下文压缩阈值 ([378ccd2](https://github.com/ZR233/anywork/commit/378ccd22e1f272cbb841a9c88297aa5fde3171b3))
+
+
+### Bug Fixes
+
+* **studio:** 优化远程项目连接为免密优先并按公布方式提示密码 ([11961b6](https://github.com/ZR233/anywork/commit/11961b6b45d9268243465b6c6c2d2523c173b0aa))
+
+
+### Refactoring
+
+* **studio:** 基于 flutter_chat_ui 重构 Timeline 并优化滑动窗口懒加载 ([#94](https://github.com/ZR233/anywork/issues/94)) ([dc59d50](https://github.com/ZR233/anywork/commit/dc59d504c17f1d82c23516766c98d72a85a0f2f2))
+
 ## [6.17.0](https://github.com/ZR233/anywork/compare/v6.16.0...v6.17.0) (2026-10-17)
 
 
