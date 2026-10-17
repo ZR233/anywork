@@ -5,6 +5,20 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.17.0](https://github.com/ZR233/anywork/compare/v6.16.0...v6.17.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 移除 StudioUpdateCommand::RecoverAfterRestart，不再恢复 settings 中的派生更新状态。进程重启后重新检查清单，再复用并验证下载库管理的缓存。
+
+### Bug Fixes
+
+* **studio:** 优化会话打开方式菜单 ([e689d2a](https://github.com/ZR233/anywork/commit/e689d2a0eaed667e8488b4a913fec85c8afc8ddc))
+* **studio:** 优化会话输入框键盘提交交互 ([4cf7de2](https://github.com/ZR233/anywork/commit/4cf7de2af17643393afa1239137f5a434b1a6336))
+* **studio:** 修复 Windows Worktree 长路径清理 ([a6453b0](https://github.com/ZR233/anywork/commit/a6453b0d468a5b56eda15c4f8a0bc0a31ba9af9a))
+* **studio:** 修复更新权限错误并支持断点续传 ([b3e6f15](https://github.com/ZR233/anywork/commit/b3e6f1526f926d1893af5c65c9ddcee90c75e37f))
+
 ## [6.16.0](https://github.com/ZR233/anywork/compare/v6.15.0...v6.16.0) (2026-10-17)
 
 
