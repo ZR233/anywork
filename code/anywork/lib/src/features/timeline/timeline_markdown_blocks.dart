@@ -8,21 +8,27 @@ enum _MarkdownSurface { assistant, user, panel, reasoning, error }
 // 转义，所以这里必须保持 raw。
 final RegExp _streamingMarkdownSyntax = RegExp(r'[\r\n\\`*_\[\]()#>~!|]');
 
-class _AgentMarkdown extends ConsumerWidget {
+class _AgentMarkdown extends ConsumerStatefulWidget {
   const _AgentMarkdown({
     required this.id,
-    required this.status,
     required this.text,
     required this.surface,
   });
 
   final String id;
-  final String status;
   final String text;
   final _MarkdownSurface surface;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_AgentMarkdown> createState() => _AgentMarkdownState();
+}
+
+class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
+  GptMarkdownThemeData? _headingTheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final _AgentMarkdown(:id, :text, :surface) = widget;
     final plainText =
         !_streamingMarkdownSyntax.hasMatch(text) &&
         !text.contains('://') &&
@@ -31,7 +37,6 @@ class _AgentMarkdown extends ConsumerWidget {
       return _PlainBodyText(
         key: ValueKey('plain-$id'),
         id: id,
-        status: status,
         text: text,
         surface: surface,
       );
@@ -42,18 +47,24 @@ class _AgentMarkdown extends ConsumerWidget {
         : const <String, String>{};
     final scheme = Theme.of(context).colorScheme;
     final onUserSurface = surface == _MarkdownSurface.user;
+    final headingTheme = GptMarkdownTheme.of(context).copyWith(
+      h1: _timelineHeadingStyle(context, surface, 2.0),
+      h2: _timelineHeadingStyle(context, surface, 1.5),
+      h3: _timelineHeadingStyle(context, surface, 1.25),
+      h4: _timelineHeadingStyle(context, surface, 1.0),
+      h5: _timelineHeadingStyle(context, surface, 0.875),
+      h6: _timelineHeadingStyle(context, surface, 0.85),
+    );
+    // The package notifies dependants by theme identity. Retain an equivalent
+    // configuration so unrelated window updates do not discard its text caches.
+    if (_headingTheme?.isSame(headingTheme) != true) {
+      _headingTheme = headingTheme;
+    }
     return GptMarkdownTheme(
       // VS Code 预览的标题阶梯：全部 w600、line-height 1.25，字级按正文字号
       // 相对递进（2/1.5/1.25/1/0.875/0.85em）。只能在 GptMarkdownThemeData
       // 上按级提供；用局部 InheritedWidget 覆盖，不改动全局主题。
-      gptThemeData: GptMarkdownTheme.of(context).copyWith(
-        h1: _timelineHeadingStyle(context, surface, 2.0),
-        h2: _timelineHeadingStyle(context, surface, 1.5),
-        h3: _timelineHeadingStyle(context, surface, 1.25),
-        h4: _timelineHeadingStyle(context, surface, 1.0),
-        h5: _timelineHeadingStyle(context, surface, 0.875),
-        h6: _timelineHeadingStyle(context, surface, 0.85),
-      ),
+      gptThemeData: _headingTheme!,
       child: GptMarkdown(
         repaired,
         key: ValueKey('gpt-markdown-$id'),
@@ -334,14 +345,12 @@ class _HeadingSelectionUnitState extends State<_HeadingSelectionUnit> {
 class _PlainBodyText extends StatefulWidget {
   const _PlainBodyText({
     required this.id,
-    required this.status,
     required this.text,
     required this.surface,
     super.key,
   });
 
   final String id;
-  final String status;
   final String text;
   final _MarkdownSurface surface;
 
@@ -375,12 +384,6 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
   /// 非追加替换则使全部分区失效。
   String? _validatedText;
   String? _validatedId;
-
-  /// 内容子树的稳定身份。
-  ///
-  /// 流式结束只是外层「禁用选择」的包装被去掉；用同一个 [GlobalKey] 让内容子树原样
-  /// 搬移而不是整棵重建，否则终态那一帧会把整段正文重新布局一次，抵消流式期间的收益。
-  late final GlobalKey _contentKey = GlobalKey();
 
   void _resetSealed() {
     _sealed.clear();
@@ -469,10 +472,7 @@ class _PlainBodyTextState extends State<_PlainBodyText> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: children,
               );
-        final body = KeyedSubtree(key: _contentKey, child: content);
-        return widget.status == 'streaming'
-            ? SelectionContainer.disabled(child: body)
-            : body;
+        return content;
       },
     );
   }

@@ -238,6 +238,94 @@ fn body_text(item: &ChatItem) -> String {
     item.body().map(|block| block.text()).unwrap_or_default()
 }
 
+#[tokio::test]
+async fn history_focus_commits_the_latest_body_and_independent_state_facts() {
+    for (revision, text) in [
+        (1, "old".to_owned()),
+        (2, "new".to_owned()),
+        (1, "canonical terminal body\n".repeat(16 * 1024)),
+    ] {
+        let gate = Arc::new(HistoryGate::new());
+        let session = Session::new(GatedHistory {
+            inner: Stored::default(),
+            page: Some((ChatQuery::Around(1), gate.clone())),
+            item: None,
+        });
+        session.publish(item(1, 1, "old", false)).unwrap();
+        let (view, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                session.open_chat(ChatFocus::Around("item-1".into())),
+                async {
+                    gate.entered.acquire().await.unwrap().forget();
+                    session.publish(item(1, revision, &text, true)).unwrap();
+                    session.confirm_saved("item-1", revision);
+                    gate.release.add_permits(1);
+                }
+            )
+        })
+        .await
+        .unwrap();
+        let (first, _) = view.unwrap().subscribe();
+        let actual = &first.items[0];
+        pretty_assertions::assert_eq!(
+            (actual.revision, actual.lifecycle, actual.saved),
+            (revision, ChatLifecycle::Terminal, true),
+        );
+        let visible = body_text(actual);
+        assert!(
+            text.starts_with(&visible),
+            "history must not restore a provisional body"
+        );
+        assert_eq!(
+            visible.len() as u64 + actual.omitted_bytes,
+            text.len() as u64
+        );
+    }
+}
+
+#[tokio::test]
+async fn history_page_commits_newly_visible_items_from_the_current_session() {
+    let gate = Arc::new(HistoryGate::new());
+    let session = Session::new(GatedHistory {
+        inner: Stored::default(),
+        page: Some((ChatQuery::Before(9), gate.clone())),
+        item: None,
+    });
+    for order in 1..=40 {
+        session.publish(item(order, 1, "old", false)).unwrap();
+    }
+    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
+    let (receipt, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(view.load(Direction::Older), async {
+            gate.entered.acquire().await.unwrap().forget();
+            session.publish(item(8, 2, "new", true)).unwrap();
+            session.confirm_saved("item-8", 2);
+            gate.release.add_permits(1);
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        receipt.unwrap().disposition,
+        ChatControlDisposition::Applied
+    );
+    let snapshot = view.snapshot();
+    let actual = snapshot
+        .items
+        .iter()
+        .find(|item| item.item_id == "item-8")
+        .unwrap();
+    pretty_assertions::assert_eq!(
+        (
+            actual.revision,
+            body_text(actual),
+            actual.lifecycle,
+            actual.saved
+        ),
+        (2, "new".to_owned(), ChatLifecycle::Terminal, true),
+    );
+}
+
 /// The same item with every content field extended by `delta` along its shared block chain.
 ///
 /// This is how the producer publishes a delta: the new revision shares the previous block instead of

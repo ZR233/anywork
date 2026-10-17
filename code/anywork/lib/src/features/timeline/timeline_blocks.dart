@@ -107,21 +107,9 @@ class _JumpToLatestButton extends StatelessWidget {
 }
 
 class _TimelineRowBlock extends StatelessWidget {
-  const _TimelineRowBlock({
-    required this.row,
-    required this.isReasoningExpanded,
-    required this.onToggleReasoning,
-    required this.isToolGroupExpanded,
-    required this.onToggleToolGroup,
-    this.body = const [],
-    super.key,
-  });
+  const _TimelineRowBlock({required this.row, this.body = const [], super.key});
 
   final TimelineRow row;
-  final bool isReasoningExpanded;
-  final ValueChanged<String> onToggleReasoning;
-  final bool isToolGroupExpanded;
-  final ValueChanged<String> onToggleToolGroup;
 
   /// 该行底层超大条目的完整正文状态；空列表表示该行不需要回源。
   ///
@@ -164,10 +152,7 @@ class _TimelineRowBlock extends StatelessWidget {
     final isUser = row.type == TimelineRowType.userMessage;
     final isParentAgent = row.type == TimelineRowType.parentAgentMessage;
     final isPrompt = isUser || isParentAgent;
-    final isCompactActivity =
-        row.type == TimelineRowType.reasoningSummary ||
-        row.type == TimelineRowType.toolGroup ||
-        row.type == TimelineRowType.skillActivation;
+    final isCompactActivity = row.isCompactActivity;
     return Padding(
       key: StudioDriverKeys.timelineRow(row.id),
       padding: EdgeInsets.only(bottom: isCompactActivity ? 12 : 24),
@@ -205,14 +190,7 @@ class _TimelineRowBlock extends StatelessWidget {
                     ),
                   Opacity(
                     opacity: row.isRolledBack ? 0.52 : 1,
-                    child: _RowCard(
-                      key: ValueKey(row.id),
-                      row: row,
-                      isReasoningExpanded: isReasoningExpanded,
-                      onToggleReasoning: onToggleReasoning,
-                      isToolGroupExpanded: isToolGroupExpanded,
-                      onToggleToolGroup: onToggleToolGroup,
-                    ),
+                    child: _RowCard(key: ValueKey(row.id), row: row),
                   ),
                   // 行状态（等待保存 / 已回退）占据固定高度的元信息条：状态切换只改变
                   // 图标可见性，不改变行高，正文几何与滚动锚点因此不受影响。
@@ -407,25 +385,15 @@ class _ItemBodyNotice extends StatelessWidget {
 }
 
 class _RowCard extends StatelessWidget {
-  const _RowCard({
-    required this.row,
-    required this.isReasoningExpanded,
-    required this.onToggleReasoning,
-    required this.isToolGroupExpanded,
-    required this.onToggleToolGroup,
-    super.key,
-  });
+  const _RowCard({required this.row, super.key});
 
   final TimelineRow row;
-  final bool isReasoningExpanded;
-  final ValueChanged<String> onToggleReasoning;
-  final bool isToolGroupExpanded;
-  final ValueChanged<String> onToggleToolGroup;
 
   @override
   Widget build(BuildContext context) {
-    return switch (row.type) {
-      TimelineRowType.turnOutcome => Semantics(
+    final row = this.row;
+    return switch (row) {
+      TimelineOutcomeRow() => Semantics(
         liveRegion: true,
         child: Container(
           key: ValueKey('timeline-turn-outcome:${row.turnId}'),
@@ -441,7 +409,7 @@ class _RowCard extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  row.part!.error!,
+                  row.reason,
                   style: context.text.bodySmall?.copyWith(
                     color: context.colors.error,
                     height: 1.5,
@@ -452,39 +420,32 @@ class _RowCard extends StatelessWidget {
           ),
         ),
       ),
-      TimelineRowType.userMessage ||
-      TimelineRowType.parentAgentMessage => _MarkdownBubble(
-        key: ValueKey(row.part!.id),
-        part: row.part!,
-        isUser: true,
+      final TimelineTextRow text => _MarkdownBubble(
+        key: ValueKey(text.part.id),
+        part: text.part,
+        isUser: text.isPrompt,
       ),
-      TimelineRowType.commentary ||
-      TimelineRowType.finalAnswer => _MarkdownBubble(
-        key: ValueKey(row.part!.id),
-        part: row.part!,
+      final TimelineRawRow raw => _MarkdownBubble(
+        part: raw.part,
         isUser: false,
       ),
-      TimelineRowType.reasoningSummary => _ReasoningPart(
-        key: ValueKey('${row.threadId}:${row.reasoningGroup!.id}'),
-        threadId: row.threadId,
-        group: row.reasoningGroup!,
-        expanded: isReasoningExpanded,
-        onToggle: () => onToggleReasoning(row.reasoningGroup!.id),
+      TimelineActivityRow(:final group) => _ActivityGroupPart(group: group),
+      TimelineImageRow() => _ImageReadPart(row: row),
+      TimelineSkillRow(:final activation) => _SkillActivationPart(
+        key: StudioDriverKeys.timelineSkillActivation(row.id),
+        activation: activation,
       ),
-      TimelineRowType.toolGroup => _ToolGroupPart(
-        key: ValueKey(row.toolGroup!.id),
-        threadId: row.threadId,
-        group: row.toolGroup!,
-        expanded: isToolGroupExpanded,
-        onToggle: () => onToggleToolGroup(row.toolGroup!.id),
-      ),
-      TimelineRowType.skillActivation => _SkillActivationPart(
-        key: StudioDriverKeys.timelineSkillActivation(row.part!.id),
-        activation: row.part!.skill!,
-      ),
-      TimelineRowType.agentActivity => _AgentPart(
-        key: ValueKey(row.agentEvent!.eventId),
-        event: row.agentEvent!,
+      TimelineAgentRow(:final agent) => _AgentPart(agent: agent),
+      TimelineCompactionRow(:final compaction) => Tooltip(
+        message: switch ((compaction.beforeTokens, compaction.afterTokens)) {
+          (final int before, final int after) =>
+            context.l10n.timelineCompactionDetail(before, after),
+          _ => context.l10n.timelineContextCompacted,
+        },
+        child: _TimelineActivitySummary(
+          icon: Icons.compress_outlined,
+          label: context.l10n.timelineContextCompacted,
+        ),
       ),
     };
   }
@@ -626,7 +587,6 @@ class _MarkdownBubble extends StatelessWidget {
             if (part.text.trim().isNotEmpty || part.error != null)
               _AgentMarkdown(
                 id: part.id,
-                status: part.status,
                 text: part.text.trim().isEmpty ? part.error ?? '' : part.text,
                 surface: surface,
               ),
@@ -649,143 +609,16 @@ String _formatBytes(int bytes) {
   return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
-class _ReasoningPart extends StatelessWidget {
-  const _ReasoningPart({
-    required this.threadId,
-    required this.group,
-    required this.expanded,
-    required this.onToggle,
-    super.key,
-  });
-
-  final String threadId;
-  final TimelineReasoningGroup group;
-  final bool expanded;
-  final VoidCallback onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    // 历史上发生过的推理只描述“曾经思考了什么”，展开态按 group 身份保存在 Timeline
-    // 状态里；当前活动由输入框上方的固定活动条单独呈现。
-    void toggle() {
-      _TimelineItemLayoutScope.report(
-        context,
-        expanded
-            ? _TimelineLayoutChangeKind.collapse
-            : _TimelineLayoutChangeKind.expand,
-      );
-      onToggle();
-    }
-
-    final label = _reasoningGroupLabel(context, group);
-    final details = expanded ? group.details : '';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Semantics(
-          container: true,
-          button: true,
-          expanded: expanded,
-          label: label,
-          onTap: toggle,
-          excludeSemantics: true,
-          child: Material(
-            key: ValueKey('reasoning:$threadId:${group.id}:$expanded'),
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(StudioRadii.xs),
-              onTap: toggle,
-              excludeFromSemantics: true,
-              child: _TimelineActivitySummary(
-                icon: Icons.psychology_alt_outlined,
-                label: label,
-                isIssue: const {
-                  'failed',
-                  'interrupted',
-                  'cancelled',
-                  'denied',
-                  'budgetLimited',
-                }.contains(group.status),
-                expanded: expanded,
-              ),
-            ),
-          ),
-        ),
-        if (expanded)
-          DecoratedBox(
-            key: const ValueKey('timeline-reasoning-group-details'),
-            decoration: BoxDecoration(
-              border: Border(
-                left: BorderSide(
-                  color: context.colors.outlineVariant.withValues(alpha: 0.82),
-                ),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 2, 6),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: details.isEmpty
-                    ? Text(
-                        context.l10n.timelineReasoningEmpty,
-                        style: context.text.bodySmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      )
-                    : _AgentMarkdown(
-                        id: group.id,
-                        status: group.status,
-                        text: details,
-                        surface: _MarkdownSurface.reasoning,
-                      ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-String _reasoningGroupLabel(
-  BuildContext context,
-  TimelineReasoningGroup group,
-) {
-  final allSummaries = group.summaries;
-  final summaries = allSummaries
-      .take(3)
-      .map(_activityPreview)
-      .toList(growable: true);
-  final hiddenCount = allSummaries.length - summaries.length;
-  if (hiddenCount > 0) {
-    summaries.add('+$hiddenCount');
-  }
-  return summaries.isEmpty
-      ? context.l10n.timelineReasoningCompleted
-      : summaries.join(' · ');
-}
-
-String _activityPreview(String text) {
-  const maxUnits = 160;
-  if (text.length <= maxUnits) return text.trim();
-  var start = text.length - maxUnits;
-  final current = text.codeUnitAt(start);
-  if (current >= 0xDC00 && current <= 0xDFFF) start++;
-  return '…${text.substring(start).trim()}';
-}
-
 class _TimelineActivitySummary extends StatelessWidget {
   const _TimelineActivitySummary({
     required this.icon,
     required this.label,
     this.isIssue = false,
-    this.expanded,
   });
 
   final IconData icon;
   final String label;
   final bool isIssue;
-  final bool? expanded;
 
   @override
   Widget build(BuildContext context) {
@@ -816,16 +649,6 @@ class _TimelineActivitySummary extends StatelessWidget {
                 ),
               ),
             ),
-            if (expanded != null) ...[
-              const SizedBox(width: 4),
-              Icon(
-                expanded!
-                    ? Icons.keyboard_arrow_up_rounded
-                    : Icons.keyboard_arrow_down_rounded,
-                size: 17,
-                color: context.colors.onSurfaceVariant,
-              ),
-            ],
           ],
         ),
       ),

@@ -127,7 +127,6 @@ class PlanDetailPanel extends StatelessWidget {
     required this.identity,
     required this.markdown,
     required this.statusLabel,
-    required this.markdownStatus,
     required this.onClose,
     this.overlay = false,
     super.key,
@@ -142,7 +141,6 @@ class PlanDetailPanel extends StatelessWidget {
   final String identity;
   final String markdown;
   final String statusLabel;
-  final String markdownStatus;
   final VoidCallback onClose;
   final bool overlay;
 
@@ -190,7 +188,6 @@ class PlanDetailPanel extends StatelessWidget {
     final divider = Divider(height: 1, color: context.colors.outlineVariant);
     final markdown = _AgentMarkdown(
       id: 'plan:$identity',
-      status: markdownStatus,
       text: this.markdown,
       surface: _MarkdownSurface.panel,
     );

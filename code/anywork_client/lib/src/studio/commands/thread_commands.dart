@@ -393,14 +393,6 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   Future<void> loadNewerHistory(String threadId) =>
       _track(() => _loadWindow(threadId, TimelineDirection.newer));
 
-  /// 打开会话后的首窗：确保权威内容绑定已建立，首帧 Reset 由内容泵交付。
-  Future<void> loadLatestHistory(String threadId) =>
-      _track(() => _loadLatestHistory(threadId));
-
-  Future<void> _loadLatestHistory(String threadId) async {
-    await _client.session(threadId).chatView();
-  }
-
   /// 运行中窗口追新：向旧扩充操作；loading 落在 older 边，与 timeline 上边缘的重试指示对齐。
   Future<void> extendLatestHistory(String threadId) =>
       _track(() => _extendLatestHistory(threadId));
@@ -534,28 +526,22 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     }
     if (!retry && history.itemBodyErrors.containsKey(itemId)) return;
     final store = _client.session(threadId);
-    final window = await store.chatView();
-    if (window == null || !!_client.isClosed) return;
-    final latest = _client.session(threadId).state;
-    if (!latest.history.previewedItemIds.contains(itemId) ||
-        latest.history.loadingItemIds.contains(itemId)) {
-      return;
-    }
-    store.beginItemBodyLoad(itemId);
+    final request = store.beginItemBodyLoad(itemId);
+    if (request == null) return;
     try {
-      final receipt = await window.expandItem(itemId);
-      if (!!_client.isClosed) return;
-      if (!receipt.retained) {
-        // 身份仍在窗口、正文此刻取不到：保留预览与重试入口，不编造正文。
-        store.markItemBodyPending(itemId);
+      final window = await store.chatView();
+      if (!store.isItemBodyRequestCurrent(request)) return;
+      if (window == null) {
+        store.failItemBodyLoad(request, 'Chat window is unavailable');
         return;
       }
-      // 完整正文已保留进权威窗口：由内容泵的下一次交付写进镜像，帧到达时
-      // 预览标记消失、`_syncItemBody` 自动清掉 loading，不在命令路径伪造正文。
+      final receipt = await window.expandItem(itemId);
+      if (!store.isItemBodyRequestCurrent(request)) return;
+      if (!receipt.retained) store.markItemBodyPending(request);
+      // The same content pump delivers the full body. Its reducer clears loading;
+      // a receipt never installs another body baseline.
     } catch (error) {
-      if (!_client.isClosed) {
-        store.failItemBodyLoad(itemId, error.toString());
-      }
+      store.failItemBodyLoad(request, error.toString());
     }
   }
 

@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:scrollview_observer/scrollview_observer.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
@@ -22,6 +23,127 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const threadId = 'thread-main';
+
+  testWidgets('未挂载锚点的逐帧定位在用户拖动时立即中止', (tester) async {
+    final now = DateTime.utc(2026);
+    final rows = TimelineRowProjector().project([
+      for (var index = 0; index < 80; index++)
+        ThreadItemView(
+          id: 'locate-$index',
+          threadId: threadId,
+          turnId: 'turn',
+          ordinal: index,
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+          state: ThreadTextItemStateView(
+            channel: ThreadTextChannel.finalAnswer,
+            text: List.filled(2 + index % 3, '第 $index 条正文').join('\n\n'),
+            attachments: const [],
+            lifecycle: CompletedThreadContentView(now),
+          ),
+        ),
+    ]);
+    final notifications = <Notification>[];
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 640,
+                height: 320,
+                child: NotificationListener<Notification>(
+                  onNotification: (event) {
+                    notifications.add(event);
+                    return false;
+                  },
+                  child: TimelineView(
+                    threadId: threadId,
+                    viewId: 'locate-view',
+                    rows: rows,
+                    body: const ThreadHistoryWindow(),
+                    turn: null,
+                    anchor: const TimelineAnchor(
+                      'locate-70',
+                      -10,
+                      readingIntent: TimelineReadingIntent.browseHistory,
+                    ),
+                    onCommand: (_) {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final position = tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .controller!
+        .position;
+    final target = find.byKey(StudioDriverKeys.timelineRow('locate-70'));
+    for (var frame = 0; frame < 12; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+      if (notifications
+              .whereType<ObserverScrollStartNotification>()
+              .isNotEmpty &&
+          position.pixels > 0 &&
+          target.evaluate().isEmpty) {
+        break;
+      }
+    }
+    expect(
+      notifications.whereType<ObserverScrollStartNotification>(),
+      hasLength(1),
+    );
+    expect(
+      notifications.whereType<ObserverScrollDecisionNotification>(),
+      isEmpty,
+    );
+    expect(position.pixels, greaterThan(0));
+    expect(
+      target,
+      findsNothing,
+      reason: 'the variable-height index search is still in progress',
+    );
+    final viewport = tester.getRect(find.byType(CustomScrollView));
+    final gesture = await tester.startGesture(
+      Offset(viewport.right - 12, viewport.center.dy),
+    );
+    await gesture.moveBy(const Offset(0, 40));
+    expect(
+      notifications.whereType<ScrollStartNotification>().any(
+        (event) => event.dragDetails != null,
+      ),
+      isTrue,
+    );
+    final heldPixels = position.pixels;
+    for (var frame = 0; frame < 3; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(
+        position.pixels,
+        closeTo(heldPixels, .5),
+        reason: 'a cancelled index search must not take over the held drag',
+      );
+      expect(tester.takeException(), isNull);
+    }
+    expect(
+      notifications.whereType<ObserverScrollInterruptionNotification>(),
+      hasLength(1),
+    );
+    expect(
+      notifications.whereType<ObserverScrollDecisionNotification>(),
+      isEmpty,
+    );
+    await gesture.up();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
 
   group('ViewFocus 去重语义', () {
     late ProviderContainer container;
@@ -240,7 +362,7 @@ List<TimelineRow> _rows(int count) {
   final now = DateTime.utc(2026, 1, 1);
   return [
     for (var index = 0; index < count; index++)
-      TimelineRow.item(
+      TimelineTextRow(
         item: ThreadItemView(
           id: 'item-$index',
           threadId: 'thread-main',
@@ -269,7 +391,6 @@ List<TimelineRow> _rows(int count) {
           createdAt: now,
           updatedAt: now,
         ),
-        type: TimelineRowType.userMessage,
       ),
   ];
 }

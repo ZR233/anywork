@@ -288,7 +288,7 @@ class HistoryLockJourney {
     // No tool may start on the locked turn: the fault-safe boundary forbids new
     // model/tool work while persistence cannot commit.
     checks['noToolStartedWhileWriterLocked'] = timelineRows(liveSnapshot)
-        .where((row) => row['type'] == 'toolGroup')
+        .where((row) => row['type'] == 'activityGroup')
         .isEmpty;
     await shot('locked-live');
 

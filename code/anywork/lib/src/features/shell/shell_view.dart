@@ -208,32 +208,6 @@ HeaderView headerView(Ref ref) {
   );
 }
 
-/// 打开后首窗请求。相等性只含 threadId，同一未完成请求不会重复通知。
-class ShellHistoryOpenRequest {
-  const ShellHistoryOpenRequest(this.threadId);
-
-  final String threadId;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ShellHistoryOpenRequest && threadId == other.threadId;
-
-  @override
-  int get hashCode => threadId.hashCode;
-}
-
-/// `needsOpen` 时不订阅会话。已有历史窗口后不再请求首窗。
-@riverpod
-ShellHistoryOpenRequest? shellHistoryOpenRequest(Ref ref) {
-  final selection = ref.watch(selectionStoreProvider);
-  final threadId = selection.selectedThreadId;
-  if (threadId == null || selection.needsOpen) return null;
-  final session = ref.watch(threadSessionStoreProvider(threadId));
-  if (!session.hasSnapshot || sessionHasTimelineWindow(session)) return null;
-  return ShellHistoryOpenRequest(threadId);
-}
-
 /// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
 /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。
@@ -422,12 +396,6 @@ PersistencePanelView persistencePanelView(Ref ref) {
 
 void retryShellPersistenceQueue(AnyworkClient client) {
   client.retryResource(const PersistenceQueueTopic());
-}
-
-/// 与 `timelineSessionWindowProvider` 共用的「已有时间线窗口」判定；正文镜像只在
-/// 内容绑定交付首帧后出现，历史库 identity 不再参与（SQL 分页旁路已删除）。
-bool sessionHasTimelineWindow(ThreadSessionState session) {
-  return session.hasChatWindow || session.items.isNotEmpty;
 }
 
 AgentWorkspaceSyncState sessionSyncState(ThreadSessionState session) {

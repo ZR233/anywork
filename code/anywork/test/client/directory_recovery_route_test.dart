@@ -15,6 +15,64 @@ import 'support/recording_demo_transport.dart';
 
 void main() {
   testWidgets(
+    'closing the selected thread does not reopen content from shell',
+    (tester) async {
+      final transport = RecordingDemoTransport();
+      final graph = AppGraph(transport: transport, clientId: 'closing-shell');
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await pumpClientFuture(
+          tester,
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          'closing shell teardown',
+        );
+      });
+      await pumpClientFuture(
+        tester,
+        graph.client.bootstrap(),
+        'shell bootstrap',
+      );
+      await pumpClientFuture(
+        tester,
+        graph.client.directoryCommands.selectThread('thread-main'),
+        'select closing thread',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appGraphProvider.overrideWithValue(graph)],
+          child: MaterialApp(
+            theme: pureStudioTheme(),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: const StudioShell(),
+          ),
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => graph.client.existingSession('thread-main')!.state.hasChatWindow,
+        'Client opens the initial content window',
+      );
+      await tester.pumpAndSettle();
+      final openedWindows = transport.windows.length;
+      await pumpClientFuture(
+        tester,
+        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        'close while shell remains mounted',
+      );
+      for (var frame = 0; frame < 4; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
+      expect(transport.windows, hasLength(openedWindows));
+      expect(
+        transport.windows.every((window) => window.joined.isCompleted),
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets(
     'directory failure retains the shell and explicitly retries its topic',
     (tester) async {
       final transport = _DirectoryFailureTransport();

@@ -1881,7 +1881,7 @@ impl ChatView {
         }
         let before = WindowContents::capture(&window);
         window.focus = focus;
-        window.items = items;
+        window.items = refresh_window_items(&state, items);
         window.has_older = has_older;
         window.has_newer = has_newer;
         overlay_complete(&mut window);
@@ -1971,6 +1971,7 @@ impl ChatView {
         {
             window.focus = ChatFocus::Around(last.item_id.clone());
         }
+        let addition = refresh_window_items(&state, addition);
         window.items = merge_items(window.items.drain(..).chain(addition));
         let mut older_removed = false;
         let mut newer_removed = false;
@@ -2189,6 +2190,40 @@ fn overlay_complete_body(slot: &mut ChatItem, full: &ChatItem) {
     slot.omitted_bytes = full.omitted_bytes;
 }
 
+/// Reconcile an IO candidate with facts published while the history read awaited. Call only while
+/// holding timeline -> window locks; never reenter Session accessors from this commit boundary.
+fn refresh_window_items(state: &TimelineState, items: Vec<ChatItem>) -> Vec<ChatItem> {
+    let mut current = Vec::with_capacity(items.len() * 3);
+    for candidate in items {
+        let recent = state
+            .recent
+            .iter()
+            .find(|item| item.item_id == candidate.item_id);
+        let resident = resident_item(state, &candidate.item_id);
+        // Terminal admission may authoritatively replace a provisional body at the same revision.
+        // An IO candidate captured before that boundary is not a more complete copy of the current
+        // body, even if their bounded prefixes happen to agree. Keep the true preview/omitted count
+        // and let the ordinary complete-body request fetch the canonical content.
+        let superseded = recent.into_iter().chain(resident.as_ref()).any(|current| {
+            current.revision == candidate.revision
+                && (current.lifecycle > candidate.lifecycle
+                    || (current.saved && !candidate.saved)
+                    || current.turn_id != candidate.turn_id
+                    || current.meta != candidate.meta)
+        });
+        if let Some(recent) = recent {
+            current.push(recent.clone());
+        }
+        if let Some(resident) = resident {
+            current.push(resident);
+        }
+        if !superseded {
+            current.push(candidate);
+        }
+    }
+    merge_items(current)
+}
+
 fn merge_items(items: impl IntoIterator<Item = ChatItem>) -> Vec<ChatItem> {
     let mut merged = BTreeMap::<String, ChatItem>::new();
     for item in items {
@@ -2205,16 +2240,10 @@ fn merge_items(items: impl IntoIterator<Item = ChatItem>) -> Vec<ChatItem> {
             if slot.revision == item.revision {
                 let saved = slot.saved || item.saved;
                 let lifecycle = slot.lifecycle.max(item.lifecycle);
-                if item.omitted_bytes < slot.omitted_bytes {
-                    // Keep the more complete body, carry the monotonic facts forward.
-                    let mut body = item;
-                    body.saved = saved;
-                    body.lifecycle = lifecycle;
-                    *slot = body;
-                } else {
-                    slot.saved = saved;
-                    slot.lifecycle = lifecycle;
-                }
+                // Completeness contributes body fields only. Keep current metadata and identity.
+                overlay_complete_body(slot, &item);
+                slot.saved = saved;
+                slot.lifecycle = lifecycle;
                 continue;
             }
             // A strictly newer revision replaces the slot outright.

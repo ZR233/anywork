@@ -1,162 +1,168 @@
 part of 'timeline_view.dart';
 
-/// 历史上的工具组：按发生顺序保留、默认折叠，展开态按 group 身份保存在 Timeline 状态里。
-///
-/// 当前正在执行的工具不再在这里高亮/搬动；那属于输入框上方固定活动条的职责。
-class _ToolGroupPart extends StatelessWidget {
-  const _ToolGroupPart({
-    required this.threadId,
-    required this.group,
-    required this.expanded,
-    required this.onToggle,
-    super.key,
+class _TimelineExpansionScope extends InheritedWidget {
+  const _TimelineExpansionScope({
+    required this.controllers,
+    required super.child,
   });
-
-  final String threadId;
-  final TimelineToolGroup group;
-  final bool expanded;
-  final VoidCallback onToggle;
+  final Map<String, ExpansibleController> controllers;
+  static ExpansibleController controllerOf(BuildContext context, String id) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_TimelineExpansionScope>()!;
+    return scope.controllers.putIfAbsent(id, ExpansibleController.new);
+  }
 
   @override
+  bool updateShouldNotify(_TimelineExpansionScope oldWidget) =>
+      controllers != oldWidget.controllers;
+}
+
+class _ActivityGroupPart extends StatelessWidget {
+  const _ActivityGroupPart({required this.group});
+  final TimelineActivityGroup group;
+  @override
   Widget build(BuildContext context) {
-    void toggle() {
-      _TimelineItemLayoutScope.report(
+    final controller = _TimelineExpansionScope.controllerOf(context, group.id);
+    final current = group.current;
+    final label = group.isActive
+        ? current.type == TimelineEntryType.tool
+              ? _toolTitle(context, TimelineToolItem(part: current))
+              : plainReasoningSummary(
+                      current.reasoningSummary.firstOrNull ?? '',
+                    ) ??
+                    context.l10n.timelineReasoningActive
+        : group.toolCount == 0
+        ? context.l10n.timelineReasoningCompleted
+        : '${group.hasReasoning ? context.l10n.timelineActivityTitle : context.l10n.timelineToolGroupTitle} · ${context.l10n.timelineToolGroupSummary(group.toolCount)}';
+    final firstIssue = group.firstIssue;
+    final issue = firstIssue != null;
+    return ExpansionTile(
+      key: StudioDriverKeys.timelineActivitySummary(group.id),
+      controller: controller,
+      initiallyExpanded: controller.isExpanded,
+      maintainState: false,
+      minTileHeight: 32,
+      dense: true,
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(left: 14, bottom: 6),
+      shape: const Border(),
+      collapsedShape: const Border(),
+      onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
         context,
         expanded
-            ? _TimelineLayoutChangeKind.collapse
-            : _TimelineLayoutChangeKind.expand,
-      );
-      onToggle();
-    }
-
-    final imageEntries = _toolImageEntries(group.items);
-    final activityLabel = _toolGroupActivityLabel(context, group);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+            ? _TimelineLayoutChangeKind.expand
+            : _TimelineLayoutChangeKind.collapse,
+      ),
+      title: _TimelineActivitySummary(
+        icon: issue
+            ? Icons.error_outline
+            : group.hasReasoning
+            ? Icons.psychology_alt_outlined
+            : Icons.build_outlined,
+        label: issue
+            ? '${context.toolStatusLabel(firstIssue.status)} · $label'
+            : label,
+        isIssue: issue,
+      ),
       children: [
-        Semantics(
-          key: StudioDriverKeys.timelineToolGroupSummary(group.id),
-          container: true,
-          button: true,
-          expanded: expanded,
-          label: activityLabel,
-          onTap: toggle,
-          excludeSemantics: true,
-          child: Material(
-            key: const ValueKey('timeline-tool-group-summary'),
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(StudioRadii.xs),
-              onTap: toggle,
-              excludeFromSemantics: true,
-              child: _TimelineActivitySummary(
-                icon: _toolGroupIcon(group),
-                label: activityLabel,
-                isIssue: group.issueCount > 0,
-                expanded: expanded,
-              ),
+        DecoratedBox(
+          key: const ValueKey('timeline-activity-details'),
+          decoration: BoxDecoration(
+            border: Border(
+              left: BorderSide(color: context.colors.outlineVariant),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.only(left: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final part in group.parts)
+                  if (part.type == TimelineEntryType.reasoning)
+                    _ReasoningActivity(part: part)
+                  else
+                    _ToolActivity(item: TimelineToolItem(part: part)),
+              ],
             ),
           ),
         ),
-        if (imageEntries.isNotEmpty) ...[
-          const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _ToolActivity extends StatelessWidget {
+  const _ToolActivity({required this.item});
+  final TimelineToolItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final images = _toolImageEntries([item]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_isWebSearch(item))
+          _WebSearchToolCard(item: item, embedded: true)
+        else
+          _ToolDetails(item: item),
+        if (images.isNotEmpty)
           _ThreadImageGallery(
-            threadId: threadId,
-            entries: imageEntries,
-            groupId: group.id,
-          ),
-        ],
-        if (expanded)
-          DecoratedBox(
-            key: const ValueKey('timeline-tool-group-details'),
-            decoration: BoxDecoration(
-              border: Border(
-                left: BorderSide(
-                  color: context.colors.outlineVariant.withValues(alpha: 0.82),
-                ),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 2, 6),
-              child: Column(
-                children: [
-                  for (final item in group.items)
-                    _isWebSearch(item)
-                        ? _WebSearchToolCard(item: item, embedded: true)
-                        : _ToolGroupItemRow(item: item),
-                ],
-              ),
-            ),
+            threadId: item.part.threadId,
+            entries: images,
+            groupId: item.id,
           ),
       ],
     );
   }
+}
 
-  String _toolGroupActivityLabel(
-    BuildContext context,
-    TimelineToolGroup group,
-  ) {
-    final visibleItems = group.items.take(3).toList();
-    final labels = [for (final item in visibleItems) _toolTitle(context, item)];
-    final hiddenCount = group.items.length - visibleItems.length;
-    if (hiddenCount > 0) {
-      labels.add(context.l10n.timelineToolGroupSummary(hiddenCount));
-    }
-    final issueReason = group.firstIssueReason;
-    if (issueReason != null) {
-      labels.add(issueReason);
-    }
-    return labels.isEmpty
-        ? context.l10n.timelineToolGroupTitle
-        : labels.join(' · ');
+class _ReasoningActivity extends StatelessWidget {
+  const _ReasoningActivity({required this.part});
+  final TimelineEntry part;
+  @override
+  Widget build(BuildContext context) {
+    final chunks = part.reasoningContent.isNotEmpty
+        ? part.reasoningContent
+        : part.reasoningSummary;
+    final text = chunks.where((chunk) => chunk.trim().isNotEmpty).join('\n\n');
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: text.isEmpty
+          ? Text(context.l10n.timelineReasoningEmpty)
+          : _AgentMarkdown(
+              id: part.id,
+              text: text,
+              surface: _MarkdownSurface.reasoning,
+            ),
+    );
   }
 }
 
-IconData _toolGroupIcon(TimelineToolGroup group) {
-  if (group.items.length != 1) {
-    return Icons.build_outlined;
+class _ImageReadPart extends StatelessWidget {
+  const _ImageReadPart({required this.row});
+  final TimelineImageRow row;
+  @override
+  Widget build(BuildContext context) {
+    final entries = _toolImageEntries([row.tool]);
+    if (entries.isEmpty) {
+      return _ToolDetails(item: row.tool);
+    }
+    return _ThreadImageGallery(
+      threadId: row.threadId,
+      entries: entries,
+      groupId: row.id,
+    );
   }
-  final name = group.items.first.name.toLowerCase();
-  if (name == 'web_search') {
-    return Icons.travel_explore;
-  }
-  if (name == 'lsp_query' || name == 'lsp_capabilities') {
-    return Icons.code_outlined;
-  }
-  if (name.contains('exec') ||
-      name.contains('command') ||
-      name.contains('shell') ||
-      name.contains('stdin')) {
-    return Icons.terminal;
-  }
-  if (name.contains('edit') ||
-      name.contains('write') ||
-      name.contains('patch') ||
-      name.contains('move') ||
-      name.contains('copy') ||
-      name.contains('delete') ||
-      name.contains('create')) {
-    return Icons.edit_outlined;
-  }
-  if (name.contains('read') ||
-      name.contains('search') ||
-      name.contains('list') ||
-      name.contains('stat') ||
-      name.contains('glob') ||
-      name.contains('grep')) {
-    return Icons.menu_book_outlined;
-  }
-  return Icons.build_outlined;
 }
 
-bool _isWebSearch(TimelineToolGroupItem item) {
+bool _isWebSearch(TimelineToolItem item) {
   return item.tool?.name == 'web_search';
 }
 
 class _WebSearchToolCard extends StatelessWidget {
   const _WebSearchToolCard({required this.item, this.embedded = false});
 
-  final TimelineToolGroupItem item;
+  final TimelineToolItem item;
   final bool embedded;
 
   @override
@@ -390,10 +396,10 @@ void _collectWebLinks(Object? value, Set<String> links) {
   }
 }
 
-class _ToolGroupItemRow extends StatelessWidget {
-  const _ToolGroupItemRow({required this.item});
+class _ToolDetails extends StatelessWidget {
+  const _ToolDetails({required this.item});
 
-  final TimelineToolGroupItem item;
+  final TimelineToolItem item;
 
   @override
   Widget build(BuildContext context) {
@@ -430,6 +436,10 @@ class _ToolGroupItemRow extends StatelessWidget {
       padding: const EdgeInsets.only(top: 6),
       child: ExpansionTile(
         key: ValueKey('timeline-tool-details:${item.id}'),
+        controller: _TimelineExpansionScope.controllerOf(
+          context,
+          'tool-details:${item.id}',
+        ),
         onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
           context,
           expanded
@@ -486,7 +496,7 @@ class _ToolGroupItemRow extends StatelessWidget {
     );
   }
 
-  String? _resultDetail(TimelineToolGroupItem item, TimelineToolPart? tool) {
+  String? _resultDetail(TimelineToolItem item, TimelineToolPart? tool) {
     final result = tool?.result;
     if (result == null || result.trim().isEmpty) {
       return null;
@@ -525,7 +535,7 @@ class _ToolGroupItemRow extends StatelessWidget {
   }
 }
 
-String? _toolTarget(TimelineToolGroupItem item) {
+String? _toolTarget(TimelineToolItem item) {
   final arguments = decodeJsonObject(item.tool?.arguments ?? '');
   for (final key in const [
     'path',
@@ -549,7 +559,7 @@ String _prettyToolPayload(String value) {
   }
 }
 
-String _toolTitle(BuildContext context, TimelineToolGroupItem item) {
+String _toolTitle(BuildContext context, TimelineToolItem item) {
   final label = _toolDisplayName(context, item);
   if (item.name == 'view_image') {
     return switch (item.status) {
@@ -600,7 +610,7 @@ String _unknownToolStatusLabel(
 }
 
 /// 工具的展示名；LSP 工具使用本地化标题并附带参数摘要，其余保持原始领域名。
-String _toolDisplayName(BuildContext context, TimelineToolGroupItem item) {
+String _toolDisplayName(BuildContext context, TimelineToolItem item) {
   final name = item.name;
   if (name == 'lsp_query') {
     final detail = _lspQueryDetail(item.tool?.arguments ?? '');

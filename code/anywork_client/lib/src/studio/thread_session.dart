@@ -53,6 +53,13 @@ final class StudioViewFocusRequest {
   final AttemptId? attempt;
 }
 
+/// One body request belongs to one content binding, including its late completion.
+final class StudioItemBodyRequest {
+  StudioItemBodyRequest._(this.itemId, this.attempt);
+  final String itemId;
+  final AttemptId attempt;
+}
+
 /// The application-owned runtime observer and unique content reducer for a Thread.
 /// Providers attach only to [source]; [start], [retire] and [close] are explicit.
 final class StudioThreadSession extends ReadModel<ThreadSessionState> {
@@ -89,6 +96,7 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
   bool _closed = false;
   Future<CloseReport>? _closing;
   final _ViewFocusTarget _viewFocus = _ViewFocusTarget();
+  final Map<String, StudioItemBodyRequest> _itemBodyRequests = {};
   int _operationSequence = 0;
   _WindowOperation? _windowOperation;
   final historyOperation = LatestValue<StudioHistoryOperation?>(null);
@@ -353,6 +361,7 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     if (_closed || !_active) return;
     switch (next) {
       case ChatOpening<StudioChatSnapshot>():
+        _retireItemBodyRequests();
         _finishHistoryOp(_windowOperation, HistoryOperationOutcome.retired);
         _viewFocus.itemId = null;
         _viewFocus.request = null;
@@ -366,10 +375,12 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
           ChatFailed<StudioChatSnapshot>():
         // The content channel owns its error. Thread runtime synchronization
         // changes only through its own state stream, never through ChatView.
+        _retireItemBodyRequests();
         _finishHistoryOp(_windowOperation, HistoryOperationOutcome.retired);
       case ChatReady<StudioChatSnapshot>():
         _completeHistoryOpIfObserved();
       case ChatIdle<StudioChatSnapshot>() || ChatClosed<StudioChatSnapshot>():
+        _retireItemBodyRequests();
         _finishHistoryOp(_windowOperation, HistoryOperationOutcome.retired);
     }
   }
@@ -385,6 +396,9 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     switch (result.outcome) {
       case ChatFrameOutcome.applied:
         state = result.state;
+        _itemBodyRequests.removeWhere(
+          (id, _) => !state.history.previewedItemIds.contains(id),
+        );
         _completeHistoryOpIfObserved();
       case ChatFrameOutcome.irrelevant:
         if (first) throw ChatProtocolError(result.reason.name);
@@ -500,19 +514,57 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     if (next != state) state = next;
   }
 
-  void beginItemBodyLoad(String itemId) {
+  StudioItemBodyRequest? beginItemBodyLoad(String itemId) {
+    final attempt = chat.currentAttemptId;
+    final acceptsBodies = switch (chat.state.value) {
+      ChatOpening<StudioChatSnapshot>() ||
+      ChatReady<StudioChatSnapshot>() => true,
+      _ => false,
+    };
+    if (_closed ||
+        !_active ||
+        !acceptsBodies ||
+        attempt == null ||
+        _itemBodyRequests.containsKey(itemId)) {
+      return null;
+    }
+    final request = StudioItemBodyRequest._(itemId, attempt);
+    _itemBodyRequests[itemId] = request;
     final next = beginItemBodyLoadState(state, itemId);
     if (next != state) state = next;
+    return request;
   }
 
-  void markItemBodyPending(String itemId) {
-    final next = markItemBodyPendingState(state, itemId);
+  bool isItemBodyRequestCurrent(StudioItemBodyRequest request) =>
+      !_closed &&
+      _active &&
+      request.attempt == chat.currentAttemptId &&
+      identical(_itemBodyRequests[request.itemId], request);
+
+  void markItemBodyPending(StudioItemBodyRequest request) {
+    if (!isItemBodyRequestCurrent(request)) return;
+    _itemBodyRequests.remove(request.itemId);
+    final next = markItemBodyPendingState(state, request.itemId);
     if (next != state) state = next;
   }
 
-  void failItemBodyLoad(String itemId, String message) {
-    final next = failItemBodyLoadState(state, itemId, message);
+  void failItemBodyLoad(StudioItemBodyRequest request, String message) {
+    if (!isItemBodyRequestCurrent(request)) return;
+    _itemBodyRequests.remove(request.itemId);
+    final next = failItemBodyLoadState(state, request.itemId, message);
     if (next != state) state = next;
+  }
+
+  void _retireItemBodyRequests() {
+    _itemBodyRequests.clear();
+    state = state.copyWith(
+      history: state.history.copyWith(
+        loadingItemIds: const {},
+        pendingItemBodyIds: const {},
+        unavailableItemIds: const {},
+        itemBodyErrors: const {},
+      ),
+    );
   }
 
   void setHistoryLoading(TimelineDirection direction) {
@@ -681,6 +733,7 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
 
   Future<CloseReport> retire({DateTime? deadline}) async {
     _active = false;
+    _retireItemBodyRequests();
     _lifecycleVersion++;
     _cancelRuntimeResync();
     _runtimeRetry?.cancel();

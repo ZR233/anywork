@@ -11,9 +11,7 @@ class _ThreadImageLoader {
       attachments.addAll(
         row.part?.attachments.map((item) => item.id) ?? const <String>[],
       );
-      final group = row.toolGroup;
-      if (group == null) continue;
-      for (final entry in _toolImageEntries(group.items)) {
+      for (final entry in _toolImageEntries(row.tools.toList())) {
         attachments.add(entry.attachment.id);
         entries.add(_toolImageCallId(entry));
       }
@@ -188,7 +186,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
 /// 内出现相同资源时追加稳定序号；该序号只取决于同一调用自身的附件列表，不随其它
 /// 调用流式新增而变化。
 typedef _ToolImageEntryRef = ({
-  TimelineToolGroupItem item,
+  TimelineToolItem item,
   ThreadAttachmentView attachment,
   String entryId,
 });
@@ -198,7 +196,7 @@ typedef _ToolImageEntryRef = ({
 /// 不按资源去重、不丢弃调用：同一调用重复引用同一资源时追加 `#<序号>`；跨调用同一
 /// 资源仍各自保留独立条目与展开状态。字节读取仍由 Thread 附件缓存按
 /// `threadId + attachmentId` 去重。
-List<_ToolImageEntryRef> _toolImageEntries(List<TimelineToolGroupItem> items) {
+List<_ToolImageEntryRef> _toolImageEntries(List<TimelineToolItem> items) {
   final entries = <_ToolImageEntryRef>[];
   final occurrences = <String, int>{};
   for (final item in items) {

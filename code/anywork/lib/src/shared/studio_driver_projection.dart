@@ -82,6 +82,8 @@ StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
 
   return StudioDriverFacts(
     timelineWorkspace: session?.workspace,
+    chatViewId: session?.chatViewId,
+    hasChatWindow: session?.hasChatWindow ?? false,
     history: session?.history ?? const ThreadHistoryWindow(),
     workspacesByThread: {
       for (final state in client.sessionStates)

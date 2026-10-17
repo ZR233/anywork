@@ -1855,6 +1855,12 @@ abstract class AppLocalizations {
   /// **'No reasoning text was provided.'**
   String get timelineReasoningEmpty;
 
+  /// No description provided for @timelineReasoningBudgetLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'Reasoning budget reached'**
+  String get timelineReasoningBudgetLimited;
+
   /// No description provided for @timelineToolFallback.
   ///
   /// In en, this message translates to:
@@ -4894,6 +4900,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This provider returned no models.'**
   String get settingsModelCatalogEmpty;
+
+  /// No description provided for @timelineActivityTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Thinking and tools'**
+  String get timelineActivityTitle;
+
+  /// No description provided for @timelineContextCompacted.
+  ///
+  /// In en, this message translates to:
+  /// **'Context automatically compacted'**
+  String get timelineContextCompacted;
+
+  /// No description provided for @timelineCompactionDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Before: {before}; after: {after} tokens'**
+  String timelineCompactionDetail(int before, int after);
 }
 
 class _AppLocalizationsDelegate

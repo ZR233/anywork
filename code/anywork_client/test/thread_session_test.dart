@@ -37,6 +37,8 @@ final class _FakeWindow implements StudioChatWindow {
   final Object? failInitial;
   final List<Completer<StudioChatFrame?>> _nextReads = [];
   final Completer<StudioChatReceipt> loadResult = Completer();
+  final expandEntered = Completer<void>();
+  final expandRequests = <String>[];
   final focusEntered = Completer<void>();
   final List<String?> focusRequests = [];
   final Completer<void> closeCompleted = Completer();
@@ -66,6 +68,10 @@ final class _FakeWindow implements StudioChatWindow {
     _nextReads.removeAt(0).complete(frame);
   }
 
+  void failNext(Object error) {
+    _nextReads.removeAt(0).completeError(error);
+  }
+
   @override
   Future<StudioChatReceipt> load(TimelineDirection direction) =>
       loadResult.future;
@@ -79,7 +85,11 @@ final class _FakeWindow implements StudioChatWindow {
   }
 
   @override
-  Future<StudioChatReceipt> expandItem(String itemId) => loadResult.future;
+  Future<StudioChatReceipt> expandItem(String itemId) {
+    expandRequests.add(itemId);
+    if (!expandEntered.isCompleted) expandEntered.complete();
+    return loadResult.future;
+  }
 
   @override
   void requestClose() {
@@ -279,6 +289,133 @@ Future<void> _deliverSnapshot(
 }
 
 void main() {
+  for (final contentFailure in [false, true]) {
+    test(
+      'retired body request cannot block or fail the returning view (content failure: $contentFailure)',
+      () async {
+        final transport = _FakeTransport();
+        final client = AnyworkClient(
+          transport: transport,
+          clientId: 'body-lifetime',
+        );
+        final session = client.session('thread');
+        StudioChatItem preview(String text) => StudioChatItem(
+          ThreadItemView(
+            id: 'body',
+            threadId: 'thread',
+            turnId: 'turn',
+            ordinal: 1,
+            revision: 1,
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+            bodyOmittedUnits: 64,
+            executionTerminal: true,
+            saved: true,
+            state: ThreadTextItemStateView(
+              channel: ThreadTextChannel.finalAnswer,
+              text: text,
+              attachments: const [],
+              lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+            ),
+          ),
+          saved: true,
+          lifecycle: StudioChatLifecycle.terminal,
+        );
+        final first = _FakeWindow(
+          initialSnapshot: _snapshot(1, items: [preview('old preview')]),
+        );
+        final returned = _FakeWindow(
+          initialSnapshot: _snapshot(8, items: [preview('new preview')]),
+        );
+        addTearDown(() async {
+          for (final window in [first, returned]) {
+            if (!window.loadResult.isCompleted) {
+              window.loadResult.complete(
+                const StudioChatReceipt(
+                  operationId: 1,
+                  version: 1,
+                  retained: false,
+                  disposition: StudioChatDisposition.noChange,
+                ),
+              );
+            }
+          }
+          for (final open in transport.pendingOpens) {
+            if (!open.isCompleted)
+              open.complete(_FakeWindow(initialSnapshot: _snapshot(1)));
+          }
+          await client.close();
+          await transport.close();
+        });
+        await _deliverSnapshot(session, transport);
+        transport.pendingOpens.single.complete(first);
+        await session.chat.ready;
+        final oldLoad = client.threadCommands.ensureItemBodies('thread', [
+          'body',
+        ]);
+        await first.expandEntered.future;
+        if (contentFailure) {
+          final reconnecting = session.chat.state.waitFor(
+            (state) => state is ChatReconnecting<StudioChatSnapshot>,
+          );
+          first.failNext(StateError('content connection failed'));
+          await reconnecting;
+          expect(session.state.history.loadingItemIds, isEmpty);
+          expect(session.beginItemBodyLoad('body'), isNull);
+        }
+        session.chat.retry();
+        transport.pendingOpens.last.complete(returned);
+        await session.chat.ready;
+        expect(session.state.history.loadingItemIds, isEmpty);
+        first.loadResult.completeError(const StaleChatAttempt());
+        await oldLoad;
+        expect(session.state.history.itemBodyErrors, isEmpty);
+        expect(session.state.items.single.text, 'new preview');
+        final newLoad = client.threadCommands.ensureItemBodies('thread', [
+          'body',
+        ]);
+        await returned.expandEntered.future;
+        returned.emit(
+          const StudioChatPatch(
+            from: 8,
+            to: 9,
+            hasNewer: false,
+            changes: [
+              StudioViewItemUpdate(
+                itemId: 'body',
+                expectedRevision: 1,
+                revision: 1,
+                omittedUnits: 0,
+                saved: true,
+                fields: [
+                  StudioFieldUpdateView(
+                    field: ThreadTextFieldView(),
+                    change: ReplaceThreadFieldChangeView('complete new body'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+        await session.source.waitFor((state) => state.chatVersion == 9);
+        returned.loadResult.complete(
+          const StudioChatReceipt(
+            operationId: 1,
+            version: 9,
+            retained: true,
+            disposition: StudioChatDisposition.applied,
+          ),
+        );
+        await newLoad;
+        expect(returned.expandRequests, ['body']);
+        expect(session.state.items.single.text, 'complete new body');
+        expect(session.state.items.single.bodyOmittedUnits, 0);
+        expect(session.state.history.loadingItemIds, isEmpty);
+        expect(session.state.history.itemBodyErrors, isEmpty);
+      },
+    );
+  }
+
   test('runtime snapshot and updates expose approved plan markdown', () async {
     final transport = _FakeTransport();
     final session = _session(transport);

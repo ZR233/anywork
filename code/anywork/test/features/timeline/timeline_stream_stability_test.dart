@@ -217,66 +217,48 @@ Widget _harness(Widget child) {
 }
 
 TimelineRow _reasoningRow(List<String> summaries) {
-  final now = DateTime.utc(2026, 1, 1);
-  return TimelineRow.reasoningGroup(
-    TimelineReasoningGroup(
-      id: 'reasoning-group:turn-1',
-      threadId: 'thread-main',
-      groupId: 'turn-1',
-      turnId: 'turn-1',
-      parts: [
-        for (var index = 0; index < summaries.length; index++)
-          TimelineEntry(
-            id: 'reasoning-$index',
-            groupId: 'turn-1',
-            type: TimelineEntryType.reasoning,
-            text: summaries[index],
-            threadId: 'thread-main',
-            turnId: 'turn-1',
-            order: index,
-            sequence: index,
-            status: 'running',
-            createdAt: now,
-            updatedAt: now,
-          ),
-      ],
-    ),
-  );
+  final now = DateTime.utc(2026);
+  return TimelineRowProjector().project([
+    for (final entry in summaries.indexed)
+      ThreadItemView(
+        id: 'reasoning-${entry.$1}',
+        threadId: 'thread-main',
+        turnId: 'turn-1',
+        ordinal: entry.$1,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        state: ThreadThinkingItemStateView(
+          summary: [entry.$2],
+          content: const [],
+          lifecycle: const StreamingThreadContentView(),
+        ),
+      ),
+  ]).single;
 }
 
 TimelineRow _toolGroupRow(List<String> commands) {
-  final now = DateTime.utc(2026, 1, 1);
-  return TimelineRow.toolGroup(
-    TimelineToolGroup(
-      id: 'tool-group:turn-1',
-      threadId: 'thread-main',
-      groupId: 'turn-1',
-      turnId: 'turn-1',
-      items: [
-        for (var index = 0; index < commands.length; index++)
-          TimelineToolGroupItem(
-            part: TimelineEntry(
-              id: 'tool-$index',
-              groupId: 'turn-1',
-              type: TimelineEntryType.tool,
-              text: '',
-              threadId: 'thread-main',
-              turnId: 'turn-1',
-              order: index,
-              sequence: index,
-              status: 'running',
-              createdAt: now,
-              updatedAt: now,
-              tool: TimelineToolPart(
-                toolCallId: 'call-$index',
-                name: 'exec_command',
-                arguments: jsonEncode({'command': commands[index]}),
-              ),
-            ),
+  final now = DateTime.utc(2026);
+  return TimelineRowProjector().project([
+    for (final entry in commands.indexed)
+      ThreadItemView(
+        id: 'tool-${entry.$1}',
+        threadId: 'thread-main',
+        turnId: 'turn-1',
+        ordinal: entry.$1,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        state: ThreadToolItemStateView(
+          invocation: ThreadToolInvocationView(
+            toolCallId: 'call-${entry.$1}',
+            name: 'exec_command',
+            arguments: jsonEncode({'command': entry.$2}),
           ),
-      ],
-    ),
-  );
+          lifecycle: const RunningThreadToolView(''),
+        ),
+      ),
+  ]).single;
 }
 
 TimelineRow _textRow(
@@ -302,7 +284,7 @@ TimelineRow _textRow(
       lifecycle: CompletedThreadContentView(now),
     ),
   );
-  return TimelineRow.item(
+  return TimelineTextRow(
     item: item,
     part: TimelineEntry(
       id: id,
@@ -315,7 +297,6 @@ TimelineRow _textRow(
       createdAt: now,
       updatedAt: now,
     ),
-    type: TimelineRowType.finalAnswer,
   );
 }
 

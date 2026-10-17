@@ -348,6 +348,7 @@
   "timelineReasoningActive": "思考中",
   "timelineReasoningCompleted": "已思考",
   "timelineReasoningEmpty": "没有可展示的思考内容。",
+  "timelineReasoningBudgetLimited": "已达思考预算",
   "timelineToolFallback": "工具",
   "timelineToolGroupTitle": "工具活动",
   "timelineToolGroupSummary": "{count} 个工具",
@@ -1008,5 +1009,18 @@
   "settingsModelCatalogChecked": "上次检查",
   "settingsModelCatalogFailed": "模型刷新失败，继续使用原有列表。",
   "settingsModelCatalogCacheWarning": "无法加载已保存的模型列表，当前使用内置列表。",
-  "settingsModelCatalogEmpty": "供应商未返回任何模型。"
+  "settingsModelCatalogEmpty": "供应商未返回任何模型。",
+  "timelineActivityTitle": "思考与工具",
+  "timelineContextCompacted": "上下文已自动压缩",
+  "timelineCompactionDetail": "压缩前 {before}，压缩后 {after} 词元",
+  "@timelineCompactionDetail": {
+    "placeholders": {
+      "before": {
+        "type": "int"
+      },
+      "after": {
+        "type": "int"
+      }
+    }
+  }
 }

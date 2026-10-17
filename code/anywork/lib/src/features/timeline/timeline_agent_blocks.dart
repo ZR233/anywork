@@ -1,156 +1,23 @@
 part of 'timeline_view.dart';
 
 class _AgentPart extends StatelessWidget {
-  const _AgentPart({required this.event, super.key});
-
-  final TimelineAgentEvent event;
-
+  const _AgentPart({required this.agent});
+  final ThreadAgentItemStateView agent;
   @override
   Widget build(BuildContext context) {
-    if (event.payload case final TimelineTodoListUpdate update) {
-      return _TodoListPart(update: update);
-    }
-    return _TimelinePanel(
-      child: _TimelineMetaRow(
-        icon: Icons.account_tree_outlined,
-        title: _agentTitle(context, event.title),
-        subtitle: _agentSubtitle(context, event),
-      ),
-    );
-  }
-
-  /// 子智能体副标题：超时状态由展示层按 locale 追加，领域层不写死文案。
-  String _agentSubtitle(BuildContext context, TimelineAgentEvent event) {
-    final payload = event.payload;
-    if (payload is TimelineSubAgentActivity && payload.timedOut) {
-      final timeout = context.l10n.timelineAgentTimedOut;
-      return event.text.isEmpty ? timeout : '${event.text}\n$timeout';
-    }
-    return event.text;
-  }
-
-  String _agentTitle(BuildContext context, String title) {
-    return switch (title) {
-      'agentTimeline.spawn' => context.l10n.timelineAgentSubagent,
-      'agentTimeline.message' => context.l10n.timelineAgentSubagentMessage,
-      'agentTimeline.waiting' => context.l10n.timelineAgentWaiting,
-      'agentTimeline.close' => context.l10n.timelineAgentClose,
-      // 已知 agent marker 与未知 kind（'agentTimeline.activity'）统一使用
-      // 本地化 fallback，绝不把内部 marker 泄漏到界面。
-      _ => context.l10n.timelineAgentFallback,
+    final (status, detail) = switch (agent.lifecycle) {
+      QueuedThreadAgentView() => ('queued', agent.identity.task),
+      RunningThreadAgentView() => ('running', agent.identity.task),
+      SucceededThreadAgentView(:final summary) => ('succeeded', summary),
+      DeniedThreadAgentView(:final reason) => ('denied', reason),
+      CancelledThreadAgentView(:final reason) => ('cancelled', reason),
+      FailedThreadAgentView(:final error) => ('failed', error),
     };
-  }
-}
-
-class _TodoListPart extends StatelessWidget {
-  const _TodoListPart({required this.update});
-
-  final TimelineTodoListUpdate update;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final title = update.explanation?.trim().isNotEmpty == true
-        ? update.explanation!.trim()
-        : context.l10n.timelineTodoListFallback;
-    return _TimelinePanel(
-      child: Padding(
-        padding: const EdgeInsets.all(13),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.checklist_outlined, size: 18, color: colors.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleSmall,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                _StatusPill(label: _todoAggregateLabel(context, update.status)),
-              ],
-            ),
-            const SizedBox(height: 10),
-            for (final item in update.items) _TodoItemRow(item: item),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 汇总状态标签：未知/混合聚合使用中性本地化标签，其余沿用状态映射。
-String _todoAggregateLabel(BuildContext context, String status) {
-  return switch (status) {
-    'unknown' => context.l10n.timelineTodoStatusUnknown,
-    // 聚合 'running' 复用进行中文案，避免徽标原样显示 canonical 值。
-    'running' => context.l10n.timelineTodoInProgress,
-    _ => context.todoStatusLabel(status),
-  };
-}
-
-class _TodoItemRow extends StatelessWidget {
-  const _TodoItemRow({required this.item});
-
-  final TimelineTodoItem item;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final status = item.status;
-    final completed = status == 'completed';
-    final inProgress = status == 'inProgress';
-    final pending = status == 'pending';
-    final unknown = !completed && !inProgress && !pending;
-    final icon = completed
-        ? Icons.check_circle_outline
-        : inProgress
-        ? Icons.radio_button_checked
-        : unknown
-        ? Icons.help_outline
-        : Icons.radio_button_unchecked;
-    final color = completed
-        ? colors.onSurfaceVariant
-        : inProgress
-        ? colors.primary
-        : unknown
-        ? colors.onSurfaceVariant
-        : colors.outline;
-    final label = context.todoStatusLabel(status);
-    final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-      color: completed ? colors.onSurfaceVariant : colors.onSurface,
-      fontWeight: inProgress ? FontWeight.w600 : FontWeight.w400,
-      decoration: completed ? TextDecoration.lineThrough : null,
-      decorationColor: colors.onSurfaceVariant,
-    );
-    return Padding(
-      padding: const EdgeInsets.only(top: 7),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Icon(icon, size: 17, color: color),
-          ),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 86,
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: color,
-                fontWeight: inProgress ? FontWeight.w700 : FontWeight.w500,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(child: Text(item.step, style: textStyle)),
-        ],
-      ),
+    return _TimelineMetaRow(
+      icon: Icons.account_tree_outlined,
+      title:
+          '${context.l10n.timelineAgentSubagent} · ${agent.identity.path} · ${context.toolStatusLabel(status)}',
+      subtitle: detail,
     );
   }
 }

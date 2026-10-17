@@ -42,7 +42,9 @@ class ToolProbeExtension extends CommandExtension {
       ]);
     }
     Map<String, Object?> sample() {
-      final box = target.evaluate().single.renderObject! as RenderBox;
+      final element = target.evaluate().single;
+      final box = element.renderObject! as RenderBox;
+      final widget = element.widget;
       final offset = box.localToGlobal(Offset.zero);
       final nested = find.descendant(
         of: target,
@@ -53,6 +55,7 @@ class ToolProbeExtension extends CommandExtension {
         'left': offset.dx,
         'width': box.size.width,
         'height': box.size.height,
+        if (widget is ExpansionTile) 'expanded': widget.controller?.isExpanded,
         'scroll': jsonDecode(
           StudioDriverState.snapshotJson(),
         )['timelineScroll'],

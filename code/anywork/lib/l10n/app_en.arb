@@ -501,6 +501,7 @@
   "timelineReasoningActive": "Thinking",
   "timelineReasoningCompleted": "Thought",
   "timelineReasoningEmpty": "No reasoning text was provided.",
+  "timelineReasoningBudgetLimited": "Reasoning budget reached",
   "timelineToolFallback": "Tool",
   "timelineToolGroupTitle": "Tool activity",
   "timelineToolGroupSummary": "{count} tools",
@@ -1428,5 +1429,18 @@
   "settingsModelCatalogChecked": "Last checked",
   "settingsModelCatalogFailed": "Could not refresh models. The previous list is still available.",
   "settingsModelCatalogCacheWarning": "The saved model list could not be loaded. Showing bundled models.",
-  "settingsModelCatalogEmpty": "This provider returned no models."
+  "settingsModelCatalogEmpty": "This provider returned no models.",
+  "timelineActivityTitle": "Thinking and tools",
+  "timelineContextCompacted": "Context automatically compacted",
+  "timelineCompactionDetail": "Before: {before}; after: {after} tokens",
+  "@timelineCompactionDetail": {
+    "placeholders": {
+      "before": {
+        "type": "int"
+      },
+      "after": {
+        "type": "int"
+      }
+    }
+  }
 }

@@ -1179,17 +1179,6 @@ class ThreadActivityDetailState {
 
 enum TimelineDirection { older, newer }
 
-class TimelineTurnView {
-  const TimelineTurnView({
-    required this.turn,
-    required this.lastItemId,
-    this.disposition = ThreadContextDisposition.active,
-  });
-  final StudioTurnView turn;
-  final String lastItemId;
-  final ThreadContextDisposition disposition;
-}
-
 /// Reading position and permission to move the canonical window are distinct.
 enum TimelineReadingIntent { followLatest, inspectItem, browseHistory }
 

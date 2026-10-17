@@ -109,15 +109,6 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   Widget build(BuildContext context) {
     final startup = ref.watch(shellStartupViewProvider);
     _general = ref.watch(shellGeneralProvider);
-    ref.listen(shellHistoryOpenRequestProvider, (previous, next) {
-      if (next == null || next == previous) return;
-      unawaited(
-        ref
-            .read(anyworkClientProvider)
-            .threadCommands
-            .loadLatestHistory(next.threadId),
-      );
-    });
     final savedWidth = _general.sidebarWidth;
     final desiredWidth = _sidebarWidth ?? savedWidth.toDouble();
     return Builder(

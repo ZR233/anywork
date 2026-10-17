@@ -279,7 +279,8 @@ pub fn gui_tool_scroll_script() -> Vec<Step> {
                 Protocol::ResponsesHttp,
                 prompt,
                 step,
-                Reply::Sse(responses_tool_calls(
+                Reply::Sse(responses_reasoning_tool_calls(
+                    &["Inspect the fixture before using tools."],
                     "scroll-tools",
                     "fixture-model",
                     &calls,
@@ -305,7 +306,16 @@ pub fn gui_tool_scroll_script() -> Vec<Step> {
                 Protocol::ResponsesHttp,
                 prompt,
                 step,
-                Reply::Sse(responses_text(&tail, "scroll-tail", "fixture-model")),
+                Reply::Sse(if prompt == "Tool scroll medium" {
+                    responses_reasoning_text(
+                        &["Check the tool result before replying."],
+                        &[&tail],
+                        "scroll-tail",
+                        "fixture-model",
+                    )
+                } else {
+                    responses_text(&tail, "scroll-tail", "fixture-model")
+                }),
             )
         });
         script.optional_title(&title);

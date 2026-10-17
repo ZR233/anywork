@@ -9,6 +9,8 @@ import '../domain/models/agent_workspace_view.dart';
 final class StudioDriverFacts {
   StudioDriverFacts({
     this.timelineWorkspace,
+    this.chatViewId,
+    this.hasChatWindow = false,
     this.history = const ThreadHistoryWindow(),
     Map<String, ThreadWorkspace> workspacesByThread = const {},
     List<StudioThread> rootThreads = const [],
@@ -39,6 +41,8 @@ final class StudioDriverFacts {
        recoveryIssues = List.unmodifiable(recoveryIssues);
 
   final ThreadWorkspace? timelineWorkspace;
+  final String? chatViewId;
+  final bool hasChatWindow;
   final ThreadHistoryWindow history;
   final Map<String, ThreadWorkspace> workspacesByThread;
   final List<StudioThread> rootThreads;
@@ -289,6 +293,8 @@ abstract final class StudioDriverState {
           },
       ],
       'timelineWindow': {
+        'viewId': facts.chatViewId,
+        'ready': facts.hasChatWindow,
         'itemIds':
             facts.timelineWorkspace?.items.map((item) => item.id).toList() ??
             [],
@@ -555,7 +561,7 @@ abstract final class StudioDriverState {
                       'byteSize': attachment.byteSize,
                     },
                 for (final row in workspace.timelineRows)
-                  for (final item in row.toolGroup?.items ?? const [])
+                  for (final item in row.tools)
                     for (final attachment in item.tool?.attachments ?? const [])
                       {
                         'id': attachment.id,
@@ -572,9 +578,21 @@ abstract final class StudioDriverState {
                   {
                     'id': row.id,
                     'type': row.type.name,
-                    'text': row.part?.text,
+                    'itemIds': [for (final part in row.entries) part.id],
+                    'activityKinds': [
+                      for (final part in row.entries) part.type.name,
+                    ],
+                    'text':
+                        row.part?.text ??
+                        row.entries
+                            .where(
+                              (part) =>
+                                  part.type == TimelineEntryType.reasoning,
+                            )
+                            .expand((part) => part.reasoningSummary)
+                            .join('\n'),
                     'tools': [
-                      for (final item in row.toolGroup?.items ?? const [])
+                      for (final item in row.tools)
                         if (item.tool case final tool?)
                           {
                             'name': tool.name,
@@ -787,7 +805,14 @@ abstract final class StudioDriverState {
           {
             'id': row.id,
             'type': row.type.name,
-            'text': row.part?.text,
+            'itemIds': [for (final part in row.entries) part.id],
+            'activityKinds': [for (final part in row.entries) part.type.name],
+            'text':
+                row.part?.text ??
+                row.entries
+                    .where((part) => part.type == TimelineEntryType.reasoning)
+                    .expand((part) => part.reasoningSummary)
+                    .join('\n'),
             'sequence': row.sequence,
           },
       ],

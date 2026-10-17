@@ -959,6 +959,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningEmpty => '没有可展示的思考内容。';
 
   @override
+  String get timelineReasoningBudgetLimited => '已达思考预算';
+
+  @override
   String get timelineToolFallback => '工具';
 
   @override
@@ -2604,4 +2607,15 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsModelCatalogEmpty => '供应商未返回任何模型。';
+
+  @override
+  String get timelineActivityTitle => '思考与工具';
+
+  @override
+  String get timelineContextCompacted => '上下文已自动压缩';
+
+  @override
+  String timelineCompactionDetail(int before, int after) {
+    return '压缩前 $before，压缩后 $after 词元';
+  }
 }

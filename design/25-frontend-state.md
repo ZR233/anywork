@@ -95,6 +95,13 @@ load、focus、extendLatest、expand 返回 typed receipt，不直接替换 Dart
 Applied / NoChange 来自后端操作本身。已观察到 receipt 的目标版本只表示观察完成；
 帧先到和回执先到都必须收束，旧 attempt 的回包不能完成新 attempt 的操作。
 
+正文补齐请求由 Session 关联当前 attempt 与独立请求身份。绑定退役后，旧请求的成功、
+失败和清理只能结束自身，不修改新绑定同一条目的加载、等待或失败状态；内容仍由当前
+ChatView 的同一 reducer 交付。内容连接失败或失去绑定时立即退役加载状态，只为正在打开或
+就绪的当前绑定登记新请求。
+首窗与历史焦点恢复只由 Client 的选择激活和 Session 绑定生命周期驱动；界面外壳不根据
+“已有运行快照但尚无正文窗口”再次发起打开，资源退役也不生成新的打开意图。
+
 阅读锚点及其像素偏移属于 Client；Reset 只替换内容和窗口能力，不根据服务端 focus 改写阅读
 意图。每个新 attempt 在首 Reset 前登记主动历史阅读的 focus 恢复，控制操作等待该 view Ready，
 并以相同内容泵观察回执目标版本。初始 latest 窗口没有锚点时，呈现层等待恢复或显示其失败，
@@ -135,8 +142,8 @@ ThreadWorkspace 首快照携带的 Thread 仅用于建立身份；标题、模�
 复用同一身份与实例，移出窗口的行随之释放。Timeline 的展示 owner 由 AppGraph 持有，直接
 观察选中 Thread 的 ChatView 窗口，按 threadId 管理展示 lease，并向该 Thread 派发分页、聚焦、
 正文补齐与锚点意图；切换 Thread 时显式关闭旧 lease，关闭只释放自己的投影与附件展示缓存，
-不关闭 Session、ChatView 或草稿。行投影与消息集合是展示 owner 的内存态，不另开 native view、
-正文缓存或会话事实源。Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件；连接组件与纯显示
+不关闭 Session、ChatView 或草稿。行投影是展示 owner 的内存态，不另开 native view、
+正文缓存、消息操作流或会话事实源。Widget 不直接分页 SQL、轮询 native 或访问 FRB 附件；连接组件与纯显示
 组件的边界见 [19](./19-studio-ui.md)。
 
 Connector 读取查询并调用稳定目标 action，向纯 View 传不可变 props。同一份业务值不能同时

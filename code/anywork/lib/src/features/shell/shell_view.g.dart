@@ -360,59 +360,6 @@ final class HeaderViewProvider
 
 String _$headerViewHash() => r'466ac6c30420510eea3313d0644abd73844c0b4f';
 
-/// `needsOpen` 时不订阅会话。已有历史窗口后不再请求首窗。
-
-@ProviderFor(shellHistoryOpenRequest)
-final shellHistoryOpenRequestProvider = ShellHistoryOpenRequestProvider._();
-
-/// `needsOpen` 时不订阅会话。已有历史窗口后不再请求首窗。
-
-final class ShellHistoryOpenRequestProvider
-    extends
-        $FunctionalProvider<
-          ShellHistoryOpenRequest?,
-          ShellHistoryOpenRequest?,
-          ShellHistoryOpenRequest?
-        >
-    with $Provider<ShellHistoryOpenRequest?> {
-  /// `needsOpen` 时不订阅会话。已有历史窗口后不再请求首窗。
-  ShellHistoryOpenRequestProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'shellHistoryOpenRequestProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$shellHistoryOpenRequestHash();
-
-  @$internal
-  @override
-  $ProviderElement<ShellHistoryOpenRequest?> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  ShellHistoryOpenRequest? create(Ref ref) {
-    return shellHistoryOpenRequest(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(ShellHistoryOpenRequest? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<ShellHistoryOpenRequest?>(value),
-    );
-  }
-}
-
-String _$shellHistoryOpenRequestHash() =>
-    r'6f9bcb92bc3664ced0880acab66e4b2d58468f22';
-
 /// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
 /// 不在这里持有 shell 租约：pane/预览也会观察它，不能因此拉起真实 Bridge。

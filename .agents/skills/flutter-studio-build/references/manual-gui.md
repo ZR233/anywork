@@ -45,6 +45,12 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 等待，不重复启动。GUI ready 后才能交互。若启动迟迟未完成，检查本次进程树及其日志，
 区分构建中、VM Service 未就绪、显示失败与应用异常，不盲目重试。
 
+`tool-scroll` 与 `stress-body` 使用性能分析构建。`tool-scroll --retain-environment` 在场景成功、
+运行时正常关闭且所属进程回收后，把本次合成环境保留在证据目录中，并写出
+`retained-environment.json`。保留整个环境根，避免配置及工作区里的绝对路径失效；仅复制 home
+不足以重开同一合成会话。随后可构建正式程序，以该文件中的 home 作为进程级 `ANYWORK_HOME`
+运行 `cargo xtask run-gui --release`，进行系统截图复核；不要将合成配置写入用户的数据根。
+
 ## 涉及系统凭据的隔离场景
 
 `ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `provider:<id>` account 不随数据根改变。

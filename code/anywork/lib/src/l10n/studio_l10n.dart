@@ -202,6 +202,7 @@ extension StudioLocalizationsX on BuildContext {
       'cancelled' => l10n.toolStatusCancelled,
       'cancelling' => l10n.toolStatusCancelling,
       'interrupted' => l10n.agentDetailStatusInterrupted,
+      'budgetLimited' => l10n.timelineReasoningBudgetLimited,
       _ => status,
     };
   }

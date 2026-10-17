@@ -114,7 +114,7 @@ TimelineRow _textRow(String id, String text) {
       lifecycle: CompletedThreadContentView(now),
     ),
   );
-  return TimelineRow.item(
+  return TimelineTextRow(
     item: item,
     part: TimelineEntry(
       id: id,
@@ -127,6 +127,5 @@ TimelineRow _textRow(String id, String text) {
       createdAt: now,
       updatedAt: now,
     ),
-    type: TimelineRowType.userMessage,
   );
 }

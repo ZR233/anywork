@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_driver/flutter_driver.dart';
 
@@ -88,7 +89,10 @@ Future<void> main(List<String> args) async {
       final s = await snapshot();
       final w = s['workspace'] as Map?;
       final rows = w?['timeline'] as List? ?? [];
+      final persistence = s['persistence'] as Map?;
       if (w?['isBusy'] == false &&
+          persistence?['kind'] == 'ready' &&
+          persistence?['pendingCommits'] == 0 &&
           rows.any(
             (r) => (r['text'] as String? ?? '').contains(
               '$marker following paragraph 44.',
@@ -108,11 +112,18 @@ Future<void> main(List<String> args) async {
     String action, {
     double dy = 0,
   }) => driver.sendCommand(ToolProbe(f, action, dy: dy));
-  Future<void> place(SerializableFinder target, double y) async {
-    final view = (await probe(timeline, 'observe'))['samples'].last as Map;
-    final viewTop = view['top'] as num;
-    final viewHeight = view['height'] as num;
+  Future<void> place(
+    SerializableFinder target,
+    double y, {
+    double leadingInset = 16,
+  }) async {
     for (var i = 0; i < 80; i++) {
+      final view = (await probe(timeline, 'observe'))['samples'].last as Map;
+      final viewTop = view['top'] as num;
+      final viewHeight = view['height'] as num;
+      // Application banners can move the viewport. Keep the operation and its
+      // surrounding padding visible before judging expansion geometry.
+      final wanted = math.max(y, viewTop.toDouble() + leadingInset);
       final geometry = await probe(target, 'observe');
       final sample = (geometry['samples'] as List).last as Map;
       if (sample['mounted'] == false) {
@@ -137,18 +148,29 @@ Future<void> main(List<String> args) async {
         final targetIndex = rows.indexWhere(
           (row) =>
               key.contains(row['id'] as String) ||
-              ((row['tools'] as List?) ?? []).any(
-                (tool) => key.contains(tool['itemId'] as String),
+              (row['itemIds'] as List).any(
+                (itemId) => key.contains(itemId as String),
               ),
         );
         final anchor = scroll['anchor'] as Map?;
         final anchorIndex = rows.indexWhere(
           (row) =>
               row['id'] == anchor?['itemId'] ||
-              ((row['tools'] as List?) ?? []).any(
-                (tool) => tool['itemId'] == anchor?['itemId'],
-              ),
+              (row['itemIds'] as List).contains(anchor?['itemId']),
         );
+        if (targetIndex < 0 && state['timelineWindow']['hasOlder'] == true) {
+          // Entering history opens a fresh bounded window. Mixed activities add
+          // real items, so the first fixture turn may now be outside that window.
+          // Load through the production Client action before locating its widget.
+          await driver.requestData('load-older');
+          await probe(timeline, 'observe');
+          continue;
+        }
+        if (targetIndex < 0 && state['timelineWindow']['hasNewer'] == true) {
+          await driver.requestData('load-newer');
+          await probe(timeline, 'observe');
+          continue;
+        }
         if (targetIndex < 0 || anchorIndex < 0) {
           await File('${output.path}/lazy-target-failure.json').writeAsString(
             jsonEncode({
@@ -174,7 +196,7 @@ Future<void> main(List<String> args) async {
         continue;
       }
       final top = (sample['top'] as num).toDouble();
-      if ((top - y).abs() < 1) return;
+      if ((top - wanted).abs() < 1) return;
       // A fully clipped sliver has a paint extent of zero; its transform is
       // not a distance-to-item estimate. Traverse by viewport steps until the
       // header is visible, then use its actual on-screen position.
@@ -182,7 +204,7 @@ Future<void> main(List<String> args) async {
           ? -viewHeight * 0.8
           : top > viewTop + viewHeight - 25
           ? viewHeight * 0.8
-          : top - y;
+          : top - wanted;
       await probe(timeline, 'wheelOutside', dy: delta.toDouble());
     }
     throw StateError('Unable to place tool at $y');
@@ -206,6 +228,7 @@ Future<void> main(List<String> args) async {
       find.byValueKey('timeline-block-${firstRows.first['id']}'),
       ((await probe(timeline, 'observe'))['samples'].last['top'] as num)
           .toDouble(),
+      leadingInset: 0,
     );
     await driver.sendCommand(
       RawTap(find.byValueKey('history-attachment-$sentImageId')),
@@ -258,19 +281,86 @@ Future<void> main(List<String> args) async {
     await File('${output.path}/fixture-snapshot.json')
         .writeAsString(jsonEncode(s));
     final groups = ((s['workspace'] as Map)['timeline'] as List)
-        .where((r) => r['type'] == 'toolGroup')
+        .where((r) => r['type'] == 'activityGroup')
         .toList();
     if (groups.length != 6) {
       throw StateError('Expected 6 real tool groups, got ${groups.length}');
+    }
+    final imageRows = ((s['workspace'] as Map)['timeline'] as List)
+        .cast<Map>()
+        .where((row) => row['type'] == 'imageRead')
+        .toList();
+    if (imageRows.length != 2) {
+      throw StateError('Expected two independent image reads');
+    }
+    final imageGroup = imageRows.first;
+    final summary = find.byValueKey('timeline-block-${imageGroup['id']}');
+    await place(summary, 120);
+    final imageTools = imageRows.expand((row) => row['tools'] as List).toList();
+    if (imageTools.isNotEmpty) {
+      final entries = <String>[];
+      for (final tool in imageTools) {
+        final attachments = tool['attachments'] as List;
+        if (tool['status'] != 'succeeded' || attachments.isEmpty) {
+          throw StateError('view_image did not archive its image');
+        }
+        entries.add('${tool['callId']}:${attachments.single['id']}');
+      }
+      final first = entries.first;
+      final toggle = find.byValueKey('view-image-toggle-$first');
+      final thumbnail = find.byValueKey('view-image-thumbnail-$first');
+      await driver.sendCommand(RawTap(toggle));
+      await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
+      await driver.sendCommand(RawTap(thumbnail));
+      await driver.waitFor(find.byValueKey('view-image-dialog-$first'));
+      await File('${output.path}/agent-read-image-dialog.png')
+          .writeAsBytes(await driver.screenshot());
+      await driver.sendCommand(RawTap(find.byValueKey('timeline-image-close')));
+      if ((await probe(
+            find.byValueKey('view-image-thumbnail-${entries.last}'),
+            'observe',
+          ))['samples'].last['mounted'] !=
+          false) {
+        throw StateError('Distinct image calls share expansion state');
+      }
+      // Recycle the containing row, then return without toggling it again.
+      final jump = find.byValueKey('timeline-jump-latest');
+      await driver.sendCommand(RawTap(jump));
+      await driver.waitForAbsent(
+        thumbnail,
+        timeout: const Duration(seconds: 10),
+      );
+      await place(summary, 120);
+      await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
+      await File('${output.path}/agent-read-image-recycled.png')
+          .writeAsBytes(await driver.screenshot());
+      await driver.sendCommand(RawTap(toggle));
+      await driver.waitForAbsent(thumbnail);
+      evidence['agentReadImage'] = {
+        'distinctCalls': entries.length,
+        'dialogOpened': true,
+        'survivedRowRecycling': true,
+        'collapsed': true,
+      };
+      await place(summary, 120);
     }
     final cases = <Object?>[];
     evidence['cases'] = cases;
     for (var index = 0; index < groups.length; index++) {
       stdout.writeln('tool_scroll_case=$index');
       var row = groups[index] as Map;
-      final summary = find.byValueKey(
-        'timeline-tool-group-summary-${row['id']}',
-      );
+      final callId = (row['tools'] as List).first['callId'];
+      final kinds = row['activityKinds'] as List;
+      if (!kinds.contains('reasoning') || !kinds.contains('tool')) {
+        throw StateError('Thinking and tools were not merged for $callId');
+      }
+      if (callId == 'scroll-call-medium' &&
+          kinds.where((kind) => kind == 'reasoning').length != 2) {
+        throw StateError(
+          'Thinking after a tool must remain in the same activity group',
+        );
+      }
+      final summary = find.byValueKey('timeline-activity-summary-${row['id']}');
       await place(summary, 120);
       for (final item in row['tools'] as List) {
         if (((await snapshot())['timelineWindow']['previewedItemIds'] as List)
@@ -296,72 +386,23 @@ Future<void> main(List<String> args) async {
                   .firstWhere((r) => r['id'] == row['id'])
               as Map;
       await place(summary, 120);
-      final imageTools = (row['tools'] as List)
-          .where((tool) => tool['name'] == 'view_image')
-          .toList();
-      if (imageTools.isNotEmpty) {
-        final entries = <String>[];
-        for (final tool in imageTools) {
-          final attachments = tool['attachments'] as List;
-          if (tool['status'] != 'succeeded' || attachments.isEmpty) {
-            throw StateError('view_image did not archive its image');
-          }
-          entries.add('${tool['callId']}:${attachments.single['id']}');
-        }
-        final first = entries.first;
-        final toggle = find.byValueKey('view-image-toggle-$first');
-        final thumbnail = find.byValueKey('view-image-thumbnail-$first');
-        await driver.sendCommand(RawTap(toggle));
-        await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
-        await driver.sendCommand(RawTap(thumbnail));
-        await driver.waitFor(find.byValueKey('view-image-dialog-$first'));
-        await File('${output.path}/agent-read-image-dialog.png')
-            .writeAsBytes(await driver.screenshot());
-        await driver.sendCommand(
-          RawTap(find.byValueKey('timeline-image-close')),
-        );
-        if ((await probe(
-              find.byValueKey('view-image-thumbnail-${entries.last}'),
-              'observe',
-            ))['samples'].last['mounted'] !=
-            false) {
-          throw StateError('Distinct image calls share expansion state');
-        }
-        // Recycle the containing row, then return without toggling it again.
-        final jump = find.byValueKey('timeline-jump-latest');
-        await driver.sendCommand(RawTap(jump));
-        await driver.waitForAbsent(
-          thumbnail,
-          timeout: const Duration(seconds: 10),
-        );
-        await place(summary, 120);
-        await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
-        await File('${output.path}/agent-read-image-recycled.png')
-            .writeAsBytes(await driver.screenshot());
-        await driver.sendCommand(RawTap(toggle));
-        await driver.waitForAbsent(thumbnail);
-        evidence['agentReadImage'] = {
-          'distinctCalls': entries.length,
-          'dialogOpened': true,
-          'survivedRowRecycling': true,
-          'collapsed': true,
-        };
-        await place(summary, 120);
-      }
       final opened = await probe(summary, 'tap');
       final record = <String, Object?>{'index': index, 'groupOpen': opened};
       cases.add(record);
       final items = row['tools'] as List;
       if (items.any(
-        (item) => item['status'] != (index == 5 ? 'failed' : 'succeeded'),
+        (item) =>
+            item['status'] !=
+            (callId == 'scroll-call-failed' ? 'failed' : 'succeeded'),
       )) {
         throw StateError('Unexpected tool outcome in case $index');
       }
-      if (index == 2 &&
+      if (callId == 'scroll-call-long' &&
           jsonDecode(items.single['result'] as String)['count'] != 200) {
         throw StateError('Long result was not delivered whole');
       }
-      if (index == 3 && (items.single['arguments'] as String).length < 12000) {
+      if (callId == 'scroll-call-arguments' &&
+          (items.single['arguments'] as String).length < 12000) {
         throw StateError('Long arguments were truncated');
       }
       final tiles = <Object?>[];
@@ -401,13 +442,16 @@ Future<void> main(List<String> args) async {
     // Leave one group open, visit a later group, then return to the earlier
     // group and expand its nested tool after its row has been recycled.
     stdout.writeln('tool_scroll_reverse');
-    final earlier = groups[1] as Map;
-    final later = groups[3] as Map;
+    Map groupFor(String callId) => groups.cast<Map>().singleWhere(
+      (row) => (row['tools'] as List).any((tool) => tool['callId'] == callId),
+    );
+    final earlier = groupFor('scroll-call-medium');
+    final later = groupFor('scroll-call-arguments');
     final earlierSummary = find.byValueKey(
-      'timeline-tool-group-summary-${earlier['id']}',
+      'timeline-activity-summary-${earlier['id']}',
     );
     final laterSummary = find.byValueKey(
-      'timeline-tool-group-summary-${later['id']}',
+      'timeline-activity-summary-${later['id']}',
     );
     await place(earlierSummary, 120);
     await probe(earlierSummary, 'tap');
@@ -422,16 +466,16 @@ Future<void> main(List<String> args) async {
         .writeAsBytes(await driver.screenshot());
     await place(earlierTile, 125);
     evidence['reverseCollapse'] = await probe(earlierTile, 'tap');
-    final imageGroup = groups.cast<Map>().firstWhere(
-      (group) =>
-          (group['tools'] as List).any((tool) => tool['name'] == 'view_image'),
-    );
     final imageTool = (imageGroup['tools'] as List).firstWhere(
       (tool) => tool['name'] == 'view_image',
     ) as Map;
     final imageId =
         '${imageTool['callId']}:${(imageTool['attachments'] as List).first['id']}';
     final originalThread = (s['navigation'] as Map)['selectedThreadId'];
+    final previousView = (await snapshot())['timelineWindow']['viewId'];
+    if (previousView == null) {
+      throw StateError('Content view identity is missing');
+    }
     await driver.sendCommand(RawTap(find.byValueKey('sidebar-new-session')));
     await driver.waitFor(
       find.byValueKey('start-page-selectors'),
@@ -444,11 +488,17 @@ Future<void> main(List<String> args) async {
     while (true) {
       final reopened = await snapshot();
       final workspace = reopened['workspace'] as Map?;
+      final window = reopened['timelineWindow'] as Map;
       if (reopened['navigation']['selectedThreadId'] == originalThread &&
           workspace?['syncState'] == 'ready' &&
-          ((workspace?['timeline'] as List?) ?? []).any(
-            (row) => row['id'] == imageGroup['id'],
-          )) {
+          window['ready'] == true &&
+          window['loading'] != true &&
+          window['viewId'] != null &&
+          window['viewId'] != previousView) {
+        evidence['reopenedView'] = {
+          'previous': previousView,
+          'current': window['viewId'],
+        };
         break;
       }
       if (DateTime.now().isAfter(reopenDeadline)) {
@@ -456,10 +506,7 @@ Future<void> main(List<String> args) async {
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await place(
-      find.byValueKey('timeline-tool-group-summary-${imageGroup['id']}'),
-      120,
-    );
+    await place(find.byValueKey('timeline-block-${imageGroup['id']}'), 120);
     await driver.sendCommand(
       RawTap(find.byValueKey('view-image-toggle-$imageId')),
     );
@@ -474,6 +521,7 @@ Future<void> main(List<String> args) async {
       find.byValueKey('timeline-block-${firstRows.first['id']}'),
       ((await probe(timeline, 'observe'))['samples'].last['top'] as num)
           .toDouble(),
+      leadingInset: 0,
     );
     await driver.sendCommand(
       RawTap(find.byValueKey('history-attachment-$sentImageId')),
@@ -490,15 +538,27 @@ Future<void> main(List<String> args) async {
       return samples.every((s) => ((s['top'] as num) - initial).abs() < 1);
     }
 
+    bool expansionChanged(Object? probe, bool expanded) {
+      final samples = (probe as Map)['samples'] as List;
+      return samples.first['expanded'] == !expanded &&
+          samples.last['expanded'] == expanded;
+    }
+
     final checks = <bool>[];
     checks.add(headerStable(evidence['reverseExpansion']));
     checks.add(headerStable(evidence['reverseCollapse']));
+    checks.add(expansionChanged(evidence['reverseExpansion'], true));
+    checks.add(expansionChanged(evidence['reverseCollapse'], false));
     for (final c in cases.cast<Map>()) {
       checks.add(headerStable(c['groupOpen']));
       checks.add(headerStable(c['groupClose']));
+      checks.add(expansionChanged(c['groupOpen'], true));
+      checks.add(expansionChanged(c['groupClose'], false));
       for (final t in (c['tiles'] as List).cast<Map>()) {
         checks.add(headerStable(t['expanded']));
         checks.add(headerStable(t['collapsed']));
+        checks.add(expansionChanged(t['expanded'], true));
+        checks.add(expansionChanged(t['collapsed'], false));
         final expanded = (t['expanded'] as Map)['samples'] as List;
         final collapsed = (t['collapsed'] as Map)['samples'] as List;
         checks.add(

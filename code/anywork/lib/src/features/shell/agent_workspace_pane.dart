@@ -360,7 +360,6 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             statusLabel: presentation.pending
                 ? context.l10n.interactionPlanAwaitingConfirmation
                 : context.l10n.interactionPlanApproved,
-            markdownStatus: presentation.pending ? 'pending' : 'approved',
             overlay: overlay,
             onClose: () => _closePlan(threadId),
           ),

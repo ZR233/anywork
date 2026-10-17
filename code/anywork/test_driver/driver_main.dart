@@ -218,6 +218,11 @@ Future<String> _handleDriverData(String? message) async {
       if (threadId == null) return jsonEncode({'loaded': false});
       await _client.threadCommands.loadOlderHistory(threadId);
       return jsonEncode({'loaded': true});
+    case 'load-newer':
+      final threadId = _client.selection.state.selectedThreadId;
+      if (threadId == null) return jsonEncode({'loaded': false});
+      await _client.threadCommands.loadNewerHistory(threadId);
+      return jsonEncode({'loaded': true});
     case 'selection-body':
       // Read-only: the rendered split of the long assistant body.
       return jsonEncode(<String, Object?>{'ok': true, ...?_renderedLongBody()});

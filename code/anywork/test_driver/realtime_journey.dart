@@ -694,7 +694,7 @@ class RealtimeJourney {
     await observe('reasoning_complete', settled);
     final rows = timelineRows(settled);
     final reasoningIndex = rows.indexWhere(
-      (row) => row['type'] == 'reasoningSummary',
+      (row) => row['type'] == 'activityGroup',
     );
     final answerIndex = rows.indexWhere(
       (row) =>
@@ -709,7 +709,7 @@ class RealtimeJourney {
       'timeToFirstContentMillis': firstContentAt - context.submittedAt,
       'terminalStatus': turnStatus(terminal),
       'reasoningRows': rows
-          .where((row) => row['type'] == 'reasoningSummary')
+          .where((row) => row['type'] == 'activityGroup')
           .length,
     };
     checks['reasoningThenAnswer'] =
@@ -2045,10 +2045,9 @@ int assistantContentCount(Map<String, dynamic> snapshot) {
   return timelineRows(snapshot)
       .where(
         (row) => const {
-          'reasoningSummary',
+          'activityGroup',
           'commentary',
           'finalAnswer',
-          'toolGroup',
         }.contains(row['type']),
       )
       .length;
@@ -2056,7 +2055,7 @@ int assistantContentCount(Map<String, dynamic> snapshot) {
 
 int reasoningCount(Map<String, dynamic> snapshot) =>
     timelineRows(snapshot)
-        .where((row) => row['type'] == 'reasoningSummary')
+        .where((row) => row['type'] == 'activityGroup')
         .length;
 
 /// A token of observable content progress for the current turn.

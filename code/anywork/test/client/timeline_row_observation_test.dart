@@ -11,7 +11,7 @@ import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,210 +19,478 @@ import 'support/recording_demo_transport.dart';
 import 'support/pump_client_future.dart';
 
 void main() {
-  group('窗口对齐契约（headless）', () {
-    test('Reset 整窗替换：旧身份全部淘汰，新身份一次区间插入', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final ops = _recordOperations(controller);
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'mixed activity stops at text, images, compaction and agent notifications ($brightness)',
+      (tester) async {
+        final now = DateTime.utc(2026);
+        StudioChatItem entry(
+          String id,
+          int ordinal,
+          ThreadItemStateView state,
+        ) {
+          final item = ThreadItemView(
+            id: id,
+            threadId: 'thread-main',
+            turnId: 'turn',
+            ordinal: ordinal,
+            revision: 1,
+            createdAt: now,
+            updatedAt: now,
+            state: state,
+            saved: true,
+          );
+          return StudioChatItem(
+            item,
+            saved: true,
+            lifecycle: item.isTerminal
+                ? StudioChatLifecycle.terminal
+                : StudioChatLifecycle.streaming,
+          );
+        }
 
-      controller.applyWindow([
-        _textRow('first'),
-        _textRow('second'),
-      ], const ThreadHistoryWindow());
-      expect(ops, hasLength(1));
-      expect(ops.single.type, ChatOperationType.insertAll);
-      expect(ops.single.animated, isFalse);
-      expect(controller.lastDiff.inserts, 2);
-      expect(controller.lastDiff.operations, 1);
+        ThreadToolItemStateView tool(
+          String name, {
+          ThreadToolLifecycleView? lifecycle,
+        }) => ThreadToolItemStateView(
+          invocation: ThreadToolInvocationView(
+            toolCallId: name,
+            name: name,
+            arguments: '{}',
+          ),
+          lifecycle:
+              lifecycle ??
+              SucceededThreadToolView(
+                now,
+                ThreadToolOutputView(
+                  result: 'result',
+                  attachments: name == 'read_alpha'
+                      ? const [
+                          ThreadAttachmentView(
+                            id: 'ordinary-tool-image',
+                            modality: AttachmentModalityView.image,
+                            mediaType: 'image/png',
+                            byteSize: 4,
+                          ),
+                        ]
+                      : const [],
+                  outputArtifacts: const [],
+                ),
+              ),
+        );
+        ThreadThinkingItemStateView thought(String text) =>
+            ThreadThinkingItemStateView(
+              summary: [text],
+              content: const [],
+              lifecycle: CompletedThreadContentView(now),
+            );
+        final harness = await _mountTimeline(
+          tester,
+          brightness: brightness,
+          initialItems: [
+            entry('thinking-a', 0, thought('first thought')),
+            entry('read-a', 1, tool('read_alpha')),
+            entry('thinking-b', 2, thought('thought after the tool')),
+            entry(
+              'text',
+              3,
+              ThreadTextItemStateView(
+                channel: ThreadTextChannel.finalAnswer,
+                text: 'Visible model narrative',
+                attachments: const [],
+                lifecycle: CompletedThreadContentView(now),
+              ),
+            ),
+            entry('image', 4, tool('view_image')),
+            entry(
+              'terminal',
+              5,
+              const ThreadTurnItemStateView(
+                CancelledStudioTurnState(
+                  startedAt: 0,
+                  requestedAt: 1,
+                  completedAt: 2,
+                  cause: UserRequestedTurnCancellation(),
+                ),
+              ),
+            ),
+            entry(
+              'compaction',
+              6,
+              ThreadContextCompactionItemStateView(120, 40, now),
+            ),
+            entry(
+              'read-b',
+              7,
+              tool(
+                'read_beta',
+                lifecycle: FailedThreadToolView(
+                  now,
+                  const ThreadToolFailureView(
+                    kind: ThreadToolFailureKindView.execution,
+                    message: 'fixture failed',
+                  ),
+                  null,
+                ),
+              ),
+            ),
+            entry(
+              'read-c',
+              8,
+              tool(
+                'read_gamma',
+                lifecycle: const RunningThreadToolView('partial result'),
+              ),
+            ),
+            entry(
+              'agent',
+              9,
+              const ThreadAgentItemStateView(
+                identity: ThreadAgentIdentityView(
+                  id: 'child',
+                  path: 'child-alpha',
+                  role: 'explorer',
+                  task: 'Inspect the fixture',
+                  depth: 1,
+                ),
+                lifecycle: RunningThreadAgentView(),
+              ),
+            ),
+          ],
+        );
+        final rows = harness.graph.timeline.source.value!.rows;
+        expect(rows.map((row) => row.type.name), [
+          'activityGroup',
+          'finalAnswer',
+          'imageRead',
+          'turnOutcome',
+          'contextCompaction',
+          'activityGroup',
+          'agentActivity',
+        ]);
+        expect(
+          rows[3].entries.single.id,
+          'terminal',
+          reason:
+              'terminal facts retain their canonical position within a window',
+        );
+        expect(rows.first.entries.map((part) => part.id), [
+          'thinking-a',
+          'read-a',
+          'thinking-b',
+        ]);
+        expect(find.textContaining('child-alpha'), findsOneWidget);
+        expect(find.text('Context automatically compacted'), findsOneWidget);
+        expect(
+          find.text('first thought'),
+          findsNothing,
+          reason: 'activity starts collapsed',
+        );
+        expect(
+          find.textContaining('Failed ·'),
+          findsOneWidget,
+          reason: 'a later active tool cannot hide an earlier failure',
+        );
+        final summary = find.byKey(
+          StudioDriverKeys.timelineActivitySummary(rows.first.id),
+        );
+        _timelinePosition(tester).jumpTo(0);
+        await tester.pump();
+        await tester.ensureVisible(summary);
+        await tester.tap(summary);
+        await tester.pumpAndSettle();
+        expect(find.text('first thought'), findsOneWidget);
+        expect(
+          find.byKey(StudioDriverKeys.toolImageGallery('read-a')),
+          findsOneWidget,
+          reason: 'ordinary tools retain their typed image attachments',
+        );
+        expect(find.byType(ErrorWidget), findsNothing);
+        expect(tester.takeException(), isNull);
+        await _closeTimeline(tester, harness);
+      },
+    );
+  }
 
-      ops.clear();
-      controller.applyWindow([_textRow('third')], const ThreadHistoryWindow());
-      expect(ops.map((op) => op.type), [
-        ChatOperationType.remove,
-        ChatOperationType.remove,
-        ChatOperationType.insert,
-      ]);
+  for (final markdown in [false, true]) {
+    testWidgets(
+      'tool insertion preserves text order, selection and recycled rows (markdown: $markdown)',
+      (tester) async {
+        StudioChatItem entry(
+          String id,
+          int ordinal,
+          ThreadItemStateView state, {
+          int revision = 1,
+        }) => StudioChatItem(
+          ThreadItemView(
+            id: id,
+            threadId: 'thread-main',
+            turnId: 'turn',
+            ordinal: ordinal,
+            revision: revision,
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+            state: state,
+            saved: true,
+            executionTerminal:
+                state is! ThreadTextItemStateView || state.lifecycle.isTerminal,
+          ),
+          saved: true,
+          lifecycle:
+              state is ThreadTextItemStateView && !state.lifecycle.isTerminal
+              ? StudioChatLifecycle.streaming
+              : StudioChatLifecycle.terminal,
+        );
+        StudioChatItem tool(String id, int ordinal) => entry(
+          id,
+          ordinal,
+          ThreadToolItemStateView(
+            invocation: ThreadToolInvocationView(
+              toolCallId: id,
+              name: 'read_$id',
+              arguments: '{}',
+            ),
+            lifecycle: SucceededThreadToolView(
+              DateTime.utc(2026),
+              const ThreadToolOutputView(
+                result: 'read completed',
+                attachments: [],
+                outputArtifacts: [],
+              ),
+            ),
+          ),
+        );
+        const marker = 'unique-body-selection';
+        final bodyText = markdown
+            ? '## 中文标题\n\n$marker readable model output with `src/config.dart`\n\n### 后续步骤\n\n第二段正文'
+            : '$marker readable model output';
+        ThreadTextItemStateView text(String value, {bool complete = false}) =>
+            ThreadTextItemStateView(
+              channel: ThreadTextChannel.finalAnswer,
+              text: value,
+              attachments: const [],
+              lifecycle: complete
+                  ? CompletedThreadContentView(DateTime.utc(2026))
+                  : const StreamingThreadContentView(),
+            );
+        final harness = await _mountTimeline(
+          tester,
+          height: markdown ? 560 : 320,
+          initialItems: [tool('alpha', 0), entry('body', 1, text(bodyText))],
+        );
+        harness.window.emit(
+          StudioChatPatch(
+            from: 1,
+            to: 2,
+            hasNewer: false,
+            changes: [
+              StudioViewSplice(index: 2, remove: 0, items: [tool('beta', 2)]),
+            ],
+          ),
+        );
+        await _pumpVersion(tester, harness.session, harness.window, 2);
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+        expect(find.byType(ErrorWidget), findsNothing);
+        final rows = harness.graph.timeline.source.value!.rows;
+        expect(
+          rows,
+          hasLength(3),
+          reason: 'ordinary tools cannot cross model text',
+        );
+        expect(rows[1].id, 'body');
+        final boxes = [
+          for (final row in rows)
+            tester.getRect(find.byKey(StudioDriverKeys.timelineBlock(row.id))),
+        ];
+        expect(boxes[0].top, lessThan(boxes[1].top));
+        expect(boxes[1].top, lessThan(boxes[2].top));
+        harness.window.emit(
+          StudioChatPatch(
+            from: 2,
+            to: 3,
+            hasNewer: false,
+            changes: [
+              StudioViewSplice(
+                index: 1,
+                remove: 1,
+                items: [
+                  entry('body', 1, text(bodyText, complete: true), revision: 2),
+                ],
+              ),
+            ],
+          ),
+        );
+        await _pumpVersion(tester, harness.session, harness.window, 3);
+        String copied = '';
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied = (call.arguments as Map)['text'] as String;
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        Future<void> copy() async {
+          final region = tester.state<SelectableRegionState>(
+            find.byType(SelectableRegion).first,
+          );
+          region.selectAll(SelectionChangedCause.keyboard);
+          await tester.pump();
+          final copy = region.contextMenuButtonItems.firstWhere(
+            (item) => item.type == ContextMenuButtonType.copy,
+          );
+          expect(copy.onPressed, isNotNull);
+          copy.onPressed!();
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+        }
+
+        await copy();
+        expect(copied, contains(marker));
+        if (markdown) {
+          expect(copied.indexOf('中文标题'), lessThan(copied.indexOf(marker)));
+          expect(copied.indexOf(marker), lessThan(copied.indexOf('后续步骤')));
+          expect(copied, contains('src/config.dart'));
+          expect(copied, contains('第二段正文'));
+        }
+        harness.window.emit(
+          StudioChatReset(
+            StudioChatSnapshot(
+              focusedItemId: null,
+              version: 4,
+              hasOlder: false,
+              hasNewer: false,
+              canExtendLatest: false,
+              items: [
+                for (var i = 0; i < 24; i++)
+                  entry(
+                    'replacement-$i',
+                    i,
+                    text('replacement-visible-$i', complete: true),
+                  ),
+              ],
+            ),
+          ),
+        );
+        await _pumpVersion(tester, harness.session, harness.window, 4);
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+        expect(find.byType(ErrorWidget), findsNothing);
+        await copy();
+        expect(copied, contains('replacement-visible-'));
+        expect(copied, isNot(contains(marker)));
+        await _closeTimeline(tester, harness);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'cleared selection does not offer a stale copy in the context menu',
+    (tester) async {
+      final harness = await _mountTimeline(tester);
+      final region = tester.state<SelectableRegionState>(
+        find.byType(SelectableRegion).first,
+      );
+      region.selectAll(SelectionChangedCause.keyboard);
+      await tester.pump();
       expect(
-        ops.whereType<ChatOperation>().every((op) => !op.animated),
+        region.contextMenuButtonItems.any(
+          (item) => item.type == ContextMenuButtonType.copy,
+        ),
         isTrue,
       );
-      expect(controller.lastDiff.removes, 2);
-      expect(controller.lastDiff.inserts, 1);
-      expect(controller.lastDiff.isIdle, isFalse);
+      region.clearSelection();
+      await tester.pump();
+      await tester.tapAt(
+        tester.getCenter(find.byKey(StudioDriverKeys.timeline)),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Select all'), findsOneWidget);
+      expect(find.text('Copy'), findsNothing);
+      region.hideToolbar();
+      await _closeTimeline(tester, harness);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
+
+  testWidgets('offscreen focused code cannot publish a non-finite anchor', (
+    tester,
+  ) async {
+    final harness = await _mountTimeline(
+      tester,
+      initialItems: [
+        _item('first', text: '```text\nRetained code selection\n```'),
+        _item('second', text: _streamingParagraphs(100)),
+        _item('third'),
+      ],
+    );
+    final position = _timelinePosition(tester);
+    await tester.drag(
+      find.byKey(StudioDriverKeys.timeline),
+      const Offset(0, 120),
+    );
+    await tester.pumpAndSettle();
+    expect(_publishedScrollDiagnostic()['followingBottom'], isFalse);
+    position.jumpTo(0);
+    await tester.pumpAndSettle();
+    final first = find.byKey(
+      StudioDriverKeys.timelineBlock('first'),
+      skipOffstage: false,
+    );
+    expect(first, findsOneWidget);
+    await tester.tap(
+      find.descendant(of: first, matching: find.byType(SelectableText)).first,
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: first, matching: find.byType(EditableText)),
+          )
+          .focusNode
+          .hasFocus,
+      isTrue,
+    );
+    harness.commands.clear();
+    position.jumpTo(position.maxScrollExtent);
+    for (var frame = 0; frame < 4; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
       expect(
-        [for (final message in controller.messages) message.id],
-        ['third'],
+        first,
+        findsOneWidget,
+        reason: 'focused code keeps the row mounted',
       );
-    });
-
-    test('Patch 增量：追加只发一次插入，未变化行不发任何操作', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final first = _textRow('first');
-      final second = _textRow('second');
-      controller.applyWindow([first], const ThreadHistoryWindow());
-      final ops = _recordOperations(controller);
-
-      controller.applyWindow([first, second], const ThreadHistoryWindow());
-
-      expect(ops, hasLength(1));
-      expect(ops.single.type, ChatOperationType.insert);
-      expect(ops.single.index, 1);
-      expect(ops.single.animated, isFalse);
-      expect(controller.lastDiff.reused, 1);
-      expect(controller.lastDiff.removes, 0);
-      expect(controller.lastDiff.updates, 0);
-      expect(controller.lastDiff.operations, 1);
-      expect(
-        controller.lastDiff.comparisons,
-        lessThanOrEqualTo(2),
-        reason: '线性对齐一轮最多比较两侧行数之和',
-      );
-    });
-
-    test('未变化的行复用同一 Message 实例', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final rows = [_textRow('first'), _textRow('second')];
-      controller.applyWindow(rows, const ThreadHistoryWindow());
-      final before = controller.messages;
-      final ops = _recordOperations(controller);
-
-      controller.applyWindow(rows, const ThreadHistoryWindow());
-
-      expect(ops, isEmpty);
-      expect(controller.lastDiff.isIdle, isTrue);
-      expect(controller.lastDiff.reused, 2);
-      expect(identical(controller.messages[0], before[0]), isTrue);
-      expect(identical(controller.messages[1], before[1]), isTrue);
-      expect(
-        TimelineChatController.rowOf(controller.messages[0]),
-        same(rows[0]),
-      );
-    });
-
-    test('流式正文只对变化行发一次原位更新', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final stable = _textRow('first');
-      controller.applyWindow([
-        stable,
-        _textRow('second', text: 'partial'),
-      ], const ThreadHistoryWindow());
-      final ops = _recordOperations(controller);
-
-      controller.applyWindow([
-        stable,
-        _textRow('second', text: 'partial and more'),
-      ], const ThreadHistoryWindow());
-
-      expect(ops, hasLength(1));
-      final update = ops.single;
-      expect(update.type, ChatOperationType.update);
-      expect(update.index, 1);
-      expect(update.oldMessage!.id, 'second');
-      expect(update.message!.id, 'second');
-      expect(
-        identical(update.oldMessage, update.message),
-        isFalse,
-        reason: '内容变化的行必须给出新的消息实例',
-      );
-      expect(controller.lastDiff.updates, 1);
-      expect(controller.lastDiff.removes, 0);
-      expect(controller.lastDiff.inserts, 0);
-      expect(identical(controller.messages[0], update.oldMessage), isFalse);
-      expect(controller.lastDiff.reused, 1);
-    });
-
-    test('淘汰只发 remove，不产生区间插入或更新', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final retained = [_textRow('second'), _textRow('third')];
-      controller.applyWindow([
-        _textRow('first'),
-        ...retained,
-      ], const ThreadHistoryWindow());
-      final ops = _recordOperations(controller);
-
-      controller.applyWindow(retained, const ThreadHistoryWindow());
-
-      expect(ops, hasLength(1));
-      expect(ops.single.type, ChatOperationType.remove);
-      expect(ops.single.index, 0);
-      expect(ops.single.animated, isFalse);
-      expect(controller.lastDiff.removes, 1);
-      expect(controller.lastDiff.inserts, 0);
-      expect(controller.lastDiff.updates, 0);
-      expect(controller.lastDiff.reused, 2);
-    });
-
-    test('正文状态变化只原位更新承载它的行', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final rows = [_textRow('first'), _textRow('second')];
-      controller.applyWindow(rows, const ThreadHistoryWindow());
-      final ops = _recordOperations(controller);
-
-      controller.applyWindow(
-        rows,
-        const ThreadHistoryWindow(previewedItemIds: {'second'}),
-      );
-
-      expect(ops, hasLength(1));
-      expect(ops.single.type, ChatOperationType.update);
-      expect(ops.single.message!.id, 'second');
-      expect(controller.lastDiff.reused, 1);
-      expect(
-        TimelineChatController.bodyOf(controller.messages[1]).previewedItemIds,
-        contains('second'),
-      );
-    });
-
-    test('窗口上限 96 行：一遍线性对齐，无重定位', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      final rows = [
-        for (var index = 0; index < 96; index += 1) _textRow('r$index'),
-      ];
-      controller.applyWindow(rows, const ThreadHistoryWindow());
-      final ops = _recordOperations(controller);
-
-      // 向旧加载一页：头部插入一条、尾部淘汰一条。
-      controller.applyWindow([
-        _textRow('newer'),
-        ...rows.take(95),
-      ], const ThreadHistoryWindow());
-
-      expect(controller.lastDiff.relocations, 0);
-      expect(controller.lastDiff.removes, 1);
-      expect(controller.lastDiff.inserts, 1);
-      expect(controller.lastDiff.updates, 0);
-      expect(controller.lastDiff.reused, 95);
-      expect(
-        controller.lastDiff.comparisons,
-        lessThanOrEqualTo(2 * 96),
-        reason: '每帧只允许一次线性对齐',
-      );
-      expect(controller.lastDiff.operations, 2);
-      expect(ops.map((op) => op.type), [
-        ChatOperationType.remove,
-        ChatOperationType.insert,
-      ]);
-      expect(controller.messages, hasLength(96));
-    });
-
-    test('整个列表转换被拒绝，且重复身份可诊断', () {
-      final controller = TimelineChatController();
-      addTearDown(controller.dispose);
-      expect(() => controller.setMessages(const []), throwsUnsupportedError);
-
-      final duplicate = _textRow('first');
-      controller.applyWindow([
-        duplicate,
-        duplicate,
-      ], const ThreadHistoryWindow());
-      expect(controller.failure, isA<StateError>());
-    });
+      expect(tester.getTopLeft(first).dy.isNaN, isTrue);
+      final diagnostic = _publishedScrollDiagnostic();
+      final anchor = diagnostic['anchor'] as Map?;
+      if (anchor != null) {
+        expect(anchor['itemId'], isNot('first'));
+        expect((anchor['offset'] as num).isFinite, isTrue);
+      }
+      for (final command
+          in harness.commands.whereType<TimelineAnchorChanged>()) {
+        expect(command.anchor.offset.isFinite, isTrue);
+      }
+      final visible = harness.commands.whereType<TimelineVisibleBodies>();
+      for (final command in visible) {
+        expect(command.itemIds, isNot(contains('first')));
+      }
+      expect(position.pixels.isFinite, isTrue);
+      expect(tester.takeException(), isNull);
+    }
+    await _closeTimeline(tester, harness);
   });
 
   testWidgets('initial long streaming body follows the real layout bottom', (
@@ -729,52 +997,10 @@ void main() {
   });
 }
 
-/// 收集控制器发出的操作；订阅早于第一次 [TimelineChatController.applyWindow]。
-List<ChatOperation> _recordOperations(TimelineChatController controller) {
-  final records = <ChatOperation>[];
-  final subscription = controller.operationsStream.listen(records.add);
-  addTearDown(subscription.cancel);
-  return records;
-}
-
-TimelineRow _textRow(String id, {String? text}) {
-  final now = DateTime.utc(2026);
-  final body = text ?? id;
-  const turnId = 'turn';
-  final item = ThreadItemView(
-    id: id,
-    threadId: 'thread-main',
-    turnId: turnId,
-    ordinal: 0,
-    revision: 1,
-    createdAt: now,
-    updatedAt: now,
-    state: ThreadTextItemStateView(
-      channel: ThreadTextChannel.user,
-      text: body,
-      attachments: const [],
-      lifecycle: CompletedThreadContentView(now),
-    ),
-  );
-  return TimelineRow.item(
-    item: item,
-    part: TimelineEntry(
-      id: id,
-      groupId: turnId,
-      threadId: 'thread-main',
-      turnId: turnId,
-      type: TimelineEntryType.text,
-      text: body,
-      textChannel: TimelineTextChannel.user,
-      createdAt: now,
-      updatedAt: now,
-    ),
-    type: TimelineRowType.userMessage,
-  );
-}
-
 class _ControlledWindow implements StudioChatWindow {
-  _ControlledWindow({this.secondText = 'second'});
+  _ControlledWindow({this.secondText = 'second', this.initialItems});
+
+  final List<StudioChatItem>? initialItems;
 
   final String secondText;
   Completer<StudioChatFrame?>? _next;
@@ -785,10 +1011,12 @@ class _ControlledWindow implements StudioChatWindow {
   Future<StudioChatSnapshot> initial() async => StudioChatSnapshot(
     focusedItemId: null,
     version: 1,
-    items: [
-      for (final id in ['first', 'second', 'third'])
-        _item(id, text: id == 'second' ? secondText : null),
-    ],
+    items:
+        initialItems ??
+        [
+          for (final id in ['first', 'second', 'third'])
+            _item(id, text: id == 'second' ? secondText : null),
+        ],
     hasOlder: false,
     hasNewer: false,
     canExtendLatest: false,
@@ -898,11 +1126,17 @@ final class _TimelineHarness {
 Future<_TimelineHarness> _mountTimeline(
   WidgetTester tester, {
   String secondText = 'second',
+  List<StudioChatItem>? initialItems,
   ValueChanged<ScrollNotification>? onScrollNotification,
   TextHeightBehavior textHeightBehavior = const TextHeightBehavior(),
+  Brightness brightness = Brightness.light,
+  double height = 320,
 }) async {
   final transport = RecordingDemoTransport();
-  final window = _ControlledWindow(secondText: secondText);
+  final window = _ControlledWindow(
+    secondText: secondText,
+    initialItems: initialItems,
+  );
   transport.chatWindowFactory = (threadId, demoWindow) async {
     demoWindow.requestClose();
     await demoWindow.close();
@@ -934,6 +1168,7 @@ Future<_TimelineHarness> _mountTimeline(
     ProviderScope(
       overrides: [appGraphProvider.overrideWithValue(graph)],
       child: MaterialApp(
+        theme: ThemeData(brightness: brightness),
         locale: const Locale('en'),
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
@@ -941,7 +1176,7 @@ Future<_TimelineHarness> _mountTimeline(
           body: Center(
             child: SizedBox(
               width: 640,
-              height: 320,
+              height: height,
               child: DefaultTextHeightBehavior(
                 textHeightBehavior: textHeightBehavior,
                 child: NotificationListener<ScrollNotification>(
@@ -1035,6 +1270,11 @@ Future<void> _pumpVersion(
   for (var frame = 0; frame < 64; frame++) {
     await tester.runAsync(() async {});
     await tester.pump();
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'version=$version frame=$frame',
+    );
     final chat = session.chat.state.value;
     final Object? error = switch (chat) {
       ChatReconnecting<StudioChatSnapshot>(:final error) => error,

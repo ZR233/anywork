@@ -3,21 +3,11 @@ part of 'timeline_view.dart';
 extension on _TimelineViewState {
   /// 构建一行：行外壳、气泡、头像与状态元信息条都由应用自己的内容组件承担。
   ///
-  /// 行 widget 不再由 Timeline 缓存：消息集合已经保证未变化的行复用同一 `Message`
-  /// 实例，只有真正变化的行才会走到这里（design/19 §19.10）。
-  Widget _buildRow(
-    TimelineRow row, {
-    required ThreadHistoryWindow body,
-    required bool reasoningExpanded,
-    required bool toolExpanded,
-  }) {
+  /// 行由官方列表按稳定身份管理，投影只复用当前窗口内未变化的不可变数据。
+  Widget _buildRow(TimelineRow row, {required ThreadHistoryWindow body}) {
     final block = _TimelineRowBlock(
       key: ValueKey(row.id),
       row: row,
-      isReasoningExpanded: reasoningExpanded,
-      onToggleReasoning: _toggleReasoning,
-      isToolGroupExpanded: toolExpanded,
-      onToggleToolGroup: _toggleToolGroup,
       body: _itemBodyStates(row, body),
     );
     return KeyedSubtree(
@@ -35,16 +25,13 @@ extension on _TimelineViewState {
   }
 
   String _anchorItemIdForRow(TimelineRow row) {
-    return row.part?.id ??
-        row.toolGroup?.items.firstOrNull?.id ??
-        row.reasoningGroup?.parts.firstOrNull?.id ??
-        row.id;
+    return row.entries.firstOrNull?.id ?? row.id;
   }
 
   /// 该行需要“回源完整正文”提示的底层条目；不需要时返回空列表。
   ///
   /// 单条行、raw 行与分组行都按 canonical item id 解析：分组行的 `row.id` 是合成身份
-  /// （`tool-group:`/`reasoning-group:`），不能直接拿去查预览/回源状态，否则超大工具输出、
+  /// （`activity-group:`），不能直接拿去查预览/回源状态，否则超大工具输出、
   /// 推理正文或 raw 载荷永远拿不到回源入口。
   List<_ItemBodyState> _itemBodyStates(
     TimelineRow row,
@@ -98,10 +85,7 @@ extension on _TimelineViewState {
 
   String? _anchorRowId(String itemId, {List<TimelineRow>? rows}) {
     for (final row in rows ?? widget.rows) {
-      if (row.id == itemId ||
-          row.part?.id == itemId ||
-          row.toolGroup?.items.any((item) => item.id == itemId) == true ||
-          row.reasoningGroup?.parts.any((item) => item.id == itemId) == true) {
+      if (row.id == itemId || row.entries.any((part) => part.id == itemId)) {
         return row.id;
       }
     }
@@ -125,21 +109,22 @@ extension on _TimelineViewState {
 
   /// 记录“最靠上的可见行”的锚点。
   ///
-  /// 记录的偏移量是**内容自身**的偏移：短内容整体贴底时整段内容被
-  /// 锚点偏移量直接使用行相对视口的真实绘制位置。
+  /// 锚点偏移量直接使用行相对视口的真实绘制位置；保留缓存不参与可见性判断。
   TimelineAnchor? _captureAnchor({List<TimelineRow>? rows}) {
     final viewport = _viewportKey.currentContext?.findRenderObject();
     if (viewport is! RenderBox || !viewport.hasSize) return null;
     String? id;
     double? offset;
     for (final entry in _rowKeys.entries) {
-      final box = entry.value.currentContext?.findRenderObject();
-      if (box is! RenderBox || !box.hasSize || !box.attached) continue;
-      final top = box.localToGlobal(Offset.zero, ancestor: viewport).dy;
-      if (top + box.size.height <= 0 || top >= viewport.size.height) continue;
-      if (offset == null || top < offset) {
+      final rect = _paintedViewportRect(entry.value.currentContext);
+      if (rect == null ||
+          rect.bottom <= 0 ||
+          rect.top >= viewport.size.height) {
+        continue;
+      }
+      if (offset == null || rect.top < offset) {
         id = entry.key;
-        offset = top;
+        offset = rect.top;
       }
     }
     return id == null
@@ -246,3 +231,9 @@ extension on _TimelineViewState {
     );
   }
 }
+
+typedef _RowBodyCandidate = ({String id, String? label, bool isText});
+List<_RowBodyCandidate> _rowBodyCandidates(TimelineRow row) => [
+  for (final part in row.entries)
+    (id: part.id, label: part.tool?.name, isText: row is TimelineTextRow),
+];

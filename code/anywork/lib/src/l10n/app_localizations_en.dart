@@ -1014,6 +1014,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningEmpty => 'No reasoning text was provided.';
 
   @override
+  String get timelineReasoningBudgetLimited => 'Reasoning budget reached';
+
+  @override
   String get timelineToolFallback => 'Tool';
 
   @override
@@ -2737,4 +2740,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelCatalogEmpty => 'This provider returned no models.';
+
+  @override
+  String get timelineActivityTitle => 'Thinking and tools';
+
+  @override
+  String get timelineContextCompacted => 'Context automatically compacted';
+
+  @override
+  String timelineCompactionDetail(int before, int after) {
+    return 'Before: $before; after: $after tokens';
+  }
 }

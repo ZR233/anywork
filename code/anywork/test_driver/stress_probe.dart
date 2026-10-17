@@ -258,7 +258,7 @@ Future<void> main(List<String> args) async {
             timeline.length >= 60 &&
             rowKinds.contains('finalAnswer') &&
             rowKinds.contains('commentary') &&
-            rowKinds.contains('reasoningSummary');
+            rowKinds.contains('activityGroup');
         final streamCompleted =
             workspace is Map &&
             persistence is Map &&

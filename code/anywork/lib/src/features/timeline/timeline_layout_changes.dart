@@ -45,8 +45,47 @@ class _TimelineLayoutTarget {
 }
 
 extension on _TimelineViewState {
-  void _cancelLayoutRestore() {
+  /// Kept-alive sliver children remain attached but have no paint transform.
+  /// Follow Flutter's paint relationship before measuring any reading geometry.
+  Rect? _paintedViewportRect(BuildContext? context) {
+    final viewport = _viewportKey.currentContext?.findRenderObject();
+    final box = context?.findRenderObject();
+    if (viewport is! RenderBox ||
+        !viewport.attached ||
+        !viewport.hasSize ||
+        !viewport.size.isFinite ||
+        box is! RenderBox ||
+        !box.attached ||
+        !box.hasSize ||
+        !box.size.isFinite ||
+        box.size.isEmpty) {
+      return null;
+    }
+    RenderObject child = box;
+    while (child != viewport) {
+      final parent = child.parent;
+      if (parent == null || !parent.paintsChild(child)) return null;
+      if (parent is RenderSliver && parent.geometry?.visible != true) {
+        return null;
+      }
+      child = parent;
+    }
+    final rect = MatrixUtils.transformRect(
+      box.getTransformTo(viewport),
+      Offset.zero & box.size,
+    );
+    return rect.isFinite ? rect : null;
+  }
+
+  void _invalidateIndexRestore() {
     _readingGeneration++;
+    _observer.controller = null;
+    _indexRestore = null;
+    _programmaticScroll = false;
+  }
+
+  void _cancelLayoutRestore() {
+    _invalidateIndexRestore();
     _restoreClamped = false;
     _pendingRestore = const _TimelineRestore.bottom();
     _settledAnchor = null;
@@ -70,22 +109,16 @@ extension on _TimelineViewState {
 
   double? _layoutTargetPixels(_TimelineLayoutTarget target) {
     final viewport = _viewportKey.currentContext?.findRenderObject();
-    final box = target.context.findRenderObject();
-    if (viewport is! RenderBox ||
-        !viewport.hasSize ||
-        box is! RenderBox ||
-        !box.hasSize ||
-        !box.attached ||
-        !_controller.hasClients) {
+    final rect = _paintedViewportRect(target.context);
+    if (viewport is! RenderBox || rect == null || !_controller.hasClients) {
       return null;
     }
-    final top = box.localToGlobal(Offset.zero, ancestor: viewport).dy;
     // Reveal only the operation's leading edge, never the whole expanded row.
     final wanted = target.top.clamp(
       0.0,
       math.max(0.0, viewport.size.height - 40),
     );
-    return _controller.position.pixels + top - wanted;
+    return _controller.position.pixels + rect.top - wanted;
   }
 
   void _handleItemLayoutChange(
@@ -107,19 +140,12 @@ extension on _TimelineViewState {
       _resumeAfterNewerPage = false;
     }
     final anchor = _captureAnchor();
-    final viewport = _viewportKey.currentContext?.findRenderObject();
-    final box = trigger.findRenderObject();
-    final target =
-        explicit &&
-            viewport is RenderBox &&
-            viewport.hasSize &&
-            box is RenderBox &&
-            box.hasSize &&
-            box.attached
+    final rect = explicit ? _paintedViewportRect(trigger) : null;
+    final target = rect != null
         ? _TimelineLayoutTarget(
             itemId: itemId,
             context: trigger,
-            top: box.localToGlobal(Offset.zero, ancestor: viewport).dy,
+            top: rect.top,
             threadId: widget.threadId,
             viewId: widget.viewId,
             windowEpoch: widget.windowEpoch,

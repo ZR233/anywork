@@ -46,6 +46,9 @@ pub(crate) struct ManualGuiOptions {
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
+    /// Retain a successfully closed synthetic environment for release visual review.
+    #[arg(long)]
+    pub(crate) retain_environment: bool,
     /// Run tool-scroll against an explicitly supplied SSH test host (user@host).
     #[arg(long, value_name = "USER@HOST")]
     pub(crate) ssh_target: Option<String>,
@@ -411,6 +414,10 @@ impl Drop for OwnedProcess {
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ensure!(
+        !options.retain_environment || options.scenario == "tool-scroll",
+        "--retain-environment is supported by tool-scroll"
+    );
+    ensure!(
         options.startup_fault.is_none() || options.scenario == "gui",
         "--startup-fault requires --scenario gui"
     );
@@ -490,7 +497,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     )?;
     fs::write(output.join("operations.json"), "[]\n")?;
 
-    let working = tempfile::tempdir().context("failed to create isolated GUI home")?;
+    let working = tempfile::Builder::new()
+        .prefix("environment-")
+        .tempdir_in(&output)
+        .context("failed to create isolated GUI home")?;
     let home = working.path().join("home");
     fs::create_dir(&home)?;
     let ready_file = working.path().join("fixture-ready.json");
@@ -811,7 +821,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if options.scenario == "gui" {
         gui_command.args(["--log-level", "info"]);
     }
-    if options.scenario == "stress" {
+    if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
         gui_command.arg("--profile");
     }
     if options.scenario == "tool-scroll" {
@@ -1391,6 +1401,22 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             "GUI snapshot stalled for {slowest}ms during stress stream"
         );
     }
+    if options.retain_environment {
+        let capture = fs::read_to_string(output.join("capture-stage.txt"))
+            .context("retained environment requires completed shutdown capture")?;
+        ensure!(
+            capture.trim() == "shutdown_completed",
+            "runtime shutdown did not complete"
+        );
+        let root = working.keep();
+        fs::write(
+            output.join("retained-environment.json"),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"root": root, "home": home, "project": root.join("tool-scroll-project")}),
+            )?,
+        )?;
+    }
+
     Ok(())
 }
 
