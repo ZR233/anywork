@@ -3392,7 +3392,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsDeepSeekWebSearchSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails.'**
+  /// **'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.'**
   String get settingsDeepSeekWebSearchSubtitle;
 
   /// No description provided for @settingsDeepSeekWebSearchProvider.
@@ -3404,13 +3404,13 @@ abstract class AppLocalizations {
   /// No description provided for @settingsDeepSeekWebSearchConfigured.
   ///
   /// In en, this message translates to:
-  /// **'Configured'**
+  /// **'Search configured'**
   String get settingsDeepSeekWebSearchConfigured;
 
   /// No description provided for @settingsDeepSeekWebSearchEffective.
   ///
   /// In en, this message translates to:
-  /// **'Effective'**
+  /// **'Search effective'**
   String get settingsDeepSeekWebSearchEffective;
 
   /// No description provided for @settingsDeepSeekWebSearchEnabled.
@@ -3418,6 +3418,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Enabled'**
   String get settingsDeepSeekWebSearchEnabled;
+
+  /// No description provided for @settingsDeepSeekWebSearchEnableLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Web search'**
+  String get settingsDeepSeekWebSearchEnableLabel;
+
+  /// No description provided for @settingsDeepSeekWebFetchEnableLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Page fetch'**
+  String get settingsDeepSeekWebFetchEnableLabel;
+
+  /// No description provided for @settingsDeepSeekWebFetchConfigured.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetch configured'**
+  String get settingsDeepSeekWebFetchConfigured;
+
+  /// No description provided for @settingsDeepSeekWebFetchEffective.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetch effective'**
+  String get settingsDeepSeekWebFetchEffective;
 
   /// No description provided for @settingsStudioUpdateTitle.
   ///

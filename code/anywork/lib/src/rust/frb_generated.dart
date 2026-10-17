@@ -6004,14 +6004,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_bridge_deep_seek_web_search_settings_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeDeepSeekWebSearchSettingsDto(
       configuredEnabled: dco_decode_bool(arr[0]),
       effectiveEnabled: dco_decode_bool(arr[1]),
-      availability: dco_decode_String(arr[2]),
-      providerId: dco_decode_opt_String(arr[3]),
-      model: dco_decode_opt_String(arr[4]),
+      configuredFetchEnabled: dco_decode_bool(arr[2]),
+      effectiveFetchEnabled: dco_decode_bool(arr[3]),
+      availability: dco_decode_String(arr[4]),
+      providerId: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -11389,23 +11390,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           value: dco_decode_bool(raw[1]),
         );
       case 29:
+        return SettingsFieldInput_DeepSeekWebFetchEnabled(
+          value: dco_decode_bool(raw[1]),
+        );
+      case 30:
         return SettingsFieldInput_ModeModel(
           modeId: dco_decode_String(raw[1]),
           providerId: dco_decode_String(raw[2]),
           model: dco_decode_String(raw[3]),
         );
-      case 30:
+      case 31:
         return SettingsFieldInput_ModeReasoningEffort(
           modeId: dco_decode_String(raw[1]),
           effort: dco_decode_opt_String(raw[2]),
         );
-      case 31:
+      case 32:
         return SettingsFieldInput_RoleModel(
           role: dco_decode_String(raw[1]),
           providerId: dco_decode_String(raw[2]),
           model: dco_decode_String(raw[3]),
         );
-      case 32:
+      case 33:
         return SettingsFieldInput_RoleReasoningEffort(
           role: dco_decode_String(raw[1]),
           effort: dco_decode_opt_String(raw[2]),
@@ -13706,15 +13711,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_configuredEnabled = sse_decode_bool(deserializer);
     var var_effectiveEnabled = sse_decode_bool(deserializer);
+    var var_configuredFetchEnabled = sse_decode_bool(deserializer);
+    var var_effectiveFetchEnabled = sse_decode_bool(deserializer);
     var var_availability = sse_decode_String(deserializer);
     var var_providerId = sse_decode_opt_String(deserializer);
-    var var_model = sse_decode_opt_String(deserializer);
     return BridgeDeepSeekWebSearchSettingsDto(
       configuredEnabled: var_configuredEnabled,
       effectiveEnabled: var_effectiveEnabled,
+      configuredFetchEnabled: var_configuredFetchEnabled,
+      effectiveFetchEnabled: var_effectiveFetchEnabled,
       availability: var_availability,
       providerId: var_providerId,
-      model: var_model,
     );
   }
 
@@ -20928,6 +20935,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_value = sse_decode_bool(deserializer);
         return SettingsFieldInput_DeepSeekWebSearchEnabled(value: var_value);
       case 29:
+        var var_value = sse_decode_bool(deserializer);
+        return SettingsFieldInput_DeepSeekWebFetchEnabled(value: var_value);
+      case 30:
         var var_modeId = sse_decode_String(deserializer);
         var var_providerId = sse_decode_String(deserializer);
         var var_model = sse_decode_String(deserializer);
@@ -20936,14 +20946,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           providerId: var_providerId,
           model: var_model,
         );
-      case 30:
+      case 31:
         var var_modeId = sse_decode_String(deserializer);
         var var_effort = sse_decode_opt_String(deserializer);
         return SettingsFieldInput_ModeReasoningEffort(
           modeId: var_modeId,
           effort: var_effort,
         );
-      case 31:
+      case 32:
         var var_role = sse_decode_String(deserializer);
         var var_providerId = sse_decode_String(deserializer);
         var var_model = sse_decode_String(deserializer);
@@ -20952,7 +20962,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           providerId: var_providerId,
           model: var_model,
         );
-      case 32:
+      case 33:
         var var_role = sse_decode_String(deserializer);
         var var_effort = sse_decode_opt_String(deserializer);
         return SettingsFieldInput_RoleReasoningEffort(
@@ -23271,9 +23281,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.configuredEnabled, serializer);
     sse_encode_bool(self.effectiveEnabled, serializer);
+    sse_encode_bool(self.configuredFetchEnabled, serializer);
+    sse_encode_bool(self.effectiveFetchEnabled, serializer);
     sse_encode_String(self.availability, serializer);
     sse_encode_opt_String(self.providerId, serializer);
-    sse_encode_opt_String(self.model, serializer);
   }
 
   @protected
@@ -29083,12 +29094,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case SettingsFieldInput_DeepSeekWebSearchEnabled(value: final value):
         sse_encode_i_32(28, serializer);
         sse_encode_bool(value, serializer);
+      case SettingsFieldInput_DeepSeekWebFetchEnabled(value: final value):
+        sse_encode_i_32(29, serializer);
+        sse_encode_bool(value, serializer);
       case SettingsFieldInput_ModeModel(
         modeId: final modeId,
         providerId: final providerId,
         model: final model,
       ):
-        sse_encode_i_32(29, serializer);
+        sse_encode_i_32(30, serializer);
         sse_encode_String(modeId, serializer);
         sse_encode_String(providerId, serializer);
         sse_encode_String(model, serializer);
@@ -29096,7 +29110,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         modeId: final modeId,
         effort: final effort,
       ):
-        sse_encode_i_32(30, serializer);
+        sse_encode_i_32(31, serializer);
         sse_encode_String(modeId, serializer);
         sse_encode_opt_String(effort, serializer);
       case SettingsFieldInput_RoleModel(
@@ -29104,7 +29118,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         providerId: final providerId,
         model: final model,
       ):
-        sse_encode_i_32(31, serializer);
+        sse_encode_i_32(32, serializer);
         sse_encode_String(role, serializer);
         sse_encode_String(providerId, serializer);
         sse_encode_String(model, serializer);
@@ -29112,7 +29126,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         role: final role,
         effort: final effort,
       ):
-        sse_encode_i_32(32, serializer);
+        sse_encode_i_32(33, serializer);
         sse_encode_String(role, serializer);
         sse_encode_opt_String(effort, serializer);
     }

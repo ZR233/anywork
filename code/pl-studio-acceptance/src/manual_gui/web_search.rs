@@ -2,7 +2,7 @@
 //!
 //! One isolated home starts the real GUI/bridge/Studio twice (a `first` and a
 //! `restart` lifecycle) against a loopback fixture that serves the OpenAI
-//! standalone search API, the DeepSeek native search endpoint and a generic
+//! standalone search API, the DeepSeek Search & Fetch tool endpoints and a generic
 //! Streamable-HTTP MCP server. A Driver probe opens a session, switches the
 //! session model across the three fixture models, exercises each search path,
 //! edits and persists the Web Search settings and probes the hot-add/remove of
@@ -98,8 +98,8 @@ fn deepseek_capabilities() -> ProviderServiceCapabilities {
         web_search: WebSearchProviderCapabilities {
             hosted_responses: false,
             hosted_dialect: HostedWebSearchDialect::DeepSeekResponses,
-            // B 任务的锁定接口：DeepSeek 原生搜索使用 Anthropic Messages wire。
-            standalone: Some(StandaloneWebSearchDialect::DeepSeekAnthropicMessages),
+            // DeepSeek standalone search uses the official Search & Fetch tools API.
+            standalone: Some(StandaloneWebSearchDialect::DeepSeekToolsApi),
         },
         ..ProviderServiceCapabilities::default()
     }
@@ -203,6 +203,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
         timezone: Some("Asia/Shanghai".to_string()),
     });
     config.deepseek_web_search.enabled = true;
+    config.deepseek_web_search.fetch_enabled = true;
 
     let host = ready
         .base_url
@@ -292,6 +293,84 @@ fn request_mentions(request: &Value, needle: &str) -> bool {
         .get("body")
         .and_then(|body| serde_json::to_string(body).ok())
         .is_some_and(|body| body.contains(needle))
+}
+
+/// One DeepSeek Search/Fetch tool row copied from a Driver snapshot timeline.
+#[derive(Debug, Clone)]
+struct DeepSeekToolRow {
+    snapshot: String,
+    name: String,
+    call_id: String,
+    status: String,
+    result: String,
+}
+
+fn deepseek_tool_status_terminal_ok(status: &str) -> bool {
+    matches!(status, "succeeded" | "running" | "pending")
+}
+
+/// Reads every `snapshot-*.json` Driver dump and collects DeepSeek tool rows
+/// from `workspace.timeline[].tools[]`. The Driver summary does not carry tool
+/// status, so this is the only real evidence of a failed Search/Fetch call.
+fn collect_deepseek_tool_rows(output: &Path) -> Result<Vec<DeepSeekToolRow>> {
+    let mut files: Vec<PathBuf> = fs::read_dir(output)
+        .with_context(|| format!("failed to list evidence dir {}", output.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("snapshot-") && name.ends_with(".json"))
+        })
+        .collect();
+    files.sort();
+    let mut rows = Vec::new();
+    for path in files {
+        let snapshot: Value = serde_json::from_slice(&fs::read(&path)?)
+            .with_context(|| format!("failed to parse snapshot {}", path.display()))?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("snapshot")
+            .to_owned();
+        let Some(timeline) = snapshot
+            .pointer("/workspace/timeline")
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for item in timeline {
+            let Some(tools) = item.get("tools").and_then(Value::as_array) else {
+                continue;
+            };
+            for tool in tools {
+                let name = tool.get("name").and_then(Value::as_str).unwrap_or_default();
+                if name != "deepseek_web_search" && name != "deepseek_web_fetch" {
+                    continue;
+                }
+                rows.push(DeepSeekToolRow {
+                    snapshot: file_name.clone(),
+                    name: name.to_owned(),
+                    call_id: tool
+                        .get("callId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    status: tool
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    result: tool
+                        .get("result")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                });
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// Rejection categories a fault run is *expected* to own.
@@ -496,8 +575,43 @@ pub(super) fn run(
     };
     let openai_search =
         accepted_path(pl_provider_fixture::OPENAI_SEARCH_PATH) || accepted_path("/alpha/search");
-    let deepseek_search = accepted_path(pl_provider_fixture::DEEPSEEK_MESSAGES_PATH)
-        || accepted_path("/anthropic/v1/messages");
+    let deepseek_search =
+        accepted_path(pl_provider_fixture::DEEPSEEK_SEARCH_PATH) || accepted_path("/tools/search");
+    let deepseek_fetch =
+        accepted_path(pl_provider_fixture::DEEPSEEK_FETCH_PATH) || accepted_path("/tools/fetch");
+    // Official Search is one `query` per request. Fan-out is proven by ≥2
+    // distinct accepted `/body/query` values inside one tool-call window:
+    // the window resets on each recorded model request (`/v1/responses`).
+    let deepseek_fanout = {
+        let mut window = BTreeSet::new();
+        let mut best = 0usize;
+        for request in &requests {
+            let path = request.get("path").and_then(Value::as_str);
+            if path == Some("/v1/responses") || path == Some("/v1/chat/completions") {
+                window.clear();
+                continue;
+            }
+            if request.get("accepted").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if path != Some(pl_provider_fixture::DEEPSEEK_SEARCH_PATH)
+                && path != Some("/tools/search")
+            {
+                continue;
+            }
+            let Some(query) = request
+                .pointer("/body/query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+            else {
+                continue;
+            };
+            window.insert(query);
+            best = best.max(window.len());
+        }
+        if best >= 2 { best } else { 0 }
+    };
     let mcp_methods: BTreeSet<String> = requests
         .iter()
         .filter(|request| {
@@ -534,7 +648,7 @@ pub(super) fn run(
         WebSearchFault::None => true,
         WebSearchFault::Unstructured => {
             categories("openai_search_unstructured_fault") > 0
-                || categories("deepseek_messages_unstructured_fault") > 0
+                || categories("deepseek_search_unstructured_fault") > 0
         }
         WebSearchFault::WrongSearchKey => categories("openai_search_auth_failed") > 0,
         WebSearchFault::WrongMcpKey => categories("mcp_auth_failed") > 0,
@@ -591,9 +705,14 @@ pub(super) fn run(
                 .collect()
         })
         .unwrap_or_default();
-    let child_has_search_tools = ["web_search", "deepseek_web_search", "discover_tools"]
-        .iter()
-        .all(|name| child_tools.contains(*name));
+    let child_has_search_tools = [
+        "web_search",
+        "deepseek_web_search",
+        "deepseek_web_fetch",
+        "discover_tools",
+    ]
+    .iter()
+    .all(|name| child_tools.contains(*name));
     let child_has_mcp = child_tools.iter().any(|name| name.starts_with("mcp__"));
     let child_tools_declared = !child_tools.is_empty() && child_tools.is_subset(&child_declared);
     let spawn_requested = categories("spawn_child_requested");
@@ -601,15 +720,36 @@ pub(super) fn run(
     let auxiliary_title = categories("auxiliary_title_answered");
     let child_tools_present = categories("child_search_tools_present");
     let child_deepseek = categories("child_search_deepseek");
+    let child_deepseek_fetch = categories("child_search_deepseek_fetch");
     let child_discover = categories("child_search_discover");
     let child_mcp_present = categories("child_search_mcp_present");
+    let deepseek_tool_rows = collect_deepseek_tool_rows(context.output)?;
+    let deepseek_search_succeeded = deepseek_tool_rows
+        .iter()
+        .filter(|row| row.name == "deepseek_web_search" && row.status == "succeeded")
+        .count();
+    let deepseek_fetch_succeeded = deepseek_tool_rows
+        .iter()
+        .filter(|row| row.name == "deepseek_web_fetch" && row.status == "succeeded")
+        .count();
+    let deepseek_tool_failures: Vec<Value> = deepseek_tool_rows
+        .iter()
+        .filter(|row| !deepseek_tool_status_terminal_ok(&row.status))
+        .map(|row| {
+            json!({
+                "snapshot": row.snapshot,
+                "name": row.name,
+                "callId": row.call_id,
+                "status": row.status,
+                "result": row.result,
+            })
+        })
+        .collect();
     let summaries_complete = summaries.len() == 2
         && summaries
             .iter()
             .all(|summary| summary["status"] == "complete");
-    fs::write(
-        context.output.join("collection.json"),
-        serde_json::to_vec_pretty(&json!({
+    let mut collection = json!({
             "scenario": ready.scenario,
             "platform": std::env::consts::OS,
             "probeMode": context.probe_mode,
@@ -628,6 +768,8 @@ pub(super) fn run(
             "restartFreshMcpCall": restart_fresh_call,
             "openaiSearchExercised": openai_search,
             "deepseekSearchExercised": deepseek_search,
+            "deepseekFetchExercised": deepseek_fetch,
+            "deepseekFanoutRequests": deepseek_fanout,
             "mcpMethods": mcp_methods,
             "searchToolModels": search_tool_models,
             "searchToolsAbsentRequests": search_tools_absent,
@@ -636,6 +778,7 @@ pub(super) fn run(
             "childWaitRequests": spawn_wait,
             "childSearchToolsPresentRequests": child_tools_present,
             "childDeepseekRequests": child_deepseek,
+            "childDeepseekFetchRequests": child_deepseek_fetch,
             "childDiscoverRequests": child_discover,
             "childMcpPresentRequests": child_mcp_present,
             "childThreadId": child_thread_id,
@@ -648,7 +791,13 @@ pub(super) fn run(
             "journey": if journey.is_ok() { "complete" } else { "failed" },
             "error": journey.as_ref().err().map(ToString::to_string),
             "humanVerdict": "pending",
-        }))?,
+    });
+    collection["deepseekSearchSucceededRows"] = json!(deepseek_search_succeeded);
+    collection["deepseekFetchSucceededRows"] = json!(deepseek_fetch_succeeded);
+    collection["deepseekToolFailures"] = Value::Array(deepseek_tool_failures.clone());
+    fs::write(
+        context.output.join("collection.json"),
+        serde_json::to_vec_pretty(&collection)?,
     )?;
     journey?;
     ensure!(
@@ -728,7 +877,27 @@ pub(super) fn run(
     );
     ensure!(
         deepseek_search,
-        "DeepSeek native search endpoint was never exercised"
+        "DeepSeek Search endpoint (`/v1/tools/search`) was never exercised"
+    );
+    ensure!(
+        deepseek_fetch,
+        "DeepSeek Fetch endpoint (`/v1/tools/fetch`) was never exercised"
+    );
+    ensure!(
+        deepseek_fanout >= 1,
+        "DeepSeek search was never called with multiple merged queries within a single tool call"
+    );
+    ensure!(
+        deepseek_tool_failures.is_empty(),
+        "DeepSeek Search/Fetch tool row failed: {deepseek_tool_failures:?}"
+    );
+    ensure!(
+        deepseek_search_succeeded >= 1,
+        "no snapshot recorded a succeeded deepseek_web_search tool row"
+    );
+    ensure!(
+        deepseek_fetch_succeeded >= 1,
+        "no snapshot recorded a succeeded deepseek_web_fetch tool row"
     );
     ensure!(
         ["initialize", "tools/list", "tools/call"]
@@ -768,8 +937,8 @@ pub(super) fn run(
         "no child request coexisted both search tools and a normal tool"
     );
     ensure!(
-        child_deepseek >= 1 && child_discover >= 1,
-        "the child did not call each search path (deepseek={child_deepseek}, discover={child_discover})"
+        child_deepseek >= 1 && child_deepseek_fetch >= 1 && child_discover >= 1,
+        "the child did not call each search path (deepseek={child_deepseek}, fetch={child_deepseek_fetch}, discover={child_discover})"
     );
     ensure!(
         child_mcp_present >= 1,

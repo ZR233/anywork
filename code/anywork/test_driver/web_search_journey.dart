@@ -58,6 +58,7 @@ const _restartMcpNonce = 'ws-restart-mcp';
 const _searchToolNames = <String>{
   'web_search',
   'deepseek_web_search',
+  'deepseek_web_fetch',
   'discover_tools',
 };
 
@@ -437,7 +438,8 @@ class _Probe {
     // the next Turn no longer declares either tool, then restore and recover.
     await _openGeneralSettings();
     await _setMode('disabled');
-    await _toggleDeepSeek(false);
+    await _toggleDeepSeek(false, fetchEnabled: true);
+    await _toggleDeepSeekFetch(false, searchEnabled: false);
     await _focus('deepseek_web_search_settings');
     await capture('ds-card-off');
     await _leaveSettings();
@@ -452,7 +454,8 @@ class _Probe {
 
     await _openGeneralSettings();
     await _setMode('live');
-    await _toggleDeepSeek(true);
+    await _toggleDeepSeekFetch(true, searchEnabled: false);
+    await _toggleDeepSeek(true, fetchEnabled: true);
     await capture('ds-card-on');
     await _leaveSettings();
     if (_fixture) {
@@ -1105,30 +1108,81 @@ class _Probe {
     _controls['mode'] = mode;
   }
 
-  Future<void> _toggleDeepSeek(bool enabled) async {
-    final before = await searchSettings();
-    final current =
-        ((before['deepSeekWebSearch'] as Map)['configuredEnabled'] as bool?) ??
-        false;
-    if (current == enabled) {
-      _controls['deepseekEnabled'] = enabled;
-      return;
-    }
-    await _tapControl('deepseek_web_search_enabled');
+  Map<String, dynamic> _deepSeekSettings(Map<String, dynamic> settings) =>
+      (settings['deepSeekWebSearch'] as Map).cast<String, dynamic>();
+
+  bool _deepSeekEffective(Map<String, dynamic> deep, bool configured) =>
+      configured && deep['availability'] == 'available';
+
+  bool _deepSeekMatches(
+    Map<String, dynamic> deep, {
+    required bool searchEnabled,
+    required bool fetchEnabled,
+  }) {
+    return deep['configuredEnabled'] == searchEnabled &&
+        deep['configuredFetchEnabled'] == fetchEnabled &&
+        deep['effectiveEnabled'] == _deepSeekEffective(deep, searchEnabled) &&
+        deep['effectiveFetchEnabled'] == _deepSeekEffective(deep, fetchEnabled);
+  }
+
+  Future<void> _waitDeepSeek({
+    required bool searchEnabled,
+    required bool fetchEnabled,
+    required String label,
+  }) async {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
+    Map<String, dynamic>? last;
     while (DateTime.now().isBefore(deadline)) {
-      final settings = await searchSettings();
-      final deep = (settings['deepSeekWebSearch'] as Map)
-          .cast<String, dynamic>();
-      if (deep['configuredEnabled'] == enabled) {
-        _controls['deepseekEnabled'] = enabled;
+      last = _deepSeekSettings(await searchSettings());
+      if (_deepSeekMatches(
+        last,
+        searchEnabled: searchEnabled,
+        fetchEnabled: fetchEnabled,
+      )) {
+        _controls['deepseekEnabled'] = searchEnabled;
+        _controls['deepseekFetchEnabled'] = fetchEnabled;
         return;
       }
-      // The card saves its own command on toggle; only the canonical value
-      // proves it, so wait for it instead of trusting the draft.
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
-    throw StateError('DeepSeek web-search toggle never persisted $enabled');
+    throw StateError(
+      '$label: expected configuredEnabled=$searchEnabled '
+      'configuredFetchEnabled=$fetchEnabled, last=${jsonEncode(last)}',
+    );
+  }
+
+  Future<void> _toggleDeepSeek(
+    bool enabled, {
+    required bool fetchEnabled,
+  }) async {
+    final before = _deepSeekSettings(await searchSettings());
+    final current = (before['configuredEnabled'] as bool?) ?? false;
+    if (current != enabled) {
+      await _tapControl('deepseek_web_search_enabled');
+    }
+    // The card saves its own command on toggle; only the canonical value
+    // proves it, so wait for it instead of trusting the draft.
+    await _waitDeepSeek(
+      searchEnabled: enabled,
+      fetchEnabled: fetchEnabled,
+      label: 'DeepSeek web-search toggle',
+    );
+  }
+
+  Future<void> _toggleDeepSeekFetch(
+    bool enabled, {
+    required bool searchEnabled,
+  }) async {
+    final before = _deepSeekSettings(await searchSettings());
+    final current = (before['configuredFetchEnabled'] as bool?) ?? false;
+    if (current != enabled) {
+      await _tapControl('deepseek_web_fetch_enabled');
+    }
+    await _waitDeepSeek(
+      searchEnabled: searchEnabled,
+      fetchEnabled: enabled,
+      label: 'DeepSeek web-fetch toggle',
+    );
   }
 
   Future<void> _editWebSearchSettings() async {

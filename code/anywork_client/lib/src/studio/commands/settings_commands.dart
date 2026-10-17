@@ -345,6 +345,7 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       WebSearchCityCommand() => 'web-search:city',
       WebSearchTimezoneCommand() => 'web-search:timezone',
       DeepSeekWebSearchEnabledCommand() => 'deepseek:web-search-enabled',
+      DeepSeekWebFetchEnabledCommand() => 'deepseek:web-fetch-enabled',
       ModeModelCommand(:final modeId) => 'mode-route:model:$modeId',
       ModeReasoningEffortCommand(:final modeId) => 'mode-route:effort:$modeId',
       RoleModelCommand(:final role) => 'agent-role:model:$role',

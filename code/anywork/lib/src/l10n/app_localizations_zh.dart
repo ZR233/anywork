@@ -1803,19 +1803,31 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsDeepSeekWebSearchSubtitle =>
-      '先由其它可用搜索优先处理；仅当其它搜索未配置、不可用或调用失败时，才由 DeepSeek 联网搜索兜底并按实际用量计费。';
+      '先由其它可用搜索优先处理；仅当其它搜索未配置、不可用或调用失败时，才由 DeepSeek 联网搜索兜底；搜索与抓取均按请求次数计费。';
 
   @override
   String get settingsDeepSeekWebSearchProvider => 'DeepSeek 模型服务商';
 
   @override
-  String get settingsDeepSeekWebSearchConfigured => '已配置';
+  String get settingsDeepSeekWebSearchConfigured => '搜索已配置';
 
   @override
-  String get settingsDeepSeekWebSearchEffective => '当前有效';
+  String get settingsDeepSeekWebSearchEffective => '搜索当前有效';
 
   @override
   String get settingsDeepSeekWebSearchEnabled => '已启用';
+
+  @override
+  String get settingsDeepSeekWebSearchEnableLabel => '联网搜索';
+
+  @override
+  String get settingsDeepSeekWebFetchEnableLabel => '网页抓取';
+
+  @override
+  String get settingsDeepSeekWebFetchConfigured => '抓取已配置';
+
+  @override
+  String get settingsDeepSeekWebFetchEffective => '抓取当前有效';
 
   @override
   String get settingsStudioUpdateTitle => '糊来帮更新';

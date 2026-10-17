@@ -699,9 +699,10 @@ Future<String> _handleSearchSettings() async {
     'deepSeekWebSearch': <String, Object?>{
       'configuredEnabled': deep.configuredEnabled,
       'effectiveEnabled': deep.effectiveEnabled,
+      'configuredFetchEnabled': deep.configuredFetchEnabled,
+      'effectiveFetchEnabled': deep.effectiveFetchEnabled,
       'availability': deep.availability,
       'providerId': deep.providerId,
-      'model': deep.model,
     },
   });
 }

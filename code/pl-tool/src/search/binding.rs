@@ -5,7 +5,7 @@
 
 use pl_core::tool::opaque::Registration;
 use pl_model::provider::StandaloneWebSearchDialect;
-use pl_model::provider::deepseek::search::{SearchClient, SearchError, SearchOptions};
+use pl_model::provider::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_model::runtime::{HostedTool, thread_tool_declaration};
 use pl_protocol::HostedWebSearchDialect;
 use pl_protocol::search::WebSearchConfig;
@@ -13,7 +13,10 @@ use pl_protocol::search::WebSearchConfig;
 use super::client::{SearchEndpoint, WebSearchClient};
 use super::hosted_options;
 use super::plan::{WebSearchPath, WebSearchPlans};
-use super::thread::{ThreadDeepSeekWebSearchTool, ThreadSearchOptions, ThreadWebSearchTool};
+use super::thread::{
+    ThreadDeepSeekWebFetchTool, ThreadDeepSeekWebSearchTool, ThreadSearchOptions,
+    ThreadWebSearchTool,
+};
 
 /// 公共搜索装配错误；产品调用方负责映射到自身错误域。
 ///
@@ -29,7 +32,7 @@ pub enum SearchBindingError {
     #[error("web search tool registration failed")]
     Registry(#[from] pl_core::tool::opaque::RegistryError),
     #[error(transparent)]
-    DeepSeek(#[from] SearchError),
+    Tools(#[from] ToolsError),
 }
 
 /// Frozen search assembly; hosted entries never acquire core executors.
@@ -93,10 +96,16 @@ impl WebSearchPlans {
                             bearer_token: backend.endpoint.bearer_token.clone(),
                             http_headers: backend.endpoint.http_headers.clone(),
                         })?;
+                        let model = backend.model.clone().ok_or_else(|| {
+                            pl_protocol::PureError::ConfigError(
+                                "openai standalone web search requires a resolved service model"
+                                    .into(),
+                            )
+                        })?;
                         let tool = ThreadWebSearchTool::new(
                             client,
                             ThreadSearchOptions {
-                                model: backend.model.clone(),
+                                model,
                                 settings: pl_protocol::search::SearchSettings::from_config(config),
                                 max_output_tokens: backend.max_output_tokens,
                             },
@@ -105,16 +114,22 @@ impl WebSearchPlans {
                             thread_tool_declaration(&ThreadWebSearchTool::declaration())?;
                         binding.tools.push(tool.registration(declaration)?);
                     }
-                    StandaloneWebSearchDialect::DeepSeekAnthropicMessages => {
-                        let options = SearchOptions {
-                            model: backend.model.clone(),
-                            ..SearchOptions::default()
-                        };
-                        let client = SearchClient::new(&backend.endpoint, options)?;
-                        let tool = ThreadDeepSeekWebSearchTool::new(client);
-                        let declaration =
-                            thread_tool_declaration(&ThreadDeepSeekWebSearchTool::declaration())?;
-                        binding.tools.push(tool.registration(declaration)?);
+                    StandaloneWebSearchDialect::DeepSeekToolsApi => {
+                        let client = ToolsClient::new(&backend.endpoint, ToolsOptions::default())?;
+                        if self.deepseek_options.enabled {
+                            let tool = ThreadDeepSeekWebSearchTool::new(client.clone());
+                            let declaration = thread_tool_declaration(
+                                &ThreadDeepSeekWebSearchTool::declaration(),
+                            )?;
+                            binding.tools.push(tool.registration(declaration)?);
+                        }
+                        if self.deepseek_options.fetch_enabled {
+                            let tool = ThreadDeepSeekWebFetchTool::new(client);
+                            let declaration = thread_tool_declaration(
+                                &ThreadDeepSeekWebFetchTool::declaration(),
+                            )?;
+                            binding.tools.push(tool.registration(declaration)?);
+                        }
                     }
                 }
             }

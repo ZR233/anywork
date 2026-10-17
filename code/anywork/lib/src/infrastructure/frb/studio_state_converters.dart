@@ -271,9 +271,10 @@ DeepSeekWebSearchSettingsView _deepSeekWebSearchFromFrb(
   return DeepSeekWebSearchSettingsView(
     configuredEnabled: value.configuredEnabled,
     effectiveEnabled: value.effectiveEnabled,
+    configuredFetchEnabled: value.configuredFetchEnabled,
+    effectiveFetchEnabled: value.effectiveFetchEnabled,
     availability: value.availability,
     providerId: value.providerId,
-    model: value.model,
   );
 }
 

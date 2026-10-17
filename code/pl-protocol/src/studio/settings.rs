@@ -271,7 +271,8 @@ pub struct StudioWebSearchSettings {
 pub struct StudioDeepSeekWebSearchSettings {
     pub configured_enabled: bool,
     pub effective_enabled: bool,
+    pub configured_fetch_enabled: bool,
+    pub effective_fetch_enabled: bool,
     pub availability: String,
     pub provider_id: Option<String>,
-    pub model: Option<String>,
 }

@@ -17,7 +17,8 @@ class GeneralTab extends StatefulWidget {
     required this.runtimeBusy,
     required this.onCommand,
     required this.onSaveWebSearch,
-    required this.onDeepSeekChanged,
+    required this.onDeepSeekSearchChanged,
+    required this.onDeepSeekFetchChanged,
   });
 
   final GeneralSettingsView settings;
@@ -27,7 +28,8 @@ class GeneralTab extends StatefulWidget {
   final Future<void> Function(SettingsFieldCommand) onCommand;
   final Future<WebSearchSettingsView> Function(List<SettingsFieldCommand>)
   onSaveWebSearch;
-  final Future<void> Function(bool) onDeepSeekChanged;
+  final Future<void> Function(bool) onDeepSeekSearchChanged;
+  final Future<void> Function(bool) onDeepSeekFetchChanged;
 
   @override
   State<GeneralTab> createState() => _GeneralTabState();
@@ -78,7 +80,8 @@ class _GeneralTabState extends State<GeneralTab> {
             DeepSeekWebSearchSettingsCard(
               key: const ValueKey('deepseek_web_search_settings'),
               settings: widget.deepSeekWebSearch,
-              onChanged: widget.onDeepSeekChanged,
+              onSearchChanged: widget.onDeepSeekSearchChanged,
+              onFetchChanged: widget.onDeepSeekFetchChanged,
             ),
           ],
         ),

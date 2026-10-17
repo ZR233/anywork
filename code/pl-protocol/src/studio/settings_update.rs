@@ -105,6 +105,9 @@ pub enum SettingsFieldUpdate {
     DeepSeekWebSearchEnabled {
         value: bool,
     },
+    DeepSeekWebFetchEnabled {
+        value: bool,
+    },
     ModeModel {
         mode_id: String,
         provider_id: String,

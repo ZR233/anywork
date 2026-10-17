@@ -125,7 +125,10 @@ impl StudioRuntime {
             &config.models,
             route,
             &config.web_search,
-            config.deepseek_web_search.enabled,
+            &pl_tool::search::WebSearchDeepSeekOptions {
+                enabled: config.deepseek_web_search.enabled,
+                fetch_enabled: config.deepseek_web_search.fetch_enabled,
+            },
         )?;
         let mut hosted = search.hosted_tools(&config.web_search)?;
         hosted.extend(crate::programmatic::hosted_tool(route));

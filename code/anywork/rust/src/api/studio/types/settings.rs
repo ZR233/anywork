@@ -182,6 +182,9 @@ pub enum SettingsFieldInput {
     DeepSeekWebSearchEnabled {
         value: bool,
     },
+    DeepSeekWebFetchEnabled {
+        value: bool,
+    },
     ModeModel {
         mode_id: String,
         provider_id: String,
@@ -271,6 +274,9 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
             SettingsFieldInput::DeepSeekWebSearchEnabled { value } => {
                 Update::DeepSeekWebSearchEnabled { value }
             }
+            SettingsFieldInput::DeepSeekWebFetchEnabled { value } => {
+                Update::DeepSeekWebFetchEnabled { value }
+            }
             SettingsFieldInput::ModeModel {
                 mode_id,
                 provider_id,
@@ -322,9 +328,10 @@ pub struct BridgeWebSearchSettingsDto {
 pub struct BridgeDeepSeekWebSearchSettingsDto {
     pub configured_enabled: bool,
     pub effective_enabled: bool,
+    pub configured_fetch_enabled: bool,
+    pub effective_fetch_enabled: bool,
     pub availability: String,
     pub provider_id: Option<String>,
-    pub model: Option<String>,
 }
 
 /// Studio 配置与本地界面设置的 canonical typed 快照。

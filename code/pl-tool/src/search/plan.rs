@@ -9,7 +9,6 @@
 //! [`super::thread`]，装配见 [`super::binding`]。
 
 use pl_model::config::{AgentModelConfig, ProviderConfig, ProviderId, ResolvedModelRoute};
-use pl_model::provider::deepseek::search::SearchOptions;
 use pl_model::provider::{ProviderEndpoint, ProviderWireProtocol, StandaloneWebSearchDialect};
 use pl_protocol::HostedWebSearchDialect;
 use pl_protocol::search::{WebSearchConfig, WebSearchMode};
@@ -40,7 +39,7 @@ pub enum WebSearchAvailability {
 pub struct WebSearchBackend {
     pub provider_id: ProviderId,
     pub endpoint: ProviderEndpoint,
-    pub model: String,
+    pub model: Option<String>,
     pub max_output_tokens: Option<u64>,
     pub dialect: StandaloneWebSearchDialect,
 }
@@ -97,11 +96,34 @@ pub struct WebSearchPlan {
 pub struct WebSearchPlans {
     pub openai: WebSearchPlan,
     pub deepseek: WebSearchPlan,
+    pub deepseek_options: WebSearchDeepSeekOptions,
 }
 
 impl WebSearchPlans {
     pub(super) fn plans(&self) -> [&WebSearchPlan; 2] {
         [&self.openai, &self.deepseek]
+    }
+}
+
+/// DeepSeek 联网能力的两个独立开关。
+#[derive(Debug, Clone, Copy)]
+pub struct WebSearchDeepSeekOptions {
+    pub enabled: bool,
+    pub fetch_enabled: bool,
+}
+
+impl Default for WebSearchDeepSeekOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fetch_enabled: true,
+        }
+    }
+}
+
+impl WebSearchDeepSeekOptions {
+    pub fn any_enabled(&self) -> bool {
+        self.enabled || self.fetch_enabled
     }
 }
 
@@ -112,11 +134,11 @@ impl WebSearchPlans {
 pub fn plan_web_search_services(
     models: &AgentModelConfig,
     openai_config: &WebSearchConfig,
-    deepseek_enabled: bool,
+    deepseek: &WebSearchDeepSeekOptions,
 ) -> Result<WebSearchServices> {
     Ok(WebSearchServices {
         openai: plan_openai_service(models, openai_config)?,
-        deepseek: plan_deepseek_service(models, deepseek_enabled, None)?,
+        deepseek: plan_deepseek_service(models, deepseek, None)?,
     })
 }
 
@@ -125,11 +147,12 @@ pub fn plan_web_searches(
     models: &AgentModelConfig,
     current: &ResolvedModelRoute,
     openai_config: &WebSearchConfig,
-    deepseek_enabled: bool,
+    deepseek: &WebSearchDeepSeekOptions,
 ) -> Result<WebSearchPlans> {
     Ok(WebSearchPlans {
         openai: plan_openai_web_search(models, current, openai_config)?,
-        deepseek: plan_deepseek_web_search(models, current, deepseek_enabled)?,
+        deepseek: plan_deepseek_web_search(models, current, deepseek)?,
+        deepseek_options: *deepseek,
     })
 }
 
@@ -169,7 +192,7 @@ pub fn plan_openai_web_search(
         return Ok(hosted_plan(
             configured_mode,
             current.provider_id.clone(),
-            current.model.slug.clone(),
+            Some(current.model.slug.clone()),
             HostedWebSearchDialect::OpenAiResponses,
         ));
     }
@@ -187,13 +210,13 @@ pub fn plan_openai_web_search(
 /// 规划 DeepSeek 独立搜索路径，消费者模型只要求 function calling。
 ///
 /// 当前 provider 仅在自己声明 DeepSeek native 方言且有 key 时作为候选优先；否则按
-/// provider id 稳定顺序。搜索服务模型始终取 standalone 默认（deepseek-flash）。
+/// provider id 稳定顺序。DeepSeek standalone 不解析也不借用会话模型。
 pub fn plan_deepseek_web_search(
     models: &AgentModelConfig,
     current: &ResolvedModelRoute,
-    enabled: bool,
+    deepseek: &WebSearchDeepSeekOptions,
 ) -> Result<WebSearchPlan> {
-    let service = plan_deepseek_service(models, enabled, Some(&current.provider_id))?;
+    let service = plan_deepseek_service(models, deepseek, Some(&current.provider_id))?;
     let configured_mode = service.resolution.configured_mode;
     if service.resolution.availability == WebSearchAvailability::Disabled {
         return Ok(unavailable_plan(
@@ -244,15 +267,15 @@ fn plan_openai_service(
 
 fn plan_deepseek_service(
     models: &AgentModelConfig,
-    enabled: bool,
+    deepseek: &WebSearchDeepSeekOptions,
     preferred: Option<&ProviderId>,
 ) -> Result<WebSearchService> {
-    let configured_mode = if enabled {
+    let configured_mode = if deepseek.any_enabled() {
         WebSearchMode::Live
     } else {
         WebSearchMode::Disabled
     };
-    if !enabled {
+    if !deepseek.any_enabled() {
         return Ok(unavailable_service(
             configured_mode,
             WebSearchAvailability::Disabled,
@@ -260,7 +283,7 @@ fn plan_deepseek_service(
     }
     let selection = standalone_backend(
         models,
-        StandaloneWebSearchDialect::DeepSeekAnthropicMessages,
+        StandaloneWebSearchDialect::DeepSeekToolsApi,
         preferred,
     )?;
     if let Some(backend) = selection.backend {
@@ -341,7 +364,7 @@ fn search_service_model(
     provider_id: &ProviderId,
     provider: &ProviderConfig,
     dialect: StandaloneWebSearchDialect,
-) -> Result<(String, Option<u64>)> {
+) -> Result<(Option<String>, Option<u64>)> {
     match dialect {
         StandaloneWebSearchDialect::OpenAiSearchApi => {
             let models = provider.effective_models()?;
@@ -354,11 +377,9 @@ fn search_service_model(
                         "provider {provider_id} has no models for standalone web search"
                     ))
                 })?;
-            Ok((model.slug.clone(), model.max_output_tokens))
+            Ok((Some(model.slug.clone()), model.max_output_tokens))
         }
-        StandaloneWebSearchDialect::DeepSeekAnthropicMessages => {
-            Ok((SearchOptions::default().model, None))
-        }
+        StandaloneWebSearchDialect::DeepSeekToolsApi => Ok((None, None)),
     }
 }
 
@@ -411,7 +432,7 @@ fn standalone_plan(mode: WebSearchMode, backend: WebSearchBackend) -> WebSearchP
 fn hosted_plan(
     mode: WebSearchMode,
     provider_id: ProviderId,
-    model: String,
+    model: Option<String>,
     dialect: HostedWebSearchDialect,
 ) -> WebSearchPlan {
     WebSearchPlan {
@@ -425,7 +446,7 @@ fn available_resolution(
     mode: WebSearchMode,
     path: WebSearchPath,
     provider_id: ProviderId,
-    model: String,
+    model: Option<String>,
 ) -> WebSearchResolution {
     WebSearchResolution {
         configured_mode: mode,
@@ -433,7 +454,7 @@ fn available_resolution(
         availability: WebSearchAvailability::Available,
         path: Some(path),
         provider_id: Some(provider_id),
-        model: Some(model),
+        model,
     }
 }
 

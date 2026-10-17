@@ -196,14 +196,17 @@ DeepSeek、TOML 等标准缩写、产品名和协议名可以保留。界面展�
 
 ## 19.5 联网搜索设置
 
-General 页把 OpenAI Web Search 与可选的 DeepSeek hosted 搜索显示为两张独立卡片。OpenAI 卡片
-保留 mode、context size、域名和位置等配置，并明确文案只表示 OpenAI 搜索；DeepSeek 卡片
-只提供启用开关，不展示官方未承诺的 cached/indexed、域名、位置或上下文选项。两张卡片都
-消费 bridge 返回的 configured、effective、availability、selected provider/model；当前
-endpoint 显式声明 DeepSeek hosted 能力时该搜索优先；官方 DeepSeek Responses route 显示
-provider unsupported，并可使用 OpenAI standalone 搜索。保存必须携带
-Settings CAS revision，并以返回的完整 canonical snapshot 原子更新 UI；不得本地推演 backend
-仲裁、凭据或模型能力（仲裁合同见 [20](./20-config.md)）。
+General 页把 OpenAI Web Search 与 DeepSeek 联网搜索显示为两张独立卡片。OpenAI 卡片保留
+mode、context size、域名和位置等配置，并明确文案只表示 OpenAI 搜索；DeepSeek 卡片只有
+「联网搜索」与「网页抓取」两个开关，不展示结果条数、正文开关、搜索模型或官方未承诺的
+cached/indexed、域名、位置、上下文选项，也不保存本地输入草稿。卡片显示所选 DeepSeek 模型
+服务商，并说明先由其它可用搜索优先处理、仅当其它搜索未配置、不可用或调用失败时才由
+DeepSeek 兜底，搜索与抓取都按请求次数计费。两张卡片都消费 bridge 返回的 configured、
+effective、availability 与 provider（DeepSeek 无模型位）；官方 DeepSeek Responses route 显示
+provider unsupported，并可使用 OpenAI standalone 搜索。每个开关各自提交一个 typed command：
+保存必须携带 Settings CAS revision，并以返回的完整 canonical snapshot 原子更新 UI，不做本地
+乐观推演；不得在 UI 侧推演 backend 仲裁、凭据或模型能力（仲裁合同见
+[20](./20-config.md)）。
 
 ## 19.6 Thread title 展示
 

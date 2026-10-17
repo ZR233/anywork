@@ -5201,15 +5201,17 @@ impl SseDecode for crate::api::studio::types::settings::BridgeDeepSeekWebSearchS
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_configuredEnabled = <bool>::sse_decode(deserializer);
         let mut var_effectiveEnabled = <bool>::sse_decode(deserializer);
+        let mut var_configuredFetchEnabled = <bool>::sse_decode(deserializer);
+        let mut var_effectiveFetchEnabled = <bool>::sse_decode(deserializer);
         let mut var_availability = <String>::sse_decode(deserializer);
         let mut var_providerId = <Option<String>>::sse_decode(deserializer);
-        let mut var_model = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::settings::BridgeDeepSeekWebSearchSettingsDto {
             configured_enabled: var_configuredEnabled,
             effective_enabled: var_effectiveEnabled,
+            configured_fetch_enabled: var_configuredFetchEnabled,
+            effective_fetch_enabled: var_effectiveFetchEnabled,
             availability: var_availability,
             provider_id: var_providerId,
-            model: var_model,
         };
     }
 }
@@ -13122,6 +13124,10 @@ impl SseDecode for crate::api::studio::types::settings::SettingsFieldInput {
                 return crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebSearchEnabled{value: var_value};
             }
             29 => {
+                let mut var_value = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebFetchEnabled{value: var_value};
+            }
+            30 => {
                 let mut var_modeId = <String>::sse_decode(deserializer);
                 let mut var_providerId = <String>::sse_decode(deserializer);
                 let mut var_model = <String>::sse_decode(deserializer);
@@ -13131,12 +13137,12 @@ impl SseDecode for crate::api::studio::types::settings::SettingsFieldInput {
                     model: var_model,
                 };
             }
-            30 => {
+            31 => {
                 let mut var_modeId = <String>::sse_decode(deserializer);
                 let mut var_effort = <Option<String>>::sse_decode(deserializer);
                 return crate::api::studio::types::settings::SettingsFieldInput::ModeReasoningEffort{mode_id: var_modeId, effort: var_effort};
             }
-            31 => {
+            32 => {
                 let mut var_role = <String>::sse_decode(deserializer);
                 let mut var_providerId = <String>::sse_decode(deserializer);
                 let mut var_model = <String>::sse_decode(deserializer);
@@ -13146,7 +13152,7 @@ impl SseDecode for crate::api::studio::types::settings::SettingsFieldInput {
                     model: var_model,
                 };
             }
-            32 => {
+            33 => {
                 let mut var_role = <String>::sse_decode(deserializer);
                 let mut var_effort = <Option<String>>::sse_decode(deserializer);
                 return crate::api::studio::types::settings::SettingsFieldInput::RoleReasoningEffort{role: var_role, effort: var_effort};
@@ -14687,9 +14693,10 @@ impl flutter_rust_bridge::IntoDart
         [
             self.configured_enabled.into_into_dart().into_dart(),
             self.effective_enabled.into_into_dart().into_dart(),
+            self.configured_fetch_enabled.into_into_dart().into_dart(),
+            self.effective_fetch_enabled.into_into_dart().into_dart(),
             self.availability.into_into_dart().into_dart(),
             self.provider_id.into_into_dart().into_dart(),
-            self.model.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -22102,18 +22109,20 @@ crate::api::studio::types::settings::SettingsFieldInput::WebSearchTimezone{value
 value.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebSearchEnabled{value} => { [28.into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::ModeModel{mode_id,provider_id,model} => { [29.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebFetchEnabled{value} => { [29.into_dart(),
+value.into_into_dart().into_dart()].into_dart() }
+crate::api::studio::types::settings::SettingsFieldInput::ModeModel{mode_id,provider_id,model} => { [30.into_dart(),
 mode_id.into_into_dart().into_dart(),
 provider_id.into_into_dart().into_dart(),
 model.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::ModeReasoningEffort{mode_id,effort} => { [30.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::ModeReasoningEffort{mode_id,effort} => { [31.into_dart(),
 mode_id.into_into_dart().into_dart(),
 effort.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::RoleModel{role,provider_id,model} => { [31.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::RoleModel{role,provider_id,model} => { [32.into_dart(),
 role.into_into_dart().into_dart(),
 provider_id.into_into_dart().into_dart(),
 model.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::RoleReasoningEffort{role,effort} => { [32.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::RoleReasoningEffort{role,effort} => { [33.into_dart(),
 role.into_into_dart().into_dart(),
 effort.into_into_dart().into_dart()].into_dart() }
  _ => { unimplemented!(""); }}
@@ -23436,9 +23445,10 @@ impl SseEncode for crate::api::studio::types::settings::BridgeDeepSeekWebSearchS
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <bool>::sse_encode(self.configured_enabled, serializer);
         <bool>::sse_encode(self.effective_enabled, serializer);
+        <bool>::sse_encode(self.configured_fetch_enabled, serializer);
+        <bool>::sse_encode(self.effective_fetch_enabled, serializer);
         <String>::sse_encode(self.availability, serializer);
         <Option<String>>::sse_encode(self.provider_id, serializer);
-        <Option<String>>::sse_encode(self.model, serializer);
     }
 }
 
@@ -29372,18 +29382,20 @@ crate::api::studio::types::settings::SettingsFieldInput::WebSearchTimezone{value
  }
 crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebSearchEnabled{value} => { <i32>::sse_encode(28, serializer); <bool>::sse_encode(value, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::ModeModel{mode_id,provider_id,model} => { <i32>::sse_encode(29, serializer); <String>::sse_encode(mode_id, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::DeepSeekWebFetchEnabled{value} => { <i32>::sse_encode(29, serializer); <bool>::sse_encode(value, serializer);
+ }
+crate::api::studio::types::settings::SettingsFieldInput::ModeModel{mode_id,provider_id,model} => { <i32>::sse_encode(30, serializer); <String>::sse_encode(mode_id, serializer);
 <String>::sse_encode(provider_id, serializer);
 <String>::sse_encode(model, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::ModeReasoningEffort{mode_id,effort} => { <i32>::sse_encode(30, serializer); <String>::sse_encode(mode_id, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::ModeReasoningEffort{mode_id,effort} => { <i32>::sse_encode(31, serializer); <String>::sse_encode(mode_id, serializer);
 <Option<String>>::sse_encode(effort, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::RoleModel{role,provider_id,model} => { <i32>::sse_encode(31, serializer); <String>::sse_encode(role, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::RoleModel{role,provider_id,model} => { <i32>::sse_encode(32, serializer); <String>::sse_encode(role, serializer);
 <String>::sse_encode(provider_id, serializer);
 <String>::sse_encode(model, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::RoleReasoningEffort{role,effort} => { <i32>::sse_encode(32, serializer); <String>::sse_encode(role, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::RoleReasoningEffort{role,effort} => { <i32>::sse_encode(33, serializer); <String>::sse_encode(role, serializer);
 <Option<String>>::sse_encode(effort, serializer);
  }
  _ => { unimplemented!(""); }}

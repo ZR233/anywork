@@ -107,9 +107,9 @@ Rust 可靠历史、SQLite 故障与 writer 的已有公开 API/专项测试继�
 协议及期望轮次返回固定 HTTP/SSE 或 WebSocket 事件流。它验证实际请求的重要字段；
 未登记的请求、错序、多余调用和错误协议明确失败，不回退到成功文本，也不访问真实
 供应商。OpenAI 已实现的 Responses HTTP/WS 与兼容 Chat 使用共享协议样本；DeepSeek
-和智谱只为原生选项、媒体、上传、搜索方言及使用量差异添加独立样本。DeepSeek 原生独立搜索
-（Anthropic 兼容 Messages）不进入会话 transport，由独立的 loopback HTTP 样本证明其请求、
-鉴权与解析。
+和智谱只为原生选项、媒体、上传、搜索方言及使用量差异添加独立样本。DeepSeek Search & Fetch
+工具接口（`/v1/tools/search` 与 `/v1/tools/fetch`）不进入会话 transport，由独立端点样本证明
+其请求、鉴权与解析，并供 GUI 人工验收观察 `queries` 扇出与抓取。
 
 模拟只证明当前实现与约定样本的行为，不证明供应商线上接口的最新兼容性。真实接口
 保持显式人工观察，采集证据后由人判断，不参与确定性提交门禁。
@@ -238,17 +238,23 @@ DeepSeek 上传与搜索方言、智谱 Chat 与 Coding Plan、远程压缩、�
 真实供应商后端和其他 crate 的权限/进程/迁移不在这两库的模拟自动测试证明范围内；
 增减协议能力时应同步维护场景和缺口。
 
-`pl-model/tests/deepseek_search.rs` 通过公开的 `pl_model::provider::deepseek::search` 域和真实
-loopback HTTP 服务核对 DeepSeek 原生独立搜索：native Messages 请求形状与 `x-api-key` /
-`anthropic-version` 鉴权、base_url path 前缀保真与 `/v1` 别名归一化、非法 base_url 拒绝、
-`text.citations` 与 `web_search_tool_result` 的 URL 首现去重与片段合并、合法空结果、
-`web_search_tool_result_error`、缺失结果块、非 JSON / 畸形 JSON / 非 UTF-8 正文的无损留存与
-有界 JSON 错误、重定向不被跟随、取消与
-整体超时，以及缺凭据 / 非法参数 / 空 query 时不发出请求；能力门控用例核对 canonical preset
-声明、非 canonical PresetDefaults 撤销与 Explicit opt-in。完整能力用例
-`deepseek_search_uses_canonical_provider_and_native_sources` 消费 canonical DeepSeek preset 的
-standalone capability 并对临时 HTTP 环境执行 native 请求。确定性样本只证明客户端请求与解析
-行为，不证明供应商线上接口的最新兼容性；真实供应商保持显式人工观察。
+`pl-model/tests/deepseek_tools.rs` 通过公开的 `pl_model::provider::deepseek::tools` 域和真实
+loopback HTTP 服务核对 DeepSeek Search & Fetch 工具接口：两个端点的 base_url path 前缀保真、
+`/v1` 别名归一化与 `/anthropic` 结尾的明确拒绝、非法 base_url 拒绝、`Authorization: Bearer`
+鉴权且不再发送 `x-api-key` / `anthropic-version`、请求体只含 `query`/`count`/`need_content`
+或 `url`；`results` 的 URL 首现去重、`date` 到 `published_at` 映射、空串归一为缺失、不消费
+`summary` 等未使用字段、合法空结果成功、`MalformedResults`、fetch 正文成功与 `MissingContent`；
+非 JSON / 畸形 JSON / 非 UTF-8 正文的无损留存、`error.message` 有界截断、重定向不被跟随、
+取消与整体超时，以及缺凭据 / 非法参数 / 空 query / 超长 query / 超范围 count / 非法 fetch url
+时不发出请求；能力门控用例核对 canonical preset 声明 `DeepSeekToolsApi`、非 canonical
+PresetDefaults 撤销与 Explicit opt-in。完整能力用例消费 canonical DeepSeek preset 的 standalone
+capability 并对临时 HTTP 环境执行 search 与 fetch。确定性样本只证明客户端请求与解析行为，
+不证明供应商线上接口的最新兼容性；真实供应商保持显式人工观察。
+
+`pl-tool` 的 `queries` 扇出、并发中止、位次合并、URL 去重与来源上限不在上述测试范围内；
+该 crate 不新增自动化用例，由模拟供应商人工验收与静态审查覆盖，缺口在交付说明中记录。
+`pl-studio-runtime` 的配置迁移专项测试覆盖 schema 20→21：旧方言 token 改写且其它字段逐项
+保留、无旧 token 的 20 配置等价迁移、未知未来版本仍 fail-closed 且不重写文件、迁移失败不落盘。
 
 完整回放用例通过无数据库的真实 Thread 和模拟供应商验证 commentary、final、原生 phase、
 工具原文、HTTP/WS/Chat 前缀以及 checkpoint 恢复；摘要和原生压缩必须消费相同材料。

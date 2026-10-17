@@ -72,25 +72,28 @@ class BridgeCustomModelSettingsDto {
 class BridgeDeepSeekWebSearchSettingsDto {
   final bool configuredEnabled;
   final bool effectiveEnabled;
+  final bool configuredFetchEnabled;
+  final bool effectiveFetchEnabled;
   final String availability;
   final String? providerId;
-  final String? model;
 
   const BridgeDeepSeekWebSearchSettingsDto({
     required this.configuredEnabled,
     required this.effectiveEnabled,
+    required this.configuredFetchEnabled,
+    required this.effectiveFetchEnabled,
     required this.availability,
     this.providerId,
-    this.model,
   });
 
   @override
   int get hashCode =>
       configuredEnabled.hashCode ^
       effectiveEnabled.hashCode ^
+      configuredFetchEnabled.hashCode ^
+      effectiveFetchEnabled.hashCode ^
       availability.hashCode ^
-      providerId.hashCode ^
-      model.hashCode;
+      providerId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -99,9 +102,10 @@ class BridgeDeepSeekWebSearchSettingsDto {
           runtimeType == other.runtimeType &&
           configuredEnabled == other.configuredEnabled &&
           effectiveEnabled == other.effectiveEnabled &&
+          configuredFetchEnabled == other.configuredFetchEnabled &&
+          effectiveFetchEnabled == other.effectiveFetchEnabled &&
           availability == other.availability &&
-          providerId == other.providerId &&
-          model == other.model;
+          providerId == other.providerId;
 }
 
 /// Flutter 本地通用设置的 typed 快照。
@@ -1463,6 +1467,9 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   const factory SettingsFieldInput.deepSeekWebSearchEnabled({
     required bool value,
   }) = SettingsFieldInput_DeepSeekWebSearchEnabled;
+  const factory SettingsFieldInput.deepSeekWebFetchEnabled({
+    required bool value,
+  }) = SettingsFieldInput_DeepSeekWebFetchEnabled;
   const factory SettingsFieldInput.modeModel({
     required String modeId,
     required String providerId,

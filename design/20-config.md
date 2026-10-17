@@ -36,7 +36,7 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
   协调器按 [17.2](./17-studio-storage.md#172-启动与按需激活) 完整备份后重建初始状态。
   配置模块自身不静默覆盖默认值。凭据或 IO 环境失败保留现场并报告，不触发重置。
   配置缺失判定只依据路径条目；权限、元数据及符号链接异常不能冒充缺失。
-  18→19→20 优先保全迁移。解析诊断只含路径、类别和行/列位置，不回显原文或凭据。
+  18→19→20→21 优先保全迁移。解析诊断只含路径、类别和行/列位置，不回显原文或凭据。
 - 中断后可安全重试或恢复一致状态；运行期显式重载只接受当前有效结构，失败保留已有
   canonical snapshot，不在查询或重载中隐式迁移。迁移结果与失败通过脱敏诊断报告。
 
@@ -49,6 +49,19 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
 子代理 route、provider、其他设置和凭据关联。两步都先校验和备份，再原子替换；迁移失败
 保留原文件并向协调器返回明确错误。没有转换路径的版本保留原字节进入统一备份恢复，
 环境失败则停止启动。正常运行不接受禁用主智能体或以该标识保存用户 Profile。
+
+20→21 迁移在未类型化的 TOML 表上先把 provider 显式能力里的方言标识
+`models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"`
+改写为 `deep_seek_tools_api`（旧方言标识已不可解析，只在迁移边界转换）。唯一权威路径是
+`capabilities`：`ProviderConfig` 没有 `service_capabilities` 键，手写的同形表是未知键，typed
+parse 忽略、canonical 落盘丢弃，迁移只把其中的旧标识字符串一并改写以免留下已失效标识，
+不改变解析结果。改写只针对该路径上的字符串值：其它位置的同名文本不动，`web_search` 缺失或
+形态不符时不猜测补齐，交给 typed parse 报错。随后按当前结构 typed parse、
+`validate_declarations()`、备份原字节、原子写入并回读凭据；`[deepseek_web_search]` 的
+`fetch_enabled` 由该版本的默认值补齐：迁移不推断用户对「网页抓取」的意图，原本只关闭
+`enabled` 的配置升级后仍会得到一个新启用的抓取工具。18/19 存量配置中的同一 token 在同一步
+改写，迁移失败保留原字节且不落盘。迁移的诊断定位基于改写后的 canonical 文本，而不是用户
+原始文件的行列，因此只用于定位失败原因，不承诺与原文件行号一致。
 
 所有 Settings command 必须携带 `expectedSettingsRevision`，成功返回新的
 `SettingsConfigSnapshot`；目录发生变化时另返回 `ModelCatalogSnapshot`，并分别发布
@@ -160,7 +173,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 20
+schema_version = 21
 
 disabled_system_agents = []
 
@@ -429,14 +442,18 @@ Authorization header。
 
 Studio 保留两段互不混用的顶层配置。`[web_search]` 只配置 OpenAI 搜索：`mode` 为
 `disabled | cached | indexed | live`，默认 `cached`；`context_size`、`allowed_domains` 和
-近似位置均可省略。`[deepseek_web_search]` 只包含 `enabled`，默认 `true`；缺失整段时同样
-按启用处理。DeepSeek 不接受 cached/indexed、域名、位置或 context size 等 OpenAI 专属字段。
+近似位置均可省略。`[deepseek_web_search]` 只有两个开关：`enabled` 表示联网搜索、
+`fetch_enabled` 表示网页抓取，都默认 `true`；缺失整段或单键时同样按启用处理。结果条数、
+正文开关与官方其它可选请求参数是代码内的固定部署值，不进入配置；DeepSeek 也不接受
+cached/indexed、域名、位置或 context size 等 OpenAI 专属字段。
 
-搜索不是单选：`StudioWebSearchSettings` 与 `StudioDeepSeekWebSearchSettings` 只暴露
-configured/effective/availability、provider_id/model 与原配置开关（`mode` / `enabled`），
-不再有 `selected` 字段，也不存在互斥的 exclusive 路线。canonical DeepSeek preset 声明
-DeepSeek 原生 standalone 能力；preset 实例覆盖非 canonical base_url 时由 PresetDefaults 仅撤销
-该 DeepSeek 原生方言（连同其它 hosted/Responses 能力），非 canonical DeepSeek endpoint 必须显式
+搜索不是单选：`StudioWebSearchSettings` 暴露 configured/effective/availability、
+provider_id/model 与原配置开关 `mode`；`StudioDeepSeekWebSearchSettings` 暴露
+configured/effective/availability、provider_id 与 `enabled` / `fetch_enabled` 两组配置位，
+不含模型字段。两者都没有 `selected` 字段，也不存在互斥的 exclusive 路线；
+`effective_* = configured_* && availability == available`。canonical DeepSeek preset 声明
+`DeepSeekToolsApi` 独立能力；preset 实例覆盖非 canonical base_url 时由 PresetDefaults 仅撤销
+该 DeepSeek 方言（连同其它 hosted/Responses 能力），非 canonical DeepSeek endpoint 必须显式
 声明该方言。此撤销同时关闭继承的 prompt cache dialect，不改变既有 OpenAI `OpenAiSearchApi`
 继承语义：覆盖非 canonical base_url 的 OpenAI endpoint 仍保留 `/alpha/search` standalone。
 显式 capability 仍可重新声明。
@@ -444,18 +461,20 @@ DeepSeek 原生 standalone 能力；preset 实例覆盖非 canonical base_url �
 设置页运行独立的 service planner，不依赖会话、route 或当前模型：每条后端只按 provider
 capability 与凭据解析 configured/effective/availability、provider_id 与 model。OpenAI
 standalone 服务优先使用该 provider catalog 的 `gpt-6-sol`，否则用该 provider 首个有效模型；
-provider 之间按 ID 稳定排序。DeepSeek standalone 服务默认模型 `deepseek-flash`；线程内优先
-当前支持原生搜索的 DeepSeek provider，否则同样按 ID 排序。服务模型与会话模型独立，不再按
+provider 之间按 ID 稳定排序。DeepSeek standalone 服务不解析模型：它直接命中原生工具接口，
+线程内优先声明该能力的 DeepSeek provider，否则同样按 ID 排序。服务模型与会话模型独立，不再按
 explorer / planner / executor / worktree_executor / reviewer role route 选模型。
 
 实际 thread 消费时才用当前模型是否支持 function calling 决定本轮是否注册对应 standalone
 搜索工具，它不改变设置里已解析的服务可用性。OpenAI standalone、DeepSeek 原生 standalone 与
 可用的 hosted 搜索互不抢占，也不隐藏 MCP、LSP、文件和命令工具；只有 DeepSeek 搜索工具的
-描述写明收费兜底，其他搜索不分优先级、不按 provider 排序、不自动跨供应商回退，也不因某一路
-可用而停用另一路。
+两个工具描述写明按请求次数计费与兜底条件，其他搜索不分优先级、不按 provider 排序、不自动跨
+供应商回退，也不因某一路可用而停用另一路。
 
 配置值与生效值必须分离：缺少有凭据的 provider 时保留 configured mode，但 effective mode
 为 `disabled`——此状态下不得注册对应 standalone 或 hosted 搜索工具，也不得为它创建客户端。
+DeepSeek 两个开关同构：provider 不可用时保留 configured 值而 effective 位为 `false`，两个开关
+各自独立解析，不合并成单一状态。
 服务 planner 的每后端可用性只看 provider capability 与凭据（`disabled` / `missingCredential` /
 `providerUnsupported`），不因当前会话角色或模型不可用而降级；当前模型能力只在真实 thread
 消费时生效。`cached` 映射为禁止外部实时访问；`indexed` 映射为显式 indexed 访问；`live` 允许
@@ -489,7 +508,8 @@ fingerprint。
 配置 mutation 按最小业务资源拆分：provider 实例、默认 provider、provider 删除、单个 Mode
 route 的 model、单个 Mode route 的 reasoning effort、单个 Agent role 的 model、单个 Agent
 role 的 reasoning effort、permission、instructions 字段、skills 字段、单个 MCP server、
-general 字段、web search 字段和 DeepSeek 开关各自有 typed command。所有 command
+general 字段、web search 字段和 DeepSeek 的搜索/抓取两个开关各自有 typed command。每个开关
+命令只改自己的布尔值，另一开关与其它字段由配置 owner 从最新 canonical state 解析。所有 command
 携带当前 `expectedSettingsRevision`，由同一 runtime command lock 做 CAS；成功返回新的 canonical
 Settings snapshot 并发布设置事件。Bridge 与 loopback HTTP 均使用 `PUT /api/v1/settings/field`
 承载 `SettingsFieldUpdate`，FRB 只暴露同一 typed handler。一个 command 不得把页面当前完整 provider、roles、mode

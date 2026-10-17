@@ -494,11 +494,13 @@ class DeepSeekWebSearchSettingsCard extends StatefulWidget {
   const DeepSeekWebSearchSettingsCard({
     super.key,
     required this.settings,
-    required this.onChanged,
+    required this.onSearchChanged,
+    required this.onFetchChanged,
   });
 
   final DeepSeekWebSearchSettingsView settings;
-  final Future<void> Function(bool) onChanged;
+  final Future<void> Function(bool) onSearchChanged;
+  final Future<void> Function(bool) onFetchChanged;
 
   @override
   State<DeepSeekWebSearchSettingsCard> createState() =>
@@ -507,7 +509,8 @@ class DeepSeekWebSearchSettingsCard extends StatefulWidget {
 
 class _DeepSeekWebSearchSettingsCardState
     extends State<DeepSeekWebSearchSettingsCard> {
-  bool _saving = false;
+  bool _searchSaving = false;
+  bool _fetchSaving = false;
   String? _error;
 
   @override
@@ -543,21 +546,22 @@ class _DeepSeekWebSearchSettingsCardState
                   ],
                 ),
               ),
-              if (_saving)
-                const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              else
-                Switch(
-                  key: const ValueKey('deepseek_web_search_enabled'),
-                  value: settings.configuredEnabled,
-                  onChanged: _save,
-                ),
             ],
+          ),
+          const SizedBox(height: 12),
+          _DeepSeekToggleRow(
+            switchKey: const ValueKey('deepseek_web_search_enabled'),
+            label: context.l10n.settingsDeepSeekWebSearchEnableLabel,
+            value: settings.configuredEnabled,
+            saving: _searchSaving,
+            onChanged: _saveSearch,
+          ),
+          _DeepSeekToggleRow(
+            switchKey: const ValueKey('deepseek_web_fetch_enabled'),
+            label: context.l10n.settingsDeepSeekWebFetchEnableLabel,
+            value: settings.configuredFetchEnabled,
+            saving: _fetchSaving,
+            onChanged: _saveFetch,
           ),
           const SizedBox(height: 16),
           Wrap(
@@ -573,12 +577,16 @@ class _DeepSeekWebSearchSettingsCardState
                 value: _enabledLabel(context, settings.effectiveEnabled),
               ),
               _WebSearchStatusValue(
-                label: context.l10n.settingsDeepSeekWebSearchProvider,
-                value: settings.providerId ?? context.l10n.settingsNotAvailable,
+                label: context.l10n.settingsDeepSeekWebFetchConfigured,
+                value: _enabledLabel(context, settings.configuredFetchEnabled),
               ),
               _WebSearchStatusValue(
-                label: context.l10n.settingsWebSearchModel,
-                value: settings.model ?? context.l10n.settingsNotAvailable,
+                label: context.l10n.settingsDeepSeekWebFetchEffective,
+                value: _enabledLabel(context, settings.effectiveFetchEnabled),
+              ),
+              _WebSearchStatusValue(
+                label: context.l10n.settingsDeepSeekWebSearchProvider,
+                value: settings.providerId ?? context.l10n.settingsNotAvailable,
               ),
             ],
           ),
@@ -600,19 +608,80 @@ class _DeepSeekWebSearchSettingsCardState
     );
   }
 
-  Future<void> _save(bool enabled) async {
-    if (_saving) return;
+  Future<void> _saveSearch(bool enabled) async {
+    if (_searchSaving) return;
     setState(() {
-      _saving = true;
+      _searchSaving = true;
       _error = null;
     });
     try {
-      await widget.onChanged(enabled);
+      await widget.onSearchChanged(enabled);
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) setState(() => _searchSaving = false);
     }
+  }
+
+  Future<void> _saveFetch(bool enabled) async {
+    if (_fetchSaving) return;
+    setState(() {
+      _fetchSaving = true;
+      _error = null;
+    });
+    try {
+      await widget.onFetchChanged(enabled);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _fetchSaving = false);
+    }
+  }
+}
+
+class _DeepSeekToggleRow extends StatelessWidget {
+  const _DeepSeekToggleRow({
+    required this.switchKey,
+    required this.label,
+    required this.value,
+    required this.saving,
+    required this.onChanged,
+  });
+
+  final Key switchKey;
+  final String label;
+  final bool value;
+  final bool saving;
+  final Future<void> Function(bool) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: context.text.bodyMedium?.copyWith(
+                color: context.colors.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          if (saving)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            Switch(key: switchKey, value: value, onChanged: onChanged),
+        ],
+      ),
+    );
   }
 }
 

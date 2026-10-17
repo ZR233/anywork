@@ -1,5 +1,5 @@
 import 'package:anywork_client/studio_client.dart'
-    show DeepSeekWebSearchEnabledCommand;
+    show DeepSeekWebFetchEnabledCommand, DeepSeekWebSearchEnabledCommand;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -170,9 +170,14 @@ class _GeneralSettingsTab extends ConsumerWidget {
         }
         return confirmed;
       },
-      onDeepSeekChanged: (enabled) async {
+      onDeepSeekSearchChanged: (enabled) async {
         await commands.applySettingsField(
           DeepSeekWebSearchEnabledCommand(enabled),
+        );
+      },
+      onDeepSeekFetchChanged: (enabled) async {
+        await commands.applySettingsField(
+          DeepSeekWebFetchEnabledCommand(enabled),
         );
       },
     );

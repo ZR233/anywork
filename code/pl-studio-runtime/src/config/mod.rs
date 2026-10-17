@@ -51,7 +51,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 20;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 21;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -189,16 +189,21 @@ const fn default_true() -> bool {
     true
 }
 
-/// DeepSeek Responses 原生 Web Search 的独立产品开关。
+/// DeepSeek Search & Fetch 的两个独立产品开关。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeepSeekWebSearchConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub fetch_enabled: bool,
 }
 
 impl Default for DeepSeekWebSearchConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            fetch_enabled: true,
+        }
     }
 }
 

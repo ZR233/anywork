@@ -1900,19 +1900,31 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsDeepSeekWebSearchSubtitle =>
-      'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails.';
+      'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.';
 
   @override
   String get settingsDeepSeekWebSearchProvider => 'DeepSeek provider';
 
   @override
-  String get settingsDeepSeekWebSearchConfigured => 'Configured';
+  String get settingsDeepSeekWebSearchConfigured => 'Search configured';
 
   @override
-  String get settingsDeepSeekWebSearchEffective => 'Effective';
+  String get settingsDeepSeekWebSearchEffective => 'Search effective';
 
   @override
   String get settingsDeepSeekWebSearchEnabled => 'Enabled';
+
+  @override
+  String get settingsDeepSeekWebSearchEnableLabel => 'Web search';
+
+  @override
+  String get settingsDeepSeekWebFetchEnableLabel => 'Page fetch';
+
+  @override
+  String get settingsDeepSeekWebFetchConfigured => 'Fetch configured';
+
+  @override
+  String get settingsDeepSeekWebFetchEffective => 'Fetch effective';
 
   @override
   String get settingsStudioUpdateTitle => 'anywork update';

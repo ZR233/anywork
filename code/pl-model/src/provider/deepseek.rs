@@ -1,5 +1,5 @@
 //! Native DeepSeek access. Completion uses the same lifecycle and accounting as routed calls.
-pub mod search;
+pub mod tools;
 
 use crate::completion::{CompletionFailure, CompletionRequest, CompletionResponse};
 use crate::runtime::{InvocationRunner, ModelInvocationContext};

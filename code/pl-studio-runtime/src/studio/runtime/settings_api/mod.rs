@@ -200,6 +200,9 @@ impl StudioRuntime {
                     SettingsFieldUpdate::DeepSeekWebSearchEnabled { value } => {
                         config.deepseek_web_search.enabled = value;
                     }
+                    SettingsFieldUpdate::DeepSeekWebFetchEnabled { value } => {
+                        config.deepseek_web_search.fetch_enabled = value;
+                    }
                     SettingsFieldUpdate::ModeModel {
                         mode_id,
                         provider_id,

@@ -2,8 +2,8 @@
 //!
 //! One listener serves three independent wire surfaces:
 //! * OpenAI standalone `/alpha/search` (`SearchResponse`-shaped JSON),
-//! * DeepSeek native `/anthropic/v1/messages` (Anthropic-shaped result with
-//!   structured sources and usage),
+//! * DeepSeek official Search & Fetch tool endpoints (`/v1/tools/search` and
+//!   `/v1/tools/fetch`),
 //! * a generic Streamable-HTTP MCP server at `/mcp`
 //!   (`initialize` / `tools/list` / `tools/call`).
 //!
@@ -21,7 +21,7 @@ use axum::http::HeaderMap;
 
 /// Expected bearer token for the OpenAI standalone search endpoint.
 pub const OPENAI_SEARCH_KEY: &str = "fixture-openai-search-key";
-/// Expected bearer token for the DeepSeek native search endpoint.
+/// Expected bearer token for both DeepSeek Search & Fetch tool endpoints.
 pub const DEEPSEEK_SEARCH_KEY: &str = "fixture-deepseek-search-key";
 /// Expected `Authorization: Bearer` value for the Streamable-HTTP MCP server.
 pub const MCP_KEY: &str = "fixture-mcp-key";
@@ -32,8 +32,19 @@ pub const MCP_SERVER_ID: &str = "fixture_search";
 pub const MCP_TOOL_NAME: &str = "search";
 
 pub const OPENAI_SEARCH_PATH: &str = "/v1/alpha/search";
-pub const DEEPSEEK_MESSAGES_PATH: &str = "/v1/anthropic/v1/messages";
+pub const DEEPSEEK_SEARCH_PATH: &str = "/v1/tools/search";
+pub const DEEPSEEK_FETCH_PATH: &str = "/v1/tools/fetch";
 pub const MCP_PATH: &str = "/mcp";
+
+/// Short Search queries for the parent DeepSeek Turn. The user prompt that
+/// carries `MARK_DEEPSEEK_SEARCH` also embeds skill suggestions, so the raw
+/// prompt exceeds the official 128-character query limit.
+const DEEPSEEK_SEARCH_QUERY: &str = "deepseek fixture search";
+const DEEPSEEK_SEARCH_FOLLOW_UP: &str = "deepseek fixture search follow-up";
+/// Independent short queries for the child Turn so parent and child fan-out
+/// windows cannot substitute for each other.
+const CHILD_DEEPSEEK_SEARCH_QUERY: &str = "child deepseek fixture search";
+const CHILD_DEEPSEEK_SEARCH_FOLLOW_UP: &str = "child deepseek fixture search follow-up";
 
 /// Prompt markers the acceptance Driver embeds so the dynamic model endpoint
 /// calls one *specific* tool.
@@ -47,9 +58,9 @@ pub const MCP_PATH: &str = "/mcp";
 pub const MARK_OPENAI_SEARCH: &str = "[[openai_search]]";
 pub const MARK_DEEPSEEK_SEARCH: &str = "[[deepseek_search]]";
 pub const MARK_MCP_SEARCH: &str = "[[mcp_search]]";
-/// Assert that the two standalone search tools are declared for this session.
+/// Assert that OpenAI search plus both DeepSeek Search & Fetch tools are declared.
 pub const MARK_EXPECT_SEARCH_TOOLS: &str = "[[expect_search]]";
-/// Assert that neither standalone search tool is declared (toggle/config off).
+/// Assert that none of the standalone search/fetch tools are declared.
 pub const MARK_EXPECT_NO_SEARCH_TOOLS: &str = "[[expect_no_search]]";
 /// Answer with a stream that never completes, so the operator can cancel.
 pub const MARK_SLOW_RESPONSE: &str = "[[slow_response]]";
@@ -193,15 +204,6 @@ fn authorized(headers: &HeaderMap, expected: &str) -> bool {
         .is_some_and(|token| token.trim() == expected)
 }
 
-/// Anthropic-style `x-api-key` credential, which the DeepSeek native search
-/// client uses instead of a bearer token.
-fn authorized_api_key(headers: &HeaderMap, expected: &str) -> bool {
-    headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|token| token.trim() == expected)
-}
-
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -227,11 +229,8 @@ fn content_text(content: Option<&Value>) -> Option<String> {
 }
 
 fn last_user_text(body: &Value) -> Option<String> {
-    let messages = body
-        .get("input")
-        .or_else(|| body.get("messages"))?
-        .as_array()?;
-    for item in messages.iter().rev() {
+    let input = body.get("input")?.as_array()?;
+    for item in input.iter().rev() {
         if item.get("role").and_then(Value::as_str) != Some("user") {
             continue;
         }
@@ -337,6 +336,7 @@ fn declared(tools: &[String], name: &str) -> bool {
 fn is_search_tool(name: &str) -> bool {
     name == "web_search"
         || name == "deepseek_web_search"
+        || name == "deepseek_web_fetch"
         || name == "discover_tools"
         || name.starts_with("mcp__")
 }
@@ -503,22 +503,25 @@ pub(super) async fn responses(
         Marker::Slow => slow = true,
         Marker::ExpectSearchTools => {
             let openai = declared(&tools, "web_search");
-            let deepseek = declared(&tools, "deepseek_web_search");
+            let deepseek_search = declared(&tools, "deepseek_web_search");
+            let deepseek_fetch = declared(&tools, "deepseek_web_fetch");
             let discovery = declared(&tools, "discover_tools");
             let normal = tools.iter().any(|tool| !is_search_tool(tool));
-            // The locked contract is that every function-calling session model
-            // sees both search tools; discovery and a normal tool are recorded
-            // as separate facts so a partial declaration is not a false pass.
-            accepted = openai && deepseek;
-            note = Some(match (openai, deepseek, discovery, normal) {
-                (true, true, true, true) => "search_tools_present",
-                (true, true, _, _) => "search_tools_present_partial",
+            // Every function-calling session model must declare OpenAI search
+            // plus both DeepSeek Search & Fetch tools. Discovery and a normal
+            // tool are recorded separately so a partial declaration is not a
+            // false pass.
+            accepted = openai && deepseek_search && deepseek_fetch;
+            note = Some(match (accepted, discovery, normal) {
+                (true, true, true) => "search_tools_present",
+                (true, _, _) => "search_tools_present_partial",
                 _ => "search_tools_missing",
             });
         }
         Marker::ExpectNoSearchTools => {
-            let absent =
-                !declared(&tools, "web_search") && !declared(&tools, "deepseek_web_search");
+            let absent = !declared(&tools, "web_search")
+                && !declared(&tools, "deepseek_web_search")
+                && !declared(&tools, "deepseek_web_fetch");
             accepted = absent;
             note = Some(if absent {
                 "search_tools_absent"
@@ -549,11 +552,26 @@ pub(super) async fn responses(
                 .iter()
                 .any(|id| id == &expected("ds-search", "deepseek_web_search"))
             {
-                // Tool result already committed.
+                if outputs
+                    .iter()
+                    .any(|id| id == &expected("ds-fetch", "deepseek_web_fetch"))
+                {
+                    // Search and fetch results are both committed.
+                } else if declared(&tools, "deepseek_web_fetch") {
+                    tool_call = Some(planned(
+                        "deepseek_web_fetch",
+                        json!({"url": "https://fixture.test/fetched"}),
+                        "ds-fetch",
+                        generation("deepseek_web_fetch"),
+                    ));
+                } else {
+                    accepted = false;
+                    note = Some("deepseek_fetch_tool_not_declared");
+                }
             } else if declared(&tools, "deepseek_web_search") {
                 tool_call = Some(planned(
                     "deepseek_web_search",
-                    json!({"query": query}),
+                    json!({"queries": [DEEPSEEK_SEARCH_QUERY, DEEPSEEK_SEARCH_FOLLOW_UP]}),
                     "ds-search",
                     generation("deepseek_web_search"),
                 ));
@@ -655,6 +673,7 @@ pub(super) async fn responses(
             } else {
                 let web = declared(&tools, "web_search");
                 let deepseek = declared(&tools, "deepseek_web_search");
+                let deepseek_fetch = declared(&tools, "deepseek_web_fetch");
                 let discovery = declared(&tools, "discover_tools");
                 let normal = tools.iter().any(|tool| !is_search_tool(tool));
                 let mcp = declared_mcp_tool(&tools);
@@ -664,6 +683,9 @@ pub(super) async fn responses(
                 let deepseek_committed = outputs
                     .iter()
                     .any(|id| id == &expected("child-deepseek", "deepseek_web_search"));
+                let deepseek_fetch_committed = outputs
+                    .iter()
+                    .any(|id| id == &expected("child-deepseek-fetch", "deepseek_web_fetch"));
                 let discover_committed = outputs
                     .iter()
                     .any(|id| id == &expected("child-discover", "discover_tools"));
@@ -671,9 +693,10 @@ pub(super) async fn responses(
                     outputs.iter().any(|id| id == &expected("child-mcp", name))
                 });
                 if !web_committed {
-                    // First child step: assert the three search tools plus a
-                    // normal tool coexist, then really call the OpenAI path.
-                    accepted = web && deepseek && discovery && normal;
+                    // First child step: assert OpenAI search, both DeepSeek
+                    // tools, discovery and a normal tool coexist, then call
+                    // the OpenAI path.
+                    accepted = web && deepseek && deepseek_fetch && discovery && normal;
                     note = Some(if accepted {
                         "child_search_tools_present"
                     } else {
@@ -697,9 +720,29 @@ pub(super) async fn responses(
                     if deepseek {
                         tool_call = Some(planned(
                             "deepseek_web_search",
-                            json!({"query": query}),
+                            json!({
+                                "queries": [
+                                    CHILD_DEEPSEEK_SEARCH_QUERY,
+                                    CHILD_DEEPSEEK_SEARCH_FOLLOW_UP
+                                ]
+                            }),
                             "child-deepseek",
                             generation("deepseek_web_search"),
+                        ));
+                    }
+                } else if !deepseek_fetch_committed {
+                    accepted = deepseek_fetch;
+                    note = Some(if deepseek_fetch {
+                        "child_search_deepseek_fetch"
+                    } else {
+                        "child_search_deepseek_fetch_missing"
+                    });
+                    if deepseek_fetch {
+                        tool_call = Some(planned(
+                            "deepseek_web_fetch",
+                            json!({"url": "https://fixture.test/fetched"}),
+                            "child-deepseek-fetch",
+                            generation("deepseek_web_fetch"),
                         ));
                     }
                 } else if !discover_committed {
@@ -718,9 +761,9 @@ pub(super) async fn responses(
                         ));
                     }
                 } else if !mcp_committed {
-                    // After discovery the MCP tool must coexist with both
-                    // search tools and the normal tool before it is called.
-                    accepted = web && deepseek && normal && mcp.is_some();
+                    // After discovery the MCP tool must coexist with OpenAI
+                    // search, both DeepSeek tools and the normal tool.
+                    accepted = web && deepseek && deepseek_fetch && normal && mcp.is_some();
                     note = Some(if accepted {
                         "child_search_mcp_present"
                     } else {
@@ -876,35 +919,29 @@ pub(super) async fn openai_search(
     .into_response()
 }
 
-fn deepseek_query(body: &Value) -> Option<String> {
-    if let Some(query) = body
-        .get("query")
+fn deepseek_search_query(body: &Value) -> Option<String> {
+    body.get("query")
         .and_then(Value::as_str)
-        .filter(|query| !query.trim().is_empty())
-    {
-        return Some(query.to_owned());
-    }
-    let messages = body
-        .get("messages")
-        .or_else(|| body.get("input"))?
-        .as_array()?;
-    for message in messages.iter().rev() {
-        if message.get("role").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        if let Some(text) = content_text(message.get("content")) {
-            return Some(text);
-        }
-    }
-    None
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_owned)
 }
 
-/// DeepSeek native search `/anthropic/v1/messages`.
-///
-/// The reply carries both the Anthropic-shaped `web_search_tool_result` content
-/// block and a top-level structured `sources` / `usage` pair so either parsing
-/// contract sees the same real result.
-pub(super) async fn deepseek_messages(
+fn deepseek_search_count(body: &Value) -> Option<u64> {
+    body.get("count").and_then(Value::as_u64)
+}
+
+fn deepseek_need_content_ok(body: &Value) -> bool {
+    matches!(body.get("need_content"), None | Some(Value::Bool(false)))
+}
+
+fn http_url(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (trimmed.starts_with("http://") || trimmed.starts_with("https://")).then_some(trimmed)
+}
+
+/// DeepSeek official Search endpoint `POST /v1/tools/search`.
+pub(super) async fn deepseek_search(
     State(state): State<AppState>,
     headers: HeaderMap,
     request: axum::extract::Request,
@@ -913,95 +950,151 @@ pub(super) async fn deepseek_messages(
         record(
             &state,
             "POST",
-            DEEPSEEK_MESSAGES_PATH,
+            DEEPSEEK_SEARCH_PATH,
             Value::Null,
             false,
-            Some("deepseek_messages_invalid_json"),
+            Some("deepseek_search_invalid_json"),
         );
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if !authorized_api_key(&headers, DEEPSEEK_SEARCH_KEY) {
+    if !authorized(&headers, DEEPSEEK_SEARCH_KEY) {
         record(
             &state,
             "POST",
-            DEEPSEEK_MESSAGES_PATH,
+            DEEPSEEK_SEARCH_PATH,
             body,
             false,
-            Some("deepseek_messages_auth_failed"),
+            Some("deepseek_search_auth_failed"),
         );
         return unauthorized();
     }
-    let Some(query) = deepseek_query(&body) else {
+    let Some(query) = deepseek_search_query(&body) else {
         record(
             &state,
             "POST",
-            DEEPSEEK_MESSAGES_PATH,
+            DEEPSEEK_SEARCH_PATH,
             body,
             false,
-            Some("deepseek_messages_missing_query"),
+            Some("deepseek_search_missing_query"),
         );
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": {"code": "fixture_missing_query", "message": "no search query in messages"}})),
+            Json(json!({"error": {"code": "fixture_missing_query", "message": "search query is missing or empty"}})),
         )
             .into_response();
     };
+    if !matches!(deepseek_search_count(&body), Some(count) if (1..=50).contains(&count)) {
+        record(
+            &state,
+            "POST",
+            DEEPSEEK_SEARCH_PATH,
+            body,
+            false,
+            Some("deepseek_search_invalid_count"),
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"code": "fixture_invalid_count", "message": "count must be an integer in 1..=50"}})),
+        )
+            .into_response();
+    }
+    if !deepseek_need_content_ok(&body) {
+        record(
+            &state,
+            "POST",
+            DEEPSEEK_SEARCH_PATH,
+            body,
+            false,
+            Some("deepseek_search_invalid_need_content"),
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"code": "fixture_invalid_need_content", "message": "need_content must be omitted or false"}})),
+        )
+            .into_response();
+    }
     let fault = state
         .web_search
         .lock()
         .expect("fixture web search state poisoned")
         .fault();
     let note = fault.map(|fault| match fault {
-        WebSearchFault::Unstructured => "deepseek_messages_unstructured_fault",
+        WebSearchFault::Unstructured => "deepseek_search_unstructured_fault",
     });
-    let model = body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("deepseek-flash")
-        .to_owned();
-    record(&state, "POST", DEEPSEEK_MESSAGES_PATH, body, true, note);
+    record(&state, "POST", DEEPSEEK_SEARCH_PATH, body, true, note);
     if fault == Some(WebSearchFault::Unstructured) {
-        // Deliberately omits both `sources` and Anthropic content blocks.
-        return Json(json!({"id": "msg_fixture", "type": "message", "role": "assistant"}))
-            .into_response();
+        // Deliberately omits `results`; this is not a legal empty-result object.
+        return Json(json!({"id": "fixture-malformed"})).into_response();
     }
-    let url = "https://fixture.test/deepseek-result";
-    let title = format!("Fixture DeepSeek result for {query}");
-    let snippet = format!("fixture snippet for {query}");
-    // Anthropic-shaped `web_search_result` items, plus the top-level `sources`
-    // pair so both parsing contracts see the same real result.
-    let sources = json!([{
-        "url": url,
-        "title": &title,
-        "snippet": &snippet,
-        "publishedAt": "2026-01-01T00:00:00Z",
-        "encrypted_content": "fixture-encrypted",
-    }]);
-    let query_input = query.clone();
-    let answer = format!("fixture deepseek answer for {query}");
     Json(json!({
-        "id": "msg_fixture",
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": [
-            {"type": "server_tool_use", "id": "srvtoolu_fixture", "name": "web_search", "input": {"query": query_input}},
-            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_fixture", "content": [{
-                "type": "web_search_result",
-                "url": url,
-                "title": title,
-                "page_age": "2026-01-01T00:00:00Z",
-                "encrypted_content": "fixture-encrypted",
-            }]},
-            {"type": "text", "text": answer, "citations": [{
-                "type": "web_search_result_location",
-                "url": url,
-                "cited_text": snippet,
-            }]},
-        ],
-        "stop_reason": "end_turn",
-        "usage": {"input_tokens": 12, "output_tokens": 34, "cache_read_input_tokens": 0},
-        "sources": sources,
+        "results": [{
+            "rerank_score": 0.98,
+            "title": format!("Fixture DeepSeek result for {query}"),
+            "url": "https://fixture.test/deepseek-result",
+            "snippet": format!("fixture snippet for {query}"),
+            "summary": format!("fixture summary for {query}"),
+            "content": format!("fixture long content for {query}"),
+            "site_name": "fixture.test",
+            "site_icon": "https://fixture.test/icon.png",
+            "date": "2026-01-01T00:00:00Z",
+            "authority": "fixture",
+        }]
+    }))
+    .into_response()
+}
+
+/// DeepSeek official Fetch endpoint `POST /v1/tools/fetch`.
+pub(super) async fn deepseek_fetch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(body) = json_body(request).await else {
+        record(
+            &state,
+            "POST",
+            DEEPSEEK_FETCH_PATH,
+            Value::Null,
+            false,
+            Some("deepseek_fetch_invalid_json"),
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !authorized(&headers, DEEPSEEK_SEARCH_KEY) {
+        record(
+            &state,
+            "POST",
+            DEEPSEEK_FETCH_PATH,
+            body,
+            false,
+            Some("deepseek_fetch_auth_failed"),
+        );
+        return unauthorized();
+    }
+    let Some(url) = body
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(http_url)
+        .map(str::to_owned)
+    else {
+        record(
+            &state,
+            "POST",
+            DEEPSEEK_FETCH_PATH,
+            body,
+            false,
+            Some("deepseek_fetch_missing_url"),
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"code": "fixture_missing_url", "message": "fetch url must be a non-empty http(s) string"}})),
+        )
+            .into_response();
+    };
+    record(&state, "POST", DEEPSEEK_FETCH_PATH, body, true, None);
+    Json(json!({
+        "title": format!("Fixture fetch of {url}"),
+        "content": format!("# Fixture fetched page\n\nMarkdown body for {url}."),
     }))
     .into_response()
 }

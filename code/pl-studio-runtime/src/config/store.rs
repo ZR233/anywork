@@ -141,7 +141,7 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；已知 18/19 版本走数据保全式迁移路径。
+    /// 也不替换为默认配置；已知 18/19/20 版本走数据保全式迁移路径。
     pub(crate) fn load_for_startup(&self) -> Result<StudioConfig> {
         if self.config_absent()? {
             let mut config = StudioConfig::default_config()?;
@@ -150,7 +150,7 @@ impl ConfigStore {
         }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so the supported 18/19 configs reach
+        // Version dispatch precedes the strict parse so the supported 18/19/20 configs reach
         // their data-preserving migration instead of failing current-schema validation.
         #[derive(serde::Deserialize)]
         struct Version {
@@ -160,7 +160,7 @@ impl ConfigStore {
             .ok()
             .and_then(|text| toml::from_str::<Version>(text).ok())
             .map(|version| version.schema_version)
-            .filter(|version| matches!(version, 18 | 19))
+            .filter(|version| matches!(version, 18..=20))
         {
             return self
                 .migrate_legacy_config_for_startup(&content, version)
@@ -212,24 +212,22 @@ impl ConfigStore {
         let text = std::str::from_utf8(original).map_err(|error| {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
-        let mut config = parse_typed_config(text)?;
+        let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
+        let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
-        if source_version == 18 {
-            config.disabled_system_agents.remove("planner");
+        match source_version {
+            18 => {
+                config.disabled_system_agents.remove("planner");
+                migrate_legacy_planner_route(&mut config, source_version)?;
+            }
+            19 => migrate_legacy_planner_route(&mut config, source_version)?,
+            20 => {}
+            other => {
+                return Err(PureError::ConfigError(format!(
+                    "unsupported Studio config schema version: {other}"
+                )));
+            }
         }
-        let planner_route = config
-            .models
-            .routes
-            .remove(&StudioRole::Planner.id())
-            .ok_or_else(|| {
-                PureError::ConfigError(format!(
-                    "schema {source_version} config is missing planner model route"
-                ))
-            })?;
-        config.mode_model_routes = std::collections::BTreeMap::from([
-            (ThreadModeId::simple(), planner_route.clone()),
-            (ThreadModeId::task(), planner_route),
-        ]);
         config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
         config.validate_declarations()?;
         let persisted = serialize_persisted_config(&config)?;
@@ -361,6 +359,72 @@ impl ConfigStore {
             }
         }
     }
+}
+
+fn rewrite_legacy_deepseek_standalone_dialect(text: &str) -> Result<String> {
+    let mut table: toml::Table = toml::from_str(text).map_err(|error| {
+        PureError::ConfigError(format!(
+            "invalid Studio config TOML{}",
+            toml_error_location(text, &error)
+        ))
+    })?;
+    rewrite_legacy_deepseek_standalone_in_providers(&mut table);
+    toml::to_string(&table).map_err(|error| {
+        PureError::ConfigError(format!(
+            "failed to rewrite Studio config dialect token: {error}"
+        ))
+    })
+}
+
+fn rewrite_legacy_deepseek_standalone_in_providers(table: &mut toml::Table) {
+    let Some(toml::Value::Table(models)) = table.get_mut("models") else {
+        return;
+    };
+    let Some(toml::Value::Table(providers)) = models.get_mut("providers") else {
+        return;
+    };
+    let provider_ids: Vec<String> = providers.keys().cloned().collect();
+    for provider_id in provider_ids {
+        let Some(toml::Value::Table(provider)) = providers.get_mut(&provider_id) else {
+            continue;
+        };
+        // Design/token path is `service_capabilities`; persisted ProviderConfig uses `capabilities`.
+        for field in ["service_capabilities", "capabilities"] {
+            rewrite_legacy_web_search_standalone_token(provider.get_mut(field));
+        }
+    }
+}
+
+fn rewrite_legacy_web_search_standalone_token(capabilities: Option<&mut toml::Value>) {
+    let Some(toml::Value::Table(capabilities)) = capabilities else {
+        return;
+    };
+    let Some(toml::Value::Table(web_search)) = capabilities.get_mut("web_search") else {
+        return;
+    };
+    let Some(toml::Value::String(standalone)) = web_search.get_mut("standalone") else {
+        return;
+    };
+    if standalone == "deep_seek_anthropic_messages" {
+        *standalone = "deep_seek_tools_api".to_string();
+    }
+}
+
+fn migrate_legacy_planner_route(config: &mut StudioConfig, source_version: u32) -> Result<()> {
+    let planner_route = config
+        .models
+        .routes
+        .remove(&StudioRole::Planner.id())
+        .ok_or_else(|| {
+            PureError::ConfigError(format!(
+                "schema {source_version} config is missing planner model route"
+            ))
+        })?;
+    config.mode_model_routes = std::collections::BTreeMap::from([
+        (ThreadModeId::simple(), planner_route.clone()),
+        (ThreadModeId::task(), planner_route),
+    ]);
+    Ok(())
 }
 
 fn parse_current_config(content: &str) -> Result<StudioConfig> {
@@ -503,4 +567,302 @@ fn user_home_dir() -> Result<PathBuf> {
         .map(PathBuf::from)
         .find(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| PureError::ConfigError("could not resolve user home directory".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_model::config::{ProviderCapabilitySelection, ProviderId};
+    use pl_model::provider::StandaloneWebSearchDialect;
+    use pl_protocol::search::WebSearchMode;
+
+    fn isolated_store() -> (tempfile::TempDir, ConfigStore) {
+        let directory = tempfile::tempdir().expect("isolated config directory");
+        let store = ConfigStore::new(ConfigPaths::from_config_dir(directory.path()));
+        (directory, store)
+    }
+
+    fn write_table(path: &Path, table: &toml::Table) {
+        fs::write(path, toml::to_string(table).expect("serialize test config"))
+            .expect("write test config");
+    }
+
+    fn read_table(path: &Path) -> toml::Table {
+        toml::from_str(&fs::read_to_string(path).expect("read test config"))
+            .expect("parse test config")
+    }
+
+    fn migrated_backups(config_file: &Path) -> Vec<PathBuf> {
+        let Some(directory) = config_file.parent() else {
+            return Vec::new();
+        };
+        let prefix = format!(
+            "{}.migrated.",
+            config_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(super::super::STUDIO_CONFIG_FILE_NAME)
+        );
+        fs::read_dir(directory)
+            .expect("read config directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".bak"))
+            })
+            .collect()
+    }
+
+    fn legacy_web_search_table() -> toml::Table {
+        let mut web_search = toml::Table::new();
+        web_search.insert("hosted_responses".into(), toml::Value::Boolean(false));
+        web_search.insert(
+            "hosted_dialect".into(),
+            toml::Value::String("open_ai_responses".into()),
+        );
+        web_search.insert(
+            "standalone".into(),
+            toml::Value::String("deep_seek_anthropic_messages".into()),
+        );
+        web_search
+    }
+
+    fn explicit_legacy_deepseek_capabilities() -> toml::Table {
+        let mut prompt_cache = toml::Table::new();
+        prompt_cache.insert(
+            "dialect".into(),
+            toml::Value::String("implicit_prefix".into()),
+        );
+        let mut responses_tools = toml::Table::new();
+        responses_tools.insert(
+            "programmatic_tool_calling".into(),
+            toml::Value::Boolean(false),
+        );
+        let mut capabilities = toml::Table::new();
+        capabilities.insert("source".into(), toml::Value::String("explicit".into()));
+        capabilities.insert("files".into(), toml::Value::String("deepSeek".into()));
+        capabilities.insert("remote_compaction".into(), toml::Value::Boolean(false));
+        capabilities.insert(
+            "web_search".into(),
+            toml::Value::Table(legacy_web_search_table()),
+        );
+        capabilities.insert("prompt_cache".into(), toml::Value::Table(prompt_cache));
+        capabilities.insert(
+            "responses_tools".into(),
+            toml::Value::Table(responses_tools),
+        );
+        capabilities.insert(
+            "historyInstructionRole".into(),
+            toml::Value::String("developer".into()),
+        );
+        capabilities
+    }
+
+    fn declared_service_capabilities() -> toml::Table {
+        let mut capabilities = toml::Table::new();
+        capabilities.insert("files".into(), toml::Value::String("deepSeek".into()));
+        capabilities.insert("remote_compaction".into(), toml::Value::Boolean(false));
+        capabilities.insert(
+            "web_search".into(),
+            toml::Value::Table(legacy_web_search_table()),
+        );
+        capabilities
+    }
+
+    #[test]
+    fn schema_20_rewrites_legacy_deepseek_standalone_token_and_preserves_fields() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().expect("bundled defaults");
+        config.deepseek_web_search.enabled = false;
+        config.web_search.mode = WebSearchMode::Live;
+        config.instructions.user = "keep deep_seek_anthropic_messages in user text".into();
+        store.save(&config).expect("save current schema");
+
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table.insert("schema_version".into(), toml::Value::Integer(20));
+        let providers = table
+            .get_mut("models")
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|models| models.get_mut("providers"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("providers table");
+        let deepseek = providers
+            .get_mut("deepseek")
+            .and_then(toml::Value::as_table_mut)
+            .expect("deepseek provider");
+        deepseek.insert(
+            "capabilities".into(),
+            toml::Value::Table(explicit_legacy_deepseek_capabilities()),
+        );
+        deepseek.insert(
+            "service_capabilities".into(),
+            toml::Value::Table(declared_service_capabilities()),
+        );
+        table
+            .get_mut("deepseek_web_search")
+            .and_then(toml::Value::as_table_mut)
+            .expect("deepseek_web_search")
+            .remove("fetch_enabled");
+        write_table(path, &table);
+        let original = fs::read(path).expect("original schema 20 bytes");
+
+        let loaded = store.load_for_startup().expect("schema 20 migrates");
+        let provider_id = ProviderId::new("deepseek").expect("provider id");
+        let provider = loaded
+            .models
+            .providers
+            .get(&provider_id)
+            .expect("deepseek provider");
+        let ProviderCapabilitySelection::Explicit(capabilities) = &provider.capabilities else {
+            panic!("migrated provider must keep explicit capabilities");
+        };
+
+        assert_eq!(
+            loaded.schema_version,
+            super::super::STUDIO_CONFIG_SCHEMA_VERSION
+        );
+        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(
+            capabilities.web_search.standalone,
+            Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
+        );
+        assert!(!capabilities.web_search.hosted_responses);
+        assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
+        assert_eq!(loaded.models.routes, config.models.routes);
+        assert_eq!(loaded.web_search, config.web_search);
+        assert!(!loaded.deepseek_web_search.enabled);
+        assert!(loaded.deepseek_web_search.fetch_enabled);
+        assert_eq!(loaded.instructions.user, config.instructions.user);
+        assert_eq!(provider.name, config.models.providers[&provider_id].name);
+        assert_eq!(
+            provider.base_url,
+            config.models.providers[&provider_id].base_url
+        );
+        assert_eq!(
+            provider.preset,
+            config.models.providers[&provider_id].preset
+        );
+
+        let persisted = fs::read_to_string(path).expect("read migrated config");
+        let persisted_table: toml::Table =
+            toml::from_str(&persisted).expect("parse migrated config");
+        assert_eq!(persisted_table["schema_version"].as_integer(), Some(21));
+        assert_eq!(
+            persisted_table["models"]["providers"]["deepseek"]["capabilities"]["web_search"]
+                ["standalone"]
+                .as_str(),
+            Some("deep_seek_tools_api")
+        );
+        assert_eq!(
+            loaded.instructions.user,
+            "keep deep_seek_anthropic_messages in user text"
+        );
+        assert!(
+            persisted_table
+                .get("models")
+                .and_then(|models| models.get("providers"))
+                .and_then(|providers| providers.get("deepseek"))
+                .and_then(|provider| provider.get("service_capabilities"))
+                .is_none(),
+            "canonical persist drops the untyped service_capabilities table"
+        );
+
+        let backups = migrated_backups(path);
+        assert_eq!(backups.len(), 1, "one migration backup");
+        assert_eq!(fs::read(&backups[0]).expect("read backup"), original);
+    }
+
+    #[test]
+    fn schema_20_without_legacy_token_preserves_routes() {
+        let (_directory, store) = isolated_store();
+        let config = StudioConfig::default_config().expect("bundled defaults");
+        store.save(&config).expect("save current schema");
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table.insert("schema_version".into(), toml::Value::Integer(20));
+        write_table(path, &table);
+
+        let loaded = store
+            .load_for_startup()
+            .expect("schema 20 without dialect token migrates");
+        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
+        assert_eq!(loaded.models.routes, config.models.routes);
+        assert_eq!(
+            loaded.models.routes.len(),
+            4,
+            "four child-agent routes remain"
+        );
+        assert_eq!(loaded.models.providers, config.models.providers);
+        assert_eq!(loaded.web_search, config.web_search);
+        assert_eq!(loaded.deepseek_web_search, config.deepseek_web_search);
+        assert!(loaded.deepseek_web_search.fetch_enabled);
+    }
+
+    #[test]
+    fn unknown_future_schema_fails_closed_without_rewrite() {
+        let (_directory, store) = isolated_store();
+        let config = StudioConfig::default_config().expect("bundled defaults");
+        store.save(&config).expect("save current schema");
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table.insert("schema_version".into(), toml::Value::Integer(22));
+        write_table(path, &table);
+        let original = fs::read(path).expect("original future-schema bytes");
+
+        let error = store
+            .load_for_startup()
+            .expect_err("future schema must fail closed");
+        assert!(
+            matches!(error, PureError::ConfigError(_)),
+            "future schema is a config error: {error}"
+        );
+        assert_eq!(fs::read(path).expect("reread config"), original);
+        assert!(
+            migrated_backups(path).is_empty(),
+            "no backup for fail-closed load"
+        );
+    }
+
+    #[test]
+    fn schema_20_migration_failure_does_not_persist() {
+        let (_directory, store) = isolated_store();
+        let config = StudioConfig::default_config().expect("bundled defaults");
+        store.save(&config).expect("save current schema");
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table.insert("schema_version".into(), toml::Value::Integer(20));
+        let routes = table
+            .get_mut("models")
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|models| models.get_mut("routes"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("role routes");
+        let explorer = routes
+            .get_mut("explorer")
+            .and_then(toml::Value::as_table_mut)
+            .expect("explorer route");
+        explorer.insert(
+            "provider".into(),
+            toml::Value::String("missing-provider".into()),
+        );
+        write_table(path, &table);
+        let original = fs::read(path).expect("original invalid schema 20 bytes");
+
+        let error = store
+            .load_for_startup()
+            .expect_err("invalid schema 20 must not migrate");
+        assert!(
+            matches!(error, PureError::ConfigError(_)),
+            "migration failure is a config error: {error}"
+        );
+        assert_eq!(fs::read(path).expect("reread config"), original);
+        assert!(
+            migrated_backups(path).is_empty(),
+            "backup is written only after validation succeeds"
+        );
+    }
 }

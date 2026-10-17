@@ -66,6 +66,8 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     frb.SettingsFieldInput.webSearchTimezone(value: value),
   DeepSeekWebSearchEnabledCommand(:final value) =>
     frb.SettingsFieldInput.deepSeekWebSearchEnabled(value: value),
+  DeepSeekWebFetchEnabledCommand(:final value) =>
+    frb.SettingsFieldInput.deepSeekWebFetchEnabled(value: value),
   ModeModelCommand(:final modeId, :final providerId, :final model) =>
     frb.SettingsFieldInput.modeModel(
       modeId: modeId,

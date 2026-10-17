@@ -33,15 +33,15 @@ pub(crate) const RESPONSES_WEBSOCKET_DIALECT: &str = "responses_websockets=2026-
 pub enum StandaloneWebSearchDialect {
     /// OpenAI 兼容的独立 `/alpha/search` 搜索 API。
     OpenAiSearchApi,
-    /// DeepSeek 原生独立搜索：Anthropic 兼容 Messages API 的 `web_search` server tool。
-    DeepSeekAnthropicMessages,
+    /// DeepSeek 原生独立搜索：官方 Search & Fetch 工具接口。
+    DeepSeekToolsApi,
 }
 
 impl StandaloneWebSearchDialect {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiSearchApi => "open_ai_search_api",
-            Self::DeepSeekAnthropicMessages => "deep_seek_anthropic_messages",
+            Self::DeepSeekToolsApi => "deep_seek_tools_api",
         }
     }
 }
@@ -52,7 +52,7 @@ impl std::str::FromStr for StandaloneWebSearchDialect {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "open_ai_search_api" => Ok(Self::OpenAiSearchApi),
-            "deep_seek_anthropic_messages" => Ok(Self::DeepSeekAnthropicMessages),
+            "deep_seek_tools_api" => Ok(Self::DeepSeekToolsApi),
             value => Err(format!(
                 "unsupported standalone web search dialect: {value}"
             )),
@@ -419,8 +419,7 @@ impl ProviderEndpoint {
                     FileUploadCapability::None
                 },
                 web_search: WebSearchProviderCapabilities {
-                    standalone: canonical
-                        .then_some(StandaloneWebSearchDialect::DeepSeekAnthropicMessages),
+                    standalone: canonical.then_some(StandaloneWebSearchDialect::DeepSeekToolsApi),
                     ..WebSearchProviderCapabilities::default()
                 },
                 prompt_cache: PromptCacheProviderCapabilities {

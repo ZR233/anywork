@@ -213,9 +213,10 @@ pub(crate) fn bridge_deepseek_web_search_settings(
     BridgeDeepSeekWebSearchSettingsDto {
         configured_enabled: settings.configured_enabled,
         effective_enabled: settings.effective_enabled,
+        configured_fetch_enabled: settings.configured_fetch_enabled,
+        effective_fetch_enabled: settings.effective_fetch_enabled,
         availability: settings.availability,
         provider_id: settings.provider_id,
-        model: settings.model,
     }
 }
 

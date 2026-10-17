@@ -534,59 +534,78 @@ transport 记录 continuation attempted/used/invalid、full replay retry 和 HTT
 ## 6.11 Web 搜索 Provider 边界
 
 Web 搜索是多后端能力，不维护单选。三条路径彼此独立、可同时装配：OpenAI standalone
-`/alpha/search`、DeepSeek 原生独立搜索（Anthropic 兼容 Messages API 的 `web_search_20250305`
-server tool），以及携带 hosted dialect 的 Responses hosted search。通用 MCP（含智谱）是独立的
-additive 能力，不因任一搜索路径可用而被隐藏，也不为智谱另建搜索后端。凡支持 function calling
-的模型都同时暴露各自可用的 standalone 搜索工具：OpenAI 的 `web_search`（保留 SearchCommands
-入参）与 DeepSeek 的 `deepseek_web_search`（入参只有 `{query}`）。只有 DeepSeek 搜索工具的描述
-写明收费兜底；其他搜索不分优先级、不按 provider 排序、不自动跨供应商回退。
+`/alpha/search`、DeepSeek 官方 Search & Fetch 工具接口（`POST {root}/v1/tools/search` 与
+`POST {root}/v1/tools/fetch`），以及携带 hosted dialect 的 Responses hosted search。通用 MCP
+（含智谱）是独立的 additive 能力，不因任一搜索路径可用而被隐藏，也不为智谱另建搜索后端。凡支持
+function calling 的模型都同时暴露各自可用的 standalone 搜索工具：OpenAI 的 `web_search`（保留
+SearchCommands 入参）与 DeepSeek 的 `deepseek_web_search`（`{queries}`，1–4 个查询合并结果）和
+`deepseek_web_fetch`（`{url}`）。只有 DeepSeek 两个工具的描述写明按请求次数计费与兜底条件；
+其他搜索不分优先级、不按 provider 排序、不自动跨供应商回退。
 
 standalone 搜索服务的选择与会话模型、role route 独立：设置页由独立 service planner 仅按
 provider capability 与凭据解析每后端的有效状态与 provider/model。OpenAI standalone 服务优先
 使用该 provider catalog 的 `gpt-6-sol`，否则用该 provider 首个有效模型；provider 之间按 ID
-稳定排序。DeepSeek standalone 服务默认模型 `deepseek-flash`；线程内优先当前支持原生搜索的
-DeepSeek provider，否则同样按 ID 排序。provider 服务可用性只看 capability 与 key，不因当前会话
-角色或模型不可用而降低；当前模型是否支持 function calling 只在该 thread 真正消费搜索工具时决定
-本轮是否注册它，因此同一份已解析服务可以由多个模型共享。
+稳定排序。DeepSeek standalone 服务直接命中原生工具接口，不解析也不借用会话模型或第三方模型
+别名；线程内优先声明该能力的 DeepSeek provider，否则同样按 ID 排序。provider 服务可用性只看
+capability 与 key，不因当前会话角色或模型不可用而降低；当前模型是否支持 function calling 只在
+该 thread 真正消费搜索工具时决定本轮是否注册它，因此同一份已解析服务可以由多个模型共享。
 
-DeepSeek 原生搜索是 `pl-model` 的公开域 `pl_model::provider::deepseek::search`，含
-`SearchClient`、`SearchOptions`、`SearchRequest`、`SearchResponse`、`SearchSource`、
-`SearchUsage` 与 `SearchError`，并精确重导出取消类型 `CancellationToken`。
-`SearchClient::new(&ProviderEndpoint, SearchOptions)` 解析端点与鉴权；`SearchOptions` 默认
-`deepseek-flash` / 4096 / 5 次 / 60 秒；`SearchRequest` 只有 `query`。请求端点由
-`provider.base_url` 自身地址组装：保留自定义 reverse-proxy 的 path 前缀并追加
-`/anthropic/v1/messages`，canonical `/v1` 版本别名（如 `https://api.deepseek.com/v1`）归一化到
-同一根，已指向 `/anthropic` 或 `/anthropic/v1` 的地址不重复追加；只接受无 userinfo / query /
-fragment 的 http(s) 地址，不替换 host，也不回退到官方域名（默认官方根
-`https://api.deepseek.com`）。只发送所选 provider 的 key 作为 `x-api-key`，附带
-`anthropic-version: 2023-06-01` 与 JSON headers；不采用 harness 的账户 token 双发鉴权
-workaround，不重定向、不自动重试，也不强改会话 transport。请求只把 `query` 作为唯一输入，用
-固定指令包装强制触发原生搜索并索要结构化来源，不带任何会话历史；空 query 与非法配置值在发出前
-拒绝。超时覆盖整个请求（headers 与 body），取消同样覆盖两段读取；错误保留 HTTP status 与原始
-事实，任何输出都不包含凭据。
+DeepSeek Search & Fetch 是 `pl-model` 的公开域 `pl_model::provider::deepseek::tools`，含
+`ToolsClient`、`ToolsOptions`、`SearchRequest`、`SearchSource`、`SearchResponse`、
+`FetchRequest`、`FetchResponse`、`Observed` 与 `ToolsError`，并精确重导出取消类型
+`CancellationToken`。`ToolsClient::new(&ProviderEndpoint, ToolsOptions)` 冻结端点、参数与凭据，
+`Debug` 不输出凭据；`ToolsOptions` 只有结果上限 `count`（默认 10，与官方默认一致）与整体超时
+（默认 60 秒），请求体固定 `need_content = false`，不暴露 `ori_question`、`localization` 或正文
+开关。两个端点都由 `provider.base_url` 自身地址组装：去掉尾部 `/`、去掉一个尾部 `/v1`
+（canonical 版本别名归一化）、保留自定义 reverse-proxy 的 path 前缀，再分别追加
+`/v1/tools/search` 与 `/v1/tools/fetch`；已指向 `/anthropic` 或 `/anthropic/v1` 的地址得到明确
+配置错误（该兼容端点不承载官方工具接口），不作静默改写。只接受无 userinfo / query / fragment 的
+http(s) 地址，不替换 host，也不回退到官方域名（默认官方根 `https://api.deepseek.com`）。鉴权只
+发送所选 provider 的 key 作为 `Authorization: Bearer`，附 `content-type` 与 `accept:
+application/json`；自定义 header 透传但跳过 `authorization`、`content-type`、`accept` 与
+`host`。不跟随重定向、不自动重试；超时覆盖整个请求（headers 与 body），取消同样覆盖两段读取。
+发出前校验 query 去空白后非空且不超过 128 个 Unicode 字符、`count` 在 1..=50、fetch url 非空且
+不超过 8192 字符并含 host。入参校验按对象分型报告，不复用同一变体：空 query 与超长 query 分别
+为 `EmptyQuery` 与 `InvalidQuery`（`Display` 指明是 query），URL 形态问题为 `InvalidUrl`，
+`count` 与超时为 `Config`；错误保留 HTTP status 与原始事实，任何输出都不包含凭据。
 
-响应解析只消费结构化事实：遍历 `web_search_tool_result` 块中的 `web_search_result`，把 `text`
-块 `citations[]` 的 `cited_text` 按 URL 首现合并为 `snippet`，并按 URL 首现去重。
-`web_search_tool_result` 的 `content` 既可能是结果数组，也可能是 `web_search_tool_result_error`
-对象；后者明确失败。缺失结果块不是成功——普通回答不能伪造来源；合法空数组是成功但零来源。
-归一化结果保留 `raw_response`、`usage` 与 `model`。完整收到的响应正文一律通过
-`SearchError::observed_response()` 留存：合法 JSON 保留解析值；正文已完整收到但不是合法 JSON
-（非 2xx 文本、畸形 JSON、非 UTF-8 字节）时，`raw_response` 改为
-`{"encoding":"base64","data":...}`，逐字节无损保留原始正文且与 JSON 结果可区分，`usage`/`model`
-缺失即未知，不伪造来源；超时或取消等尚未取到完整正文的路径返回 `None`。完整正文只进入既有的
-不透明历史载荷，错误信息与 `Display` 输出保持有界。API 输出 DTO 使用 camelCase，供应商 wire
-保持协议原字段。
+响应解析严格按官方形状消费：search 的 `results` 必须是数组，任一项非对象、`url` 不是非空字符串、
+`title` / `snippet` 不是字符串、`date` 既非 null 也非字符串时明确失败（`MalformedResults`）；
+空数组是成功但零来源。`summary`、`content`、`site_name`、`site_icon`、`rerank_score` 与
+`authority` 不参与归一化，只保留在原始响应中；`date` 映射为 `published_at`，空串视为缺失，结果
+按 `url` 首现去重并保留供应商顺序。fetch 的 `content` 必须是字符串（否则 `MissingContent`），
+`title` 空串视为缺失，`FetchResponse.status` 记录成功响应的真实 HTTP 状态码（成功路径在读取正文
+之前取得，供工具层如实渲染）。完整收到的响应正文一律通过 `ToolsError::observed_response()` 留存：合法
+JSON 保留解析值与完整原始正文；正文已完整收到但不是合法 JSON（非 2xx 文本、畸形 JSON、非 UTF-8
+字节）时，`raw_response` 改为 `{"encoding":"base64","data":...}`，逐字节无损保留原始正文且与
+JSON 结果可区分；超时或取消等尚未取到完整正文的路径返回 `None`。完整正文只进入既有的不透明
+历史载荷，错误信息与 `Display` 输出保持有界，错误消息优先取 `error.message` 且不超过 512 字符。
+API 输出 DTO 使用 camelCase，供应商 wire 保持协议原字段。
 
 Provider 服务能力同时包含 `hosted_responses`、`hosted_dialect` 与独立 `standalone` dialect；
-`StandaloneWebSearchDialect` 现有 `OpenAiSearchApi` 与 `DeepSeekAnthropicMessages`（serde 与
-`as_str` 均为 `deep_seek_anthropic_messages`）。canonical DeepSeek preset 声明
-`DeepSeekAnthropicMessages`；preset 实例覆盖非 canonical `base_url` 时仅由 PresetDefaults 撤销
-该 DeepSeek 原生 standalone 能力（与其它 hosted/Responses 能力一并撤销），非 canonical 的
-DeepSeek endpoint 必须显式声明该方言。此撤销不改变既有 OpenAI `OpenAiSearchApi` 的继承语义：
-覆盖非 canonical `base_url` 的 OpenAI endpoint 仍保留 `/alpha/search` standalone；显式
-capability 仍可由用户重新声明。同一非 canonical 覆盖同时撤销继承的 prompt cache dialect。
-provider catalog schema 暴露 dialect，产品层不得从 provider id
-或 URL 猜测。
+`StandaloneWebSearchDialect` 现有 `OpenAiSearchApi` 与 `DeepSeekToolsApi`（serde 与 `as_str`
+均为 `deep_seek_tools_api`）。canonical DeepSeek preset 声明 `DeepSeekToolsApi`；preset 实例覆盖
+非 canonical `base_url` 时仅由 PresetDefaults 撤销该 DeepSeek standalone 能力（与其它
+hosted/Responses 能力一并撤销），非 canonical 的 DeepSeek endpoint 必须显式声明该方言。旧值
+`deep_seek_anthropic_messages` 不再可解析，只由配置迁移边界改写（见 [20](./20-config.md) §20.1）。
+此撤销不改变既有 OpenAI `OpenAiSearchApi` 的继承语义：覆盖非 canonical `base_url` 的 OpenAI
+endpoint 仍保留 `/alpha/search` standalone；显式 capability 仍可由用户重新声明。同一非 canonical
+覆盖同时撤销继承的 prompt cache dialect。
+provider catalog schema 暴露 dialect，产品层不得从 provider id 或 URL 猜测。
+
+两个工具由 `pl-tool` 按 harness 的模型可见形态装配，并共享同一个 `ToolsClient`。
+`deepseek_web_search` 接受 `queries`（1–4 项，去空白后非空，精确重复折叠后保持首现顺序）：
+单查询直接发出，多查询并发扇出，任一失败即中止其余并向模型报告首个失败（此处「首个」定义为
+查询索引最小者，而不是最先到达者，兄弟请求因中止返回的取消不算真实失败），成功结果按位次轮询
+合并、按 URL 首现去重，最多保留 `ToolsOptions::default().count` 条来源并标注截断。渲染顺序为
+外部内容提示、`Sources:` 行 `- [Title 或 hostname](url) — snippet (date)`、截断说明与引用
+收尾；零来源输出 `No results found.` 并以成功返回。`deepseek_web_fetch` 渲染抓取目标、外部
+内容提示、Markdown 正文与截断脚注：首行为 `Fetched <url> (HTTP <status>)`，状态码取自
+`FetchResponse.status`，不渲染 `title`。两者都按本项目的 12_000 字节工具输出预算截断（harness 的
+部署上限更大，差异属输出预算而非语义），完整响应进入不透明历史载荷；失败但已观察到正文时仍
+投影正文并附错误。搜索与抓取都按成功请求次数计费，与 `count` 和并发数无关，因此 `queries`
+上限同时是成本约束。搜索的完整原始响应按 `{"queries", "responses"}` 结构、抓取按
+`FetchResponse` 进入各自的 v1 不透明历史载荷；载荷只在历史中留存，产品侧不解析其字段。
 
 Responses hosted 搜索统一通过携带 hosted dialect 的 WebSearch 工具规格表达。OpenAI dialect 可
 发送 external/indexed access、context size、允许域名与近似位置；DeepSeek dialect 严格只序列化
@@ -613,9 +632,10 @@ Responses 协议组装，不从 provider id 或 URL 猜测兼容性。帧已持�
 不得以模型名、item id 或加密文本形状猜供应商。
 provider adapter 不自行注入未进入本轮冻结工具计划的 hosted tool。
 
-验证边界：DeepSeek 原生搜索的 wire、鉴权、解析与失败路径由 `pl-model` 公开 API 集成测试在
+验证边界：DeepSeek 工具接口的 wire、鉴权、解析与失败路径由 `pl-model` 公开 API 集成测试在
 真实 loopback HTTP 上证明；确定性模拟只证明实现与约定样本一致，不证明供应商线上接口的最新
-兼容性，真实供应商保持显式人工观察。
+兼容性，真实供应商保持显式人工观察。`queries` 扇出、合并与截断位于 `pl-tool`，按测试边界不
+新增该 crate 的自动化用例，由模拟供应商人工验收与静态审查覆盖。
 
 ## 6.12 计量与价格
 

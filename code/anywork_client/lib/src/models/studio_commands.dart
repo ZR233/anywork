@@ -331,6 +331,11 @@ class DeepSeekWebSearchEnabledCommand extends SettingsFieldCommand {
   final bool value;
 }
 
+class DeepSeekWebFetchEnabledCommand extends SettingsFieldCommand {
+  const DeepSeekWebFetchEnabledCommand(this.value);
+  final bool value;
+}
+
 class ModeModelCommand extends SettingsFieldCommand {
   const ModeModelCommand({
     required this.modeId,

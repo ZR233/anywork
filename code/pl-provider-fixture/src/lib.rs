@@ -38,11 +38,11 @@ pub use provider_usage::{
     SLOW_QUOTA_KEY, STATE_PATH as PROVIDER_USAGE_STATE_PATH,
 };
 pub use web_search::{
-    CHILD_PROFILE_ID, DEEPSEEK_MESSAGES_PATH, DEEPSEEK_SEARCH_KEY, MARK_CHILD_SEARCH,
-    MARK_DEEPSEEK_SEARCH, MARK_EXPECT_NO_SEARCH_TOOLS, MARK_EXPECT_SEARCH_TOOLS, MARK_MCP_SEARCH,
-    MARK_OPENAI_SEARCH, MARK_SLOW_RESPONSE, MARK_SPAWN_CHILD, MCP_KEY, MCP_PATH, MCP_SERVER_ID,
-    MCP_TOOL_NAME, OPENAI_SEARCH_KEY, OPENAI_SEARCH_PATH, WebSearchFault, WebSearchOptions,
-    gui_web_search_script,
+    CHILD_PROFILE_ID, DEEPSEEK_FETCH_PATH, DEEPSEEK_SEARCH_KEY, DEEPSEEK_SEARCH_PATH,
+    MARK_CHILD_SEARCH, MARK_DEEPSEEK_SEARCH, MARK_EXPECT_NO_SEARCH_TOOLS, MARK_EXPECT_SEARCH_TOOLS,
+    MARK_MCP_SEARCH, MARK_OPENAI_SEARCH, MARK_SLOW_RESPONSE, MARK_SPAWN_CHILD, MCP_KEY, MCP_PATH,
+    MCP_SERVER_ID, MCP_TOOL_NAME, OPENAI_SEARCH_KEY, OPENAI_SEARCH_PATH, WebSearchFault,
+    WebSearchOptions, gui_web_search_script,
 };
 
 mod mcp_stdio;
@@ -1450,12 +1450,20 @@ impl FixtureServer {
                 post(web_search::openai_search).fallback(unexpected_route),
             )
             .route(
-                "/v1/anthropic/v1/messages",
-                post(web_search::deepseek_messages).fallback(unexpected_route),
+                "/v1/tools/search",
+                post(web_search::deepseek_search).fallback(unexpected_route),
             )
             .route(
-                "/anthropic/v1/messages",
-                post(web_search::deepseek_messages).fallback(unexpected_route),
+                "/tools/search",
+                post(web_search::deepseek_search).fallback(unexpected_route),
+            )
+            .route(
+                "/v1/tools/fetch",
+                post(web_search::deepseek_fetch).fallback(unexpected_route),
+            )
+            .route(
+                "/tools/fetch",
+                post(web_search::deepseek_fetch).fallback(unexpected_route),
             )
             .route(
                 "/mcp",

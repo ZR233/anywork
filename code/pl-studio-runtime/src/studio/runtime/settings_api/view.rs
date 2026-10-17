@@ -15,7 +15,7 @@ use pl_protocol::studio::{
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot, StudioRole};
 use pl_model::config::{ProviderCapabilitySelection, ProviderModelCatalogConfig};
-use pl_tool::search::WebSearchAvailability;
+use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
 pub(crate) fn settings_config_snapshot(
     state: &ConfigRuntimeSnapshot,
@@ -329,7 +329,10 @@ fn search_settings(
     let services = pl_tool::search::plan_web_search_services(
         &config.models,
         &config.web_search,
-        config.deepseek_web_search.enabled,
+        &WebSearchDeepSeekOptions {
+            enabled: config.deepseek_web_search.enabled,
+            fetch_enabled: config.deepseek_web_search.fetch_enabled,
+        },
     )?;
     let openai = services.openai.resolution;
     let deepseek = services.deepseek.resolution;
@@ -359,10 +362,11 @@ fn search_settings(
         },
         StudioDeepSeekWebSearchSettings {
             configured_enabled: config.deepseek_web_search.enabled,
-            effective_enabled: deepseek_available,
+            effective_enabled: config.deepseek_web_search.enabled && deepseek_available,
+            configured_fetch_enabled: config.deepseek_web_search.fetch_enabled,
+            effective_fetch_enabled: config.deepseek_web_search.fetch_enabled && deepseek_available,
             availability: web_search_availability_label(deepseek.availability).to_string(),
             provider_id: deepseek.provider_id.map(|provider| provider.to_string()),
-            model: deepseek.model,
         },
     ))
 }

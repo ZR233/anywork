@@ -80,9 +80,10 @@ class DemoStudioTransport extends StudioTransport
   DeepSeekWebSearchSettingsView _deepSeekWebSearch =
       const DeepSeekWebSearchSettingsView(
         effectiveEnabled: true,
+        configuredFetchEnabled: true,
+        effectiveFetchEnabled: true,
         availability: 'available',
         providerId: 'deepseek-primary',
-        model: 'deepseek-flash',
       );
   PermissionMode _permissionMode = PermissionMode.requestApproval;
   int _turnSequence = 0;
@@ -1471,7 +1472,10 @@ class DemoStudioTransport extends StudioTransport
       s.webSearch.city,
       s.webSearch.timezone,
     ],
-    s.deepSeekWebSearch.configuredEnabled,
+    [
+      s.deepSeekWebSearch.configuredEnabled,
+      s.deepSeekWebSearch.configuredFetchEnabled,
+    ],
   ];
 
   bool _sameDemoFacts(Object? left, Object? right) {
@@ -1835,6 +1839,10 @@ class DemoStudioTransport extends StudioTransport
         );
       case DeepSeekWebSearchEnabledCommand(:final value):
         _deepSeekWebSearch = _deepSeekWebSearch.withConfiguredEnabled(value);
+      case DeepSeekWebFetchEnabledCommand(:final value):
+        _deepSeekWebSearch = _deepSeekWebSearch.withConfiguredFetchEnabled(
+          value,
+        );
       case ModeModelCommand(:final modeId, :final providerId, :final model):
         final mode = ThreadModeId.fromId(modeId);
         final selected = _findDemoModel(settings.providers, providerId, model);

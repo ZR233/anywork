@@ -119,7 +119,10 @@ impl StudioThreadFactory {
             &config.models,
             route,
             &config.web_search,
-            config.deepseek_web_search.enabled,
+            &pl_tool::search::WebSearchDeepSeekOptions {
+                enabled: config.deepseek_web_search.enabled,
+                fetch_enabled: config.deepseek_web_search.fetch_enabled,
+            },
         )?
         .build_thread(&config.web_search)
         .map_err(|error| resource_error("bind web search", error))?;

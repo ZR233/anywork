@@ -27,7 +27,7 @@ Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories a
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 20`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 21`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Unrecoverable global data corruption, unsupported versions and invalid references trigger one complete startup backup of `config.toml`, `agents/`, `v2/` and `studio/v2/` under `<home>/startup-backups/<unique-id>/original/`, followed by initialization with current defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery. The UI reports the backup location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures do not reset global data.
@@ -46,12 +46,12 @@ Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories a
 - `[lsp.servers.<id>]` — command-based LSP servers outside the bundled catalog.
 - `[ui]` — `follow_active_turn`, `compact_timeline`. Studio always uses its fixed light theme. The obsolete `follow_system_theme` key is ignored when reading current-schema files and omitted on the next normal save; no configuration reset is needed.
 - `[web_search]` — OpenAI standalone `/alpha/search` configuration: mode, context size, allowed domains, location.
-- `[deepseek_web_search]` — Optional toggle for DeepSeek's native standalone search (the Anthropic-compatible Messages `web_search` server tool). The section and `enabled` field both default to `true` and define no OpenAI-specific mode, domain, location, or context options.
+- `[deepseek_web_search]` — Two independent switches for the DeepSeek Search & Fetch tools: `enabled` (web search) and `fetch_enabled` (page fetch), both defaulting to `true`. The section, a missing key, and a missing section all mean enabled. It defines no result count, content toggle, OpenAI-specific mode, domain, location, or context option; those request details are fixed deployment constants in code.
 - `[instructions]` — base override, developer/user instructions, project doc limits.
 
-A few sections are omitted when left at defaults (`runtime`, `instructions`, `lsp`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` and `user_dir = "~/.anywork/skills"`, `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true`, so do not delete them assuming they are unused.
+A few sections are omitted when left at defaults (`runtime`, `instructions`, `lsp`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` and `user_dir = "~/.anywork/skills"`, `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true` and `fetch_enabled = true`, so do not delete them assuming they are unused.
 
-Web search is not a single selection. Both search services are resolved independently of the session, route, or current model: OpenAI standalone search uses the provider's `gpt-6-sol` when its catalog has it (otherwise the provider's first valid model), DeepSeek standalone search defaults to `deepseek-flash`, and providers are ordered by stable ID. Provider availability depends only on capability plus a usable key; whether the current model supports function calling only decides whether that thread registers the additive tools. At runtime the OpenAI `web_search`, DeepSeek `deepseek_web_search`, and any generic MCP tools (including Zhipu, discovered and registered through generic MCP when a valid key is available) coexist as additive tools; there is no `selected` backend and no exclusive route that hides the other tools. Only the DeepSeek search tool description mentions billing fallback, and searches are neither ordered nor automatically fallen back across providers. A DeepSeek provider instance that overrides the preset's canonical base URL stops inheriting the DeepSeek native standalone search capability unless it explicitly declares that dialect; this revocation is DeepSeek-native only and does not change the existing OpenAI `/alpha/search` standalone inheritance for non-canonical OpenAI endpoints.
+Web search is not a single selection. Both services are resolved independently of the session, route, or current model: OpenAI standalone search uses the provider's `gpt-6-sol` when its catalog has it (otherwise the provider's first valid model), DeepSeek search calls the official `POST {root}/v1/tools/search` and `POST {root}/v1/tools/fetch` endpoints without resolving any model, and providers are ordered by stable ID. Provider availability depends only on capability plus a usable key; whether the current model supports function calling only decides whether that thread registers the additive tools. At runtime the OpenAI `web_search`, DeepSeek `deepseek_web_search` (`queries`, 1–4 merged queries) and `deepseek_web_fetch` (`url`), and any generic MCP tools (including Zhipu, discovered and registered through generic MCP when a valid key is available) coexist as additive tools; there is no `selected` backend and no exclusive route that hides the other tools. Only the two DeepSeek tool descriptions mention per-request billing and the fallback condition, and searches are neither ordered nor automatically fallen back across providers. `enabled` and `fetch_enabled` gate the tools independently, and each switch only affects its own tool. A DeepSeek provider instance that overrides the preset's canonical base URL stops inheriting the DeepSeek standalone capability unless it explicitly declares the `deep_seek_tools_api` dialect; the pre-21 token `deep_seek_anthropic_messages` is rewritten by the configuration migration and is rejected if written by hand. This revocation is DeepSeek-only and does not change the existing OpenAI `/alpha/search` standalone inheritance for non-canonical OpenAI endpoints.
 
 ## Model compaction thresholds
 
@@ -72,10 +72,11 @@ The Providers tab automatically checks each instance when its page state first b
 Every provider needs `name`, `base_url`, and a `catalog` section; every role needs a route. `effort` is optional and must match the model's supported effort candidates.
 
 ```toml
-schema_version = 20
+schema_version = 21
 
 [deepseek_web_search]
 enabled = true
+fetch_enabled = true
 
 [models.providers.deepseek]
 name = "DeepSeek"

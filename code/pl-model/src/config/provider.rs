@@ -176,7 +176,7 @@ impl ProviderConfig {
                             // 保留既有继承语义，不因 base_url 覆盖被禁用。
                             if matches!(
                                 capabilities.web_search.standalone,
-                                Some(StandaloneWebSearchDialect::DeepSeekAnthropicMessages)
+                                Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
                             ) {
                                 capabilities.web_search.standalone = None;
                             }

@@ -255,16 +255,18 @@ class DeepSeekWebSearchSettingsView {
   const DeepSeekWebSearchSettingsView({
     this.configuredEnabled = true,
     this.effectiveEnabled = false,
+    this.configuredFetchEnabled = true,
+    this.effectiveFetchEnabled = false,
     this.availability = 'providerUnsupported',
     this.providerId,
-    this.model,
   });
 
   final bool configuredEnabled;
   final bool effectiveEnabled;
+  final bool configuredFetchEnabled;
+  final bool effectiveFetchEnabled;
   final String availability;
   final String? providerId;
-  final String? model;
 
   bool get isAvailable => availability == 'available';
 
@@ -277,9 +279,22 @@ class DeepSeekWebSearchSettingsView {
     return DeepSeekWebSearchSettingsView(
       configuredEnabled: enabled,
       effectiveEnabled: enabled && nextAvailability == 'available',
+      configuredFetchEnabled: configuredFetchEnabled,
+      effectiveFetchEnabled:
+          configuredFetchEnabled && nextAvailability == 'available',
       availability: nextAvailability,
       providerId: providerId,
-      model: model,
+    );
+  }
+
+  DeepSeekWebSearchSettingsView withConfiguredFetchEnabled(bool enabled) {
+    return DeepSeekWebSearchSettingsView(
+      configuredEnabled: configuredEnabled,
+      effectiveEnabled: effectiveEnabled,
+      configuredFetchEnabled: enabled,
+      effectiveFetchEnabled: enabled && availability == 'available',
+      availability: availability,
+      providerId: providerId,
     );
   }
 }
