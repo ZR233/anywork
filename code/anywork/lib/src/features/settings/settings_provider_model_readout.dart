@@ -16,8 +16,10 @@ class ProviderModelReadout extends StatelessWidget {
     this.framed = false,
     this.onConnectionModeChanged,
     this.autoCompact,
-    this.autoCompactEnabled = true,
+    this.autoCompactEdit,
     this.onAutoCompactChanged,
+    this.onAutoCompactCommit,
+    this.onAutoCompactInvalid,
   });
 
   final ProviderModelView model;
@@ -31,8 +33,9 @@ class ProviderModelReadout extends StatelessWidget {
   /// 非空时提供压缩阈值编辑；`null` 表示只读展示。
   final ValueChanged<int?>? onAutoCompactChanged;
 
-  /// 压缩阈值输入与滑块是否可用（保存中禁用）。
-  final bool autoCompactEnabled;
+  final ModelAutoCompactEdit? autoCompactEdit;
+  final VoidCallback? onAutoCompactCommit;
+  final VoidCallback? onAutoCompactInvalid;
 
   @override
   Widget build(BuildContext context) {
@@ -77,6 +80,12 @@ class ProviderModelReadout extends StatelessWidget {
                 ),
                 Text(
                   '${context.modelProtocolLabel(model.wireProtocol)} · ${context.modelConnectionLabel(model.connectionMode)}',
+                  style: context.text.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  '${context.l10n.settingsContextBudget}: ${formatTokenCount(model.contextWindow ?? model.maxContextWindow)}',
                   style: context.text.labelSmall?.copyWith(
                     color: context.colors.onSurfaceVariant,
                   ),
@@ -178,8 +187,10 @@ class ProviderModelReadout extends StatelessWidget {
               limit: autoCompact!,
               providerId: providerId,
               modelSlug: model.slug,
-              enabled: autoCompactEnabled,
+              edit: autoCompactEdit,
               onOverrideChanged: onAutoCompactChanged,
+              onEditingComplete: onAutoCompactCommit,
+              onInvalidInput: onAutoCompactInvalid,
             ),
           ),
         ],

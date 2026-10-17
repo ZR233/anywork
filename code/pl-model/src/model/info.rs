@@ -10,9 +10,6 @@ use crate::model::parameter::ModelParameter;
 use crate::model::profile_error::ModelProfileError;
 use crate::provider::{ProviderConnectionMode, ProviderWireProtocol};
 
-/// 模型未显式声明默认压缩阈值时使用的十进制 token 数（258k）。
-pub const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT: u64 = 258_000;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub slug: String,
@@ -508,17 +505,18 @@ impl ModelInfo {
         self.context_window.or(self.max_context_window)
     }
 
-    /// 模型默认上下文压缩阈值；未显式声明时为 [`DEFAULT_AUTO_COMPACT_TOKEN_LIMIT`]。
-    pub fn default_auto_compact_token_limit(&self) -> u64 {
+    /// 模型预设优先，否则使用当前上下文容量的 90%；两者都未知时保持未知。
+    pub fn default_auto_compact_token_limit(&self) -> Option<u64> {
         self.auto_compact_token_limit
-            .unwrap_or(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT)
+            .or_else(|| self.safe_auto_compact_token_limit())
     }
 
     /// 上下文容量 90% 的安全上限；上下文未知时返回 `None`，保持不自动压缩。
     pub fn safe_auto_compact_token_limit(&self) -> Option<u64> {
         let context = self.resolved_context_window()?;
         // 用 u128 精确计算 floor(context * 90 / 100)，避免大 u64 相乘溢出。
-        Some(((u128::from(context) * 90) / 100) as u64)
+        let limit = ((u128::from(context) * 90) / 100) as u64;
+        (limit > 0).then_some(limit)
     }
 
     /// 在给定用户覆盖值下解析实际生效的压缩阈值。
@@ -527,7 +525,7 @@ impl ModelInfo {
     /// 上下文未知时返回 `None`。用户覆盖不能绕过安全上限。
     pub fn resolved_auto_compact_limit_with(&self, override_limit: Option<u64>) -> Option<u64> {
         let safe = self.safe_auto_compact_token_limit()?;
-        let selected = override_limit.unwrap_or_else(|| self.default_auto_compact_token_limit());
+        let selected = override_limit.or_else(|| self.default_auto_compact_token_limit())?;
         Some(selected.min(safe))
     }
 

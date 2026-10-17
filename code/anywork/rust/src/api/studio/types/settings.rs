@@ -511,7 +511,7 @@ pub struct BridgeModelConnectionSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelAutoCompactSettingsDto {
     pub slug: String,
-    pub default_limit: u64,
+    pub default_limit: Option<u64>,
     pub override_limit: Option<u64>,
     pub effective_limit: Option<u64>,
     pub safe_limit: Option<u64>,
@@ -666,6 +666,7 @@ pub struct BridgeModelDescriptor {
     pub description: Option<String>,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
+    pub auto_compact_token_limit: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub transport: BridgeModelTransportDescriptor,
     pub capabilities: BridgeModelCapabilities,
@@ -807,6 +808,7 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
             description: model.description,
             context_window: model.context_window,
             max_context_window: model.max_context_window,
+            auto_compact_token_limit: model.auto_compact_token_limit,
             max_output_tokens: model.max_output_tokens,
             transport: BridgeModelTransportDescriptor {
                 protocol: model.transport.protocol,

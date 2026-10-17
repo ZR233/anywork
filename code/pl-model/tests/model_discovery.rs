@@ -258,6 +258,12 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         config.set_model_catalog_overlay(models).unwrap();
         let descriptor = model_descriptor(&config.effective_models().unwrap()[0]);
         assert_eq!(descriptor.context_window, Some(64000));
+        let preset = (adapter == ProviderAdapterKind::OpenAi).then_some(12_000);
+        assert_eq!(descriptor.auto_compact_token_limit, preset);
+        assert_eq!(
+            model.resolved_auto_compact_limit(),
+            Some(preset.unwrap_or(57_600))
+        );
         assert_eq!(descriptor.pricing, None);
         let reasoning = descriptor.reasoning.unwrap();
         assert_eq!(reasoning.candidates, ["gentle", "new-ultra"]);
@@ -478,6 +484,11 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     assert_eq!(model.slug, slug);
     assert_eq!(model.description, description);
     assert_eq!(model.context_window, Some(1_050_000));
+    assert_eq!(
+        model_descriptor(&model).auto_compact_token_limit,
+        Some(475_000)
+    );
+    assert_eq!(model.resolved_auto_compact_limit(), Some(475_000));
     assert_eq!(model.max_output_tokens, Some(128_000));
     assert_eq!(
         model.supported_efforts(),

@@ -419,7 +419,7 @@ abstract final class StudioDriverState {
                 'cacheWarning': provider.modelCatalog.cacheWarning?.name,
                 'lastSuccessAt': provider.modelCatalog.lastSuccessAt,
               },
-              // 压缩阈值三层视图：slug → {default, override, effective, safe}。
+              // 压缩阈值四层视图：slug → {default, override, effective, safe}。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
                 for (final model in provider.allModels)

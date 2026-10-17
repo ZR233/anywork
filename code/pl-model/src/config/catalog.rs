@@ -411,6 +411,7 @@ pub fn model_descriptor(model: &ModelInfo) -> ModelDescriptor {
         description: model.description.clone(),
         context_window: model.context_window,
         max_context_window: model.max_context_window,
+        auto_compact_token_limit: model.auto_compact_token_limit,
         max_output_tokens: model.max_output_tokens,
         transport: ModelTransportDescriptor {
             protocol: protocol_label(model.binding.transport.protocol).to_string(),

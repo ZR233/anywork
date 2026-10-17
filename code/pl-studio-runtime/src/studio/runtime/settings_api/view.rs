@@ -151,7 +151,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                     .collect(),
                 model_auto_compact_limits: {
                     let overrides = provider.auto_compact_overrides();
-                    models
+                    let mut limits = models
                         .iter()
                         .map(|model| {
                             let override_limit = overrides.get(&model.slug).copied();
@@ -164,7 +164,24 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                                 safe_limit: model.safe_auto_compact_token_limit(),
                             }
                         })
-                        .collect()
+                        .collect::<Vec<_>>();
+                    // A successful remote inventory can withdraw a model without deleting
+                    // its desired override. Full provider edits must retain those choices.
+                    limits.extend(
+                        overrides
+                            .iter()
+                            .filter(|(slug, _)| {
+                                !models.iter().any(|model| model.slug == slug.as_str())
+                            })
+                            .map(|(slug, limit)| StudioModelAutoCompactSettings {
+                                slug: slug.clone(),
+                                default_limit: None,
+                                override_limit: Some(*limit),
+                                effective_limit: None,
+                                safe_limit: None,
+                            }),
+                    );
+                    limits
                 },
                 catalog_id,
             })

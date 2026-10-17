@@ -1,3 +1,4 @@
+import 'provider_models.dart';
 import 'studio_state_snapshots.dart';
 
 /// 配置与模型目录进入同一条 merge path 的范围。
@@ -68,6 +69,28 @@ SettingsProjectionState mergeSettingsProjection(
   );
 }
 
+Map<String, ProviderModelAutoCompactView> _projectAutoCompactLimits(
+  ProviderSettingsView configProvider,
+  ProviderSettingsView catalogProvider,
+) {
+  final projected = <String, ProviderModelAutoCompactView>{
+    for (final model in catalogProvider.models)
+      model.slug: ProviderModelAutoCompactView.forModel(model)
+          .withStoredOverride(
+            configProvider.autoCompactLimits[model.slug]?.overrideLimit,
+          ),
+  };
+  for (final entry in configProvider.autoCompactLimits.entries) {
+    if (projected.containsKey(entry.key)) continue;
+    projected[entry.key] = ProviderModelAutoCompactView(
+      slug: entry.key,
+      defaultLimit: null,
+      overrideLimit: entry.value.overrideLimit,
+    );
+  }
+  return projected;
+}
+
 /// 把配置字段与模型目录字段合成为一个领域快照。
 SettingsStateSnapshot projectSettingsSnapshot({
   required SettingsStateData configData,
@@ -84,6 +107,10 @@ SettingsStateSnapshot projectSettingsSnapshot({
         provider.copyWith(
           models: catalogProvider.models,
           modelCatalog: catalogProvider.modelCatalog,
+          autoCompactLimits: _projectAutoCompactLimits(
+            provider,
+            catalogProvider,
+          ),
         )
       else
         provider,

@@ -4031,6 +4031,24 @@ abstract class AppLocalizations {
   /// **'Restore default'**
   String get settingsModelAutoCompactRestore;
 
+  /// No description provided for @settingsModelAutoCompactSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Applying automatically…'**
+  String get settingsModelAutoCompactSaving;
+
+  /// No description provided for @settingsModelAutoCompactSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not apply. Your input is kept.'**
+  String get settingsModelAutoCompactSaveFailed;
+
+  /// No description provided for @settingsModelAutoCompactRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get settingsModelAutoCompactRetry;
+
   /// No description provided for @settingsModelAutoCompactDefaultLabel.
   ///
   /// In en, this message translates to:

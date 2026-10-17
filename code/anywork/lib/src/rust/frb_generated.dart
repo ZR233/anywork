@@ -6730,7 +6730,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return BridgeModelAutoCompactSettingsDto(
       slug: dco_decode_String(arr[0]),
-      defaultLimit: dco_decode_u_64(arr[1]),
+      defaultLimit: dco_decode_opt_box_autoadd_u_64(arr[1]),
       overrideLimit: dco_decode_opt_box_autoadd_u_64(arr[2]),
       effectiveLimit: dco_decode_opt_box_autoadd_u_64(arr[3]),
       safeLimit: dco_decode_opt_box_autoadd_u_64(arr[4]),
@@ -6948,21 +6948,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeModelDescriptor dco_decode_bridge_model_descriptor(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return BridgeModelDescriptor(
       id: dco_decode_String(arr[0]),
       displayName: dco_decode_String(arr[1]),
       description: dco_decode_opt_String(arr[2]),
       contextWindow: dco_decode_opt_box_autoadd_u_64(arr[3]),
       maxContextWindow: dco_decode_opt_box_autoadd_u_64(arr[4]),
-      maxOutputTokens: dco_decode_opt_box_autoadd_u_64(arr[5]),
-      transport: dco_decode_bridge_model_transport_descriptor(arr[6]),
-      capabilities: dco_decode_bridge_model_capabilities(arr[7]),
+      autoCompactTokenLimit: dco_decode_opt_box_autoadd_u_64(arr[5]),
+      maxOutputTokens: dco_decode_opt_box_autoadd_u_64(arr[6]),
+      transport: dco_decode_bridge_model_transport_descriptor(arr[7]),
+      capabilities: dco_decode_bridge_model_capabilities(arr[8]),
       reasoning: dco_decode_opt_box_autoadd_bridge_model_reasoning_descriptor(
-        arr[8],
+        arr[9],
       ),
-      pricing: dco_decode_opt_box_autoadd_bridge_model_pricing(arr[9]),
+      pricing: dco_decode_opt_box_autoadd_bridge_model_pricing(arr[10]),
     );
   }
 
@@ -14580,7 +14581,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_slug = sse_decode_String(deserializer);
-    var var_defaultLimit = sse_decode_u_64(deserializer);
+    var var_defaultLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_overrideLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_effectiveLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_safeLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
@@ -14868,6 +14869,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_description = sse_decode_opt_String(deserializer);
     var var_contextWindow = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_maxContextWindow = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_autoCompactTokenLimit = sse_decode_opt_box_autoadd_u_64(
+      deserializer,
+    );
     var var_maxOutputTokens = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_transport = sse_decode_bridge_model_transport_descriptor(
       deserializer,
@@ -14886,6 +14890,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       description: var_description,
       contextWindow: var_contextWindow,
       maxContextWindow: var_maxContextWindow,
+      autoCompactTokenLimit: var_autoCompactTokenLimit,
       maxOutputTokens: var_maxOutputTokens,
       transport: var_transport,
       capabilities: var_capabilities,
@@ -23914,7 +23919,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.slug, serializer);
-    sse_encode_u_64(self.defaultLimit, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.defaultLimit, serializer);
     sse_encode_opt_box_autoadd_u_64(self.overrideLimit, serializer);
     sse_encode_opt_box_autoadd_u_64(self.effectiveLimit, serializer);
     sse_encode_opt_box_autoadd_u_64(self.safeLimit, serializer);
@@ -24148,6 +24153,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.description, serializer);
     sse_encode_opt_box_autoadd_u_64(self.contextWindow, serializer);
     sse_encode_opt_box_autoadd_u_64(self.maxContextWindow, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.autoCompactTokenLimit, serializer);
     sse_encode_opt_box_autoadd_u_64(self.maxOutputTokens, serializer);
     sse_encode_bridge_model_transport_descriptor(self.transport, serializer);
     sse_encode_bridge_model_capabilities(self.capabilities, serializer);

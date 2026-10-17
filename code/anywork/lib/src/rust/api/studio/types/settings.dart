@@ -253,14 +253,14 @@ class BridgeModeModelSettingsDto {
 /// provider 实例中某模型上下文压缩阈值的三层 canonical 视图。
 class BridgeModelAutoCompactSettingsDto {
   final String slug;
-  final BigInt defaultLimit;
+  final BigInt? defaultLimit;
   final BigInt? overrideLimit;
   final BigInt? effectiveLimit;
   final BigInt? safeLimit;
 
   const BridgeModelAutoCompactSettingsDto({
     required this.slug,
-    required this.defaultLimit,
+    this.defaultLimit,
     this.overrideLimit,
     this.effectiveLimit,
     this.safeLimit,
@@ -498,6 +498,7 @@ class BridgeModelDescriptor {
   final String? description;
   final BigInt? contextWindow;
   final BigInt? maxContextWindow;
+  final BigInt? autoCompactTokenLimit;
   final BigInt? maxOutputTokens;
   final BridgeModelTransportDescriptor transport;
   final BridgeModelCapabilities capabilities;
@@ -510,6 +511,7 @@ class BridgeModelDescriptor {
     this.description,
     this.contextWindow,
     this.maxContextWindow,
+    this.autoCompactTokenLimit,
     this.maxOutputTokens,
     required this.transport,
     required this.capabilities,
@@ -524,6 +526,7 @@ class BridgeModelDescriptor {
       description.hashCode ^
       contextWindow.hashCode ^
       maxContextWindow.hashCode ^
+      autoCompactTokenLimit.hashCode ^
       maxOutputTokens.hashCode ^
       transport.hashCode ^
       capabilities.hashCode ^
@@ -540,6 +543,7 @@ class BridgeModelDescriptor {
           description == other.description &&
           contextWindow == other.contextWindow &&
           maxContextWindow == other.maxContextWindow &&
+          autoCompactTokenLimit == other.autoCompactTokenLimit &&
           maxOutputTokens == other.maxOutputTokens &&
           transport == other.transport &&
           capabilities == other.capabilities &&

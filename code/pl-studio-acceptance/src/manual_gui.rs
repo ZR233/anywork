@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -497,6 +497,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     )?;
     fs::write(output.join("operations.json"), "[]\n")?;
 
+    // Cargo may wait on package/build locks. Finish preparation before the
+    // fixture's service-readiness deadline starts, then own the native process.
+    let fixture_executable = build_fixture_executable(&workspace)?;
+
     let working = tempfile::Builder::new()
         .prefix("environment-")
         .tempdir_in(&output)
@@ -522,18 +526,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     let probe_finished = working.path().join("probe-finished");
     let fixture_log_path = working.path().join("fixture.log");
     let fixture_log = File::create(&fixture_log_path)?;
-    let mut fixture_command = Command::new("cargo");
+    let mut fixture_command = Command::new(fixture_executable);
     fixture_command
         .current_dir(&workspace)
-        .args([
-            "run",
-            "-p",
-            "pl-provider-fixture",
-            "--",
-            "--scenario",
-            &options.scenario,
-            "--ready-file",
-        ])
+        .args(["--scenario", &options.scenario, "--ready-file"])
         .arg(&ready_file)
         .arg("--requests-file")
         .arg(&requests_file)
@@ -1654,6 +1650,54 @@ fn write_config_with_lsp_server(
     persist_config(home, &config)
 }
 
+/// Uses the same build/artifact-discovery contract as the xtask launcher, so
+/// Cargo's configured target directory and native executable suffix stay owned
+/// by Cargo rather than being guessed by the readiness loop.
+fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
+    const PACKAGE: &str = "pl-provider-fixture";
+    let args = ["build", "--locked", "-p", PACKAGE, "--bin", PACKAGE];
+    let mut build = Command::new("cargo");
+    build.current_dir(workspace).args(args);
+    process::run_checked(
+        &mut build,
+        "cargo build --locked -p pl-provider-fixture --bin pl-provider-fixture",
+    )?;
+
+    let discovery = Command::new("cargo")
+        .current_dir(workspace)
+        .args(args)
+        .arg("--message-format=json")
+        .output()
+        .context("failed to query Cargo for the provider fixture executable")?;
+    ensure!(
+        discovery.status.success(),
+        "failed to locate the provider fixture executable: {}",
+        String::from_utf8_lossy(&discovery.stderr)
+    );
+    for line in String::from_utf8_lossy(&discovery.stdout).lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let target = &record["target"];
+        if record["reason"] == "compiler-artifact"
+            && target["name"] == PACKAGE
+            && target["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+            && let Some(executable) = record["executable"].as_str()
+        {
+            let executable = PathBuf::from(executable);
+            ensure!(
+                executable.is_file(),
+                "Cargo fixture executable is missing: {}",
+                executable.display()
+            );
+            return Ok(executable);
+        }
+    }
+    bail!("Cargo reported no provider fixture bin executable")
+}
+
 /// Builds the isolated acceptance config without persisting it, so every writer
 /// shares one model/provider/route fact source.
 fn fixture_config(
@@ -1692,7 +1736,25 @@ fn fixture_config(
     let provider_id = ProviderId::new(format!("gui-fixture-{}", std::process::id()))?;
     let mut endpoint = ProviderEndpoint::compatible("Local GUI fixture", &ready.base_url);
     endpoint.service_capabilities.remote_compaction = ready.scenario == "call-lifecycle-recovery";
-    let provider = ProviderConfig::from_explicit_models(endpoint, vec![model]);
+    let mut models = vec![model];
+    if ready.scenario == "gui" {
+        // Distinct metadata in the same isolated provider exercises the real
+        // settings projection without creating system credential accounts.
+        let mut preset = models[0].clone();
+        preset.slug = "fixture-preset".into();
+        preset.display_name = "Fixture with a model preset".into();
+        preset.context_window = Some(64_000);
+        preset.max_context_window = Some(64_000);
+        preset.auto_compact_token_limit = Some(24_000);
+        let mut unknown = models[0].clone();
+        unknown.slug = "fixture-unknown".into();
+        unknown.display_name = "Fixture with unknown context capacity".into();
+        unknown.context_window = None;
+        unknown.max_context_window = None;
+        unknown.auto_compact_token_limit = None;
+        models.extend([preset, unknown]);
+    }
+    let provider = ProviderConfig::from_explicit_models(endpoint, models);
     config.models.providers.clear();
     config
         .models

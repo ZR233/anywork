@@ -51,6 +51,7 @@ class ProviderModelView {
     this.description = '',
     this.contextWindow,
     this.maxContextWindow,
+    this.autoCompactTokenLimit,
     this.maxOutputTokens,
     this.inputCapabilities = const [],
     this.outputModalities = const [],
@@ -72,6 +73,9 @@ class ProviderModelView {
   final String description;
   final int? contextWindow;
   final int? maxContextWindow;
+
+  /// 原始模型目录预设；没有预设时按解析上下文容量的 90% 推导。
+  final int? autoCompactTokenLimit;
   final int? maxOutputTokens;
   final List<ModelInputCapabilityView> inputCapabilities;
   final List<ModelModalityView> outputModalities;
@@ -93,6 +97,7 @@ class ProviderModelView {
     String? description,
     int? contextWindow,
     int? maxContextWindow,
+    int? autoCompactTokenLimit,
     int? maxOutputTokens,
     List<ModelInputCapabilityView>? inputCapabilities,
     List<ModelModalityView>? outputModalities,
@@ -114,6 +119,8 @@ class ProviderModelView {
       description: description ?? this.description,
       contextWindow: contextWindow ?? this.contextWindow,
       maxContextWindow: maxContextWindow ?? this.maxContextWindow,
+      autoCompactTokenLimit:
+          autoCompactTokenLimit ?? this.autoCompactTokenLimit,
       maxOutputTokens: maxOutputTokens ?? this.maxOutputTokens,
       inputCapabilities: inputCapabilities ?? this.inputCapabilities,
       outputModalities: outputModalities ?? this.outputModalities,
@@ -134,13 +141,7 @@ class ProviderModelView {
   }
 }
 
-/// 模型未显式声明默认压缩阈值时使用的十进制 token 数（258k）。
-///
-/// 与 pl-model 的 `DEFAULT_AUTO_COMPACT_TOKEN_LIMIT` 保持一致；草稿中尚未由服务端解析的
-/// 模型（新建 provider 或新增自定义模型）用它作为默认阈值展示，不写入保存请求。
-const int kDefaultAutoCompactTokens = 258000;
-
-/// provider 实例中某模型上下文压缩阈值的三层视图。
+/// provider 实例中某模型上下文压缩阈值的四层视图。
 ///
 /// `defaultLimit` 为模型默认元信息；`overrideLimit` 为用户覆盖（`null` 表示使用默认）；
 /// `effectiveLimit` 为实际生效值 `min(覆盖或默认, 上下文 90%)`，上下文未知时为 `null`；
@@ -154,14 +155,17 @@ class ProviderModelAutoCompactView {
     this.safeLimit,
   });
 
-  /// 由模型草稿推导的默认视图：默认阈值 258k，上下文 90% 为安全上限。
+  /// 尚无 canonical 解析结果时，由同一份目录元数据推导草稿读数。
   factory ProviderModelAutoCompactView.forModel(ProviderModelView model) {
-    final safeLimit = safeLimitForContext(model.contextWindow);
+    final safeLimit = safeLimitForContext(
+      model.contextWindow ?? model.maxContextWindow,
+    );
+    final defaultLimit = model.autoCompactTokenLimit ?? safeLimit;
     return ProviderModelAutoCompactView(
       slug: model.slug,
-      defaultLimit: kDefaultAutoCompactTokens,
+      defaultLimit: defaultLimit,
       overrideLimit: null,
-      effectiveLimit: _effective(kDefaultAutoCompactTokens, safeLimit),
+      effectiveLimit: _effective(defaultLimit, safeLimit),
       safeLimit: safeLimit,
     );
   }
@@ -175,18 +179,19 @@ class ProviderModelAutoCompactView {
     }
     final quotient = contextWindow ~/ 100;
     final remainder = contextWindow % 100;
-    return quotient * 90 + (remainder * 90) ~/ 100;
+    final limit = quotient * 90 + (remainder * 90) ~/ 100;
+    return limit > 0 ? limit : null;
   }
 
-  static int? _effective(int selected, int? safeLimit) {
-    if (safeLimit == null) {
+  static int? _effective(int? selected, int? safeLimit) {
+    if (selected == null || safeLimit == null) {
       return null;
     }
     return selected < safeLimit ? selected : safeLimit;
   }
 
   final String slug;
-  final int defaultLimit;
+  final int? defaultLimit;
   final int? overrideLimit;
   final int? effectiveLimit;
   final int? safeLimit;
@@ -197,17 +202,22 @@ class ProviderModelAutoCompactView {
   ///
   /// 实际生效值按 `min(覆盖或默认, 安全上限)` 重新推导，上下文未知时保持 `null`。
   ProviderModelAutoCompactView withOverride(int? overrideLimit) {
+    final normalized = overrideLimit == defaultLimit ? null : overrideLimit;
     return ProviderModelAutoCompactView(
       slug: slug,
       defaultLimit: defaultLimit,
-      overrideLimit: overrideLimit,
-      effectiveLimit: _effective(overrideLimit ?? defaultLimit, safeLimit),
+      overrideLimit: normalized,
+      effectiveLimit: _effective(normalized ?? defaultLimit, safeLimit),
       safeLimit: safeLimit,
     );
   }
 
-  /// 以新的上下文安全上限重算生效值，保留模型默认与用户覆盖。
-  ProviderModelAutoCompactView withSafeLimit(int? safeLimit) {
+  /// Reprojects a stored configuration value without normalizing it.
+  ///
+  /// Read-only catalog merges must retain an explicit override even when a
+  /// new catalog default happens to equal it. Normalization belongs to an
+  /// explicit write intent, which uses [withOverride].
+  ProviderModelAutoCompactView withStoredOverride(int? overrideLimit) {
     return ProviderModelAutoCompactView(
       slug: slug,
       defaultLimit: defaultLimit,
@@ -300,10 +310,10 @@ class ProviderSettingsView {
     );
   }
 
-  /// 返回某模型的三层压缩阈值视图。
+  /// 返回某模型的四层压缩阈值视图。
   ///
   /// 优先使用 canonical snapshot 的解析结果；草稿中尚未持久化的模型（新建 provider 或
-  /// 新增自定义模型）按模型默认 258,000 与上下文 90% 安全上限推导。
+  /// 新增自定义模型）按目录预设或上下文 90% 推导，不写入用户配置。
   ProviderModelAutoCompactView autoCompactLimitFor(ProviderModelView model) {
     return autoCompactLimits[model.slug] ??
         ProviderModelAutoCompactView.forModel(model);
@@ -526,7 +536,14 @@ ProviderSettingsView providerWithCatalogMetadata(
       .where((model) => !customSlugs.contains(model.slug))
       .map(applyConnectionMode)
       .toList();
-  final customModels = provider.customModels.map(applyConnectionMode).toList();
+  final customModels = provider.customModels.map((model) {
+    final metadata = provider.models
+        .where((candidate) => candidate.slug == model.slug)
+        .firstOrNull;
+    return applyConnectionMode(
+      model.copyWith(autoCompactTokenLimit: metadata?.autoCompactTokenLimit),
+    );
+  }).toList();
   final effectiveModels = provider.models.map(applyConnectionMode).toList();
   return provider.copyWith(
     subtitle: provider.subtitle.isEmpty && preset != null

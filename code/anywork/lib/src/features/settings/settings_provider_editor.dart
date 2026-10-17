@@ -5,7 +5,6 @@ import '../../l10n/studio_l10n.dart';
 import '../../shared/provider_brand.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
-import 'settings_provider_auto_compact.dart';
 import 'settings_provider_drafts.dart';
 import 'settings_provider_model_readout.dart';
 
@@ -26,7 +25,7 @@ class ProviderEditor extends StatelessWidget {
     required this.onRemoveCustomModel,
   });
 
-  /// 用于在保存前校验草稿中所有阈值输入；无效输入必须阻止保存并保留草稿。
+  /// 供应商连接与模型声明的草稿表单；阈值在详情列表即时编辑。
   final GlobalKey<FormState> formKey;
   final ProviderDraft draft;
   final List<ProviderPresetView> presets;
@@ -241,13 +240,6 @@ class ProviderEditor extends StatelessWidget {
                       ProviderModelReadout(
                         model: model,
                         providerId: provider.id,
-                        autoCompact: provider.autoCompactLimitFor(model),
-                        autoCompactEnabled: !saving,
-                        onAutoCompactChanged: (value) => onUpdate(
-                          (item) => item.withAutoCompactLimit(
-                            item.autoCompactLimitFor(model).withOverride(value),
-                          ),
-                        ),
                         onConnectionModeChanged:
                             saving || model.supportedConnectionModes.length <= 1
                             ? null
@@ -282,19 +274,6 @@ class ProviderEditor extends StatelessWidget {
                         _CustomModelEditor(
                           index: index,
                           model: provider.customModels[index],
-                          providerId: provider.id,
-                          autoCompact: provider.autoCompactLimitFor(
-                            provider.customModels[index],
-                          ),
-                          onAutoCompactChanged: (value) => onUpdate(
-                            (item) => item.withAutoCompactLimit(
-                              item
-                                  .autoCompactLimitFor(
-                                    provider.customModels[index],
-                                  )
-                                  .withOverride(value),
-                            ),
-                          ),
                           enabled: !saving,
                           onChanged: (model) =>
                               onUpdateCustomModel(index, model),
@@ -339,18 +318,12 @@ class _CustomModelEditor extends StatelessWidget {
   const _CustomModelEditor({
     required this.index,
     required this.model,
-    required this.providerId,
-    required this.autoCompact,
-    required this.onAutoCompactChanged,
     required this.enabled,
     required this.onChanged,
     required this.onRemove,
   });
   final int index;
   final ProviderModelView model;
-  final String providerId;
-  final ProviderModelAutoCompactView autoCompact;
-  final ValueChanged<int?> onAutoCompactChanged;
   final bool enabled;
   final ValueChanged<ProviderModelView> onChanged;
   final VoidCallback onRemove;
@@ -450,13 +423,6 @@ class _CustomModelEditor extends StatelessWidget {
                     onChanged(model.copyWith(maxOutputTokens: count));
                   }
                 },
-              ),
-              ProviderModelAutoCompactControl(
-                limit: autoCompact,
-                providerId: providerId,
-                modelSlug: model.slug,
-                enabled: enabled,
-                onOverrideChanged: onAutoCompactChanged,
               ),
             ],
           ),

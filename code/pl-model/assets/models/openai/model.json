@@ -163,7 +163,7 @@
       }
     },
     {
-      "auto_compact_token_limit": null,
+      "auto_compact_token_limit": 475000,
       "base_instructions": "",
       "binding": {
         "request": {

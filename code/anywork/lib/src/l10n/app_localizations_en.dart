@@ -2260,6 +2260,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactRestore => 'Restore default';
 
   @override
+  String get settingsModelAutoCompactSaving => 'Applying automatically…';
+
+  @override
+  String get settingsModelAutoCompactSaveFailed =>
+      'Could not apply. Your input is kept.';
+
+  @override
+  String get settingsModelAutoCompactRetry => 'Retry';
+
+  @override
   String get settingsModelAutoCompactDefaultLabel => 'Default';
 
   @override

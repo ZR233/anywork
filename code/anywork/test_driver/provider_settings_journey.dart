@@ -6,20 +6,12 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
 
-/// Manual Driver journey for the provider context-compaction threshold UI.
-///
-/// Run against a native GUI started by `cargo xtask manual-gui` (default `gui`
-/// scenario), which prints the VM service URL. This journey never shuts the
-/// application down; the operator types `done` in the manual-gui console to
-/// capture evidence and shut down.
-///
-/// Usage:
-///   dart run test_driver/provider_settings_journey.dart VM_URL OUTPUT_DIR
-///
-/// Covered: explicit fixture provider edit -> save; model/provider isolation;
-/// input -> save; slider -> save; invalid input must not save; restore default;
-/// custom-model field edit keeps its override; screenshots and snapshot JSON
-/// per stage.
+/// Real-bridge manual journey for detail-list auto-save, not a widget test.
+/// Run with cargo xtask manual-gui --scenario gui, then:
+/// cargo dart test_driver/provider_settings_journey.dart VM_URL OUTPUT_DIR
+/// Only the isolated fixture provider is edited; no system credential account
+/// is created. The operator still sends the fixture prompt and `done` to the
+/// harness, reviews screenshots and records the human verdict separately.
 Future<void> main(List<String> args) async {
   if (args.length != 2) {
     stderr.writeln('usage: provider_settings_journey.dart VM_URL OUTPUT_DIR');
@@ -31,176 +23,140 @@ Future<void> main(List<String> args) async {
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
   try {
     final recorder = _Recorder(output, driver);
-    await recorder.stage('connected');
     final baseline = await recorder.readSnapshot();
-    final baselineIds = _providerIds(baseline);
-    if (baselineIds.isEmpty) {
-      throw StateError('no provider present to exercise the threshold editor');
-    }
-    await recorder.capture('baseline', baseline);
-    final fixtureId = baselineIds.first;
-    final fixtureModel = _models(_provider(baseline, fixtureId)).firstOrNull;
-    if (fixtureModel == null) {
-      throw StateError('initial fixture provider exposes no model');
-    }
-
-    // Navigate once into the settings providers tab; every later step works
-    // from the list the shell shows after a successful save.
+    final fixture = _providers(baseline)
+        .where((provider) => '${provider['id']}'.startsWith('gui-fixture-'))
+        .single;
+    final id = '${fixture['id']}';
+    final model = '${fixture['defaultModel']}';
+    final siblings = {
+      for (final slug in _models(fixture))
+        if (slug != model) slug: _limit(baseline, id, slug),
+    };
     await recorder.openProviders();
-    await recorder.assertProviderListRedacted(fixtureId, fixtureModel);
-
-    // 0. Explicit fixture provider (no preset id) must open, edit and save.
-    await recorder.openProviderEditor(fixtureId);
-    await recorder.expandCustomAdvanced(0);
-    await recorder.setCompactInput(fixtureId, fixtureModel, '18000');
-    await recorder.capture('fixture-edited', await recorder.readSnapshot());
-    await recorder.saveExpectEditorClosed();
-    final afterFixture = await recorder.readSnapshot();
-    _requireOverride(
-      afterFixture,
-      fixtureId,
-      fixtureModel,
-      expected: 18000,
-      what: 'explicit fixture input then save',
+    await recorder.assertProviderListRedacted(id, model);
+    await recorder.openDetails(id);
+    await recorder.capture('details-defaults', await recorder.readSnapshot());
+    await driver.waitForAbsent(find.byValueKey('provider-save'));
+    final preset = _models(fixture).singleWhere((slug) {
+      final limit = _limit(baseline, id, slug);
+      return limit['safe'] != null && limit['default'] != limit['safe'];
+    });
+    await recorder._scrollTo(
+      find.byValueKey('provider-$id-model-$preset-auto-compact-input'),
     );
-    await recorder.capture('fixture-saved', afterFixture);
-    // Isolation reference: fixture now carries the override; later steps must
-    // not change it again.
-    final reference = afterFixture;
-
-    // 1. A preset-backed provider exposes bundled models in the visible section.
-    await recorder.tapAddProvider();
-    await recorder.capture('create-provider', await recorder.readSnapshot());
-    await recorder.saveExpectEditorClosed();
-    final addedSnapshot = await recorder.readSnapshot();
-    final addedId = _providerIds(addedSnapshot)
-        .difference(baselineIds)
-        .firstOrNull;
-    if (addedId == null) {
-      throw StateError('provider was not created by the add + save flow');
-    }
-    final added = _provider(addedSnapshot, addedId);
-    final bundledModel = _models(added).firstOrNull;
-    await recorder.capture('provider-created', addedSnapshot);
-    if (bundledModel == null) {
-      throw StateError('created provider exposes no model to configure');
-    }
-    _requireProviderUnchanged(addedSnapshot, reference, baselineIds);
-
-    // 2. Input -> save: exact positive integer override is persisted.
-    await recorder.openProviderEditor(addedId);
-    await recorder.setCompactInput(addedId, bundledModel, '20000');
-    await recorder.capture('input-edited', await recorder.readSnapshot());
-    await recorder.saveExpectEditorClosed();
-    final afterInput = await recorder.readSnapshot();
-    _requireOverride(
-      afterInput,
-      addedId,
-      bundledModel,
-      expected: 20000,
-      what: 'input then save',
+    await recorder.capture(
+      'model-preset-default',
+      await recorder.readSnapshot(),
     );
-    _requireProviderUnchanged(afterInput, reference, baselineIds);
-    await recorder.capture('input-saved', afterInput);
 
-    // 3. Slider -> save: dragging the slider commits a different override.
-    await recorder.openProviderEditor(addedId);
-    await recorder.moveCompactSlider(addedId, bundledModel);
-    await recorder.capture('slider-edited', await recorder.readSnapshot());
-    await recorder.saveExpectEditorClosed();
-    final afterSlider = await recorder.readSnapshot();
-    final sliderOverride = _limit(
-      afterSlider,
-      addedId,
-      bundledModel,
-    )['override'];
-    if (sliderOverride is! int || sliderOverride == 20000) {
+    await recorder.setCompactInput(id, model, '18000');
+    await recorder.capture('input-pending', await recorder.readSnapshot());
+    final afterInput = await recorder.waitOverride(id, model, 18000);
+    await recorder.capture('input-applied-without-save', afterInput);
+    final safe = _limit(afterInput, id, model)['safe'];
+    if (safe is! int || safe <= 0) {
+      throw StateError('fixture capacity is missing');
+    }
+    await recorder.setCompactInput(id, model, '${safe + 10000}');
+    final above = await recorder.waitOverride(id, model, safe + 10000);
+    if (_limit(above, id, model)['effective'] != safe) {
+      throw StateError('above-safe override was not clamped');
+    }
+    await recorder.capture('above-safe-clamped', above);
+
+    await recorder.setCompactInput(id, model, 'not-a-number');
+    // Negative proof: observe past the 650ms debounce, not merely one frame.
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+    final invalid = await recorder.readSnapshot();
+    if (_limit(invalid, id, model)['override'] != safe + 10000 ||
+        invalid['settings']['revision'] != above['settings']['revision']) {
+      throw StateError('invalid input changed canonical settings');
+    }
+    await recorder.capture('invalid-kept-not-persisted', invalid);
+
+    await recorder.moveCompactSlider(id, model);
+    final slider = await recorder.waitLimit(
+      id,
+      model,
+      (limit) => limit['override'] is int && (limit['override'] as int) <= safe,
+    );
+    await recorder.capture('slider-applied', slider);
+    await recorder.tapCompactReset(id, model);
+    await recorder.waitOverride(id, model, null);
+    await recorder.capture('restored-default', await recorder.readSnapshot());
+
+    // Rapid typing must keep the newest raw input and eventually canonicalize
+    // it without a page round trip. Deterministic CAS/old-ACK races live in the
+    // SDK-only Client suite, rather than being faked inside Driver.
+    await recorder.setCompactInput(id, model, '19000');
+    await recorder.setCompactInput(id, model, '21000');
+    await driver.sendTextInputAction(TextInputAction.done);
+    final latest = await recorder.waitOverride(id, model, 21000);
+    await recorder.capture('latest-intent-applied', latest);
+    for (final sibling in siblings.entries) {
+      if (jsonEncode(_limit(latest, id, sibling.key)) !=
+          jsonEncode(sibling.value)) {
+        throw StateError('sibling ${sibling.key} changed');
+      }
+    }
+
+    final unknown = _models(fixture)
+        .where((slug) => _limit(baseline, id, slug)['safe'] == null)
+        .single;
+    if (_limit(baseline, id, unknown)['default'] != null) {
+      throw StateError('unknown-capacity fixture fabricated a default');
+    }
+    await recorder.setCompactInput(id, unknown, '17000');
+    final unknownApplied = await recorder.waitOverride(id, unknown, 17000);
+    if (_limit(unknownApplied, id, unknown)['effective'] != null) {
+      throw StateError('unknown context enabled compaction');
+    }
+    await recorder.capture('unknown-capacity-stays-off', unknownApplied);
+    await recorder.tapCompactReset(id, unknown);
+    await recorder.waitOverride(id, unknown, null);
+
+    // Explicit Save remains only for other provider fields, with no second
+    // threshold entry. Its canonical payload must preserve the thresholds.
+    await driver.scrollBy(find.byValueKey('provider-editor'), 3000);
+    await driver.tap(find.byValueKey('provider-edit'));
+    await driver.waitFor(find.byValueKey('provider-save'));
+    await driver.waitForAbsent(
+      find.byValueKey('provider-$id-model-$model-auto-compact-input'),
+    );
+    await recorder.capture(
+      'editor-without-threshold-entry',
+      await recorder.readSnapshot(),
+    );
+    await driver.tap(find.byValueKey('provider-save'));
+    await driver.waitForAbsent(find.byValueKey('provider-save'));
+    final afterProviderSave = await recorder.waitOverride(id, model, 21000);
+    if (_limit(afterProviderSave, id, unknown)['override'] != null) {
       throw StateError(
-        'slider move did not persist a new override: $sliderOverride',
+        'provider field save restored a cleared sibling override',
       );
     }
-    await recorder.capture('slider-saved', afterSlider);
-
-    // 4. Invalid input must block save and keep the draft open.
-    await recorder.openProviderEditor(addedId);
-    await recorder.setCompactInput(addedId, bundledModel, 'not-a-number');
-    await recorder.capture('invalid-edited', await recorder.readSnapshot());
-    await recorder.saveExpectEditorOpen();
-    final afterInvalid = await recorder.readSnapshot();
-    if (_limit(afterInvalid, addedId, bundledModel)['override'] !=
-        sliderOverride) {
-      throw StateError('invalid input changed the persisted override');
-    }
-    await recorder.capture('invalid-blocked', afterInvalid);
-
-    // 5. Restore default clears the override (and any invalid input).
-    await recorder.tapCompactReset(addedId, bundledModel);
-    await recorder.saveExpectEditorClosed();
-    final afterReset = await recorder.readSnapshot();
-    if (_limit(afterReset, addedId, bundledModel)['override'] != null) {
-      throw StateError('restore default did not clear the override');
-    }
-    _requireProviderUnchanged(afterReset, reference, baselineIds);
-    await recorder.capture('reset-saved', afterReset);
-
-    // 6. Custom model: a field edit must keep that model's override.
-    final existing = _models(_provider(afterReset, addedId));
-    final customSlug = _nextCustomSlug(existing);
-    await recorder.openProviderEditor(addedId);
-    await recorder.tapAddCustomModel();
-    await recorder.expandCustomAdvanced(0);
-    await recorder.setCompactInput(addedId, customSlug, '30000');
-    await recorder.setCustomDisplayName(0, 'Journey Custom');
-    await recorder.capture('custom-edited', await recorder.readSnapshot());
-    await recorder.saveExpectEditorClosed();
-    final afterCustom = await recorder.readSnapshot();
-    _requireOverride(
-      afterCustom,
-      addedId,
-      customSlug,
-      expected: 30000,
-      what: 'custom model field edit preserves override',
+    await recorder.capture(
+      'provider-save-preserved-overrides',
+      afterProviderSave,
     );
-    if (_limit(afterCustom, addedId, bundledModel)['override'] != null) {
-      throw StateError('custom model edit leaked into the bundled model');
-    }
-    _requireProviderUnchanged(afterCustom, reference, baselineIds);
-    await recorder.capture('custom-saved', afterCustom);
-
-    await recorder.writeSummary({
-      'fixtureProviderId': fixtureId,
-      'fixtureModel': fixtureModel,
-      'addedProviderId': addedId,
-      'bundledModel': bundledModel,
-      'customModel': customSlug,
-      'inputOverride': 20000,
-      'sliderOverride': sliderOverride,
-    });
-    await recorder.stage('completed');
-    stdout.writeln(
-      'Provider settings journey completed; human verdict pending.',
+    await recorder.openDetails(id);
+    await recorder.tapCompactReset(id, model);
+    await recorder.waitOverride(id, model, null);
+    await File('${output.path}/provider-journey-summary.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert({'fixtureProviderId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'slider': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'humanVerdict': 'pending'})}\n',
     );
+    stdout.writeln('Provider journey captured; human verdict pending.');
   } finally {
-    try {
-      await driver.close().timeout(const Duration(seconds: 5));
-    } on Object {
-      // Closing the observation connection must not mask a journey failure.
-    }
+    await driver.close().timeout(const Duration(seconds: 5));
   }
 }
 
 class _Recorder {
   _Recorder(this.output, this.driver);
-
   final Directory output;
   final FlutterDriverSession driver;
   int _captureIndex = 0;
-
-  static const _scrollStep = -220.0;
-  static const _scrollTimeout = Duration(seconds: 45);
-
-  Future<void> stage(String name) =>
-      File('${output.path}/provider-journey-stage.txt').writeAsString(name);
 
   Future<Map<String, dynamic>> readSnapshot() => driver.readSnapshot();
 
@@ -211,35 +167,41 @@ class _Recorder {
     );
     await File('${output.path}/screenshot-$ordinal-$name.png')
         .writeAsBytes(await driver.screenshot());
+    await File('${output.path}/tree-$ordinal-$name.txt')
+        .writeAsString(await driver.renderTree());
   }
 
-  Future<void> assertProviderListRedacted(
-    String providerId,
-    String fixtureModel,
+  Future<Map<String, dynamic>> waitOverride(
+    String id,
+    String model,
+    int? value,
+  ) => waitLimit(id, model, (limit) => limit['override'] == value);
+
+  Future<Map<String, dynamic>> waitLimit(
+    String id,
+    String model,
+    bool Function(Map<String, dynamic>) predicate,
   ) async {
-    final snapshot = await readSnapshot();
-    verifyProviderListRedacted(
-      snapshot,
-      fixtureModelSlug: fixtureModel,
-      providerId: providerId,
-    );
-    final renderTree = await driver.renderTree();
-    final treeContainsFixtureSlug = renderTree.contains(fixtureModel);
-    final treeContainsPlusN = RegExp(r'\+\d+').hasMatch(renderTree);
-    if (treeContainsFixtureSlug || treeContainsPlusN) {
-      throw StateError(
-        'provider list rendered a model slug or +N label: '
-        'slug=$treeContainsFixtureSlug plusN=$treeContainsPlusN',
-      );
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      final snapshot = await readSnapshot();
+      if (predicate(_limit(snapshot, id, model))) return snapshot;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await File('${output.path}/provider-list-observation.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'providerId': providerId, 'fixtureModel': fixtureModel, 'snapshotListRedacted': true, 'detailModelObserved': true, 'renderedFixtureSlug': treeContainsFixtureSlug, 'renderedPlusN': treeContainsPlusN})}\n',
-    );
+    throw StateError('canonical threshold did not settle: $id/$model');
   }
 
-  Future<void> writeSummary(Map<String, Object?> summary) => File(
-    '${output.path}/provider-journey-summary.json',
-  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(summary)}\n');
+  Future<void> assertProviderListRedacted(String id, String model) async {
+    verifyProviderListRedacted(
+      await readSnapshot(),
+      fixtureModelSlug: model,
+      providerId: id,
+    );
+    final tree = await driver.renderTree();
+    if (tree.contains(model)) {
+      throw StateError('provider list rendered model slug');
+    }
+  }
 
   Future<void> openProviders() async {
     await driver.waitFor(
@@ -252,190 +214,63 @@ class _Recorder {
     await driver.waitFor(find.byValueKey('provider-add'));
   }
 
-  Future<void> tapAddProvider() async {
-    await driver.tap(find.byValueKey('provider-add'));
-    await driver.waitFor(find.byValueKey('provider-save'));
-  }
-
-  Future<void> openProviderEditor(String providerId) async {
-    await driver.waitFor(find.byValueKey('provider-add'));
-    await driver.tap(find.byValueKey('provider-row-$providerId'));
+  Future<void> openDetails(String id) async {
+    await driver.tap(find.byValueKey('provider-row-$id'));
     await driver.waitFor(find.byValueKey('provider-edit'));
-    await driver.tap(find.byValueKey('provider-edit'));
-    await driver.waitFor(find.byValueKey('provider-save'));
   }
 
-  Future<void> saveExpectEditorClosed() async {
-    await driver.tap(find.byValueKey('provider-save'));
-    final deadline = DateTime.now().add(const Duration(seconds: 40));
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        await driver.waitForAbsent(
-          find.byValueKey('provider-save'),
-          timeout: const Duration(seconds: 2),
-        );
-        return;
-      } on Object {
-        // Still open; a save error keeps the draft for correction.
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-    }
-    throw StateError('provider editor did not close after save');
-  }
-
-  Future<void> saveExpectEditorOpen() async {
-    await driver.tap(find.byValueKey('provider-save'));
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await driver.waitFor(
-      find.byValueKey('provider-save'),
-      timeout: const Duration(seconds: 15),
-    );
-  }
-
-  /// Drags the editor list downward ([_scrollStep] is negative) to reveal later
-  /// content such as the custom-model section at the bottom.
   Future<void> _scrollTo(SerializableFinder finder) async {
+    // The isolated gui fixture has three model cards. Re-anchor at the top so
+    // targets above a lazy ListView's cache are built before scrolling down.
+    await driver.scrollBy(find.byValueKey('provider-editor'), 3000);
     await driver.scrollUntilVisible(
-      find.byValueKey('provider-editor-scroll'),
+      find.byValueKey('provider-editor'),
       finder,
-      dyScroll: _scrollStep,
-      timeout: _scrollTimeout,
+      dyScroll: -220,
+      timeout: const Duration(seconds: 45),
     );
   }
 
-  Future<void> setCompactInput(
-    String providerId,
-    String modelSlug,
-    String value,
-  ) async {
+  Future<void> setCompactInput(String id, String slug, String value) async {
     final finder = find.byValueKey(
-      'provider-$providerId-model-$modelSlug-auto-compact-input',
+      'provider-$id-model-$slug-auto-compact-input',
     );
     await _scrollTo(finder);
     await driver.tap(finder);
     await driver.enterText(value);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
   }
 
-  Future<void> moveCompactSlider(String providerId, String modelSlug) async {
+  Future<void> moveCompactSlider(String id, String slug) async {
     final finder = find.byValueKey(
-      'provider-$providerId-model-$modelSlug-auto-compact-slider',
+      'provider-$id-model-$slug-auto-compact-slider',
     );
     await _scrollTo(finder);
     await driver.rawTap(finder);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
   }
 
-  Future<void> tapCompactReset(String providerId, String modelSlug) async {
+  Future<void> tapCompactReset(String id, String slug) async {
     final finder = find.byValueKey(
-      'provider-$providerId-model-$modelSlug-auto-compact-reset',
+      'provider-$id-model-$slug-auto-compact-reset',
     );
     await _scrollTo(finder);
     await driver.tap(finder);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-  }
-
-  Future<void> tapAddCustomModel() async {
-    final finder = find.byValueKey('provider-model-add');
-    await _scrollTo(finder);
-    await driver.tap(finder);
-    await driver.waitFor(find.byValueKey('provider-model-0-id'));
-  }
-
-  Future<void> expandCustomAdvanced(int index) async {
-    final finder = find.byValueKey('provider-model-$index-advanced');
-    await _scrollTo(finder);
-    await driver.tap(finder);
-    await driver.waitFor(find.byValueKey('provider-model-$index-display-name'));
-  }
-
-  Future<void> setCustomDisplayName(int index, String value) async {
-    final finder = find.byValueKey('provider-model-$index-display-name');
-    await _scrollTo(finder);
-    await driver.tap(finder);
-    await driver.enterText(value);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
   }
 }
 
-List<Map<String, dynamic>> _providers(Map<String, dynamic> snapshot) {
-  final settings = snapshot['settings'];
-  final providers = settings is Map ? settings['providers'] : null;
-  if (providers is! List) return const [];
-  return [
-    for (final provider in providers)
-      if (provider is Map) provider.cast<String, dynamic>(),
-  ];
-}
-
-Set<String> _providerIds(Map<String, dynamic> snapshot) => {
-  for (final provider in _providers(snapshot)) '${provider['id']}',
-};
-
-Map<String, dynamic> _provider(Map<String, dynamic> snapshot, String id) {
-  for (final provider in _providers(snapshot)) {
-    if (provider['id'] == id) return provider;
-  }
-  throw StateError('provider $id missing from snapshot');
-}
-
-List<String> _models(Map<String, dynamic> provider) {
-  final models = provider['models'];
-  if (models is! List) return const [];
-  return [for (final model in models) '$model'];
-}
-
+List<Map<String, dynamic>> _providers(Map<String, dynamic> snapshot) => [
+  for (final provider in snapshot['settings']['providers'] as List)
+    (provider as Map).cast<String, dynamic>(),
+];
+Map<String, dynamic> _provider(Map<String, dynamic> snapshot, String id) =>
+    _providers(snapshot).singleWhere((provider) => provider['id'] == id);
+List<String> _models(Map<String, dynamic> provider) => [
+  for (final model in provider['models'] as List) '$model',
+];
 Map<String, dynamic> _limit(
   Map<String, dynamic> snapshot,
-  String providerId,
-  String modelSlug,
-) {
-  final limits = _provider(snapshot, providerId)['autoCompactLimits'];
-  if (limits is List) {
-    for (final limit in limits) {
-      if (limit is Map && limit['slug'] == modelSlug) {
-        return limit.cast<String, dynamic>();
-      }
-    }
-  }
-  throw StateError('model $modelSlug missing autoCompactLimits in snapshot');
-}
-
-void _requireOverride(
-  Map<String, dynamic> snapshot,
-  String providerId,
-  String modelSlug, {
-  required int expected,
-  required String what,
-}) {
-  final override = _limit(snapshot, providerId, modelSlug)['override'];
-  if (override != expected) {
-    throw StateError('$what: expected override $expected, saw $override');
-  }
-}
-
-/// Fails the journey if any provider present in [reference] changed.
-void _requireProviderUnchanged(
-  Map<String, dynamic> current,
-  Map<String, dynamic> reference,
-  Set<String> referenceIds,
-) {
-  for (final id in referenceIds) {
-    final before = _provider(reference, id);
-    final after = _provider(current, id);
-    if (jsonEncode(before['autoCompactLimits']) !=
-        jsonEncode(after['autoCompactLimits'])) {
-      throw StateError('provider $id thresholds changed unexpectedly');
-    }
-  }
-}
-
-/// Mirrors the editor's `_addCustomModel` slug dedup for the added model.
-String _nextCustomSlug(List<String> existing) {
-  final taken = existing.toSet();
-  var slug = 'custom-model';
-  for (var index = 2; taken.contains(slug); index += 1) {
-    slug = 'custom-model-$index';
-  }
-  return slug;
-}
+  String id,
+  String slug,
+) => (_provider(snapshot, id)['autoCompactLimits'] as List)
+    .cast<Map>()
+    .singleWhere((limit) => limit['slug'] == slug)
+    .cast<String, dynamic>();

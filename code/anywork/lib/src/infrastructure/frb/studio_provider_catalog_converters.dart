@@ -58,6 +58,7 @@ ProviderModelView _providerModelFromCatalog(frb.BridgeModelDescriptor model) {
     description: model.description ?? '',
     contextWindow: model.contextWindow?.toInt(),
     maxContextWindow: model.maxContextWindow?.toInt(),
+    autoCompactTokenLimit: model.autoCompactTokenLimit?.toInt(),
     maxOutputTokens: model.maxOutputTokens?.toInt(),
     inputCapabilities: model.capabilities.input
         .map(_modelInputCapabilityFromFrb)

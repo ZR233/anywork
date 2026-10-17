@@ -89,6 +89,7 @@ abstract final class ProviderCommandBuilder {
   static ProviderCommand buildProvider(
     ProviderSettingsView value, {
     String? originalId,
+    ProviderSecretCommand? secret,
   }) {
     final provider = normalizeProvider(value);
     return ProviderCommand(
@@ -97,11 +98,13 @@ abstract final class ProviderCommandBuilder {
       templateKind: provider.templateKind,
       name: provider.name,
       baseUrl: provider.baseUrl,
-      secret: provider.bearerToken.trim().isNotEmpty
-          ? ProviderSecretCommand.replace(provider.bearerToken.trim())
-          : provider.hasBearerToken
-          ? const ProviderSecretCommand.preserve()
-          : const ProviderSecretCommand.clear(),
+      secret:
+          secret ??
+          (provider.bearerToken.trim().isNotEmpty
+              ? ProviderSecretCommand.replace(provider.bearerToken.trim())
+              : provider.hasBearerToken
+              ? const ProviderSecretCommand.preserve()
+              : const ProviderSecretCommand.clear()),
       pricingEnabled: provider.pricingEnabled,
       defaultModel: provider.defaultModel,
       customModels: [
@@ -132,14 +135,15 @@ abstract final class ProviderCommandBuilder {
     ProviderSettingsView provider,
   ) {
     final commands = <ProviderModelAutoCompactCommand>[];
-    for (final model in provider.allModels) {
-      final limit = provider.autoCompactLimits[model.slug];
-      final override = limit?.overrideLimit;
-      final slug = model.slug.trim();
+    // 完整覆盖集合还包括在线目录暂时撤下的模型，不可只遍历可见模型。
+    for (final entry in provider.autoCompactLimits.entries) {
+      final limit = entry.value;
+      final override = limit.overrideLimit;
+      final slug = entry.key;
       if (override == null || override <= 0 || slug.isEmpty) {
         continue;
       }
-      if (override == limit!.defaultLimit) {
+      if (override == limit.defaultLimit) {
         continue;
       }
       commands.add(

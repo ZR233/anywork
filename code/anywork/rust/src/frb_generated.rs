@@ -6237,7 +6237,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelAutoCompactSe
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_slug = <String>::sse_decode(deserializer);
-        let mut var_defaultLimit = <u64>::sse_decode(deserializer);
+        let mut var_defaultLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_overrideLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_effectiveLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_safeLimit = <Option<u64>>::sse_decode(deserializer);
@@ -6569,6 +6569,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelDescriptor {
         let mut var_description = <Option<String>>::sse_decode(deserializer);
         let mut var_contextWindow = <Option<u64>>::sse_decode(deserializer);
         let mut var_maxContextWindow = <Option<u64>>::sse_decode(deserializer);
+        let mut var_autoCompactTokenLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_maxOutputTokens = <Option<u64>>::sse_decode(deserializer);
         let mut var_transport =
             <crate::api::studio::types::settings::BridgeModelTransportDescriptor>::sse_decode(
@@ -6591,6 +6592,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelDescriptor {
             description: var_description,
             context_window: var_contextWindow,
             max_context_window: var_maxContextWindow,
+            auto_compact_token_limit: var_autoCompactTokenLimit,
             max_output_tokens: var_maxOutputTokens,
             transport: var_transport,
             capabilities: var_capabilities,
@@ -16352,6 +16354,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::settings::Brid
             self.description.into_into_dart().into_dart(),
             self.context_window.into_into_dart().into_dart(),
             self.max_context_window.into_into_dart().into_dart(),
+            self.auto_compact_token_limit.into_into_dart().into_dart(),
             self.max_output_tokens.into_into_dart().into_dart(),
             self.transport.into_into_dart().into_dart(),
             self.capabilities.into_into_dart().into_dart(),
@@ -24206,7 +24209,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelAutoCompactSe
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.slug, serializer);
-        <u64>::sse_encode(self.default_limit, serializer);
+        <Option<u64>>::sse_encode(self.default_limit, serializer);
         <Option<u64>>::sse_encode(self.override_limit, serializer);
         <Option<u64>>::sse_encode(self.effective_limit, serializer);
         <Option<u64>>::sse_encode(self.safe_limit, serializer);
@@ -24491,6 +24494,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelDescriptor {
         <Option<String>>::sse_encode(self.description, serializer);
         <Option<u64>>::sse_encode(self.context_window, serializer);
         <Option<u64>>::sse_encode(self.max_context_window, serializer);
+        <Option<u64>>::sse_encode(self.auto_compact_token_limit, serializer);
         <Option<u64>>::sse_encode(self.max_output_tokens, serializer);
         <crate::api::studio::types::settings::BridgeModelTransportDescriptor>::sse_encode(
             self.transport,

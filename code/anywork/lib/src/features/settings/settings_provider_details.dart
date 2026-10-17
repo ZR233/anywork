@@ -8,6 +8,7 @@ import 'settings_common.dart';
 import 'settings_provider_model_readout.dart';
 import 'settings_provider_usage.dart';
 import 'settings_model_catalog.dart';
+import 'settings_provider_auto_compact.dart';
 
 class ProviderDetails extends StatelessWidget {
   const ProviderDetails({
@@ -21,6 +22,10 @@ class ProviderDetails extends StatelessWidget {
     required this.onRefreshUsage,
     required this.onRefreshCatalog,
     required this.catalogRefreshing,
+    required this.autoCompactEdits,
+    required this.onAutoCompactChanged,
+    required this.onAutoCompactCommit,
+    required this.onAutoCompactInvalid,
   });
 
   final ProviderSettingsView? provider;
@@ -32,6 +37,10 @@ class ProviderDetails extends StatelessWidget {
   final VoidCallback? onRefreshUsage;
   final VoidCallback? onRefreshCatalog;
   final bool catalogRefreshing;
+  final Map<String, ModelAutoCompactEdit> autoCompactEdits;
+  final void Function(String slug, int? value) onAutoCompactChanged;
+  final ValueChanged<String> onAutoCompactCommit;
+  final ValueChanged<String> onAutoCompactInvalid;
 
   @override
   Widget build(BuildContext context) {
@@ -146,10 +155,16 @@ class ProviderDetails extends StatelessWidget {
               Text(context.l10n.settingsModelCatalogEmpty),
             for (final model in provider.allModels)
               ProviderModelReadout(
+                key: ValueKey((provider.id, model.slug)),
                 model: model,
                 providerId: provider.id,
                 framed: true,
                 autoCompact: provider.autoCompactLimitFor(model),
+                autoCompactEdit: autoCompactEdits[model.slug],
+                onAutoCompactChanged: (value) =>
+                    onAutoCompactChanged(model.slug, value),
+                onAutoCompactCommit: () => onAutoCompactCommit(model.slug),
+                onAutoCompactInvalid: () => onAutoCompactInvalid(model.slug),
               ),
           ],
         ),

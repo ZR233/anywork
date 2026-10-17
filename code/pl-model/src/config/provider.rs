@@ -442,7 +442,7 @@ impl ProviderConfig {
                     "model {model} auto compact limit must be a positive integer"
                 )));
             }
-            Some(limit) => limit == selected.default_auto_compact_token_limit(),
+            Some(limit) => Some(limit) == selected.default_auto_compact_token_limit(),
         };
         if restore_default {
             self.auto_compact_overrides_mut().remove(model);

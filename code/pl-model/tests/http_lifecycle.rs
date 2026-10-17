@@ -106,6 +106,49 @@ async fn send(sender: &tokio::sync::mpsc::Sender<Chunk>, bytes: Vec<u8>) {
     }
 }
 
+/// Keeps paused time from auto-advancing to the next timer while real socket
+/// I/O is pending. Tokio 1.53 inhibits auto-advance for the lifetime of a
+/// `spawn_blocking` task on the `current_thread` runtime.
+struct PauseAutoAdvanceInhibit {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    join: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PauseAutoAdvanceInhibit {
+    async fn hold() -> Self {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let join = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = blocked.recv();
+        });
+        ready
+            .await
+            .expect("blocking task that inhibits clock auto-advance must start");
+        Self {
+            release: Some(release),
+            join: Some(join),
+        }
+    }
+
+    async fn release(mut self) {
+        drop(self.release.take());
+        self.join
+            .take()
+            .expect("blocking inhibit task")
+            .await
+            .expect("blocking inhibit task");
+    }
+}
+
+impl Drop for PauseAutoAdvanceInhibit {
+    fn drop(&mut self) {
+        // Unblock `recv` if the test panics before `release()`, so the runtime
+        // is not left waiting on a blocking worker.
+        self.release.take();
+    }
+}
+
 #[tokio::test]
 async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond_300_seconds() {
     for native in [false, true] {
@@ -148,6 +191,7 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
         )
         .await;
         wait_text(&mut received).await;
+        let inhibit = PauseAutoAdvanceInhibit::hold().await;
         tokio::time::pause();
         let data = if native {
             json!({"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"checkpoint"}})
@@ -165,6 +209,7 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
             send(&sender, chunk.to_vec()).await;
         }
         tokio::time::resume();
+        inhibit.release().await;
         let completed = if native {
             json!({"type":"response.completed","response":{"id":"active","usage":{"input_tokens":2,"output_tokens":1}}})
         } else {

@@ -2157,6 +2157,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactRestore => '恢复默认';
 
   @override
+  String get settingsModelAutoCompactSaving => '正在自动应用…';
+
+  @override
+  String get settingsModelAutoCompactSaveFailed => '应用失败，已保留输入。';
+
+  @override
+  String get settingsModelAutoCompactRetry => '重试';
+
+  @override
   String get settingsModelAutoCompactDefaultLabel => '默认';
 
   @override

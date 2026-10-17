@@ -171,7 +171,7 @@ pub struct StudioModelConnectionSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelAutoCompactSettings {
     pub slug: String,
-    pub default_limit: u64,
+    pub default_limit: Option<u64>,
     pub override_limit: Option<u64>,
     pub effective_limit: Option<u64>,
     pub safe_limit: Option<u64>,

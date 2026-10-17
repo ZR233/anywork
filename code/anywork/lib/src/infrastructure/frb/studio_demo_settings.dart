@@ -233,7 +233,7 @@ List<ProviderSettingsView> _providersFromCommands(
   }).toList();
 }
 
-/// 预览态的压缩阈值三层视图：默认 258k，上下文 90% 为安全上限，覆盖等于默认时归一化。
+/// 预览态也消费共享模型规则，不维护独立的默认值算法。
 ProviderModelAutoCompactView _demoAutoCompactLimit(
   ProviderModelView model, {
   int? override,

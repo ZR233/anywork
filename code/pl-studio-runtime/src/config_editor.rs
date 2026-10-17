@@ -186,6 +186,26 @@ impl ProviderEdit {
                 config
             }
         };
+        let previous_limits = config.auto_compact_overrides().clone();
+        let declared = config.declared_models()?;
+        let mut limits = BTreeMap::new();
+        for (slug, limit) in &self.model_auto_compact_limits {
+            if *limit == 0 {
+                return Err(PureError::ConfigError(
+                    "model auto compact limit must be a positive integer".into(),
+                ));
+            }
+            if let Some(model) = declared.iter().find(|model| model.slug == *slug) {
+                if Some(*limit) != model.default_auto_compact_token_limit() {
+                    limits.insert(slug.clone(), *limit);
+                }
+            } else if config.supports_model_discovery() && previous_limits.get(slug) == Some(limit)
+            {
+                limits.insert(slug.clone(), *limit);
+            } else {
+                return Err(PureError::ConfigError(format!("unknown model: {slug}")));
+            }
+        }
         match &mut config.catalog {
             ProviderModelCatalogConfig::Bundled {
                 connection_overrides,
@@ -198,7 +218,7 @@ impl ProviderEdit {
                 ..
             } => {
                 *connection_overrides = self.model_connection_modes.clone();
-                *auto_compact_overrides = self.model_auto_compact_limits.clone();
+                *auto_compact_overrides = limits;
             }
         }
         config.pricing_mode = self.pricing_mode;

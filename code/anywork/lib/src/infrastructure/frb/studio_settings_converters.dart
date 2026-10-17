@@ -165,7 +165,7 @@ ProviderSettingsView _providerSettingsFromFrb(
     for (final limit in value.modelAutoCompactLimits)
       limit.slug: ProviderModelAutoCompactView(
         slug: limit.slug,
-        defaultLimit: limit.defaultLimit.toInt(),
+        defaultLimit: limit.defaultLimit?.toInt(),
         overrideLimit: limit.overrideLimit?.toInt(),
         effectiveLimit: limit.effectiveLimit?.toInt(),
         safeLimit: limit.safeLimit?.toInt(),

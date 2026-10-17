@@ -41,6 +41,9 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   ProviderSubscription<bool>? _visibilitySubscription;
   ProviderSubscription<ProviderUsageQueryIdentitySnapshot>?
   _identitySubscription;
+  late final AnyworkClient _client;
+  final Map<(String, String), _AutoCompactIntent> _compactIntents = {};
+  bool _disposing = false;
 
   SettingsProvidersView get _settings =>
       ref.read(settingsProvidersViewProvider);
@@ -50,9 +53,13 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   @override
   void initState() {
     super.initState();
+    _client = ref.read(anyworkClientProvider);
     _visibilitySubscription = ref.listenManual<bool>(
       settingsVisibleTabProvider.select((index) => index == widget.tabIndex),
-      (previous, next) => _scheduleUsageDemand(),
+      (previous, next) {
+        if (!next) _flushCompactIntents();
+        _scheduleUsageDemand();
+      },
       fireImmediately: true,
     );
     _identitySubscription = ref
@@ -65,9 +72,82 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   @override
   void dispose() {
+    _disposing = true;
+    _flushCompactIntents();
     _visibilitySubscription?.close();
     _identitySubscription?.close();
     super.dispose();
+  }
+
+  void _changeCompact(String providerId, String slug, int? value) {
+    final key = (providerId, slug);
+    final current = _compactIntents[key];
+    if (current != null && current.value == value && !current.failed) return;
+    _compactIntents[key]?.timer?.cancel();
+    final intent = _AutoCompactIntent(value);
+    setState(() => _compactIntents[key] = intent);
+    intent.timer = Timer(
+      const Duration(milliseconds: 650),
+      () => _submitCompact(key, intent),
+    );
+  }
+
+  void _invalidateCompact(String providerId, String slug) {
+    final key = (providerId, slug);
+    final intent = _compactIntents.remove(key);
+    intent?.timer?.cancel();
+    if (intent != null) setState(() {});
+  }
+
+  void _commitCompact(String providerId, String slug) {
+    final key = (providerId, slug);
+    final intent = _compactIntents[key];
+    if (intent == null) return;
+    if (intent.failed) {
+      final retry = _AutoCompactIntent(intent.value);
+      setState(() => _compactIntents[key] = retry);
+      _submitCompact(key, retry);
+    } else if (!intent.submitted) {
+      _submitCompact(key, intent);
+    }
+  }
+
+  void _flushCompactIntents() {
+    for (final entry in _compactIntents.entries.toList()) {
+      if (!entry.value.submitted && !entry.value.failed) {
+        _submitCompact(entry.key, entry.value);
+      }
+    }
+  }
+
+  void _submitCompact((String, String) key, _AutoCompactIntent intent) {
+    if (intent.submitted) return;
+    intent.timer?.cancel();
+    intent.timer = null;
+    intent.submitted = true;
+    // Client owns the queued command and joins it even after this page leaves.
+    unawaited(
+      _client.settingsCommands
+          .setModelAutoCompactLimit(key.$1, key.$2, intent.value)
+          .then<void>(
+            (_) {
+              if (_disposing ||
+                  !mounted ||
+                  !identical(_compactIntents[key], intent)) {
+                return;
+              }
+              setState(() => _compactIntents.remove(key));
+            },
+            onError: (Object error, StackTrace stack) {
+              if (_disposing ||
+                  !mounted ||
+                  !identical(_compactIntents[key], intent)) {
+                return;
+              }
+              setState(() => intent.failed = true);
+            },
+          ),
+    );
   }
 
   void _scheduleUsageDemand() {
@@ -185,8 +265,24 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       usageError: selected == null
           ? null
           : usageErrorsByProviderId[selected.id],
-      onBack: () => setState(() => _showDetails = false),
+      onBack: () {
+        _flushCompactIntents();
+        setState(() => _showDetails = false);
+      },
       onEdit: _startEdit,
+      autoCompactEdits: {
+        for (final entry in _compactIntents.entries)
+          if (entry.key.$1 == selectedId)
+            entry.key.$2: (
+              overrideLimit: entry.value.value,
+              pending: !entry.value.failed,
+              failed: entry.value.failed,
+            ),
+      },
+      onAutoCompactChanged: (slug, value) =>
+          _changeCompact(selectedId!, slug, value),
+      onAutoCompactCommit: (slug) => _commitCompact(selectedId!, slug),
+      onAutoCompactInvalid: (slug) => _invalidateCompact(selectedId!, slug),
       catalogRefreshing: selected != null && _refreshingCatalog == selected.id,
       onRefreshCatalog: selected == null
           ? null
@@ -205,10 +301,13 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       usageErrorsByProviderId: usageErrorsByProviderId,
       onQueryChanged: (value) => setState(() => _query = value),
       onAdd: _startAdd,
-      onSelect: (provider) => setState(() {
-        _selectedProviderId = provider.id;
-        _showDetails = true;
-      }),
+      onSelect: (provider) {
+        _flushCompactIntents();
+        setState(() {
+          _selectedProviderId = provider.id;
+          _showDetails = true;
+        });
+      },
       onSetDefault: _setDefaultProvider,
       onRefreshAll: _refreshUsages,
       onRefreshProvider: (provider) =>
@@ -269,6 +368,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   }
 
   void _startAdd() {
+    _flushCompactIntents();
     final catalog = ref.read(settingsProvidersViewProvider).providerCatalog;
     final template = catalog.presets.firstOrNull;
     if (template == null) {
@@ -299,12 +399,19 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     });
   }
 
-  void _startEdit(ProviderSettingsView provider) {
+  Future<void> _startEdit(ProviderSettingsView provider) async {
+    _flushCompactIntents();
+    await _client.settingsCommands.enqueueSettingsWrite(() async {});
+    if (!mounted) return;
+    final latest = _settings.providers
+        .where((item) => item.id == provider.id)
+        .firstOrNull;
+    if (latest == null) return;
     setState(() {
       _saveSession.abandon();
       _selectedProviderId = provider.id;
       _showDetails = false;
-      _draft = ProviderDraft.edit(provider);
+      _draft = ProviderDraft.edit(latest);
       _draftFormKey = GlobalKey<FormState>();
       _draftError = null;
     });
@@ -389,25 +496,14 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         connections.remove(previousSlug);
       }
       // 保留既有用户覆盖：同名编辑不得丢覆盖，仅更名时迁移；上下文窗口变化时按新容量
-      // 重算安全上限与生效值，模型默认与用户覆盖保持不变。
+      // 重算派生默认、安全上限与生效值，保留用户覆盖。
       final limits = {...provider.autoCompactLimits};
-      final previousLimit =
-          limits[previousSlug] ?? ProviderModelAutoCompactView.forModel(model);
-      final recalculated = previousLimit.withSafeLimit(
-        ProviderModelAutoCompactView.safeLimitForContext(model.contextWindow),
-      );
+      final recalculated = ProviderModelAutoCompactView.forModel(model)
+          .withOverride(limits[previousSlug]?.overrideLimit);
       if (previousSlug != model.slug) {
         limits.remove(previousSlug);
       }
-      limits[model.slug] = previousSlug == model.slug
-          ? recalculated
-          : ProviderModelAutoCompactView(
-              slug: model.slug,
-              defaultLimit: recalculated.defaultLimit,
-              overrideLimit: recalculated.overrideLimit,
-              effectiveLimit: recalculated.effectiveLimit,
-              safeLimit: recalculated.safeLimit,
-            );
+      limits[model.slug] = recalculated;
       return provider.copyWith(
         customModels: custom,
         modelConnectionModes: connections,
@@ -451,7 +547,6 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     if (current == null || _saveSession.isSaving) {
       return;
     }
-    // 无效阈值输入必须阻止保存并保留草稿，不得静默用旧值保存成功。
     if (_draftFormKey.currentState?.validate() == false) {
       return;
     }
@@ -583,4 +678,14 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       }
     }
   }
+}
+
+/// 对象身份隔离旧完成通知；不把原始文本、焦点或 canonical 数据放进提交状态。
+class _AutoCompactIntent {
+  _AutoCompactIntent(this.value);
+
+  final int? value;
+  Timer? timer;
+  bool submitted = false;
+  bool failed = false;
 }

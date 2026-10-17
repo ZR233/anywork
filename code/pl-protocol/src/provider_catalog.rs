@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Provider/模型目录跨产品传输协议版本。
-pub const PROVIDER_CATALOG_SCHEMA_VERSION: u32 = 10;
+pub const PROVIDER_CATALOG_SCHEMA_VERSION: u32 = 11;
 
 /// 无敏感信息、可供 Web 与桌面端直接渲染的 Provider 目录快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -87,6 +87,8 @@ pub struct ModelDescriptor {
     pub description: Option<String>,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
+    /// Explicit model preset only; missing values derive from the context capacity.
+    pub auto_compact_token_limit: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub transport: ModelTransportDescriptor,
     pub capabilities: ModelCapabilitiesDto,

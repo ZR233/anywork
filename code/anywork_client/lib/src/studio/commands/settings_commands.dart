@@ -38,6 +38,49 @@ class SettingsCommands {
     );
   }
 
+  /// 只持有目标模型意图；在串行 lane 内、每次 CAS 重试时都基于最新 canonical 重建。
+  /// 其它模型覆盖、目录、endpoint 和凭据不会被发起输入时的旧快照覆盖。
+  Future<SettingsStateSnapshot> setModelAutoCompactLimit(
+    String providerId,
+    String slug,
+    int? limit,
+  ) {
+    if (limit != null && limit <= 0) {
+      return Future.error(
+        ArgumentError.value(limit, 'limit', 'Must be positive'),
+      );
+    }
+    return _run(
+      'model-auto-compact:${providerId.length}:$providerId:$slug',
+      target: CommandTarget(providerId: providerId, model: slug),
+      (revision, operationId) {
+        final provider = _client.settings.state.canonical?.providers
+            .where((provider) => provider.id == providerId)
+            .firstOrNull;
+        final model = provider?.allModels
+            .where((model) => model.slug == slug)
+            .firstOrNull;
+        if (provider == null || model == null) {
+          throw StudioFailure(
+            code: StudioFailureCode.notFound,
+            message: 'Provider model is unavailable: $providerId/$slug',
+            retryable: false,
+            correlationId: 'client-model-auto-compact',
+          );
+        }
+        final updated = provider.withAutoCompactLimit(
+          provider.autoCompactLimitFor(model).withOverride(limit),
+        );
+        final command = ProviderCommandBuilder.buildProvider(
+          updated,
+          originalId: provider.id,
+          secret: const ProviderSecretCommand.preserve(),
+        );
+        return _api.saveProvider(revision, command, operationId: operationId);
+      },
+    );
+  }
+
   Future<SettingsStateSnapshot> removeProvider(
     String providerId, {
     String? replacementProviderId,

@@ -657,6 +657,7 @@ bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
     left.description == right.description &&
     left.contextWindow == right.contextWindow &&
     left.maxContextWindow == right.maxContextWindow &&
+    left.autoCompactTokenLimit == right.autoCompactTokenLimit &&
     left.maxOutputTokens == right.maxOutputTokens &&
     _listEqualsBy(
       left.inputCapabilities,
@@ -682,6 +683,7 @@ int _providerModelHash(ProviderModelView model) => Object.hash(
   model.description,
   model.contextWindow,
   model.maxContextWindow,
+  model.autoCompactTokenLimit,
   model.maxOutputTokens,
   Object.hashAll(model.inputCapabilities.map(_inputCapabilityHash)),
   Object.hashAll(model.outputModalities),
