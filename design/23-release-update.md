@@ -67,6 +67,10 @@ commit SHA，并使用最小 token 权限、单实例 concurrency 与 build prov
 
 固定 channel 声明的工具链组件同时包含 `rustfmt`、`clippy` 与 `rust-analyzer`：编辑器语言服务
 与命令行构建共享同一工具链，不把 LSP 交给另一套 toolchain，也不要求开发者额外安装服务器。
+同一文件声明的目标列表包含 remote helper 交叉构建所需的 `aarch64-unknown-linux-musl` 与
+`x86_64-unknown-linux-musl` 标准库，rustup 在同步固定工具链时一并安装，本地构建、RC 与发布
+都不执行单独的 `rustup target add`，也不为目标架构引入第二套工具链；目标链接器或 Zig 仍由
+构建环境提供。
 xtask 在触发 Rust 工作的命令前先以仓库根为目录执行 `rustc --version`，由 rustup 完成固定
 工具链的同步与安装；该步骤失败时 xtask 保留 rustc/rustup 的原始输出并立即终止。版本与组件
 以 `rust-toolchain.toml` 为唯一事实源，xtask 不解析版本号、不比较 channel、不自行安装组件，

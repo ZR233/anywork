@@ -2,3 +2,4 @@
 channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy", "rust-analyzer"]
+targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
