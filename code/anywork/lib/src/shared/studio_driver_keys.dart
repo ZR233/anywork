@@ -271,8 +271,14 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> copyThreadWorkspace(String id) =>
       ValueKey<String>('thread-menu-copy-workspace-$id');
 
+  static ValueKey<String> openThreadWorkspace(String id) =>
+      ValueKey<String>('thread-menu-open-workspace-$id');
+
   static ValueKey<String> openThreadVsCode(String id) =>
       ValueKey<String>('thread-menu-open-vscode-$id');
+
+  static ValueKey<String> openThreadZed(String id) =>
+      ValueKey<String>('thread-menu-open-zed-$id');
 
   static ValueKey<String> openThreadTerminal(String id) =>
       ValueKey<String>('thread-menu-open-terminal-$id');

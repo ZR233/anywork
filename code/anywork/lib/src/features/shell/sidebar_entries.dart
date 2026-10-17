@@ -547,9 +547,10 @@ class _ProjectMenuButtonState extends State<_ProjectMenuButton> {
 }
 
 /// 侧栏会话行的更多菜单：置顶、重命名、归档、复制会话工作区路径，以及
-/// 会话级打开入口（VS Code、Zed、终端；不可用时禁用并说明原因），并保留
-/// recovery issue 的重试入口。Material [MenuAnchor] 承载锚定与键盘交互，
-/// 与页眉菜单共用同一套打开实现，不新增后端能力。
+/// 通过 Material [SubmenuButton] 承载的会话级打开方式入口（VS Code、Zed、
+/// 终端；不可用时禁用并说明原因），并保留 recovery issue 的重试入口。
+/// Material [MenuAnchor] 和 [SubmenuButton] 负责锚定、二级菜单、键盘导航
+/// 与焦点恢复，与页眉菜单共用同一套打开实现，不新增后端能力。
 /// 触发按钮与 [MenuAnchor.childFocusNode] 共用同一 [FocusNode]。
 class _ThreadMenuButton extends StatefulWidget {
   const _ThreadMenuButton({
@@ -657,35 +658,52 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
             child: Text(context.l10n.sidebarCopyPath),
           ),
           const Divider(key: ValueKey('thread-menu-workspace'), height: 1),
-          _workspaceMenuEntry(
-            context,
-            key: StudioDriverKeys.openThreadVsCode(thread.id),
-            icon: Icons.code,
-            label: context.l10n.sessionOpenInVsCode,
-            targetDescription: widget.targetDescription,
-            available: widget.vsCodeAvailable,
-            unavailableReason: context.l10n.sessionVsCodeUnavailable,
-            onActivated: () => _select('open-vscode'),
-          ),
-          _workspaceMenuEntry(
-            context,
-            key: ValueKey('thread-menu-open-zed-${thread.id}'),
-            icon: Icons.code,
-            label: context.l10n.sessionOpenInZed,
-            targetDescription: widget.targetDescription,
-            available: widget.zedAvailable,
-            unavailableReason: context.l10n.sessionZedUnavailable,
-            onActivated: () => _select('open-zed'),
-          ),
-          _workspaceMenuEntry(
-            context,
-            key: StudioDriverKeys.openThreadTerminal(thread.id),
-            icon: Icons.terminal,
-            label: context.l10n.sessionOpenInTerminal,
-            targetDescription: widget.targetDescription,
-            available: widget.terminalAvailable,
-            unavailableReason: _terminalUnavailableReason(context),
-            onActivated: () => _select('open-terminal'),
+          SubmenuButton(
+            key: StudioDriverKeys.openThreadWorkspace(thread.id),
+            leadingIcon: const Icon(Icons.open_in_new, size: 18),
+            menuChildren: [
+              _workspaceMenuEntry(
+                key: StudioDriverKeys.openThreadVsCode(thread.id),
+                icon: const HostAppLogo(
+                  app: HostAppIcon.vsCode,
+                  fallback: Icons.code,
+                ),
+                label: context.l10n.sessionOpenInVsCode,
+                targetDescription: widget.targetDescription,
+                available: widget.vsCodeAvailable,
+                unavailableReason: context.l10n.sessionVsCodeUnavailable,
+                onActivated: () => _select('open-vscode'),
+              ),
+              _workspaceMenuEntry(
+                key: StudioDriverKeys.openThreadZed(thread.id),
+                icon: const HostAppLogo(
+                  app: HostAppIcon.zed,
+                  fallback: Icons.code,
+                ),
+                label: context.l10n.sessionOpenInZed,
+                targetDescription: widget.targetDescription,
+                available: widget.zedAvailable,
+                unavailableReason: context.l10n.sessionZedUnavailable,
+                onActivated: () => _select('open-zed'),
+              ),
+              _workspaceMenuEntry(
+                key: StudioDriverKeys.openThreadTerminal(thread.id),
+                icon: const HostAppLogo(
+                  app: HostAppIcon.terminal,
+                  fallback: Icons.terminal,
+                ),
+                label: context.l10n.sessionOpenInTerminal,
+                targetDescription: widget.targetDescription,
+                available: widget.terminalAvailable,
+                unavailableReason: _terminalUnavailableReason(context),
+                onActivated: () => _select('open-terminal'),
+              ),
+            ],
+            child: Tooltip(
+              message:
+                  '${context.l10n.sessionOpenWith}\n${widget.targetDescription}',
+              child: Text(context.l10n.sessionOpenWith),
+            ),
           ),
         ],
         child: IconButton(
@@ -703,12 +721,12 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
   }
 }
 
-/// 侧栏会话菜单中的会话级打开条目；不可用时禁用并说明原因，
-/// 悬停与读屏可获取完整打开目标。
-MenuItemButton _workspaceMenuEntry(
-  BuildContext context, {
+/// 侧栏会话菜单二级入口中的应用条目；不可用时禁用并说明原因，
+/// 悬停与读屏可获取完整打开目标。布局完全交给 Material
+/// [MenuItemButton]，菜单行只显示应用图标与操作名称。
+Widget _workspaceMenuEntry({
   required Key key,
-  required IconData icon,
+  required Widget icon,
   required String label,
   required String targetDescription,
   required bool available,
@@ -720,36 +738,12 @@ MenuItemButton _workspaceMenuEntry(
       : '$label\n$targetDescription\n$unavailableReason';
   return MenuItemButton(
     key: key,
-    overflowAxis: Axis.vertical,
+    semanticsLabel: message,
+    leadingIcon: icon,
     onPressed: available ? onActivated : null,
     child: Tooltip(
       message: message,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18),
-          const SizedBox(width: 10),
-          Flexible(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-                Text(
-                  available ? targetDescription : unavailableReason,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.text.labelSmall?.copyWith(
-                    color: available
-                        ? context.colors.onSurfaceVariant
-                        : context.colors.error,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     ),
   );
 }

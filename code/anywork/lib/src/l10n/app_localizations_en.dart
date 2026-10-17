@@ -670,6 +670,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sessionOpenWorkspace => 'Open workspace';
 
   @override
+  String get sessionOpenWith => 'Open with';
+
+  @override
   String get sessionOpenInVsCode => 'Open in VS Code';
 
   @override

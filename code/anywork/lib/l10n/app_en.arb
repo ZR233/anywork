@@ -327,6 +327,7 @@
   "sessionAllAgentsCostTooltip": "Cost for all agents in this session",
   "sessionMoreActionsTooltip": "More actions",
   "sessionOpenWorkspace": "Open workspace",
+  "sessionOpenWith": "Open with",
   "sessionOpenInVsCode": "Open in VS Code",
   "sessionOpenInZed": "Open in Zed",
   "sessionOpenInTerminal": "Open in terminal",

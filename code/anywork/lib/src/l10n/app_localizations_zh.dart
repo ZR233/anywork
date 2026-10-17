@@ -639,6 +639,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sessionOpenWorkspace => '打开工作区';
 
   @override
+  String get sessionOpenWith => '打开方式';
+
+  @override
   String get sessionOpenInVsCode => '在 VS Code 中打开';
 
   @override

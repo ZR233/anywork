@@ -160,7 +160,10 @@ class _SessionOpenWorkspaceMenuState
       menuChildren: [
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceVsCode,
-          icon: _appIcon(HostAppIcon.vsCode, Icons.code),
+          icon: const HostAppLogo(
+            app: HostAppIcon.vsCode,
+            fallback: Icons.code,
+          ),
           label: context.l10n.sessionOpenInVsCode,
           targetDescription: targetDescription,
           available: vsCodeAvailable,
@@ -170,7 +173,7 @@ class _SessionOpenWorkspaceMenuState
         ),
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceZed,
-          icon: _appIcon(HostAppIcon.zed, Icons.code),
+          icon: const HostAppLogo(app: HostAppIcon.zed, fallback: Icons.code),
           label: context.l10n.sessionOpenInZed,
           targetDescription: targetDescription,
           available: zedAvailable,
@@ -180,7 +183,10 @@ class _SessionOpenWorkspaceMenuState
         ),
         _menuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceTerminal,
-          icon: _appIcon(HostAppIcon.terminal, Icons.terminal),
+          icon: const HostAppLogo(
+            app: HostAppIcon.terminal,
+            fallback: Icons.terminal,
+          ),
           label: context.l10n.sessionOpenInTerminal,
           targetDescription: targetDescription,
           available: terminalAvailable,
@@ -233,39 +239,20 @@ class _SessionOpenWorkspaceMenuState
     required String unavailableReason,
     required VoidCallback onActivated,
   }) {
-    // 覆盖整个按钮（包括禁用项），并保留 Tooltip 默认的读屏说明。
+    // 菜单项保持 Material 原生布局；完整目标与不可用原因由 Tooltip 和
+    // semanticsLabel 承载，不把路径挤进菜单行。
     final tooltipMessage = available
         ? '$label\n$targetDescription'
         : '$label\n$targetDescription\n$unavailableReason';
     return MenuItemButton(
       key: key,
-      overflowAxis: Axis.vertical,
+      semanticsLabel: tooltipMessage,
+      leadingIcon: icon,
       onPressed: available ? onActivated : null,
       child: Tooltip(
         message: tooltipMessage,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            icon,
-            const SizedBox(width: 12),
-            Flexible(
-              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-            ),
-          ],
-        ),
+        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
       ),
-    );
-  }
-
-  Widget _appIcon(HostAppIcon app, IconData fallback) {
-    final bytes = ref.watch(hostAppIconProvider(app)).value;
-    if (bytes == null) return Icon(fallback, size: 20);
-    return Image.memory(
-      bytes,
-      width: 20,
-      height: 20,
-      filterQuality: FilterQuality.medium,
-      errorBuilder: (_, error, stackTrace) => Icon(fallback, size: 20),
     );
   }
 }

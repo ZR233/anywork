@@ -1262,6 +1262,12 @@ abstract class AppLocalizations {
   /// **'Open workspace'**
   String get sessionOpenWorkspace;
 
+  /// No description provided for @sessionOpenWith.
+  ///
+  /// In en, this message translates to:
+  /// **'Open with'**
+  String get sessionOpenWith;
+
   /// No description provided for @sessionOpenInVsCode.
   ///
   /// In en, this message translates to:

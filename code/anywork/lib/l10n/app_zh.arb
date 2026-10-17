@@ -251,6 +251,7 @@
   "sessionAllAgentsCostTooltip": "会话全部智能体费用",
   "sessionMoreActionsTooltip": "更多操作",
   "sessionOpenWorkspace": "打开工作区",
+  "sessionOpenWith": "打开方式",
   "sessionOpenInVsCode": "在 VS Code 中打开",
   "sessionOpenInZed": "在 Zed 中打开",
   "sessionOpenInTerminal": "在终端中打开",
