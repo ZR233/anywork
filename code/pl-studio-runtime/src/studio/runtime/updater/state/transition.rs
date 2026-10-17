@@ -1,13 +1,11 @@
 //! 更新状态机的唯一迁移入口 decide：校验命令 revision 与状态合法性，产出决策或迁移错误。
 
-use semver::Version;
 use thiserror::Error;
 
 use super::{
     AvailableUpdateState, CheckFailedUpdateState, CheckingUpdateState, DownloadingUpdateState,
-    IdleUpdateState, InstallFailedUpdateState, InstallerLaunchedUpdateState, ReadyUpdateState,
-    StudioUpdateCommand, StudioUpdateStateKind, StudioUpdateStateSnapshot, UpToDateUpdateState,
-    VerifyingUpdateState,
+    InstallFailedUpdateState, InstallerLaunchedUpdateState, ReadyUpdateState, StudioUpdateCommand,
+    StudioUpdateStateKind, StudioUpdateStateSnapshot, UpToDateUpdateState, VerifyingUpdateState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -56,46 +54,6 @@ impl StudioUpdateStateSnapshot {
         }
         let revision = self.revision().saturating_add(1);
         let next = match (self, &command) {
-            (_, StudioUpdateCommand::RecoverAfterRestart { updated_at, .. }) => {
-                if let Some(update) = self.update() {
-                    let current = Version::parse(crate::updater::STUDIO_VERSION.trim());
-                    let target = Version::parse(&update.version);
-                    let (Ok(current), Ok(target)) = (current, target) else {
-                        return Err(StudioUpdateTransitionError::InvalidPayload {
-                            current: self.kind(),
-                            command: Box::new(command),
-                            detail: "cached update or product version is not SemVer".to_string(),
-                        });
-                    };
-                    if target <= current {
-                        return Ok(StudioUpdateTransitionDecision {
-                            changed: true,
-                            next_state: Self::UpToDate(UpToDateUpdateState {
-                                revision,
-                                checked_at: *updated_at,
-                            }),
-                        });
-                    }
-                }
-                match self {
-                    Self::Checking(_) => Self::Idle(IdleUpdateState {
-                        revision,
-                        updated_at: *updated_at,
-                    }),
-                    Self::Downloading(_)
-                    | Self::Verifying(_)
-                    | Self::Ready(_)
-                    | Self::InstallerLaunched(_) => Self::Available(AvailableUpdateState {
-                        revision,
-                        checked_at: *updated_at,
-                        update: self
-                            .update()
-                            .expect("install states have an update")
-                            .clone(),
-                    }),
-                    _ => self.clone(),
-                }
-            }
             (
                 Self::Idle(_)
                 | Self::UpToDate(_)

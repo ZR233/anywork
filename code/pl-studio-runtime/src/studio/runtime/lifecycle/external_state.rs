@@ -124,7 +124,7 @@ impl StudioRuntime {
             .updater
             .updater()
             .install_after(update, event_tx, cancellation, || async {
-                // All preceding download events and Verifying must be durable
+                // All preceding download events and Verifying must be projected
                 // before the host is allowed to stop services or launch a binary.
                 ready_rx.await.map_err(|error| {
                     crate::StudioUpdateError::new(

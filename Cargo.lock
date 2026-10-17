@@ -1061,6 +1061,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
+name = "downlowd"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2252fcae3960ecd2fa935221c64d8fe7d67a4e01956f954648e93ad3860a8484"
+dependencies = [
+ "bytes",
+ "http",
+ "reqwest",
+ "sync_executor",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2880,6 +2896,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "downlowd",
  "dunce",
  "fs4",
  "futures",
@@ -4251,6 +4268,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync_executor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbc5de46b8712584480bc82e70aa9bd1457861f027c695eb73981c5927be4771"
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4777,6 +4800,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf8_iter"

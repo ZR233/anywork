@@ -4,6 +4,7 @@ mod client;
 mod error;
 mod install;
 mod manifest;
+mod transfer;
 mod types;
 
 pub use client::StudioUpdater;

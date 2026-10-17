@@ -54,7 +54,7 @@ impl StudioRuntime {
             config_runtime.clone(),
             product_events.clone(),
         );
-        let updater = StudioUpdateRuntime::new(store.clone(), product_events.clone())?;
+        let updater = StudioUpdateRuntime::new(product_events.clone())?;
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;

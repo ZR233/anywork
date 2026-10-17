@@ -1,5 +1,13 @@
 # 真实任务人工观察
 
+更新器可通过 `updater_observe` 显式观察，不启动安装器：`state ARTIFACT_DIR` 在隔离 home
+将设置文件设为只读并取消一次更新检查，保存 canonical 状态和文件未改写证据；
+`download ARTIFACT_DIR [CANCEL_AFTER_BYTES]` 下载真实稳定 Release，可在指定进度取消。
+下载前由父进程将 `LOCALAPPDATA` 设为证据目录旁的独立缓存目录；再次启动进程并使用同一
+缓存，可观察恢复起点与完成校验。各次运行使用独立证据目录，取消保留非零退出状态和错误报告。
+入口为 `cargo run -p pl-studio-runtime --features live-tests --example updater_observe -- ...`。
+`report.json` 的 review 默认为 pending，运行完成不替代人工核对进度、文件和结果。
+
 从仓库根目录运行，artifact 目录必须尚不存在：
 
 ```bash

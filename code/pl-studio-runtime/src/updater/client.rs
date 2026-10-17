@@ -21,6 +21,7 @@ pub(crate) const STUDIO_VERSION: &str = include_str!("../../../../studio-version
 #[derive(Clone)]
 pub struct StudioUpdater {
     pub(super) client: Client,
+    pub(super) downloader: downlowd::Client,
     pub(super) cache_dir: PathBuf,
     pub(super) public_key: &'static str,
     pub(super) install_active: Arc<std::sync::atomic::AtomicBool>,
@@ -29,14 +30,23 @@ pub struct StudioUpdater {
 impl StudioUpdater {
     /// 创建使用生产清单、公钥和应用缓存目录的更新客户端。
     pub fn new_default() -> Result<Self, StudioUpdateError> {
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(format!("anywork/{}", STUDIO_VERSION.trim()))
+        let client = http_client()
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(15 * 60))
             .build()
             .map_err(network_error)?;
+        let download_client = http_client()
+            .connect_timeout(Duration::from_secs(5))
+            .read_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15 * 60))
+            .build()
+            .map_err(network_error)?;
+        let downloader = downlowd::Client::builder()
+            .reqwest_client(download_client)
+            .max_retries(Some(3))
+            .build()
+            .map_err(super::transfer::download_error)?;
         let cache_root = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(env::temp_dir)
@@ -44,6 +54,7 @@ impl StudioUpdater {
             .join("updates");
         Ok(Self {
             client,
+            downloader,
             cache_dir: cache_root,
             public_key: include_str!("anywork.pub"),
             install_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -115,58 +126,16 @@ impl StudioUpdater {
         .await
     }
 
-    pub(super) async fn request(&self, mut url: Url) -> Result<Response, StudioUpdateError> {
-        for redirect_count in 0..=MAX_REDIRECTS {
-            validate_redirect_url(&url)?;
-            let response = self
-                .client
-                .get(url.clone())
-                .send()
-                .await
-                .map_err(network_error)?;
-            if response.status().is_redirection() {
-                if redirect_count == MAX_REDIRECTS {
-                    return Err(StudioUpdateError::new(
-                        StudioUpdateErrorCode::Network,
-                        "update download exceeded five redirects",
-                    ));
-                }
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .ok_or_else(|| {
-                        StudioUpdateError::new(
-                            StudioUpdateErrorCode::Network,
-                            "update redirect is missing Location",
-                        )
-                    })?
-                    .to_str()
-                    .map_err(|_| {
-                        StudioUpdateError::new(
-                            StudioUpdateErrorCode::Network,
-                            "update redirect Location is not UTF-8",
-                        )
-                    })?;
-                url = url.join(location).map_err(|error| {
-                    StudioUpdateError::new(
-                        StudioUpdateErrorCode::Network,
-                        format!("invalid update redirect: {error}"),
-                    )
-                })?;
-                continue;
-            }
-            if response.status() != StatusCode::OK {
-                return Err(StudioUpdateError::new(
-                    StudioUpdateErrorCode::Network,
-                    format!("update request failed with HTTP {}", response.status()),
-                ));
-            }
-            return Ok(response);
+    async fn request(&self, url: Url) -> Result<Response, StudioUpdateError> {
+        validate_redirect_url(&url)?;
+        let response = self.client.get(url).send().await.map_err(network_error)?;
+        if response.status() != StatusCode::OK {
+            return Err(StudioUpdateError::new(
+                StudioUpdateErrorCode::Network,
+                format!("update request failed with HTTP {}", response.status()),
+            ));
         }
-        Err(StudioUpdateError::new(
-            StudioUpdateErrorCode::Network,
-            "update redirect loop did not terminate",
-        ))
+        Ok(response)
     }
 
     pub(super) async fn request_bytes(
@@ -204,6 +173,20 @@ impl StudioUpdater {
         }
         Ok(bytes)
     }
+}
+
+fn http_client() -> reqwest::ClientBuilder {
+    Client::builder()
+        .user_agent(format!("anywork/{}", STUDIO_VERSION.trim()))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > MAX_REDIRECTS {
+                return attempt.error("update download exceeded five redirects");
+            }
+            match validate_redirect_url(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(error) => attempt.error(error),
+            }
+        }))
 }
 
 pub(super) fn network_error(error: reqwest::Error) -> StudioUpdateError {

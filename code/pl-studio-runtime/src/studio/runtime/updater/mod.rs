@@ -1,4 +1,4 @@
-//! Canonical Studio updater lifecycle and its durable runtime owner.
+//! Canonical, process-owned Studio updater lifecycle. Download files own resume progress.
 
 mod state;
 
@@ -13,11 +13,8 @@ use tokio::sync::{Mutex, MutexGuard, RwLock};
 use crate::studio::ids::unix_seconds;
 use crate::updater::STUDIO_VERSION;
 use crate::{
-    StudioStore, StudioUpdate, StudioUpdateCheck, StudioUpdateErrorCode, StudioUpdateEvent,
-    StudioUpdater,
+    StudioUpdate, StudioUpdateCheck, StudioUpdateErrorCode, StudioUpdateEvent, StudioUpdater,
 };
-
-const CACHE_KEY: &str = "studioUpdateState:v2";
 
 enum PreparedUpdate {
     None,
@@ -27,7 +24,6 @@ enum PreparedUpdate {
 
 #[derive(Clone)]
 pub(crate) struct StudioUpdateRuntime {
-    store: StudioStore,
     updater: StudioUpdater,
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<StudioUpdateStateSnapshot>>,
@@ -36,28 +32,14 @@ pub(crate) struct StudioUpdateRuntime {
 }
 
 impl StudioUpdateRuntime {
-    pub(crate) fn new(store: StudioStore, events: crate::ProductEventBus) -> Result<Self> {
+    pub(crate) fn new(events: crate::ProductEventBus) -> Result<Self> {
         Ok(Self {
-            store,
             updater: StudioUpdater::new_default()?,
             command_lock: Arc::new(Mutex::new(())),
             state: Arc::new(RwLock::new(StudioUpdateStateSnapshot::idle(unix_seconds()))),
             events,
             prepared: Arc::new(Mutex::new(PreparedUpdate::None)),
         })
-    }
-
-    pub(crate) async fn load_cache(&self) -> Result<()> {
-        let Some(value) = self.store.load_setting(CACHE_KEY).await? else {
-            return Ok(());
-        };
-        *self.state.write().await = serde_json::from_str(&value)?;
-        self.apply(StudioUpdateCommand::RecoverAfterRestart {
-            expected_revision: self.read().await.revision(),
-            updated_at: unix_seconds(),
-        })
-        .await?;
-        Ok(())
     }
 
     pub(crate) async fn read(&self) -> StudioUpdateStateSnapshot {
@@ -213,7 +195,7 @@ impl StudioUpdateRuntime {
         Ok(command)
     }
 
-    /// 保留下载和进度投影的真实所有者，只有所有状态已保存才发布 Ready。
+    /// 保留下载和进度投影的真实所有者，只有校验与投影完成才发布 Ready。
     pub(crate) async fn prepare(
         &self,
         update: StudioUpdate,
@@ -242,7 +224,7 @@ impl StudioUpdateRuntime {
             Ok::<_, anyhow::Error>(())
         });
         let result = self.updater.download(update, events, cancellation).await;
-        // 即使下载失败也完整观察投影，不能让写设置的任务越过退出保存屏障。
+        // 即使下载失败也完整观察投影，不能让状态事件越过退出屏障。
         let projected = projection
             .await
             .context("updater download projection task failed")
@@ -254,7 +236,7 @@ impl StudioUpdateRuntime {
         let prepared = match result {
             Ok(prepared) => prepared,
             Err(error) => {
-                // 下载业务失败已由完成的投影保存；所有者失败仍必须向调用方传播。
+                // 下载业务失败已由完成的投影发布；所有者失败仍必须向调用方传播。
                 anyhow::ensure!(
                     matches!(
                         self.read().await,
@@ -296,26 +278,19 @@ impl StudioUpdateRuntime {
     }
 
     async fn apply(&self, command: StudioUpdateCommand) -> Result<StudioUpdateStateSnapshot> {
-        let current = self.read().await;
+        let mut current = self.state.write().await;
         let decision = current.decide(command)?;
         let next = decision.next_state;
         if !decision.changed {
             return Ok(next);
         }
-        if let Err(error) = self
-            .store
-            .save_setting(CACHE_KEY, &serde_json::to_string(&next)?)
-            .await
-        {
-            self.publish_owner_failure(&error).await;
-            return Err(error);
-        }
-        *self.state.write().await = next.clone();
+        *current = next.clone();
+        drop(current);
         self.events.emit_updater_state(next.clone());
         Ok(next)
     }
 
-    /// 保存失败只能发布真实的内存诊断，不能把未保存的进度或 Ready 声称为持久化事实。
+    /// 投影所有者失败必须发布诊断，不能把缺少文件租约的安装包发布为 Ready。
     async fn publish_owner_failure(&self, error: &anyhow::Error) {
         let mut current = self.state.write().await;
         let failure = StateError {
@@ -344,6 +319,7 @@ impl StudioUpdateRuntime {
             }
         };
         *current = next.clone();
+        drop(current);
         self.events.emit_updater_state(next);
     }
 }

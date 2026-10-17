@@ -27,6 +27,7 @@ tracing = { workspace = true }
 toml = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
+downlowd = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
@@ -60,4 +61,8 @@ required-features = ["live-tests"]
 
 [[example]]
 name = "context_cache_matrix"
+required-features = ["live-tests"]
+
+[[example]]
+name = "updater_observe"
 required-features = ["live-tests"]

@@ -58,6 +58,7 @@ which = "8"
 dunce = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
+downlowd = "0.1.4"
 hyper = { version = "1", default-features = false }
 eventsource-stream = "0.2.3"
 secrecy = "0.10"

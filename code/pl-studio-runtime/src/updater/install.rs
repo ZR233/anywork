@@ -1,8 +1,7 @@
 use super::client::StudioUpdater;
 use super::error::{StudioUpdateError, StudioUpdateErrorCode};
-use super::manifest::{MAX_INSTALLER_BYTES, validate_update};
+use super::manifest::validate_update;
 use super::types::{StudioUpdate, StudioUpdateEvent};
-use futures::StreamExt;
 use minisign_verify::{PublicKey, Signature};
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -23,6 +22,11 @@ const MAX_SIGNATURE_BYTES: u64 = 16 * 1024;
 pub struct PreparedStudioUpdate {
     path: PathBuf,
     lease: Option<std::fs::File>,
+}
+
+struct CachedInstaller {
+    path: PathBuf,
+    lock: std::fs::File,
 }
 
 #[derive(Clone, Copy)]
@@ -112,7 +116,7 @@ impl StudioUpdateCancellation {
         Ok(())
     }
 
-    /// Reports the actual process handoff even if its durable projection failed.
+    /// Reports the actual process handoff even if its state projection failed.
     pub fn installer_launched(&self) -> bool {
         *self
             .inner
@@ -188,8 +192,8 @@ where
         let _ = progress.send(StudioUpdateEvent::Started {
             total: update.installer.size,
         });
-        let path = prepare_installer(updater, &update, &progress, &cancellation).await?;
-        let mut installer = lease_verified_installer(updater, &update, path).await?;
+        let cached = prepare_installer(updater, &update, &progress, &cancellation).await?;
+        let mut installer = lease_verified_installer(updater, &update, cached).await?;
         cancellation.check()?;
         cancellation.begin_launch()?;
         before_launch().await?;
@@ -223,8 +227,8 @@ pub(super) async fn download(
         let _ = progress.send(StudioUpdateEvent::Started {
             total: update.installer.size,
         });
-        let path = prepare_installer(updater, &update, &progress, &cancellation).await?;
-        let prepared = lease_verified_installer(updater, &update, path).await?;
+        let cached = prepare_installer(updater, &update, &progress, &cancellation).await?;
+        let prepared = lease_verified_installer(updater, &update, cached).await?;
         cancellation.check()?;
         Ok(prepared)
     }
@@ -241,11 +245,15 @@ pub(super) async fn download(
 async fn lease_verified_installer(
     updater: &StudioUpdater,
     update: &StudioUpdate,
-    path: PathBuf,
+    cached: CachedInstaller,
 ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
     let public_key = updater.public_key;
     let asset = update.installer.clone();
     tokio::task::spawn_blocking(move || {
+        let CachedInstaller {
+            path,
+            lock: _cache_lock,
+        } = cached;
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         #[cfg(windows)]
@@ -301,12 +309,13 @@ async fn prepare_installer(
     update: &StudioUpdate,
     progress: &UnboundedSender<StudioUpdateEvent>,
     cancellation: &StudioUpdateCancellation,
-) -> Result<PathBuf, StudioUpdateError> {
+) -> Result<CachedInstaller, StudioUpdateError> {
     cancellation.check()?;
     let version_dir = updater.cache_dir.join(&update.version);
     tokio::fs::create_dir_all(&version_dir)
         .await
         .map_err(io_error)?;
+    let lock = lock_cache(version_dir.join("download.lock")).await?;
     let filename = asset_filename(&update.installer.url)?;
     let installer = version_dir.join(&filename);
     let signature = version_dir.join(format!("{filename}.minisig"));
@@ -323,7 +332,10 @@ async fn prepare_installer(
         )
         .await?
     {
-        return Ok(installer);
+        return Ok(CachedInstaller {
+            path: installer,
+            lock,
+        });
     }
     remove_if_exists(&installer).await?;
     remove_if_exists(&signature).await?;
@@ -351,21 +363,83 @@ async fn prepare_installer(
         return Err(error);
     }
 
-    let partial = PathBuf::from(format!("{}.partial", installer.display()));
-    remove_if_exists(&partial).await?;
+    // The content address binds the library's partial/checkpoint files to this manifest even
+    // if a Release asset was replaced under the same version/filename.
+    let partial = version_dir.join(format!("{filename}.{}.partial", update.installer.sha256));
     let prepare_result = async {
-        download_installer(updater, update, &partial, progress, cancellation).await?;
+        super::transfer::download(
+            &updater.downloader,
+            update.installer.clone(),
+            partial.clone(),
+            progress.clone(),
+            cancellation.inner.token.clone(),
+        )
+        .await?;
         cancellation.check()?;
         let _ = progress.send(StudioUpdateEvent::Verifying);
+        if hash_file(&partial).await? != update.installer.sha256 {
+            return Err(StudioUpdateError::new(
+                StudioUpdateErrorCode::HashMismatch,
+                "installer SHA-256 does not match the manifest",
+            ));
+        }
+        cancellation.check()?;
         verify_file(updater.public_key, &signature, &partial).await
     }
     .await;
     if let Err(error) = prepare_result {
-        let _ = remove_if_exists(&partial).await;
+        if matches!(
+            error.code(),
+            StudioUpdateErrorCode::HashMismatch
+                | StudioUpdateErrorCode::SignatureInvalid
+                | StudioUpdateErrorCode::DownloadTooLarge
+        ) {
+            remove_download(&partial).await?;
+        }
         return Err(error);
     }
     rename_replacing(&partial, &installer).await?;
-    Ok(installer)
+    Ok(CachedInstaller {
+        path: installer,
+        lock,
+    })
+}
+
+async fn remove_download(destination: &Path) -> Result<(), StudioUpdateError> {
+    remove_if_exists(destination).await?;
+    for extension in ["part", "downloadinfo"] {
+        let mut path = destination.as_os_str().to_owned();
+        path.push(format!(".{extension}"));
+        remove_if_exists(Path::new(&path)).await?;
+    }
+    Ok(())
+}
+
+async fn lock_cache(path: PathBuf) -> Result<std::fs::File, StudioUpdateError> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(io_error)?;
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => Ok(file),
+            Err(fs4::TryLockError::WouldBlock) => Err(StudioUpdateError::new(
+                StudioUpdateErrorCode::InstallInProgress,
+                "another process owns this update cache",
+            )),
+            Err(fs4::TryLockError::Error(error)) => Err(io_error(error)),
+        }
+    })
+    .await
+    .map_err(|error| {
+        StudioUpdateError::new(
+            StudioUpdateErrorCode::Io,
+            format!("update cache lock task failed: {error}"),
+        )
+    })?
 }
 
 async fn verify_cached(
@@ -392,90 +466,15 @@ async fn verify_cached(
     }
     match verify_file(updater.public_key, signature, installer).await {
         Ok(()) => {
+            let _ = progress.send(StudioUpdateEvent::Progress {
+                downloaded: update.installer.size,
+                total: update.installer.size,
+            });
             let _ = progress.send(StudioUpdateEvent::Verifying);
             Ok(true)
         }
         Err(_) => Ok(false),
     }
-}
-
-async fn download_installer(
-    updater: &StudioUpdater,
-    update: &StudioUpdate,
-    partial: &Path,
-    progress: &UnboundedSender<StudioUpdateEvent>,
-    cancellation: &StudioUpdateCancellation,
-) -> Result<(), StudioUpdateError> {
-    let url = Url::parse(&update.installer.url).map_err(|error| {
-        StudioUpdateError::new(
-            StudioUpdateErrorCode::InvalidManifest,
-            format!("invalid installer URL: {error}"),
-        )
-    })?;
-    let response = tokio::select! {
-        _ = cancellation.inner.token.cancelled() => return Err(cancelled_error()),
-        result = updater.request(url) => result?,
-    };
-    if response
-        .content_length()
-        .is_some_and(|size| size != update.installer.size)
-    {
-        return Err(StudioUpdateError::new(
-            StudioUpdateErrorCode::DownloadIncomplete,
-            "installer Content-Length does not match the manifest",
-        ));
-    }
-    let mut file = tokio::fs::File::create(partial).await.map_err(io_error)?;
-    let mut stream = response.bytes_stream();
-    let mut downloaded = 0_u64;
-    let mut hasher = Sha256::new();
-    loop {
-        let chunk = tokio::select! {
-            _ = cancellation.inner.token.cancelled() => return Err(cancelled_error()),
-            chunk = stream.next() => chunk,
-        };
-        let Some(chunk) = chunk else { break };
-        cancellation.check()?;
-        let chunk = chunk.map_err(super::client::network_error)?;
-        downloaded = downloaded
-            .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| {
-                StudioUpdateError::new(
-                    StudioUpdateErrorCode::DownloadTooLarge,
-                    "installer download size overflow",
-                )
-            })?;
-        if downloaded > update.installer.size || downloaded > MAX_INSTALLER_BYTES {
-            return Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::DownloadTooLarge,
-                "installer exceeded its declared size",
-            ));
-        }
-        file.write_all(&chunk).await.map_err(io_error)?;
-        hasher.update(&chunk);
-        let _ = progress.send(StudioUpdateEvent::Progress {
-            downloaded,
-            total: update.installer.size,
-        });
-    }
-    file.flush().await.map_err(io_error)?;
-    if downloaded != update.installer.size {
-        return Err(StudioUpdateError::new(
-            StudioUpdateErrorCode::DownloadIncomplete,
-            format!(
-                "installer download length {downloaded} does not match {}",
-                update.installer.size
-            ),
-        ));
-    }
-    let actual_hash = hex::encode(hasher.finalize());
-    if actual_hash != update.installer.sha256 {
-        return Err(StudioUpdateError::new(
-            StudioUpdateErrorCode::HashMismatch,
-            "installer SHA-256 does not match the manifest",
-        ));
-    }
-    Ok(())
 }
 
 fn cancelled_error() -> StudioUpdateError {

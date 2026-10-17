@@ -133,6 +133,8 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 产品设置；`workspaces.toml` 保存 workspace/project；`catalog.toml` 保存会话目录。所有文件使用
 版本化 schema、CAS revision 与统一原子写入，不在正常路径双读旧格式。
 
+更新下载进度不属于产品设置，不写入 `settings.toml`；下载恢复和安装资格遵循 [23](./23-release-update.md)。
+
 用户 Agent Profile 继续一个稳定 ID 一个 TOML 文件。系统 Profile 不写用户文件。Provider secret
 保存在 OS 凭据库；配置迁移改变 provider ID 时必须先写入并验证目标凭据，再切换引用。
 
