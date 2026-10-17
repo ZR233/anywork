@@ -1,5 +1,6 @@
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -302,6 +303,45 @@ void main() {
       ThreadWorkspaceMode.worktree,
     );
   });
+
+  testWidgets(
+    'composer uses Shift+Enter for editing and Enter for submission',
+    (tester) async {
+      await tester.pumpWidget(harness(const StartPageComposerDock()));
+      await tester.pumpAndSettle();
+
+      final input = find.byKey(StudioDriverKeys.composerInput);
+      await tester.tap(input);
+      await tester.enterText(input, '第一行\n第二行');
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+
+      expect(
+        container.read(anyworkClientProvider).startDraft.state.submitting,
+        isFalse,
+        reason:
+            'Shift+Enter must remain an editing action, not submit the draft',
+      );
+      expect(
+        tester.widget<TextField>(input).controller!.text,
+        '第一行\n第二行',
+        reason:
+            'the widget test binding does not emulate the native newline path',
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      expect(
+        container.read(anyworkClientProvider).startDraft.state.submitting,
+        isTrue,
+        reason:
+            'an unmodified Enter must share the send button submission path',
+      );
+    },
+  );
 }
 
 class _ModeSelectorHost extends ConsumerWidget {

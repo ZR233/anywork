@@ -753,6 +753,16 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
 
   bool get _canSubmit => widget.enabled && _hasContent && !_submissionPending;
 
+  /// Let an active IME composition consume Enter before the composer submits.
+  ///
+  /// The composing range is empty when normal text editing is active. When an
+  /// IME owns a non-empty range, leaving the Enter shortcut disabled lets the
+  /// platform commit that composition through the native text input path.
+  bool get _hasActiveComposition {
+    final composing = _controller.value.composing;
+    return composing.isValid && composing.start != composing.end;
+  }
+
   bool get _supportsPastedImages => widget.inputCapabilities.any(
     (capability) =>
         capability.modality == ModelModalityView.image &&
@@ -841,6 +851,12 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
             ),
           Shortcuts(
             shortcuts: const {
+              SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false):
+                  _SubmitComposerIntent(),
+              SingleActivator(
+                LogicalKeyboardKey.numpadEnter,
+                includeRepeats: false,
+              ): _SubmitComposerIntent(),
               SingleActivator(LogicalKeyboardKey.paste): _PasteComposerIntent(),
               SingleActivator(LogicalKeyboardKey.keyV, control: true):
                   _PasteComposerIntent(),
@@ -852,6 +868,10 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
             },
             child: Actions(
               actions: {
+                _SubmitComposerIntent: _SubmitComposerAction(
+                  enabled: _canSubmit && !_hasActiveComposition,
+                  onSubmit: widget.onSubmit,
+                ),
                 _PasteComposerIntent: CallbackAction<_PasteComposerIntent>(
                   onInvoke: (_) {
                     if (widget.enabled && !_pasteInFlight) {
@@ -877,6 +897,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                 enabled: widget.enabled,
                 minLines: widget.compact ? 2 : 3,
                 maxLines: 8,
+                textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
                   hintText: context.l10n.composerHint,
                   hintStyle: TextStyle(color: colors.onSurfaceVariant),
@@ -888,11 +909,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                   contentPadding: const EdgeInsets.symmetric(vertical: 8),
                 ),
                 onChanged: widget.onChanged,
-                onSubmitted: (_) {
-                  if (_canSubmit) {
-                    widget.onSubmit();
-                  }
-                },
               ),
             ),
           ),
@@ -1072,6 +1088,26 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
 
 class _PasteComposerIntent extends Intent {
   const _PasteComposerIntent();
+}
+
+class _SubmitComposerIntent extends Intent {
+  const _SubmitComposerIntent();
+}
+
+class _SubmitComposerAction extends Action<_SubmitComposerIntent> {
+  _SubmitComposerAction({required this.enabled, required this.onSubmit});
+
+  final bool enabled;
+  final VoidCallback onSubmit;
+
+  @override
+  bool isEnabled(_SubmitComposerIntent intent) => enabled;
+
+  @override
+  Object? invoke(_SubmitComposerIntent intent) {
+    onSubmit();
+    return null;
+  }
 }
 
 class _StopComposerIntent extends Intent {

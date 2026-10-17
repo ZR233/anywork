@@ -802,6 +802,13 @@ Client 的草稿身份不随 Settings、标签页或 provider 重建变化；Tex
 composing 等编辑状态，同一草稿输入不反复覆盖其 text。
 输入框回车提交：Enter 提交满足前置条件的当前草稿，语义与主按钮一致（运行中即“发送并继续”）；
 Shift+Enter 插入换行，多行草稿不受影响。
+该行为仅在 composer 输入控件的焦点作用域内生效：使用 Flutter 官方 `Shortcuts`/`Actions` 将
+未带修饰键的 Enter（含小键盘 Enter）映射到与主按钮相同的提交意图，提交前仍检查输入有效性、启用状态与
+提交中状态；IME 组词区间有效时不触发提交，Enter 交由平台完成组词确认；Shift+Enter
+交给多行 `TextField` 的原生编辑行为插入换行。输入区不使用
+`RawKeyboardListener`、全局键盘拦截、额外提交 overlay 或手动焦点状态机来复制这套语义，
+其他控件与全局快捷键不受影响。可访问提示可以说明 Enter 发送、Shift+Enter 换行，但不成为
+第二份业务状态。
 普通 Composer 输入框聚焦且可编辑时，Ctrl+V、Cmd+V 与 Shift+Insert 优先读取系统剪贴板图片；
 图片规范化为 PNG 后通过现有本地附件 admission 进入 canonical 草稿，预览继续显示在输入框上方的
 附件栏并可用 X 删除。剪贴板无图片时保持按当前选区粘贴文本；读取、解码或模型能力错误写入
