@@ -11,6 +11,7 @@ mod studio_acceptance;
 mod studio_tool;
 mod studio_version;
 mod sync_skills;
+mod toolchain;
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
     match cli::parse(args)? {
@@ -18,23 +19,28 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
             print!("{output}");
             Ok(())
         }
-        cli::ParseOutcome::Run(command) => match command {
-            cli::Command::Flutter(options) => {
-                studio_tool::run(studio_tool::StudioTool::Flutter, options.args)
+        cli::ParseOutcome::Run(command) => {
+            if toolchain::required_for(&command) {
+                toolchain::sync()?;
             }
-            cli::Command::Dart(options) => {
-                studio_tool::run(studio_tool::StudioTool::Dart, options.args)
+            match command {
+                cli::Command::Flutter(options) => {
+                    studio_tool::run(studio_tool::StudioTool::Flutter, options.args)
+                }
+                cli::Command::Dart(options) => {
+                    studio_tool::run(studio_tool::StudioTool::Dart, options.args)
+                }
+                cli::Command::GenerateGui => flutter::generate_gui(),
+                cli::Command::CheckGuiGenerated => flutter::check_gui_generated(),
+                cli::Command::VerifyGui => flutter::verify_gui(),
+                cli::Command::VerifyClient => client::verify(),
+                cli::Command::ManualGui(options) => studio_acceptance::run(&options.args),
+                cli::Command::RunGui(options) => flutter::run_gui(options),
+                cli::Command::BuildGui(options) => flutter::build_gui(options),
+                cli::Command::ReleaseGui { action } => release::run(action),
+                cli::Command::BuildRemoteHelper(options) => remote_helper::build(options),
+                cli::Command::SyncSkills => sync_skills::run(),
             }
-            cli::Command::GenerateGui => flutter::generate_gui(),
-            cli::Command::CheckGuiGenerated => flutter::check_gui_generated(),
-            cli::Command::VerifyGui => flutter::verify_gui(),
-            cli::Command::VerifyClient => client::verify(),
-            cli::Command::ManualGui(options) => studio_acceptance::run(&options.args),
-            cli::Command::RunGui(options) => flutter::run_gui(options),
-            cli::Command::BuildGui(options) => flutter::build_gui(options),
-            cli::Command::ReleaseGui { action } => release::run(action),
-            cli::Command::BuildRemoteHelper(options) => remote_helper::build(options),
-            cli::Command::SyncSkills => sync_skills::run(),
-        },
+        }
     }
 }

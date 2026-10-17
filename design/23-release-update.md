@@ -65,6 +65,13 @@ Flutter 版本由 workflow 固定；Rust toolchain 由仓库统一固定，本�
 发布使用同一版本，Flutter 检查中的 Rust 生成工具也遵循该约束。第三方 Action 固定到完整
 commit SHA，并使用最小 token 权限、单实例 concurrency 与 build provenance attestation。
 
+固定 channel 声明的工具链组件同时包含 `rustfmt`、`clippy` 与 `rust-analyzer`：编辑器语言服务
+与命令行构建共享同一工具链，不把 LSP 交给另一套 toolchain，也不要求开发者额外安装服务器。
+xtask 在触发 Rust 工作的命令前先以仓库根为目录执行 `rustc --version`，由 rustup 完成固定
+工具链的同步与安装；该步骤失败时 xtask 保留 rustc/rustup 的原始输出并立即终止。版本与组件
+以 `rust-toolchain.toml` 为唯一事实源，xtask 不解析版本号、不比较 channel、不自行安装组件，
+也不提供绕过该预检的路径。
+
 ## 23.2 Windows 包边界
 
 正式打包入口命令（stage / finalize / verify，参数为规范 `x.y.z`）严格要求版本与 pubspec
