@@ -357,6 +357,8 @@ pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {
         "-c".to_string(),
         "credential.helper=".to_string(),
     ];
+    #[cfg(windows)]
+    full_args.extend(["-c".to_string(), "core.longpaths=true".to_string()]);
     full_args.extend_from_slice(args);
     ExecutionRequest {
         program: PathBuf::from("git"),

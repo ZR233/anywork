@@ -389,7 +389,10 @@ root 重派新 reviewer，不代为重建被审者工作树。关闭工具等待
 child 智能体还是根会话，都在 Agents/Recovery 中显示 revision、branch、base/head、dirty 与
 changed-files 预览，并提供显式清理；两种归属共用同一清理入口，按归属标识区分。物理
 worktree 清理尊重 Git 锁与注册身份拒绝：注销失败且目录仍存在时，不继续
-绕过 Git 删除目录或分支；保留现场并返回实际错误，显式解除原因后可重试。
+绕过 Git 删除目录或分支；保留现场并返回实际错误，显式解除原因后可重试。Windows 本地 Git
+命令必须按进程传入 `-c core.longpaths=true`，覆盖 worktree 创建、状态、注销、分支清理
+及普通 Git tool 操作；不修改用户全局 Git 配置。该设置只解决 Git 的长路径处理，不改变
+归属校验、注册状态或失败后的现场保留规则。
 
 ## 12.6 GUI
 

@@ -19,6 +19,8 @@ use super::super::StudioRuntime;
 
 fn background_git_command() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
+    #[cfg(windows)]
+    command.args(["-c", "core.longpaths=true"]);
     pl_remote_helper::process::configure_background_command(&mut command);
     command
 }

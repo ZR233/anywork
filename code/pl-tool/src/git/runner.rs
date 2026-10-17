@@ -66,12 +66,13 @@ where
     where
         S: AsRef<str>,
     {
+        let mut git_args = Vec::with_capacity(args.len() + 2);
+        #[cfg(windows)]
+        git_args.extend(["-c".to_string(), "core.longpaths=true".to_string()]);
+        git_args.extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
         ExecutionRequest {
             program: self.config.git_binary.clone(),
-            args: args
-                .into_iter()
-                .map(|arg| arg.as_ref().to_string())
-                .collect(),
+            args: git_args,
             cwd: self.config.worktree.clone(),
             env,
             timeout: Some(GIT_TIMEOUT),
