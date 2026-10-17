@@ -54,6 +54,19 @@ final class _QueryTransport implements StudioTransport {
   );
 }
 
+StudioFailure _sshStudioFailure({
+  required String message,
+  String? detailsJson,
+}) {
+  return StudioFailure(
+    code: StudioFailureCode.permissionDenied,
+    message: message,
+    retryable: false,
+    correlationId: 'ssh-auth',
+    detailsJson: detailsJson,
+  );
+}
+
 void main() {
   test(
     'remote actions forward SSH password updates and session authentication',
@@ -104,6 +117,81 @@ void main() {
       expect(
         isSshAuthenticationError(StateError('network unreachable')),
         isFalse,
+      );
+    },
+  );
+
+  test(
+    'SSH detailsJson is authoritative for auth kind and password prompt',
+    () {
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{"sshPasswordOffered": false}',
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{"sshPasswordOffered": true}',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{"sshErrorKind": "authenticationFailed"}',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{not-json',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(StateError('network unreachable')),
+        isTrue,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(message: 'remote host rejected credentials'),
+        ),
+        isTrue,
+      );
+      expect(
+        sshPasswordAuthenticationOffered(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{"sshPasswordOffered": "false"}',
+          ),
+        ),
+        isTrue,
+      );
+
+      expect(
+        isSshAuthenticationError(StateError('network unreachable')),
+        isFalse,
+      );
+      expect(
+        isSshAuthenticationError(
+          _sshStudioFailure(
+            message: 'remote host rejected credentials',
+            detailsJson: '{"sshErrorKind":"authenticationFailed"}',
+          ),
+        ),
+        isTrue,
       );
     },
   );

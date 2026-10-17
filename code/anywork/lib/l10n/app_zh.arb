@@ -192,6 +192,7 @@
   "settingsSshAuthPasswordRequired": "请输入 SSH 密码",
   "settingsSshAuthRememberPassword": "保存密码到系统凭据库",
   "settingsSshAuthConnect": "连接",
+  "settingsSshPasswordAuthUnavailable": "该服务器未提供密码认证，请配置 SSH 密钥或启动 ssh-agent。",
   "settingsSshReadOnlyEntry": "手写条目——请直接编辑 ~/.ssh/config。",
   "settingsSshSave": "保存",
   "settingsSshAliasRequired": "请输入别名",

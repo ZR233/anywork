@@ -487,6 +487,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSshAuthConnect => 'Connect';
 
   @override
+  String get settingsSshPasswordAuthUnavailable =>
+      'This server does not offer password authentication. Configure an SSH key or start ssh-agent.';
+
+  @override
   String get settingsSshReadOnlyEntry =>
       'Hand-written entry — edit it in ~/.ssh/config.';
 

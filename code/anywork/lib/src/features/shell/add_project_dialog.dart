@@ -161,58 +161,49 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
     final selected = _selected;
     if (_busy || selected == null) return;
 
-    final hasIdentity =
-        selected.identityFile != null &&
-        selected.identityFile!.trim().isNotEmpty;
     var ready = false;
-
-    if (!selected.hasPassword && !hasIdentity) {
-      final snapshot = await showDialog<SshConnectionView>(
-        context: context,
-        builder: (context) => SshPasswordPromptDialog(server: selected),
-      );
-      if (snapshot == null || !mounted) return;
-      ready = snapshot.state == 'ready';
-      await _loadServers();
-      if (!mounted) return;
-    }
-
-    if (!ready) {
-      setState(() {
-        _busy = true;
-        _error = null;
-      });
-      try {
-        final connection = await ref
-            .read(anyworkClientProvider)
-            .remote
-            .testSshConnection(selected.alias);
-        if (connection.state != 'ready') {
-          throw StateError(connection.errorMessage ?? connection.state);
-        }
-        ready = true;
-      } catch (error) {
-        if (!mounted) return;
-        setState(() => _busy = false);
-        if (isSshAuthenticationError(error)) {
-          final snapshot = await showDialog<SshConnectionView>(
-            context: context,
-            builder: (context) => SshPasswordPromptDialog(
-              server: selected,
-              initialError: error.toString(),
-            ),
-          );
-          if (snapshot == null || !mounted) return;
-          ready = snapshot.state == 'ready';
-          await _loadServers();
-          if (!mounted) return;
-        } else {
-          setState(() => _error = error.toString());
-          return;
-        }
-      } finally {
-        if (mounted && _busy) setState(() => _busy = false);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      // 始终先非交互探测：ssh-agent / 默认密钥可能已能免密登录。
+      // 只有探测失败且服务器接受密码认证时才弹密码框。
+      final connection = await ref
+          .read(anyworkClientProvider)
+          .remote
+          .testSshConnection(selected.alias);
+      if (connection.state != 'ready') {
+        throw StateError(connection.errorMessage ?? connection.state);
       }
+      ready = true;
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (isSshAuthenticationError(error) &&
+          sshPasswordAuthenticationOffered(error)) {
+        final snapshot = await showDialog<SshConnectionView>(
+          context: context,
+          builder: (context) => SshPasswordPromptDialog(
+            server: selected,
+            initialError: error.toString(),
+          ),
+        );
+        if (snapshot == null || !mounted) return;
+        ready = snapshot.state == 'ready';
+        await _loadServers();
+        if (!mounted) return;
+      } else if (isSshAuthenticationError(error)) {
+        setState(
+          () => _error = context.l10n.settingsSshPasswordAuthUnavailable,
+        );
+        return;
+      } else {
+        setState(() => _error = error.toString());
+        return;
+      }
+    } finally {
+      if (mounted && _busy) setState(() => _busy = false);
     }
 
     if (!ready || !mounted) return;

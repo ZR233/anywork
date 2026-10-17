@@ -1,10 +1,12 @@
 import 'dart:convert';
 
-/// Decodes a tool argument payload as a tolerant string-keyed JSON object.
+/// Decodes a tool argument payload or structured detail text as a tolerant
+/// string-keyed JSON object.
 ///
-/// Tool arguments cross a provider boundary as text and may be malformed while
-/// streaming. Display projections use one policy everywhere: non-objects,
-/// empty input, invalid JSON, and empty string values are treated as absent.
+/// Tool arguments and StudioError details cross a provider boundary as text
+/// and may be malformed while streaming. Display projections and failure
+/// details use one policy everywhere: non-objects, empty input, invalid JSON,
+/// and empty string values are treated as absent.
 Map<String, Object?> decodeJsonObject(String value) {
   if (value.trim().isEmpty) {
     return const {};

@@ -119,7 +119,9 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       });
     } catch (error) {
       if (!mounted) return;
-      if (isSshAuthenticationError(error)) {
+      if (isSshAuthenticationError(error) &&
+          sshPasswordAuthenticationOffered(error)) {
+        // 浏览失败后才提示密码：服务器未提供密码认证时改为内联错误，不弹框。
         setState(() => _browsing = false);
         final snapshot = await showDialog<SshConnectionView>(
           context: context,
@@ -133,6 +135,12 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
           await _load(path);
           return;
         }
+      } else if (isSshAuthenticationError(error)) {
+        setState(() {
+          _browsing = false;
+          _error = context.l10n.settingsSshPasswordAuthUnavailable;
+        });
+        return;
       }
       setState(() {
         _browsing = false;

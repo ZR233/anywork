@@ -145,8 +145,19 @@ class _SshTabState extends ConsumerState<SshTab> {
               .testSshConnection(server.alias);
           if (mounted) setState(() => _connections[server.alias] = snapshot);
         } catch (error) {
-          if (isSshAuthenticationError(error)) {
+          if (isSshAuthenticationError(error) &&
+              sshPasswordAuthenticationOffered(error)) {
+            // 探测失败且服务器接受密码时才提示，避免对免密主机强制弹框。
             await _promptPassword(server);
+            return;
+          }
+          if (isSshAuthenticationError(error)) {
+            if (mounted) {
+              setState(
+                () => _serverErrors[server.alias] =
+                    context.l10n.settingsSshPasswordAuthUnavailable,
+              );
+            }
             return;
           }
           rethrow;
@@ -163,8 +174,19 @@ class _SshTabState extends ConsumerState<SshTab> {
               .reconnectSshServer(server.alias);
           if (mounted) setState(() => _connections[server.alias] = snapshot);
         } catch (error) {
-          if (isSshAuthenticationError(error)) {
+          if (isSshAuthenticationError(error) &&
+              sshPasswordAuthenticationOffered(error)) {
+            // 探测失败且服务器接受密码时才提示，避免对免密主机强制弹框。
             await _promptPassword(server);
+            return;
+          }
+          if (isSshAuthenticationError(error)) {
+            if (mounted) {
+              setState(
+                () => _serverErrors[server.alias] =
+                    context.l10n.settingsSshPasswordAuthUnavailable,
+              );
+            }
             return;
           }
           rethrow;
@@ -218,22 +240,13 @@ class _SshTabState extends ConsumerState<SshTab> {
         await _reload();
       });
 
-  Future<void> _openWorkspace(SshServer server) => _runServerOperation(
-    server,
-    SshServerOperation.open,
-    () async {
-      final hasIdentity =
-          server.identityFile != null && server.identityFile!.trim().isNotEmpty;
-      final isReady = _connections[server.alias]?.state == 'ready';
-      if (!isReady && !server.hasPassword && !hasIdentity) {
-        final snapshot = await _promptPassword(server);
-        if (snapshot == null || !mounted) return;
-      }
-      if (!mounted) return;
-      await showDialog<String>(
-        context: context,
-        builder: (context) => RemoteDirectoryDialog(server: server),
-      );
-    },
-  );
+  Future<void> _openWorkspace(SshServer server) =>
+      _runServerOperation(server, SshServerOperation.open, () async {
+        // 目录对话框自己处理认证失败；此处不再按“无密码/无 IdentityFile”预弹框。
+        if (!mounted) return;
+        await showDialog<String>(
+          context: context,
+          builder: (context) => RemoteDirectoryDialog(server: server),
+        );
+      });
 }

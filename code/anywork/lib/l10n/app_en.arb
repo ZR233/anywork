@@ -268,6 +268,7 @@
   "settingsSshAuthPasswordRequired": "Enter the SSH password",
   "settingsSshAuthRememberPassword": "Save password in system credential store",
   "settingsSshAuthConnect": "Connect",
+  "settingsSshPasswordAuthUnavailable": "This server does not offer password authentication. Configure an SSH key or start ssh-agent.",
   "settingsSshReadOnlyEntry": "Hand-written entry — edit it in ~/.ssh/config.",
   "settingsSshSave": "Save",
   "settingsSshAliasRequired": "Enter an alias",

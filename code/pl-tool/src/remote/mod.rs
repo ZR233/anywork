@@ -14,7 +14,7 @@ mod ssh_config;
 mod tools;
 mod workspace;
 
-pub use client::{RemoteClient, RemoteClientError, RemoteReply};
+pub use client::{RemoteClient, RemoteClientError, RemoteReply, SshAuthFailure};
 pub use command::RemoteCommandBackend;
 pub use execution::RemoteExecutionBackend;
 pub use manager::{

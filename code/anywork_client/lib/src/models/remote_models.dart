@@ -1,3 +1,6 @@
+import 'failure_models.dart';
+import 'typed_json.dart';
+
 enum SshPasswordAction { preserve, replace, clear }
 
 class SshPasswordUpdate {
@@ -71,11 +74,40 @@ class AuthenticateSshServerCommand {
 
 /// 判断异常是否表示 SSH 认证失败（需要输入或更新密码）。
 bool isSshAuthenticationError(Object error) {
+  if (_sshFailureDetails(error)?['sshErrorKind'] == 'authenticationFailed') {
+    return true;
+  }
   final text = error.toString();
   return text.contains('SSH authentication required or failed') ||
       text.contains('sshAuthFailed') ||
       text.contains('authenticationFailed') ||
       text.contains('Permission denied');
+}
+
+/// 认证失败后是否应提示输入 SSH 密码。
+///
+/// 取值来源：
+/// 1. [StudioFailure.detailsJson] 中的 `sshPasswordOffered`（bool）为权威结果；
+/// 2. 该字段缺失、details 为 null、JSON 非法或类型不符时返回 `true`（保持旧行为：按需要密码处理）；
+/// 3. 非 [StudioFailure] 错误返回 `true`。
+///
+/// 仅应在 [isSshAuthenticationError] 为真时用于决定是否提示密码；本函数不做认证判定。
+bool sshPasswordAuthenticationOffered(Object error) {
+  return switch (_sshFailureDetails(error)?['sshPasswordOffered']) {
+    final bool offered => offered,
+    _ => true,
+  };
+}
+
+Map<String, Object?>? _sshFailureDetails(Object error) {
+  if (error is! StudioFailure) {
+    return null;
+  }
+  final detailsJson = error.detailsJson;
+  if (detailsJson == null) {
+    return null;
+  }
+  return decodeJsonObject(detailsJson);
 }
 
 class SshConnectionView {

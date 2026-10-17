@@ -466,6 +466,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSshAuthConnect => '连接';
 
   @override
+  String get settingsSshPasswordAuthUnavailable =>
+      '该服务器未提供密码认证，请配置 SSH 密钥或启动 ssh-agent。';
+
+  @override
   String get settingsSshReadOnlyEntry => '手写条目——请直接编辑 ~/.ssh/config。';
 
   @override

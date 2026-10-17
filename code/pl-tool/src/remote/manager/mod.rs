@@ -556,7 +556,9 @@ impl SshManager {
                 ssh::terminate_ssh_child(&mut child, "bootstrap").await?;
                 let diagnostic = ssh::initialization_diagnostic(child.stderr().take()).await?;
                 if ssh::is_ssh_auth_failure(&diagnostic) {
-                    return Err(RemoteClientError::AuthenticationFailed(diagnostic));
+                    return Err(RemoteClientError::AuthenticationFailed(ssh::auth_failure(
+                        &diagnostic,
+                    )));
                 }
                 return Err(RemoteClientError::Protocol(format!(
                     "SSH helper initialization failed: {reason}; {diagnostic}"

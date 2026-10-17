@@ -94,14 +94,20 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
     use pl_tool::remote::RemoteClientError;
 
     match error {
-        RemoteClientError::AuthenticationFailed(reason) => StudioError::new(
-            StudioErrorCode::PermissionDenied,
-            format!("SSH authentication required or failed: {reason}"),
-            true,
-        )
-        .with_details(serde_json::json!({
-            "sshErrorKind": "authenticationFailed",
-        })),
+        RemoteClientError::AuthenticationFailed(failure) => {
+            let mut details = serde_json::json!({
+                "sshErrorKind": "authenticationFailed",
+            });
+            if let Some(offered) = failure.password_offered() {
+                details["sshPasswordOffered"] = serde_json::Value::Bool(offered);
+            }
+            StudioError::new(
+                StudioErrorCode::PermissionDenied,
+                format!("SSH authentication required or failed: {failure}"),
+                true,
+            )
+            .with_details(details)
+        }
         RemoteClientError::Disconnected
         | RemoteClientError::Backpressure
         | RemoteClientError::ManagerClosing => {

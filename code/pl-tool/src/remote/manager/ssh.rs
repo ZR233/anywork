@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::SshServerProfile;
-use crate::remote::RemoteClientError;
+use crate::remote::{RemoteClientError, SshAuthFailure};
 use pl_remote_helper::process::wrap_parent_bound_command;
 
 const SSH_ASKPASS_SECRET_ENV: &str = "ANYWORK_SSH_ASKPASS_SECRET";
@@ -28,10 +28,34 @@ pub(super) fn is_ssh_auth_failure(stderr: &str) -> bool {
         || lower.contains("too many authentication failures")
 }
 
+fn parse_ssh_auth_methods(diagnostic: &str) -> Vec<String> {
+    for line in diagnostic.lines() {
+        let lower = line.to_ascii_lowercase();
+        let Some(start) = lower.find("permission denied (") else {
+            continue;
+        };
+        let methods_start = start + "permission denied (".len();
+        let Some(end) = lower[methods_start..].find(')') else {
+            continue;
+        };
+        return lower[methods_start..methods_start + end]
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    Vec::new()
+}
+
+pub(super) fn auth_failure(diagnostic: &str) -> SshAuthFailure {
+    SshAuthFailure::new(diagnostic.trim(), parse_ssh_auth_methods(diagnostic))
+}
+
 pub(super) fn classify_ssh_stderr(prefix: &str, stderr: &str) -> RemoteClientError {
     let trimmed = stderr.trim();
     if is_ssh_auth_failure(trimmed) {
-        RemoteClientError::AuthenticationFailed(trimmed.to_string())
+        RemoteClientError::AuthenticationFailed(auth_failure(trimmed))
     } else {
         RemoteClientError::Protocol(format!("{prefix}: {trimmed}"))
     }

@@ -926,6 +926,12 @@ abstract class AppLocalizations {
   /// **'Connect'**
   String get settingsSshAuthConnect;
 
+  /// No description provided for @settingsSshPasswordAuthUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This server does not offer password authentication. Configure an SSH key or start ssh-agent.'**
+  String get settingsSshPasswordAuthUnavailable;
+
   /// No description provided for @settingsSshReadOnlyEntry.
   ///
   /// In en, this message translates to:

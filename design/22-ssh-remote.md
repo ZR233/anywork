@@ -168,8 +168,19 @@ API Key 采用同一套系统凭据库（`CredentialStore`，账号键 `ssh:<ali
 `Preserve` / `Replace` / `Clear`）或当前进程内存会话租约，绝不写入 `~/.ssh/config`、
 SQLite、DTO、日志、helper 参数、helper 环境或远端协议；删除受管主机时同步清除对应系统凭据。
 本地 OpenSSH 子进程仅在存在可用密码时通过受控临时 `SSH_ASKPASS` 脚本（`SSH_ASKPASS_REQUIRE=force`）
-读取本地子进程专属环境变量完成非交互密码认证；未配置密码或认证失败返回可识别的认证失败错误，
-供前端弹出密码输入弹窗（支持单次会话认证或同时保存到凭据库）。
+读取本地子进程专属环境变量完成非交互密码认证。认证顺序固定为免密优先：每次连接都先用
+`BatchMode` 非交互探测 ssh-agent 与密钥（包含默认身份文件、`IdentityFile`、ProxyJump 与用户
+ssh 配置），探测成功即继续连接，不请求也不提示密码；只有探测以认证失败结束、且诊断表明服务器
+接受密码类方式时，才由 GUI 弹出密码输入弹窗（支持单次会话认证或同时保存到凭据库）。GUI 不得
+依据「未保存密码」或「管理块未写 IdentityFile」主动索要密码，该判据的唯一事实源是服务器公布的
+认证方式。
+
+OpenSSH 在失败诊断 `Permission denied (<methods>)` 中公布服务器接受的认证方式，因此认证失败错误
+本身携带该事实：`password` 或 `keyboard-interactive` 出现在列表中表示还能用密码继续；只公布
+`publickey` 等非密码方式时 GUI 不再提示密码，改为报告需要配置密钥或 ssh-agent 的可操作错误；
+诊断缺少方法列表、或方法列表为空时按需要密码处理，保持旧行为。该事实通过 StudioError details 的
+`sshErrorKind: "authenticationFailed"` 与仅在能判定时出现的 `sshPasswordOffered`（bool）暴露给
+前端；GUI 与 SDK 只消费这两个字段，不解析 OpenSSH stderr 文本。
 首次主机身份核验沿用用户 ssh 的 known_hosts 语义，不自动信任新主机或已变更的主机密钥。
 provider token 不得转发；远端 Git 只使用服务器原生配置与凭据。shell descriptor 不是
 login shell 配置，也不携带完整环境变量。
