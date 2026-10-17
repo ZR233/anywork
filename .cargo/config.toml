@@ -4,17 +4,6 @@ include = [{ path = "config.local.toml", optional = true }]
 # Bound local HTTP/SSE, git, and SQLite test resource usage on Windows.
 RUST_TEST_THREADS = { value = "4", force = false }
 
-# D8050 (`cannot execute 'c1xx.dll': failed to get command line into debug
-# records`) is cl.exe failing to write debug records, not a zstd defect. On
-# MSVC cc-rs passes `/Z7` for every non-zero debug level, so only disabling
-# debug information avoids it: `debug = 1` and `"line-tables-only"` still pass
-# `/Z7`. The override covers zstd's C objects in the development profile only
-# and can be dropped once the MSVC environment that triggers D8050 is fixed;
-# the workspace's Rust crates keep their debug information, and the xtask only
-# needs the library at build time.
-[profile.dev.package.zstd-sys]
-debug = 0
-
 [alias]
 xtask = "run --locked --target-dir target/xtask -p pl-xtask --"
 flutter = "run --locked --target-dir target/xtask -p pl-xtask -- flutter"

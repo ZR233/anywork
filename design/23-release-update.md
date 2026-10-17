@@ -72,6 +72,16 @@ xtask 在触发 Rust 工作的命令前先以仓库根为目录执行 `rustc --v
 以 `rust-toolchain.toml` 为唯一事实源，xtask 不解析版本号、不比较 channel、不自行安装组件，
 也不提供绕过该预检的路径。
 
+Windows 上第三方 C 依赖由 `cc` 构建时触发的 D8050（`cannot execute 'c1xx.dll': failed to get
+command line into debug records`）属于本机 MSVC 环境故障，不是依赖或压缩实现自身的缺陷：
+`cc` 对 MSVC 的非零 debug 级别固定传 `/Z7`，调试记录写入失败即报该错误。仓库不携带按依赖
+关闭调试信息的 profile 补丁，修复方向是本机环境——`%TMP%`/`%TEMP%` 可写且为短 ASCII 路径、
+磁盘余量、目录 ACL 与完整性级别（低完整性楼层下 build script 无法写临时目录）、管理员权限与
+杀毒软件排除、`vcvars` 环境与 MSVC 工具集版本。定位时用 `CC_ENABLE_DEBUG_OUTPUT` 取回被 `cc`
+隐藏的编译器输出，并手工重跑失败的命令行。只有本机环境短期无法修复时，才把
+`[profile.dev.package.zstd-sys] debug = 0` 写进 `.cargo/config.toml` 已 include 的
+`config.local.toml` 作为个人绕过；该文件不入库，仓库配置不再保留该覆盖。
+
 ## 23.2 Windows 包边界
 
 正式打包入口命令（stage / finalize / verify，参数为规范 `x.y.z`）严格要求版本与 pubspec
