@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widget_previews.dart';
@@ -21,6 +20,7 @@ import '../../l10n/app_localizations.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/studio_platform.dart';
 import '../../platform/host_app_icons.dart';
+import '../../platform/local_file_dialogs.dart';
 import '../../platform/terminal_launcher.dart';
 import '../../platform/vscode_launcher.dart';
 import '../../platform/zed_launcher.dart';
@@ -61,7 +61,7 @@ final projectDirectoryPickerProvider = Provider<ProjectDirectoryPicker>((ref) {
   if (const bool.fromEnvironment('ANYWORK_DRIVER')) {
     return showDriverProjectPathDialog;
   }
-  return (_) => FilePicker.getDirectoryPath();
+  return (_) => pickLocalProjectDirectory();
 });
 
 Future<String?> showDriverProjectPathDialog(BuildContext context) {

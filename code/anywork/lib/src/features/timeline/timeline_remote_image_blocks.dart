@@ -27,7 +27,20 @@ Map<String, String> _markdownImageAlts(String source) {
         for (final row in rows)
           for (final cell in row.cells) ...cell.content,
       ],
-      _ => const <MdNode>[],
+      MdFootnoteDefinitions(:final footnotes) => [
+        for (final footnote in footnotes) ...footnote.children,
+      ],
+      MdText() ||
+      MdCodeBlock() ||
+      MdInlineCode() ||
+      MdInlineLatex() ||
+      MdBlockLatex() ||
+      MdHorizontalRule() ||
+      MdImage() ||
+      MdSourceTag() ||
+      MdFootnoteReference() ||
+      MdLineBreak() ||
+      MdCustomBlock() => const <MdNode>[],
     };
     for (final child in children) {
       visit(child);

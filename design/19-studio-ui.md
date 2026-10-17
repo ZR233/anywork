@@ -26,6 +26,13 @@ Riverpod、FRB 或 `Ref`，feature 不导入 FRB、adapter、transport 或 Clien
 UI 不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo integration 验收，不能
 伪造原生 provider、文件系统或进程能力。
 
+附件拖放直接消费平台插件的 typed file item，只接收文件，不将目录、文本或 URL 解释为本地
+附件。异步 drop 回调拥有本次传输资源的借用期；所有读取及 Rust 附件草稿准入必须在回调返回前
+完成，后续提交只消费已经入库的草稿，不持有平台临时路径或 provider 句柄。
+文件和项目目录选择由桌面原生宿主持有，分别调用 Windows 文件对话框与 GTK 原生文件选择器。
+Flutter 通过平台通道提交扩展名筛选并接收本地路径；取消返回空选择，原生失败以平台错误传播。
+宿主不读取文件内容，附件校验与复制仍由 Rust 的草稿准入负责。
+
 Windows 原生宿主显式选用 Skia，以规避 Impeller GLES 在高分辨率大窗口下的栅格化延迟。
 后端选择在 debug、profile 与 release 构建中保持一致。恢复 Impeller 前，须以同机普通窗口、
 最大化、还原及大尺寸窗口的帧耗时和实际显示、输入、滚动结果验证，单纯切换 GPU 或线程策略

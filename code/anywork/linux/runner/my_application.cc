@@ -8,6 +8,7 @@
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
+#include "local_file_dialogs.h"
 #include "studio_host_lifecycle.h"
 
 // Native -> Dart exit callback target. Holds a strong reference while the
@@ -291,6 +292,9 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+
+  register_local_file_dialogs(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)), window);
 
   // fl_method_channel_new refs and registers the channel on the messenger, and
   // the messenger keeps that reference alive for the lifetime of the engine, so

@@ -4,13 +4,14 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import '../../app/theme/studio_tokens.dart';
 
 import '../../l10n/studio_l10n.dart';
 import '../../platform/clipboard_image_reader.dart';
+import '../../platform/dropped_attachments.dart';
+import '../../platform/local_file_dialogs.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -997,63 +998,71 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
       ),
     );
     return DropTarget(
-      onDragEntered: attachmentEnabled && localCapabilities.isNotEmpty
-          ? (_) => setState(() => _dragging = true)
-          : null,
-      onDragExited: (_) {
+      enabled: attachmentEnabled && localCapabilities.isNotEmpty,
+      acceptedKinds: const {DropItemKind.file},
+      onEnter: (_) => setState(() => _dragging = true),
+      onLeave: () {
         if (_dragging) setState(() => _dragging = false);
       },
-      onDragDone: attachmentEnabled && localCapabilities.isNotEmpty
-          ? (event) {
-              setState(() => _dragging = false);
-              final paths = event.files
-                  .map((file) => file.path)
-                  .where((path) => path.isNotEmpty)
-                  .toList();
-              if (paths.isNotEmpty) unawaited(widget.onAddLocal(paths));
-            }
-          : null,
+      onDrop: _dropAttachments,
       child: panel,
     );
+  }
+
+  Future<void> _dropAttachments(DropDetails details) async {
+    final admit = widget.onAddLocal;
+    final reportFailure = widget.onReportFailure;
+    try {
+      await admitDroppedAttachments(
+        details.items.whereType<DropFileItem>(),
+        admit,
+      );
+    } catch (error) {
+      reportFailure(error);
+    }
   }
 
   Future<void> _pickLocalAttachments(
     List<ModelInputCapabilityView> capabilities,
   ) async {
-    const driverFixture = String.fromEnvironment(
-      'ANYWORK_DRIVER_ATTACHMENT_PATH',
-    );
-    if (const bool.fromEnvironment('ANYWORK_DRIVER') &&
-        driverFixture.isNotEmpty) {
-      await widget.onAddLocal([driverFixture]);
-      return;
+    final admit = widget.onAddLocal;
+    final reportFailure = widget.onReportFailure;
+    try {
+      const driverFixture = String.fromEnvironment(
+        'ANYWORK_DRIVER_ATTACHMENT_PATH',
+      );
+      if (const bool.fromEnvironment('ANYWORK_DRIVER') &&
+          driverFixture.isNotEmpty) {
+        await admit([driverFixture]);
+        return;
+      }
+      final modalities = capabilities
+          .map((capability) => capability.modality)
+          .toSet();
+      final acceptsFiles = modalities.contains(ModelModalityView.file);
+      final paths = await pickLocalAttachmentPaths(
+        extensions: acceptsFiles
+            ? const []
+            : [
+                if (modalities.contains(ModelModalityView.image)) ...[
+                  'png',
+                  'jpg',
+                  'jpeg',
+                  'gif',
+                  'webp',
+                ],
+                if (modalities.contains(ModelModalityView.video)) ...[
+                  'mp4',
+                  'mov',
+                  'webm',
+                  'mkv',
+                ],
+              ],
+      );
+      if (paths.isNotEmpty) await admit(paths);
+    } catch (error) {
+      reportFailure(error);
     }
-    final modalities = capabilities
-        .map((capability) => capability.modality)
-        .toSet();
-    final acceptsFiles = modalities.contains(ModelModalityView.file);
-    final result = await FilePicker.pickFiles(
-      type: acceptsFiles ? FileType.any : FileType.custom,
-      allowedExtensions: acceptsFiles
-          ? null
-          : [
-              if (modalities.contains(ModelModalityView.image)) ...[
-                'png',
-                'jpg',
-                'jpeg',
-                'gif',
-                'webp',
-              ],
-              if (modalities.contains(ModelModalityView.video)) ...[
-                'mp4',
-                'mov',
-                'webm',
-                'mkv',
-              ],
-            ],
-    );
-    final paths = result.map((file) => file.path).whereType<String>().toList();
-    if (paths.isNotEmpty) await widget.onAddLocal(paths);
   }
 
   Future<void> _showUrlDialog() async {

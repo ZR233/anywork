@@ -355,44 +355,31 @@ fn canonical_workspace_path(path: &Path) -> String {
 }
 
 fn run_frb_codegen(workspace_root: &Path, app_dir: &Path) -> Result<()> {
-    let lock_path = app_dir.join("pubspec.lock");
-    let original_lock =
-        fs::read(&lock_path).with_context(|| format!("failed to read {}", lock_path.display()))?;
-    let result = (|| {
-        prepare_freezed_prerelease_for_frb(&lock_path)?;
-        let rust_root = app_dir.join("rust");
-        let rust_output = rust_root.join("src").join("frb_generated.rs");
-        let dart_output = app_dir.join("lib").join("src").join("rust");
-        let args = vec![
-            OsString::from("generate"),
-            OsString::from("--rust-root"),
-            codegen_rust_path(&rust_root),
-            OsString::from("--rust-input"),
-            OsString::from("crate::api::studio"),
-            OsString::from("--dart-root"),
-            app_dir.as_os_str().to_os_string(),
-            OsString::from("--dart-output"),
-            dart_output.into_os_string(),
-            OsString::from("--rust-output"),
-            codegen_rust_path(&rust_output),
-            OsString::from("--stop-on-error"),
-            OsString::from("--no-build-runner"),
-        ];
-        run_os_tool("flutter_rust_bridge_codegen", &args, app_dir)
-    })();
-    let restore = fs::write(&lock_path, original_lock)
-        .with_context(|| format!("failed to restore {}", lock_path.display()));
-    match (result, restore) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), _) => Err(error).with_context(|| {
-            format!(
-                "workspace root: {}, Studio app dir: {}",
-                workspace_root.display(),
-                app_dir.display()
-            )
-        }),
-        (Ok(()), Err(error)) => Err(error),
-    }
+    let rust_root = app_dir.join("rust");
+    let rust_output = rust_root.join("src").join("frb_generated.rs");
+    let dart_output = app_dir.join("lib").join("src").join("rust");
+    let args = vec![
+        OsString::from("generate"),
+        OsString::from("--rust-root"),
+        codegen_rust_path(&rust_root),
+        OsString::from("--rust-input"),
+        OsString::from("crate::api::studio"),
+        OsString::from("--dart-root"),
+        app_dir.as_os_str().to_os_string(),
+        OsString::from("--dart-output"),
+        dart_output.into_os_string(),
+        OsString::from("--rust-output"),
+        codegen_rust_path(&rust_output),
+        OsString::from("--stop-on-error"),
+        OsString::from("--no-build-runner"),
+    ];
+    run_os_tool("flutter_rust_bridge_codegen", &args, app_dir).with_context(|| {
+        format!(
+            "workspace root: {}, Studio app dir: {}",
+            workspace_root.display(),
+            app_dir.display()
+        )
+    })
 }
 
 fn codegen_rust_path(path: &Path) -> OsString {
@@ -401,35 +388,4 @@ fn codegen_rust_path(path: &Path) -> OsString {
     } else {
         path.as_os_str().to_os_string()
     }
-}
-
-fn prepare_freezed_prerelease_for_frb(lock_path: &Path) -> Result<()> {
-    let source = fs::read_to_string(lock_path)
-        .with_context(|| format!("failed to read {}", lock_path.display()))?;
-    let mut in_freezed = false;
-    let mut output = String::with_capacity(source.len());
-    for line in source.lines() {
-        if line == "  freezed:" {
-            in_freezed = true;
-        } else if in_freezed && line.starts_with("  ") && !line.starts_with("    ") {
-            in_freezed = false;
-        }
-        if in_freezed && line.trim_start().starts_with("version:") {
-            let stable = line.split_once("-dev.").map_or(line, |(prefix, _)| {
-                // FRB 2.12 rejects prerelease semver in pubspec.lock even though
-                // the installed Freezed build is compatible. Codegen does not
-                // execute the package because build_runner runs after FRB codegen.
-                prefix
-            });
-            output.push_str(stable);
-            if stable != line {
-                output.push('"');
-            }
-        } else {
-            output.push_str(line);
-        }
-        output.push('\n');
-    }
-    fs::write(lock_path, output)
-        .with_context(|| format!("failed to prepare {}", lock_path.display()))
 }

@@ -9,7 +9,6 @@ import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -49,9 +48,6 @@ void main() {
         }
       });
       messenger.setMockMethodCallHandler(hostAppsChannel, (_) async => null);
-      // Native drop registration is outside this route/Client contract.
-      const dropChannel = MethodChannel('desktop_drop');
-      messenger.setMockMethodCallHandler(dropChannel, (_) async => null);
       tester.view.physicalSize = const Size(1280, 900);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -70,7 +66,6 @@ void main() {
         );
         messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, null);
         messenger.setMockMethodCallHandler(hostAppsChannel, null);
-        messenger.setMockMethodCallHandler(dropChannel, null);
       });
 
       await tester.pumpWidget(

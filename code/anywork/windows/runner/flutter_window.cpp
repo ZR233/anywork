@@ -21,6 +21,7 @@
 #include <variant>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "local_file_dialogs.h"
 #include "studio_host_lifecycle.h"
 #include "utils.h"
 
@@ -286,6 +287,9 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
 
+  file_dialogs_channel_ = anywork::CreateLocalFileDialogs(
+      flutter_controller_->engine()->messenger(), GetHandle());
+
   host_apps_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), kHostAppsChannel,
@@ -366,6 +370,10 @@ void FlutterWindow::OnDestroy() {
   // Clear the native close callback before the channel disappears; the deadline
   // thread keeps running so engine/window teardown cannot disarm the exit bound.
   anywork::StudioHostLifecycle::Instance().ClearExitRequestCallback();
+  if (file_dialogs_channel_) {
+    file_dialogs_channel_->SetMethodCallHandler(nullptr);
+    file_dialogs_channel_.reset();
+  }
   if (lifecycle_channel_) {
     lifecycle_channel_->SetMethodCallHandler(nullptr);
     lifecycle_channel_.reset();
