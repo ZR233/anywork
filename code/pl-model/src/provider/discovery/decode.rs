@@ -128,14 +128,25 @@ pub(super) fn models(
         .into_iter()
         .map(|record| normalize(record, discovery, adapter, &metadata))
         .collect::<Result<Vec<_>, _>>()?;
-    result.retain(|model| {
-        !discovery
-            .excluded_slugs
-            .iter()
-            .any(|slug| slug == &model.slug)
-    });
+    result.retain(|model| !excluded_by_discovery(&model.slug, discovery));
     validate_inventory(&result).map_err(|_| ModelCatalogQueryError::Protocol)?;
     Ok(result)
+}
+
+/// 目录声明的非对话排除规则（精确 slug 与 slug 前缀，均大小写敏感）。
+/// 解码写缓存与读取在线缓存共用这一份匹配语义，避免两处规则漂移。
+pub(crate) fn excluded_by_discovery(
+    slug: &str,
+    discovery: &crate::config::ModelCatalogDiscovery,
+) -> bool {
+    discovery
+        .excluded_slugs
+        .iter()
+        .any(|excluded| excluded == slug)
+        || discovery
+            .excluded_prefixes
+            .iter()
+            .any(|prefix| slug.starts_with(prefix.as_str()))
 }
 
 fn normalize(
@@ -161,6 +172,12 @@ fn normalize(
     }
     if let Some(value) = record.max_context_window {
         model.max_context_window = Some(value);
+    } else if let (Some(current), Some(max)) = (model.context_window, model.max_context_window)
+        && max < current
+    {
+        // 观测到的窗口是更新的服务端事实；仅在 API 未声明上限时抬升继承的默认上限。
+        // 同时显式声明两个字段仍由 validate 要求自身一致。
+        model.max_context_window = Some(current);
     }
     if let Some(value) = record.max_output_tokens {
         model.max_output_tokens = Some(value);

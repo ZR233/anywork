@@ -382,6 +382,219 @@ fn remove_manual_model_applies_to_explicit_catalog() {
     ));
 }
 
+fn manual_model(slug: &str) -> ModelInfo {
+    let mut model = ModelInfo::compatible(slug);
+    model.context_window = None;
+    model.max_output_tokens = None;
+    model
+        .binding
+        .set_transport(ModelTransportProfile::responses_websocket());
+    model
+}
+
+#[test]
+fn historical_cache_is_filtered_when_resolving_effective_catalog() {
+    // 修复前写入的在线缓存可能仍含已被排除的非对话 slug。
+    let mut config = openai_provider("http://127.0.0.1:1");
+    config
+        .set_model_catalog_overlay(vec![
+            manual_model("gpt-6-astra"),
+            manual_model("gpt-image-2"),
+            manual_model("text-embedding-3-large"),
+            manual_model("GPT-Image-2"),
+        ])
+        .unwrap();
+    assert_eq!(
+        config
+            .effective_catalog()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gpt-6-astra", ProviderModelOrigin::Online),
+            ("GPT-Image-2", ProviderModelOrigin::Online)
+        ]
+    );
+    assert_eq!(
+        config
+            .effective_models()
+            .unwrap()
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-6-astra", "GPT-Image-2"]
+    );
+}
+
+#[test]
+fn excluded_online_entry_never_hides_the_manual_model_with_the_same_slug() {
+    let mut config = ProviderConfig::from_bundled_catalog(
+        ProviderEndpoint::openai(Some("http://127.0.0.1:1".into())),
+        ModelCatalogId::new("openai").unwrap(),
+        vec![manual_model("gpt-image-manual")],
+    );
+    config
+        .set_model_catalog_overlay(vec![
+            manual_model("gpt-6-astra"),
+            manual_model("gpt-image-manual"),
+        ])
+        .unwrap();
+    assert_eq!(
+        config
+            .effective_catalog()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gpt-6-astra", ProviderModelOrigin::Online),
+            ("gpt-image-manual", ProviderModelOrigin::Manual)
+        ]
+    );
+}
+
+#[test]
+fn exclusion_is_driven_only_by_the_catalog_discovery_declaration() {
+    // 智谱目录不声明发现能力，不可能持有在线缓存；其手工图像类模型保留。
+    let mut zhipu = ProviderConfig::from_bundled_catalog(
+        ProviderEndpoint::zhipu(None),
+        ModelCatalogId::new("zhipu").unwrap(),
+        vec![ModelInfo::compatible("gpt-image-manual")],
+    );
+    assert!(zhipu.discovery_profile().unwrap().is_none());
+    assert!(matches!(
+        zhipu.set_model_catalog_overlay(Vec::new()),
+        Err(pl_protocol::PureError::Protocol(_))
+    ));
+    assert!(zhipu.effective_catalog().unwrap().iter().any(|entry| {
+        entry.model.slug == "gpt-image-manual" && entry.origin == ProviderModelOrigin::Manual
+    }));
+    // openai-compatible 是用户完全自定义的显式目录，同样不排除任何条目。
+    let mut compatible = ProviderConfig::from_explicit_models(
+        ProviderEndpoint::compatible("Custom", "http://127.0.0.1:1"),
+        vec![
+            ModelInfo::compatible("gpt-image-2"),
+            ModelInfo::compatible("text-embedding-3-large"),
+        ],
+    );
+    assert!(compatible.discovery_profile().unwrap().is_none());
+    assert!(matches!(
+        compatible.set_model_catalog_overlay(Vec::new()),
+        Err(pl_protocol::PureError::Protocol(_))
+    ));
+    assert_eq!(
+        compatible
+            .effective_catalog()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-image-2", "text-embedding-3-large"]
+    );
+}
+
+#[tokio::test]
+async fn excluded_prefixes_drop_non_conversational_families_only() {
+    let server = Server::json(json!({
+        "data":[
+            {"id":"gpt-6-astra"},
+            {"id":"gpt-image-2"},
+            {"id":"gpt-image-1.5"},
+            {"id":"dall-e-3"},
+            {"id":"text-embedding-3-large"},
+            {"id":"tts-1"},
+            {"id":"whisper-1"},
+            {"id":"omni-moderation-latest"},
+            {"id":"text-moderation-latest"},
+            {"id":"GPT-Image-2"}
+        ]
+    }))
+    .await;
+    let config = openai_provider(&server.url);
+    let discovery = config.discovery_profile().unwrap().unwrap();
+    assert_eq!(
+        discovery.excluded_prefixes,
+        [
+            "gpt-image-",
+            "dall-e-",
+            "text-embedding-",
+            "tts-",
+            "whisper-",
+            "omni-moderation-",
+            "text-moderation-"
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+    );
+    // OpenAI 目录不使用精确 slug 排除，两条声明互不依赖。
+    assert!(discovery.excluded_slugs.is_empty());
+    let models = updated(
+        ModelCatalogQuery::for_provider(&config)
+            .unwrap()
+            .execute(None)
+            .await
+            .unwrap(),
+    );
+    // 前缀匹配大小写敏感：不缩小写家族之外的相似 slug。
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-6-astra", "GPT-Image-2"]
+    );
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn exclusion_declarations_keep_bundled_and_manual_models() {
+    let server = Server::json(json!({
+        "data":[{"id":"gpt-6-astra"},{"id":"gpt-image-2"}]
+    }))
+    .await;
+    let catalog_id = ModelCatalogId::new("openai").unwrap();
+    let bundled = builtin_model_catalog(&catalog_id).unwrap();
+    let mut config = ProviderConfig::from_bundled_catalog(
+        ProviderEndpoint::openai(Some(server.url.clone())),
+        catalog_id,
+        vec![manual_model("gpt-image-manual")],
+    );
+    // 尚无在线成功观察时，内置默认名单完整保留；排除声明只作用于在线结果。
+    let defaults = config.effective_catalog().unwrap();
+    assert_eq!(
+        defaults
+            .iter()
+            .filter(|entry| entry.origin == ProviderModelOrigin::Bundled)
+            .count(),
+        bundled.models.len()
+    );
+    assert!(defaults.iter().any(|entry| {
+        entry.origin == ProviderModelOrigin::Manual && entry.model.slug == "gpt-image-manual"
+    }));
+    let models = updated(
+        ModelCatalogQuery::for_provider(&config)
+            .unwrap()
+            .execute(None)
+            .await
+            .unwrap(),
+    );
+    config.set_model_catalog_overlay(models).unwrap();
+    let catalog = config.effective_catalog().unwrap();
+    assert_eq!(
+        catalog
+            .iter()
+            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gpt-6-astra", ProviderModelOrigin::Online),
+            ("gpt-image-manual", ProviderModelOrigin::Manual)
+        ]
+    );
+    server.finish().await;
+}
+
 #[tokio::test]
 async fn excluded_slugs_are_filtered_before_inventory_validation() {
     let server = Server::json(json!({
@@ -400,6 +613,8 @@ async fn excluded_slugs_are_filtered_before_inventory_validation() {
         discovery.transport,
         ModelTransportProfile::chat_completions_http()
     );
+    // MiMo 仍只按精确 slug 排除语音模型，不声明前缀家族。
+    assert!(discovery.excluded_prefixes.is_empty());
     let models = updated(
         ModelCatalogQuery::for_provider(&config)
             .unwrap()
