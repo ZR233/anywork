@@ -255,17 +255,17 @@ impl ProviderConfig {
                 }
                 let mut entries = if let Some(overlay) = &self.model_catalog_overlay {
                     // Overlay publication already required a catalog discovery declaration.
-                    let discovery_transport = &bundled
-                        .discovery
-                        .as_ref()
-                        .ok_or_else(|| {
-                            PureError::Protocol("model catalog observation is unsupported".into())
-                        })?
-                        .transport;
+                    let discovery = bundled.discovery.as_ref().ok_or_else(|| {
+                        PureError::Protocol("model catalog observation is unsupported".into())
+                    })?;
+                    // 历史缓存（含 304 复用的旧 model.json）同样按当前目录声明剔除非对话模型。
                     overlay
                         .iter()
                         .filter(|model| {
-                            !additional_models
+                            !crate::provider::discovery::excluded_by_discovery(
+                                &model.slug,
+                                discovery,
+                            ) && !additional_models
                                 .iter()
                                 .any(|manual| manual.slug == model.slug)
                         })
@@ -277,7 +277,7 @@ impl ProviderConfig {
                                     crate::provider::discovery::enrich_unknown_model_fallback(
                                         &model,
                                         local,
-                                        discovery_transport,
+                                        &discovery.transport,
                                         self.adapter,
                                     )
                             {

@@ -2,6 +2,7 @@
 mod decode;
 
 pub(crate) use decode::enrich_unknown_model_fallback;
+pub(crate) use decode::excluded_by_discovery;
 
 use super::ProviderEndpoint;
 use crate::{
