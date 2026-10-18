@@ -36,6 +36,12 @@ impl StudioRuntime {
             .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)?;
         crate::mode::validate_thread_mode_model(Some(&mode), &route.model)?;
         let thread = self.ensure_thread_owner(thread_id).await?;
+        let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
+        let _installation = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Closed.into()),
+            guard = gate.lock_owned() => guard,
+        };
         let state = thread.snapshot();
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(
@@ -210,13 +216,13 @@ impl StudioRuntime {
         );
         let (tools, exposure, binding) = self
             .thread_factory
-            .refresh_thread_tools(
-                thread_id,
-                &candidate,
-                tokio_util::sync::CancellationToken::new(),
-            )
+            .refresh_thread_tools(thread_id, &candidate, cancellation.clone())
             .await?;
         let mut registrations = tools.into_registrations();
+        if cancellation.is_cancelled() {
+            thread.retire_tools(registrations).await?;
+            return Err(pl_core::thread::ThreadError::Cancelled.into());
+        }
         if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
             registrations.extend(self.threads.agent_control_tools()?);
         }

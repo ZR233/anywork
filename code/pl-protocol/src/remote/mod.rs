@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const REMOTE_PROTOCOL_VERSION: u32 = 8;
+pub const REMOTE_REQUEST_CAPACITY: usize = 32;
 pub const REMOTE_OUTPUT_WINDOW: usize = 8;
 pub const REMOTE_OUTPUT_CHUNK_BYTES: usize = 8192;
 pub const REMOTE_MAX_HEADER_BYTES: usize = 64 * 1024;

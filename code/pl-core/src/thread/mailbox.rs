@@ -45,6 +45,11 @@ pub(super) enum MailboxCommand {
         oneshot::Sender<Result<ThreadSnapshot, ThreadError>>,
     ),
     BeginIdleClose(oneshot::Sender<bool>),
+    RetryToolCleanup(oneshot::Sender<Result<(), ThreadError>>),
+    RetireTools(
+        crate::tool::opaque::RegistrationBatch,
+        oneshot::Sender<Result<(), ThreadError>>,
+    ),
     Reconfigure(
         IdleReconfiguration,
         crate::tool::opaque::RegistrationBatch,
@@ -163,6 +168,18 @@ impl Owner {
             MailboxCommand::QueueRuntimeFacts(facts, reply) => {
                 let _ = reply.send(self.queue_runtime_facts(facts));
             }
+            MailboxCommand::RetryToolCleanup(reply) => {
+                self.tools.retry_cleanup();
+                self.publish_snapshot();
+                let _ = reply.send(Ok(()));
+            }
+            MailboxCommand::RetireTools(batch, reply) => {
+                let tools = batch.take().unwrap_or_default();
+                self.tools.retain_candidates(&tools);
+                drop(tools);
+                self.publish_snapshot();
+                let _ = reply.send(Ok(()));
+            }
             MailboxCommand::ToolProgress {
                 caller,
                 executor,
@@ -234,14 +251,18 @@ impl Owner {
             }
 
             MailboxCommand::Reconfigure(mut update, batch, reply) => {
+                update.tools = batch.take().unwrap_or_default();
+                self.tools.retain_candidates(&update.tools);
                 let result = if self.state.lifecycle == ThreadLifecycle::Open
                     && !self.interrupt.is_closing()
                 {
-                    update.tools = batch.take().unwrap_or_default();
                     self.reconfigure(update)
                 } else {
                     Err(ThreadError::Closed)
                 };
+                if result.is_err() {
+                    self.publish_snapshot();
+                }
                 let _ = reply.send(result);
             }
 
@@ -439,12 +460,16 @@ impl Owner {
                 let _ = reply.send(self.cancel_task(&id));
             }
             MailboxCommand::Register(expected, tools, reply) => {
+                let tools = tools.take().unwrap_or_default();
+                self.tools.retain_candidates(&tools);
                 let result = if self.state.lifecycle == ThreadLifecycle::Open
                     && !self.interrupt.is_closing()
                 {
                     if let Some(expected) = expected
                         && expected != self.state.extension_sequence
                     {
+                        drop(tools);
+                        self.publish_snapshot();
                         let _ = reply.send(Err(ThreadError::ExtensionSequenceConflict {
                             expected,
                             actual: self.state.extension_sequence,
@@ -453,7 +478,7 @@ impl Owner {
                     }
                     let result = self
                         .tools
-                        .replace(tools.take().unwrap_or_default())
+                        .replace(tools)
                         .map_err(ThreadError::from)
                         .and_then(|()| self.revoke_stale_permissions());
                     if result.is_ok() {
@@ -462,8 +487,12 @@ impl Owner {
                     }
                     result
                 } else {
+                    drop(tools);
                     Err(ThreadError::Closed)
                 };
+                if result.is_err() {
+                    self.publish_snapshot();
+                }
                 let _ = reply.send(result);
             }
             MailboxCommand::Message(message, drive, reply) => {
@@ -516,6 +545,7 @@ impl Owner {
         loop {
             tokio::select! {
                 result = &mut operation => return result,
+                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
                 changed = async {
                     match self.model_progress.as_mut() {
                         Some((_, receiver)) => receiver.changed().await,

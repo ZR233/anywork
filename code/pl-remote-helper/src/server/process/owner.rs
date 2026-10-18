@@ -29,8 +29,7 @@ pub(super) async fn run(
         let request = tokio::select! {
             biased;
             _ = closing.wait_for(|closing| *closing) => break,
-            error = writer.failed() => {
-                failure = Some(remote_error(RemoteErrorCode::Io, error.to_string()));
+            _ = writer.failed() => {
                 break;
             }
             result = jobs.join_next(), if !jobs.is_empty() => {

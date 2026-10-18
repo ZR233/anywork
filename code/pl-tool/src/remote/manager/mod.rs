@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use pl_protocol::remote::{
     REMOTE_PROTOCOL_VERSION, RemoteDirectoryListing, RemoteHello, RemoteRequest, RemoteResponse,
-    RemoteWorkspaceOpened,
 };
 use process_wrap::tokio::ChildWrapper;
 use serde::{Deserialize, Serialize};
@@ -111,8 +110,7 @@ pub struct SshManager {
     closing: CancellationToken,
     operations: TaskTracker,
     connection_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
-    workspaces: Arc<Mutex<HashMap<(String, String), RemoteWorkspaceHost>>>,
-    workspace_paths: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    workspaces: Arc<super::client::workspace::WorkspaceCache>,
     states: Arc<RwLock<HashMap<String, watch::Sender<SshConnectionState>>>>,
     ready_revisions: watch::Sender<BTreeMap<String, u64>>,
     desired_connections: Arc<RwLock<HashSet<String>>>,
@@ -154,8 +152,7 @@ impl SshManager {
             closing: CancellationToken::new(),
             operations: TaskTracker::new(),
             connection_locks: Arc::new(Mutex::new(HashMap::new())),
-            workspaces: Arc::new(Mutex::new(HashMap::new())),
-            workspace_paths: Arc::new(RwLock::new(HashMap::new())),
+            workspaces: Default::default(),
             states: Arc::new(RwLock::new(HashMap::new())),
             ready_revisions: watch::channel(BTreeMap::new()).0,
             desired_connections: Arc::new(RwLock::new(HashSet::new())),
@@ -255,9 +252,8 @@ impl SshManager {
         self.connection_locks.lock().await.remove(server_id);
         self.workspaces
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(id, _), _| id != server_id);
-        self.workspace_paths.write().await.remove(server_id);
         Ok(())
     }
 
@@ -324,14 +320,11 @@ impl SshManager {
             Ok((connection, hello)) => {
                 let client = connection.client.clone();
                 let heartbeat = connection.heartbeat.clone();
-                let execution_environment = connection.execution_environment.clone();
                 self.connections
                     .lock()
                     .await
                     .insert(server_id.to_string(), Arc::new(connection));
                 self.spawn_heartbeat(server_id.to_string(), client.clone(), heartbeat);
-                self.reopen_known_workspaces(server_id, &client, &execution_environment)
-                    .await;
                 self.set_state(
                     server_id,
                     SshConnectionState::Ready {
@@ -450,45 +443,44 @@ impl SshManager {
                 connection.client.is_same_connection(&client) && !client.is_disconnected()
             })
             .ok_or(RemoteClientError::Disconnected)?;
-        if let Some(host) = self
-            .workspaces
-            .lock()
-            .await
-            .get(&(server_id.to_string(), path.clone()))
-            .filter(|host| host.files.client().is_same_connection(&client))
-            .cloned()
-        {
-            return Ok(host);
+        let cached = {
+            let cache = self
+                .workspaces
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache
+                .get(&(server_id.to_string(), path.clone()))
+                .and_then(|entry| Some((entry.lease.upgrade()?, entry.environment.clone())))
         }
-        let files = tokio::select! {
-            biased;
-            () = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
-            files = open_workspace(&client, path) => files?,
+        .filter(|(lease, _)| lease.is_connection(&client));
+        let (lease, execution_environment) = match cached {
+            Some(cached) => cached,
+            None => {
+                let lease = tokio::select! {
+                    biased;
+                    () = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
+                    opened = tokio::time::timeout(std::time::Duration::from_secs(15), client.open_workspace_lease(path, server_id.to_owned(), self.workspaces.clone())) => opened.map_err(|_| RemoteClientError::Protocol("SSH workspace open timed out".into()))??,
+                };
+                let environment = connection.execution_environment.clone();
+                self.workspaces
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        (server_id.to_owned(), lease.path.clone()),
+                        super::client::workspace::CachedWorkspace {
+                            lease: Arc::downgrade(&lease),
+                            environment: environment.clone(),
+                        },
+                    );
+                (lease, environment)
+            }
         };
-        let client = files.client().clone();
-        let workspace_id = files.workspace_id().to_string();
-        let canonical_path = files.canonical_path().to_string();
-        let commands = RemoteCommandBackend::new(client.clone(), workspace_id.clone());
-        let git = RemoteExecutionBackend::new(client, workspace_id, canonical_path);
-        let execution_environment = connection.execution_environment.clone();
-        let host = RemoteWorkspaceHost {
-            files,
-            commands,
-            git,
+        Ok(RemoteWorkspaceHost {
+            files: RemoteWorkspaceFileBackend::new(client.clone(), lease.clone()),
+            commands: RemoteCommandBackend::new(client.clone(), lease.clone()),
+            git: RemoteExecutionBackend::new(client, lease),
             execution_environment,
-        };
-        let canonical_path = host.files.canonical_path().to_string();
-        self.workspace_paths
-            .write()
-            .await
-            .entry(server_id.to_string())
-            .or_default()
-            .insert(canonical_path.clone());
-        self.workspaces
-            .lock()
-            .await
-            .insert((server_id.to_string(), canonical_path), host.clone());
-        Ok(host)
+        })
     }
 
     async fn connect(
@@ -768,48 +760,6 @@ impl SshManager {
             }
         }
     }
-
-    async fn reopen_known_workspaces(
-        &self,
-        server_id: &str,
-        client: &RemoteClient,
-        execution_environment: &ExecutionEnvironment,
-    ) {
-        let paths = self
-            .workspace_paths
-            .read()
-            .await
-            .get(server_id)
-            .cloned()
-            .unwrap_or_default();
-        for path in paths {
-            let opened = tokio::select! {
-                biased;
-                () = self.closing.cancelled() => break,
-                opened = tokio::time::timeout(
-                    std::time::Duration::from_secs(15),
-                    open_workspace(client, path.clone()),
-                ) => opened,
-            };
-            let Ok(Ok(files)) = opened else {
-                continue;
-            };
-            let workspace_id = files.workspace_id().to_string();
-            let canonical_path = files.canonical_path().to_string();
-            let commands = RemoteCommandBackend::new(client.clone(), workspace_id.clone());
-            let git =
-                RemoteExecutionBackend::new(client.clone(), workspace_id, canonical_path.clone());
-            self.workspaces.lock().await.insert(
-                (server_id.to_string(), canonical_path),
-                RemoteWorkspaceHost {
-                    files,
-                    commands,
-                    git,
-                    execution_environment: execution_environment.clone(),
-                },
-            );
-        }
-    }
 }
 
 fn execution_environment_from_hello(
@@ -838,29 +788,4 @@ fn execution_environment_from_hello(
         shell,
         hello.shell.path.clone(),
     ))
-}
-
-async fn open_workspace(
-    client: &RemoteClient,
-    path: String,
-) -> Result<RemoteWorkspaceFileBackend, RemoteClientError> {
-    let reply = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        client.request(RemoteRequest::OpenWorkspace { path }, &[]),
-    )
-    .await
-    .map_err(|_| RemoteClientError::Protocol("SSH workspace open timed out".into()))??;
-    match reply.response {
-        RemoteResponse::WorkspaceOpened(RemoteWorkspaceOpened {
-            workspace_id,
-            canonical_path,
-        }) => Ok(RemoteWorkspaceFileBackend::new(
-            client.clone(),
-            workspace_id,
-            canonical_path,
-        )),
-        response => Err(RemoteClientError::Protocol(format!(
-            "unexpected open workspace response: {response:?}"
-        ))),
-    }
 }

@@ -60,6 +60,8 @@ impl LspRuntimeRegistry {
                     resolved.workspace_root.clone(),
                     diagnostics,
                     self.updates.clone(),
+                    host.as_ref()
+                        .map_or(crate::host::LspPathStyle::Native, |host| host.path_style()),
                 );
                 let client = Arc::new(LspClient::new(
                     resolved.clone(),

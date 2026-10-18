@@ -23,6 +23,7 @@ pub(super) struct ThreadToolAssembly<'a> {
 }
 
 pub(super) struct PreparedThreadTools {
+    pub binding_guard: Option<crate::thread_assembler::ThreadPreparationGuard>,
     pub catalog: Option<Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub tools: StudioThreadTools,
     pub hosted: Vec<pl_model::runtime::HostedTool>,
@@ -49,6 +50,7 @@ impl StudioThreadFactory {
         assembly: ThreadToolAssembly<'_>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let binding = super::tool_bindings::ToolBinding {
+            lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
             target_invalidated: false,
             permission_mode: assembly.config.runtime.permission_mode,
@@ -73,7 +75,7 @@ impl StudioThreadFactory {
             },
         };
         let id = assembly.thread_id.to_owned();
-        let tools = self
+        let mut tools = self
             .prepare_thread_tools_with(assembly, CatalogPreparation::Initial)
             .await?;
         let binding = super::tool_bindings::ToolBinding {
@@ -92,6 +94,14 @@ impl StudioThreadFactory {
                 .map(|commands| commands.downgrade()),
             ..binding
         };
+        let factory = self.clone();
+        let identity = binding.lifetime.clone();
+        let guard_id = id.clone();
+        tools.binding_guard = Some(crate::thread_assembler::ThreadPreparationGuard::new(
+            move || {
+                factory.forget_tool_binding_if_current(&guard_id, &identity);
+            },
+        ));
         self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -316,6 +326,7 @@ impl StudioThreadFactory {
             CatalogPreparation::Initial | CatalogPreparation::Refresh { .. } => Default::default(),
         };
         Ok(PreparedThreadTools {
+            binding_guard: None,
             catalog: skill_catalog,
             tools: tools
                 .with_tools(search.tools)

@@ -232,6 +232,9 @@ pub enum ModelExecutionPhase {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
+    /// Live executor retirement owned by this Thread; never part of a checkpoint.
+    #[serde(skip)]
+    pub tool_cleanup: ToolCleanupState,
     #[serde(skip)]
     pub model_progress: Option<crate::model::ActiveModelProgress>,
     /// Explicit phase of the current model execution driver; `None` when no step is between its
@@ -779,6 +782,19 @@ pub enum ThreadLifecycle {
     Open,
     Closing,
     Closed,
+}
+
+/// Current resource cleanup progress; errors retain their original typed causes.
+#[derive(Debug, Clone, Default)]
+pub struct ToolCleanupState {
+    pub pending: usize,
+    pub failures: Vec<ToolCleanupFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCleanupFailure {
+    pub tool_id: String,
+    pub error: Arc<crate::tool::opaque::ToolError>,
 }
 
 /// An admitted model request and its lightweight resident status.

@@ -81,6 +81,7 @@ impl Owner {
     pub(super) async fn drain_background(&mut self) {
         while !self.background.is_empty() {
             tokio::select! {
+                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
                 Some(completion) = futures::StreamExt::next(&mut self.background) => self.finish_background(completion),
                 message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => {
                     if let Some(message) = message { self.dispatch_mailbox(message).await; }

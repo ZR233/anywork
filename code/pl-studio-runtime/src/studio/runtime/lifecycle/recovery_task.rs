@@ -14,6 +14,11 @@ impl StudioRuntime {
             "runtime is not ready"
         );
         self.start_recovery_scan().await;
+        for (_, thread) in self.threads.observed_threads() {
+            if !thread.snapshot().tool_cleanup.failures.is_empty() {
+                thread.retry_tool_cleanup().await?;
+            }
+        }
         // A diagnostic scan cannot repair a failed catalog. Advance the refresh
         // generation even when configuration fingerprints have not changed.
         self.tool_catalog_updates.notify_one();

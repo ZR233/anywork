@@ -732,6 +732,44 @@ impl ThreadHandle {
         finish_tool_transfer(batch, result).await
     }
 
+    /// Retries retained tool cleanup failures without replacing the current catalog.
+    /// Completion and original errors are observed through `ThreadSnapshot::tool_cleanup`.
+    ///
+    /// # Errors
+    /// Returns `Closed` when the owner no longer accepts operations.
+    pub async fn retry_tool_cleanup(&self) -> Result<(), ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::RetryToolCleanup(reply))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Transfers unused candidates to this owner for asynchronous cleanup, without installing them.
+    ///
+    /// # Errors
+    /// Returns owner errors; a failed transfer returns retained cleanup through `RejectedTools`.
+    pub async fn retire_tools(
+        &self,
+        tools: Vec<crate::tool::opaque::Registration>,
+    ) -> Result<(), ThreadError> {
+        let batch = crate::tool::opaque::RegistrationBatch::new(tools);
+        let (reply, response) = oneshot::channel();
+        let result = match self
+            .mailbox
+            .send(super::mailbox::MailboxCommand::RetireTools(
+                batch.clone(),
+                reply,
+            ))
+            .await
+        {
+            Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
+            Err(_) => Err(ThreadError::Closed),
+        };
+        finish_tool_transfer(batch, result).await
+    }
+
     /// Executes one admitted call, attaching its result to the original call and tool role.
     ///
     /// # Errors

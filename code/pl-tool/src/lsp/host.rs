@@ -50,6 +50,9 @@ impl LocalLspHostBackend {
 }
 
 impl LspHostBackend for LocalLspHostBackend {
+    fn path_style(&self) -> pl_lsp::host::LspPathStyle {
+        pl_lsp::host::LspPathStyle::Native
+    }
     fn identity(&self) -> String {
         format!("local:{}", self.policy.root().display())
     }

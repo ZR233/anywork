@@ -47,7 +47,7 @@ impl Capture {
                         .await
                         .map_err(|error| io_error("create capture directory", error))?;
                 }
-                let mut file = tokio::fs::File::create(path)
+                let mut file = crate::server::regular_file::create(path.to_owned())
                     .await
                     .map_err(|error| io_error("create capture file", error))?;
                 file.write_all(header.as_bytes())

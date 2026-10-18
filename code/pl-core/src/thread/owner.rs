@@ -174,6 +174,9 @@ impl Owner {
         let mut pressure_updates = self.subscribe_pressure();
         loop {
             tokio::task::consume_budget().await;
+            if self.tools.poll_cleanup() {
+                self.publish_snapshot();
+            }
             if pressure_updates.is_none() {
                 pressure_updates = self.subscribe_pressure();
             }
@@ -198,6 +201,10 @@ impl Owner {
                     }
                     let awaiting_storage = self.state.persistence.resume_required;
                     tokio::select! {
+                        () = self.tools.next_cleanup(), if self.tools.has_cleanup() => {
+                            self.publish_snapshot();
+                            continue;
+                        },
                         Some(completion) = futures::StreamExt::next(&mut self.background), if !self.background.is_empty() => {
                             self.finish_background(completion);
                             continue;
@@ -390,6 +397,7 @@ impl Owner {
                         Err(error) => Err(error),
                     };
                     let finished = result.is_ok();
+                    self.publish_snapshot();
                     let _ = reply.send(result);
                     if finished {
                         return;
@@ -452,6 +460,8 @@ impl Owner {
             self.model = Some(model);
             return Err(ThreadError::Model(Arc::new(error)));
         }
+        self.retry_plan = None;
+        self.pending.clear();
         self.tools
             .close()
             .await
@@ -464,6 +474,7 @@ impl Owner {
 
     pub(super) fn publish_snapshot(&self) {
         let mut snapshot = self.state.clone();
+        snapshot.tool_cleanup = self.tools.cleanup_state();
         snapshot.tool_progress.retain(|id, _| {
             snapshot.lifecycle == ThreadLifecycle::Open
                 && snapshot
@@ -523,6 +534,21 @@ impl Owner {
     }
 
     pub(super) fn publish(&mut self) {
+        if self.retry_plan.as_ref().is_some_and(|(id, plan)| {
+            !self.state.attempts.last().is_some_and(|attempt| {
+                &attempt.attempt_id == id
+                    && match attempt.status {
+                        AttemptStatus::Running => true,
+                        AttemptStatus::Failed | AttemptStatus::Cancelled => {
+                            attempt.input_revision == self.state.context.revision
+                                && plan.retry_compatible(&self.tools.freeze())
+                        }
+                        _ => false,
+                    }
+            })
+        }) {
+            self.retry_plan = None;
+        }
         self.publish_once();
         // A pending output repair can only supplement a result that is already committed: the journal
         // validates a delivered context record against its delivery, so the supplement always lands in

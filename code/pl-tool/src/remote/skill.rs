@@ -47,7 +47,7 @@ impl SkillProvider for RemoteSkillProvider {
         &'a self,
         request: SkillProviderRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SkillProviderObservation>> + Send + 'a>> {
-        Box::pin(async move {
+        Box::pin(cancellable(request.cancellation.clone(), async move {
             ensure_not_cancelled(&request.cancellation)?;
             let root = request.config.project_dir.clone();
             if self
@@ -98,7 +98,7 @@ impl SkillProvider for RemoteSkillProvider {
                 complete: !listing.truncated,
                 warnings,
             })
-        })
+        }))
     }
 
     fn load<'a>(
@@ -106,7 +106,7 @@ impl SkillProvider for RemoteSkillProvider {
         candidate: &'a SkillCandidate,
         cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<SkillDefinition>> + Send + 'a>> {
-        Box::pin(async move {
+        Box::pin(cancellable(cancellation.clone(), async move {
             ensure_not_cancelled(&cancellation)?;
             let skill_file = join_remote(&candidate.locator, SKILL_FILE_NAME)?;
             let content = self.read_text(skill_file).await?;
@@ -121,7 +121,7 @@ impl SkillProvider for RemoteSkillProvider {
                 revision: content_revision(&content),
                 content,
             })
-        })
+        }))
     }
 
     fn read_resource<'a>(
@@ -130,7 +130,7 @@ impl SkillProvider for RemoteSkillProvider {
         relative_path: &'a str,
         cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
-        Box::pin(async move {
+        Box::pin(cancellable(cancellation.clone(), async move {
             ensure_not_cancelled(&cancellation)?;
             let relative = support_file_path(relative_path)?;
             let relative = relative.to_str().ok_or_else(|| {
@@ -138,7 +138,7 @@ impl SkillProvider for RemoteSkillProvider {
             })?;
             self.read_text(join_remote(&candidate.locator, relative)?)
                 .await
-        })
+        }))
     }
 }
 
@@ -214,6 +214,17 @@ fn ensure_not_cancelled(cancellation: &CancellationToken) -> Result<()> {
         ))
     } else {
         Ok(())
+    }
+}
+
+async fn cancellable<T>(
+    cancellation: CancellationToken,
+    operation: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(PureError::ConfigError("remote Skill operation was cancelled".into())),
+        result = operation => result,
     }
 }
 

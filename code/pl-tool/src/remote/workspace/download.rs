@@ -77,7 +77,6 @@ impl RemoteWorkspaceFileBackend {
         let mut expected_total = None;
         loop {
             let reply = self
-                .client
                 .request(
                     RemoteRequest::ReadRange(RemoteReadRangeRequest {
                         workspace_id: path.workspace_id.clone(),

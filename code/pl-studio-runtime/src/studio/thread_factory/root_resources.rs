@@ -211,6 +211,7 @@ impl StudioThreadFactory {
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
         let spec = StudioThreadSpec {
+            preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
                 config.runtime.openai_compaction_mode,

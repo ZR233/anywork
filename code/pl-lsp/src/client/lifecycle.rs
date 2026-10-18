@@ -101,7 +101,7 @@ impl LspClient {
             }
             initialize = rpc.request(
                 "initialize",
-                initialize_params(&self.server, self.driver.initialization_options())?,
+                initialize_params(&self.server, self.driver.initialization_options(), self.path_style())?,
                 STARTUP_TIMEOUT,
             ) => initialize,
         };

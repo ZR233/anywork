@@ -51,6 +51,11 @@ impl std::fmt::Debug for LspClient {
 }
 
 impl LspClient {
+    pub(crate) fn path_style(&self) -> crate::host::LspPathStyle {
+        self.host
+            .as_ref()
+            .map_or(crate::host::LspPathStyle::Native, |host| host.path_style())
+    }
     pub(crate) fn new(
         server: ResolvedLspServer,
         driver: Arc<dyn LspServerDriver>,

@@ -60,7 +60,7 @@ impl Owner {
         let (id, plan) = self
             .retry_plan
             .as_ref()
-            .ok_or(ThreadError::InvalidIdentity)?;
+            .ok_or(ThreadError::InvalidContext)?;
         if id != &source || !plan.retry_compatible(&self.tools.freeze()) {
             return Err(ThreadError::InvalidContext);
         }

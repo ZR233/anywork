@@ -100,6 +100,7 @@ impl StudioRuntime {
             config_runtime.clone(),
             thread_factory.clone(),
         ))?;
+        let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 store: store.clone(),
@@ -107,9 +108,11 @@ impl StudioRuntime {
                 performance: model_performance.clone(),
                 threads: threads.clone(),
                 writer: persistence.clone(),
+                recovery: recovery.clone(),
             },
         );
-        thread_observations.install(thread_factory.clone())?;
+        let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
+        thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         Ok(Self {
             owner_epoch: crate::studio::ids::new_id("runtime"),
@@ -120,7 +123,7 @@ impl StudioRuntime {
             settings_refresh: Default::default(),
             model_catalog_tasks: Default::default(),
             tool_refresh: Default::default(),
-            rejected_tools: Default::default(),
+            rejected_tools,
             tool_catalog_updates: Default::default(),
             threads,
             thread_factory,
@@ -144,7 +147,7 @@ impl StudioRuntime {
                 product_events: product_events.clone(),
             },
             runtime_state: StudioRuntimeState::new(),
-            recovery: crate::studio::StudioRecoveryRegistry::new(),
+            recovery,
             recovery_task: Default::default(),
             skills,
             thread_modes,

@@ -17,7 +17,7 @@ pub(super) async fn read(
     let path = workspaces
         .resolve_existing(&request.workspace_id, &request.path)
         .await?;
-    let mut file = tokio::fs::File::open(path)
+    let mut file = super::regular_file::read(path)
         .await
         .map_err(|error| io_error("failed to open range source", error))?;
     let metadata = file

@@ -4,6 +4,8 @@ use crate::{context::OpaquePayload, model::ModelToolDeclaration};
 use futures::future::BoxFuture;
 use std::{collections::BTreeMap, fmt, future::Future, sync::Arc};
 use tokio_util::sync::CancellationToken;
+mod retirement;
+use retirement::{ExecutorLease, Executors};
 
 /// Scope assigned by Thread; tools cannot choose their context role or call identity.
 #[derive(Debug, Clone)]
@@ -175,6 +177,7 @@ impl RejectedTools {
 pub(crate) async fn close_rejected(tools: Vec<Registration>) -> Result<(), RejectedTools> {
     let mut resources = ToolManager::default();
     resources.retain_candidates(&tools);
+    drop(tools);
     resources.close().await.map_err(|source| RejectedTools {
         rejection: None,
         source: Arc::new(source),
@@ -261,7 +264,7 @@ pub(crate) struct FrozenTool {
     execution_policy: Option<super::execution_policy::ExecutionPolicyHandle>,
     authorization: Option<ToolAuthorization>,
     declaration: ModelToolDeclaration,
-    executor: Arc<dyn Executor>,
+    executor: ExecutorLease,
     deferred: bool,
     may_end_turn: bool,
     may_update_extensions: bool,
@@ -405,7 +408,7 @@ impl Registration {
                     tool_id: id,
                     declaration,
                 },
-                executor: Arc::new(tool),
+                executor: ExecutorLease::new(tool),
                 deferred: false,
                 may_end_turn: false,
                 may_update_extensions: false,
@@ -564,8 +567,7 @@ pub enum RegistryError {
 #[derive(Debug, Default)]
 pub(crate) struct ToolManager {
     tools: BTreeMap<String, FrozenTool>,
-    owned_instances: Vec<Arc<dyn Executor>>,
-    closed_instances: usize,
+    executors: Executors,
     revealed: BTreeMap<String, ModelToolDeclaration>,
 }
 impl ToolManager {
@@ -582,14 +584,10 @@ impl ToolManager {
     /// Takes lifecycle ownership before validating a candidate registry transaction.
     pub(crate) fn retain_candidates(&mut self, registrations: &[Registration]) {
         for registration in registrations {
-            let executor = &registration.binding.executor;
-            if !self
-                .owned_instances
-                .iter()
-                .any(|owned| Arc::ptr_eq(owned, executor))
-            {
-                self.owned_instances.push(executor.clone());
-            }
+            self.executors.retain(
+                &registration.binding.declaration.tool_id,
+                &registration.binding.executor,
+            );
         }
     }
 
@@ -639,17 +637,26 @@ impl ToolManager {
     }
 
     pub(crate) async fn close(&mut self) -> Result<(), ToolError> {
-        while let Some(tool) = self.owned_instances.get(self.closed_instances) {
-            crate::error_record::catch_boundary("tool close", async { tool.close().await })
-                .await
-                .map_err(ToolError::new)??;
-            self.closed_instances += 1;
-        }
         self.tools.clear();
         self.revealed.clear();
-        self.owned_instances.clear();
-        self.closed_instances = 0;
-        Ok(())
+        self.executors.close().await
+    }
+
+    pub(crate) fn poll_cleanup(&mut self) -> bool {
+        self.executors.poll_ready()
+    }
+    pub(crate) fn retry_cleanup(&mut self) {
+        self.executors.retry_failed();
+    }
+    pub(crate) fn has_cleanup(&self) -> bool {
+        self.executors.has_pending()
+    }
+    pub(crate) async fn next_cleanup(&mut self) {
+        self.executors.next().await;
+    }
+    pub(crate) fn cleanup_state(&self) -> crate::thread::ToolCleanupState {
+        self.executors
+            .state(self.tools.values().map(|tool| &tool.executor))
     }
 
     pub(crate) fn catalog(&self) -> Arc<[ModelToolDeclaration]> {

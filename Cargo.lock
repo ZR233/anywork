@@ -2725,6 +2725,7 @@ dependencies = [
  "futures",
  "lsp-server",
  "lsp-types",
+ "percent-encoding",
  "process-wrap",
  "schemars",
  "serde",
@@ -2813,6 +2814,7 @@ dependencies = [
  "libc",
  "pl-protocol",
  "process-wrap",
+ "procfs",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3132,6 +3134,27 @@ dependencies = [
  "tokio",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "procfs"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25485360a54d6861439d60facef26de713b1e126bf015ec8f98239467a2b82f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "procfs-core",
+ "rustix",
+]
+
+[[package]]
+name = "procfs-core"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
+dependencies = [
+ "bitflags 2.13.2",
+ "hex",
 ]
 
 [[package]]

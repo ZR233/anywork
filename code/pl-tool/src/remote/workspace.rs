@@ -37,18 +37,32 @@ const DEFAULT_INSTRUCTION_FILENAMES: &[&str] = &["AGENTS.override.md", "AGENTS.m
 /// 将现有 workspace 文件端口映射到远端 helper 原语的 backend。
 #[derive(Debug, Clone)]
 pub struct RemoteWorkspaceFileBackend {
+    pub(super) lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
     client: RemoteClient,
     workspace_id: String,
     canonical_path: String,
 }
 
 impl RemoteWorkspaceFileBackend {
-    pub(crate) fn new(client: RemoteClient, workspace_id: String, canonical_path: String) -> Self {
+    pub(super) fn new(
+        client: RemoteClient,
+        lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
+    ) -> Self {
         Self {
             client,
-            workspace_id,
-            canonical_path,
+            workspace_id: lease.id.clone(),
+            canonical_path: lease.path.clone(),
+            lease,
         }
+    }
+    async fn request(
+        &self,
+        request: RemoteRequest,
+        body: &[u8],
+    ) -> std::result::Result<super::RemoteReply, RemoteClientError> {
+        self.client
+            .workspace_request(self.lease.clone(), request, body)
+            .await
     }
 
     /// 返回当前 SSH channel 内的 opaque workspace id。
@@ -61,16 +75,19 @@ impl RemoteWorkspaceFileBackend {
         &self.canonical_path
     }
 
+    pub(super) fn binding_identity(&self) -> String {
+        // Membership retains both hosts while comparing identities, so two live leases
+        // cannot reuse an allocation address. Cloned backends share the same lease.
+        // This identity is only for live in-process comparison and must not be persisted.
+        format!("remote-workspace:{:p}", std::sync::Arc::as_ptr(&self.lease))
+    }
+
     /// Whether both workspaces use the same transport and workspace handle.
     /// Equal paths or workspace IDs alone do not identify a connection.
     pub fn is_same_binding(&self, other: &Self) -> bool {
         self.client.is_same_connection(&other.client)
             && self.workspace_id == other.workspace_id
             && self.canonical_path == other.canonical_path
-    }
-
-    pub(crate) fn client(&self) -> &RemoteClient {
-        &self.client
     }
 
     fn path_request(&self, path: String, cwd: Option<String>) -> Result<RemotePathRequest> {
@@ -83,7 +100,6 @@ impl RemoteWorkspaceFileBackend {
     /// 读取目录的一层 typed entry，供本地 Skills/LSP 等编排消费。
     pub async fn list_directory_entries(&self, path: String) -> Result<RemoteDirectoryListing> {
         let reply = self
-            .client
             .request(
                 RemoteRequest::ListDirectory(RemotePathRequest {
                     workspace_id: self.workspace_id.clone(),
@@ -109,7 +125,7 @@ impl RemoteWorkspaceFileBackend {
         cwd: Option<String>,
     ) -> Result<Option<WorkspaceFileStat>> {
         let path = self.path_request(path, cwd)?;
-        let reply = self.client.request(RemoteRequest::Stat(path), &[]).await;
+        let reply = self.request(RemoteRequest::Stat(path), &[]).await;
         match reply {
             Ok(reply) => match reply.response {
                 RemoteResponse::Stat(stat) => Ok(Some(WorkspaceFileStat {
@@ -137,7 +153,6 @@ impl RemoteWorkspaceFileBackend {
     pub async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
         let request = self.path_request(path, cwd)?;
         let reply = self
-            .client
             .request(RemoteRequest::CreateDirectory(request), &[])
             .await
             .map_err(remote_file_error)?;
@@ -153,7 +168,6 @@ impl RemoteWorkspaceFileBackend {
     ) -> Result<()> {
         let path = self.path_request(path, cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::WriteFile(pl_protocol::remote::RemoteWriteRequest {
                     target: path,
@@ -175,7 +189,6 @@ impl RemoteWorkspaceFileBackend {
     ) -> Result<()> {
         let path = self.path_request(path, cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::RemovePath(RemoteRemoveRequest {
                     workspace_id: path.workspace_id,
@@ -199,7 +212,6 @@ impl RemoteWorkspaceFileBackend {
         let source = self.path_request(source, cwd.clone())?;
         let target = self.path_request(target, cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::RenamePath(RemoteRenameRequest {
                     workspace_id: source.workspace_id,
@@ -224,7 +236,6 @@ impl RemoteWorkspaceFileBackend {
         let source = self.path_request(source, cwd.clone())?;
         let target = self.path_request(target, cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::CopyPath(RemoteCopyRequest {
                     workspace_id: source.workspace_id,
@@ -306,7 +317,6 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     async fn read_text(&self, request: WorkspaceFileReadRequest) -> Result<String> {
         let path = self.path_request(request.path, request.cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::ReadBytes(RemoteReadRequest {
                     workspace_id: path.workspace_id,
@@ -330,7 +340,6 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
         let path = self.path_request(request.path, request.cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::ReadBytes(RemoteReadRequest {
                     workspace_id: path.workspace_id,
@@ -353,7 +362,6 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
         let target = self.path_request(request.path, request.cwd)?;
         let reply = self
-            .client
             .request(
                 RemoteRequest::WriteFile(pl_protocol::remote::RemoteWriteRequest {
                     target,

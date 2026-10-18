@@ -27,7 +27,218 @@ use support::{ScriptedModel, turn};
 use tool_support::tool;
 
 #[derive(Debug)]
+struct RetiringTool(tokio::sync::mpsc::UnboundedSender<&'static str>);
+
+impl Tool for RetiringTool {
+    async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::new(input, vec![]))
+    }
+    async fn close(&self) -> Result<(), ToolError> {
+        let _ = self.0.send("closed");
+        Ok(())
+    }
+}
+
+impl Drop for RetiringTool {
+    fn drop(&mut self) {
+        let _ = self.0.send("dropped");
+    }
+}
+
+#[tokio::test]
+async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("retirement".into(), DynModelSession::new(model)).unwrap();
+    for _ in 0..50 {
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        thread
+            .register_tools(vec![
+                Registration::new(
+                    "retiring".into(),
+                    OpaquePayload::text("retiring"),
+                    RetiringTool(events),
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap();
+        thread.register_tools(Vec::new()).await.unwrap();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+            .await
+            .expect("replaced executor was retained until thread close");
+        assert_eq!(closed, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+        assert_eq!(received.recv().await, None);
+    }
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut rejected = Box::pin(thread.register_tools_if_extensions(
+        thread.snapshot().extension_sequence + 1,
+        vec![
+                Registration::new(
+                    "rejected".into(),
+                    OpaquePayload::text("rejected"),
+                    RetiringTool(events),
+                )
+                .unwrap(),
+            ],
+    ));
+    assert!(futures::poll!(&mut rejected).is_pending());
+    drop(rejected);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        assert_eq!(received.recv().await, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+    })
+    .await
+    .expect("cancelled transfer lost rejected candidates");
+    thread.close().await.unwrap();
+}
+
+#[derive(Debug)]
 struct FenceTool(Arc<Mutex<Vec<u64>>>);
+
+#[derive(Debug)]
+struct FailingClose {
+    first: AtomicBool,
+    panic_on_first: bool,
+    events: tokio::sync::mpsc::UnboundedSender<&'static str>,
+}
+impl Tool for FailingClose {
+    async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::new(input, vec![]))
+    }
+    fn close(&self) -> impl Future<Output = Result<(), ToolError>> + Send {
+        let failed = self.first.swap(false, Ordering::SeqCst);
+        if failed && self.panic_on_first {
+            panic!("synthetic close construction failure");
+        }
+        let result = if failed {
+            Err(ToolError::new(std::io::Error::other(
+                "synthetic close failure",
+            )))
+        } else {
+            let _ = self.events.send("closed");
+            Ok(())
+        };
+        std::future::ready(result)
+    }
+}
+impl Drop for FailingClose {
+    fn drop(&mut self) {
+        let _ = self.events.send("dropped");
+    }
+}
+
+#[tokio::test]
+async fn tool_cleanup_retains_original_failure_and_retries_only_unfinished_instances() {
+    for panic_on_first in [false, true] {
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread =
+            ThreadHandle::start("cleanup-failure".into(), DynModelSession::new(model)).unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        thread
+            .register_tools(vec![
+                Registration::new(
+                    "failed".into(),
+                    OpaquePayload::text("failed"),
+                    FailingClose {
+                        first: AtomicBool::new(true),
+                        panic_on_first,
+                        events: events.clone(),
+                    },
+                )
+                .unwrap(),
+                Registration::new(
+                    "successful".into(),
+                    OpaquePayload::text("successful"),
+                    RetiringTool(events),
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap();
+        assert!(thread.close().await.is_err());
+        let snapshot = thread.snapshot();
+        assert_eq!(snapshot.tool_cleanup.pending, 1);
+        assert_eq!(snapshot.tool_cleanup.failures.len(), 1);
+        assert_eq!(snapshot.tool_cleanup.failures[0].tool_id, "failed");
+        let error = snapshot.tool_cleanup.failures[0].error.to_string();
+        assert!(
+            error.contains("synthetic close"),
+            "original failure was lost: {error}"
+        );
+        assert_eq!(received.recv().await, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+        thread.close().await.unwrap();
+        assert_eq!(received.recv().await, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+        assert_eq!(received.recv().await, None);
+        assert_eq!(thread.snapshot().tool_cleanup.pending, 0);
+    }
+}
+
+#[derive(Debug)]
+struct InFlightTool {
+    events: tokio::sync::mpsc::UnboundedSender<&'static str>,
+    release: Arc<tokio::sync::Notify>,
+}
+impl Tool for InFlightTool {
+    async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
+        self.events.send("executing").unwrap();
+        self.release.notified().await;
+        Ok(ToolOutput::new(input, vec![]))
+    }
+    async fn close(&self) -> Result<(), ToolError> {
+        let _ = self.events.send("closed");
+        Ok(())
+    }
+}
+impl Drop for InFlightTool {
+    fn drop(&mut self) {
+        let _ = self.events.send("dropped");
+    }
+}
+
+#[tokio::test]
+async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
+    let (model, _) = ScriptedModel::new(&["leased"]);
+    let thread = ThreadHandle::start("frozen-tool".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    thread
+        .register_tools(vec![
+            Registration::new(
+                "leased".into(),
+                OpaquePayload::text("leased"),
+                InFlightTool {
+                    events,
+                    release: release.clone(),
+                },
+            )
+            .unwrap()
+            .foreground_coexisting(),
+        ])
+        .await
+        .unwrap();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("lease")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    thread.register_tools(Vec::new()).await.unwrap();
+    assert!(
+        received.try_recv().is_err(),
+        "retirement closed a running executor"
+    );
+    release.notify_one();
+    running.await.unwrap().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        assert_eq!(received.recv().await, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+    })
+    .await
+    .unwrap();
+    thread.close().await.unwrap();
+}
 
 impl Tool for FenceTool {
     async fn execute(

@@ -4,6 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::client::uri::uri_display_path;
+use crate::host::LspPathStyle;
 use crate::query::{LspDiagnostic, LspQueryOperation};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,18 +32,23 @@ pub(crate) fn format_lsp_result(
     operation: LspQueryOperation,
     value: &Value,
     workspace_root: &Path,
+    style: LspPathStyle,
 ) -> FormattedLspResult {
     match operation {
         LspQueryOperation::GoToDefinition | LspQueryOperation::GoToImplementation => {
-            format_locations(value, workspace_root, "definition")
+            format_locations(value, workspace_root, style, "definition")
         }
-        LspQueryOperation::FindReferences => format_locations(value, workspace_root, "reference"),
+        LspQueryOperation::FindReferences => {
+            format_locations(value, workspace_root, style, "reference")
+        }
         LspQueryOperation::Hover => format_hover(value),
         LspQueryOperation::DocumentSymbol => format_document_symbols(value),
-        LspQueryOperation::WorkspaceSymbol => format_workspace_symbols(value, workspace_root),
+        LspQueryOperation::WorkspaceSymbol => {
+            format_workspace_symbols(value, workspace_root, style)
+        }
         LspQueryOperation::PrepareCallHierarchy
         | LspQueryOperation::IncomingCalls
-        | LspQueryOperation::OutgoingCalls => format_call_items(value, workspace_root),
+        | LspQueryOperation::OutgoingCalls => format_call_items(value, workspace_root, style),
         LspQueryOperation::Diagnostics => FormattedLspResult::new(value.to_string(), None, None),
     }
 }
@@ -85,8 +91,13 @@ pub(crate) fn format_diagnostics(
     FormattedLspResult::new(lines.join("\n"), Some(diagnostics.len()), Some(files.len()))
 }
 
-fn format_locations(value: &Value, workspace_root: &Path, noun: &str) -> FormattedLspResult {
-    let locations = collect_locations(value);
+fn format_locations(
+    value: &Value,
+    workspace_root: &Path,
+    style: LspPathStyle,
+    noun: &str,
+) -> FormattedLspResult {
+    let locations = collect_locations(value, style);
     if locations.is_empty() {
         return FormattedLspResult::new(format!("No {noun}s found."), Some(0), Some(0));
     }
@@ -142,7 +153,11 @@ fn format_document_symbols(value: &Value) -> FormattedLspResult {
     FormattedLspResult::new(lines.join("\n"), Some(lines.len()), None)
 }
 
-fn format_workspace_symbols(value: &Value, workspace_root: &Path) -> FormattedLspResult {
+fn format_workspace_symbols(
+    value: &Value,
+    workspace_root: &Path,
+    style: LspPathStyle,
+) -> FormattedLspResult {
     let Some(items) = value.as_array() else {
         return FormattedLspResult::new("No workspace symbols found.", Some(0), Some(0));
     };
@@ -162,7 +177,7 @@ fn format_workspace_symbols(value: &Value, workspace_root: &Path) -> FormattedLs
             .and_then(|location| location.get("uri"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        let path = uri_display_path(uri, Some(workspace_root));
+        let path = uri_display_path(uri, Some(workspace_root), style);
         files.insert(path.clone());
         lines.push(format!("{name} kind={kind} {path}"));
     }
@@ -173,7 +188,11 @@ fn format_workspace_symbols(value: &Value, workspace_root: &Path) -> FormattedLs
     FormattedLspResult::new(lines.join("\n"), Some(items.len()), Some(files.len()))
 }
 
-fn format_call_items(value: &Value, workspace_root: &Path) -> FormattedLspResult {
+fn format_call_items(
+    value: &Value,
+    workspace_root: &Path,
+    style: LspPathStyle,
+) -> FormattedLspResult {
     let Some(items) = value.as_array() else {
         return FormattedLspResult::new("No call hierarchy results found.", Some(0), Some(0));
     };
@@ -190,7 +209,7 @@ fn format_call_items(value: &Value, workspace_root: &Path) -> FormattedLspResult
                 .and_then(Value::as_str)
                 .unwrap_or("<unknown>");
             let uri = target.get("uri").and_then(Value::as_str).unwrap_or("");
-            let path = uri_display_path(uri, Some(workspace_root));
+            let path = uri_display_path(uri, Some(workspace_root), style);
             files.insert(path.clone());
             format!("{name} {path}")
         })
@@ -220,15 +239,18 @@ struct LocationText {
     character: u64,
 }
 
-fn collect_locations(value: &Value) -> Vec<LocationText> {
+fn collect_locations(value: &Value, style: LspPathStyle) -> Vec<LocationText> {
     match value {
-        Value::Array(items) => items.iter().filter_map(location_text).collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| location_text(item, style))
+            .collect(),
         Value::Null => Vec::new(),
-        item => location_text(item).into_iter().collect(),
+        item => location_text(item, style).into_iter().collect(),
     }
 }
 
-fn location_text(value: &Value) -> Option<LocationText> {
+fn location_text(value: &Value, style: LspPathStyle) -> Option<LocationText> {
     let uri = value
         .get("uri")
         .or_else(|| value.get("targetUri"))
@@ -239,7 +261,7 @@ fn location_text(value: &Value) -> Option<LocationText> {
         .or_else(|| value.get("targetRange"))?;
     let start = range.get("start")?;
     Some(LocationText {
-        path: uri_display_path(uri, None),
+        path: uri_display_path(uri, None, style),
         line: start.get("line").and_then(Value::as_u64).unwrap_or(0) + 1,
         character: start.get("character").and_then(Value::as_u64).unwrap_or(0) + 1,
     })

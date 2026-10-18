@@ -23,8 +23,13 @@ Future<void> main(List<String> args) async {
         .copy('${args[2]}/tool-image.png');
     final git = await Process.run('git', ['init', '-q', args[2]]);
     if (git.exitCode != 0) throw StateError('Fixture project: ${git.stderr}');
-    if (args.length == 4) {
+    if (args.length >= 4) {
       final target = args[3];
+      final parent = args.length >= 5 ? args[4] : '/tmp';
+      if (!RegExp(r'^/[a-zA-Z0-9_./-]+$').hasMatch(parent) ||
+          parent.split('/').contains('..')) {
+        throw ArgumentError('Expected an absolute POSIX fixture parent');
+      }
       if (!RegExp(r'^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+$').hasMatch(target)) {
         throw ArgumentError('Expected SSH user@host');
       }
@@ -34,21 +39,22 @@ Future<void> main(List<String> args) async {
         '-o',
         'ConnectTimeout=10',
         target,
-        'mktemp -d /tmp/anywork-image-acceptance-XXXXXXXX',
+        'mktemp -d $parent/anywork-image-acceptance-XXXXXXXX',
       ]);
       remoteProject = (created.stdout as String).trim();
       if (created.exitCode != 0 ||
-          !RegExp(r'^/tmp/anywork-image-acceptance-[a-zA-Z0-9]+$')
-              .hasMatch(remoteProject)) {
+          !RegExp(
+            '^${RegExp.escape(parent)}/anywork-image-acceptance-[a-zA-Z0-9]+\$',
+          ).hasMatch(remoteProject)) {
         throw StateError('Remote fixture directory: ${created.stderr}');
       }
       final copied = await Process.run('scp', [
         '-q',
         '-r',
-        '${args[2]}/scroll-fixture',
-        '${args[2]}/tool-image.png',
+        'scroll-fixture',
+        'tool-image.png',
         '$target:$remoteProject/',
-      ]);
+      ], workingDirectory: args[2]);
       if (copied.exitCode != 0) {
         throw StateError('Remote fixtures: ${copied.stderr}');
       }
@@ -598,6 +604,46 @@ Future<void> main(List<String> args) async {
       driver,
       output,
     );
+    if (args.length >= 5) {
+      final modes = <String>[];
+      for (var cycle = 0; cycle < 3; cycle++) {
+        for (final mode in ['mode.task', 'mode.simple']) {
+          await driver.sendCommand(
+            RawTap(find.byValueKey('session-mode-selector')),
+          );
+          await driver.sendCommand(
+            RawTap(find.byValueKey('session-mode-$mode')),
+          );
+          final deadline = DateTime.now().add(const Duration(seconds: 30));
+          while ((await snapshot())['workspace']?['threadMode'] != mode) {
+            if (DateTime.now().isAfter(deadline)) {
+              throw StateError('Mode refresh did not commit $mode');
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+          modes.add(mode);
+        }
+      }
+      evidence['resourceLifecycleModes'] = modes;
+      await File('${output.path}/resource-lifecycle.png')
+          .writeAsBytes(await driver.screenshot());
+      final id = (await snapshot())['workspace']['threadId'] as String;
+      await driver.sendCommand(RawTap(find.byValueKey('thread-menu-$id')));
+      await driver.sendCommand(
+        RawTap(find.byValueKey('thread-menu-archive-$id')),
+      );
+      await driver.sendCommand(
+        RawTap(find.byValueKey('thread-archive-confirm')),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      while ((await snapshot())['workspace']?['threadId'] == id) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw StateError('Thread close did not complete');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      evidence['resourceLifecycleArchived'] = true;
+    }
     if (evidence['checksPassed'] != true) exitCode = 1;
   } finally {
     await File('${output.path}/tool-scroll.json')

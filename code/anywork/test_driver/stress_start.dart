@@ -55,9 +55,16 @@ Future<void> main(List<String> args) async {
       }
       await driver.tap(find.byValueKey('ssh-server-save'));
       await driver.waitFor(
+        find.byValueKey('add-project-continue-ready'),
+        timeout: const Duration(seconds: 15),
+      );
+      await driver.tap(find.byValueKey('add-project-continue-ready'));
+      await stage('remote_connecting');
+      await driver.waitFor(
         find.byValueKey('ssh-directory-list'),
         timeout: const Duration(seconds: 120),
       );
+      await stage('remote_directory_ready');
       await driver.tap(find.byValueKey('ssh-directory-path-input'));
       await driver.enterText(args[1]);
       await driver.tap(find.byValueKey('ssh-directory-go'));

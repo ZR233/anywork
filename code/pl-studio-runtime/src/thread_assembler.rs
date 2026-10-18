@@ -55,6 +55,8 @@ pub enum AgentControlExposure {
 
 /// Already resolved product inputs. Tool instances are transferred once, never cloned.
 pub struct StudioThreadSpec {
+    /// Owns unpublished preparation until the assembler registers its cleanup owner.
+    pub preparation_guard: Option<ThreadPreparationGuard>,
     pub context_preparation: Option<pl_core::thread::context_preparation::ContextPreparer>,
     pub agent_controls: AgentControlExposure,
     pub execution: pl_core::thread::input::InputDriverOptions,
@@ -72,6 +74,24 @@ pub struct StudioThreadSpec {
     pub resources: ResourceAccess,
     pub capacity: ContextCapacity,
     pub cold_store: Option<ColdStoreHandle>,
+}
+
+/// Synchronous ownership transfer for preparation that has not entered the owner registry.
+pub struct ThreadPreparationGuard(Option<Box<dyn FnOnce() + Send + Sync>>);
+impl ThreadPreparationGuard {
+    pub(crate) fn new(cleanup: impl FnOnce() + Send + Sync + 'static) -> Self {
+        Self(Some(Box::new(cleanup)))
+    }
+    fn disarm(mut self) {
+        self.0.take();
+    }
+}
+impl Drop for ThreadPreparationGuard {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            cleanup();
+        }
+    }
 }
 
 impl std::fmt::Debug for StudioThreadSpec {
@@ -155,7 +175,7 @@ pub enum ThreadAssemblyError {
         id: String,
         #[source]
         setup: Box<ThreadError>,
-        cleanup: Box<ThreadError>,
+        cleanup: Box<ThreadAssemblyError>,
     },
 }
 
@@ -314,6 +334,9 @@ impl StudioThreadAssembler {
                 thread: thread.clone(),
             },
         );
+        if let Some(guard) = spec.preparation_guard.take() {
+            guard.disarm();
+        }
         let setup = async {
             thread
                 .set_context_preparation(spec.context_preparation)
@@ -363,8 +386,22 @@ impl StudioThreadAssembler {
         }
         .await;
         if let Err(setup) = setup {
+            if let Err(cleanup) = self.prepare_close(&spec.id, &thread).await {
+                return Err(ThreadAssemblyError::Cleanup {
+                    id: spec.id,
+                    setup: Box::new(setup),
+                    cleanup: Box::new(cleanup),
+                });
+            }
             match thread.close().await {
                 Ok(()) => {
+                    if let Err(cleanup) = self.drain_observation(&spec.id).await {
+                        return Err(ThreadAssemblyError::Cleanup {
+                            id: spec.id,
+                            setup: Box::new(setup),
+                            cleanup: Box::new(cleanup),
+                        });
+                    }
                     let removed = { self.0.state().entries.remove(&spec.id) };
                     drop(removed);
                 }
@@ -372,7 +409,7 @@ impl StudioThreadAssembler {
                     return Err(ThreadAssemblyError::Cleanup {
                         id: spec.id,
                         setup: Box::new(setup),
-                        cleanup: Box::new(cleanup),
+                        cleanup: Box::new(cleanup.into()),
                     });
                 }
             }
@@ -614,6 +651,23 @@ impl StudioThreadAssembler {
             targets
         };
         targets.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        // Broadcast cancellation to the entire tree before the first dependent wait.
+        // Each close below awaits the same retained cleanup barrier.
+        let owners = {
+            let state = self.0.state();
+            targets
+                .iter()
+                .filter_map(|(_, id)| {
+                    state
+                        .entries
+                        .get(id)
+                        .map(|entry| (id.clone(), entry.thread.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, owner) in owners {
+            drop(self.prepare_close(&id, &owner));
+        }
         for (_, id) in targets {
             self.close(&id).await?;
         }
@@ -714,6 +768,7 @@ impl StudioThreadAssembler {
         let Some((incarnation, thread)) = thread else {
             return Ok(());
         };
+        self.prepare_close(id, &thread).await?;
         if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
             let closed = thread.close().await;
             if let Err(error) = closed

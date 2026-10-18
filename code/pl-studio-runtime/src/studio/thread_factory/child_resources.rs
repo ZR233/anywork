@@ -74,7 +74,7 @@ impl StudioChildResources for StudioThreadFactory {
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
                 .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
         let store = FileResourceStore::new(self.services.store.session_resources_dir(&request.id));
-        let prepared_tools = self
+        let mut prepared_tools = self
             .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
                 thread_id: &request.id,
                 cancellation: &request.cancellation,
@@ -173,6 +173,7 @@ impl StudioChildResources for StudioThreadFactory {
         .await
         .map_err(|error| resource_error("open child chat session", error))?;
         let spec = StudioThreadSpec {
+            preparation_guard: prepared_tools.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &profile.route,
                 profile.config.runtime.openai_compaction_mode,

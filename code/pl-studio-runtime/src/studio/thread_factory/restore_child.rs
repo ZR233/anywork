@@ -173,7 +173,7 @@ impl StudioThreadFactory {
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
 
         let resources = FileResourceStore::new(self.services.store.session_resources_dir(id));
-        let prepared = self
+        let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
                 cancellation: &request.cancellation,
@@ -207,6 +207,7 @@ impl StudioThreadFactory {
             );
         }
         let spec = StudioThreadSpec {
+            preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
                 config.runtime.openai_compaction_mode,

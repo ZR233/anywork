@@ -52,6 +52,9 @@ pub(crate) struct ManualGuiOptions {
     /// Run tool-scroll against an explicitly supplied SSH test host (user@host).
     #[arg(long, value_name = "USER@HOST")]
     pub(crate) ssh_target: Option<String>,
+    /// Parent directory for synthetic remote fixtures; must already exist.
+    #[arg(long, value_name = "PATH", requires = "ssh_target")]
+    pub(crate) ssh_workspace_parent: Option<String>,
     /// Damage an isolated startup input, then capture recovery and its backup.
     #[arg(long, value_parser = ["config", "database", "log", "cache"])]
     pub(crate) startup_fault: Option<String>,
@@ -1041,6 +1044,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 .stderr(Stdio::from(log));
             if let Some(target) = &options.ssh_target {
                 command.arg(target);
+                if let Some(parent) = &options.ssh_workspace_parent {
+                    command.arg(parent);
+                }
             }
             let mut driver = OwnedProcess::start(&mut command, false)?;
             let deadline = Instant::now() + Duration::from_secs(600);

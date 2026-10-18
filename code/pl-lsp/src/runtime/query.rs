@@ -25,7 +25,7 @@ impl LspRuntimeRegistry {
             .client_for_query_in_workspace(&workspace_root, &query)
             .await?;
         if let Some(path) = query.file_path.as_deref() {
-            let uri = path_to_file_uri(path);
+            let uri = path_to_file_uri(path, client.path_style());
             let _ = client.open_document(path, &uri).await;
         }
         let value = match request_for_query(&client, &query).await {
@@ -36,7 +36,12 @@ impl LspRuntimeRegistry {
                 return Err(error);
             }
         };
-        let formatted = format_lsp_result(query.operation, &value, &resolved.workspace_root);
+        let formatted = format_lsp_result(
+            query.operation,
+            &value,
+            &resolved.workspace_root,
+            client.path_style(),
+        );
         Ok(LspQueryResult {
             success: true,
             operation: query.operation,

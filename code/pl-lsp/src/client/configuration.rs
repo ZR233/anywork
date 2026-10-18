@@ -18,8 +18,9 @@ use crate::runtime::{LspResult, ResolvedLspServer};
 pub(crate) fn initialize_params(
     server: &ResolvedLspServer,
     initialization_options: Value,
+    style: crate::host::LspPathStyle,
 ) -> LspResult<Value> {
-    let workspace_uri = file_uri(&server.workspace_root)?;
+    let workspace_uri = file_uri(&server.workspace_root, style)?;
     let workspace_name = server
         .workspace_root
         .file_name()
@@ -65,9 +66,10 @@ pub(crate) fn workspace_configuration_response(
 pub(crate) fn watched_file_event_params(
     path: &Path,
     typ: FileChangeType,
+    style: crate::host::LspPathStyle,
 ) -> LspResult<DidChangeWatchedFilesParams> {
     Ok(DidChangeWatchedFilesParams {
-        changes: vec![FileEvent::new(file_uri(path)?, typ)],
+        changes: vec![FileEvent::new(file_uri(path, style)?, typ)],
     })
 }
 

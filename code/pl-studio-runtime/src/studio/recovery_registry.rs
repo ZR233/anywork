@@ -119,9 +119,9 @@ impl StudioRecoveryRegistry {
         let mut inner = self.inner.lock().expect("recovery lock poisoned");
         // Keep observer-owned issues; merge only the audit's categories and never resurrect
         // a result removed by a user or retired owner while this scan was in flight.
-        inner
-            .issues
-            .retain(|issue| issue.id.starts_with("tool-refresh:"));
+        inner.issues.retain(|issue| {
+            issue.id.starts_with("tool-refresh:") || issue.id.starts_with("tool-cleanup:")
+        });
         for issue in issues {
             if !inner.removed.contains(&issue.id)
                 && !issue

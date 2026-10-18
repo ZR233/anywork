@@ -34,7 +34,7 @@ pub(crate) async fn request_for_query(
     client: &Arc<LspClient>,
     query: &LspQuery,
 ) -> LspResult<Value> {
-    let (method, params) = method_and_params(query)?;
+    let (method, params) = method_and_params(query, client.path_style())?;
     let mut value = request_with_content_modified_retries(client, &method, &params).await?;
     if query.operation.requires_position() && is_empty_semantic_result(&value) {
         client.wait_until_idle(SEMANTIC_STARTUP_TIMEOUT).await;
@@ -113,17 +113,20 @@ fn is_empty_semantic_result(value: &Value) -> bool {
         })
 }
 
-pub(crate) fn method_and_params(query: &LspQuery) -> LspResult<(String, Value)> {
+pub(crate) fn method_and_params(
+    query: &LspQuery,
+    style: crate::host::LspPathStyle,
+) -> LspResult<(String, Value)> {
     match query.operation {
         LspQueryOperation::Hover => serialize_params::<HoverRequest>(HoverParams {
-            text_document_position_params: text_document_position(query)?,
+            text_document_position_params: text_document_position(query, style)?,
             work_done_progress_params: WorkDoneProgressParams::default(),
         }),
         LspQueryOperation::GoToDefinition => {
-            serialize_params::<GotoDefinition>(definition_params(query)?)
+            serialize_params::<GotoDefinition>(definition_params(query, style)?)
         }
         LspQueryOperation::FindReferences => serialize_params::<References>(ReferenceParams {
-            text_document_position: text_document_position(query)?,
+            text_document_position: text_document_position(query, style)?,
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
             context: ReferenceContext {
@@ -132,7 +135,7 @@ pub(crate) fn method_and_params(query: &LspQuery) -> LspResult<(String, Value)> 
         }),
         LspQueryOperation::DocumentSymbol => {
             serialize_params::<DocumentSymbolRequest>(DocumentSymbolParams {
-                text_document: text_document(query)?,
+                text_document: text_document(query, style)?,
                 work_done_progress_params: WorkDoneProgressParams::default(),
                 partial_result_params: PartialResultParams::default(),
             })
@@ -144,13 +147,13 @@ pub(crate) fn method_and_params(query: &LspQuery) -> LspResult<(String, Value)> 
             })
         }
         LspQueryOperation::GoToImplementation => {
-            serialize_params::<GotoImplementation>(definition_params(query)?)
+            serialize_params::<GotoImplementation>(definition_params(query, style)?)
         }
         LspQueryOperation::PrepareCallHierarchy
         | LspQueryOperation::IncomingCalls
         | LspQueryOperation::OutgoingCalls => {
             serialize_params::<CallHierarchyPrepare>(CallHierarchyPrepareParams {
-                text_document_position_params: text_document_position(query)?,
+                text_document_position_params: text_document_position(query, style)?,
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
         }
@@ -158,15 +161,21 @@ pub(crate) fn method_and_params(query: &LspQuery) -> LspResult<(String, Value)> 
     }
 }
 
-fn definition_params(query: &LspQuery) -> LspResult<GotoDefinitionParams> {
+fn definition_params(
+    query: &LspQuery,
+    style: crate::host::LspPathStyle,
+) -> LspResult<GotoDefinitionParams> {
     Ok(GotoDefinitionParams {
-        text_document_position_params: text_document_position(query)?,
+        text_document_position_params: text_document_position(query, style)?,
         work_done_progress_params: WorkDoneProgressParams::default(),
         partial_result_params: PartialResultParams::default(),
     })
 }
 
-fn text_document_position(query: &LspQuery) -> LspResult<TextDocumentPositionParams> {
+fn text_document_position(
+    query: &LspQuery,
+    style: crate::host::LspPathStyle,
+) -> LspResult<TextDocumentPositionParams> {
     let line = query
         .line
         .ok_or_else(|| LspRuntimeError::InvalidQuery("line is required".to_string()))?;
@@ -179,18 +188,21 @@ fn text_document_position(query: &LspQuery) -> LspResult<TextDocumentPositionPar
         ));
     }
     Ok(TextDocumentPositionParams {
-        text_document: text_document(query)?,
+        text_document: text_document(query, style)?,
         position: Position::new(line - 1, character - 1),
     })
 }
 
-fn text_document(query: &LspQuery) -> LspResult<TextDocumentIdentifier> {
+fn text_document(
+    query: &LspQuery,
+    style: crate::host::LspPathStyle,
+) -> LspResult<TextDocumentIdentifier> {
     let path = query
         .file_path
         .as_deref()
         .ok_or_else(|| LspRuntimeError::InvalidQuery("filePath is required".to_string()))?;
     Ok(TextDocumentIdentifier {
-        uri: file_uri(path)?,
+        uri: file_uri(path, style)?,
     })
 }
 

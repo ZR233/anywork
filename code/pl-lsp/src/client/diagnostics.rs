@@ -13,6 +13,7 @@ use super::uri::{file_uri_to_path, normalize_separators};
 /// 诊断收集器，负责接收 LSP 服务器发布的诊断信息并存储。
 #[derive(Clone)]
 pub(crate) struct DiagnosticSink {
+    style: crate::host::LspPathStyle,
     server_id: String,
     workspace_root: PathBuf,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnostic>>>>,
@@ -25,8 +26,10 @@ impl DiagnosticSink {
         workspace_root: PathBuf,
         diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnostic>>>>,
         updates: tokio::sync::broadcast::Sender<()>,
+        style: crate::host::LspPathStyle,
     ) -> Self {
         Self {
+            style,
             server_id,
             workspace_root,
             diagnostics,
@@ -36,7 +39,7 @@ impl DiagnosticSink {
 
     pub async fn publish(&self, params: PublishDiagnosticsParams) {
         let received_at = unix_seconds();
-        let path = file_uri_to_path(params.uri.as_str());
+        let path = file_uri_to_path(params.uri.as_str(), self.style);
         let display_path = path
             .strip_prefix(&self.workspace_root)
             .map(normalize_separators)

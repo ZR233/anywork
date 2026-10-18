@@ -4,10 +4,11 @@ use std::str::FromStr;
 use lsp_types::Uri;
 use url::Url;
 
+use crate::host::LspPathStyle;
 use crate::runtime::{LspResult, LspRuntimeError};
 
-pub(crate) fn file_uri(path: &Path) -> LspResult<Uri> {
-    parse_uri(&path_to_file_uri(path))
+pub(crate) fn file_uri(path: &Path, style: LspPathStyle) -> LspResult<Uri> {
+    parse_uri(&path_to_file_uri(path, style))
 }
 
 pub(crate) fn parse_uri(uri: &str) -> LspResult<Uri> {
@@ -15,7 +16,20 @@ pub(crate) fn parse_uri(uri: &str) -> LspResult<Uri> {
         .map_err(|error| LspRuntimeError::InvalidQuery(format!("invalid file URI: {error}")))
 }
 
-pub(crate) fn path_to_file_uri(path: &Path) -> String {
+pub(crate) fn path_to_file_uri(path: &Path, style: LspPathStyle) -> String {
+    if style == LspPathStyle::Posix {
+        let path = normalize_separators(path);
+        assert!(
+            path.starts_with('/'),
+            "POSIX LSP paths must already be absolute"
+        );
+        let mut uri = Url::parse("file:///").expect("static file URL");
+        uri.path_segments_mut()
+            .expect("file URL has path segments")
+            .clear()
+            .extend(path.split('/').skip(1));
+        return uri.into();
+    }
     debug_assert!(
         path.is_absolute(),
         "LSP file URI paths must already be absolute: {}",
@@ -31,11 +45,20 @@ pub(crate) fn path_to_file_uri(path: &Path) -> String {
         .into()
 }
 
-pub(crate) fn file_uri_to_path(uri: &str) -> PathBuf {
+pub(crate) fn file_uri_to_path(uri: &str, style: LspPathStyle) -> PathBuf {
     Url::parse(uri)
         .ok()
         .filter(|url| url.scheme() == "file")
         .and_then(|url| {
+            if style == LspPathStyle::Posix {
+                if url.has_host() {
+                    return None;
+                }
+                return percent_encoding::percent_decode_str(url.path())
+                    .decode_utf8()
+                    .ok()
+                    .map(|path| PathBuf::from(path.as_ref()));
+            }
             let path = url.to_file_path().ok()?;
             let uri_path = url.path().as_bytes();
             let is_windows_drive = uri_path.first() == Some(&b'/')
@@ -54,8 +77,12 @@ pub(crate) fn file_uri_to_path(uri: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(uri))
 }
 
-pub(crate) fn uri_display_path(uri: &str, workspace_root: Option<&Path>) -> String {
-    let path = file_uri_to_path(uri);
+pub(crate) fn uri_display_path(
+    uri: &str,
+    workspace_root: Option<&Path>,
+    style: LspPathStyle,
+) -> String {
+    let path = file_uri_to_path(uri, style);
     if let Some(root) = workspace_root
         && let Ok(relative) = path.strip_prefix(root)
     {

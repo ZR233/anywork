@@ -210,6 +210,7 @@ impl Drop for Observation {
 }
 #[derive(Clone)]
 pub(super) struct ObservationServices {
+    pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
     pub(super) performance: ModelPerformanceOwner,
@@ -247,10 +248,12 @@ impl ThreadObservations {
     pub(super) fn install(
         &self,
         thread_factory: crate::studio::thread_factory::StudioThreadFactory,
+        rejected_tools: super::rejected_tools::RejectedToolOwners,
     ) -> Result<()> {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let message_store = self.0.projector.store.clone();
+        let closing_factory = thread_factory.clone();
         self.0.projector.threads.observe_assembly(
             move |id, thread| {
                 if let Some(owner) = owner.upgrade() {
@@ -322,6 +325,17 @@ impl ThreadObservations {
                     ))
                 })
             })),
+            move |id, thread| {
+                // Cancellation is synchronous, so no new preparation can pass the gate.
+                let gate = closing_factory.stop_tool_operation(&id);
+                let rejected = rejected_tools.clone();
+                Box::pin(async move {
+                    let _guard = match gate { Some(gate) => Some(gate.lock_owned().await), None => None };
+                    rejected.retry(Some(&thread)).await.map_err(|source| crate::thread_assembler::ThreadAssemblyError::Resource {
+                        operation: "drain Thread tool candidates", source: source.into_boxed_dyn_error(),
+                    })
+                })
+            },
         )?;
         Ok(())
     }
@@ -1092,6 +1106,40 @@ async fn run(
     // follows every owner snapshot so streaming previews reach the same single publisher.
     let mut projected = None;
     loop {
+        let issue_id = format!("tool-cleanup:{}", worker.id);
+        let issue = (!current.tool_cleanup.failures.is_empty()).then(|| {
+            crate::studio::StudioRecoveryIssue {
+                id: issue_id.clone(),
+                scope: crate::studio::StudioRecoveryIssueScope::Thread,
+                category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
+                action: crate::studio::StudioRecoveryIssueAction::Retry,
+                project_id: None,
+                thread_id: Some(worker.id.clone()),
+                worktree: None,
+                message: current
+                    .tool_cleanup
+                    .failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.tool_id, failure.error))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }
+        });
+        worker.services.recovery.update_if_current(
+            &issue_id,
+            issue,
+            || {
+                worker
+                    .services
+                    .threads
+                    .observed_threads()
+                    .iter()
+                    .any(|(id, thread)| id == &worker.id && thread.same_instance(&worker.thread))
+            },
+            |issues| {
+                worker.services.events.emit_recovery_state(issues);
+            },
+        );
         let products = projected != Some((current.commit_sequence, current.lifecycle));
         // Read the coordinator's newest typed facts before publishing: a storage change is a fact
         // this pass has to carry, exactly like a commit or a preview it also projects.

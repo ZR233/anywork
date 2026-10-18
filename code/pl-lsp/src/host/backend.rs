@@ -146,6 +146,8 @@ impl LspHostProcess {
 ///
 /// 实现不得承担 JSON-RPC、server schema、诊断、工具输出或持久化逻辑。
 pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
+    /// Path semantics of the machine owning these files and the language server.
+    fn path_style(&self) -> LspPathStyle;
     /// 标识当前 workspace handle；transport 重连后必须变化。
     fn identity(&self) -> String;
 
@@ -173,4 +175,11 @@ pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
         &'a self,
         request: LspHostSpawnRequest,
     ) -> BoxFuture<'a, Result<LspHostProcess, LspHostError>>;
+}
+
+/// File paths belong to the server host, independently of the client operating system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspPathStyle {
+    Native,
+    Posix,
 }

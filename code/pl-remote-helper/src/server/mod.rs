@@ -3,7 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use pl_protocol::remote::{
-    REMOTE_PROTOCOL_VERSION, RemoteCapability, RemoteCopyRequest, RemoteDirectoryEntry,
+    REMOTE_OUTPUT_CHUNK_BYTES, REMOTE_OUTPUT_WINDOW, REMOTE_PROTOCOL_VERSION,
+    REMOTE_REQUEST_CAPACITY, RemoteCapability, RemoteCopyRequest, RemoteDirectoryEntry,
     RemoteDirectoryListing, RemoteError, RemoteErrorCode, RemoteFileStat, RemoteHello,
     RemoteMessage, RemotePathRequest, RemoteReadRequest, RemoteRemoveRequest, RemoteRenameRequest,
     RemoteRequest, RemoteResponse, RemoteShellDescriptor, RemoteShellDialect,
@@ -20,6 +21,7 @@ mod lease;
 mod outbound;
 mod process;
 mod read_range;
+mod regular_file;
 mod write;
 
 use lease::LeaseReader;
@@ -62,22 +64,18 @@ where
     }));
     let (processes, mut registry_task) = ProcessRegistry::new(writer.clone(), shell);
     let (reader, activity) = LeaseReader::new(reader);
-    let outcome = tokio::select! {
-        biased;
-        result = serve_requests(reader, &writer, &state, &processes) => result,
-        () = lease::wait_expired(activity) => Err(ServerError::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "remote helper heartbeat lease expired",
-        ))),
-    };
-    // EOF, malformed input and write failures all seal the byte stream before cleanup.
-    writer.close();
-    let cleanup = processes.terminate_all().await;
+    let reader = tokio::io::BufReader::with_capacity(
+        REMOTE_OUTPUT_CHUNK_BYTES * REMOTE_OUTPUT_WINDOW,
+        reader,
+    );
+    let outcome = serve_requests(reader, &writer, &state, &processes, activity).await;
     let registry_outcome = registry_task.wait().await;
     let write_outcome = writer_task.wait().await.map_err(ServerError::Io);
-    cleanup.map_err(ServerError::Cleanup)?;
     registry_outcome.map_err(ServerError::Cleanup)?;
-    outcome.and(write_outcome)
+    if matches!(outcome, Err(ServerError::Cleanup(_))) {
+        return outcome;
+    }
+    write_outcome.and(outcome)
 }
 
 async fn serve_requests<R>(
@@ -85,12 +83,20 @@ async fn serve_requests<R>(
     writer: &Outbound,
     state: &Arc<Mutex<ServerState>>,
     processes: &ProcessRegistry,
+    activity: tokio::sync::watch::Receiver<tokio::time::Instant>,
 ) -> Result<(), ServerError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut handlers = tokio::task::JoinSet::new();
-    let outcome = receive_requests(reader, writer, state, processes, &mut handlers).await;
+    let outcome = tokio::select! {
+        biased;
+        result = receive_requests(reader, writer, state, processes, &mut handlers) => result,
+        () = lease::wait_expired(activity) => Err(ServerError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "remote helper heartbeat lease expired",
+        ))),
+    };
     writer.close();
     let cleanup = processes.terminate_all().await;
     let mut handler_failure = None;
@@ -128,7 +134,11 @@ async fn receive_requests<R>(
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let capacity = Arc::new(tokio::sync::Semaphore::new(REMOTE_REQUEST_CAPACITY));
     loop {
+        while let Some(result) = handlers.try_join_next() {
+            result.map_err(io::Error::other)??;
+        }
         // read_frame has partial IO state. Keep the same future when a handler completes.
         let incoming = read_frame(&mut reader);
         tokio::pin!(incoming);
@@ -205,7 +215,7 @@ where
             write_response(writer, request_id, response, &[]).await?;
             continue;
         }
-        if handlers.len() >= 32 {
+        let Ok(admission) = capacity.clone().try_acquire_owned() else {
             write_response(
                 writer,
                 request_id,
@@ -217,7 +227,7 @@ where
             )
             .await?;
             continue;
-        }
+        };
         let state = state.clone();
         let processes = processes.clone();
         let writer = writer.clone();
@@ -227,7 +237,9 @@ where
                 Ok(outcome) => outcome,
                 Err(error) => (RemoteResponse::Error(error), Vec::new()),
             };
-            write_response(&writer, request_id, response, &body).await?;
+            writer
+                .respond(request_id, response, body, admission)
+                .await?;
             Ok(())
         });
     }
@@ -435,11 +447,21 @@ async fn read_bytes(
     state: &Arc<Mutex<ServerState>>,
     request: RemoteReadRequest,
 ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
+    if request.max_bytes > pl_protocol::remote::REMOTE_MAX_BODY_BYTES {
+        return Err(remote_error(
+            RemoteErrorCode::InvalidRequest,
+            "read limit exceeds remote body capacity",
+        ));
+    }
     let workspaces = state.lock().await.workspaces.clone();
     let path = workspaces
         .resolve_existing(&request.workspace_id, &request.path)
         .await?;
-    let metadata = tokio::fs::metadata(&path)
+    let file = regular_file::read(path)
+        .await
+        .map_err(|error| io_error("failed to open regular file", error))?;
+    let metadata = file
+        .metadata()
         .await
         .map_err(|error| io_error("failed to inspect file", error))?;
     if !metadata.is_file() {
@@ -454,9 +476,18 @@ async fn read_bytes(
             format!("file exceeds {} byte limit", request.max_bytes),
         ));
     }
-    let bytes = tokio::fs::read(path)
+    let mut bytes = Vec::new();
+    use tokio::io::AsyncReadExt;
+    file.take(request.max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
         .await
         .map_err(|error| io_error("failed to read file", error))?;
+    if bytes.len() > request.max_bytes {
+        return Err(remote_error(
+            RemoteErrorCode::InvalidRequest,
+            "file grew beyond read limit",
+        ));
+    }
     Ok((RemoteResponse::Bytes, bytes))
 }
 
@@ -565,7 +596,7 @@ async fn copy_path(
                 .await
                 .map_err(|error| io_error("failed to create copy directory", error))?;
         }
-        tokio::fs::copy(source, target)
+        regular_file::copy(source, target)
             .await
             .map_err(|error| io_error("failed to copy file", error))?;
     }
@@ -656,7 +687,7 @@ async fn copy_directory(source: &Path, target: &Path) -> Result<(), RemoteError>
             if metadata.is_dir() {
                 stack.push((source_path, target_path));
             } else if metadata.is_file() {
-                tokio::fs::copy(source_path, target_path)
+                regular_file::copy(source_path, target_path)
                     .await
                     .map_err(|error| io_error("failed to copy entry", error))?;
             }

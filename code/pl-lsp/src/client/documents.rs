@@ -140,7 +140,7 @@ impl LspClient {
         }
         self.notify(
             "workspace/didChangeWatchedFiles",
-            watched_file_event_params(path, typ)?,
+            watched_file_event_params(path, typ, self.path_style())?,
         )
         .await
     }

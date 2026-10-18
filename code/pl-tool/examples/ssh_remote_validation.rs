@@ -51,7 +51,31 @@ async fn main() -> anyhow::Result<()> {
     let host = manager
         .open_workspace_host("validation", workspace.clone())
         .await?;
+    let cached = manager
+        .open_workspace_host("validation", workspace.clone())
+        .await?;
+    anyhow::ensure!(host.identity() == cached.identity());
+    drop(cached);
     let files = Arc::new(host.files.clone());
+    files.create_directory("leases".into(), None).await?;
+    for cycle in 0..50 {
+        let path = format!("leases/{cycle}");
+        files.create_directory(path.clone(), None).await?;
+        let path = format!("{workspace}/{path}");
+        let opened = manager
+            .open_workspace_host("validation", path.clone())
+            .await?;
+        let identity = opened.files.workspace_id().to_owned();
+        drop(opened);
+        let reopened = manager.open_workspace_host("validation", path).await?;
+        anyhow::ensure!(
+            reopened.files.workspace_id() != identity,
+            "workspace cache permanently retained its last user"
+        );
+        drop(reopened);
+    }
+    files.remove_path("leases".into(), None, true).await?;
+    println!("workspace leases: 50 distinct open/drop/reopen cycles PASS");
     files.create_directory("nested".to_string(), None).await?;
     files
         .write_text(WorkspaceFileWriteRequest {
@@ -271,6 +295,14 @@ async fn main() -> anyhow::Result<()> {
     wait_until_ready(&mut connection_state).await?;
 
     let reconnected = manager.open_workspace_host("validation", workspace).await?;
+    anyhow::ensure!(
+        host.identity() != reconnected.identity(),
+        "reconnect reused a retired LSP workspace identity"
+    );
+    println!(
+        "LSP binding generation: PASS (helper workspace id reused: {})",
+        host.files.workspace_id() == reconnected.files.workspace_id()
+    );
     let reconnected_files = Arc::new(reconnected.files);
     let cleanup_check = run_remote(
         &reconnected.git,
