@@ -3,6 +3,7 @@
 这些图片是计划工作区重构的文档展示资产，不是自动化 golden。全部来自同一次成功的
 Linux/X11 原生 `plan-recovery` 流程，使用隔离数据根、真实 bridge 和本地严格 fixture；
 界面为中文，计划正文与反馈为合成英文样例，不含真实用户数据、凭据或调试地址。
+截图基于已同步 `main` 的 `22ea0f6d`（含 #101 上下文状态展示）之后的最终整合版本。
 
 | 完整窗口截图 | 展示内容 |
 | --- | --- |
@@ -29,7 +30,7 @@ Linux/X11 原生 `plan-recovery` 流程，使用隔离数据根、真实 bridge 
 生命周期均正常 shutdown，本工作区所属验收进程已回收。修订后还核对到 1 条 pending 计划行
 与 1 条保留的旧修改回执行，避免把正确历史误判为重复待确认卡片。
 
-原始证据位于忽略目录 `target/manual-gui/plan-workspace-final-aligned`。harness 的默认
+原始证据位于忽略目录 `target/manual-gui/plan-workspace-main-final`。harness 的默认
 `humanVerdict: pending` 不代表人工判断；上文是独立的视觉复核结论。原始日志、快照、一次性
 脚本不随文档提交。
 
