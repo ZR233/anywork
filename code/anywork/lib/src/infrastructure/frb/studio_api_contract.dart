@@ -593,9 +593,9 @@ class FrbStudioTransport
     }
   }
 
-  /// 共享同一退出 future：重复调用（重复关窗、dispose、driver）复用同一次收束，绝不复位
-  /// 或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束得到的
-  /// typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
+  /// 共享同一退出 future：重复调用（重复退出请求、dispose、driver）复用同一次收束，
+  /// 绝不复位或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束
+  /// 得到的 typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
   static Future<StudioShutdownReport> shutdownAndDispose({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],

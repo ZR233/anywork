@@ -213,7 +213,8 @@ abstract final class StudioDriverState {
     _nativeCleanupBudgetMs = cleanupBudgetMs;
   }
 
-  /// 记录一次退出请求（窗口关闭 / ServicesBinding / Driver / dispose）。
+  /// 记录一次应用退出请求（托盘退出 / 系统会话结束 / 无托盘窗口关闭 /
+  /// ServicesBinding / Driver / dispose）。
   static void markExitRequested() {
     _exitRequests++;
   }

@@ -2,6 +2,8 @@
   "promptAccepted": "已受理",
   "composerSendAndContinue": "发送并继续",
   "appTitle": "糊来帮",
+  "trayShowWindow": "显示主窗口",
+  "trayExit": "退出",
   "sidebarProjects": "项目",
   "sidebarSessions": "会话",
   "sidebarLoadingMore": "正在加载更多会话…",

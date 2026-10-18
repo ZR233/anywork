@@ -19,6 +19,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appTitle => 'anywork';
 
   @override
+  String get trayShowWindow => 'Show main window';
+
+  @override
+  String get trayExit => 'Exit';
+
+  @override
   String get sidebarProjects => 'Projects';
 
   @override

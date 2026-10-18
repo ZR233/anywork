@@ -33,6 +33,10 @@ static void request_exit_cb() {
 
 // Intercept the window close before Dart: arm the native deadline and hand the
 // close back to the same Dart exit coordinator (which calls finishExit).
+//
+// Windows hides the window to the system tray before reaching this path. Linux
+// does not implement a tray yet, so this delete-event hook is the reserved
+// platform interface and still requests the coordinated exit.
 static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event,
                                  gpointer user_data) {
   (void)widget;

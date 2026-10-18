@@ -50,7 +50,8 @@ class StudioHostLifecycle {
  public:
   static StudioHostLifecycle& Instance();
 
-  // native 窗口关闭时回调 Dart 侧的同一退出协调器。回调在平台线程被同步调用。
+  // native 应用退出请求（托盘退出、系统会话结束或无托盘时的窗口关闭）回调 Dart
+  // 侧的同一退出协调器。回调在平台线程被同步调用。
   using ExitRequestCallback = std::function<void()>;
 
   void SetExitRequestCallback(ExitRequestCallback callback);
@@ -65,7 +66,8 @@ class StudioHostLifecycle {
   // 以给定退出码结束本进程（不返回）。
   void Finish(int exit_code);
 
-  // native 窗口关闭入口：武装期限并请求 Dart 协调器（由 Dart 驱动收束与 finishExit）。
+  // native 应用退出入口：武装期限并请求 Dart 协调器（由 Dart 驱动收束与 finishExit）。
+  // 托盘隐藏不得调用本方法。
   void RequestExit();
 
   // 平台 main() 的消息循环自然结束后调用。协调器可靠退出（Finish）会在循环返回前终止

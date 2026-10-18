@@ -372,7 +372,7 @@ void StudioHostLifecycle::ClearExitRequestCallback() {
 }
 
 void StudioHostLifecycle::RequestExit() {
-  // 持续武装：窗口关闭、engine/window 析构都覆盖，绝不提前 disarm。
+  // 持续武装：应用退出、engine/window 析构都覆盖，绝不提前 disarm。
   // Arm() 只取 state_mutex_，与可能卡住的日志锁无关。
   Arm();
   ExitRequestCallback callback;
