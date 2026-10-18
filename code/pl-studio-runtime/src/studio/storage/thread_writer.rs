@@ -2303,6 +2303,8 @@ mod storage_fault_tests {
                 isolation: "test".into(),
                 purpose: "test".into(),
                 context_window: None,
+                max_context_window: None,
+                auto_compact_limit: None,
             },
             response: pl_model::completion::CompletionResponse {
                 replay: None,

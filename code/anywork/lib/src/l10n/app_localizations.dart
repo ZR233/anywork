@@ -1196,17 +1196,71 @@ abstract class AppLocalizations {
   /// **'Context'**
   String get statusContextLabel;
 
+  /// No description provided for @statusContextRemainingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'To compact'**
+  String get statusContextRemainingLabel;
+
+  /// No description provided for @statusContextOverLimitValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{tokens} over'**
+  String statusContextOverLimitValue(String tokens);
+
+  /// No description provided for @statusModelMaxContextLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Max context'**
+  String get statusModelMaxContextLabel;
+
+  /// No description provided for @statusModelEffectiveWindowLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Effective window'**
+  String get statusModelEffectiveWindowLabel;
+
+  /// No description provided for @statusAutoCompactLimitLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Compact at'**
+  String get statusAutoCompactLimitLabel;
+
+  /// No description provided for @statusSessionUsageSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Session usage'**
+  String get statusSessionUsageSection;
+
+  /// No description provided for @statusInputTokensLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Input'**
+  String get statusInputTokensLabel;
+
+  /// No description provided for @statusOutputTokensLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Output'**
+  String get statusOutputTokensLabel;
+
+  /// No description provided for @statusCostEstimateLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated cost'**
+  String get statusCostEstimateLabel;
+
+  /// No description provided for @statusUsageIncompleteLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete'**
+  String get statusUsageIncompleteLabel;
+
   /// No description provided for @statusCacheLabel.
   ///
   /// In en, this message translates to:
-  /// **'Cache'**
+  /// **'Cache hit rate'**
   String get statusCacheLabel;
-
-  /// No description provided for @statusCacheReportedOnlyLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'based on reported data'**
-  String get statusCacheReportedOnlyLabel;
 
   /// No description provided for @statusCacheHitTokensLabel.
   ///
@@ -1247,7 +1301,7 @@ abstract class AppLocalizations {
   /// No description provided for @statusUnpricedUsageLabel.
   ///
   /// In en, this message translates to:
-  /// **'Partially unpriced'**
+  /// **'Unpriced'**
   String get statusUnpricedUsageLabel;
 
   /// No description provided for @sessionAllAgentsCostTooltip.
@@ -1645,29 +1699,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Waiting for input'**
   String get statusInteractionUserInput;
-
-  /// No description provided for @statusContextTooltip.
-  ///
-  /// In en, this message translates to:
-  /// **'Context: {contextTokens}/{contextWindow} ({percent}%)\n\nTotal tokens: {totalTokens}\n\nModel: {model}'**
-  String statusContextTooltip(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-    String model,
-  );
-
-  /// No description provided for @statusContextTooltipNoModel.
-  ///
-  /// In en, this message translates to:
-  /// **'Context: {contextTokens}/{contextWindow} ({percent}%)\n\nTotal tokens: {totalTokens}'**
-  String statusContextTooltipNoModel(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-  );
 
   /// No description provided for @statusSkillsCount.
   ///
@@ -4234,12 +4265,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cache write'**
   String get settingsPriceCacheWrite;
-
-  /// No description provided for @statusReportedUsageOnly.
-  ///
-  /// In en, this message translates to:
-  /// **'reported'**
-  String get statusReportedUsageOnly;
 
   /// No description provided for @settingsSystemAgentsGroup.
   ///

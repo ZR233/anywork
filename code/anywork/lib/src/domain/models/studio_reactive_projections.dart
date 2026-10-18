@@ -62,6 +62,8 @@ class StudioContextProjection {
     required this.model,
     required this.contextTokens,
     required this.contextWindow,
+    required this.maxContextWindow,
+    required this.autoCompactLimit,
     required this.totalTokens,
     required this.costLabel,
     required this.promptTokens,
@@ -94,6 +96,8 @@ class StudioContextProjection {
       model: runtime.model,
       contextTokens: live?.latestContextTokens ?? runtime.contextTokens,
       contextWindow: runtime.contextWindow,
+      maxContextWindow: runtime.maxContextWindow,
+      autoCompactLimit: runtime.autoCompactLimit,
       totalTokens: runtime.totalTokens,
       costLabel: runtime.costLabel,
       promptTokens: runtime.promptTokens,
@@ -114,6 +118,12 @@ class StudioContextProjection {
   final String model;
   final int contextTokens;
   final int contextWindow;
+
+  /// 绑定模型自身声明的最大上下文；未知为 `null`。
+  final int? maxContextWindow;
+
+  /// 最终生效的自动压缩阈值，上下文进度的分母；未知为 `null`。
+  final int? autoCompactLimit;
   final int totalTokens;
   final String costLabel;
   final int promptTokens;
@@ -139,6 +149,8 @@ class StudioContextProjection {
             model == other.model &&
             contextTokens == other.contextTokens &&
             contextWindow == other.contextWindow &&
+            maxContextWindow == other.maxContextWindow &&
+            autoCompactLimit == other.autoCompactLimit &&
             totalTokens == other.totalTokens &&
             costLabel == other.costLabel &&
             promptTokens == other.promptTokens &&
@@ -160,6 +172,8 @@ class StudioContextProjection {
     model,
     contextTokens,
     contextWindow,
+    maxContextWindow,
+    autoCompactLimit,
     totalTokens,
     costLabel,
     promptTokens,

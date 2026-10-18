@@ -1,40 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../shared/studio_anchored_panel.dart';
 
-/// 状态读数的悬停/点击详情弹层。
+/// 详情悬浮表面的分区标题与内容容器。
 ///
-/// 锚定、开合与打开期间的 canonical 刷新由共享
-/// [StudioAnchoredPanel] 承担；本组件只补充状态语义标签。
-class StatusDetailPopover extends StatelessWidget {
-  const StatusDetailPopover({
-    required this.child,
-    required this.detailBuilder,
-    required this.semanticsLabel,
-    required this.semanticsValue,
-    this.width = 300,
-    super.key,
-  });
-
-  final Widget child;
-  final WidgetBuilder detailBuilder;
-  final String semanticsLabel;
-  final String semanticsValue;
-  final double width;
-
-  @override
-  Widget build(BuildContext context) {
-    return StudioAnchoredPanel(
-      width: width,
-      semanticsLabel: semanticsLabel,
-      semanticsValue: semanticsValue,
-      panelBuilder: detailBuilder,
-      child: child,
-    );
-  }
-}
-
+/// 组件只负责排版：分区标题、键值行和列表行保持同一套字号、间距与细线，不拥有业务状态。
 class StatusDetailPanel extends StatelessWidget {
   const StatusDetailPanel({
     required this.title,
@@ -63,9 +33,25 @@ class StatusDetailPanel extends StatelessWidget {
             letterSpacing: 1,
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 6),
         ...children,
       ],
+    );
+  }
+}
+
+/// 分区之间的细分隔线；只用于分隔同级事实，不作为装饰性边框。
+class StatusDetailDivider extends StatelessWidget {
+  const StatusDetailDivider({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: SizedBox(
+        height: 1,
+        child: ColoredBox(color: context.colors.outlineVariant),
+      ),
     );
   }
 }
@@ -74,7 +60,7 @@ class StatusDetailRow extends StatelessWidget {
   const StatusDetailRow({
     required this.label,
     required this.value,
-    this.valueMaxLines = 1,
+    this.valueMaxLines = 2,
     this.valueKey,
     super.key,
   });
@@ -87,14 +73,15 @@ class StatusDetailRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3.5),
+      padding: const EdgeInsets.symmetric(vertical: 2.5),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
+            flex: 5,
             child: Text(
               label,
-              maxLines: 1,
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: context.text.bodySmall?.copyWith(
                 color: context.colors.onSurfaceVariant,
@@ -102,9 +89,10 @@ class StatusDetailRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 14),
-          Flexible(
-            flex: 2,
+          const SizedBox(width: 12),
+          // 紧约束的值槽让数字真正贴齐内容右边界；宽松槽只让 Text 自宽，右对齐会落在槽中间。
+          Expanded(
+            flex: 4,
             child: Text(
               value,
               key: valueKey,
@@ -115,6 +103,7 @@ class StatusDetailRow extends StatelessWidget {
                 color: context.colors.onSurface,
                 fontWeight: FontWeight.w600,
                 height: 1.25,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ),

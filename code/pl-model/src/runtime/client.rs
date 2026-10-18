@@ -12,6 +12,12 @@ use pl_protocol::{PricingMode, Result};
 #[derive(Debug, Clone)]
 pub struct ModelRuntime {
     runner: InvocationRunner,
+    /// Finally resolved automatic compaction threshold of the bound route.
+    ///
+    /// The product resolves it once from the real route, so a user override and the safety ceiling
+    /// are already applied here. A runtime bound without a route keeps it unknown instead of
+    /// deriving a policy of its own.
+    auto_compact_limit: Option<u64>,
 }
 
 impl ModelRuntime {
@@ -20,12 +26,16 @@ impl ModelRuntime {
     /// # Errors
     /// Rejects invalid endpoint or model configuration.
     pub fn from_route(route: &crate::config::ResolvedModelRoute) -> Result<Self> {
-        Ok(Self::new_with_provider_id(
+        let runtime = Self::new_with_provider_id(
             route.provider_id.as_str(),
             route.endpoint.clone(),
             route.model.clone(),
         )?
-        .with_pricing_mode(route.pricing_mode))
+        .with_pricing_mode(route.pricing_mode);
+        Ok(Self {
+            auto_compact_limit: route.auto_compact_limit,
+            ..runtime
+        })
     }
 
     /// Binds a concrete adapter and one model.
@@ -45,6 +55,7 @@ impl ModelRuntime {
     ) -> Result<Self> {
         Ok(Self {
             runner: InvocationRunner::new_with_provider_id(id, endpoint, model)?,
+            auto_compact_limit: None,
         })
     }
 
@@ -66,6 +77,11 @@ impl ModelRuntime {
     }
     pub fn connection_fingerprint(&self) -> u64 {
         self.runner.connection_fingerprint()
+    }
+
+    /// Returns the frozen compaction threshold of this route, or `None` when it does not compact.
+    pub fn auto_compact_limit(&self) -> Option<u64> {
+        self.auto_compact_limit
     }
 
     /// Freezes this provider's monetary accounting choice for subsequent invocations.

@@ -13,7 +13,7 @@ import '../../shared/studio_driver_keys.dart';
 import 'context_usage_readout.dart';
 import 'session_selectors.dart';
 import 'status_bar_item.dart';
-import 'status_detail_popover.dart';
+import 'status_detail_panel.dart';
 
 /// Reads one stable Thread owner and passes a single frame to the pure View.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -197,7 +197,6 @@ class ThreadStatusBar extends StatelessWidget {
                         tooltip: context.l10n.statusCapabilitiesTitle,
                         detailWidth: 520,
                         maxWidth: 160,
-                        interactive: true,
                         detailBuilder: (context) =>
                             _CapabilityDetail(runtime: runtime),
                       ),
@@ -363,7 +362,6 @@ class _LspActivityReadout extends StatelessWidget {
         label: label,
         tooltip: tooltip,
         maxWidth: 120,
-        interactive: true,
         detailBuilder: (context) => _LspActivityDetail(servers: activeServers),
       ),
     );
@@ -612,7 +610,6 @@ class _StatusReadout extends StatelessWidget {
     this.detailBuilder,
     this.detailWidth = 300,
     this.maxWidth = 180,
-    this.interactive = false,
     super.key,
   });
 
@@ -622,7 +619,6 @@ class _StatusReadout extends StatelessWidget {
   final WidgetBuilder? detailBuilder;
   final double detailWidth;
   final double maxWidth;
-  final bool interactive;
 
   @override
   Widget build(BuildContext context) {
@@ -635,8 +631,6 @@ class _StatusReadout extends StatelessWidget {
       semanticsLabel: tooltip.isEmpty ? label : tooltip,
       detailBuilder: detailBuilder,
       detailWidth: detailWidth,
-      enableHover: detailBuilder == null,
-      interactive: interactive,
       maxWidth: maxWidth,
     );
   }

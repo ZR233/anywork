@@ -9983,6 +9983,8 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         let mut var_hasIncompleteUsage = <bool>::sse_decode(deserializer);
         let mut var_model = <String>::sse_decode(deserializer);
         let mut var_contextWindow = <Option<u64>>::sse_decode(deserializer);
+        let mut var_maxContextWindow = <Option<u64>>::sse_decode(deserializer);
+        let mut var_autoCompactLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_latestContextTokens = <u64>::sse_decode(deserializer);
         let mut var_promptTokens = <u64>::sse_decode(deserializer);
         let mut var_completionTokens = <u64>::sse_decode(deserializer);
@@ -10012,6 +10014,8 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
             has_incomplete_usage: var_hasIncompleteUsage,
             model: var_model,
             context_window: var_contextWindow,
+            max_context_window: var_maxContextWindow,
+            auto_compact_limit: var_autoCompactLimit,
             latest_context_tokens: var_latestContextTokens,
             prompt_tokens: var_promptTokens,
             completion_tokens: var_completionTokens,
@@ -20349,6 +20353,8 @@ impl flutter_rust_bridge::IntoDart
             self.has_incomplete_usage.into_into_dart().into_dart(),
             self.model.into_into_dart().into_dart(),
             self.context_window.into_into_dart().into_dart(),
+            self.max_context_window.into_into_dart().into_dart(),
+            self.auto_compact_limit.into_into_dart().into_dart(),
             self.latest_context_tokens.into_into_dart().into_dart(),
             self.prompt_tokens.into_into_dart().into_dart(),
             self.completion_tokens.into_into_dart().into_dart(),
@@ -27437,6 +27443,8 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         <bool>::sse_encode(self.has_incomplete_usage, serializer);
         <String>::sse_encode(self.model, serializer);
         <Option<u64>>::sse_encode(self.context_window, serializer);
+        <Option<u64>>::sse_encode(self.max_context_window, serializer);
+        <Option<u64>>::sse_encode(self.auto_compact_limit, serializer);
         <u64>::sse_encode(self.latest_context_tokens, serializer);
         <u64>::sse_encode(self.prompt_tokens, serializer);
         <u64>::sse_encode(self.completion_tokens, serializer);

@@ -2077,7 +2077,18 @@ pub struct ModelUsageBinding {
     #[serde(default)]
     pub route_identity: Option<String>,
     pub model: String,
+    /// Context window this request may actually use; `None` stays unknown.
     pub context_window: Option<u64>,
+    /// Capacity the bound model itself declares; never inferred from the effective window.
+    #[serde(default)]
+    pub max_context_window: Option<u64>,
+    /// Finally resolved automatic compaction threshold of the bound route; `None` stays unknown.
+    ///
+    /// It already accounts for the model default, the user override and the safety ceiling, so
+    /// consumers never recompute it from current settings. Auxiliary calls without the owning
+    /// Thread's compaction policy leave it unknown.
+    #[serde(default)]
+    pub auto_compact_limit: Option<u64>,
 }
 
 /// One-shot invocation bound to the implementation that prepared its request.

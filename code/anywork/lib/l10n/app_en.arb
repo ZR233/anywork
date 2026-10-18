@@ -316,15 +316,31 @@
   "statusExecutorModel": "Executor model",
   "statusReasoningEffort": "Reasoning effort",
   "statusContextLabel": "Context",
-  "statusCacheLabel": "Cache",
-  "statusCacheReportedOnlyLabel": "based on reported data",
+  "statusContextRemainingLabel": "To compact",
+  "statusContextOverLimitValue": "{tokens} over",
+  "@statusContextOverLimitValue": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "statusModelMaxContextLabel": "Max context",
+  "statusModelEffectiveWindowLabel": "Effective window",
+  "statusAutoCompactLimitLabel": "Compact at",
+  "statusSessionUsageSection": "Session usage",
+  "statusInputTokensLabel": "Input",
+  "statusOutputTokensLabel": "Output",
+  "statusCostEstimateLabel": "Estimated cost",
+  "statusUsageIncompleteLabel": "Incomplete",
+  "statusCacheLabel": "Cache hit rate",
   "statusCacheHitTokensLabel": "Cache read",
   "statusCacheMissTokensLabel": "Cache miss",
   "statusCacheWriteTokensLabel": "Cache write",
   "statusReasoningTokensLabel": "Reasoning tokens",
   "statusInferenceCountLabel": "Inferences",
   "statusCacheSavingsLabel": "Cache savings",
-  "statusUnpricedUsageLabel": "Partially unpriced",
+  "statusUnpricedUsageLabel": "Unpriced",
   "sessionAllAgentsCostTooltip": "Cost for all agents in this session",
   "sessionMoreActionsTooltip": "More actions",
   "sessionOpenWorkspace": "Open workspace",
@@ -391,43 +407,6 @@
   "statusTurnPersisting": "Saving turn",
   "statusInteractionToolApproval": "Waiting for tool approval",
   "statusInteractionUserInput": "Waiting for input",
-  "statusContextTooltip": "Context: {contextTokens}/{contextWindow} ({percent}%)\n\nTotal tokens: {totalTokens}\n\nModel: {model}",
-  "@statusContextTooltip": {
-    "placeholders": {
-      "contextTokens": {
-        "type": "int"
-      },
-      "contextWindow": {
-        "type": "int"
-      },
-      "percent": {
-        "type": "int"
-      },
-      "totalTokens": {
-        "type": "int"
-      },
-      "model": {
-        "type": "String"
-      }
-    }
-  },
-  "statusContextTooltipNoModel": "Context: {contextTokens}/{contextWindow} ({percent}%)\n\nTotal tokens: {totalTokens}",
-  "@statusContextTooltipNoModel": {
-    "placeholders": {
-      "contextTokens": {
-        "type": "int"
-      },
-      "contextWindow": {
-        "type": "int"
-      },
-      "percent": {
-        "type": "int"
-      },
-      "totalTokens": {
-        "type": "int"
-      }
-    }
-  },
   "statusSkillsCount": "{count, plural, =1{1 skill} other{{count} skills}}",
   "@statusSkillsCount": {
     "placeholders": {
@@ -1267,7 +1246,6 @@
   "settingsPriceOutput": "Output",
   "settingsPriceCacheRead": "Cache read",
   "settingsPriceCacheWrite": "Cache write",
-  "statusReportedUsageOnly": "reported",
   "settingsSystemAgentsGroup": "System subagents",
   "settingsUserAgentsGroup": "User subagents",
   "settingsAppearanceGroup": "Appearance & conversation",

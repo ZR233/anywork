@@ -166,6 +166,8 @@ async fn sqlite_thread_usage_matches_hot_snapshot_and_restored_checkpoint() {
         route_identity: None,
         model: "test-model".into(),
         context_window: Some(1_000),
+        max_context_window: Some(4_000),
+        auto_compact_limit: Some(900),
     });
     let thread = ThreadHandle::start("usage-thread".into(), DynModelSession::new(model)).unwrap();
     thread
@@ -178,6 +180,8 @@ async fn sqlite_thread_usage_matches_hot_snapshot_and_restored_checkpoint() {
     let hot = thread.snapshot().usage_summary;
     assert_eq!(hot.model, "test-model");
     assert_eq!(hot.context_window, Some(1_000));
+    assert_eq!(hot.max_context_window, Some(4_000));
+    assert_eq!(hot.auto_compact_limit, Some(900));
     assert_eq!(hot.inference_count, 2);
     assert_eq!(hot.prompt_tokens, 240);
     assert_eq!(hot.completion_tokens, 60);
@@ -206,6 +210,14 @@ async fn sqlite_thread_usage_matches_hot_snapshot_and_restored_checkpoint() {
     assert_eq!(
         restored.state.usage_summary.context_window,
         hot.context_window
+    );
+    assert_eq!(
+        restored.state.usage_summary.max_context_window,
+        hot.max_context_window
+    );
+    assert_eq!(
+        restored.state.usage_summary.auto_compact_limit,
+        hot.auto_compact_limit
     );
     reopened.shutdown().await.unwrap();
 }
