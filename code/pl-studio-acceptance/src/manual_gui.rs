@@ -58,7 +58,7 @@ pub(crate) struct ManualGuiOptions {
     /// Add isolated OpenAI, DeepSeek and MiMo discovery instances against a loopback model-list fixture.
     #[arg(long, value_name = "URL")]
     pub(crate) model_catalog_url: Option<String>,
-    /// Named startup inventory written into the model-catalog control file (`a`, `b`, `empty`, `reject-all`, `reject-second`).
+    /// Named startup inventory written into the model-catalog control file (`a`, `b`, `empty`, `reject-all`, `reject-second`, `real`).
     #[arg(long, value_name = "NAME", conflicts_with = "model_catalog_control")]
     pub(crate) model_catalog_inventory: Option<String>,
     /// Existing control-file path copied into the isolated environment. Mutually exclusive with `--model-catalog-inventory`.
@@ -536,6 +536,20 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     || options.model_catalog_control.is_some())),
         "--model-catalog-restart-check requires --scenario gui and a catalog control file"
     );
+    // The restart journey withdraws `fixture-model-old` between phases, so it
+    // needs a synthesized list; a payload instance replays a capture verbatim.
+    // Resolving the selection here reports it before any process or temporary
+    // environment exists.
+    if options.model_catalog_restart {
+        let control = model_catalog::resolve_control(
+            options.model_catalog_inventory.as_deref(),
+            options.model_catalog_control.as_deref(),
+        )?;
+        ensure!(
+            control.openai.payload.is_none(),
+            "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable slug"
+        );
+    }
     // The statistics, realtime, history and plan-recovery journeys are fully
     // driven by Flutter Driver and reviewed from captured evidence, so they do
     // not require an interactive stdin.
@@ -729,7 +743,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     options.scenario == "gui",
                     "--model-catalog-inventory/--model-catalog-control require --scenario gui"
                 );
-                model_catalog::configure(&home, &ready.base_url)?;
+                model_catalog::configure(&home, &ready.base_url, Some(control))?;
                 model_catalog::write_runbook(
                     &output,
                     &home,
@@ -742,7 +756,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     options.scenario == "gui",
                     "--model-catalog-url requires --scenario gui"
                 );
-                model_catalog::configure(&home, url)?;
+                model_catalog::configure(&home, url, None)?;
             }
             Ok(())
         })

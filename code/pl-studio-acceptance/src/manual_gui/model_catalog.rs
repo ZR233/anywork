@@ -1,7 +1,8 @@
 //! Optional discovery instances for directed native GUI observation.
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{
-    ModelCatalogId, ProviderId, ProviderModelCatalogConfig, builtin_provider_catalog,
+    ModelCatalogDiscovery, ModelCatalogId, ProviderCatalogRegistry, ProviderId,
+    ProviderModelCatalogConfig, builtin_provider_catalog,
 };
 use pl_model::provider::ProviderConnectionMode;
 use pl_provider_fixture::{
@@ -25,7 +26,60 @@ pub(super) const INSTANCES: [(&str, &str, &str); 4] = [
     ("catalog-mimo", "mimo-api", "mimo"),
 ];
 
-pub(super) fn configure(home: &Path, base_url: &str) -> Result<()> {
+/// Bootstrap route slug for a synthesized `models` inventory. Inventory A keeps a
+/// withdrawable slug so the restart journey can prove a vanished model stays
+/// selected but unavailable.
+const BOOTSTRAP_ROUTE_SLUG: &str = "fixture-model-old";
+
+/// Preferred bootstrap route slug for payload instances: the captured list has no
+/// `fixture-model-old`, so prefer a bundled slug real responses usually contain.
+/// It is only used when the selected capture really lists it; see
+/// [`bootstrap_route_slug`].
+const PAYLOAD_BOOTSTRAP_ROUTE_SLUG: &str = "gpt-6-astra";
+
+/// Picks the `catalog-openai` startup route slug.
+///
+/// A `models` inventory always keeps [`BOOTSTRAP_ROUTE_SLUG`] because the restart
+/// journey needs a withdrawable slug. A payload instance must instead resolve
+/// against ids the capture actually contains: prefer
+/// [`PAYLOAD_BOOTSTRAP_ROUTE_SLUG`], otherwise the first id the product catalog
+/// would publish, and only when the capture has no dialogue model at all fall
+/// back to [`BOOTSTRAP_ROUTE_SLUG`] with a visible note.
+fn bootstrap_route_slug(
+    control: Option<&ModelCatalogControl>,
+    catalog: &ProviderCatalogRegistry,
+) -> Result<String> {
+    let Some(control) = control else {
+        return Ok(BOOTSTRAP_ROUTE_SLUG.into());
+    };
+    let Some(captured) = control.openai.captured_model_ids()? else {
+        return Ok(BOOTSTRAP_ROUTE_SLUG.into());
+    };
+    if captured.iter().any(|id| id == PAYLOAD_BOOTSTRAP_ROUTE_SLUG) {
+        return Ok(PAYLOAD_BOOTSTRAP_ROUTE_SLUG.into());
+    }
+    let excluded_prefixes = &discovery(catalog, "openai")?.excluded_prefixes;
+    let dialogue = captured.iter().find(|id| {
+        !excluded_prefixes
+            .iter()
+            .any(|prefix| id.starts_with(prefix.as_str()))
+    });
+    match dialogue {
+        Some(id) => Ok(id.clone()),
+        None => {
+            eprintln!(
+                "captured catalog {captured:?} has no dialogue model; keeping {BOOTSTRAP_ROUTE_SLUG} as the startup route"
+            );
+            Ok(BOOTSTRAP_ROUTE_SLUG.into())
+        }
+    }
+}
+
+pub(super) fn configure(
+    home: &Path,
+    base_url: &str,
+    control: Option<&ModelCatalogControl>,
+) -> Result<()> {
     // Accept only an explicit IPv4 loopback endpoint; never consult real credentials.
     let remainder = base_url
         .strip_prefix("http://127.0.0.1:")
@@ -38,6 +92,8 @@ pub(super) fn configure(home: &Path, base_url: &str) -> Result<()> {
     let file = home.join("config.toml");
     let mut config: StudioConfig = toml::from_str(&fs::read_to_string(&file)?)?;
     let catalog = builtin_provider_catalog()?;
+    ensure_catalog_discovery_declarations(&catalog)?;
+    let route_slug = bootstrap_route_slug(control, &catalog)?;
     for (id, preset, suffix) in INSTANCES {
         let preset = catalog
             .presets
@@ -56,8 +112,8 @@ pub(super) fn configure(home: &Path, base_url: &str) -> Result<()> {
                 ..
             } = &mut provider.catalog
         {
-            connection_overrides.insert("fixture-model-old".into(), ProviderConnectionMode::Http);
-            auto_compact_overrides.insert("fixture-model-old".into(), 12_000);
+            connection_overrides.insert(route_slug.clone(), ProviderConnectionMode::Http);
+            auto_compact_overrides.insert(route_slug.clone(), 12_000);
         }
         config
             .models
@@ -72,10 +128,9 @@ pub(super) fn configure(home: &Path, base_url: &str) -> Result<()> {
         .chain(config.mode_model_routes.values_mut())
     {
         route.provider = openai.clone();
-        route.model = "fixture-model-old".into();
+        route.model = route_slug.clone();
         route.effort = None;
     }
-    ensure_mimo_exclusions(&catalog)?;
     // Discovery instances keep withdrawn-slug routes and overrides before the
     // first successful observation; strict `validate` would reject them.
     config.validate_declarations()?;
@@ -83,27 +138,70 @@ pub(super) fn configure(home: &Path, base_url: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_mimo_exclusions(catalog: &pl_model::config::ProviderCatalogRegistry) -> Result<()> {
-    let mimo = catalog
-        .model_catalog(&ModelCatalogId::new("mimo")?)
-        .ok_or_else(|| anyhow::anyhow!("mimo catalog is missing"))?;
-    let product = mimo
-        .discovery
-        .as_ref()
-        .map(|discovery| discovery.excluded_slugs.as_slice())
-        .unwrap_or(&[]);
+/// Non-dialogue prefix families `design/06-model.md` 6.7 requires the product
+/// OpenAI catalog to exclude from online observations.
+const OPENAI_DISCOVERY_EXCLUDED_PREFIXES: [&str; 7] = [
+    "gpt-image-",
+    "dall-e-",
+    "text-embedding-",
+    "tts-",
+    "whisper-",
+    "omni-moderation-",
+    "text-moderation-",
+];
+
+fn discovery<'a>(
+    catalog: &'a ProviderCatalogRegistry,
+    id: &str,
+) -> Result<&'a ModelCatalogDiscovery> {
+    catalog
+        .model_catalog(&ModelCatalogId::new(id)?)
+        .and_then(|catalog| catalog.discovery.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("{id} catalog declares no discovery capability"))
+}
+
+/// Acceptance guard for the discovery exclusions the runbook relies on.
+///
+/// The fixture replays captured `/models` responses unchanged, so only the
+/// product catalog decides which non-dialogue families disappear from the GUI.
+/// Pinning the declarations here makes an unintended product change fail the
+/// journey instead of silently changing what the operator is told to observe.
+fn ensure_catalog_discovery_declarations(catalog: &ProviderCatalogRegistry) -> Result<()> {
+    let mimo = discovery(catalog, "mimo")?;
     ensure!(
-        product == MIMO_DISCOVERY_EXCLUDED_SLUGS,
+        mimo.excluded_slugs == MIMO_DISCOVERY_EXCLUDED_SLUGS,
         "fixture MiMo excluded slugs {:?} diverge from product {:?}",
         MIMO_DISCOVERY_EXCLUDED_SLUGS,
-        product
+        mimo.excluded_slugs
     );
+    let openai = discovery(catalog, "openai")?;
+    ensure!(
+        openai.excluded_slugs.is_empty(),
+        "product OpenAI declares exact exclusions {:?}; only prefix families are allowed",
+        openai.excluded_slugs
+    );
+    ensure!(
+        openai.excluded_prefixes == OPENAI_DISCOVERY_EXCLUDED_PREFIXES,
+        "product OpenAI excluded prefixes {:?} diverge from design 06-model.md 6.7 {:?}",
+        openai.excluded_prefixes,
+        OPENAI_DISCOVERY_EXCLUDED_PREFIXES
+    );
+    for id in ["deepseek", "xai"] {
+        let product = discovery(catalog, id)?;
+        ensure!(
+            product.excluded_slugs.is_empty() && product.excluded_prefixes.is_empty(),
+            "product {id} must exclude nothing, had slugs={:?} prefixes={:?}",
+            product.excluded_slugs,
+            product.excluded_prefixes
+        );
+    }
     Ok(())
 }
 
-/// Materializes a named inventory or copies an operator-supplied control file.
-pub(super) fn materialize_control(
-    destination: &Path,
+/// Resolves a named inventory or an operator-supplied control file without
+/// writing it. Argument validation inspects the selection before any temporary
+/// environment exists; the coordinator then materializes the same resolution.
+pub(super) fn resolve_control(
     inventory: Option<&str>,
     source: Option<&Path>,
 ) -> Result<ModelCatalogControl> {
@@ -123,6 +221,16 @@ pub(super) fn materialize_control(
             bail!("--model-catalog-inventory cannot be combined with --model-catalog-control")
         }
     };
+    Ok(control)
+}
+
+/// Materializes a named inventory or copies an operator-supplied control file.
+pub(super) fn materialize_control(
+    destination: &Path,
+    inventory: Option<&str>,
+    source: Option<&Path>,
+) -> Result<ModelCatalogControl> {
+    let control = resolve_control(inventory, source)?;
     control.write(destination)?;
     Ok(control)
 }
@@ -159,7 +267,7 @@ pub(super) fn write_runbook(
 - 当前控制文件库存:
 {inventory}
 
-命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second`；自定义文件用 `--model-catalog-control PATH`。每次运行都是全新隔离 home，改库存请重跑一次命令，不要热重启。
+命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second|real`；自定义文件用 `--model-catalog-control PATH`。每次运行都是全新隔离 home，改库存请重跑一次命令，不要热重启。
 
 JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`）:
 
@@ -170,10 +278,12 @@ JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`
 ```
 
 - `models`: 任意 slug 列表；空名单是合法成功替换。
+- `payload`: 可选，原样返回编译进 fixture 的真实 `/models` 响应（见第 8 项）；不能与 `models` 同时声明，否则 fixture 启动即报错。
 - 失败开关互斥，判定顺序 **`hang` > `protocolError` > `status`/`reject`**：同时给出时只生效最先匹配的一项，不会静默组合。
 - `hang: true`: 挂起直到进程停止（超时隔离）。
 - `protocolError: true`: HTTP 200 + error envelope，验证协议失败回退。
 - `status`: 非 2xx 验证 HTTP 失败回退。
+- `status` 为 2xx 时不改写成功响应码：`models` 列表与 `payload` 原样报文都恒为 HTTP 200。
 - `reject: true`: 未给 `status` 时 HTTP 401。
 
 ## 1. 旧模型移除
@@ -248,6 +358,22 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-second
 
 超时隔离可用自定义控制文件把该实例设为 `hang: true` 后同样重跑一次。
 
+## 8. 真实报文复刻（payload 模式）
+
+`real` 预设让 fixture 原样返回抓取下来的真实 `/models` 响应，用于离线复现真实报文字段（`context_window`、`max_output_tokens`、`input_modalities`、`effort`、`api_capabilities` 等），**不联网、不校验真实凭据**。
+
+```text
+cargo xtask manual-gui --scenario gui --model-catalog-inventory real
+```
+
+1. 控制文件：`catalog-openai` 与 `catalog-openai-second` 用 `payload: "openai-aggregator"`（19 个 id），`catalog-deepseek` 用 `payload: "deepseek"`（2 个 id），`catalog-mimo` 仍是库存 A 的合成名单（含 4 个 TTS/ASR 排除 slug）。
+2. payload 实例不做任何增删改：HTTP 200、`content-type: application/json`，正文与 `code/pl-provider-fixture/assets/model-lists/` 下的资源逐字节一致。
+3. 打开 `catalog-openai`：应观察 `gpt-5.6-sol`、`gpt-6`、`gpt-6-astra`、`gpt-5.3-codex-spark`、`codex-auto-review` 等对话 slug，以及 5 个 `gpt-image-*`（`gpt-image-1`、`gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`）**不出现**。排除发生在产品 catalog 的 `gpt-image-` 非对话前缀过滤，fixture 依然原样返回它们；对照 fixture 请求证据可确认 19 个 id 都已发出。
+4. 打开 `catalog-deepseek`：应观察 2 个 slug，且详情卡显示真实上下文/输出上限与 effort 档位（`context_window=1048576`、`max_output_tokens=393216`、`supported_levels` 为 `low/high/max`）。合成名单模式没有这些字段。
+5. payload 模式下启动路由取该报文的实际 id：优先 `gpt-6-astra`，否则取报文中第一个产品会发布的对话 id（按目录 `excluded_prefixes` 判断非对话家族），全部被排除时保持 `fixture-model-old` 并在 stderr 记录说明；不再是库存 A 的固定 `fixture-model-old`。要观察"下线模型保留但不可用"仍用第 1/5 项的 `--model-catalog-inventory a --model-catalog-restart` 旅程。
+6. 这是离线复刻，报文内容取自资源文件而非实时探测；把控制文件的 `payload` 去掉即回到 `models` 列表模式（两种模式共用 `reject` / `protocolError` / `status` / `hang` 失败开关，优先级不变）。
+7. 证据：两个实例的设置页截图、运行目录的 `model-catalog.json`、`model-catalog-requests.json`、`gui.log`。自检可用 `pl-provider-fixture --model-catalog-inventory real --model-catalog-check`，输出每个路径的 `payload=`/`ids=`/`image=`/`non_image=`/`ids_match=true`/`body_match=true`。
+
 完成后在本目录记录 `verdict.json` 与 `operations.json`，保持既有截图/快照/请求/日志机制。
 "#,
         home = home.display(),
@@ -269,23 +395,27 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-second
 
 fn inventory_summary(control: &ModelCatalogControl) -> String {
     format!(
-        "- openai: models={:?} reject={} status={:?} protocolError={} hang={}\n- openai-second: models={:?} reject={} status={:?} protocolError={} hang={}\n- deepseek: models={:?} reject={} status={:?} protocolError={} hang={}\n- mimo: models={:?} reject={} status={:?} protocolError={} hang={}",
+        "- openai: models={:?} payload={:?} reject={} status={:?} protocolError={} hang={}\n- openai-second: models={:?} payload={:?} reject={} status={:?} protocolError={} hang={}\n- deepseek: models={:?} payload={:?} reject={} status={:?} protocolError={} hang={}\n- mimo: models={:?} payload={:?} reject={} status={:?} protocolError={} hang={}",
         control.openai.models,
+        control.openai.payload,
         control.openai.reject,
         control.openai.status,
         control.openai.protocol_error,
         control.openai.hang,
         control.openai_second.models,
+        control.openai_second.payload,
         control.openai_second.reject,
         control.openai_second.status,
         control.openai_second.protocol_error,
         control.openai_second.hang,
         control.deepseek.models,
+        control.deepseek.payload,
         control.deepseek.reject,
         control.deepseek.status,
         control.deepseek.protocol_error,
         control.deepseek.hang,
         control.mimo.models,
+        control.mimo.payload,
         control.mimo.reject,
         control.mimo.status,
         control.mimo.protocol_error,
