@@ -37,7 +37,9 @@ use pl_protocol::{
 };
 
 use super::StudioRuntime;
-use super::chat_item::{TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, canonical_item, item_shell};
+use super::chat_item::{
+    TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD, TOOL_USER_INPUT_FIELD, canonical_item, item_shell,
+};
 
 /// 同一个 view 的**锁外**句柄：按身份读取不经过窗口锁，也不参与窗口差量基线。
 ///
@@ -473,8 +475,50 @@ fn wire_field(field: &ChatField) -> Option<ThreadContentField> {
         ChatField::Host(key) if key.as_ref() == TOOL_RESULT_FIELD => {
             Some(ThreadContentField::ToolResult)
         }
-        ChatField::Host(_) => None,
+        ChatField::Host(key) => user_input_field(key),
     }
+}
+
+/// 普通问答正文域的 wire 身份：问题位置 + 该问题内的具体正文（标题/问题/选项/答案）。
+///
+/// 宿主字段 key 与 [`super::chat_item`] 的构造函数同源，因此两侧不可能漂移；无法解析的 key
+/// 仍然返回 `None`，让调用方按权威 Reset 收束而不是静默丢字段。
+fn user_input_field(key: &str) -> Option<ThreadContentField> {
+    use pl_protocol::ThreadUserInputFieldPart;
+
+    let rest = key.strip_prefix(TOOL_USER_INPUT_FIELD)?;
+    let mut segments = rest.split('.');
+    let scope = segments.next()?;
+    let question_index: u32 = segments.next()?.parse().ok()?;
+    let part = if scope == "answer" {
+        ThreadUserInputFieldPart::Answer {
+            answer_index: segments.next()?.parse().ok()?,
+        }
+    } else if scope == "question" {
+        match segments.next()? {
+            "header" => ThreadUserInputFieldPart::Header,
+            "body" => ThreadUserInputFieldPart::Question,
+            "option" => {
+                let option_index = segments.next()?.parse().ok()?;
+                match segments.next()? {
+                    "label" => ThreadUserInputFieldPart::OptionLabel { option_index },
+                    "description" => ThreadUserInputFieldPart::OptionDescription { option_index },
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    // 多出的段落说明这个 key 不是本模块产生的身份，宁可让调用方按权威 Reset 收束。
+    segments
+        .next()
+        .is_none()
+        .then_some(ThreadContentField::ToolUserInput {
+            question_index,
+            part,
+        })
 }
 
 /// 一批 core 字段变化 → wire 字段变化；任一字段无域映射即返回 `None`。

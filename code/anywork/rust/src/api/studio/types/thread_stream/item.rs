@@ -35,6 +35,8 @@ pub enum BridgeThreadItemState {
     Tool {
         invocation: BridgeThreadToolInvocation,
         state: BridgeThreadToolState,
+        /// Typed ordinary Q&A history the call asked for, when it asked one.
+        user_input: Option<BridgeThreadUserInput>,
     },
     Agent {
         identity: BridgeThreadAgentIdentity,
@@ -175,6 +177,50 @@ pub struct BridgeThreadToolOutput {
 pub struct BridgeThreadToolFailure {
     pub kind: BridgeThreadToolFailureKind,
     pub message: String,
+}
+
+/// 一条普通问答的只读历史投影：问题、权威状态与已接受的回答。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadUserInput {
+    pub interaction_id: String,
+    pub questions: Vec<BridgeThreadUserInputQuestion>,
+    pub state: BridgeThreadUserInputState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadUserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub is_other: bool,
+    pub is_secret: bool,
+    pub options: Vec<BridgeThreadUserInputOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadUserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// 只有 `resolved` 表示用户已回答；待回答与已取消各自是独立事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeThreadUserInputState {
+    Pending,
+    Resolved {
+        /// 按原问题顺序排列的已接受回答。
+        answers: Vec<BridgeThreadUserInputAnswer>,
+    },
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadUserInputAnswer {
+    pub question_id: String,
+    /// 已接受的答案值；`redacted` 为真时这里必然为空。
+    pub answers: Vec<String>,
+    /// 敏感回答只公开“已回答/已隐藏”的状态，原值不在公开投影内。
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

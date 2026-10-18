@@ -19,7 +19,7 @@ use sea_orm::{
     SqliteTransactionMode, Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 6;
+const HISTORY_SCHEMA_VERSION: i64 = 7;
 
 mod checkpoint;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
@@ -2419,6 +2419,9 @@ async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> 
                 if version < 6 {
                     migrate_context_sources(&tx, thread_id).await?;
                 }
+                if version < 7 {
+                    backfill_tool_user_input(&tx).await?;
+                }
                 tx.execute_raw(statement(
                     "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
                     vec![HISTORY_SCHEMA_VERSION.into(), version.into()],
@@ -2655,6 +2658,90 @@ async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> 
             db.execute_raw(statement(
                 "UPDATE history_input_identities SET presentation='hidden' WHERE item_id=?",
                 vec![id.to_owned().into()],
+            ))
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Attaches the accepted ordinary Q&A to the tool item that asked it in already-written history.
+///
+/// A version-6 or older database stored the questions and the answer only in the interaction fact,
+/// because the timeline row was written before the tool item carried a typed Q&A projection. The
+/// receipts are the durable evidence of that one canonical fact, so the migration re-derives the
+/// projection from them and updates the calling item **in place**: the row keeps its `item_id`,
+/// ordinal, Turn binding, creation time and body, and only gains the Q&A projection plus one content
+/// revision. Nothing is replayed, no tool runs again and no model context changes, so an already
+/// resolved question cannot be answered twice or lose an answer. A repeated open re-reads a database
+/// that already carries the projection and changes nothing.
+async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
+    use crate::studio::thread_projection::{
+        attach_tool_user_input, order, project_tool_user_input,
+    };
+    use pl_core::thread::interactions::InteractionRecord;
+
+    let mut cursor = 0_i64;
+    loop {
+        let rows = db
+            .query_all_raw(statement(
+                "SELECT rowid,item_id,payload FROM history_fact_receipts \
+             WHERE kind='interaction' AND rowid>? ORDER BY rowid LIMIT 100",
+                vec![cursor.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            cursor = row.try_get("", "rowid")?;
+            let record: InteractionRecord =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)
+                    .context("legacy interaction receipt cannot be decoded")?;
+            let receipt: String = row.try_get("", "item_id")?;
+            ensure!(
+                receipt == order::receipt_id("interaction", &record.request.id),
+                "legacy interaction receipt identity conflicts with its payload"
+            );
+            let Some(user_input) = project_tool_user_input(&record)? else {
+                continue;
+            };
+            // Receipts are appended per revision, so an identity's newest row is applied last and
+            // wins: the settled answer supersedes the pending projection, never the other way round.
+            let call_id =
+                pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
+                    .context("ordinary user Q&A interaction names no tool call")?;
+            let tool_id = order::tool_id(call_id);
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT revision,payload FROM history_items WHERE item_id=?",
+                    vec![tool_id.clone().into()],
+                ))
+                .await?
+                .with_context(|| {
+                    format!("ordinary user Q&A `{tool_id}` has no durable tool item")
+                })?;
+            let stored_revision: i64 = row.try_get("", "revision")?;
+            let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
+                .with_context(|| format!("tool item `{tool_id}` cannot be decoded"))?;
+            if item.tool().and_then(|tool| tool.user_input()) == Some(&user_input) {
+                continue;
+            }
+            attach_tool_user_input(&mut item, user_input)?;
+            // 迁移只原位改载荷，不推进内容版本：schema 升级在读基线之前完成，下一次内容变化仍由
+            // 既有版本机制推进一次。迁移自己推进 revision 会让紧接的提交撞上同一版本的不同载荷，
+            // 或把真实内容版本挤到迁移伪造的版本域之下。
+            ensure!(
+                integer(item.revision)? == stored_revision,
+                "tool item `{tool_id}` row and payload versions disagree"
+            );
+            db.execute_raw(statement(
+                "UPDATE history_items SET payload=? WHERE item_id=? AND revision=?",
+                vec![
+                    serde_json::to_string(&item)?.into(),
+                    item.id.clone().into(),
+                    stored_revision.into(),
+                ],
             ))
             .await?;
         }
@@ -2989,6 +3076,7 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+    use crate::studio::thread_projection::order;
 
     /// A durable terminal Turn is readable by its own Turn identity, and a later revision of the
     /// same Turn identity is rejected instead of silently rewriting committed history.
@@ -4159,6 +4247,798 @@ mod storage_fault_tests {
         assert_eq!(
             state.load().await?.context("reopened")?.state_revision,
             imported.state_revision
+        );
+        Ok(())
+    }
+
+    /// 一次普通问答的问题、回答与权威状态。
+    ///
+    /// 问题原始正文、答案值与私有的 `pl.studio.user-answer` 回执都由这里构造，测试直接用真实
+    /// 生产者格式验证历史链路，而不是另造一份测试专用协议。
+    struct QuestionFixture {
+        questions: Vec<pl_protocol::UserQuestion>,
+        answer: serde_json::Value,
+    }
+
+    fn question_fixture() -> QuestionFixture {
+        QuestionFixture {
+            questions: vec![
+                pl_protocol::UserQuestion {
+                    id: "provider".into(),
+                    header: "Provider".into(),
+                    question: "Which provider should the next release verify?".into(),
+                    is_other: true,
+                    is_secret: false,
+                    options: Some(vec![pl_protocol::UserQuestionOption {
+                        label: "anthropic".into(),
+                        description: "Verify the Claude route".into(),
+                    }]),
+                },
+                pl_protocol::UserQuestion {
+                    id: "token".into(),
+                    header: "Token".into(),
+                    question: "Paste the deployment token".into(),
+                    is_other: true,
+                    is_secret: true,
+                    options: None,
+                },
+            ],
+            answer: serde_json::json!({
+                "answers": {
+                    "provider": {"answers": ["anthropic\nline two"]},
+                    "token": {"answers": ["secret-deployment-token"]},
+                }
+            }),
+        }
+    }
+
+    fn interaction_record(
+        call_id: &str,
+        fixture: &QuestionFixture,
+        revision: u64,
+        state: pl_core::thread::interactions::InteractionState,
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        Ok(pl_core::thread::interactions::InteractionRecord {
+            created_at: 100,
+            updated_at: 100 + i64::try_from(revision)?,
+            continuation_id: None,
+            request: pl_core::thread::interactions::InteractionRequest {
+                id: pl_core::tool::opaque::tool_interaction_id(call_id),
+                turn_id: "turn-qa".into(),
+                payload: pl_core::context::OpaquePayload::new(
+                    "pl.tool.user-input",
+                    1,
+                    serde_json::to_string(&fixture.questions)?,
+                )?,
+            },
+            revision,
+            state,
+            extension_mutations: vec![],
+        })
+    }
+
+    fn answered_record(
+        call_id: &str,
+        fixture: &QuestionFixture,
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        interaction_record(
+            call_id,
+            fixture,
+            2,
+            pl_core::thread::interactions::InteractionState::Resolved(
+                pl_core::thread::interactions::InteractionResponse {
+                    payload: pl_core::context::OpaquePayload::new(
+                        "pl.studio.user-answer",
+                        1,
+                        serde_json::to_string(&fixture.answer)?,
+                    )?,
+                    context: vec![],
+                },
+            ),
+        )
+    }
+
+    /// 一条已经提交过、但还没有问答投影的工具条目（旧历史的样子）。
+    fn question_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ThreadItem {
+        ThreadItem::new(
+            order::tool_id(call_id),
+            thread_id.into(),
+            "turn-qa".into(),
+            ordinal,
+            3,
+            111,
+            222,
+            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                pl_protocol::ThreadToolInvocation::new(
+                    call_id.into(),
+                    "request_user_input".into(),
+                    "{\"questions\":[]}".into(),
+                ),
+                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
+                    String::new(),
+                )),
+            )),
+        )
+    }
+
+    fn question_effect(
+        commit: i64,
+        sequence: u64,
+        records: Vec<pl_core::thread::interactions::InteractionRecord>,
+    ) -> pl_core::thread::ThreadEffectBatch {
+        pl_core::thread::ThreadEffectBatch {
+            committed_at: commit,
+            sequence,
+            interactions: records.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 已回答的问答必须落在原工具条目上：ID、ordinal、创建时间与 Turn 不变，只增加问答正文。
+    #[test]
+    fn ordinary_user_answer_updates_the_calling_item_in_place() -> Result<()> {
+        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let fixture = question_fixture();
+        let call_id = "call-qa";
+        let saved = question_tool_item(call_id, &thread.id, 7);
+        let mut existing = std::collections::BTreeMap::new();
+        existing.insert(saved.id.clone(), saved.clone());
+        let projection = |record| {
+            crate::studio::thread_projection::project_effect_items(
+                &thread,
+                &pl_core::thread::ThreadSnapshot::default(),
+                &question_effect(500, 9, vec![record]),
+                &existing,
+                &Default::default(),
+                &Default::default(),
+            )
+        };
+
+        let pending = interaction_record(
+            call_id,
+            &fixture,
+            1,
+            pl_core::thread::interactions::InteractionState::Pending,
+        )?;
+        let waiting = projection(pending)?;
+        assert_eq!(waiting.items.len(), 1);
+        let item = waiting.items[0].tool().context("tool item")?;
+        let user_input = item.user_input().context("pending Q&A")?;
+        assert!(matches!(
+            user_input.state(),
+            pl_protocol::ThreadToolUserInputState::Pending
+        ));
+        assert_eq!(user_input.questions().len(), 2);
+        assert_eq!(waiting.items[0].id, saved.id);
+        assert_eq!(waiting.items[0].ordinal, 7);
+        assert_eq!(waiting.items[0].created_at, 111);
+        assert_eq!(waiting.items[0].turn_id, "turn-qa");
+
+        let answered = projection(answered_record(call_id, &fixture)?)?;
+        // 同一个条目，不是第二条问答记录。
+        assert_eq!(answered.items.len(), 1);
+        assert_eq!(answered.items[0].id, saved.id);
+        assert_eq!(answered.items[0].ordinal, 7);
+        assert_eq!(answered.items[0].created_at, 111);
+        let user_input = answered.items[0]
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("answered Q&A")?;
+        let answers = user_input.answers();
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[0].question_id(), "provider");
+        assert_eq!(answers[0].answers(), ["anthropic\nline two"]);
+        // 敏感回答只公开它已被回答，原值不进入公开投影。
+        assert!(answers[1].is_redacted());
+        assert!(answers[1].answers().is_empty());
+        assert!(answered.items[0].revision >= 1);
+        Ok(())
+    }
+
+    /// 调用正文只剩历史时，投影报告该 identity 让调用方补读，而不是丢下已回答的问答。
+    #[test]
+    fn pruned_call_reports_the_identity_instead_of_dropping_the_answer() -> Result<()> {
+        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let fixture = question_fixture();
+        let projection = crate::studio::thread_projection::project_effect_items(
+            &thread,
+            &pl_core::thread::ThreadSnapshot::default(),
+            &question_effect(500, 9, vec![answered_record("call-qa", &fixture)?]),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        )?;
+        assert!(projection.items.is_empty());
+        assert_eq!(
+            projection.unresolved_calls,
+            [order::tool_id("call-qa")].into()
+        );
+
+        // live 投影只剩放置元数据占位（真实正文已被回收）时同样报告 identity，绝不静默丢弃权威问答。
+        let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
+        placeholder = placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem {
+            payloads: vec![],
+            notice: "This item's body is no longer resident in the live window.".into(),
+            recorded_at: 111,
+        }));
+        let mut resident = std::collections::BTreeMap::new();
+        resident.insert(placeholder.id.clone(), placeholder.clone());
+        let without_body = crate::studio::thread_projection::project_effect_items(
+            &thread,
+            &pl_core::thread::ThreadSnapshot::default(),
+            &question_effect(500, 9, vec![answered_record("call-qa", &fixture)?]),
+            &resident,
+            &Default::default(),
+            &Default::default(),
+        )?;
+        assert!(without_body.items.is_empty());
+        assert_eq!(
+            without_body.unresolved_calls,
+            [order::tool_id("call-qa")].into()
+        );
+
+        // 补读到 durable 正文后，同一次投影就落在原条目上。
+        let saved = question_tool_item("call-qa", &thread.id, 7);
+        let mut existing = std::collections::BTreeMap::new();
+        existing.insert(saved.id.clone(), saved);
+        let resolved = crate::studio::thread_projection::project_effect_items(
+            &thread,
+            &pl_core::thread::ThreadSnapshot::default(),
+            &question_effect(500, 9, vec![answered_record("call-qa", &fixture)?]),
+            &existing,
+            &Default::default(),
+            &Default::default(),
+        )?;
+        resolved.ensure_complete()?;
+        assert_eq!(resolved.items.len(), 1);
+        assert!(
+            resolved.items[0]
+                .tool()
+                .and_then(|tool| tool.user_input())
+                .is_some_and(|input| input.state().is_resolved())
+        );
+        Ok(())
+    }
+
+    /// 同一调用后续重新投影（任务状态推进、结果交付）不会抹掉已保存的问答。
+    ///
+    /// 问答属于交互事实，不属于这一次工具状态转移；重新投影必须把它带回同一条目。
+    #[test]
+    fn later_projection_of_the_same_call_keeps_the_saved_answer() -> Result<()> {
+        use pl_core::thread::task::{TaskRecord, TaskStatus};
+
+        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let fixture = question_fixture();
+        let mut answered = question_tool_item("call-qa", &thread.id, 7);
+        let record = answered_record("call-qa", &fixture)?;
+        crate::studio::thread_projection::attach_tool_user_input(
+            &mut answered,
+            crate::studio::thread_projection::project_tool_user_input(&record)?
+                .context("answered Q&A")?,
+        )?;
+        let mut existing = std::collections::BTreeMap::new();
+        existing.insert(answered.id.clone(), answered.clone());
+        let task = TaskRecord {
+            id: "task:call-qa".into(),
+            call_id: "call-qa".into(),
+            tool_id: "request_user_input".into(),
+            turn_id: "turn-qa".into(),
+            revision: 2,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(9),
+        };
+        let effect = pl_core::thread::ThreadEffectBatch {
+            committed_at: 600,
+            sequence: 10,
+            tasks: [task].into(),
+            ..Default::default()
+        };
+        let projection = crate::studio::thread_projection::project_effect_items(
+            &thread,
+            &pl_core::thread::ThreadSnapshot::default(),
+            &effect,
+            &existing,
+            &Default::default(),
+            &Default::default(),
+        )?;
+        let item = projection
+            .items
+            .iter()
+            .find(|item| item.id == answered.id)
+            .context("re-projected tool item")?;
+        let answers = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("kept Q&A")?
+            .answers();
+        assert_eq!(answers[0].answers(), ["anthropic\nline two"]);
+        assert!(answers[1].is_redacted());
+        Ok(())
+    }
+
+    /// 旧历史（v2 结构、v6 schema）在打开时从 durable 交互回执补齐问答，原位迁移且可重复打开。
+    #[tokio::test]
+    async fn legacy_history_gains_the_answered_qa_in_place_once() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "qa-thread";
+        let fixture = question_fixture();
+        let saved = question_tool_item("call-qa", thread_id, 4);
+        let pending = interaction_record("call-qa", &fixture, 1, InteractionState::Pending)?;
+        let answered = answered_record("call-qa", &fixture)?;
+        let receipts: Vec<FactReceiptWrite> = [&pending, &answered]
+            .into_iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&saved),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        // 旧库：条目里没有问答投影，schema 停在补齐之前。
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .await?;
+        drop(store);
+
+        let migrated = HistoryStore::open(&path, thread_id).await?;
+        migrated.prepare_activation().await?;
+        let items = migrated.existing_items([saved.id.clone()]).await?;
+        let item = items.get(&saved.id).context("migrated tool item")?;
+        assert_eq!(item.ordinal, 4);
+        assert_eq!(item.created_at, 111);
+        assert_eq!(item.turn_id, "turn-qa");
+        let user_input = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("migrated Q&A")?;
+        assert_eq!(user_input.interaction_id(), "tool-interaction:call-qa");
+        assert_eq!(
+            user_input.questions()[0].question,
+            "Which provider should the next release verify?"
+        );
+        let answers = user_input.answers();
+        assert_eq!(answers[0].answers(), ["anthropic\nline two"]);
+        assert!(answers[1].is_redacted(), "secret answer must stay private");
+        let migrated_revision = item.revision;
+        // 私有回执仍是原始 payload：敏感答案没有被公开投影改写。
+        let receipt = migrated
+            .latest_fact_receipt(&order::receipt_id(
+                "interaction",
+                "tool-interaction:call-qa",
+            ))
+            .await?
+            .context("interaction receipt")?;
+        assert!(receipt.payload.contains("secret-deployment-token"));
+        drop(migrated);
+
+        // 二次打开不再改变内容，也不会丢答案或重复推进版本。
+        let reopened = HistoryStore::open(&path, thread_id).await?;
+        reopened.prepare_activation().await?;
+        let again = reopened.existing_items([saved.id.clone()]).await?;
+        let item = again.get(&saved.id).context("reopened tool item")?;
+        assert_eq!(item.revision, migrated_revision);
+        assert_eq!(
+            item.tool()
+                .and_then(|tool| tool.user_input())
+                .map(|input| input.answers().len()),
+            Some(2)
+        );
+        Ok(())
+    }
+
+    /// 迁移只原位改载荷，不推进内容版本：身份/顺序/时间/版本不变，紧接的正常提交仍能写回。
+    ///
+    /// 若迁移自己推进了 revision，紧接着的内容变化就会撞上同一 revision 的不同载荷（history item
+    /// revision conflict），或把真实内容版本挤到迁移伪造的版本域之下而被静默丢弃。
+    #[tokio::test]
+    async fn migrated_qa_keeps_the_content_version_and_accepts_the_next_commit() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+        use pl_protocol::{SucceededThreadTool, ThreadToolOutput, ThreadToolState};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "qa-version";
+        let fixture = question_fixture();
+        let saved = question_tool_item("call-version", thread_id, 4);
+        let pending = interaction_record("call-version", &fixture, 1, InteractionState::Pending)?;
+        let answered = answered_record("call-version", &fixture)?;
+        let receipts: Vec<FactReceiptWrite> = [&pending, &answered]
+            .into_iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&saved),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .await?;
+        drop(store);
+
+        let migrated = HistoryStore::open(&path, thread_id).await?;
+        migrated.prepare_activation().await?;
+        let item = migrated
+            .existing_items([saved.id.clone()])
+            .await?
+            .remove(&saved.id)
+            .context("migrated tool item")?;
+        assert_eq!(item.ordinal, 4);
+        assert_eq!(item.created_at, 111);
+        assert_eq!(item.turn_id, "turn-qa");
+        // 迁移不伪造内容版本：读回的基线仍是被迁移条目的原版本。
+        assert_eq!(
+            item.revision, 3,
+            "content version must be preserved by the migration"
+        );
+        let user_input = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("migrated Q&A")?;
+        assert_eq!(user_input.answers()[0].answers(), ["anthropic\nline two"]);
+
+        // 正常的下一次内容提交：同一身份在原版本上推进一次（结果交付），必须落库成功。
+        let mut delivered = item.clone();
+        delivered.revision = 4;
+        delivered.updated_at = 700;
+        let tool = item.tool().context("tool item")?.clone();
+        delivered = delivered.with_state(ThreadItemState::Tool(
+            pl_protocol::ThreadToolItem::new(
+                tool.invocation().clone(),
+                ThreadToolState::Succeeded(SucceededThreadTool::new(
+                    700,
+                    ThreadToolOutput::new(
+                        "waiting for the user's response.".into(),
+                        vec![],
+                        vec![],
+                        None,
+                    ),
+                )),
+            )
+            .with_user_input(Some(user_input.clone())),
+        ));
+        migrated
+            .commit_effect(
+                2,
+                EffectCommit {
+                    items: std::slice::from_ref(&delivered),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        let reread = migrated
+            .existing_items([item.id.clone()])
+            .await?
+            .remove(&item.id)
+            .context("re-read tool item")?;
+        assert_eq!(reread.revision, 4);
+        let answers = reread
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("kept Q&A after the next commit")?
+            .answers();
+        assert_eq!(answers[0].answers(), ["anthropic\nline two"]);
+        Ok(())
+    }
+
+    /// 取消的问答保持取消事实，不会被伪造成已回答。
+    #[tokio::test]
+    async fn cancelled_question_is_migrated_as_cancelled() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "qa-cancelled";
+        let fixture = question_fixture();
+        let saved = question_tool_item("call-cancel", thread_id, 2);
+        let cancelled =
+            interaction_record("call-cancel", &fixture, 2, InteractionState::Cancelled)?;
+        let receipts = [FactReceiptWrite {
+            item_id: order::receipt_id("interaction", &cancelled.request.id),
+            revision: cancelled.revision,
+            kind: "interaction",
+            payload: serde_json::to_string(&cancelled)?,
+        }];
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&saved),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .await?;
+        drop(store);
+
+        let migrated = HistoryStore::open(&path, thread_id).await?;
+        migrated.prepare_activation().await?;
+        let items = migrated.existing_items([saved.id.clone()]).await?;
+        let user_input = items
+            .get(&saved.id)
+            .and_then(|item| item.tool())
+            .and_then(|tool| tool.user_input())
+            .context("migrated cancelled Q&A")?;
+        assert!(matches!(
+            user_input.state(),
+            pl_protocol::ThreadToolUserInputState::Cancelled
+        ));
+        assert!(user_input.answers().is_empty());
+        Ok(())
+    }
+
+    /// 跳过的题不伪造成“已回答但隐藏”：空答案列表只是没有作答，只有真正提供的敏感答案才脱敏。
+    #[test]
+    fn skipped_questions_are_not_published_as_hidden_answers() -> Result<()> {
+        let fixture = question_fixture();
+        let mut record = answered_record("call-skip", &fixture)?;
+        record.state = pl_core::thread::interactions::InteractionState::Resolved(
+            pl_core::thread::interactions::InteractionResponse {
+                payload: pl_core::context::OpaquePayload::new(
+                    "pl.studio.user-answer",
+                    1,
+                    serde_json::to_string(&serde_json::json!({
+                        "answers": {
+                            "provider": {"answers": ["anthropic"]},
+                            "token": {"answers": []},
+                        }
+                    }))?,
+                )?,
+                context: vec![],
+            },
+        );
+
+        let projection =
+            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+        let answers = projection.answers();
+        assert!(projection.state().is_resolved());
+        assert_eq!(answers.len(), 1, "an empty answer list is not an answer");
+        assert_eq!(answers[0].question_id(), "provider");
+        assert_eq!(answers[0].answers(), ["anthropic"]);
+        assert!(
+            answers.iter().all(|answer| !answer.is_redacted()),
+            "a skipped sensitive question must not be published as a hidden answer"
+        );
+
+        // 真正提供了值的敏感题仍然只公开“已回答/已隐藏”，原值不进入公开投影。
+        let provided = crate::studio::thread_projection::project_tool_user_input(
+            &answered_record("call-skip", &fixture)?,
+        )?
+        .context("provided Q&A")?;
+        let secret = provided
+            .answers()
+            .iter()
+            .find(|answer| answer.question_id() == "token")
+            .context("sensitive answer")?;
+        assert!(secret.is_redacted());
+        assert!(secret.answers().is_empty());
+        Ok(())
+    }
+
+    /// 无法解码的交互事实显式失败，不伪造任何问答，也不把私密答案带进诊断。
+    #[tokio::test]
+    async fn unreadable_qa_facts_fail_the_migration_instead_of_faking_an_answer() -> Result<()> {
+        use pl_core::thread::interactions::{InteractionResponse, InteractionState};
+
+        let mut unsupported = answered_record("call-broken", &question_fixture())?;
+        unsupported.request.payload =
+            pl_core::context::OpaquePayload::new("pl.tool.user-input", 2, "[]")?;
+
+        let mut unknown_question = answered_record("call-broken", &question_fixture())?;
+        unknown_question.state = InteractionState::Resolved(InteractionResponse {
+            payload: pl_core::context::OpaquePayload::new(
+                "pl.studio.user-answer",
+                1,
+                serde_json::to_string(&serde_json::json!({
+                    "answers": {"never-asked": {"answers": ["secret-deployment-token"]}}
+                }))?,
+            )?,
+            context: vec![],
+        });
+
+        for (index, record) in [unsupported, unknown_question].into_iter().enumerate() {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let thread_id = format!("qa-broken-{index}");
+            let saved = question_tool_item("call-broken", &thread_id, 2);
+            let receipts = [FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(&record)?,
+            }];
+            let store = HistoryStore::open(&path, &thread_id).await?;
+            store
+                .commit_effect(
+                    1,
+                    EffectCommit {
+                        items: std::slice::from_ref(&saved),
+                        rolled_back_turns: &Default::default(),
+                        identities: &[],
+                        messages: &[],
+                        receipts: &receipts,
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await?;
+            store
+                .writer()
+                .await?
+                .db
+                .execute_unprepared("UPDATE history_meta SET schema_version=6")
+                .await?;
+            drop(store);
+
+            let reopened = HistoryStore::open(&path, &thread_id).await?;
+            let failure = reopened
+                .prepare_activation()
+                .await
+                .expect_err("a corrupt Q&A fact must fail the migration");
+            let diagnostic = failure.to_string();
+            assert!(
+                !diagnostic.contains("secret-deployment-token"),
+                "the diagnostic must not leak a private answer: {diagnostic}"
+            );
+            // 显式失败：条目仍是迁移前的样子，没有被伪造成已回答。
+            let unchanged = reopened.existing_items([saved.id.clone()]).await?;
+            assert!(
+                unchanged
+                    .get(&saved.id)
+                    .and_then(|item| item.tool())
+                    .is_some_and(|tool| tool.user_input().is_none()),
+                "a failed migration must not publish a Q&A projection"
+            );
+        }
+        Ok(())
+    }
+
+    /// 长问答正文走既有内容预算：问题与答案在字段域里，静态元数据不带正文，按身份能读回完整条目。
+    #[tokio::test]
+    async fn long_user_answer_stays_in_budgeted_fields_and_expands_by_identity() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "qa-long";
+        let fixture = question_fixture();
+        let long_answer = "preserved line\n".repeat(20_000);
+        let mut item = question_tool_item("call-long", thread_id, 3);
+        let record = interaction_record(
+            "call-long",
+            &fixture,
+            2,
+            pl_core::thread::interactions::InteractionState::Resolved(
+                pl_core::thread::interactions::InteractionResponse {
+                    payload: pl_core::context::OpaquePayload::new(
+                        "pl.studio.user-answer",
+                        1,
+                        serde_json::to_string(&serde_json::json!({
+                            "answers": {
+                                "provider": {"answers": [long_answer]},
+                                "token": {"answers": ["secret-deployment-token"]},
+                            }
+                        }))?,
+                    )?,
+                    context: vec![],
+                },
+            ),
+        )?;
+        let user_input =
+            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+        crate::studio::thread_projection::attach_tool_user_input(&mut item, user_input)?;
+
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&item),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+
+        // 静态元数据只带结构：问答正文不进 meta，因此不绕过内容预算。
+        let complete = store
+            .read_chat_item(&item.id)
+            .await?
+            .context("complete chat item")?;
+        let meta = String::from_utf8_lossy(&complete.meta).to_string();
+        assert!(!meta.contains("preserved line"));
+        assert!(!meta.contains("secret-deployment-token"));
+        let answer_field = crate::studio::runtime::chat_item::user_input_answer_field(0, 0);
+        assert_eq!(
+            complete.field(&answer_field).map(|block| block.text()),
+            Some(long_answer.clone())
+        );
+        // 完整条目按身份回源可还原全部正文，条目身份不变。
+        let restored = crate::studio::runtime::chat_item::canonical_item(&complete)?;
+        assert_eq!(restored, item);
+
+        // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
+        let page = store
+            .chat_page(pl_core::chat::ChatQuery::Latest, 10)
+            .await?;
+        let previewed = page.items.first().context("paged item")?;
+        assert!(previewed.omitted_bytes > 0);
+        assert!(
+            previewed
+                .field(&answer_field)
+                .map(|block| block.text())
+                .is_none_or(|text| text.len() < long_answer.len())
         );
         Ok(())
     }

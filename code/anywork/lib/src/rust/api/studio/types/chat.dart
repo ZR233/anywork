@@ -13,7 +13,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 enum BridgeChatDirection { older, newer }
 
@@ -165,6 +165,12 @@ sealed class BridgeContentField with _$BridgeContentField {
   const factory BridgeContentField.toolArguments() =
       BridgeContentField_ToolArguments;
   const factory BridgeContentField.toolResult() = BridgeContentField_ToolResult;
+
+  /// 普通问答正文：问题位置 + 该问题内的一段可展示正文。
+  const factory BridgeContentField.toolUserInput({
+    required int questionIndex,
+    required BridgeThreadUserInputFieldPart part_,
+  }) = BridgeContentField_ToolUserInput;
 }
 
 @freezed
@@ -203,6 +209,26 @@ class BridgeFieldUpdate {
           runtimeType == other.runtimeType &&
           field == other.field &&
           change == other.change;
+}
+
+@freezed
+sealed class BridgeThreadUserInputFieldPart
+    with _$BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart._();
+
+  const factory BridgeThreadUserInputFieldPart.header() =
+      BridgeThreadUserInputFieldPart_Header;
+  const factory BridgeThreadUserInputFieldPart.question() =
+      BridgeThreadUserInputFieldPart_Question;
+  const factory BridgeThreadUserInputFieldPart.answer({
+    required int answerIndex,
+  }) = BridgeThreadUserInputFieldPart_Answer;
+  const factory BridgeThreadUserInputFieldPart.optionLabel({
+    required int optionIndex,
+  }) = BridgeThreadUserInputFieldPart_OptionLabel;
+  const factory BridgeThreadUserInputFieldPart.optionDescription({
+    required int optionIndex,
+  }) = BridgeThreadUserInputFieldPart_OptionDescription;
 }
 
 /// 一帧是否需要立即应用，还是普通文本可以合帧。

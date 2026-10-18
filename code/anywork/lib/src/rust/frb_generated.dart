@@ -5092,6 +5092,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeThreadUserInput dco_decode_box_autoadd_bridge_thread_user_input(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_thread_user_input(raw);
+  }
+
+  @protected
+  BridgeThreadUserInputFieldPart
+  dco_decode_box_autoadd_bridge_thread_user_input_field_part(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_thread_user_input_field_part(raw);
+  }
+
+  @protected
   BridgeTodoListSnapshot dco_decode_box_autoadd_bridge_todo_list_snapshot(
     dynamic raw,
   ) {
@@ -5978,6 +5993,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return BridgeContentField_ToolArguments();
       case 4:
         return BridgeContentField_ToolResult();
+      case 5:
+        return BridgeContentField_ToolUserInput(
+          questionIndex: dco_decode_u_32(raw[1]),
+          part_: dco_decode_box_autoadd_bridge_thread_user_input_field_part(
+            raw[2],
+          ),
+        );
       default:
         throw Exception("unreachable");
     }
@@ -8983,6 +9005,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             raw[1],
           ),
           state: dco_decode_box_autoadd_bridge_thread_tool_state(raw[2]),
+          userInput: dco_decode_opt_box_autoadd_bridge_thread_user_input(
+            raw[3],
+          ),
         );
       case 4:
         return BridgeThreadItemState_Agent(
@@ -9548,6 +9573,112 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           cancelledAt: dco_decode_i_64(raw[1]),
           reason: dco_decode_String(raw[2]),
         );
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
+  BridgeThreadUserInput dco_decode_bridge_thread_user_input(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return BridgeThreadUserInput(
+      interactionId: dco_decode_String(arr[0]),
+      questions: dco_decode_list_bridge_thread_user_input_question(arr[1]),
+      state: dco_decode_bridge_thread_user_input_state(arr[2]),
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputAnswer dco_decode_bridge_thread_user_input_answer(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return BridgeThreadUserInputAnswer(
+      questionId: dco_decode_String(arr[0]),
+      answers: dco_decode_list_String(arr[1]),
+      redacted: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputFieldPart dco_decode_bridge_thread_user_input_field_part(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeThreadUserInputFieldPart_Header();
+      case 1:
+        return BridgeThreadUserInputFieldPart_Question();
+      case 2:
+        return BridgeThreadUserInputFieldPart_Answer(
+          answerIndex: dco_decode_u_32(raw[1]),
+        );
+      case 3:
+        return BridgeThreadUserInputFieldPart_OptionLabel(
+          optionIndex: dco_decode_u_32(raw[1]),
+        );
+      case 4:
+        return BridgeThreadUserInputFieldPart_OptionDescription(
+          optionIndex: dco_decode_u_32(raw[1]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
+  BridgeThreadUserInputOption dco_decode_bridge_thread_user_input_option(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BridgeThreadUserInputOption(
+      label: dco_decode_String(arr[0]),
+      description: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputQuestion dco_decode_bridge_thread_user_input_question(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return BridgeThreadUserInputQuestion(
+      id: dco_decode_String(arr[0]),
+      header: dco_decode_String(arr[1]),
+      question: dco_decode_String(arr[2]),
+      isOther: dco_decode_bool(arr[3]),
+      isSecret: dco_decode_bool(arr[4]),
+      options: dco_decode_list_bridge_thread_user_input_option(arr[5]),
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputState dco_decode_bridge_thread_user_input_state(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeThreadUserInputState_Pending();
+      case 1:
+        return BridgeThreadUserInputState_Resolved(
+          answers: dco_decode_list_bridge_thread_user_input_answer(raw[1]),
+        );
+      case 2:
+        return BridgeThreadUserInputState_Cancelled();
       default:
         throw Exception("unreachable");
     }
@@ -10616,6 +10747,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<BridgeThreadUserInputAnswer>
+  dco_decode_list_bridge_thread_user_input_answer(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_bridge_thread_user_input_answer)
+        .toList();
+  }
+
+  @protected
+  List<BridgeThreadUserInputOption>
+  dco_decode_list_bridge_thread_user_input_option(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_bridge_thread_user_input_option)
+        .toList();
+  }
+
+  @protected
+  List<BridgeThreadUserInputQuestion>
+  dco_decode_list_bridge_thread_user_input_question(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_bridge_thread_user_input_question)
+        .toList();
+  }
+
+  @protected
   List<BridgeTodoItem> dco_decode_list_bridge_todo_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_bridge_todo_item).toList();
@@ -10972,6 +11130,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_bridge_thread_tool_output(raw);
+  }
+
+  @protected
+  BridgeThreadUserInput? dco_decode_opt_box_autoadd_bridge_thread_user_input(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_thread_user_input(raw);
   }
 
   @protected
@@ -12598,6 +12766,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeThreadUserInput sse_decode_box_autoadd_bridge_thread_user_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_thread_user_input(deserializer));
+  }
+
+  @protected
+  BridgeThreadUserInputFieldPart
+  sse_decode_box_autoadd_bridge_thread_user_input_field_part(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_thread_user_input_field_part(deserializer));
+  }
+
+  @protected
   BridgeTodoListSnapshot sse_decode_box_autoadd_bridge_todo_list_snapshot(
     SseDeserializer deserializer,
   ) {
@@ -13678,6 +13863,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return BridgeContentField_ToolArguments();
       case 4:
         return BridgeContentField_ToolResult();
+      case 5:
+        var var_questionIndex = sse_decode_u_32(deserializer);
+        var var_part_ =
+            sse_decode_box_autoadd_bridge_thread_user_input_field_part(
+              deserializer,
+            );
+        return BridgeContentField_ToolUserInput(
+          questionIndex: var_questionIndex,
+          part_: var_part_,
+        );
       default:
         throw UnimplementedError('');
     }
@@ -17597,9 +17792,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_state = sse_decode_box_autoadd_bridge_thread_tool_state(
           deserializer,
         );
+        var var_userInput = sse_decode_opt_box_autoadd_bridge_thread_user_input(
+          deserializer,
+        );
         return BridgeThreadItemState_Tool(
           invocation: var_invocation,
           state: var_state,
+          userInput: var_userInput,
         );
       case 4:
         var var_identity = sse_decode_box_autoadd_bridge_thread_agent_identity(
@@ -18351,6 +18550,128 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           cancelledAt: var_cancelledAt,
           reason: var_reason,
         );
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
+  BridgeThreadUserInput sse_decode_bridge_thread_user_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_interactionId = sse_decode_String(deserializer);
+    var var_questions = sse_decode_list_bridge_thread_user_input_question(
+      deserializer,
+    );
+    var var_state = sse_decode_bridge_thread_user_input_state(deserializer);
+    return BridgeThreadUserInput(
+      interactionId: var_interactionId,
+      questions: var_questions,
+      state: var_state,
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputAnswer sse_decode_bridge_thread_user_input_answer(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_questionId = sse_decode_String(deserializer);
+    var var_answers = sse_decode_list_String(deserializer);
+    var var_redacted = sse_decode_bool(deserializer);
+    return BridgeThreadUserInputAnswer(
+      questionId: var_questionId,
+      answers: var_answers,
+      redacted: var_redacted,
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputFieldPart sse_decode_bridge_thread_user_input_field_part(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return BridgeThreadUserInputFieldPart_Header();
+      case 1:
+        return BridgeThreadUserInputFieldPart_Question();
+      case 2:
+        var var_answerIndex = sse_decode_u_32(deserializer);
+        return BridgeThreadUserInputFieldPart_Answer(
+          answerIndex: var_answerIndex,
+        );
+      case 3:
+        var var_optionIndex = sse_decode_u_32(deserializer);
+        return BridgeThreadUserInputFieldPart_OptionLabel(
+          optionIndex: var_optionIndex,
+        );
+      case 4:
+        var var_optionIndex = sse_decode_u_32(deserializer);
+        return BridgeThreadUserInputFieldPart_OptionDescription(
+          optionIndex: var_optionIndex,
+        );
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
+  BridgeThreadUserInputOption sse_decode_bridge_thread_user_input_option(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_label = sse_decode_String(deserializer);
+    var var_description = sse_decode_String(deserializer);
+    return BridgeThreadUserInputOption(
+      label: var_label,
+      description: var_description,
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputQuestion sse_decode_bridge_thread_user_input_question(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_header = sse_decode_String(deserializer);
+    var var_question = sse_decode_String(deserializer);
+    var var_isOther = sse_decode_bool(deserializer);
+    var var_isSecret = sse_decode_bool(deserializer);
+    var var_options = sse_decode_list_bridge_thread_user_input_option(
+      deserializer,
+    );
+    return BridgeThreadUserInputQuestion(
+      id: var_id,
+      header: var_header,
+      question: var_question,
+      isOther: var_isOther,
+      isSecret: var_isSecret,
+      options: var_options,
+    );
+  }
+
+  @protected
+  BridgeThreadUserInputState sse_decode_bridge_thread_user_input_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return BridgeThreadUserInputState_Pending();
+      case 1:
+        var var_answers = sse_decode_list_bridge_thread_user_input_answer(
+          deserializer,
+        );
+        return BridgeThreadUserInputState_Resolved(answers: var_answers);
+      case 2:
+        return BridgeThreadUserInputState_Cancelled();
       default:
         throw UnimplementedError('');
     }
@@ -19834,6 +20155,51 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<BridgeThreadUserInputAnswer>
+  sse_decode_list_bridge_thread_user_input_answer(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <BridgeThreadUserInputAnswer>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_bridge_thread_user_input_answer(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<BridgeThreadUserInputOption>
+  sse_decode_list_bridge_thread_user_input_option(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <BridgeThreadUserInputOption>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_bridge_thread_user_input_option(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<BridgeThreadUserInputQuestion>
+  sse_decode_list_bridge_thread_user_input_question(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <BridgeThreadUserInputQuestion>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_bridge_thread_user_input_question(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<BridgeTodoItem> sse_decode_list_bridge_todo_item(
     SseDeserializer deserializer,
   ) {
@@ -20427,6 +20793,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_bridge_thread_tool_output(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeThreadUserInput? sse_decode_opt_box_autoadd_bridge_thread_user_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_thread_user_input(deserializer));
     } else {
       return null;
     }
@@ -22301,6 +22680,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_thread_user_input(
+    BridgeThreadUserInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_thread_user_input(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_thread_user_input_field_part(
+    BridgeThreadUserInputFieldPart self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_thread_user_input_field_part(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_todo_list_snapshot(
     BridgeTodoListSnapshot self,
     SseSerializer serializer,
@@ -23269,6 +23666,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_i_32(3, serializer);
       case BridgeContentField_ToolResult():
         sse_encode_i_32(4, serializer);
+      case BridgeContentField_ToolUserInput(
+        questionIndex: final questionIndex,
+        part_: final part_,
+      ):
+        sse_encode_i_32(5, serializer);
+        sse_encode_u_32(questionIndex, serializer);
+        sse_encode_box_autoadd_bridge_thread_user_input_field_part(
+          part_,
+          serializer,
+        );
     }
   }
 
@@ -26298,6 +26705,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeThreadItemState_Tool(
         invocation: final invocation,
         state: final state,
+        userInput: final userInput,
       ):
         sse_encode_i_32(3, serializer);
         sse_encode_box_autoadd_bridge_thread_tool_invocation(
@@ -26305,6 +26713,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           serializer,
         );
         sse_encode_box_autoadd_bridge_thread_tool_state(state, serializer);
+        sse_encode_opt_box_autoadd_bridge_thread_user_input(
+          userInput,
+          serializer,
+        );
       case BridgeThreadItemState_Agent(
         identity: final identity,
         state: final state,
@@ -26871,6 +27283,101 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_i_32(11, serializer);
         sse_encode_i_64(cancelledAt, serializer);
         sse_encode_String(reason, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input(
+    BridgeThreadUserInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.interactionId, serializer);
+    sse_encode_list_bridge_thread_user_input_question(
+      self.questions,
+      serializer,
+    );
+    sse_encode_bridge_thread_user_input_state(self.state, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input_answer(
+    BridgeThreadUserInputAnswer self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.questionId, serializer);
+    sse_encode_list_String(self.answers, serializer);
+    sse_encode_bool(self.redacted, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input_field_part(
+    BridgeThreadUserInputFieldPart self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeThreadUserInputFieldPart_Header():
+        sse_encode_i_32(0, serializer);
+      case BridgeThreadUserInputFieldPart_Question():
+        sse_encode_i_32(1, serializer);
+      case BridgeThreadUserInputFieldPart_Answer(
+        answerIndex: final answerIndex,
+      ):
+        sse_encode_i_32(2, serializer);
+        sse_encode_u_32(answerIndex, serializer);
+      case BridgeThreadUserInputFieldPart_OptionLabel(
+        optionIndex: final optionIndex,
+      ):
+        sse_encode_i_32(3, serializer);
+        sse_encode_u_32(optionIndex, serializer);
+      case BridgeThreadUserInputFieldPart_OptionDescription(
+        optionIndex: final optionIndex,
+      ):
+        sse_encode_i_32(4, serializer);
+        sse_encode_u_32(optionIndex, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input_option(
+    BridgeThreadUserInputOption self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.label, serializer);
+    sse_encode_String(self.description, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input_question(
+    BridgeThreadUserInputQuestion self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.header, serializer);
+    sse_encode_String(self.question, serializer);
+    sse_encode_bool(self.isOther, serializer);
+    sse_encode_bool(self.isSecret, serializer);
+    sse_encode_list_bridge_thread_user_input_option(self.options, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_thread_user_input_state(
+    BridgeThreadUserInputState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeThreadUserInputState_Pending():
+        sse_encode_i_32(0, serializer);
+      case BridgeThreadUserInputState_Resolved(answers: final answers):
+        sse_encode_i_32(1, serializer);
+        sse_encode_list_bridge_thread_user_input_answer(answers, serializer);
+      case BridgeThreadUserInputState_Cancelled():
+        sse_encode_i_32(2, serializer);
     }
   }
 
@@ -28105,6 +28612,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_bridge_thread_user_input_answer(
+    List<BridgeThreadUserInputAnswer> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_bridge_thread_user_input_answer(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_bridge_thread_user_input_option(
+    List<BridgeThreadUserInputOption> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_bridge_thread_user_input_option(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_bridge_thread_user_input_question(
+    List<BridgeThreadUserInputQuestion> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_bridge_thread_user_input_question(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_bridge_todo_item(
     List<BridgeTodoItem> self,
     SseSerializer serializer,
@@ -28654,6 +29197,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_thread_tool_output(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_thread_user_input(
+    BridgeThreadUserInput? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_thread_user_input(self, serializer);
     }
   }
 

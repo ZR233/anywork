@@ -440,6 +440,7 @@ class _RowCard extends StatelessWidget {
       ),
       TimelineActivityRow(:final group) => _ActivityGroupPart(group: group),
       TimelineImageRow() => _ImageReadPart(row: row),
+      final TimelineUserInputRow input => _UserInputReceipt(row: input),
       TimelineSkillRow(:final activation) => _SkillActivationPart(
         key: StudioDriverKeys.timelineSkillActivation(row.id),
         activation: activation,

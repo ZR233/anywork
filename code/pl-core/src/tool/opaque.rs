@@ -34,8 +34,20 @@ impl CallContext {
     }
 }
 
-pub(crate) fn tool_interaction_id(call_id: &str) -> String {
+/// Identity core assigns to an interaction produced by this tool call.
+///
+/// Computing an identity does not create a record or grant permission to resolve it.
+pub fn tool_interaction_id(call_id: &str) -> String {
     format!("tool-interaction:{call_id}")
+}
+
+/// Returns the originating tool call identity for a core-minted tool interaction.
+///
+/// This only decodes the identity; callers must still verify the matching canonical record.
+pub fn interaction_tool_call_id(interaction_id: &str) -> Option<&str> {
+    interaction_id
+        .strip_prefix("tool-interaction:")
+        .filter(|call_id| !call_id.is_empty())
 }
 
 /// Minimal tool implementation. Parsing and model-visible projection belong to the producer.

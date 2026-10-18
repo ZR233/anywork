@@ -92,10 +92,29 @@ pub struct BridgeFieldUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeContentField {
     Text,
-    ThinkingSummary { chunk_index: u32 },
-    ThinkingContent { chunk_index: u32 },
+    ThinkingSummary {
+        chunk_index: u32,
+    },
+    ThinkingContent {
+        chunk_index: u32,
+    },
     ToolArguments,
     ToolResult,
+    /// 普通问答正文：问题位置 + 该问题内的一段可展示正文。
+    ToolUserInput {
+        question_index: u32,
+        part: BridgeThreadUserInputFieldPart,
+    },
+}
+
+/// 普通问答投影里一段可展示正文的位置；问答正文共享同一条内容预算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeThreadUserInputFieldPart {
+    Header,
+    Question,
+    Answer { answer_index: u32 },
+    OptionLabel { option_index: u32 },
+    OptionDescription { option_index: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -639,7 +639,7 @@ extension BridgeContentFieldPatterns on BridgeContentField {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContentField_Text value)?  text,TResult Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult Function( BridgeContentField_ToolResult value)?  toolResult,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContentField_Text value)?  text,TResult Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult Function( BridgeContentField_ToolResult value)?  toolResult,TResult Function( BridgeContentField_ToolUserInput value)?  toolUserInput,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
@@ -647,7 +647,8 @@ return text(_that);case BridgeContentField_ThinkingSummary() when thinkingSummar
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments(_that);case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult(_that);case _:
+return toolResult(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that);case _:
   return orElse();
 
 }
@@ -665,7 +666,7 @@ return toolResult(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContentField_Text value)  text,required TResult Function( BridgeContentField_ThinkingSummary value)  thinkingSummary,required TResult Function( BridgeContentField_ThinkingContent value)  thinkingContent,required TResult Function( BridgeContentField_ToolArguments value)  toolArguments,required TResult Function( BridgeContentField_ToolResult value)  toolResult,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContentField_Text value)  text,required TResult Function( BridgeContentField_ThinkingSummary value)  thinkingSummary,required TResult Function( BridgeContentField_ThinkingContent value)  thinkingContent,required TResult Function( BridgeContentField_ToolArguments value)  toolArguments,required TResult Function( BridgeContentField_ToolResult value)  toolResult,required TResult Function( BridgeContentField_ToolUserInput value)  toolUserInput,}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text():
@@ -673,7 +674,8 @@ return text(_that);case BridgeContentField_ThinkingSummary():
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent():
 return thinkingContent(_that);case BridgeContentField_ToolArguments():
 return toolArguments(_that);case BridgeContentField_ToolResult():
-return toolResult(_that);}
+return toolResult(_that);case BridgeContentField_ToolUserInput():
+return toolUserInput(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -687,7 +689,7 @@ return toolResult(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContentField_Text value)?  text,TResult? Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult? Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult? Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult? Function( BridgeContentField_ToolResult value)?  toolResult,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContentField_Text value)?  text,TResult? Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult? Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult? Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult? Function( BridgeContentField_ToolResult value)?  toolResult,TResult? Function( BridgeContentField_ToolUserInput value)?  toolUserInput,}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
@@ -695,7 +697,8 @@ return text(_that);case BridgeContentField_ThinkingSummary() when thinkingSummar
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments(_that);case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult(_that);case _:
+return toolResult(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that);case _:
   return null;
 
 }
@@ -712,14 +715,15 @@ return toolResult(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  text,TResult Function( int chunkIndex)?  thinkingSummary,TResult Function( int chunkIndex)?  thinkingContent,TResult Function()?  toolArguments,TResult Function()?  toolResult,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  text,TResult Function( int chunkIndex)?  thinkingSummary,TResult Function( int chunkIndex)?  thinkingContent,TResult Function()?  toolArguments,TResult Function()?  toolResult,TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
 return text();case BridgeContentField_ThinkingSummary() when thinkingSummary != null:
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments();case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult();case _:
+return toolResult();case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that.questionIndex,_that.part_);case _:
   return orElse();
 
 }
@@ -737,14 +741,15 @@ return toolResult();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  text,required TResult Function( int chunkIndex)  thinkingSummary,required TResult Function( int chunkIndex)  thinkingContent,required TResult Function()  toolArguments,required TResult Function()  toolResult,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  text,required TResult Function( int chunkIndex)  thinkingSummary,required TResult Function( int chunkIndex)  thinkingContent,required TResult Function()  toolArguments,required TResult Function()  toolResult,required TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)  toolUserInput,}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text():
 return text();case BridgeContentField_ThinkingSummary():
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent():
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments():
 return toolArguments();case BridgeContentField_ToolResult():
-return toolResult();}
+return toolResult();case BridgeContentField_ToolUserInput():
+return toolUserInput(_that.questionIndex,_that.part_);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -758,14 +763,15 @@ return toolResult();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  text,TResult? Function( int chunkIndex)?  thinkingSummary,TResult? Function( int chunkIndex)?  thinkingContent,TResult? Function()?  toolArguments,TResult? Function()?  toolResult,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  text,TResult? Function( int chunkIndex)?  thinkingSummary,TResult? Function( int chunkIndex)?  thinkingContent,TResult? Function()?  toolArguments,TResult? Function()?  toolResult,TResult? Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
 return text();case BridgeContentField_ThinkingSummary() when thinkingSummary != null:
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments();case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult();case _:
+return toolResult();case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that.questionIndex,_that.part_);case _:
   return null;
 
 }
@@ -1004,6 +1010,85 @@ String toString() {
 
 
 
+
+/// @nodoc
+
+
+class BridgeContentField_ToolUserInput extends BridgeContentField {
+  const BridgeContentField_ToolUserInput({required this.questionIndex, required this.part_}): super._();
+
+
+ final  int questionIndex;
+ final  BridgeThreadUserInputFieldPart part_;
+
+/// Create a copy of BridgeContentField
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeContentField_ToolUserInputCopyWith<BridgeContentField_ToolUserInput> get copyWith => _$BridgeContentField_ToolUserInputCopyWithImpl<BridgeContentField_ToolUserInput>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContentField_ToolUserInput&&(identical(other.questionIndex, questionIndex) || other.questionIndex == questionIndex)&&(identical(other.part_, part_) || other.part_ == part_));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,questionIndex,part_);
+}
+
+@override
+String toString() {
+    return 'BridgeContentField.toolUserInput(questionIndex: $questionIndex, part_: $part_)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeContentField_ToolUserInputCopyWith<$Res> implements $BridgeContentFieldCopyWith<$Res> {
+  factory $BridgeContentField_ToolUserInputCopyWith(BridgeContentField_ToolUserInput value, $Res Function(BridgeContentField_ToolUserInput) _then) = _$BridgeContentField_ToolUserInputCopyWithImpl;
+@useResult
+$Res call({
+ int questionIndex, BridgeThreadUserInputFieldPart part_
+});
+
+
+$BridgeThreadUserInputFieldPartCopyWith<$Res> get part_;
+
+}
+/// @nodoc
+class _$BridgeContentField_ToolUserInputCopyWithImpl<$Res>
+    implements $BridgeContentField_ToolUserInputCopyWith<$Res> {
+  _$BridgeContentField_ToolUserInputCopyWithImpl(this._self, this._then);
+
+  final BridgeContentField_ToolUserInput _self;
+  final $Res Function(BridgeContentField_ToolUserInput) _then;
+
+/// Create a copy of BridgeContentField
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? questionIndex = null,Object? part_ = null,}) {
+  return _then(BridgeContentField_ToolUserInput(
+questionIndex: null == questionIndex ? _self.questionIndex : questionIndex // ignore: cast_nullable_to_non_nullable
+as int,part_: null == part_ ? _self.part_ : part_ // ignore: cast_nullable_to_non_nullable
+as BridgeThreadUserInputFieldPart,
+  ));
+}
+
+/// Create a copy of BridgeContentField
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeThreadUserInputFieldPartCopyWith<$Res> get part_ {
+
+  return $BridgeThreadUserInputFieldPartCopyWith<$Res>(_self.part_, (value) {
+    return _then(_self.copyWith(part_: value));
+  });
+}
+}
 
 /// @nodoc
 mixin _$BridgeFieldChange {
@@ -1376,6 +1461,452 @@ String toString() {
 
 
 
+
+/// @nodoc
+mixin _$BridgeThreadUserInputFieldPart {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeThreadUserInputFieldPartCopyWith<$Res>  {
+$BridgeThreadUserInputFieldPartCopyWith(BridgeThreadUserInputFieldPart _, $Res Function(BridgeThreadUserInputFieldPart) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeThreadUserInputFieldPart].
+extension BridgeThreadUserInputFieldPartPatterns on BridgeThreadUserInputFieldPart {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeThreadUserInputFieldPart_Header value)?  header,TResult Function( BridgeThreadUserInputFieldPart_Question value)?  question,TResult Function( BridgeThreadUserInputFieldPart_Answer value)?  answer,TResult Function( BridgeThreadUserInputFieldPart_OptionLabel value)?  optionLabel,TResult Function( BridgeThreadUserInputFieldPart_OptionDescription value)?  optionDescription,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header() when header != null:
+return header(_that);case BridgeThreadUserInputFieldPart_Question() when question != null:
+return question(_that);case BridgeThreadUserInputFieldPart_Answer() when answer != null:
+return answer(_that);case BridgeThreadUserInputFieldPart_OptionLabel() when optionLabel != null:
+return optionLabel(_that);case BridgeThreadUserInputFieldPart_OptionDescription() when optionDescription != null:
+return optionDescription(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeThreadUserInputFieldPart_Header value)  header,required TResult Function( BridgeThreadUserInputFieldPart_Question value)  question,required TResult Function( BridgeThreadUserInputFieldPart_Answer value)  answer,required TResult Function( BridgeThreadUserInputFieldPart_OptionLabel value)  optionLabel,required TResult Function( BridgeThreadUserInputFieldPart_OptionDescription value)  optionDescription,}){
+final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header():
+return header(_that);case BridgeThreadUserInputFieldPart_Question():
+return question(_that);case BridgeThreadUserInputFieldPart_Answer():
+return answer(_that);case BridgeThreadUserInputFieldPart_OptionLabel():
+return optionLabel(_that);case BridgeThreadUserInputFieldPart_OptionDescription():
+return optionDescription(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeThreadUserInputFieldPart_Header value)?  header,TResult? Function( BridgeThreadUserInputFieldPart_Question value)?  question,TResult? Function( BridgeThreadUserInputFieldPart_Answer value)?  answer,TResult? Function( BridgeThreadUserInputFieldPart_OptionLabel value)?  optionLabel,TResult? Function( BridgeThreadUserInputFieldPart_OptionDescription value)?  optionDescription,}){
+final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header() when header != null:
+return header(_that);case BridgeThreadUserInputFieldPart_Question() when question != null:
+return question(_that);case BridgeThreadUserInputFieldPart_Answer() when answer != null:
+return answer(_that);case BridgeThreadUserInputFieldPart_OptionLabel() when optionLabel != null:
+return optionLabel(_that);case BridgeThreadUserInputFieldPart_OptionDescription() when optionDescription != null:
+return optionDescription(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  header,TResult Function()?  question,TResult Function( int answerIndex)?  answer,TResult Function( int optionIndex)?  optionLabel,TResult Function( int optionIndex)?  optionDescription,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header() when header != null:
+return header();case BridgeThreadUserInputFieldPart_Question() when question != null:
+return question();case BridgeThreadUserInputFieldPart_Answer() when answer != null:
+return answer(_that.answerIndex);case BridgeThreadUserInputFieldPart_OptionLabel() when optionLabel != null:
+return optionLabel(_that.optionIndex);case BridgeThreadUserInputFieldPart_OptionDescription() when optionDescription != null:
+return optionDescription(_that.optionIndex);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  header,required TResult Function()  question,required TResult Function( int answerIndex)  answer,required TResult Function( int optionIndex)  optionLabel,required TResult Function( int optionIndex)  optionDescription,}) {final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header():
+return header();case BridgeThreadUserInputFieldPart_Question():
+return question();case BridgeThreadUserInputFieldPart_Answer():
+return answer(_that.answerIndex);case BridgeThreadUserInputFieldPart_OptionLabel():
+return optionLabel(_that.optionIndex);case BridgeThreadUserInputFieldPart_OptionDescription():
+return optionDescription(_that.optionIndex);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  header,TResult? Function()?  question,TResult? Function( int answerIndex)?  answer,TResult? Function( int optionIndex)?  optionLabel,TResult? Function( int optionIndex)?  optionDescription,}) {final _that = this;
+switch (_that) {
+case BridgeThreadUserInputFieldPart_Header() when header != null:
+return header();case BridgeThreadUserInputFieldPart_Question() when question != null:
+return question();case BridgeThreadUserInputFieldPart_Answer() when answer != null:
+return answer(_that.answerIndex);case BridgeThreadUserInputFieldPart_OptionLabel() when optionLabel != null:
+return optionLabel(_that.optionIndex);case BridgeThreadUserInputFieldPart_OptionDescription() when optionDescription != null:
+return optionDescription(_that.optionIndex);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeThreadUserInputFieldPart_Header extends BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart_Header(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart_Header);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart.header()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeThreadUserInputFieldPart_Question extends BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart_Question(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart_Question);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart.question()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeThreadUserInputFieldPart_Answer extends BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart_Answer({required this.answerIndex}): super._();
+
+
+ final  int answerIndex;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadUserInputFieldPart_AnswerCopyWith<BridgeThreadUserInputFieldPart_Answer> get copyWith => _$BridgeThreadUserInputFieldPart_AnswerCopyWithImpl<BridgeThreadUserInputFieldPart_Answer>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart_Answer&&(identical(other.answerIndex, answerIndex) || other.answerIndex == answerIndex));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,answerIndex);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart.answer(answerIndex: $answerIndex)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadUserInputFieldPart_AnswerCopyWith<$Res> implements $BridgeThreadUserInputFieldPartCopyWith<$Res> {
+  factory $BridgeThreadUserInputFieldPart_AnswerCopyWith(BridgeThreadUserInputFieldPart_Answer value, $Res Function(BridgeThreadUserInputFieldPart_Answer) _then) = _$BridgeThreadUserInputFieldPart_AnswerCopyWithImpl;
+@useResult
+$Res call({
+ int answerIndex
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeThreadUserInputFieldPart_AnswerCopyWithImpl<$Res>
+    implements $BridgeThreadUserInputFieldPart_AnswerCopyWith<$Res> {
+  _$BridgeThreadUserInputFieldPart_AnswerCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadUserInputFieldPart_Answer _self;
+  final $Res Function(BridgeThreadUserInputFieldPart_Answer) _then;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? answerIndex = null,}) {
+  return _then(BridgeThreadUserInputFieldPart_Answer(
+answerIndex: null == answerIndex ? _self.answerIndex : answerIndex // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeThreadUserInputFieldPart_OptionLabel extends BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart_OptionLabel({required this.optionIndex}): super._();
+
+
+ final  int optionIndex;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadUserInputFieldPart_OptionLabelCopyWith<BridgeThreadUserInputFieldPart_OptionLabel> get copyWith => _$BridgeThreadUserInputFieldPart_OptionLabelCopyWithImpl<BridgeThreadUserInputFieldPart_OptionLabel>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart_OptionLabel&&(identical(other.optionIndex, optionIndex) || other.optionIndex == optionIndex));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,optionIndex);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart.optionLabel(optionIndex: $optionIndex)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadUserInputFieldPart_OptionLabelCopyWith<$Res> implements $BridgeThreadUserInputFieldPartCopyWith<$Res> {
+  factory $BridgeThreadUserInputFieldPart_OptionLabelCopyWith(BridgeThreadUserInputFieldPart_OptionLabel value, $Res Function(BridgeThreadUserInputFieldPart_OptionLabel) _then) = _$BridgeThreadUserInputFieldPart_OptionLabelCopyWithImpl;
+@useResult
+$Res call({
+ int optionIndex
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeThreadUserInputFieldPart_OptionLabelCopyWithImpl<$Res>
+    implements $BridgeThreadUserInputFieldPart_OptionLabelCopyWith<$Res> {
+  _$BridgeThreadUserInputFieldPart_OptionLabelCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadUserInputFieldPart_OptionLabel _self;
+  final $Res Function(BridgeThreadUserInputFieldPart_OptionLabel) _then;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? optionIndex = null,}) {
+  return _then(BridgeThreadUserInputFieldPart_OptionLabel(
+optionIndex: null == optionIndex ? _self.optionIndex : optionIndex // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeThreadUserInputFieldPart_OptionDescription extends BridgeThreadUserInputFieldPart {
+  const BridgeThreadUserInputFieldPart_OptionDescription({required this.optionIndex}): super._();
+
+
+ final  int optionIndex;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadUserInputFieldPart_OptionDescriptionCopyWith<BridgeThreadUserInputFieldPart_OptionDescription> get copyWith => _$BridgeThreadUserInputFieldPart_OptionDescriptionCopyWithImpl<BridgeThreadUserInputFieldPart_OptionDescription>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadUserInputFieldPart_OptionDescription&&(identical(other.optionIndex, optionIndex) || other.optionIndex == optionIndex));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,optionIndex);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadUserInputFieldPart.optionDescription(optionIndex: $optionIndex)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadUserInputFieldPart_OptionDescriptionCopyWith<$Res> implements $BridgeThreadUserInputFieldPartCopyWith<$Res> {
+  factory $BridgeThreadUserInputFieldPart_OptionDescriptionCopyWith(BridgeThreadUserInputFieldPart_OptionDescription value, $Res Function(BridgeThreadUserInputFieldPart_OptionDescription) _then) = _$BridgeThreadUserInputFieldPart_OptionDescriptionCopyWithImpl;
+@useResult
+$Res call({
+ int optionIndex
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeThreadUserInputFieldPart_OptionDescriptionCopyWithImpl<$Res>
+    implements $BridgeThreadUserInputFieldPart_OptionDescriptionCopyWith<$Res> {
+  _$BridgeThreadUserInputFieldPart_OptionDescriptionCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadUserInputFieldPart_OptionDescription _self;
+  final $Res Function(BridgeThreadUserInputFieldPart_OptionDescription) _then;
+
+/// Create a copy of BridgeThreadUserInputFieldPart
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? optionIndex = null,}) {
+  return _then(BridgeThreadUserInputFieldPart_OptionDescription(
+optionIndex: null == optionIndex ? _self.optionIndex : optionIndex // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
 
 /// @nodoc
 mixin _$BridgeViewChange {

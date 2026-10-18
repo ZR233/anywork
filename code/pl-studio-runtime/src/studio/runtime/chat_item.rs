@@ -15,13 +15,16 @@ use anyhow::Result;
 use pl_core::chat::{ChatField, ChatItem, ChatLifecycle, PresentationPart};
 use pl_core::model::ContentBlock;
 use pl_protocol::{
-    ThreadItem, ThreadItemState, ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation,
-    ThreadToolItem, ThreadToolState,
+    ResolvedThreadToolUserInput, ThreadItem, ThreadItemState, ThreadTextItem, ThreadThinkingItem,
+    ThreadToolInvocation, ThreadToolItem, ThreadToolState, ThreadToolUserInput,
+    ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
 };
 
 /// 工具参数与工具结果各自的宿主字段域 key（稳定身份，不是内容推断）。
 pub(crate) const TOOL_ARGUMENTS_FIELD: &str = "tool.arguments";
 pub(crate) const TOOL_RESULT_FIELD: &str = "tool.result";
+/// 普通问答投影的正文域 key 前缀（见 [`user_input_question_field`] / [`user_input_answer_field`]）。
+pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
 
 /// 把一条 canonical 条目拆成 typed 窗口条目：静态结构进 `meta`，动态正文进 `fields`。
 ///
@@ -98,6 +101,26 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
                     ContentBlock::from_text(output),
                 );
             }
+            // 问答正文同样进内容域：它和其它正文共享同一份有界预览、按身份回源与省略量，不能因为
+            // 塞进静态 meta 而绕过预算。问题按原顺序索引，答案按所属问题的位置索引。
+            if let Some(user_input) = tool.user_input() {
+                for (position, question) in user_input.questions().iter().enumerate() {
+                    for (field, text) in user_input_question_fields(position, question) {
+                        fields.insert(field, ContentBlock::from_text(text));
+                    }
+                }
+                for answer in user_input.answers() {
+                    let Some(position) = question_position(user_input, answer.question_id()) else {
+                        continue;
+                    };
+                    for (index, value) in answer.answers().iter().enumerate() {
+                        fields.insert(
+                            user_input_answer_field(position, index),
+                            ContentBlock::from_text(value),
+                        );
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -127,10 +150,13 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
             Vec::new(),
             thinking.lifecycle().clone(),
         )),
-        ThreadItemState::Tool(tool) => ThreadItemState::Tool(ThreadToolItem::new(
-            clear_arguments(tool.invocation()),
-            clear_streamed_output(tool.state()),
-        )),
+        ThreadItemState::Tool(tool) => ThreadItemState::Tool(
+            ThreadToolItem::new(
+                clear_arguments(tool.invocation()),
+                clear_streamed_output(tool.state()),
+            )
+            .with_user_input(tool.user_input().map(clear_user_input)),
+        ),
         other => other.clone(),
     }
 }
@@ -157,10 +183,13 @@ pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
         ThreadItemState::Tool(tool) => {
             let arguments = text_of(item, &ChatField::host(TOOL_ARGUMENTS_FIELD));
             let output = text_of(item, &ChatField::host(TOOL_RESULT_FIELD));
-            ThreadItemState::Tool(ThreadToolItem::new(
-                fill_arguments(tool.invocation(), arguments),
-                fill_streamed_output(tool.state(), &output),
-            ))
+            ThreadItemState::Tool(
+                ThreadToolItem::new(
+                    fill_arguments(tool.invocation(), arguments),
+                    fill_streamed_output(tool.state(), &output),
+                )
+                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item))),
+            )
         }
         other => other.clone(),
     };
@@ -187,6 +216,194 @@ pub(crate) fn item_shell(meta: &[u8], revision: u64) -> Result<ThreadItem> {
 fn text_of(item: &ChatItem, field: &ChatField) -> String {
     item.field(field)
         .map_or_else(String::new, |block| block.text())
+}
+
+/// 一个问题标题的内容域身份。
+pub(crate) fn user_input_header_field(question_index: usize) -> ChatField {
+    ChatField::host(format!(
+        "{TOOL_USER_INPUT_FIELD}question.{question_index}.header"
+    ))
+}
+
+/// 一个原问题正文的内容域身份：索引是它在原问题顺序里的位置。
+pub(crate) fn user_input_question_field(question_index: usize) -> ChatField {
+    ChatField::host(format!(
+        "{TOOL_USER_INPUT_FIELD}question.{question_index}.body"
+    ))
+}
+
+/// 一个问题选项标签的内容域身份。
+pub(crate) fn user_input_option_label_field(
+    question_index: usize,
+    option_index: usize,
+) -> ChatField {
+    ChatField::host(format!(
+        "{TOOL_USER_INPUT_FIELD}question.{question_index}.option.{option_index}.label"
+    ))
+}
+
+/// 一个问题选项说明的内容域身份。
+pub(crate) fn user_input_option_description_field(
+    question_index: usize,
+    option_index: usize,
+) -> ChatField {
+    ChatField::host(format!(
+        "{TOOL_USER_INPUT_FIELD}question.{question_index}.option.{option_index}.description"
+    ))
+}
+
+/// 一个已接受答案值的内容域身份：问题位置 + 该问题答案列表内的序号。
+pub(crate) fn user_input_answer_field(question_index: usize, answer_index: usize) -> ChatField {
+    ChatField::host(format!(
+        "{TOOL_USER_INPUT_FIELD}answer.{question_index}.{answer_index}"
+    ))
+}
+
+/// 一个问题里所有可展示正文与其内容域身份，按固定顺序列出。
+fn user_input_question_fields(
+    question_index: usize,
+    question: &UserQuestion,
+) -> Vec<(ChatField, &str)> {
+    let mut fields = vec![
+        (
+            user_input_header_field(question_index),
+            question.header.as_str(),
+        ),
+        (
+            user_input_question_field(question_index),
+            question.question.as_str(),
+        ),
+    ];
+    for (option_index, option) in question.options.iter().flatten().enumerate() {
+        fields.push((
+            user_input_option_label_field(question_index, option_index),
+            option.label.as_str(),
+        ));
+        fields.push((
+            user_input_option_description_field(question_index, option_index),
+            option.description.as_str(),
+        ));
+    }
+    fields
+}
+
+/// 一个已作答问题在原问题顺序里的位置。
+///
+/// 回答以 question ID 关联问题，投影边界保证每个回答都指向一个真实问题；结构本身仍按位置寻址，
+/// 因此一段正文在 `content_fields` 与 [`canonical_item`] 两侧落到同一个域上。
+fn question_position(user_input: &ThreadToolUserInput, question_id: &str) -> Option<usize> {
+    user_input
+        .questions()
+        .iter()
+        .position(|question| question.id == question_id)
+}
+
+/// 静态结构里的问答：所有正文清空，结构、顺序、ID 与脱敏状态如实保留。
+fn clear_user_input(user_input: &ThreadToolUserInput) -> ThreadToolUserInput {
+    ThreadToolUserInput::new(
+        user_input.interaction_id().to_owned(),
+        user_input
+            .questions()
+            .iter()
+            .map(|question| UserQuestion {
+                header: String::new(),
+                question: String::new(),
+                options: question.options.as_ref().map(|options| {
+                    options
+                        .iter()
+                        .map(|_| pl_protocol::UserQuestionOption {
+                            label: String::new(),
+                            description: String::new(),
+                        })
+                        .collect()
+                }),
+                ..question.clone()
+            })
+            .collect(),
+        match user_input.state() {
+            ThreadToolUserInputState::Pending => ThreadToolUserInputState::Pending,
+            ThreadToolUserInputState::Cancelled => ThreadToolUserInputState::Cancelled,
+            ThreadToolUserInputState::Resolved(resolved) => {
+                ThreadToolUserInputState::Resolved(ResolvedThreadToolUserInput::new(
+                    resolved
+                        .answers()
+                        .iter()
+                        .map(|answer| {
+                            if answer.is_redacted() {
+                                ThreadToolUserInputAnswer::redacted(answer.question_id().to_owned())
+                            } else {
+                                ThreadToolUserInputAnswer::new(
+                                    answer.question_id().to_owned(),
+                                    vec![String::new(); answer.answers().len()],
+                                )
+                            }
+                        })
+                        .collect(),
+                ))
+            }
+        },
+    )
+}
+
+/// 用内容域正文把静态结构还原成完整问答投影。
+fn fill_user_input(user_input: &ThreadToolUserInput, item: &ChatItem) -> ThreadToolUserInput {
+    ThreadToolUserInput::new(
+        user_input.interaction_id().to_owned(),
+        user_input
+            .questions()
+            .iter()
+            .enumerate()
+            .map(|(position, question)| UserQuestion {
+                header: text_of(item, &user_input_header_field(position)),
+                question: text_of(item, &user_input_question_field(position)),
+                options: question.options.as_ref().map(|options| {
+                    options
+                        .iter()
+                        .enumerate()
+                        .map(|(option_index, _)| pl_protocol::UserQuestionOption {
+                            label: text_of(
+                                item,
+                                &user_input_option_label_field(position, option_index),
+                            ),
+                            description: text_of(
+                                item,
+                                &user_input_option_description_field(position, option_index),
+                            ),
+                        })
+                        .collect()
+                }),
+                ..question.clone()
+            })
+            .collect(),
+        match user_input.state() {
+            ThreadToolUserInputState::Pending => ThreadToolUserInputState::Pending,
+            ThreadToolUserInputState::Cancelled => ThreadToolUserInputState::Cancelled,
+            ThreadToolUserInputState::Resolved(resolved) => {
+                ThreadToolUserInputState::Resolved(ResolvedThreadToolUserInput::new(
+                    resolved
+                        .answers()
+                        .iter()
+                        .map(|answer| {
+                            let question_id = answer.question_id().to_owned();
+                            // 敏感回答从未进入公开正文域，只还原它已回答/已隐藏的状态。
+                            if answer.is_redacted() {
+                                return ThreadToolUserInputAnswer::redacted(question_id);
+                            }
+                            let values = question_position(user_input, answer.question_id())
+                                .map_or_else(Vec::new, |position| {
+                                    (0..answer.answers().len())
+                                        .map(|index| {
+                                            text_of(item, &user_input_answer_field(position, index))
+                                        })
+                                        .collect()
+                                });
+                            ThreadToolUserInputAnswer::new(question_id, values)
+                        })
+                        .collect(),
+                ))
+            }
+        },
+    )
 }
 
 /// thinking 的 chunk 类别：summary 与 reasoning 各自独立成字段域。

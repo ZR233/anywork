@@ -2822,4 +2822,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String timelineCompactionDetail(int before, int after) {
     return 'Before: $before; after: $after tokens';
   }
+
+  @override
+  String get timelineUserInputAnswered => 'You answered';
+
+  @override
+  String get timelineUserInputAwaiting => 'Awaiting your answer';
+
+  @override
+  String get timelineUserInputCancelled => 'Questions cancelled';
+
+  @override
+  String timelineUserInputQuestionCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count questions',
+      one: '1 question',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get timelineUserInputYourAnswer => 'Your answer';
+
+  @override
+  String get timelineUserInputNoAnswer => 'No answer provided';
+
+  @override
+  String get timelineUserInputSecretHidden => 'Sensitive answer hidden';
 }

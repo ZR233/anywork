@@ -38,6 +38,7 @@ class TimelineToolPart {
     this.workingDirectory,
     this.denialReason,
     this.taskId,
+    this.userInput,
   });
 
   final String toolCallId;
@@ -54,6 +55,9 @@ class TimelineToolPart {
   final String? denialReason;
   final String? taskId;
 
+  /// 这条调用携带的普通问答历史；它让问答回执按工具条目独立成行而不解析工具载荷。
+  final ThreadToolUserInputView? userInput;
+
   TimelineToolPart copyWith({String? arguments, String? result}) {
     return TimelineToolPart(
       toolCallId: toolCallId,
@@ -69,6 +73,7 @@ class TimelineToolPart {
       workingDirectory: workingDirectory,
       denialReason: denialReason,
       taskId: taskId,
+      userInput: userInput,
     );
   }
 }

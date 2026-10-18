@@ -34,6 +34,7 @@ part 'timeline_plan_blocks.dart';
 part 'timeline_agent_blocks.dart';
 part 'timeline_remote_image_blocks.dart';
 part 'timeline_tool_blocks.dart';
+part 'timeline_user_input_blocks.dart';
 part 'timeline_paging.dart';
 part 'timeline_layout_changes.dart';
 

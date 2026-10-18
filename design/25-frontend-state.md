@@ -139,6 +139,12 @@ ThreadWorkspace 首快照携带的 Thread 仅用于建立身份；标题、模�
 状态流快照不反写目录行；`updatedAt` 不充当跨资源版本，尤其同秒晚到快照不能覆盖已交付的
 目录终态。mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 
+普通问答回执由 ChatView 工具条目中的 typed 问答历史派生，沿用同一条目版本与正文生命周期；
+adapter 保留问题、答案列表、脱敏标记及权威状态，不让 feature 重新解析工具载荷。composer
+的 pending interaction 队列只服务仍待处理的交互，resolved 事件不得留在队列中，也不得由
+Client 额外缓存回答以补齐历史。关闭、分页、重订阅和重开均由 canonical 内容窗口恢复回执；
+用户主动展开/收起只改变局部展示，不写回业务状态。
+
 正文窗口保留有界 orderedIds 与按身份索引的 immutable row，并由 Timeline 展示 owner 驱动
 `TimelineChatController`（实现 `flutter_chat_core` 的 `ChatController`）：窗口壳层只观察会话身份、
 Turn 状态、分页边界与错误态，行内容变化通过 `ChatController.updateMessage` 原位更新对应消息子树，

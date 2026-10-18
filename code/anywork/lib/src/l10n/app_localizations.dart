@@ -5044,6 +5044,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Before: {before}; after: {after} tokens'**
   String timelineCompactionDetail(int before, int after);
+
+  /// No description provided for @timelineUserInputAnswered.
+  ///
+  /// In en, this message translates to:
+  /// **'You answered'**
+  String get timelineUserInputAnswered;
+
+  /// No description provided for @timelineUserInputAwaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Awaiting your answer'**
+  String get timelineUserInputAwaiting;
+
+  /// No description provided for @timelineUserInputCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Questions cancelled'**
+  String get timelineUserInputCancelled;
+
+  /// No description provided for @timelineUserInputQuestionCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 question} other{{count} questions}}'**
+  String timelineUserInputQuestionCount(int count);
+
+  /// No description provided for @timelineUserInputYourAnswer.
+  ///
+  /// In en, this message translates to:
+  /// **'Your answer'**
+  String get timelineUserInputYourAnswer;
+
+  /// No description provided for @timelineUserInputNoAnswer.
+  ///
+  /// In en, this message translates to:
+  /// **'No answer provided'**
+  String get timelineUserInputNoAnswer;
+
+  /// No description provided for @timelineUserInputSecretHidden.
+  ///
+  /// In en, this message translates to:
+  /// **'Sensitive answer hidden'**
+  String get timelineUserInputSecretHidden;
 }
 
 class _AppLocalizationsDelegate

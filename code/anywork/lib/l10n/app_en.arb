@@ -1463,5 +1463,19 @@
         "type": "int"
       }
     }
-  }
+  },
+  "timelineUserInputAnswered": "You answered",
+  "timelineUserInputAwaiting": "Awaiting your answer",
+  "timelineUserInputCancelled": "Questions cancelled",
+  "timelineUserInputQuestionCount": "{count, plural, =1{1 question} other{{count} questions}}",
+  "@timelineUserInputQuestionCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineUserInputYourAnswer": "Your answer",
+  "timelineUserInputNoAnswer": "No answer provided",
+  "timelineUserInputSecretHidden": "Sensitive answer hidden"
 }

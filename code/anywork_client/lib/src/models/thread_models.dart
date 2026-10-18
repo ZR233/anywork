@@ -77,6 +77,52 @@ final class ThreadToolResultFieldView extends ThreadContentFieldView {
   const ThreadToolResultFieldView();
 }
 
+/// 普通问答正文域：问题位置 + 该问题内的一段可展示正文。
+///
+/// 问答的标题、问题、选项与答案共享同一条内容预算，因此身份必须细到"哪一段"，而不是整条问答。
+final class ThreadToolUserInputFieldView extends ThreadContentFieldView {
+  const ThreadToolUserInputFieldView({
+    required this.questionIndex,
+    required this.part,
+  });
+
+  final int questionIndex;
+  final ThreadUserInputFieldPartView part;
+}
+
+/// 普通问答投影里一段可展示正文的位置（与后端 `BridgeThreadUserInputFieldPart` 一一对应）。
+sealed class ThreadUserInputFieldPartView {
+  const ThreadUserInputFieldPartView();
+}
+
+final class ThreadUserInputHeaderFieldPartView
+    extends ThreadUserInputFieldPartView {
+  const ThreadUserInputHeaderFieldPartView();
+}
+
+final class ThreadUserInputQuestionFieldPartView
+    extends ThreadUserInputFieldPartView {
+  const ThreadUserInputQuestionFieldPartView();
+}
+
+final class ThreadUserInputAnswerFieldPartView
+    extends ThreadUserInputFieldPartView {
+  const ThreadUserInputAnswerFieldPartView(this.answerIndex);
+  final int answerIndex;
+}
+
+final class ThreadUserInputOptionLabelFieldPartView
+    extends ThreadUserInputFieldPartView {
+  const ThreadUserInputOptionLabelFieldPartView(this.optionIndex);
+  final int optionIndex;
+}
+
+final class ThreadUserInputOptionDescriptionFieldPartView
+    extends ThreadUserInputFieldPartView {
+  const ThreadUserInputOptionDescriptionFieldPartView(this.optionIndex);
+  final int optionIndex;
+}
+
 /// 一个字段的 typed 变化（与后端 `BridgeFieldChange` 一一对应）。
 ///
 /// [`Append`] 只在前缀仍有效时到达，追加到本地已交付末尾；[`Replace`] 是权威替换（含
@@ -231,6 +277,274 @@ class SkillActivationCauseView {
   final String id;
 }
 
+/// 一条普通问答的只读历史投影：问题、权威状态与已接受的回答。
+///
+/// 它随发起提问的工具条目一起交付；`resolved` 才表示用户已回答，待回答与已取消各自是独立事实。
+/// 问题复用交互自己的 `UserQuestionView`，问答不建立第二套问题模型。
+class ThreadToolUserInputView {
+  const ThreadToolUserInputView({
+    required this.interactionId,
+    required this.questions,
+    required this.state,
+  });
+
+  final String interactionId;
+  final List<UserQuestionView> questions;
+  final ThreadToolUserInputStateView state;
+
+  bool get isResolved => state is ResolvedThreadToolUserInputView;
+
+  List<ThreadUserInputAnswerView> get answers => switch (state) {
+    ResolvedThreadToolUserInputView(:final answers) => answers,
+    _ => const [],
+  };
+
+  /// 已在窗口里交付的问题标题。
+  String headerText(int questionIndex) =>
+      _question(questionIndex)?.header ?? '';
+
+  /// 已在窗口里交付的问题正文。
+  String questionText(int questionIndex) =>
+      _question(questionIndex)?.question ?? '';
+
+  /// 已在窗口里交付的一个选项标签。
+  String optionLabel(int questionIndex, int optionIndex) =>
+      _option(questionIndex, optionIndex)?.label ?? '';
+
+  /// 已在窗口里交付的一个选项说明。
+  String optionDescription(int questionIndex, int optionIndex) =>
+      _option(questionIndex, optionIndex)?.description ?? '';
+
+  /// 已在窗口里交付的一个答案值。
+  String answerText(int questionIndex, int answerIndex) {
+    final values = _answer(questionIndex)?.answers;
+    if (values == null || answerIndex < 0 || answerIndex >= values.length) {
+      return '';
+    }
+    return values[answerIndex];
+  }
+
+  /// 用一段新的正文替换本地副本，只改这一段，保持结构、顺序与脱敏标记不变。
+  ThreadToolUserInputView withText(
+    int questionIndex,
+    ThreadUserInputFieldPartView part,
+    String text,
+  ) {
+    final question = _question(questionIndex);
+    if (question == null) return this;
+    switch (part) {
+      case ThreadUserInputHeaderFieldPartView():
+        return _withQuestion(
+          questionIndex,
+          _copyQuestion(question, header: text),
+        );
+      case ThreadUserInputQuestionFieldPartView():
+        return _withQuestion(
+          questionIndex,
+          _copyQuestion(question, questionText: text),
+        );
+      case ThreadUserInputOptionLabelFieldPartView(:final optionIndex):
+        return _withQuestion(
+          questionIndex,
+          _copyOption(question, optionIndex, label: text),
+        );
+      case ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex):
+        return _withQuestion(
+          questionIndex,
+          _copyOption(question, optionIndex, description: text),
+        );
+      case ThreadUserInputAnswerFieldPartView(:final answerIndex):
+        // 答案只在权威已解决状态上可写：一段正文永远不会把 pending/cancelled 变成“已回答”。
+        if (state is! ResolvedThreadToolUserInputView) return this;
+        return ThreadToolUserInputView(
+          interactionId: interactionId,
+          questions: questions,
+          state: ResolvedThreadToolUserInputView([
+            for (final answer in answers)
+              answer.questionId == question.id
+                  ? answer.withAnswer(answerIndex, text)
+                  : answer,
+          ]),
+        );
+    }
+  }
+
+  /// 把上一份投影的正文搬回只剩结构的本体，只移动正文、不移动身份。
+  ThreadToolUserInputView withTextsFrom(ThreadToolUserInputView previous) {
+    var next = this;
+    for (var index = 0; index < next.questions.length; index++) {
+      next = next
+          .withText(
+            index,
+            const ThreadUserInputHeaderFieldPartView(),
+            previous.headerText(index),
+          )
+          .withText(
+            index,
+            const ThreadUserInputQuestionFieldPartView(),
+            previous.questionText(index),
+          );
+      final options = next.questions[index].options.length;
+      for (var option = 0; option < options; option++) {
+        next = next
+            .withText(
+              index,
+              ThreadUserInputOptionLabelFieldPartView(option),
+              previous.optionLabel(index, option),
+            )
+            .withText(
+              index,
+              ThreadUserInputOptionDescriptionFieldPartView(option),
+              previous.optionDescription(index, option),
+            );
+      }
+    }
+    for (final answer in previous.answers) {
+      final index = questionIndex(answer.questionId);
+      if (index == null) continue;
+      for (var value = 0; value < answer.answers.length; value++) {
+        next = next.withText(
+          index,
+          ThreadUserInputAnswerFieldPartView(value),
+          answer.answers[value],
+        );
+      }
+    }
+    return next;
+  }
+
+  /// 一个 question ID 在原问题顺序里的位置。
+  int? questionIndex(String questionId) {
+    for (var index = 0; index < questions.length; index++) {
+      if (questions[index].id == questionId) return index;
+    }
+    return null;
+  }
+
+  UserQuestionView? _question(int questionIndex) =>
+      questionIndex >= 0 && questionIndex < questions.length
+      ? questions[questionIndex]
+      : null;
+
+  UserQuestionOptionView? _option(int questionIndex, int optionIndex) {
+    final options = _question(questionIndex)?.options ?? const [];
+    return optionIndex >= 0 && optionIndex < options.length
+        ? options[optionIndex]
+        : null;
+  }
+
+  ThreadUserInputAnswerView? _answer(int questionIndex) {
+    final question = _question(questionIndex);
+    if (question == null) return null;
+    for (final answer in answers) {
+      if (answer.questionId == question.id) return answer;
+    }
+    return null;
+  }
+
+  ThreadToolUserInputView _withQuestion(
+    int questionIndex,
+    UserQuestionView question,
+  ) {
+    final next = [...questions];
+    next[questionIndex] = question;
+    return ThreadToolUserInputView(
+      interactionId: interactionId,
+      questions: next,
+      state: state,
+    );
+  }
+
+  UserQuestionView _copyQuestion(
+    UserQuestionView source, {
+    String? header,
+    String? questionText,
+  }) {
+    return UserQuestionView(
+      id: source.id,
+      header: header ?? source.header,
+      question: questionText ?? source.question,
+      isOther: source.isOther,
+      isSecret: source.isSecret,
+      options: source.options,
+    );
+  }
+
+  UserQuestionView _copyOption(
+    UserQuestionView question,
+    int optionIndex, {
+    String? label,
+    String? description,
+  }) {
+    if (optionIndex < 0 || optionIndex >= question.options.length) {
+      return question;
+    }
+    final options = [...question.options];
+    options[optionIndex] = UserQuestionOptionView(
+      label: label ?? options[optionIndex].label,
+      description: description ?? options[optionIndex].description,
+    );
+    return UserQuestionView(
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      isOther: question.isOther,
+      isSecret: question.isSecret,
+      options: options,
+    );
+  }
+}
+
+sealed class ThreadToolUserInputStateView {
+  const ThreadToolUserInputStateView();
+}
+
+final class PendingThreadToolUserInputView
+    extends ThreadToolUserInputStateView {
+  const PendingThreadToolUserInputView();
+}
+
+final class ResolvedThreadToolUserInputView
+    extends ThreadToolUserInputStateView {
+  const ResolvedThreadToolUserInputView(this.answers);
+
+  /// 按原问题顺序排列的已接受回答；没有回答的问题没有条目。
+  final List<ThreadUserInputAnswerView> answers;
+}
+
+final class CancelledThreadToolUserInputView
+    extends ThreadToolUserInputStateView {
+  const CancelledThreadToolUserInputView();
+}
+
+/// 一个问题已接受的回答。`redacted` 为真时原值不进入公开投影，只保留已回答/已隐藏的状态。
+class ThreadUserInputAnswerView {
+  const ThreadUserInputAnswerView({
+    required this.questionId,
+    this.answers = const [],
+    this.redacted = false,
+  });
+
+  final String questionId;
+  final List<String> answers;
+  final bool redacted;
+
+  ThreadUserInputAnswerView withAnswers(List<String> answers) {
+    return ThreadUserInputAnswerView(
+      questionId: questionId,
+      answers: answers,
+      redacted: redacted,
+    );
+  }
+
+  ThreadUserInputAnswerView withAnswer(int index, String text) {
+    if (index < 0 || index >= answers.length) return this;
+    final next = [...answers];
+    next[index] = text;
+    return withAnswers(next);
+  }
+}
+
 class ThreadToolInvocationView {
   const ThreadToolInvocationView({
     required this.toolCallId,
@@ -383,10 +697,14 @@ final class ThreadToolItemStateView extends ThreadItemStateView {
   const ThreadToolItemStateView({
     required this.invocation,
     required this.lifecycle,
+    this.userInput,
   });
 
   final ThreadToolInvocationView invocation;
   final ThreadToolLifecycleView lifecycle;
+
+  /// 这条调用携带的普通问答历史；只有真正发起问答的调用才有。
+  final ThreadToolUserInputView? userInput;
 }
 
 class ThreadAgentIdentityView {
@@ -760,7 +1078,11 @@ class ThreadItemView {
   };
 
   TimelineToolPart? get tool => switch (state) {
-    ThreadToolItemStateView(:final invocation, :final lifecycle) =>
+    ThreadToolItemStateView(
+      :final invocation,
+      :final lifecycle,
+      :final userInput,
+    ) =>
       TimelineToolPart(
         taskId: invocation.taskId,
         toolCallId: invocation.toolCallId,
@@ -768,6 +1090,7 @@ class ThreadItemView {
         providerItemId: invocation.providerItemId,
         name: invocation.name,
         arguments: invocation.arguments,
+        userInput: userInput,
         result: switch (lifecycle) {
           RunningThreadToolView(:final streamedOutput) ||
           CancellingThreadToolView(:final streamedOutput) => streamedOutput,
@@ -951,10 +1274,12 @@ class ThreadItemView {
         ThreadToolItemStateView(
           invocation: final currentInvocation,
           lifecycle: final currentLifecycle,
+          userInput: final currentUserInput,
         ),
         ThreadToolItemStateView(
           invocation: final shellInvocation,
           lifecycle: final shellLifecycle,
+          userInput: final shellUserInput,
         ),
       ) =>
         ThreadToolItemStateView(
@@ -975,6 +1300,11 @@ class ThreadItemView {
             ) =>
               CancellingThreadToolView(streamedOutput),
             _ => shellLifecycle,
+          },
+          // 问答结构来自权威 shell，正文来自本窗口已交付的副本；字段变化随后叠加其上。
+          userInput: switch ((currentUserInput, shellUserInput)) {
+            (final current?, final shell?) => shell.withTextsFrom(current),
+            (_, final shell) => shell,
           },
         ),
       _ when current.runtimeType == shell.runtimeType => shell,
@@ -1044,7 +1374,11 @@ class ThreadItemView {
           ),
           omittedUnits: omittedUnits,
         );
-      case ThreadToolItemStateView(:final invocation, :final lifecycle):
+      case ThreadToolItemStateView(
+        :final invocation,
+        :final lifecycle,
+        :final userInput,
+      ):
         switch (field) {
           case ThreadToolArgumentsFieldView():
             return (
@@ -1053,6 +1387,7 @@ class ThreadItemView {
                   _applyTextChange(invocation.arguments, change),
                 ),
                 lifecycle: lifecycle,
+                userInput: userInput,
               ),
               omittedUnits: omittedUnits,
             );
@@ -1061,6 +1396,37 @@ class ThreadItemView {
               state: ThreadToolItemStateView(
                 invocation: invocation,
                 lifecycle: _applyToolOutput(lifecycle, change),
+                userInput: userInput,
+              ),
+              omittedUnits: omittedUnits,
+            );
+          case ThreadToolUserInputFieldView(:final questionIndex, :final part):
+            if (userInput == null) return null;
+            final current = switch (part) {
+              ThreadUserInputHeaderFieldPartView() => userInput.headerText(
+                questionIndex,
+              ),
+              ThreadUserInputQuestionFieldPartView() => userInput.questionText(
+                questionIndex,
+              ),
+              ThreadUserInputAnswerFieldPartView(:final answerIndex) =>
+                userInput.answerText(questionIndex, answerIndex),
+              ThreadUserInputOptionLabelFieldPartView(:final optionIndex) =>
+                userInput.optionLabel(questionIndex, optionIndex),
+              ThreadUserInputOptionDescriptionFieldPartView(
+                :final optionIndex,
+              ) =>
+                userInput.optionDescription(questionIndex, optionIndex),
+            };
+            return (
+              state: ThreadToolItemStateView(
+                invocation: invocation,
+                lifecycle: lifecycle,
+                userInput: userInput.withText(
+                  questionIndex,
+                  part,
+                  _applyTextChange(current, change),
+                ),
               ),
               omittedUnits: omittedUnits,
             );

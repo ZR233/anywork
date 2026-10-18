@@ -535,6 +535,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadUserInput dco_decode_box_autoadd_bridge_thread_user_input(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInputFieldPart
+  dco_decode_box_autoadd_bridge_thread_user_input_field_part(dynamic raw);
+
+  @protected
   BridgeTodoListSnapshot dco_decode_box_autoadd_bridge_todo_list_snapshot(
     dynamic raw,
   );
@@ -1581,6 +1590,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeThreadToolState dco_decode_bridge_thread_tool_state(dynamic raw);
 
   @protected
+  BridgeThreadUserInput dco_decode_bridge_thread_user_input(dynamic raw);
+
+  @protected
+  BridgeThreadUserInputAnswer dco_decode_bridge_thread_user_input_answer(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInputFieldPart dco_decode_bridge_thread_user_input_field_part(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInputOption dco_decode_bridge_thread_user_input_option(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInputQuestion dco_decode_bridge_thread_user_input_question(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInputState dco_decode_bridge_thread_user_input_state(
+    dynamic raw,
+  );
+
+  @protected
   BridgeTodoItem dco_decode_bridge_todo_item(dynamic raw);
 
   @protected
@@ -1925,6 +1962,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_thread_persistence_snapshot(dynamic raw);
 
   @protected
+  List<BridgeThreadUserInputAnswer>
+  dco_decode_list_bridge_thread_user_input_answer(dynamic raw);
+
+  @protected
+  List<BridgeThreadUserInputOption>
+  dco_decode_list_bridge_thread_user_input_option(dynamic raw);
+
+  @protected
+  List<BridgeThreadUserInputQuestion>
+  dco_decode_list_bridge_thread_user_input_question(dynamic raw);
+
+  @protected
   List<BridgeTodoItem> dco_decode_list_bridge_todo_item(dynamic raw);
 
   @protected
@@ -2083,6 +2132,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeThreadToolOutput? dco_decode_opt_box_autoadd_bridge_thread_tool_output(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadUserInput? dco_decode_opt_box_autoadd_bridge_thread_user_input(
     dynamic raw,
   );
 
@@ -2828,6 +2882,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeThreadToolState sse_decode_box_autoadd_bridge_thread_tool_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInput sse_decode_box_autoadd_bridge_thread_user_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputFieldPart
+  sse_decode_box_autoadd_bridge_thread_user_input_field_part(
     SseDeserializer deserializer,
   );
 
@@ -4158,6 +4223,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadUserInput sse_decode_bridge_thread_user_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputAnswer sse_decode_bridge_thread_user_input_answer(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputFieldPart sse_decode_bridge_thread_user_input_field_part(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputOption sse_decode_bridge_thread_user_input_option(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputQuestion sse_decode_bridge_thread_user_input_question(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInputState sse_decode_bridge_thread_user_input_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTodoItem sse_decode_bridge_todo_item(SseDeserializer deserializer);
 
   @protected
@@ -4584,6 +4679,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeThreadUserInputAnswer>
+  sse_decode_list_bridge_thread_user_input_answer(SseDeserializer deserializer);
+
+  @protected
+  List<BridgeThreadUserInputOption>
+  sse_decode_list_bridge_thread_user_input_option(SseDeserializer deserializer);
+
+  @protected
+  List<BridgeThreadUserInputQuestion>
+  sse_decode_list_bridge_thread_user_input_question(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeTodoItem> sse_decode_list_bridge_todo_item(
     SseDeserializer deserializer,
   );
@@ -4792,6 +4901,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeThreadToolOutput? sse_decode_opt_box_autoadd_bridge_thread_tool_output(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadUserInput? sse_decode_opt_box_autoadd_bridge_thread_user_input(
     SseDeserializer deserializer,
   );
 
@@ -5653,6 +5767,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_thread_tool_state(
     BridgeThreadToolState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_thread_user_input(
+    BridgeThreadUserInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_thread_user_input_field_part(
+    BridgeThreadUserInputFieldPart self,
     SseSerializer serializer,
   );
 
@@ -7265,6 +7391,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_thread_user_input(
+    BridgeThreadUserInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_user_input_answer(
+    BridgeThreadUserInputAnswer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_user_input_field_part(
+    BridgeThreadUserInputFieldPart self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_user_input_option(
+    BridgeThreadUserInputOption self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_user_input_question(
+    BridgeThreadUserInputQuestion self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_user_input_state(
+    BridgeThreadUserInputState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_todo_item(
     BridgeTodoItem self,
     SseSerializer serializer,
@@ -7778,6 +7940,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_thread_user_input_answer(
+    List<BridgeThreadUserInputAnswer> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_thread_user_input_option(
+    List<BridgeThreadUserInputOption> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_thread_user_input_question(
+    List<BridgeThreadUserInputQuestion> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_todo_item(
     List<BridgeTodoItem> self,
     SseSerializer serializer,
@@ -8017,6 +8197,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_thread_tool_output(
     BridgeThreadToolOutput? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_thread_user_input(
+    BridgeThreadUserInput? self,
     SseSerializer serializer,
   );
 

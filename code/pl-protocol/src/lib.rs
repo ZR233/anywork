@@ -56,7 +56,7 @@ pub use billing::{
 pub use chat_window::{
     ChatWindowChange, ChatWindowDirection, ChatWindowFocus, ChatWindowItem, ChatWindowLifecycle,
     ChatWindowPriority, ChatWindowQuery, ChatWindowSnapshot, ChatWindowUpdate, ThreadContentField,
-    ThreadFieldChange, ThreadFieldUpdate,
+    ThreadFieldChange, ThreadFieldUpdate, ThreadUserInputFieldPart,
 };
 pub use error::{PureError, Result};
 pub use event::{

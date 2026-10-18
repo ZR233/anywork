@@ -713,17 +713,44 @@ impl LiveOwner {
         thread_id: &str,
         write: &ThreadWrite,
     ) -> Result<()> {
-        if !write.effect.delivery_repairs.is_empty() {
-            let history = services.store.history(thread_id).await?;
-            crate::studio::thread_projection::seed_repaired_targets(
-                &mut self.projection,
-                &history,
-                &write.effect,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
-        }
+        self.seed_durable_targets(services, thread_id, write)
+            .await?;
         self.project_write(write)
+    }
+
+    /// Reads the identities one effect needs but this projection holds no canonical body for.
+    ///
+    /// Two effects reference an already-committed body the bounded window may have released: a
+    /// reliable-output repair names a committed result, and an ordinary Q&A interaction names the
+    /// call that asked it — a call whose Turn is already finished, so after a restart the projection
+    /// never saw it at all. Both are read back **by identity only** and handed to the projection as
+    /// facts, so the projection still consumes facts and never performs IO. The ordinary path reads
+    /// nothing, and a missing or invalid durable body fails here instead of being skipped.
+    async fn seed_durable_targets(
+        &mut self,
+        services: &ObservationServices,
+        thread_id: &str,
+        write: &ThreadWrite,
+    ) -> Result<()> {
+        if write.effect.delivery_repairs.is_empty() && write.effect.interactions.is_empty() {
+            return Ok(());
+        }
+        let history = services.store.history(thread_id).await?;
+        crate::studio::thread_projection::seed_repaired_targets(
+            &mut self.projection,
+            &history,
+            &write.effect,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
+        crate::studio::thread_projection::seed_interaction_targets(
+            &mut self.projection,
+            &history,
+            &write.effect,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("live Thread Q&A seed failed: {error}"))?;
+        Ok(())
     }
 
     /// Folds one admitted write into the shared session and the reliable save channel.
@@ -771,7 +798,14 @@ impl LiveOwner {
     /// replayed as live frames. The history writer still owes them a durable row, so the same single
     /// projection folds their content into memory here — once, and never the writer projecting the
     /// effect itself.
-    fn prepare_behind(&mut self, write: &ThreadWrite) -> Result<()> {
+    async fn prepare_behind(
+        &mut self,
+        services: &ObservationServices,
+        thread_id: &str,
+        write: &ThreadWrite,
+    ) -> Result<()> {
+        self.seed_durable_targets(services, thread_id, write)
+            .await?;
         let projected = self.projection.project_committed(
             &self.chat,
             &self.thread,
@@ -1322,7 +1356,7 @@ impl ProjectionWorker {
             if sequence <= recovered_through {
                 // A fact the owner committed before this projection existed: it is already part of
                 // the snapshot the projection was seeded from, so it is folded for durability only.
-                live.prepare_behind(&write)?;
+                live.prepare_behind(services, id.as_str(), &write).await?;
                 continue;
             }
             live.advance(services, id.as_str(), &write).await?;
@@ -1387,6 +1421,7 @@ impl ProjectionWorker {
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+    use crate::studio::storage::history::{EffectCommit, FactReceiptWrite};
     use crate::studio::storage::thread_writer::ThreadStorageSink;
     use pl_core::{
         context::OpaquePayload,
@@ -1396,12 +1431,178 @@ mod storage_fault_tests {
             input::{InputChange, InputRecord, InputState, ThreadInput},
         },
     };
+    use pl_protocol::{ThreadItem, ThreadItemState};
     use std::time::Duration;
 
     #[tokio::test]
     async fn recovery_projection_loads_references_pruned_from_the_current_snapshot() -> Result<()> {
         recovery_projection(false).await?;
         recovery_projection(true).await
+    }
+
+    /// 普通问答的交互构造：问题来自生产者格式，回答用真实的 `pl.studio.user-answer` 载荷。
+    fn qa_record(
+        call_id: &str,
+        revision: u64,
+        state: pl_core::thread::interactions::InteractionState,
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        let questions = vec![pl_protocol::UserQuestion {
+            id: "provider".into(),
+            header: "Provider".into(),
+            question: "Which provider should the next release verify?".into(),
+            is_other: true,
+            is_secret: false,
+            options: None,
+        }];
+        Ok(pl_core::thread::interactions::InteractionRecord {
+            created_at: 10,
+            updated_at: 10 + i64::try_from(revision)?,
+            continuation_id: None,
+            request: pl_core::thread::interactions::InteractionRequest {
+                id: pl_core::tool::opaque::tool_interaction_id(call_id),
+                turn_id: "turn-qa".into(),
+                payload: OpaquePayload::new(
+                    "pl.tool.user-input",
+                    1,
+                    serde_json::to_string(&questions)?,
+                )?,
+            },
+            revision,
+            state,
+            extension_mutations: vec![],
+        })
+    }
+
+    /// 跨重开的普通问答：回答 effect 只带交互与隐藏 continuation。
+    ///
+    /// 回答时那条调用已经不在 Thread 状态里（工具成功的 Task 已是终态、Turn 已结束），新建的
+    /// LiveProjection 也没有它的正文。owner 必须按 identity 从可靠 history 补读那一条再投影，
+    /// 否则这份被采纳的回答会以 MissingDurableToolCall 失败、永不落盘。
+    #[tokio::test]
+    async fn a_question_answered_after_a_restart_is_projected_and_saved() -> Result<()> {
+        use pl_core::thread::interactions::{InteractionResponse, InteractionState};
+
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = pl_protocol::Thread::placeholder("qa-restart");
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let chat = store.chat_session(&thread.id).await?;
+        let history = store.history(&thread.id).await?;
+        let call_id = "call-restart";
+        let tool_id = crate::studio::thread_projection::order::tool_id(call_id);
+
+        // 1) 提问在重启之前就已落盘：工具条目（尚未带问答）+ pending 交互回执。
+        let pending = qa_record(call_id, 1, InteractionState::Pending)?;
+        let question = ThreadItem::new(
+            tool_id.clone(),
+            thread.id.clone(),
+            "turn-qa".into(),
+            1,
+            2,
+            10,
+            11,
+            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                pl_protocol::ThreadToolInvocation::new(
+                    call_id.into(),
+                    "request_user_input".into(),
+                    "{\"questions\":[]}".into(),
+                ),
+                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
+                    String::new(),
+                )),
+            )),
+        );
+        history
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&question),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[FactReceiptWrite {
+                        item_id: crate::studio::thread_projection::order::receipt_id(
+                            "interaction",
+                            &pending.request.id,
+                        ),
+                        revision: pending.revision,
+                        kind: "interaction",
+                        payload: serde_json::to_string(&pending)?,
+                    }],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+
+        // 2) 重启：新投影没有任何驻留正文，Turn/Task 都不在（空且已剪枝的状态）。
+        let mut projection = LiveProjection::new();
+        let answered = qa_record(
+            call_id,
+            2,
+            InteractionState::Resolved(InteractionResponse {
+                payload: OpaquePayload::new(
+                    "pl.studio.user-answer",
+                    1,
+                    serde_json::to_string(
+                        &serde_json::json!({"answers": {"provider": {"answers": ["anthropic"]}}}),
+                    )?,
+                )?,
+                context: vec![],
+            }),
+        )?;
+        let answer_effect = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 2,
+            committed_at: 2,
+            interactions: [answered].into(),
+            ..Default::default()
+        };
+        let answered_state = ThreadSnapshot {
+            commit_sequence: 2,
+            ..Default::default()
+        };
+
+        // 没有补读时这张投影无法完成这份回答：这是缺 body 的真实失败，而不是可接受的限制。
+        assert!(
+            projection
+                .advance(&chat, &thread, &answer_effect, &answered_state)
+                .is_err()
+        );
+        // owner 按 identity 补读那一条 durable 正文后，同一次投影就能完成。
+        crate::studio::thread_projection::seed_interaction_targets(
+            &mut projection,
+            &history,
+            &answer_effect,
+        )
+        .await?;
+        let (_, prepared) = projection.advance(&chat, &thread, &answer_effect, &answered_state)?;
+
+        // 3) 走真实 writer：回答必须落盘在原条目上，身份/顺序/创建时间不变。
+        let answer_write = ThreadWrite {
+            effect: Arc::new(answer_effect),
+            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, answered_state),
+            output_claim: None,
+        };
+        sink.admit(&thread.id, answer_write)?;
+        assert!(channel.prepare(prepared));
+        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
+        let saved = history
+            .existing_items([tool_id.clone()])
+            .await?
+            .remove(&tool_id)
+            .context("answered question item")?;
+        assert_eq!(saved.ordinal, 1);
+        assert_eq!(saved.created_at, 10);
+        let user_input = saved
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("saved Q&A")?;
+        assert_eq!(user_input.answers()[0].answers(), ["anthropic"]);
+        Ok(())
     }
 
     async fn recovery_projection(delayed_admission: bool) -> Result<()> {

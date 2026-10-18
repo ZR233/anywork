@@ -1,15 +1,33 @@
 use serde::{Deserialize, Serialize};
 
+use crate::UserQuestion;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadToolItem {
     invocation: ThreadToolInvocation,
     state: ThreadToolState,
+    /// Typed history of the ordinary user Q&A this call requested, when it requested one.
+    ///
+    /// The projection is derived from the canonical interaction fact of the same commit, so it
+    /// stays on the call's own item instead of becoming a second persisted Q&A record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_input: Option<ThreadToolUserInput>,
 }
 
 impl ThreadToolItem {
     pub fn new(invocation: ThreadToolInvocation, state: ThreadToolState) -> Self {
-        Self { invocation, state }
+        Self {
+            invocation,
+            state,
+            user_input: None,
+        }
+    }
+
+    /// Attaches (or clears) the Q&A history projection without touching the call's own state.
+    pub fn with_user_input(mut self, user_input: Option<ThreadToolUserInput>) -> Self {
+        self.user_input = user_input;
+        self
     }
 
     pub fn invocation(&self) -> &ThreadToolInvocation {
@@ -18,6 +36,10 @@ impl ThreadToolItem {
 
     pub fn state(&self) -> &ThreadToolState {
         &self.state
+    }
+
+    pub fn user_input(&self) -> Option<&ThreadToolUserInput> {
+        self.user_input.as_ref()
     }
 
     pub fn terminal_output(&self) -> Option<&ThreadToolOutput> {
@@ -35,6 +57,133 @@ impl ThreadToolItem {
             | ThreadToolState::Denied(_)
             | ThreadToolState::Cancelled(_) => None,
         }
+    }
+}
+
+/// Public read-only history projection of one ordinary `request_user_input` interaction.
+///
+/// It is derived from the one canonical interaction fact that owns the questions and the accepted
+/// response; it never replaces the private receipt and never carries execution authority. Questions
+/// keep the producer's original order, and a resolved answer names its question by ID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadToolUserInput {
+    interaction_id: String,
+    questions: Vec<UserQuestion>,
+    state: ThreadToolUserInputState,
+}
+
+impl ThreadToolUserInput {
+    pub fn new(
+        interaction_id: String,
+        questions: Vec<UserQuestion>,
+        state: ThreadToolUserInputState,
+    ) -> Self {
+        Self {
+            interaction_id,
+            questions,
+            state,
+        }
+    }
+
+    pub fn interaction_id(&self) -> &str {
+        &self.interaction_id
+    }
+
+    pub fn questions(&self) -> &[UserQuestion] {
+        &self.questions
+    }
+
+    pub fn state(&self) -> &ThreadToolUserInputState {
+        &self.state
+    }
+
+    pub fn answers(&self) -> &[ThreadToolUserInputAnswer] {
+        match &self.state {
+            ThreadToolUserInputState::Resolved(resolved) => resolved.answers(),
+            ThreadToolUserInputState::Pending | ThreadToolUserInputState::Cancelled => &[],
+        }
+    }
+}
+
+/// Authoritative lifecycle of one ordinary question interaction.
+///
+/// Only `Resolved` may be presented as answered: the pending answer, the cancelled request and a
+/// missing record are distinct facts, never inferred from tool success.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
+pub enum ThreadToolUserInputState {
+    Pending,
+    Resolved(ResolvedThreadToolUserInput),
+    Cancelled,
+}
+
+impl ThreadToolUserInputState {
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, Self::Resolved(_))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedThreadToolUserInput {
+    /// Accepted answers in question order; a question without an accepted answer has no entry.
+    answers: Vec<ThreadToolUserInputAnswer>,
+}
+
+impl ResolvedThreadToolUserInput {
+    pub fn new(answers: Vec<ThreadToolUserInputAnswer>) -> Self {
+        Self { answers }
+    }
+
+    pub fn answers(&self) -> &[ThreadToolUserInputAnswer] {
+        &self.answers
+    }
+}
+
+/// One question's accepted answer.
+///
+/// `answers` preserves the accepted value list, so a free-form answer keeps its own newlines. A
+/// sensitive question publishes only its answered/withheld disposition: `redacted` is authoritative
+/// and `answers` stays empty, while the private receipt keeps the original values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadToolUserInputAnswer {
+    question_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    answers: Vec<String>,
+    #[serde(default)]
+    redacted: bool,
+}
+
+impl ThreadToolUserInputAnswer {
+    pub fn new(question_id: String, answers: Vec<String>) -> Self {
+        Self {
+            question_id,
+            answers,
+            redacted: false,
+        }
+    }
+
+    /// Withholds the accepted values from the public projection, keeping only the fact of an answer.
+    pub fn redacted(question_id: String) -> Self {
+        Self {
+            question_id,
+            answers: Vec::new(),
+            redacted: true,
+        }
+    }
+
+    pub fn question_id(&self) -> &str {
+        &self.question_id
+    }
+
+    pub fn answers(&self) -> &[String] {
+        &self.answers
+    }
+
+    pub fn is_redacted(&self) -> bool {
+        self.redacted
     }
 }
 
