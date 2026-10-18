@@ -637,10 +637,39 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusContextLabel => 'Context';
 
   @override
-  String get statusCacheLabel => 'Cache';
+  String get statusContextRemainingLabel => 'To compact';
 
   @override
-  String get statusCacheReportedOnlyLabel => 'based on reported data';
+  String statusContextOverLimitValue(String tokens) {
+    return '$tokens over';
+  }
+
+  @override
+  String get statusModelMaxContextLabel => 'Max context';
+
+  @override
+  String get statusModelEffectiveWindowLabel => 'Effective window';
+
+  @override
+  String get statusAutoCompactLimitLabel => 'Compact at';
+
+  @override
+  String get statusSessionUsageSection => 'Session usage';
+
+  @override
+  String get statusInputTokensLabel => 'Input';
+
+  @override
+  String get statusOutputTokensLabel => 'Output';
+
+  @override
+  String get statusCostEstimateLabel => 'Estimated cost';
+
+  @override
+  String get statusUsageIncompleteLabel => 'Incomplete';
+
+  @override
+  String get statusCacheLabel => 'Cache hit rate';
 
   @override
   String get statusCacheHitTokensLabel => 'Cache read';
@@ -661,7 +690,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusCacheSavingsLabel => 'Cache savings';
 
   @override
-  String get statusUnpricedUsageLabel => 'Partially unpriced';
+  String get statusUnpricedUsageLabel => 'Unpriced';
 
   @override
   String get sessionAllAgentsCostTooltip =>
@@ -873,27 +902,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get statusInteractionUserInput => 'Waiting for input';
-
-  @override
-  String statusContextTooltip(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-    String model,
-  ) {
-    return 'Context: $contextTokens/$contextWindow ($percent%)\n\nTotal tokens: $totalTokens\n\nModel: $model';
-  }
-
-  @override
-  String statusContextTooltipNoModel(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-  ) {
-    return 'Context: $contextTokens/$contextWindow ($percent%)\n\nTotal tokens: $totalTokens';
-  }
 
   @override
   String statusSkillsCount(int count) {
@@ -2399,9 +2407,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsPriceCacheWrite => 'Cache write';
-
-  @override
-  String get statusReportedUsageOnly => 'reported';
 
   @override
   String get settingsSystemAgentsGroup => 'System subagents';

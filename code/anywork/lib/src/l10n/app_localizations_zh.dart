@@ -607,10 +607,39 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statusContextLabel => '上下文';
 
   @override
-  String get statusCacheLabel => '缓存';
+  String get statusContextRemainingLabel => '距阈值';
 
   @override
-  String get statusCacheReportedOnlyLabel => '基于已报告数据';
+  String statusContextOverLimitValue(String tokens) {
+    return '超出 $tokens';
+  }
+
+  @override
+  String get statusModelMaxContextLabel => '最大上下文';
+
+  @override
+  String get statusModelEffectiveWindowLabel => '有效窗口';
+
+  @override
+  String get statusAutoCompactLimitLabel => '压缩阈值';
+
+  @override
+  String get statusSessionUsageSection => '会话累计';
+
+  @override
+  String get statusInputTokensLabel => '输入';
+
+  @override
+  String get statusOutputTokensLabel => '输出';
+
+  @override
+  String get statusCostEstimateLabel => '估算费用';
+
+  @override
+  String get statusUsageIncompleteLabel => '不完整';
+
+  @override
+  String get statusCacheLabel => '缓存命中率';
 
   @override
   String get statusCacheHitTokensLabel => '缓存命中';
@@ -631,7 +660,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statusCacheSavingsLabel => '缓存节省';
 
   @override
-  String get statusUnpricedUsageLabel => '部分用量未计入费用估算';
+  String get statusUnpricedUsageLabel => '未计价';
 
   @override
   String get sessionAllAgentsCostTooltip => '会话全部智能体费用';
@@ -832,27 +861,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get statusInteractionUserInput => '等待输入';
-
-  @override
-  String statusContextTooltip(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-    String model,
-  ) {
-    return '上下文：$contextTokens/$contextWindow（$percent%）\n\n总词元数：$totalTokens\n\n模型：$model';
-  }
-
-  @override
-  String statusContextTooltipNoModel(
-    int contextTokens,
-    int contextWindow,
-    int percent,
-    int totalTokens,
-  ) {
-    return '上下文：$contextTokens/$contextWindow（$percent%）\n\n总词元数：$totalTokens';
-  }
 
   @override
   String statusSkillsCount(int count) {
@@ -2288,9 +2296,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsPriceCacheWrite => '缓存写入';
-
-  @override
-  String get statusReportedUsageOnly => '仅显示已报告用量';
 
   @override
   String get settingsSystemAgentsGroup => '系统子代理';

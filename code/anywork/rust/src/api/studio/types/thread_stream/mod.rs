@@ -337,6 +337,8 @@ pub struct BridgeThreadRuntimeUsage {
     pub has_incomplete_usage: bool,
     pub model: String,
     pub context_window: Option<u64>,
+    pub max_context_window: Option<u64>,
+    pub auto_compact_limit: Option<u64>,
     pub latest_context_tokens: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,

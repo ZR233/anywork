@@ -19,14 +19,13 @@ pub(crate) fn fold_effect(summary: &mut UsageSummary, effect: &ThreadEffectBatch
         summary.turn_decode_millis = 0;
     }
     if let Some(attempt) = &effect.attempt {
-        summary.model = attempt
-            .usage_binding
-            .as_ref()
-            .map_or_else(String::new, |binding| binding.model.clone());
-        summary.context_window = attempt
-            .usage_binding
-            .as_ref()
-            .and_then(|binding| binding.context_window);
+        // The binding facts are projected as one group: a newer attempt either replaces all of them
+        // or, without a binding, leaves them all unknown. No value may survive from an earlier model.
+        let binding = attempt.usage_binding.as_ref();
+        summary.model = binding.map_or_else(String::new, |binding| binding.model.clone());
+        summary.context_window = binding.and_then(|binding| binding.context_window);
+        summary.max_context_window = binding.and_then(|binding| binding.max_context_window);
+        summary.auto_compact_limit = binding.and_then(|binding| binding.auto_compact_limit);
         match &attempt.outcome {
             AttemptOutcome::Running => {}
             AttemptOutcome::Interrupted => {

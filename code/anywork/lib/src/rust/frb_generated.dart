@@ -9330,33 +9330,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeThreadRuntimeUsage dco_decode_bridge_thread_runtime_usage(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 19)
-      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
+    if (arr.length != 21)
+      throw Exception('unexpected arr length: expect 21 but see ${arr.length}');
     return BridgeThreadRuntimeUsage(
       hasIncompleteUsage: dco_decode_bool(arr[0]),
       model: dco_decode_String(arr[1]),
       contextWindow: dco_decode_opt_box_autoadd_u_64(arr[2]),
-      latestContextTokens: dco_decode_u_64(arr[3]),
-      promptTokens: dco_decode_u_64(arr[4]),
-      completionTokens: dco_decode_u_64(arr[5]),
-      cachedPromptTokens: dco_decode_u_64(arr[6]),
-      cacheWriteTokens: dco_decode_u_64(arr[7]),
-      reasoningTokens: dco_decode_u_64(arr[8]),
-      inferenceCount: dco_decode_u_64(arr[9]),
-      totalTokens: dco_decode_u_64(arr[10]),
-      cacheUsage: dco_decode_bridge_cache_usage_summary(arr[11]),
-      estimatedCosts: dco_decode_list_bridge_runtime_cost_amount(arr[12]),
+      maxContextWindow: dco_decode_opt_box_autoadd_u_64(arr[3]),
+      autoCompactLimit: dco_decode_opt_box_autoadd_u_64(arr[4]),
+      latestContextTokens: dco_decode_u_64(arr[5]),
+      promptTokens: dco_decode_u_64(arr[6]),
+      completionTokens: dco_decode_u_64(arr[7]),
+      cachedPromptTokens: dco_decode_u_64(arr[8]),
+      cacheWriteTokens: dco_decode_u_64(arr[9]),
+      reasoningTokens: dco_decode_u_64(arr[10]),
+      inferenceCount: dco_decode_u_64(arr[11]),
+      totalTokens: dco_decode_u_64(arr[12]),
+      cacheUsage: dco_decode_bridge_cache_usage_summary(arr[13]),
+      estimatedCosts: dco_decode_list_bridge_runtime_cost_amount(arr[14]),
       estimatedCacheSavings: dco_decode_list_bridge_runtime_cost_amount(
-        arr[13],
+        arr[15],
       ),
-      hasUnpricedUsage: dco_decode_bool(arr[14]),
-      promptGeneration: dco_decode_opt_box_autoadd_u_64(arr[15]),
-      promptCachePolicy: dco_decode_opt_String(arr[16]),
+      hasUnpricedUsage: dco_decode_bool(arr[16]),
+      promptGeneration: dco_decode_opt_box_autoadd_u_64(arr[17]),
+      promptCachePolicy: dco_decode_opt_String(arr[18]),
       prefixChangedReason:
           dco_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(
-            arr[17],
+            arr[19],
           ),
-      updatedAt: dco_decode_i_64(arr[18]),
+      updatedAt: dco_decode_i_64(arr[20]),
     );
   }
 
@@ -18223,6 +18225,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_hasIncompleteUsage = sse_decode_bool(deserializer);
     var var_model = sse_decode_String(deserializer);
     var var_contextWindow = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_maxContextWindow = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_autoCompactLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_latestContextTokens = sse_decode_u_64(deserializer);
     var var_promptTokens = sse_decode_u_64(deserializer);
     var var_completionTokens = sse_decode_u_64(deserializer);
@@ -18250,6 +18254,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hasIncompleteUsage: var_hasIncompleteUsage,
       model: var_model,
       contextWindow: var_contextWindow,
+      maxContextWindow: var_maxContextWindow,
+      autoCompactLimit: var_autoCompactLimit,
       latestContextTokens: var_latestContextTokens,
       promptTokens: var_promptTokens,
       completionTokens: var_completionTokens,
@@ -27027,6 +27033,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.hasIncompleteUsage, serializer);
     sse_encode_String(self.model, serializer);
     sse_encode_opt_box_autoadd_u_64(self.contextWindow, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.maxContextWindow, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.autoCompactLimit, serializer);
     sse_encode_u_64(self.latestContextTokens, serializer);
     sse_encode_u_64(self.promptTokens, serializer);
     sse_encode_u_64(self.completionTokens, serializer);

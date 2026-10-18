@@ -726,6 +726,8 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
           ),
     contextTokens: usage.latestContextTokens.toInt(),
     contextWindow: usage.contextWindow?.toInt() ?? 0,
+    maxContextWindow: usage.maxContextWindow?.toInt(),
+    autoCompactLimit: usage.autoCompactLimit?.toInt(),
     totalTokens: usage.totalTokens.toInt(),
     promptTokens: usage.promptTokens.toInt(),
     completionTokens: usage.completionTokens.toInt(),
