@@ -1304,10 +1304,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanDetailsTitle => 'Implementation plan';
 
   @override
-  String get interactionPlanComposerPausedHint =>
-      'Normal messages are paused to keep plan feedback unambiguous.';
-
-  @override
   String interactionPlanConfirmFooterHint(String mode) {
     return 'Confirming starts the document-editing checkpoint in $mode mode.';
   }
@@ -1323,6 +1319,37 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get interactionPlanAdjustSubmit => 'Submit changes';
+
+  @override
+  String get interactionPlanFeedbackHint =>
+      'Enter submits · Shift+Enter adds a line';
+
+  @override
+  String get planExpandReading => 'Read full width';
+
+  @override
+  String get planRestoreSplit => 'Restore side-by-side';
+
+  @override
+  String get planReceiptApproved => 'Plan approved';
+
+  @override
+  String get planReceiptRevisionRequested => 'Plan changes requested';
+
+  @override
+  String get planReceiptCancelled => 'Plan confirmation cancelled';
+
+  @override
+  String get planReceiptAnswered => 'Plan confirmation answered';
+
+  @override
+  String get planReceiptYourReply => 'Your reply';
+
+  @override
+  String get planReceiptYourFeedback => 'Requested changes';
+
+  @override
+  String get planReceiptApproveReply => 'Approved this plan for execution';
 
   @override
   String get settingsProvidersTitle => 'Providers';

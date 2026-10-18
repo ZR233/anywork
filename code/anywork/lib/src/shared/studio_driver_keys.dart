@@ -211,6 +211,17 @@ abstract final class StudioDriverKeys {
   static const planFeedbackInput = ValueKey<String>('plan-feedback-input');
   static const planSubmitRevision = ValueKey<String>('plan-submit-revision');
   static const planApprove = ValueKey<String>('plan-approve');
+  static const planFeedbackError = ValueKey<String>('plan-feedback-error');
+  static const planDetailsReadingMode = ValueKey<String>(
+    'plan-details-reading-mode',
+  );
+  static const planDetailsStatus = ValueKey<String>('plan-details-status');
+  static const planDetailsTitle = ValueKey<String>('plan-details-title');
+  static const planDetailsMarkdown = ValueKey<String>('plan-details-markdown');
+  static ValueKey<String> timelinePlanReceipt(String id) =>
+      ValueKey<String>('timeline-plan-receipt-$id');
+  static ValueKey<String> timelinePlanReceiptReply(String id) =>
+      ValueKey<String>('timeline-plan-receipt-reply-$id');
   static const userInputFirstOption = ValueKey<String>(
     'user-input-first-option',
   );

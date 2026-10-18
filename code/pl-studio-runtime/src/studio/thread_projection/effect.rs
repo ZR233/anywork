@@ -322,18 +322,19 @@ pub(in crate::studio) fn project_effect_items(
     // 只从调用事实重建状态：问答属于 interaction 事实，不能被工具状态转移抹掉。已提交正文里的问答在
     // 这里原地保留，随后的交互投影才覆盖成本次 effect 的权威版本。
     preserve_user_input(&mut items, existing);
-    // 普通问答是同一个 canonical interaction 的派生投影，落在发起提问的那次工具调用自己的条目上，
-    // 不建立第二条持久化问答记录。交互身份给出它所属的 call，条目因此保留 ID、ordinal 与创建时间，
-    // 只更新问答正文；同一次 effect 里刚投影的条目优先，其次是已提交的 durable 正文。
+    // 问答与计划确认是同一个 canonical interaction 的派生投影，落在发起它的那次工具调用自己的条目上
+    // （提问工具或 plan_submit），不建立第二条持久化记录。交互身份给出它所属的 call，条目因此保留
+    // ID、ordinal 与创建时间，只更新问答正文；同一次 effect 里刚投影的条目优先，其次是已提交的
+    // durable 正文。
     for record in effect.interactions.iter() {
-        let Some(user_input) = super::user_input::project_user_input(record)? else {
+        let Some(user_input) = super::user_input::project_user_input(&thread.id, record)? else {
             continue;
         };
         let Some(call_id) =
             pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
         else {
             return Err(ProjectionError::UserInput(format!(
-                "ordinary user Q&A interaction `{}` names no tool call",
+                "user-input interaction `{}` names no tool call",
                 user_input.interaction_id()
             )));
         };

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork_client/studio_client.dart';
 
 import '../domain/models/agent_workspace_view.dart';
+import '../domain/models/timeline_rows.dart';
 
 /// One immutable, synchronous read of the Client's current mirrors. Driver keeps
 /// no copy after serialization and cannot write these values back to the Client.
@@ -581,6 +582,7 @@ abstract final class StudioDriverState {
                     'activityKinds': [
                       for (final part in row.entries) part.type.name,
                     ],
+                    'userInput': _userInputJson(row),
                     'text':
                         row.part?.text ??
                         row.entries
@@ -783,6 +785,30 @@ abstract final class StudioDriverState {
       }
     }
     return null;
+  }
+
+  /// userInput 行的 typed 只读投影：交互身份、权威状态与计划确认决定。
+  ///
+  /// Driver 用它区分「当前待确认的计划行」与「已回答的历史回执」，因此可只对 pending
+  /// 行断言“不出现历史回执”，同时仍要求旧 resolved 回执存在。它只读公开的
+  /// `ThreadToolUserInputView` 投影，不解析工具 arguments/result，也不新增第二份
+  /// 业务状态或 wire 字段；非问答行返回 null。
+  static Map<String, Object?>? _userInputJson(TimelineRow row) {
+    if (row is! TimelineUserInputRow) return null;
+    final history = row.history;
+    final receipt = history.planReceipt;
+    return {
+      'interactionId': history.interactionId,
+      'state': switch (history.state) {
+        PendingThreadToolUserInputView() => 'pending',
+        ResolvedThreadToolUserInputView() => 'resolved',
+        CancelledThreadToolUserInputView() => 'cancelled',
+      },
+      if (receipt != null) ...{
+        'isPlanConfirmation': true,
+        'planDecision': receipt.decision.name,
+      },
+    };
   }
 
   static Map<String, Object?> _timelineProgress(AgentWorkspaceView workspace) {

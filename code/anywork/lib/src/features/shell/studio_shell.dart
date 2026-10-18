@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
 import '../../presentation/providers/client_provider.dart';

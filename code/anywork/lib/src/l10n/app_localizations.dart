@@ -2303,12 +2303,6 @@ abstract class AppLocalizations {
   /// **'Implementation plan'**
   String get interactionPlanDetailsTitle;
 
-  /// No description provided for @interactionPlanComposerPausedHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Normal messages are paused to keep plan feedback unambiguous.'**
-  String get interactionPlanComposerPausedHint;
-
   /// No description provided for @interactionPlanConfirmFooterHint.
   ///
   /// In en, this message translates to:
@@ -2338,6 +2332,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Submit changes'**
   String get interactionPlanAdjustSubmit;
+
+  /// No description provided for @interactionPlanFeedbackHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter submits · Shift+Enter adds a line'**
+  String get interactionPlanFeedbackHint;
+
+  /// No description provided for @planExpandReading.
+  ///
+  /// In en, this message translates to:
+  /// **'Read full width'**
+  String get planExpandReading;
+
+  /// No description provided for @planRestoreSplit.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore side-by-side'**
+  String get planRestoreSplit;
+
+  /// No description provided for @planReceiptApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan approved'**
+  String get planReceiptApproved;
+
+  /// No description provided for @planReceiptRevisionRequested.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan changes requested'**
+  String get planReceiptRevisionRequested;
+
+  /// No description provided for @planReceiptCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan confirmation cancelled'**
+  String get planReceiptCancelled;
+
+  /// No description provided for @planReceiptAnswered.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan confirmation answered'**
+  String get planReceiptAnswered;
+
+  /// No description provided for @planReceiptYourReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Your reply'**
+  String get planReceiptYourReply;
+
+  /// No description provided for @planReceiptYourFeedback.
+  ///
+  /// In en, this message translates to:
+  /// **'Requested changes'**
+  String get planReceiptYourFeedback;
+
+  /// No description provided for @planReceiptApproveReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved this plan for execution'**
+  String get planReceiptApproveReply;
 
   /// No description provided for @settingsProvidersTitle.
   ///

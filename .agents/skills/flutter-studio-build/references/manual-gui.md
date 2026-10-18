@@ -105,6 +105,23 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
 6. 不把临时原始快照/界面树当作已脱敏产物；可能包含正文、配置与路径。只收集需要的字段，
    分享前检查并脱敏；不提交截图、运行日志、VM URL 或一次性脚本到源码库。
 
+### Driver 宿主与原生文本输入
+
+- Journey 客户端由独立 `dart run` 执行，不能导入 `package:flutter/services.dart` 等依赖
+  `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
+  `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
+  宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
+- 不对聚焦文本框使用「全局动画全部停止」作为编辑完成条件，光标闪烁可以持续产生帧。
+  优先读 `TextField.controller.text` 的 Driver `getText` 结果、当前交互身份及精确后置状态。
+  产品会自动打开的面板或菜单先观察当前状态，再决定是否点击，避免把已打开状态反向关闭；
+  这只适用于无副作用的 UI 开关，不能据此重放批准或提交。
+- `sendTextInputAction` 只证明框架 `performAction` 通道，不证明物理回车或 IME。需要覆盖
+  原生输入时先用 `setTextEntryEmulation(enabled: false)` 恢复平台文本输入，再通过本次
+  GUI 专属显示器的原生键盘通道验证。Linux 可在私有 D-Bus、Xvfb 与独立 XDG 目录中使用
+  系统 IBus 和输入法引擎；它们的 config owner、引擎与凭据服务也须由本次进程树持有并回收。
+  保留组词预览、确认后文本与未提交状态的实际证据；输入法的 Return 可能确认原始拼音，
+  不应把「Return 必须输出汉字」当成所有输入法的通用判据。
+
 ## 跨重启交互与 Driver 判定
 
 - `cargo xtask manual-gui --scenario plan-recovery` 使用同一隔离 home 的多个原生 GUI 生命周期，

@@ -499,6 +499,113 @@ sealed class ThreadToolUserInputStateView {
   const ThreadToolUserInputStateView();
 }
 
+/// 计划确认回执的权威决定。
+///
+/// 只由该交互自己的已接受答案派生：`resolved` 表示交互已有回答，但回答里没有本版本
+/// 认识的决定标记。后一种情况既不猜测批准也不猜测修改，只保留已回答这一事实。
+enum PlanConfirmationDecisionView {
+  pending,
+  approved,
+  revisionRequested,
+  cancelled,
+  resolved,
+}
+
+/// 计划确认的只读历史回执。
+///
+/// 来源是发起 `plan_submit` 的工具条目携带的同一 typed 问答投影：唯一
+/// [agentSessionPlanConfirmationQuestionId] 问题标识计划语义，答案列表保留批准/修订
+/// 决定与用户原始反馈。GUI 只把 [decision] 映射成本地化状态，不显示内部标记。
+final class PlanConfirmationReceiptView {
+  PlanConfirmationReceiptView({
+    required this.interactionId,
+    required this.title,
+    required this.decision,
+    Iterable<String> feedback = const [],
+  }) : feedback = List.unmodifiable(feedback);
+
+  final String interactionId;
+
+  /// 计划标题（问题正文的一级标题），缺失时退回问题 header。
+  final String title;
+
+  final PlanConfirmationDecisionView decision;
+
+  /// 用户原始反馈，按原顺序保留；批准与未知标记不产生反馈正文。
+  final List<String> feedback;
+
+  bool get isResolved => decision != PlanConfirmationDecisionView.pending;
+}
+
+extension ThreadToolUserInputPlanReceipt on ThreadToolUserInputView {
+  /// 计划确认问题的唯一位置；不是恰好一个时不构成计划回执。
+  UserQuestionView? get _planQuestion {
+    final matches = questions
+        .where(
+          (question) => question.id == agentSessionPlanConfirmationQuestionId,
+        )
+        .toList(growable: false);
+    return matches.length == 1 ? matches.single : null;
+  }
+
+  /// 计划确认回执；普通问答或问题结构不完整时为空，由普通问答通道继续呈现。
+  PlanConfirmationReceiptView? get planReceipt {
+    final question = _planQuestion;
+    if (question == null || questions.length != 1) return null;
+    final title = planDocumentTitle(
+      question.question,
+      fallback: question.header,
+    );
+    final answer = answers
+        .where((item) => item.questionId == question.id)
+        .firstOrNull;
+    final decision = switch (state) {
+      PendingThreadToolUserInputView() => PlanConfirmationDecisionView.pending,
+      CancelledThreadToolUserInputView() =>
+        PlanConfirmationDecisionView.cancelled,
+      ResolvedThreadToolUserInputView() => _planDecision(answer),
+    };
+    return PlanConfirmationReceiptView(
+      interactionId: interactionId,
+      title: title,
+      decision: decision,
+      feedback: _planFeedback(question, answer, decision),
+    );
+  }
+
+  PlanConfirmationDecisionView _planDecision(
+    ThreadUserInputAnswerView? answer,
+  ) {
+    final values = answer?.answers ?? const <String>[];
+    if (values.contains(agentSessionPlanApproveAnswer)) {
+      return PlanConfirmationDecisionView.approved;
+    }
+    if (values.contains(agentSessionPlanReviseAnswer)) {
+      return PlanConfirmationDecisionView.revisionRequested;
+    }
+    return PlanConfirmationDecisionView.resolved;
+  }
+
+  /// 只把决定标记之后的原值当作反馈：敏感应答、未知标记和批准都不产生正文。
+  List<String> _planFeedback(
+    UserQuestionView question,
+    ThreadUserInputAnswerView? answer,
+    PlanConfirmationDecisionView decision,
+  ) {
+    if (answer == null || answer.redacted || question.isSecret) return const [];
+    if (decision != PlanConfirmationDecisionView.revisionRequested) {
+      return const [];
+    }
+    return [
+      for (final value in answer.answers)
+        if (value != agentSessionPlanApproveAnswer &&
+            value != agentSessionPlanReviseAnswer &&
+            value.trim().isNotEmpty)
+          value,
+    ];
+  }
+}
+
 final class PendingThreadToolUserInputView
     extends ThreadToolUserInputStateView {
   const PendingThreadToolUserInputView();

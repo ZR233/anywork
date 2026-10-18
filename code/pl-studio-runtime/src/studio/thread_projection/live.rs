@@ -375,7 +375,7 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
     bytes
 }
 
-/// Questions and accepted answers of one Q&A history projection.
+/// Questions and accepted answers of one user-input history projection.
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
@@ -813,10 +813,11 @@ impl LiveProjection {
 
     /// Whether this projection still holds the canonical tool body of `id`, in any state.
     ///
-    /// An ordinary Q&A interaction lands on the call that asked it, and the answering effect carries
-    /// neither the call nor its task: after a restart, or once a finished Turn leaves the retained
-    /// window, this projection holds no body for that identity. Placement metadata alone is not a
-    /// body — only a real tool item can carry the answer.
+    /// A user-input interaction — an ordinary question or a Plan confirmation — lands on the call
+    /// that raised it, and the answering effect carries neither the call nor its task: after a
+    /// restart, or once a finished Turn leaves the retained window, this projection holds no body for
+    /// that identity. Placement metadata alone is not a body — only a real tool item can carry the
+    /// answer.
     pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
         self.items.get(id).is_some_and(|item| item.tool().is_some())
     }
@@ -2230,25 +2231,28 @@ pub(in crate::studio) async fn seed_repaired_targets(
     Ok(())
 }
 
-/// Reads the tool items an effect's ordinary Q&A interactions name, when this projection holds no
+/// Reads the tool items an effect's user-input interactions name, when this projection holds no
 /// canonical body for them.
 ///
 /// A pending question outlives the Turn that asked it: the asking call is already terminal, its body
 /// leaves the retained window, and a projection seeded after a restart never saw the call at all.
 /// The answering effect carries only the interaction and the hidden continuation, so the answer can
 /// only land on the call's own item if the owner reads that one identity back from reliable history
-/// and hands it to the projection as a fact — the same shape as a reliable-output repair target.
-/// Nothing else is read: no Turn is scanned, no tool is activated, no model step starts, and the
-/// projection itself still performs no IO. A missing or non-tool durable item fails explicitly,
-/// because an accepted answer must never be dropped or published as a fabricated row.
+/// and hands it to the projection as a fact — the same shape as a reliable-output repair target. A
+/// Plan confirmation is answered after the same `plan_submit` call is already terminal, so it needs
+/// the same identity read-back. Nothing else is read: no Turn is scanned, no tool is activated, no
+/// model step starts, and the projection itself still performs no IO. A missing or non-tool durable
+/// item fails explicitly, because an accepted answer must never be dropped or published as a
+/// fabricated row.
 pub(in crate::studio) async fn seed_interaction_targets(
     projection: &mut LiveProjection,
+    thread_id: &str,
     history: &crate::studio::storage::history::HistoryStore,
     effect: &ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
     let mut seeded = Vec::new();
     for record in effect.interactions.iter() {
-        let Some(user_input) = super::user_input::project_user_input(record)? else {
+        let Some(user_input) = super::user_input::project_user_input(thread_id, record)? else {
             continue;
         };
         let tool_id =
@@ -2256,7 +2260,7 @@ pub(in crate::studio) async fn seed_interaction_targets(
                 Some(call_id) => super::order::tool_id(call_id),
                 None => {
                     return Err(ProjectionError::UserInput(format!(
-                        "ordinary user Q&A interaction `{}` names no tool call",
+                        "user-input interaction `{}` names no tool call",
                         user_input.interaction_id()
                     )));
                 }
@@ -2271,7 +2275,7 @@ pub(in crate::studio) async fn seed_interaction_targets(
             .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
         if item.tool().is_none() {
             return Err(ProjectionError::UserInput(format!(
-                "durable item `{tool_id}` is not a tool call and cannot own an ordinary user Q&A"
+                "durable item `{tool_id}` is not a tool call and cannot own a user-input history"
             )));
         }
         seeded.push(item);

@@ -192,7 +192,7 @@ impl Tool for ThreadPlanTool {
                     };
                     interaction = Some(
                         OpaquePayload::new(
-                            "pl.studio.plan-confirmation",
+                            super::PLAN_CONFIRMATION_FORMAT,
                             1,
                             serde_json::to_string(&prompt).map_err(ToolError::new)?,
                         )

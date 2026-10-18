@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
 import 'sidebar_navigation.dart';
+import 'window_control.dart';
 // Public snapshot helpers shared with the realtime/history journeys: this
 // journey reads the same Driver projection and must not fork a second reading.
 import 'realtime_journey.dart';
@@ -79,6 +80,34 @@ const _failedTurnStatuses = <String>{'failed', 'cancelled', 'budgetLimited'};
 /// recorded no additional provider request.
 const _quietRestartMarker = 'plan-recovery-quiet-restart';
 const _quietRecheckMarker = 'plan-recovery-quiet-recheck';
+
+/// 会话阅读区域的可定位句柄：`StudioDriverKeys.timeline` 的真实值
+/// （`lib/src/shared/studio_driver_keys.dart` → `ValueKey('timeline-scrollable')`）。
+///
+/// Host Driver 脚本在 `dart run` 下运行，不能 import 含 Flutter `ValueKey` 的 app 侧
+/// key 文件，因此这里保留与源码一一对应的 pure-Dart 字符串。
+const _readingAreaKey = 'timeline-scrollable';
+
+/// Plan reading layout contract (design/13-plan.md §13.5). The assertions compare
+/// real widget geometry, so these are the documented UI bounds rather than a
+/// second copy of the product layout constants.
+const _minimumConversationWidth = 400.0;
+const _minimumPlanWidth = 360.0;
+const _planDividerThickness = 1.0;
+const _rectEpsilon = 1.0;
+
+/// Shift+Enter 需要的官方键值（Flutter `keyboard_key.g.dart`）：
+/// `LogicalKeyboardKey.enter == 0x0010000000d`、`PhysicalKeyboardKey.enter == 0x00070028`。
+///
+/// Host Driver 脚本在 `dart run` 下运行，不能 import `package:flutter/services.dart`
+/// （会引入 `dart:ui`），因此这里只保留这两个已核对的整数常量。
+const _logicalEnterKeyId = 0x0010000000d;
+const _physicalEnterUsbHidUsage = 0x00070028;
+
+/// Narrow/short window used to prove the full-width fallback is usable.
+const _narrowPlanWindowWidth = 640;
+const _narrowPlanWindowHeight = 620;
+const _resizeSettleDeadline = Duration(seconds: 3);
 
 /// The identity evidence shared between journey phases through the output dir.
 const _observedFile = 'plan-recovery-observed.json';
@@ -344,6 +373,8 @@ class PlanRecoveryJourney {
       'restart_approved',
       expectedMarkdown: _approvePlan,
     );
+    // 已回答的计划必须留下可展开的历史回执，而不是只靠当前 Plan 正文。
+    await _planReceiptContract('restart_approved');
 
     // Stage the Revise branch: a second session with its own pending Plan, so
     // the second normal shutdown also happens while a confirmation is pending.
@@ -427,15 +458,14 @@ class PlanRecoveryJourney {
     // Revise: the feedback bar is the only writer of the Revise answer. The
     // focus tap goes through the raw pointer path like the composer: the
     // stock `Tap` command's `hitTestable()` pre-filter never yields
-    // candidates on the Linux embedder.
-    await _tap('plan-feedback-input');
-    await driver.enterText(_revisionFeedback);
-    await _tapForEffect(
-      'plan-submit-revision',
-      (snapshot) =>
-          activeInteractionOf(snapshot) == null ||
-          activeInteractionOf(snapshot)!['id'] != expectedInteractionId,
+    // candidates on the Linux embedder. The answer itself is submitted with
+    // Enter, not with the button, so the journey exercises the same text input
+    // action the engine produces for a real Return key.
+    await _planReadingLayoutContract('recheck', expectedInteractionId);
+    await _narrowPlanLayoutContract('recheck', expectedInteractionId);
+    await _answerPlanByEnter(
       'recheck_revise',
+      expectedInteractionId: expectedInteractionId,
     );
     await _cardDismissed(
       'recheck_revise',
@@ -476,6 +506,11 @@ class PlanRecoveryJourney {
       'recheck_revised_approved',
       expectedMarkdown: _revisedPlan,
     );
+    // 修改意见必须作为历史回执保留原始全文，而不是只留在已消失的反馈栏里。
+    await _planReceiptContract(
+      'recheck_revised_approved',
+      expectedReply: _revisionFeedback,
+    );
 
     // Neither answered Plan may re-pop, in either reopened session.
     await _ensureThreadOpen(approveThreadId, 'recheck_approve_thread');
@@ -483,6 +518,8 @@ class PlanRecoveryJourney {
     checks['answeredApprovePlanNotRepop'] =
         activeInteractionOf(approveThread) == null;
     observations['recheckApproveThreadFinal'] = summarize(approveThread);
+    // 重开旧会话后，已批准计划的历史回执仍可读。
+    await _planReceiptContract('recheck_approve_receipt');
     await _openApprovedPlanFromOverflow(
       'recheck_approve_reopen',
       expectedMarkdown: _approvePlan,
@@ -615,6 +652,25 @@ class PlanRecoveryJourney {
     }
   }
 
+  /// 只在目标状态尚未成立时才点击 [key]。
+  ///
+  /// 产品会自动打开待确认计划的详情面板，驱动不能无条件 toggle：面板已经打开时再点
+  /// 摘要卡会把它关掉（third-pass 的 `plan-details` 等待超时正是这样产生的）。这里先读
+  /// 当前可见状态，已满足就直接返回并留下证据；确实没满足才点击一次，并等待明确的
+  /// 后置状态。它只用于无副作用的界面开关，不用于批准/修订这类有副作用的决定。
+  Future<void> _ensureWidgetState(
+    String key,
+    String desiredKey,
+    String label, {
+    required bool present,
+  }) async {
+    if (await _widgetHolds(desiredKey, present: present)) {
+      counts['${label}AlreadySatisfied'] = true;
+      return;
+    }
+    await _tapForWidget(key, desiredKey, label, present: present);
+  }
+
   /// Taps [key] and proves the action through a snapshot-level [effect].
   ///
   /// Same recovery rule as [_tapForWidget]: a timed-out tap whose effect
@@ -737,6 +793,39 @@ class PlanRecoveryJourney {
       timeout: const Duration(seconds: 180),
       abort: threadFaulted,
     );
+    // 待确认期间只有尾部唯一摘要入口：**当前 pending 计划行**不得渲染历史回执，
+    // 但上一轮已回答的旧计划回执必须仍在（修订会连续产生多条计划行）。
+    final planRows = _planRows(card);
+    final pendingRows = planRows.where((row) => row.pending).toList();
+    final resolvedRows = planRows.where((row) => !row.pending).toList();
+    var pendingTiles = 0;
+    for (final row in pendingRows) {
+      if (await _widgetHoldsByKey(
+        find.byValueKey('timeline-plan-receipt-${row.id}'),
+      )) {
+        pendingTiles++;
+      }
+    }
+    var resolvedTiles = 0;
+    for (final row in resolvedRows) {
+      if (await _widgetHoldsByKey(
+        find.byValueKey('timeline-plan-receipt-${row.id}'),
+      )) {
+        resolvedTiles++;
+      }
+    }
+    checks['${label}PendingPlanRowUnique'] = pendingRows.length == 1;
+    checks['${label}PendingHidesPlanReceipt'] =
+        pendingRows.length == 1 && pendingTiles == 0;
+    checks['${label}ResolvedPlanReceiptsKept'] =
+        resolvedTiles == resolvedRows.length;
+    counts['${label}PendingPlanRows'] = pendingRows.length;
+    counts['${label}ResolvedPlanRows'] = resolvedRows.length;
+    counts['${label}ResolvedPlanReceiptTiles'] = resolvedTiles;
+    observations['${label}PlanRows'] = [
+      for (final row in planRows)
+        {'id': row.id, 'pending': row.pending, 'decision': row.decision},
+    ];
     // The normal composer must be replaced while the Plan is pending.
     try {
       await driver.waitForAbsent(
@@ -762,13 +851,14 @@ class PlanRecoveryJourney {
           plan['state'] == 'approved' &&
           plan['markdown'] == expectedMarkdown;
     }, '${label}_plan_projection');
-    await _tapForWidget(
+    await _ensureWidgetState(
       'status-overflow',
       'status-plan-entry',
       '$label-overflow-open',
       present: true,
     );
-    await _tapForWidget(
+    // 入口本身是显式的一次打开动作：只有面板尚未打开时才点它。
+    await _ensureWidgetState(
       'status-plan-entry',
       'plan-details',
       '$label-plan-entry',
@@ -787,7 +877,7 @@ class PlanRecoveryJourney {
       expectedMarkdown,
     );
     await shot('$label-approved-details');
-    await _tapForWidget(
+    await _ensureWidgetState(
       'plan-details-close',
       'plan-details',
       '$label-details-close',
@@ -829,8 +919,11 @@ class PlanRecoveryJourney {
   }
 
   /// Opens and closes the read-only Plan details panel through the product UI.
+  ///
+  /// 打开是幂等的：pending 计划由产品自动打开，此时直接读当前可见状态与截图，
+  /// 不再 toggle；确实关闭时才点击一次并等待面板出现。关闭同理。
   Future<void> _openPlanDetails(String label) async {
-    await _tapForWidget(
+    await _ensureWidgetState(
       'plan-summary',
       'plan-details',
       '$label-details-open',
@@ -841,7 +934,7 @@ class PlanRecoveryJourney {
       timeout: const Duration(seconds: 30),
     );
     await shot('$label-details');
-    await _tapForWidget(
+    await _ensureWidgetState(
       'plan-details-close',
       'plan-details',
       '$label-details-close',
@@ -987,6 +1080,510 @@ class PlanRecoveryJourney {
     throw StateError(
       'timed out waiting for the coordinator marker $name ($label)',
     );
+  }
+
+  // -------------------------------------------------------- plan layout --
+
+  /// 反馈文本框的当前正文；Driver `getText` 对 `TextField` 直接返回 `controller.text`。
+  Future<String?> _readFeedbackText() async {
+    try {
+      return await driver.getText(find.byValueKey('plan-feedback-input'));
+    } on Object {
+      return null;
+    }
+  }
+
+  /// 真实几何：Driver 的 offset 命令读当前布局，不读产品常量。
+  Future<DriverRect?> _readRect(String key) async {
+    final finder = find.byValueKey(key);
+    try {
+      final topLeft = await driver.getTopLeft(finder);
+      final bottomRight = await driver.getBottomRight(finder);
+      return DriverRect(
+        key: key,
+        left: topLeft.dx,
+        top: topLeft.dy,
+        right: bottomRight.dx,
+        bottom: bottomRight.dy,
+      );
+    } on Object {
+      return null;
+    }
+  }
+
+  /// 并排阅读布局契约：计划可宽于对话、对话守住最小宽度、全宽/并排往返保持宽度。
+  Future<void> _planReadingLayoutContract(
+    String label,
+    String expectedInteractionId,
+  ) async {
+    await _ensureWidgetState(
+      'plan-summary',
+      'plan-details',
+      '${label}_layout_open',
+      present: true,
+    );
+    await driver.waitFor(
+      find.byValueKey('plan-details-scroll'),
+      timeout: const Duration(seconds: 30),
+    );
+    var conversation = await _readRect(_readingAreaKey);
+    var plan = await _readRect('plan-details');
+    var divider = await _readRect('plan-resize-handle');
+    observations['${label}SideBySideRects'] = {
+      'conversation': conversation?.toJson(),
+      'plan': plan?.toJson(),
+      'divider': divider?.toJson(),
+    };
+    await shot('$label-plan-side-by-side');
+
+    // 并排有两条失败路径，必须分开：窗口确实不足以并排（可判定、先加宽），
+    // 与几何本身读不到（缺陷，必须失败传播）。两者都不允许静默记 pending。
+    WindowGeometry? restoreGeometry;
+    int? resizePid;
+    final widestNeeded =
+        2 * _minimumConversationWidth + _planDividerThickness + 3;
+    final paneTooNarrow =
+        divider == null ||
+        plan == null ||
+        conversation == null ||
+        plan.width + conversation.width + _planDividerThickness < widestNeeded;
+    if (paneTooNarrow) {
+      resizePid = await _guiProcessId();
+      final shell = await _readRect('studio-shell');
+      if (resizePid != null && shell != null) {
+        final widened = resizeOwnedWindow(
+          guiPid: resizePid,
+          width: (shell.width + 520).round(),
+          height: shell.height.round(),
+        );
+        if (widened.resized) {
+          restoreGeometry = widened.original;
+          await _settleAfterResize(shell, expectNarrower: false);
+          conversation = await _readRect(_readingAreaKey);
+          plan = await _readRect('plan-details');
+          divider = await _readRect('plan-resize-handle');
+          observations['${label}SideBySideRectsWidened'] = {
+            'conversation': conversation?.toJson(),
+            'plan': plan?.toJson(),
+            'divider': divider?.toJson(),
+          };
+        } else {
+          pendingEvidence.add(
+            'plan layout: the window could not be widened for the split '
+            'observation (${widened.reason})',
+          );
+        }
+      } else {
+        pendingEvidence.add(
+          'plan layout: the GUI process id or shell geometry was unavailable, '
+          'so the window could not be widened for the split observation',
+        );
+      }
+    }
+
+    try {
+      if (conversation == null || plan == null || divider == null) {
+        // 加宽后仍没有并排分隔条或几何不可读：这是真实失败，不是环境观察。
+        checks['${label}SideBySideReadable'] = false;
+        checks['${label}SplitGeometryReadable'] = false;
+        observations['${label}SideBySideFailure'] = {
+          'conversation': conversation?.toJson(),
+          'plan': plan?.toJson(),
+          'divider': divider?.toJson(),
+        };
+        await _ensureWidgetState(
+          'plan-details-close',
+          'plan-details',
+          '${label}_layout_close',
+          present: false,
+        );
+        return;
+      }
+      checks['${label}SplitGeometryReadable'] = true;
+      checks['${label}SideBySideReadable'] =
+          plan.width >= _minimumPlanWidth &&
+          conversation.width >= _minimumConversationWidth;
+
+      // 先收窄计划：这一方向在任何可用宽度下都有空间，证明拖动确实交给组件。
+      await driver.dragBy(
+        find.byValueKey('plan-resize-handle'),
+        dx: 160,
+        timeout: const Duration(seconds: 30),
+      );
+      final narrowedPlan = await _readRect('plan-details');
+      final widenedConversation = await _readRect(_readingAreaKey);
+      checks['${label}DragNarrowsPlan'] =
+          narrowedPlan != null &&
+          widenedConversation != null &&
+          narrowedPlan.width < plan.width - _rectEpsilon &&
+          widenedConversation.width > conversation.width + _rectEpsilon;
+      checks['${label}PlanHonoursMinimum'] =
+          narrowedPlan != null &&
+          narrowedPlan.width >= _minimumPlanWidth - _rectEpsilon;
+      await shot('$label-plan-dragged-narrow');
+
+      // 再向左拖到极限：计划可以宽于对话，对话守住 400px 下限（组件求解边界）。
+      await driver.dragBy(
+        find.byValueKey('plan-resize-handle'),
+        dx: -12000,
+        timeout: const Duration(seconds: 30),
+      );
+      final widePlan = await _readRect('plan-details');
+      final wideConversation = await _readRect(_readingAreaKey);
+      checks['${label}ConversationFloorHolds'] =
+          wideConversation != null &&
+          (wideConversation.width - _minimumConversationWidth).abs() <=
+              _rectEpsilon;
+      await shot('$label-plan-limit');
+      if (widePlan == null || wideConversation == null) {
+        throw StateError('plan layout: the limit geometry could not be read');
+      }
+      // 计划宽度可以超过可用宽度的一半（旧实现的上限正是可用宽度的一半）。
+      final available =
+          widePlan.width + wideConversation.width + _planDividerThickness;
+      checks['${label}PlanCanExceedConversation'] =
+          widePlan.width > available / 2;
+
+      // 展开阅读：占满会话阅读区域，且不再有无意义的分隔条。
+      await _ensureWidgetState(
+        'plan-details-reading-mode',
+        'plan-resize-handle',
+        '${label}_reading_full_width',
+        present: false,
+      );
+      final fullWidth = await _readRect('plan-details');
+      checks['${label}FullWidthReading'] =
+          fullWidth != null && fullWidth.width >= available - _rectEpsilon;
+      checks['${label}FullWidthKeepsFeedbackBar'] =
+          await _widgetHolds('plan-feedback-input', present: true) &&
+          await _widgetHolds('plan-approve', present: true);
+      await shot('$label-plan-full-width');
+
+      // 恢复并排：宽度回到展开前，阅读布局切换不重置宽度。
+      await _ensureWidgetState(
+        'plan-details-reading-mode',
+        'plan-resize-handle',
+        '${label}_reading_restore_split',
+        present: true,
+      );
+      final restored = await _readRect('plan-details');
+      checks['${label}RestoreKeepsWidth'] =
+          restored != null &&
+          (restored.width - widePlan.width).abs() <= _rectEpsilon;
+      await shot('$label-plan-restore-split');
+
+      await _ensureWidgetState(
+        'plan-details-close',
+        'plan-details',
+        '${label}_layout_close',
+        present: false,
+      );
+      // 关闭后普通输入与摘要入口都回来，反馈栏仍是同一交互的唯一写入者。
+      checks['${label}LayoutInteractionsCurrent'] =
+          activeInteractionOf(await snapshot())?['id'] == expectedInteractionId;
+    } finally {
+      if (restoreGeometry != null && resizePid != null) {
+        final restoredWindow = resizeOwnedWindow(
+          guiPid: resizePid,
+          width: restoreGeometry.width,
+          height: restoreGeometry.height,
+        );
+        if (!restoredWindow.resized) {
+          throw StateError(
+            'plan layout: could not restore GUI window '
+            '(${restoredWindow.reason})',
+          );
+        }
+        await _settleAfterResize(null, expectNarrower: false);
+      }
+    }
+  }
+
+  /// 窄窗与短窗：直接全宽阅读，计划正文、反馈与决定按钮都仍在窗口内。
+  Future<void> _narrowPlanLayoutContract(
+    String label,
+    String expectedInteractionId,
+  ) async {
+    final guiPid = await _guiProcessId();
+    if (guiPid == null) {
+      // 窄/短窗几何是必需证据：拿不到 GUI pid 就是能力缺失，必须失败传播。
+      checks['${label}NarrowWindowResized'] = false;
+      pendingEvidence.add(
+        'narrow plan layout: the driver did not expose the GUI process id',
+      );
+      return;
+    }
+    await _ensureWidgetState(
+      'plan-summary',
+      'plan-details',
+      '${label}_narrow_open',
+      present: true,
+    );
+    final wideShell = await _readRect('studio-shell');
+    final narrow = resizeOwnedWindow(
+      guiPid: guiPid,
+      width: _narrowPlanWindowWidth,
+      height: _narrowPlanWindowHeight,
+    );
+    if (!narrow.resized) {
+      // 窗口无法改小时窄/短窗布局无法判定：记录失败而不是跳过。
+      checks['${label}NarrowWindowResized'] = false;
+      pendingEvidence.add(
+        'narrow plan layout: driver could not resize the GUI window '
+        '(${narrow.reason})',
+      );
+      return;
+    }
+    final original = narrow.original!;
+    try {
+      checks['${label}NarrowWindowResized'] = narrow.applied != null;
+      await _settleAfterResize(wideShell, expectNarrower: true);
+      final shell = await _readRect('studio-shell');
+      // 全宽阅读覆盖的是会话阅读区域，而不是含侧栏的整个窗口。
+      final readingArea = await _readRect(_readingAreaKey);
+      final plan = await _readRect('plan-details');
+      final feedback = await _readRect('plan-feedback-input');
+      final approve = await _readRect('plan-approve');
+      final dividerAbsent = !await _widgetHolds(
+        'plan-resize-handle',
+        present: true,
+      );
+      checks['${label}NarrowUsesFullWidthReading'] = dividerAbsent;
+      checks['${label}NarrowPlanCoversReadingArea'] =
+          readingArea != null &&
+          plan != null &&
+          (plan.width - readingArea.width).abs() <= _rectEpsilon;
+      checks['${label}NarrowFeedbackReachable'] =
+          shell != null &&
+          feedback != null &&
+          approve != null &&
+          shell.contains(feedback) &&
+          shell.contains(approve);
+      observations['${label}NarrowRects'] = {
+        'shell': shell?.toJson(),
+        'readingArea': readingArea?.toJson(),
+        'plan': plan?.toJson(),
+        'feedback': feedback?.toJson(),
+        'approve': approve?.toJson(),
+      };
+      checks['${label}NarrowInteractionCurrent'] =
+          activeInteractionOf(await snapshot())?['id'] == expectedInteractionId;
+      await shot('$label-plan-narrow-short');
+    } finally {
+      final restored = resizeOwnedWindow(
+        guiPid: guiPid,
+        width: original.width,
+        height: original.height,
+      );
+      if (!restored.resized) {
+        throw StateError(
+          'narrow plan layout: could not restore GUI window '
+          '(${restored.reason})',
+        );
+      }
+    }
+    await _settleAfterResize(null, expectNarrower: false);
+    await _ensureWidgetState(
+      'plan-details-close',
+      'plan-details',
+      '${label}_narrow_close',
+      present: false,
+    );
+  }
+
+  /// Reads the GUI process id so the X11 window is matched by `_NET_WM_PID`.
+  Future<int?> _guiProcessId() async {
+    try {
+      final decoded = jsonDecode(
+        await driver.requestData('pid', timeout: const Duration(seconds: 15)),
+      );
+      final pid = decoded is Map ? decoded['pid'] : null;
+      if (pid is int && pid > 0) return pid;
+    } on Object {
+      // Recorded as pending evidence by the caller.
+    }
+    return null;
+  }
+
+  /// Bounded wait for the new geometry to reach Flutter's real layout.
+  Future<void> _settleAfterResize(
+    DriverRect? before, {
+    required bool expectNarrower,
+  }) async {
+    final deadline = DateTime.now().add(_resizeSettleDeadline);
+    while (DateTime.now().isBefore(deadline)) {
+      final current = await _readRect('studio-shell');
+      if (current != null && current.width > 0) {
+        final changed =
+            before == null ||
+            (current.width - before.width).abs() > _rectEpsilon ||
+            (current.height - before.height).abs() > _rectEpsilon;
+        final directionOk =
+            before == null ||
+            (expectNarrower
+                ? current.width <= before.width + _rectEpsilon
+                : current.width >= before.width - _rectEpsilon);
+        if (changed && directionOk) return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    }
+  }
+
+  // ------------------------------------------------------ plan answers --
+
+  /// 计划反馈栏的真实键盘路径：空输入与 Shift+Enter 不回答，Enter 才提交一次。
+  Future<void> _answerPlanByEnter(
+    String label, {
+    required String expectedInteractionId,
+  }) async {
+    await _tap('plan-feedback-input');
+    await driver.enterText(' ');
+    await driver.sendTextInputAction(TextInputAction.send);
+    // 空（仅空白）反馈按同一准入判定被拒绝：给命令一个可观测窗口，不看按钮状态。
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final afterBlank = activeInteractionOf(await snapshot());
+    checks['${label}BlankEnterDoesNotAnswer'] =
+        afterBlank != null && afterBlank['id'] == expectedInteractionId;
+
+    await driver.enterText('draft line');
+    await driver.pressKey(
+      _logicalEnterKeyId,
+      _physicalEnterUsbHidUsage,
+      shift: true,
+    );
+    // 直接读同一个 TextField 的正文（Driver `getText` 对 TextField 读
+    // `controller.text`）：不等待光标闪烁等动画清空，也不用睡眠兜底。
+    final composed = await _readFeedbackText();
+    observations['${label}ShiftEnterText'] = composed;
+    checks['${label}ShiftEnterAddsLine'] = composed == 'draft line\n';
+    final afterShift = activeInteractionOf(await snapshot());
+    checks['${label}ShiftEnterDoesNotAnswer'] =
+        afterShift != null && afterShift['id'] == expectedInteractionId;
+    await shot('$label-shift-enter-line');
+
+    // 演示后用原精确反馈覆盖正文，再走 Enter 的真实提交路径。
+    await driver.enterText(_revisionFeedback);
+    try {
+      await driver.sendTextInputAction(TextInputAction.send);
+    } on TimeoutException catch (error, stackTrace) {
+      var recovered = false;
+      try {
+        await waitFor(
+          (snapshot) {
+            final interaction = activeInteractionOf(snapshot);
+            return interaction == null ||
+                interaction['id'] != expectedInteractionId;
+          },
+          '${label}_enter_effect',
+          timeout: const Duration(seconds: 30),
+        );
+        recovered = true;
+      } on Object {
+        // The effect never arrived: the original timeout stays the failure.
+      }
+      if (!recovered) Error.throwWithStackTrace(error, stackTrace);
+      counts['${label}EnterConfirmedByEffect'] = true;
+    }
+  }
+
+  // ----------------------------------------------------- plan receipts --
+
+  /// 已回答计划的回执：先待确认不出现第二张卡，回答后出现可展开的原回复。
+  Future<void> _planReceiptContract(
+    String label, {
+    String? expectedReply,
+  }) async {
+    final Map<String, dynamic> current = await snapshot();
+    final rows = [
+      for (final row in _planRows(current))
+        if (!row.pending) row.id,
+    ];
+    if (rows.isEmpty) {
+      checks['${label}PlanReceiptRow'] = false;
+      return;
+    }
+    var tiles = 0;
+    var replyFound = expectedReply == null;
+    for (final rowId in rows) {
+      final tile = find.byValueKey('timeline-plan-receipt-$rowId');
+      if (!await _widgetHoldsByKey(
+        find.byValueKey('timeline-plan-receipt-$rowId'),
+      )) {
+        continue;
+      }
+      tiles++;
+      final reply = find.byValueKey('timeline-plan-receipt-reply-$rowId');
+      // 展开同样按当前可见状态决定：已经展开就不再点（再点会收起并让后置断言超时）。
+      var expanded = false;
+      try {
+        await driver.waitFor(reply, timeout: const Duration(seconds: 2));
+        expanded = true;
+        counts['${label}ReceiptAlreadyExpanded'] = true;
+      } on Object {
+        expanded = false;
+      }
+      if (!expanded) {
+        await driver.rawTap(tile, timeout: const Duration(seconds: 30));
+      }
+      try {
+        await driver.waitFor(reply, timeout: const Duration(seconds: 10));
+      } on Object {
+        continue;
+      }
+      if (expectedReply != null &&
+          !replyFound &&
+          await _widgetHoldsByKey(
+            find.descendant(of: reply, matching: find.text(expectedReply)),
+          )) {
+        replyFound = true;
+      }
+    }
+    // 有已回答的计划行就必须渲染计划专用回执；退回普通问答或什么都不显示都会失败。
+    checks['${label}PlanReceiptRow'] = tiles > 0;
+    checks['${label}PlanReceiptReplies'] = replyFound;
+    counts['${label}PlanReceiptTiles'] = tiles;
+    counts['${label}PlanReceiptRows'] = rows.length;
+    observations['${label}PlanReceiptRows'] = rows;
+    if (expectedReply != null) {
+      checks['${label}PlanReceiptKeepsFeedback'] = replyFound;
+    }
+    await shot('$label-plan-receipt');
+  }
+
+  /// 快照里的计划确认行（driver 只读 typed 投影）。
+  ///
+  /// `pending` 来自 canonical 交互状态（`userInput.state == 'pending'`），不是从工具
+  /// arguments/result 或当前 Plan 反推；`decision` 是已回答回执的权威决定。驱动据此
+  /// 只对「当前待确认行」断言不出现历史回执，同时要求旧 resolved 回执仍然存在。
+  List<({String id, bool pending, String? decision})> _planRows(
+    Map<String, dynamic> snapshot,
+  ) {
+    final rows = <({String id, bool pending, String? decision})>[];
+    for (final row in timelineRows(snapshot)) {
+      final id = row['id'];
+      final userInput = row['userInput'];
+      if (row['type'] != 'userInput' ||
+          id is! String ||
+          userInput is! Map<String, dynamic> ||
+          userInput['isPlanConfirmation'] != true) {
+        continue;
+      }
+      rows.add((
+        id: id,
+        pending: userInput['state'] == 'pending',
+        decision: userInput['planDecision'] as String?,
+      ));
+    }
+    return rows;
+  }
+
+  Future<bool> _widgetHoldsByKey(SerializableFinder finder) async {
+    try {
+      await driver.waitFor(finder, timeout: const Duration(seconds: 10));
+      return true;
+    } on Object {
+      return false;
+    }
   }
 
   /// Reads the shared identity evidence written by earlier phases.

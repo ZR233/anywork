@@ -61,13 +61,20 @@ class PointerDragCommandExtension extends CommandExtension {
       // Cross touch slop before waiting for a costly streamed-body layout.
       // The following frame still exercises layout between DragStart and the
       // first update; no scroll position or product reading intent is written.
-      final first = math.min(drag.dy.abs(), kTouchSlop + 1) * drag.dy.sign;
-      await gesture.moveTo(start + Offset(0, first), view: root.flutterView);
+      final total = Offset(drag.dx, drag.dy);
+      if (total.distance == 0) {
+        throw StateError('Drag distance must not be zero');
+      }
+      final unit = total / total.distance;
+      final slop = math.min(total.distance, kTouchSlop + 1);
+      Offset at(double travelled) =>
+          start + unit * travelled.clamp(0.0, total.distance);
+      await gesture.moveTo(at(slop), view: root.flutterView);
       await _frame();
       sample('afterStart');
       for (var step = 1; step <= 8; step++) {
-        final dy = first + (drag.dy - first) * step / 8;
-        await gesture.moveTo(start + Offset(0, dy), view: root.flutterView);
+        final travelled = slop + (total.distance - slop) * step / 8;
+        await gesture.moveTo(at(travelled), view: root.flutterView);
         await _frame();
         sample('move$step');
       }

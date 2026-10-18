@@ -95,16 +95,7 @@ class PlanConfirmationView {
 
   String get markdown => question.question;
 
-  String get title {
-    for (final line in markdown.split('\n')) {
-      final trimmed = line.trim();
-      if (trimmed.startsWith('# ')) {
-        final value = trimmed.substring(2).trim();
-        if (value.isNotEmpty) return value;
-      }
-    }
-    return question.header.trim();
-  }
+  String get title => planDocumentTitle(markdown, fallback: question.header);
 
   String get summary {
     for (final line in markdown.split('\n')) {
@@ -145,6 +136,21 @@ extension PendingInteractionPlanPresentation on PendingInteraction {
     if (matches.length != 1) return null;
     return PlanConfirmationView(interaction: this, question: matches.single);
   }
+}
+
+/// 计划文档标题：第一个一级标题，缺失时退回 [fallback]。
+///
+/// 待确认的 canonical 问题正文与历史回执里的同一问题正文共用这一处提取，
+/// 使摘要卡的标题与已回答回执的标题不可能来自两套规则。
+String planDocumentTitle(String markdown, {String fallback = ''}) {
+  for (final line in markdown.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.startsWith('# ')) {
+      final value = trimmed.substring(2).trim();
+      if (value.isNotEmpty) return value;
+    }
+  }
+  return fallback.trim();
 }
 
 class UserInputAnswerCommand {

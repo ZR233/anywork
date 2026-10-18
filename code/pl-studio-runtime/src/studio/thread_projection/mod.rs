@@ -89,7 +89,7 @@ pub(crate) enum ProjectionError {
     Encoding(#[from] serde_json::Error),
     #[error("duplicate or contradictory saved tool call {0}")]
     DuplicateCall(String),
-    #[error("saved ordinary user Q&A fact is invalid: {0}")]
+    #[error("saved user-input history fact is invalid: {0}")]
     UserInput(String),
     #[error("terminal tool call {0} has no saved result")]
     MissingToolResult(String),

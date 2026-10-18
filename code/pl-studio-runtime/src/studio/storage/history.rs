@@ -19,7 +19,7 @@ use sea_orm::{
     SqliteTransactionMode, Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 7;
+const HISTORY_SCHEMA_VERSION: i64 = 8;
 
 mod checkpoint;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
@@ -2419,8 +2419,11 @@ async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> 
                 if version < 6 {
                     migrate_context_sources(&tx, thread_id).await?;
                 }
-                if version < 7 {
-                    backfill_tool_user_input(&tx).await?;
+                // schema 8 起，工具条目自带由 canonical 交互派生的 typed 问答历史：普通问答与
+                // plan_submit 的计划确认共用同一结构。更早的库只能从 durable 交互回执原位补齐，
+                // 同一函数覆盖两个产品格式，因此 v6 与 v7 库都在这里推进到最新结构。
+                if version < 8 {
+                    backfill_tool_user_input(&tx, thread_id).await?;
                 }
                 tx.execute_raw(statement(
                     "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
@@ -2619,7 +2622,7 @@ async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> 
             }
             let hidden = match record.request.payload.format() {
                 "pl.tool.user-input" => true,
-                "pl.studio.plan-confirmation" => {
+                crate::plan_tool::PLAN_CONFIRMATION_FORMAT => {
                     let prompt: crate::plan_tool::PlanConfirmationPrompt =
                         serde_json::from_str(record.request.payload.content())
                             .context("legacy Plan confirmation cannot be decoded")?;
@@ -2665,17 +2668,20 @@ async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> 
     Ok(())
 }
 
-/// Attaches the accepted ordinary Q&A to the tool item that asked it in already-written history.
+/// Attaches the accepted user-input history to the tool item that raised it in already-written
+/// history.
 ///
-/// A version-6 or older database stored the questions and the answer only in the interaction fact,
-/// because the timeline row was written before the tool item carried a typed Q&A projection. The
-/// receipts are the durable evidence of that one canonical fact, so the migration re-derives the
-/// projection from them and updates the calling item **in place**: the row keeps its `item_id`,
-/// ordinal, Turn binding, creation time and body, and only gains the Q&A projection plus one content
-/// revision. Nothing is replayed, no tool runs again and no model context changes, so an already
-/// resolved question cannot be answered twice or lose an answer. A repeated open re-reads a database
-/// that already carries the projection and changes nothing.
-async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
+/// A version-7 or older database stored the questions and the answer only in the interaction fact,
+/// because the timeline row was written before the tool item carried a typed projection. That covers
+/// the ordinary question tool and the Plan confirmation a `plan_submit` call raises: both are the
+/// same canonical interaction fact on the call's own item. The receipts are the durable evidence of
+/// that fact, so the migration re-derives the projection from them and updates the calling item **in
+/// place**: the row keeps its `item_id`, ordinal, Turn binding, creation time, content revision and
+/// body, and only gains the typed history. Nothing is replayed, no tool runs again, no model context
+/// changes and the private answer receipt is never rewritten, so an already resolved question or
+/// Plan decision cannot be answered twice, lose an answer or be re-derived from the current Plan. A
+/// repeated open re-reads a database that already carries the projection and changes nothing.
+async fn backfill_tool_user_input(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
     use crate::studio::thread_projection::{
         attach_tool_user_input, order, project_tool_user_input,
     };
@@ -2703,14 +2709,14 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
                 receipt == order::receipt_id("interaction", &record.request.id),
                 "legacy interaction receipt identity conflicts with its payload"
             );
-            let Some(user_input) = project_tool_user_input(&record)? else {
+            let Some(user_input) = project_tool_user_input(thread_id, &record)? else {
                 continue;
             };
             // Receipts are appended per revision, so an identity's newest row is applied last and
             // wins: the settled answer supersedes the pending projection, never the other way round.
             let call_id =
                 pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
-                    .context("ordinary user Q&A interaction names no tool call")?;
+                    .context("user-input interaction names no tool call")?;
             let tool_id = order::tool_id(call_id);
             let row = db
                 .query_one_raw(statement(
@@ -2719,7 +2725,7 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
                 ))
                 .await?
                 .with_context(|| {
-                    format!("ordinary user Q&A `{tool_id}` has no durable tool item")
+                    format!("user-input history `{tool_id}` has no durable tool item")
                 })?;
             let stored_revision: i64 = row.try_get("", "revision")?;
             let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
@@ -3124,60 +3130,36 @@ mod storage_fault_tests {
     async fn legacy_plan_continuation_migrates_only_proven_hidden_identity() -> Result<()> {
         use pl_core::{
             context::OpaquePayload,
-            thread::{
-                input::{InputRecord, InputState, ThreadInput},
-                interactions::{
-                    InteractionRecord, InteractionRequest, InteractionResponse, InteractionState,
-                },
-            },
+            thread::input::{InputRecord, InputState, ThreadInput},
         };
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = HistoryStore::open(&path, "legacy-plan").await?;
-        let prompt = crate::plan_tool::PlanConfirmationPrompt {
-            question: pl_protocol::UserQuestion {
-                id: "plan_confirmation".into(),
-                header: "Plan".into(),
-                question: "Approved plan".into(),
-                is_other: false,
-                is_secret: false,
-                options: None,
-            },
-            expected_plan_revision: 1,
-            plan_hash: "digest".into(),
-            created_at: 1,
-            presentation: pl_protocol::MessagePresentation::Hidden,
-        };
-        let id = "interaction:plan:continuation";
-        let interaction = InteractionRecord {
-            created_at: 1,
-            updated_at: 2,
-            continuation_id: Some(id.into()),
-            request: InteractionRequest {
-                id: "plan".into(),
-                turn_id: "first-turn".into(),
-                payload: OpaquePayload::new(
-                    "pl.studio.plan-confirmation",
-                    1,
-                    serde_json::to_string(&prompt)?,
-                )?,
-            },
-            revision: 2,
-            state: InteractionState::Resolved(InteractionResponse {
-                payload: OpaquePayload::text("approved"),
-                context: vec![],
-            }),
-            extension_mutations: vec![],
-        };
+        // 一条真实的计划确认：提问、决定与发起它的 plan_submit 条目都属于同一次工具调用。
+        let call_id = "call-plan";
+        let plan_item = plan_tool_item(call_id, "legacy-plan", 1);
+        let id = format!(
+            "interaction:{}:continuation",
+            pl_core::tool::opaque::tool_interaction_id(call_id)
+        );
+        let mut interaction =
+            plan_decision_record(call_id, &plan_fixture("Approved plan")?, &["Approve"])?;
+        interaction.created_at = 1;
+        interaction.updated_at = 2;
+        interaction.continuation_id = Some(id.clone());
         let input = InputRecord {
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
-                id: id.into(),
+                id: id.clone(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",
                     1,
-                    serde_json::json!({"interactionId":"plan","presentation":"hidden"}).to_string(),
+                    serde_json::json!({
+                        "interactionId": pl_core::tool::opaque::tool_interaction_id(call_id),
+                        "presentation": "hidden"
+                    })
+                    .to_string(),
                 )?,
                 context: vec![],
             },
@@ -3210,8 +3192,8 @@ mod storage_fault_tests {
             },
         ];
         let receipts = [FactReceiptWrite {
-            item_id: "interaction:4:plan".into(),
-            revision: 2,
+            item_id: order::receipt_id("interaction", &interaction.request.id),
+            revision: interaction.revision,
             kind: "interaction",
             payload: serde_json::to_string(&interaction)?,
         }];
@@ -3219,7 +3201,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
-                    items: &[],
+                    items: std::slice::from_ref(&plan_item),
                     rolled_back_turns: &Default::default(),
                     identities: &identities,
                     messages: &[],
@@ -3255,9 +3237,9 @@ mod storage_fault_tests {
         drop(old);
         assert_eq!(
             migrated
-                .hidden_input_identities([id.into(), "unproven-input".into()])
+                .hidden_input_identities([id.clone(), "unproven-input".into()])
                 .await?,
-            [id.into()].into()
+            [id.clone()].into()
         );
         assert_eq!(
             migrated
@@ -3267,7 +3249,7 @@ mod storage_fault_tests {
                 .schema_version,
             HISTORY_SCHEMA_VERSION
         );
-        assert!(migrated.existing_items([id.into()]).await?.is_empty());
+        assert!(migrated.existing_items([id]).await?.is_empty());
         assert_eq!(migrated.watermark().await?, 1);
         Ok(())
     }
@@ -4374,6 +4356,113 @@ mod storage_fault_tests {
         }
     }
 
+    /// 一条真实的计划确认事实：提问正文就是计划文档，hash、问题身份与选项都由生产者格式约束。
+    fn plan_fixture(plan: &str) -> Result<crate::plan_tool::PlanConfirmationPrompt> {
+        use pl_protocol::{MessagePresentation, UserQuestion, UserQuestionOption};
+        Ok(crate::plan_tool::PlanConfirmationPrompt {
+            question: UserQuestion {
+                id: pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                header: "Plan".into(),
+                question: plan.into(),
+                is_other: true,
+                is_secret: false,
+                options: Some(vec![
+                    UserQuestionOption {
+                        label: "Approve".into(),
+                        description: "Approve this exact Plan and allow the task to proceed."
+                            .into(),
+                    },
+                    UserQuestionOption {
+                        label: "Revise".into(),
+                        description: "Request a revised Plan and optionally describe the changes."
+                            .into(),
+                    },
+                ]),
+            },
+            expected_plan_revision: 1,
+            plan_hash: pl_core::context::content_hash(plan.as_bytes()),
+            created_at: 100,
+            presentation: MessagePresentation::Hidden,
+        })
+    }
+
+    /// `plan_submit` 的工具条目：调用已发起计划确认，旧历史里还没有 typed 计划回执。
+    fn plan_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ThreadItem {
+        ThreadItem::new(
+            order::tool_id(call_id),
+            thread_id.into(),
+            "turn-plan".into(),
+            ordinal,
+            3,
+            111,
+            222,
+            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                pl_protocol::ThreadToolInvocation::new(
+                    call_id.into(),
+                    "plan_submit".into(),
+                    "{\"expectedRevision\":0,\"plan\":\"# Plan\"}".into(),
+                ),
+                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
+                    String::new(),
+                )),
+            )),
+        )
+    }
+
+    fn plan_interaction_record(
+        call_id: &str,
+        prompt: &crate::plan_tool::PlanConfirmationPrompt,
+        revision: u64,
+        state: pl_core::thread::interactions::InteractionState,
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        Ok(pl_core::thread::interactions::InteractionRecord {
+            created_at: 100,
+            updated_at: 100 + i64::try_from(revision)?,
+            continuation_id: None,
+            request: pl_core::thread::interactions::InteractionRequest {
+                id: pl_core::tool::opaque::tool_interaction_id(call_id),
+                turn_id: "turn-plan".into(),
+                payload: pl_core::context::OpaquePayload::new(
+                    crate::plan_tool::PLAN_CONFIRMATION_FORMAT,
+                    1,
+                    serde_json::to_string(prompt)?,
+                )?,
+            },
+            revision,
+            state,
+            extension_mutations: vec![],
+        })
+    }
+
+    /// 已解决的计划确认：决定标记与用户反馈都留在答案列表里，原样保留。
+    fn plan_decision_record(
+        call_id: &str,
+        prompt: &crate::plan_tool::PlanConfirmationPrompt,
+        answers: &[&str],
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        plan_interaction_record(
+            call_id,
+            prompt,
+            2,
+            pl_core::thread::interactions::InteractionState::Resolved(
+                pl_core::thread::interactions::InteractionResponse {
+                    payload: pl_core::context::OpaquePayload::new(
+                        crate::plan_tool::PLAN_ANSWER_FORMAT,
+                        1,
+                        serde_json::to_string(&serde_json::json!({
+                            "answers": {
+                                pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: {
+                                    "answers": answers
+                                }
+                            }
+                        }))?,
+                    )?,
+                    context: vec![],
+                },
+            ),
+        )
+    }
+
     /// 已回答的问答必须落在原工具条目上：ID、ordinal、创建时间与 Turn 不变，只增加问答正文。
     #[test]
     fn ordinary_user_answer_updates_the_calling_item_in_place() -> Result<()> {
@@ -4432,6 +4521,90 @@ mod storage_fault_tests {
         assert!(answers[1].is_redacted());
         assert!(answers[1].answers().is_empty());
         assert!(answered.items[0].revision >= 1);
+        Ok(())
+    }
+
+    /// 计划决定落在发起它的 `plan_submit` 条目上：身份、顺序与创建时间不变，状态与答案都取自
+    /// 同一份 canonical 交互事实，不因工具成功或当前计划而推演。
+    #[test]
+    fn plan_confirmation_history_lands_on_the_submitting_call_in_place() -> Result<()> {
+        use pl_protocol::ThreadToolUserInputState;
+
+        let thread = pl_protocol::Thread::placeholder("plan-thread");
+        let plan = "# Plan\n\n1. Migrate the receipts.\n";
+        let prompt = plan_fixture(plan)?;
+        let saved = plan_tool_item("call-plan", &thread.id, 5);
+        let mut existing = std::collections::BTreeMap::new();
+        existing.insert(saved.id.clone(), saved.clone());
+        let projection = |record| {
+            crate::studio::thread_projection::project_effect_items(
+                &thread,
+                &pl_core::thread::ThreadSnapshot::default(),
+                &question_effect(500, 9, vec![record]),
+                &existing,
+                &Default::default(),
+                &Default::default(),
+            )
+        };
+
+        let waiting = projection(plan_interaction_record(
+            "call-plan",
+            &prompt,
+            1,
+            pl_core::thread::interactions::InteractionState::Pending,
+        )?)?;
+        assert_eq!(waiting.items.len(), 1);
+        let item = &waiting.items[0];
+        assert_eq!(item.id, saved.id);
+        assert_eq!(item.ordinal, 5);
+        assert_eq!(item.created_at, 111);
+        assert_eq!(item.turn_id, "turn-plan");
+        let pending = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("pending Plan confirmation")?;
+        assert_eq!(
+            pending.interaction_id(),
+            pl_core::tool::opaque::tool_interaction_id("call-plan")
+        );
+        assert!(matches!(pending.state(), ThreadToolUserInputState::Pending));
+        assert_eq!(pending.questions().len(), 1);
+        assert_eq!(
+            pending.questions()[0].id,
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(pending.questions()[0].question, plan);
+        assert_eq!(
+            pending.questions()[0]
+                .options
+                .as_ref()
+                .map(|options| options.iter().map(|option| option.label.as_str()).collect()),
+            Some(vec!["Approve", "Revise"])
+        );
+
+        // 请求修改：Revise 标记与完整的用户反馈原样保留在答案列表里，不在历史投影里二次解读。
+        let revised = projection(plan_decision_record(
+            "call-plan",
+            &prompt,
+            &["Revise", "split the migration step"],
+        )?)?;
+        assert_eq!(revised.items.len(), 1);
+        let item = &revised.items[0];
+        assert_eq!(item.id, saved.id);
+        assert_eq!(item.ordinal, 5);
+        assert_eq!(item.created_at, 111);
+        let decision = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("resolved Plan confirmation")?;
+        let answers = decision.answers();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(
+            answers[0].question_id(),
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(answers[0].answers(), ["Revise", "split the migration step"]);
+        assert!(!answers[0].is_redacted());
         Ok(())
     }
 
@@ -4513,7 +4686,7 @@ mod storage_fault_tests {
         let record = answered_record("call-qa", &fixture)?;
         crate::studio::thread_projection::attach_tool_user_input(
             &mut answered,
-            crate::studio::thread_projection::project_tool_user_input(&record)?
+            crate::studio::thread_projection::project_tool_user_input(&thread.id, &record)?
                 .context("answered Q&A")?,
         )?;
         let mut existing = std::collections::BTreeMap::new();
@@ -4832,6 +5005,338 @@ mod storage_fault_tests {
         Ok(())
     }
 
+    /// schema 7 的库已有计划提问与决定回执、但条目还没有 typed 计划历史：打开时从 durable 回执
+    /// 原位补齐。批准与取消都以保存的交互事实为准，身份、顺序、时间、内容版本与私有回执不变，
+    /// 后续正常提交继续在迁移后的版本域上推进，重开幂等。
+    #[tokio::test]
+    async fn legacy_v7_history_gains_the_plan_decisions_in_place() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+        use pl_protocol::{SucceededThreadTool, ThreadToolOutput, ThreadToolState};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "plan-history";
+        let approved_plan = "# Plan\n\n1. Approve this path.\n";
+        let cancelled_plan = "# Plan\n\n1. Cancel this path.\n";
+        let approved_prompt = plan_fixture(approved_plan)?;
+        let cancelled_prompt = plan_fixture(cancelled_plan)?;
+        let approved_item = plan_tool_item("call-approve", thread_id, 3);
+        let cancelled_item = plan_tool_item("call-cancel", thread_id, 5);
+        let records = [
+            plan_interaction_record(
+                "call-approve",
+                &approved_prompt,
+                1,
+                InteractionState::Pending,
+            )?,
+            plan_decision_record("call-approve", &approved_prompt, &["Approve"])?,
+            plan_interaction_record(
+                "call-cancel",
+                &cancelled_prompt,
+                1,
+                InteractionState::Pending,
+            )?,
+            plan_interaction_record(
+                "call-cancel",
+                &cancelled_prompt,
+                2,
+                InteractionState::Cancelled,
+            )?,
+        ];
+        let receipts: Vec<FactReceiptWrite> = records
+            .iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: &[approved_item.clone(), cancelled_item.clone()],
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        // 旧库：schema 停在计划历史补齐之前，条目里没有 typed 计划回执。
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=7")
+            .await?;
+        drop(store);
+
+        let migrated = HistoryStore::open(&path, thread_id).await?;
+        migrated.prepare_activation().await?;
+        let items = migrated
+            .existing_items([approved_item.id.clone(), cancelled_item.id.clone()])
+            .await?;
+        let approved = items.get(&approved_item.id).context("approved Plan item")?;
+        assert_eq!(approved.ordinal, 3);
+        assert_eq!(approved.created_at, 111);
+        assert_eq!(approved.turn_id, "turn-plan");
+        assert_eq!(
+            approved.revision, approved_item.revision,
+            "the migration keeps the content version"
+        );
+        let decision = approved
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("approved Plan history")?;
+        assert_eq!(
+            decision.interaction_id(),
+            pl_core::tool::opaque::tool_interaction_id("call-approve")
+        );
+        assert_eq!(decision.questions().len(), 1);
+        assert_eq!(
+            decision.questions()[0].id,
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(decision.questions()[0].question, approved_plan);
+        assert_eq!(decision.answers()[0].answers(), ["Approve"]);
+
+        // 取消保留真实取消状态，不被伪造成已批准。
+        let cancelled = items
+            .get(&cancelled_item.id)
+            .context("cancelled Plan item")?;
+        let cancelled_history = cancelled
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("cancelled Plan history")?;
+        assert!(matches!(
+            cancelled_history.state(),
+            pl_protocol::ThreadToolUserInputState::Cancelled
+        ));
+        assert!(cancelled_history.answers().is_empty());
+
+        // 私有交互回执仍是原始载荷：派生补齐只写派生条目，不改写原始答案与上下文。
+        let receipt = migrated
+            .latest_fact_receipt(&order::receipt_id(
+                "interaction",
+                &pl_core::tool::opaque::tool_interaction_id("call-approve"),
+            ))
+            .await?
+            .context("Plan interaction receipt")?;
+        assert!(receipt.payload.contains("Approve"));
+
+        // 正常的下一次内容提交（真正的工具结果交付）继续在迁移后的版本域上推进一次。
+        let tool = approved.tool().context("tool item")?.clone();
+        let mut delivered = approved.clone();
+        delivered.revision = approved.revision.checked_add(1).context("revision")?;
+        delivered.updated_at = 700;
+        delivered = delivered.with_state(ThreadItemState::Tool(
+            pl_protocol::ThreadToolItem::new(
+                tool.invocation().clone(),
+                ThreadToolState::Succeeded(SucceededThreadTool::new(
+                    700,
+                    ThreadToolOutput::new(
+                        "waiting for the user's response.".into(),
+                        vec![],
+                        vec![],
+                        None,
+                    ),
+                )),
+            )
+            .with_user_input(tool.user_input().cloned()),
+        ));
+        migrated
+            .commit_effect(
+                2,
+                EffectCommit {
+                    items: std::slice::from_ref(&delivered),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        let reread = migrated
+            .existing_items([approved_item.id.clone()])
+            .await?
+            .remove(&approved_item.id)
+            .context("committed Plan item")?;
+        assert_eq!(reread.revision, delivered.revision);
+        assert_eq!(
+            reread
+                .tool()
+                .and_then(|tool| tool.user_input())
+                .map(|input| input.answers()[0].answers().to_vec()),
+            Some(vec!["Approve".to_string()])
+        );
+        let migrated_revision = reread.revision;
+        drop(migrated);
+
+        // 二次打开不再改变内容：幂等重开保留身份、顺序与版本。
+        let reopened = HistoryStore::open(&path, thread_id).await?;
+        reopened.prepare_activation().await?;
+        let again = reopened.existing_items([approved_item.id.clone()]).await?;
+        let item = again.get(&approved_item.id).context("reopened Plan item")?;
+        assert_eq!(item.revision, migrated_revision);
+        assert_eq!(item.ordinal, 3);
+        assert_eq!(item.created_at, 111);
+        assert!(
+            item.tool()
+                .and_then(|tool| tool.user_input())
+                .is_some_and(|input| input.state().is_resolved())
+        );
+        Ok(())
+    }
+
+    /// 计划历史补齐失败必须回滚整个升级：schema 停在原版本、条目保留迁移前载荷，修好后可重试。
+    #[tokio::test]
+    async fn failed_plan_history_migration_rolls_back_schema_and_items() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "plan-rollback";
+        let plan = "# Plan\n\n1. Rollback path.\n";
+        let prompt = plan_fixture(plan)?;
+        let saved = plan_tool_item("call-plan", thread_id, 2);
+        let records = [
+            plan_interaction_record("call-plan", &prompt, 1, InteractionState::Pending)?,
+            plan_decision_record("call-plan", &prompt, &["Approve"])?,
+        ];
+        let receipts: Vec<FactReceiptWrite> = records
+            .iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&saved),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared(
+                "UPDATE history_meta SET schema_version=7; \
+                 CREATE TRIGGER reject_plan_history BEFORE UPDATE ON history_items \
+                 BEGIN SELECT RAISE(ABORT,'injected plan history failure'); END;",
+            )
+            .await?;
+        drop(store);
+
+        let failed = HistoryStore::open(&path, thread_id).await?;
+        assert!(failed.prepare_activation().await.is_err());
+        let reader = failed.reader().await?.context("reader")?;
+        assert_eq!(reader.schema_version, 7);
+        let row = reader
+            .db
+            .query_one_raw(statement(
+                "SELECT payload FROM history_items WHERE item_id=?",
+                vec![saved.id.clone().into()],
+            ))
+            .await?
+            .context("pre-migration item")?;
+        let unchanged: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        assert!(
+            unchanged
+                .tool()
+                .is_some_and(|tool| tool.user_input().is_none()),
+            "a failed migration must not publish a Plan history"
+        );
+        assert_eq!(unchanged.revision, saved.revision);
+        drop(failed);
+
+        let recovery =
+            sea_orm::Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        recovery
+            .execute_unprepared("DROP TRIGGER reject_plan_history")
+            .await?;
+        recovery.close().await?;
+
+        let restored = HistoryStore::open(&path, thread_id).await?;
+        restored.prepare_activation().await?;
+        let migrated = restored
+            .existing_items([saved.id.clone()])
+            .await?
+            .remove(&saved.id)
+            .context("migrated Plan item")?;
+        assert_eq!(migrated.revision, saved.revision);
+        assert_eq!(
+            migrated
+                .tool()
+                .and_then(|tool| tool.user_input())
+                .map(|input| input.answers()[0].answers().to_vec()),
+            Some(vec!["Approve".to_string()])
+        );
+        Ok(())
+    }
+
+    /// 无法验证的计划事实显式失败：改过的计划正文与内核拒绝的决定都不会被当成批准。
+    #[test]
+    fn unverifiable_plan_facts_fail_instead_of_faking_an_approval() -> Result<()> {
+        let plan = "# Plan\n\n1. Verified path.\n";
+        // 正文与生产者记录的 hash 不再一致。
+        let mut tampered = plan_fixture(plan)?;
+        tampered.plan_hash = pl_core::context::content_hash(b"another plan");
+        let changed = plan_decision_record("call-plan", &tampered, &["Approve"])?;
+        let failure =
+            crate::studio::thread_projection::project_tool_user_input("plan-thread", &changed)
+                .expect_err("a changed Plan text must not be published as approved");
+        assert!(failure.to_string().contains("Plan confirmation"));
+        assert!(
+            !failure.to_string().contains("Verified path"),
+            "the diagnostic must not republish the Plan body: {failure}"
+        );
+
+        // 决定语义由 Plan 内核判定：同时选择批准与修改、以及没有任何决定的已解决事实都拒绝，
+        // 证明历史投影确实复用了 owner 的校验，而不是自己猜一个决定。
+        let prompt = plan_fixture(plan)?;
+        for answers in [vec!["Approve", "Revise"], vec![]] {
+            let rejected = plan_decision_record("call-plan", &prompt, &answers)?;
+            let failure =
+                crate::studio::thread_projection::project_tool_user_input("plan-thread", &rejected)
+                    .expect_err("a Plan decision the kernel rejects must not be published");
+            let diagnostic = failure.to_string();
+            assert!(
+                diagnostic.contains("decision is invalid"),
+                "the rejection must name the owner decision check: {diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains("Verified path"),
+                "the diagnostic must not republish the Plan body: {diagnostic}"
+            );
+        }
+        Ok(())
+    }
+
     /// 跳过的题不伪造成“已回答但隐藏”：空答案列表只是没有作答，只有真正提供的敏感答案才脱敏。
     #[test]
     fn skipped_questions_are_not_published_as_hidden_answers() -> Result<()> {
@@ -4854,7 +5359,8 @@ mod storage_fault_tests {
         );
 
         let projection =
-            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+            crate::studio::thread_projection::project_tool_user_input("qa-thread", &record)?
+                .context("Q&A")?;
         let answers = projection.answers();
         assert!(projection.state().is_resolved());
         assert_eq!(answers.len(), 1, "an empty answer list is not an answer");
@@ -4867,6 +5373,7 @@ mod storage_fault_tests {
 
         // 真正提供了值的敏感题仍然只公开“已回答/已隐藏”，原值不进入公开投影。
         let provided = crate::studio::thread_projection::project_tool_user_input(
+            "qa-thread",
             &answered_record("call-skip", &fixture)?,
         )?
         .context("provided Q&A")?;
@@ -4990,7 +5497,8 @@ mod storage_fault_tests {
             ),
         )?;
         let user_input =
-            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+            crate::studio::thread_projection::project_tool_user_input(thread_id, &record)?
+                .context("Q&A")?;
         crate::studio::thread_projection::attach_tool_user_input(&mut item, user_input)?;
 
         let store = HistoryStore::open(&path, thread_id).await?;

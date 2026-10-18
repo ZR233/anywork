@@ -61,8 +61,10 @@ fn decode<T: serde::de::DeserializeOwned>(
 }
 
 fn prompt(record: &InteractionRecord) -> Result<PlanConfirmationPrompt, PlanInteractionError> {
-    let prompt: PlanConfirmationPrompt =
-        decode(&record.request.payload, "pl.studio.plan-confirmation")?;
+    let prompt: PlanConfirmationPrompt = decode(
+        &record.request.payload,
+        crate::plan_tool::PLAN_CONFIRMATION_FORMAT,
+    )?;
     if prompt.expected_plan_revision == 0
         || prompt.question.id != pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
         || pl_core::context::content_hash(prompt.question.question.as_bytes()) != prompt.plan_hash
@@ -112,7 +114,8 @@ pub fn project_plan_confirmation(
     let command = match &record.state {
         InteractionState::Pending => None,
         InteractionState::Resolved(response) => {
-            let answer: UserInputResolution = decode(&response.payload, "pl.studio.plan-answer")?;
+            let answer: UserInputResolution =
+                decode(&response.payload, crate::plan_tool::PLAN_ANSWER_FORMAT)?;
             Some(InteractionCommand::ResolveUserInput(ResolveUserInput {
                 interaction_id: wire_id.clone(),
                 expected_revision: 1,
@@ -155,7 +158,7 @@ fn answer_payload(resolution: &ResolveUserInput) -> Result<OpaquePayload, PlanIn
             .collect(),
     };
     Ok(OpaquePayload::new(
-        "pl.studio.plan-answer",
+        crate::plan_tool::PLAN_ANSWER_FORMAT,
         1,
         serde_json::to_string(&answer)?,
     )?)

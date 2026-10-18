@@ -721,11 +721,11 @@ impl LiveOwner {
     /// Reads the identities one effect needs but this projection holds no canonical body for.
     ///
     /// Two effects reference an already-committed body the bounded window may have released: a
-    /// reliable-output repair names a committed result, and an ordinary Q&A interaction names the
-    /// call that asked it — a call whose Turn is already finished, so after a restart the projection
-    /// never saw it at all. Both are read back **by identity only** and handed to the projection as
-    /// facts, so the projection still consumes facts and never performs IO. The ordinary path reads
-    /// nothing, and a missing or invalid durable body fails here instead of being skipped.
+    /// reliable-output repair names a committed result, and a user-input interaction names the call
+    /// that raised it — a call whose Turn is already finished, so after a restart the projection never
+    /// saw it at all. Both are read back **by identity only** and handed to the projection as facts,
+    /// so the projection still consumes facts and never performs IO. The ordinary path reads nothing,
+    /// and a missing or invalid durable body fails here instead of being skipped.
     async fn seed_durable_targets(
         &mut self,
         services: &ObservationServices,
@@ -745,11 +745,12 @@ impl LiveOwner {
         .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
         crate::studio::thread_projection::seed_interaction_targets(
             &mut self.projection,
+            thread_id,
             &history,
             &write.effect,
         )
         .await
-        .map_err(|error| anyhow::anyhow!("live Thread Q&A seed failed: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("live Thread user-input seed failed: {error}"))?;
         Ok(())
     }
 
@@ -1575,6 +1576,7 @@ mod storage_fault_tests {
         // owner 按 identity 补读那一条 durable 正文后，同一次投影就能完成。
         crate::studio::thread_projection::seed_interaction_targets(
             &mut projection,
+            &thread.id,
             &history,
             &answer_effect,
         )
