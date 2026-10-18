@@ -3,14 +3,16 @@
 //! The control file is read once when the fixture process starts. Changing the
 //! file never affects a running listener; operators rewrite it and restart.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
     Json,
+    body::Body,
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,33 @@ pub const OPENAI_PATH: &str = "/v1/openai/models";
 pub const OPENAI_SECOND_PATH: &str = "/v1/openai-second/models";
 pub const DEEPSEEK_PATH: &str = "/v1/deepseek/models";
 pub const MIMO_PATH: &str = "/v1/mimo/models";
+
+/// Non-chat slug prefix used only when reporting payload composition in the
+/// self-check. The exclusion itself happens in the product catalog decode; the
+/// fixture always returns the captured resource unchanged.
+const IMAGE_SLUG_PREFIX: &str = "gpt-image-";
+
+/// One captured real `/models` response selectable from the control file.
+///
+/// The resource is compiled into the binary so acceptance runs never depend on
+/// the source tree, and it is returned byte-for-byte: no synthesis, no
+/// filtering and no re-serialization.
+struct PayloadAsset {
+    /// Stable control-file name; operators never reference the asset path.
+    name: &'static str,
+    json: &'static str,
+}
+
+const PAYLOAD_ASSETS: [PayloadAsset; 2] = [
+    PayloadAsset {
+        name: "deepseek",
+        json: include_str!("../assets/model-lists/deepseek.json"),
+    },
+    PayloadAsset {
+        name: "openai-aggregator",
+        json: include_str!("../assets/model-lists/openai-aggregator.json"),
+    },
+];
 
 /// Loopback suffixes used by discovery instances. Inference is served at
 /// `/{suffix}/responses` and `/{suffix}/chat/completions` by stripping the
@@ -113,6 +142,11 @@ impl ModelCatalogHits {
 /// `protocolError`, then explicit `status` or `reject`. Later flags are not
 /// applied once an earlier one matches; operators must not rely on silent
 /// combination.
+///
+/// A successful 2xx answer is either the synthesized list from [`models`](Self::models)
+/// or, when [`payload`](Self::payload) is set, one captured real response
+/// returned unchanged with HTTP 200. The two body sources are mutually exclusive;
+/// failure switches apply to both.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCatalogProviderControl {
@@ -120,11 +154,17 @@ pub struct ModelCatalogProviderControl {
     /// successful replacement, not a transport failure.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Captured real `/models` response returned verbatim instead of
+    /// [`models`](Self::models). Declaring both is a startup error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
     /// When true, answer with HTTP 401 unless [`status`](Self::status) is set.
     #[serde(default)]
     pub reject: bool,
     /// Optional explicit HTTP status. Non-2xx values fail discovery as HTTP
-    /// errors; 2xx still returns the model list unless [`protocol_error`] is set.
+    /// errors; a 2xx value serves the success body, which is always HTTP 200 for
+    /// a [`payload`](Self::payload) instance so the capture matches the list
+    /// mode and no journey depends on a reason phrase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
     /// Return HTTP 200 with an error envelope so decode fails as protocol error.
@@ -274,6 +314,28 @@ impl ModelCatalogControl {
         Self::default()
     }
 
+    /// Real captured `/models` responses: both OpenAI instances replay the
+    /// aggregator gateway list (19 ids, 5 of them `gpt-image-*`), DeepSeek
+    /// replays its own two-model list, and MiMo keeps inventory A's synthetic
+    /// names so the product-side TTS/ASR exclusion still has fixtures to reject.
+    pub fn inventory_real() -> Self {
+        fn payload(name: &str) -> ModelCatalogProviderControl {
+            ModelCatalogProviderControl {
+                payload: Some(name.into()),
+                ..ModelCatalogProviderControl::default()
+            }
+        }
+        Self {
+            openai: payload("openai-aggregator"),
+            openai_second: payload("openai-aggregator"),
+            deepseek: payload("deepseek"),
+            mimo: ModelCatalogProviderControl {
+                models: mimo_inventory(true),
+                ..ModelCatalogProviderControl::default()
+            },
+        }
+    }
+
     /// Every instance returns HTTP 401 so discovery falls back to bundled.
     pub fn inventory_reject_all() -> Self {
         let rejected = ModelCatalogProviderControl {
@@ -301,14 +363,19 @@ impl ModelCatalogControl {
 
     /// Named presets the acceptance CLI can materialize into a control file.
     pub fn named(name: &str) -> Result<Self> {
-        match name {
-            "a" | "inventory-a" => Ok(Self::inventory_a()),
-            "b" | "inventory-b" => Ok(Self::inventory_b()),
-            "empty" => Ok(Self::inventory_empty()),
-            "reject-all" => Ok(Self::inventory_reject_all()),
-            "reject-second" => Ok(Self::inventory_reject_second()),
+        let control = match name {
+            "a" | "inventory-a" => Self::inventory_a(),
+            "b" | "inventory-b" => Self::inventory_b(),
+            "empty" => Self::inventory_empty(),
+            "real" => Self::inventory_real(),
+            "reject-all" => Self::inventory_reject_all(),
+            "reject-second" => Self::inventory_reject_second(),
             other => bail!("unknown model catalog inventory: {other}"),
-        }
+        };
+        // Presets reference embedded payloads, so validate them like a loaded
+        // control file instead of trusting the built-in definitions.
+        control.validate()?;
+        Ok(control)
     }
 
     fn validate(&self) -> Result<()> {
@@ -324,6 +391,15 @@ impl ModelCatalogControl {
                     !slug.trim().is_empty(),
                     "{name} contains an empty model slug"
                 );
+            }
+            if let Some(payload) = provider.payload.as_deref() {
+                ensure!(!payload.trim().is_empty(), "{name} payload name is empty");
+                ensure!(
+                    provider.models.is_empty(),
+                    "{name} declares both `models` and `payload`; a payload instance returns the captured response unchanged, so choose one body source"
+                );
+                let asset = payload_asset(payload)?;
+                payload_model_ids(asset.json, &format!("payload `{}`", asset.name))?;
             }
         }
         Ok(())
@@ -361,6 +437,78 @@ fn mimo_inventory(include_old: bool) -> Vec<String> {
     models
 }
 
+/// Known payload names, joined for error messages.
+fn payload_names() -> String {
+    PAYLOAD_ASSETS
+        .iter()
+        .map(|asset| asset.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn payload_asset(name: &str) -> Result<&'static PayloadAsset> {
+    PAYLOAD_ASSETS
+        .iter()
+        .find(|asset| asset.name == name)
+        .with_context(|| {
+            format!(
+                "unknown model catalog payload `{name}`; known payloads: {}",
+                payload_names()
+            )
+        })
+}
+
+/// Extracts the model ids of an OpenAI-compatible `{"data":[{"id":..}]}` list.
+///
+/// Used both to validate embedded resources at startup and to compare a served
+/// payload with its resource in the self-check; anything else is a hard error so
+/// a malformed capture can never masquerade as a valid catalog.
+fn payload_model_ids(raw: &str, label: &str) -> Result<Vec<String>> {
+    let value: Value =
+        serde_json::from_str(raw).with_context(|| format!("{label} is not valid JSON"))?;
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .with_context(|| format!("{label} has no `data` array"))?;
+    ensure!(!data.is_empty(), "{label} has an empty `data` array");
+    let mut ids = Vec::with_capacity(data.len());
+    for (index, entry) in data.iter().enumerate() {
+        let id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .with_context(|| format!("{label} entry {index} has no string `id`"))?;
+        ensure!(
+            !id.trim().is_empty(),
+            "{label} entry {index} has an empty `id`"
+        );
+        ids.push(id.to_owned());
+    }
+    let unique: BTreeSet<&String> = ids.iter().collect();
+    ensure!(
+        unique.len() == ids.len(),
+        "{label} repeats a model id; real `/models` responses never repeat ids"
+    );
+    Ok(ids)
+}
+
+impl ModelCatalogProviderControl {
+    /// Model ids of the selected captured payload, or `None` for a synthesized
+    /// [`models`](Self::models) inventory.
+    ///
+    /// The manual-GUI coordinator uses this to keep the startup route on a slug
+    /// the captured list really contains instead of assuming a fixed one.
+    pub fn captured_model_ids(&self) -> Result<Option<Vec<String>>> {
+        let Some(name) = self.payload.as_deref() else {
+            return Ok(None);
+        };
+        let asset = payload_asset(name)?;
+        Ok(Some(payload_model_ids(
+            asset.json,
+            &format!("payload `{}`", asset.name),
+        )?))
+    }
+}
+
 fn list_body(owned_by: &str, models: &[String]) -> Value {
     json!({
         "object": "list",
@@ -379,6 +527,22 @@ fn error_body(message: &str) -> Value {
             "message": message,
         }
     })
+}
+
+/// Returns a captured response verbatim with `content-type: application/json`.
+///
+/// Startup validation already parsed every referenced payload, so a failure here
+/// only means the control was built without validation; it is reported as a
+/// visible 500 instead of a silently synthesized list.
+fn payload_response(raw: &str, status: u16) -> Response {
+    let mut response = Response::new(Body::from(raw.to_owned()));
+    *response.status_mut() =
+        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 async fn respond(state: AppState, provider: CatalogProvider) -> Response {
@@ -419,10 +583,38 @@ async fn respond(state: AppState, provider: CatalogProvider) -> Response {
         )
             .into_response();
     }
+    // The payload body replaces the synthesized list only; failure switches
+    // above still win, and the captured resource is never rewritten. Resolution
+    // happens before recording so an unusable payload is reported as a 500
+    // instead of being counted as a healthy catalog GET.
+    let payload = match entry.payload.as_deref() {
+        None => None,
+        Some(name) => match payload_asset(name) {
+            Ok(asset) => Some(asset.json),
+            Err(error) => {
+                state
+                    .model_catalog_hits
+                    .record(provider, provider.path(), 500, true);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_body(&format!("{error:#}"))),
+                )
+                    .into_response();
+            }
+        },
+    };
+    // A captured payload is compared byte-for-byte in the self-check, and product
+    // code branches on the body rather than on the reason phrase. Serving it as
+    // 200 keeps payload and synthesized-list modes identical for any 2xx
+    // `status`; every failure switch above still wins.
+    let status = if payload.is_some() { 200 } else { status };
     state
         .model_catalog_hits
         .record(provider, provider.path(), status, false);
-    Json(list_body(provider.owned_by(), &entry.models)).into_response()
+    match payload {
+        Some(raw) => payload_response(raw, status),
+        None => Json(list_body(provider.owned_by(), &entry.models)).into_response(),
+    }
 }
 
 pub(super) async fn openai_models(State(state): State<AppState>) -> Response {
@@ -441,8 +633,27 @@ pub(super) async fn mimo_models(State(state): State<AppState>) -> Response {
     respond(state, CatalogProvider::Mimo).await
 }
 
+/// Returns why a payload instance cannot serve its capture, or `None` when the
+/// success path applies. Failure switches keep their existing priority, so a
+/// payload under test is compared only when nothing overrides the 200 body.
+fn payload_skip_reason(entry: &ModelCatalogProviderControl, status: u16) -> Option<&'static str> {
+    if entry.protocol_error {
+        Some("protocolError wins")
+    } else if !(200..300).contains(&status) {
+        Some("status outside 2xx; a failure switch wins")
+    } else {
+        None
+    }
+}
+
 /// Probes the four catalog endpoints of a listening fixture and prints one line
 /// per path. Hanging providers are skipped so the check can finish.
+///
+/// Payload instances are verified against their embedded resource: the served
+/// body must match the capture byte-for-byte, be served as HTTP 200 and expose
+/// exactly its model ids. A failure switch means the capture is not served at
+/// all, so the comparison is skipped like a hang instead of masking the switch
+/// under test.
 pub async fn self_check(address: SocketAddr, control: &ModelCatalogControl) -> Result<()> {
     for (provider, entry) in [
         (CatalogProvider::Openai, &control.openai),
@@ -458,6 +669,47 @@ pub async fn self_check(address: SocketAddr, control: &ModelCatalogControl) -> R
             continue;
         }
         let (status, body) = get_path(address, provider.path()).await?;
+        if let Some(name) = entry.payload.as_deref() {
+            let asset = payload_asset(name)?;
+            let resource_ids = payload_model_ids(asset.json, &format!("payload `{name}`"))?;
+            if let Some(reason) = payload_skip_reason(entry, status) {
+                println!(
+                    "{} status={status} payload={name} ids=skipped({reason})",
+                    provider.path()
+                );
+                continue;
+            }
+            let returned_ids = payload_model_ids(&body, &format!("{} response", provider.path()))?;
+            let expected: BTreeSet<&str> = resource_ids.iter().map(String::as_str).collect();
+            let actual: BTreeSet<&str> = returned_ids.iter().map(String::as_str).collect();
+            ensure!(
+                actual == expected,
+                "{} payload `{name}` ids diverge from the embedded resource: resource={expected:?} fixture={actual:?}",
+                provider.path()
+            );
+            ensure!(
+                status == 200,
+                "{} payload `{name}` served status {status}; a captured payload is always HTTP 200",
+                provider.path()
+            );
+            ensure!(
+                body == asset.json,
+                "{} payload `{name}` body differs from the embedded resource byte-for-byte",
+                provider.path()
+            );
+            let image = returned_ids
+                .iter()
+                .filter(|id| id.starts_with(IMAGE_SLUG_PREFIX))
+                .count();
+            println!(
+                "{} status={status} payload={name} ids={} image={} non_image={} ids_match=true body_match=true",
+                provider.path(),
+                returned_ids.len(),
+                image,
+                returned_ids.len() - image
+            );
+            continue;
+        }
         let preview: Value = serde_json::from_str(&body).unwrap_or(Value::String(body.clone()));
         println!(
             "{} status={status} body={}",
@@ -468,6 +720,9 @@ pub async fn self_check(address: SocketAddr, control: &ModelCatalogControl) -> R
     Ok(())
 }
 
+/// Reads one catalog GET and returns its status and **untrimmed** body, so a
+/// payload self-check compares the served bytes with the resource as-is instead
+/// of a pre-trimmed copy that would hide a diverging trailing newline.
 async fn get_path(address: SocketAddr, path: &str) -> Result<(u16, String)> {
     let mut stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(address))
         .await
@@ -484,7 +739,7 @@ async fn get_path(address: SocketAddr, path: &str) -> Result<(u16, String)> {
         .nth(1)
         .and_then(|value| value.parse().ok())
         .context("catalog self-check response had no HTTP status")?;
-    Ok((status, body.trim().to_owned()))
+    Ok((status, body.to_owned()))
 }
 
 /// Starts catalog GETs against hanging providers so shutdown can record them.

@@ -57,7 +57,13 @@ struct Args {
     /// Startup-cached model-list control file. Read once; later edits need a restart.
     #[arg(long, value_name = "PATH")]
     model_catalog_control: Option<PathBuf>,
-    /// Probe the four `/models` endpoints and exit. Requires `--model-catalog-control`.
+    /// Named catalog inventory used instead of a control file (`a`, `b`, `empty`,
+    /// `reject-all`, `reject-second`, `real`). `real` replays captured `/models`
+    /// responses; it never reaches the network.
+    #[arg(long, value_name = "NAME", conflicts_with = "model_catalog_control")]
+    model_catalog_inventory: Option<String>,
+    /// Probe the four `/models` endpoints and exit. Requires
+    /// `--model-catalog-control` or `--model-catalog-inventory`.
     #[arg(long)]
     model_catalog_check: bool,
     /// Bind the HTTP listener to this loopback port so a restart can reuse `config.toml`.
@@ -105,14 +111,23 @@ async fn main() -> Result<()> {
             coord_file,
         });
     }
-    let model_catalog = args
-        .model_catalog_control
-        .as_ref()
-        .map(pl_provider_fixture::ModelCatalogControl::load)
-        .transpose()?;
+    let model_catalog = match (
+        args.model_catalog_control.as_ref(),
+        args.model_catalog_inventory.as_deref(),
+    ) {
+        (Some(path), None) => Some(pl_provider_fixture::ModelCatalogControl::load(path)?),
+        (None, Some(name)) => Some(pl_provider_fixture::ModelCatalogControl::named(name)?),
+        (None, None) => None,
+        // clap already rejects this pair; keep the invariant explicit for any
+        // future call site that bypasses the parser.
+        (Some(_), Some(_)) => {
+            bail!("--model-catalog-control cannot be combined with --model-catalog-inventory")
+        }
+    };
     if args.model_catalog_check {
-        let control =
-            model_catalog.context("--model-catalog-check requires --model-catalog-control")?;
+        let control = model_catalog.context(
+            "--model-catalog-check requires --model-catalog-control or --model-catalog-inventory",
+        )?;
         let fixture = FixtureServer::start_with_options(
             Vec::new(),
             FixtureOptions {
