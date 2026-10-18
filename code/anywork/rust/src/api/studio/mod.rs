@@ -7,12 +7,12 @@ pub mod types;
 
 // Re-exports from submodules
 pub use self::handlers::{
-    BridgeChatView, BridgeStudioUpdateOperation, activate_project, admit_attachment_drafts,
+    BridgeStudioUpdateOperation, BridgeTimeline, activate_project, admit_attachment_drafts,
     apply_settings_field, archive_project, archive_thread, authenticate_ssh_server,
     browse_remote_directories, check_provider_usage, check_studio_update, delete_ssh_server,
     discover_skills, finish_shutdown_diagnostics, init_app, install_studio_update, interrupt_turn,
-    list_ssh_servers, list_threads_page, load_provider_catalog, open_chat_view, open_project,
-    open_remote_project, prepare_startup_attempt, probe_lsp_server, query_threads,
+    list_ssh_servers, list_threads_page, load_provider_catalog, open_project, open_remote_project,
+    open_timeline, prepare_startup_attempt, probe_lsp_server, query_threads,
     read_agent_profiles_state, read_attachment_draft, read_deepseek_web_search_settings,
     read_lsp_state, read_mcp_state, read_persistence_queue, read_provider_usage_state,
     read_recovery_state, read_settings_state, read_skills_state, read_studio_state,

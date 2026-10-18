@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 // Public snapshot helpers shared with the realtime journey: this journey reads
 // the same Driver projection (workspace/timeline/conversationActivity) and must
 // not fork a second reading of it.
@@ -46,19 +47,12 @@ const _terminalTurnStatuses = <String>{
 /// observation is provably a *new* update and never a re-read of the same
 /// snapshot. Evidence only: it is never a performance measurement.
 int _streamingRevision(Map<String, dynamic> snapshot) {
-  var revision = 0;
-  final delivery = contentDelivery(snapshot);
-  if (delivery != null && delivery['enabled'] == true) {
-    final patches = delivery['patches'];
-    final changes = delivery['contentChanges'];
-    if (patches is int) revision += patches;
-    if (changes is int) revision += changes;
-  }
-  final rows = timelineRows(snapshot);
-  revision += rows.length;
-  for (final row in rows) {
-    final text = row['text'];
-    if (text is String) revision += text.length;
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  var revision = timeline.itemCount;
+  for (final item in timeline.items) {
+    revision += item.text.length + item.textBytes;
+    revision += item.tool?.progressBytes ?? 0;
   }
   return revision;
 }
@@ -287,8 +281,9 @@ class HistoryLockJourney {
     }
     // No tool may start on the locked turn: the fault-safe boundary forbids new
     // model/tool work while persistence cannot commit.
+    // 写锁期间必须没有任何 canonical 工具条目（不再有活动组合并行）。
     checks['noToolStartedWhileWriterLocked'] = timelineRows(liveSnapshot)
-        .where((row) => row['type'] == 'activityGroup')
+        .where((row) => row['kind'] == 'toolCall')
         .isEmpty;
     await shot('locked-live');
 

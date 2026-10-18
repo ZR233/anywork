@@ -7,12 +7,9 @@ use std::{
 
 use crate::studio::runtime::chat_item::typed_item;
 use anyhow::{Context, Result, ensure};
-use pl_core::chat::{ChatError, ChatHistory, ChatItem, ChatQuery, HistoryPage};
+use pl_core::chat::{ChatCursor, ChatError, ChatHistory, ChatHistoryPage, ChatItem};
 use pl_protocol::thread::TimelineCursor;
-use pl_protocol::thread::{TIMELINE_ITEM_PREVIEW_BYTES, preview_timeline_item};
-use pl_protocol::{
-    ThreadItem, ThreadItemKind, ThreadItemState, TimelinePage, TimelineQuery, TimelineTurn,
-};
+use pl_protocol::{ThreadItem, ThreadItemKind, ThreadItemState, TimelineTurn};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
@@ -25,7 +22,7 @@ mod checkpoint;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
-const _: () = assert!(TIMELINE_ITEM_PREVIEW_BYTES < PAGE_BYTE_BUDGET);
+const _: () = assert!(pl_core::chat::CHAT_ITEM_PREVIEW_BYTES < PAGE_BYTE_BUDGET);
 /// 一页 Turn 最多返回的 Turn 行数（调用方 `limit` 的上限）。
 const TURN_PAGE_ROW_LIMIT: usize = 200;
 /// 一条 Turn 在一个 Turn 页里最多返回的条目行数。
@@ -999,197 +996,33 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Reads one bounded SQL page without activating or consulting a Thread owner.
-    pub(crate) async fn page(&self, query: &TimelineQuery, limit: usize) -> Result<TimelinePage> {
-        let limit = limit.clamp(1, 100);
-        // 冷读不得创建目录/数据库：还没有历史库时，空窗口才是真实答案，且这里绝不重建它。
-        let Some(connection) = self.reader().await? else {
-            return Ok(TimelinePage {
-                thread_id: self.state.thread_id.clone(),
-                database_id: String::new(),
-                watermark: 0,
-                older_cursor: None,
-                newer_cursor: None,
-                first_item_id: None,
-                last_item_id: None,
-                truncated: false,
-                previews: Vec::new(),
-                items: Vec::new(),
-                turns: Vec::new(),
-            });
-        };
-        let (mut rows, edge) = match query {
-            TimelineQuery::Latest => {
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(limit + 1)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                if rows.len() > limit {
-                    rows.remove(0);
-                }
-                // 最新的一窗从最新端保留；更旧的一端与本页相邻，可由 cursor 继续取回。
-                (rows, BudgetEdge::Newest)
-            }
-            TimelineQuery::Before { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items
-                         WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![ordinal.into(), integer(limit)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                // 向更旧滚动：返回窗口必须紧贴锚点，预算不足时丢弃更远（更旧）的一端。
-                (rows, BudgetEdge::Newest)
-            }
-            TimelineQuery::After { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                // 向更新滚动：起点紧贴锚点，预算不足时丢弃更远（更新）的一端。
-                (
-                    query_items(
-                        &connection.db,
-                        "SELECT payload FROM history_items
-                         WHERE ordinal > ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![ordinal.into(), integer(limit)?.into()],
-                    )
-                    .await?,
-                    BudgetEdge::Oldest,
-                )
-            }
-            TimelineQuery::Around { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                let before = limit / 2;
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items
-                         WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![ordinal.into(), integer(before)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                let remaining = limit.saturating_sub(rows.len());
-                rows.extend(
-                    query_items(
-                        &connection.db,
-                        "SELECT payload FROM history_items
-                         WHERE ordinal >= ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![ordinal.into(), integer(remaining)?.into()],
-                    )
-                    .await?,
-                );
-                // 显式跳转必须能读到锚点本身：预算不足时从更旧的一侧先收缩，绝不丢掉锚点行。
-                // 锚点 ordinal 来自 SQLite rowid（非负），预算收缩按 u64 比较。
-                (rows, BudgetEdge::Around(u64::try_from(ordinal)?))
-            }
-        };
-        // 单条预览预算先于总字节预算：超大条目压缩为同身份预览，其余页预算才可能满足。
-        let mut previews = Vec::new();
-        for item in rows.iter_mut() {
-            let (bounded, reference) = preview_timeline_item(item, TIMELINE_ITEM_PREVIEW_BYTES);
-            if let Some(reference) = reference {
-                *item = bounded;
-                previews.push(reference);
-            }
-        }
-        let truncated = apply_byte_budget(&mut rows, edge)?;
-        // 只保留真正留在本页的条目引用；被总预算淘汰的条目不再出现在引用中。
-        let kept = rows
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        previews.retain(|reference| kept.contains(reference.item_id.as_str()));
-        let watermark = connection_watermark(connection).await?;
-        let first = rows.first();
-        let last = rows.last();
-        let older_cursor = match first {
-            Some(item) if exists_before(connection, item.ordinal).await? => {
-                Some(cursor(connection, &self.state.thread_id, item, watermark))
-            }
-            _ => None,
-        };
-        let newer_cursor = match last {
-            Some(item) if exists_after(connection, item.ordinal).await? => {
-                Some(cursor(connection, &self.state.thread_id, item, watermark))
-            }
-            _ => None,
-        };
-        let turns = turns_for(connection, &rows).await?;
-        Ok(TimelinePage {
-            thread_id: self.state.thread_id.clone(),
-            database_id: connection.database_id.clone(),
-            watermark,
-            older_cursor,
-            newer_cursor,
-            first_item_id: first.map(|item| item.id.clone()),
-            last_item_id: last.map(|item| item.id.clone()),
-            truncated,
-            previews,
-            items: rows,
-            turns,
-        })
-    }
-
-    /// Reads one complete item straight from the database, bypassing the preview budget.
+    /// Reads one canonical item by identity, including its complete body.
     ///
-    /// Ordinary pagination stays pure SQL and still returns an oversized item as
-    /// [`pl_protocol::TimelineItemPreview`]; this entry point resolves such a preview by identity
-    /// and returns the untouched payload with its canonical ordinal, revision and read watermark.
-    ///
-    /// 这是按身份的**单条 on-demand 读取**，不是第二份历史：它只返回被点名的那一条正文，不带
-    /// 分页、不带邻居、也不把结果缓存进 `HistoryStore`（句柄用完即释放，正文只在调用方手里）。
-    /// 因此这条路径刻意没有字节上限——有上限就无法取回超预算条目的完整正文。需要遍历历史时必须
-    /// 走 `page`/`turn_page` 的有界窗口，不能靠反复 `read_item` 物化整段历史。
+    /// 这是按身份的**单条 on-demand 读取**，不是第二份历史：它只返回被点名的那一条正文，不带分页、
+    /// 不带邻居、也不把结果缓存进 `HistoryStore`。调用方按字段与版本分块读取正文，因此这里刻意没有
+    /// 字节上限——有上限就无法取回超预算条目的完整正文。需要遍历历史时必须走有界页，不能靠反复读取
+    /// 单条来物化整段历史。
     ///
     /// # Errors
-    /// Fails on unknown item identity or a storage read failure.
-    pub(crate) async fn read_item(&self, item_id: &str) -> Result<pl_protocol::TimelineItemRead> {
-        let connection = self
-            .reader()
-            .await?
-            .context("timeline item is not in this Thread history")?;
-        let row = connection
+    /// Fails on a storage read failure; a missing identity is `None`.
+    pub(crate) async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let Some(row) = connection
             .db
             .query_one_raw(statement(
                 "SELECT ordinal,payload FROM history_items WHERE item_id=?",
                 vec![item_id.into()],
             ))
             .await?
-            .with_context(|| format!("timeline item {item_id} is not in this Thread history"))?;
-        let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)?;
-        let payload: String = row.try_get("", "payload")?;
-        let item: ThreadItem = serde_json::from_str(&payload)?;
-        Ok(pl_protocol::TimelineItemRead {
-            thread_id: self.state.thread_id.clone(),
-            database_id: connection.database_id.clone(),
-            watermark: connection_watermark(connection).await?,
-            ordinal,
-            item,
-        })
-    }
-
-    async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
-        let Some(connection) = self.reader().await? else {
+        else {
             return Ok(None);
         };
-        // `read_item` treats a missing identity as an error; only that case is optional here.
-        let exists = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT 1 AS present FROM history_items WHERE item_id=? LIMIT 1",
-                vec![item_id.into()],
-            ))
-            .await?
-            .is_some();
-        if !exists {
-            return Ok(None);
-        }
-        let read = self.read_item(item_id).await?;
-        let mut item = read.item;
-        item.ordinal = read.ordinal;
+        let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)?;
+        let payload: String = row.try_get("", "payload")?;
+        let mut item: ThreadItem = serde_json::from_str(&payload)?;
+        item.ordinal = ordinal;
         Ok(Some(chat_item(item, true)?))
     }
 
@@ -1209,87 +1042,51 @@ impl HistoryStore {
         Ok(u64::try_from(maximum.unwrap_or(0))?)
     }
 
-    async fn chat_page(&self, query: ChatQuery, limit: usize) -> Result<HistoryPage> {
+    /// Reads up to `limit` durable rows strictly older than `before`, ascending.
+    ///
+    /// `ordinal` 是 `INTEGER PRIMARY KEY`（rowid 别名）且严格递增、永不复用，因此“严格更旧”就是一
+    /// 个 rowid range seek（`ordinal < ?`），不需要 OR 表达式或前缀扫描；identity 只用于校验游标
+    /// scope（见 [`HistoryStore::ensure_cursor_identity`]），不参与排序。`has_older` 来自真实多出的
+    /// 一行，短页本身不证明到头，并且只有本页的行会被解码。
+    async fn chat_page(
+        &self,
+        before: Option<&ChatCursor>,
+        limit: usize,
+    ) -> Result<ChatHistoryPage> {
         let Some(connection) = self.reader().await? else {
-            return Ok(HistoryPage {
-                items: Vec::new(),
-                has_older: false,
-                has_newer: false,
-            });
+            return Ok(ChatHistoryPage::default());
         };
-        let limit = limit.clamp(1, 100);
-        let rows = match query {
-            ChatQuery::Latest => {
-                let mut rows = query_chat_ids(
+        let probe = limit.saturating_add(1);
+        let mut rows = match before {
+            Some(before) => {
+                query_chat_ids(
                     &connection.db,
-                    "SELECT ordinal,item_id FROM history_items ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(limit)?.into()],
+                    "SELECT ordinal,item_id FROM history_items
+                     WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
+                    vec![integer(before.order)?.into(), integer(probe)?.into()],
                 )
-                .await?;
-                rows.reverse();
-                rows
+                .await?
             }
-            ChatQuery::Before(anchor) => {
-                let mut rows = query_chat_ids(
+            None => {
+                query_chat_ids(
                     &connection.db,
-                    "SELECT ordinal,item_id FROM history_items WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(anchor)?.into(), integer(limit)?.into()],
+                    "SELECT ordinal,item_id FROM history_items
+                     ORDER BY ordinal DESC LIMIT ?",
+                    vec![integer(probe)?.into()],
                 )
-                .await?;
-                rows.reverse();
-                rows
-            }
-            ChatQuery::After(anchor) => query_chat_ids(
-                &connection.db,
-                "SELECT ordinal,item_id FROM history_items WHERE ordinal > ? ORDER BY ordinal ASC LIMIT ?",
-                vec![integer(anchor)?.into(), integer(limit)?.into()],
-            )
-            .await?,
-            ChatQuery::Around(anchor) => {
-                let anchor = integer(anchor)?;
-                let mut rows = query_chat_ids(
-                    &connection.db,
-                    "SELECT ordinal,item_id FROM history_items WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![anchor.into(), integer(limit / 2)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                let remaining = limit - rows.len();
-                rows.extend(
-                    query_chat_ids(
-                        &connection.db,
-                        "SELECT ordinal,item_id FROM history_items WHERE ordinal >= ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![anchor.into(), integer(remaining)?.into()],
-                    )
-                    .await?,
-                );
-                rows
+                .await?
             }
         };
-        let (has_older, has_newer) = match (rows.first(), rows.last()) {
-            (Some(first), Some(last)) => (
-                exists_before(connection, first.0).await?,
-                exists_after(connection, last.0).await?,
-            ),
-            _ => match query {
-                ChatQuery::Latest => (false, false),
-                ChatQuery::Before(anchor) | ChatQuery::Around(anchor) => (
-                    exists_before(connection, anchor).await?,
-                    exists(connection, "ordinal >= ?", anchor).await?,
-                ),
-                ChatQuery::After(anchor) => (
-                    exists(connection, "ordinal <= ?", anchor).await?,
-                    exists_after(connection, anchor).await?,
-                ),
-            },
-        };
+        let has_older = rows.len() > limit;
+        rows.truncate(limit);
+        rows.reverse();
         let mut items = Vec::with_capacity(rows.len());
         for (ordinal, item_id) in rows {
             let row = connection
                 .db
                 .query_one_raw(statement(
-                    "SELECT payload FROM history_items WHERE ordinal=? AND item_id=?",
-                    vec![integer(ordinal)?.into(), item_id.clone().into()],
+                    "SELECT payload FROM history_items WHERE ordinal=?",
+                    vec![integer(ordinal)?.into()],
                 ))
                 .await?
                 .with_context(|| format!("chat page item {item_id} disappeared during read"))?;
@@ -1299,49 +1096,9 @@ impl HistoryStore {
                 item.id == item_id && item.ordinal == ordinal,
                 "chat page item {item_id} differs from its indexed identity or order"
             );
-            items.push(chat_preview_item(item, true)?);
+            items.push(chat_item(item, true)?);
         }
-        Ok(HistoryPage {
-            items,
-            has_older,
-            has_newer,
-        })
-    }
-
-    /// 把 wire 锚点解析为 canonical ordinal。
-    ///
-    /// 接受版本化游标 token（校验 Thread/数据库身份、水位与条目身份）或原始 item
-    /// identity；两者都只读数据库。
-    async fn anchor_ordinal(&self, connection: &HistoryConnection, anchor: &str) -> Result<i64> {
-        let Some(cursor) = TimelineCursor::decode(anchor) else {
-            return ordinal(connection, anchor).await;
-        };
-        ensure!(
-            cursor.thread_id == self.state.thread_id,
-            "timeline cursor belongs to another Thread"
-        );
-        ensure!(
-            cursor.database_id == connection.database_id,
-            "timeline cursor belongs to a rebuilt history database; reload the window"
-        );
-        ensure!(
-            cursor.applied_write_sequence <= connection_watermark(connection).await?,
-            "timeline cursor was read from a newer history than this database"
-        );
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT item_id FROM history_items WHERE ordinal=?",
-                vec![integer(cursor.ordinal)?.into()],
-            ))
-            .await?
-            .context("timeline cursor item no longer exists; reload the window")?;
-        let item_id: String = row.try_get("", "item_id")?;
-        ensure!(
-            item_id == cursor.item_id,
-            "timeline cursor item identity changed; reload the window"
-        );
-        integer(cursor.ordinal)
+        Ok(ChatHistoryPage { items, has_older })
     }
 
     /// Reads the newest terminal Turn this Thread already committed, without a body read.
@@ -1621,7 +1378,7 @@ impl HistoryStore {
 
     /// Reads one committed timeline item by its durable identity.
     ///
-    /// The projection owner needs the canonical committed body of an identity whose live window already
+    /// The projection owner needs the canonical committed body of an identity whose live preview already
     /// released it (for example the tool result a reliable-output repair names) so the *same* owner can
     /// still project the repaired fact with its own content version instead of the writer inventing one.
     /// This is a read of an already-committed fact, never a read-back of the effect being written.
@@ -1645,8 +1402,14 @@ impl HistoryStore {
 }
 
 impl ChatHistory for HistoryStore {
-    // 有界预览由 core 的默认 `bounded` 提供：它按 `ContentBlock` 前缀复用裁剪，不再让宿主重新
-    // 解码/重编码整条 JSON 才能压缩一条超长条目。
+    /// 产品展示预算：正文合计 32 KiB，工具参数与结果各最多 4 KiB。
+    ///
+    /// 有界预览由这一处统一实现，因此页、订阅基线与实时出帧共用同一份裁剪规则；裁剪按
+    /// `ContentBlock` 前缀复用，不再重新解码/重编码整条 JSON。
+    fn bounded(&self, item: &ChatItem) -> std::result::Result<ChatItem, ChatError> {
+        crate::studio::runtime::timeline_content::preview::bounded(item)
+    }
+
     async fn latest_allocated_order(&self) -> std::result::Result<u64, ChatError> {
         HistoryStore::latest_allocated_order(self)
             .await
@@ -1655,10 +1418,13 @@ impl ChatHistory for HistoryStore {
 
     async fn page(
         &self,
-        query: ChatQuery,
+        before: Option<&ChatCursor>,
         limit: usize,
-    ) -> std::result::Result<HistoryPage, ChatError> {
-        self.chat_page(query, limit)
+    ) -> std::result::Result<ChatHistoryPage, ChatError> {
+        if let Some(before) = before {
+            self.ensure_cursor_identity(before).await?;
+        }
+        self.chat_page(before, limit)
             .await
             .map_err(chat_history_error)
     }
@@ -1670,17 +1436,50 @@ impl ChatHistory for HistoryStore {
     }
 }
 
-pub(crate) fn chat_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    typed_item(item, saved, 0)
+impl HistoryStore {
+    /// 校验游标身份与它命名的 durable 顺序一致。
+    ///
+    /// 顺序槽严格递增且永不复用，因此 `ordinal < ?` 恰好就是严格 `(ordinal, identity)` 边界；这里
+    /// 用一次 rowid 点查保证：如果该顺序已经有行，它的 identity 必须就是游标声明的那个，否则拒绝，
+    /// 绝不把游标当成「附近某条」的猜测位置。该顺序还没有 durable 行是合法情形——边界可以指向尚未
+    /// 落盘的权威条目。
+    async fn ensure_cursor_identity(
+        &self,
+        before: &ChatCursor,
+    ) -> std::result::Result<(), ChatError> {
+        let connection = self.reader().await.map_err(chat_history_error)?;
+        let Some(connection) = connection else {
+            return Ok(());
+        };
+        let ordinal = integer(before.order).map_err(chat_history_error)?.into();
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT item_id FROM history_items WHERE ordinal=?",
+                vec![ordinal],
+            ))
+            .await
+            .map_err(anyhow::Error::new)
+            .map_err(chat_history_error)?;
+        let Some(row) = row else {
+            return Ok(());
+        };
+        let item_id: String = row
+            .try_get("", "item_id")
+            .map_err(anyhow::Error::new)
+            .map_err(chat_history_error)?;
+        if item_id == before.item_id {
+            return Ok(());
+        }
+        Err(ChatError::InvalidArgument(format!(
+            "timeline cursor names order {} with a different identity",
+            before.order
+        )))
+    }
 }
 
-fn chat_preview_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    let (preview, reference) = preview_timeline_item(&item, TIMELINE_ITEM_PREVIEW_BYTES);
-    typed_item(
-        preview,
-        saved,
-        reference.map_or(0, |reference| reference.omitted_bytes),
-    )
+pub(crate) fn chat_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
+    typed_item(item, saved)
 }
 
 fn chat_history_error(error: anyhow::Error) -> ChatError {
@@ -1956,23 +1755,6 @@ async fn connection_watermark(connection: &HistoryConnection) -> Result<u64> {
         .context("negative history write sequence")
 }
 
-/// 构造绑定本数据库当前位置的版本化游标。
-fn cursor(
-    connection: &HistoryConnection,
-    thread_id: &str,
-    item: &ThreadItem,
-    watermark: u64,
-) -> String {
-    TimelineCursor::new(
-        thread_id.to_owned(),
-        connection.database_id.clone(),
-        item.ordinal,
-        item.id.clone(),
-        watermark,
-    )
-    .encode()
-}
-
 /// Turn 页的续传位置。
 ///
 /// `after_ordinal` 是本页最后返回的条目 ordinal，`end_ordinal` 是这条 Turn 的 durable 结尾；
@@ -2029,14 +1811,14 @@ async fn turn_page_resume(
     watermark: u64,
 ) -> Result<TurnPageResume> {
     let parsed = TimelineCursor::decode(cursor)
-        .context("Turn cursor is not a versioned history cursor; reload the window")?;
+        .context("Turn cursor is not a versioned history cursor; restart the page")?;
     ensure!(
         parsed.thread_id == thread_id,
         "timeline cursor belongs to another Thread"
     );
     ensure!(
         parsed.database_id == connection.database_id,
-        "timeline cursor belongs to a rebuilt history database; reload the window"
+        "timeline cursor belongs to a rebuilt history database; restart the page"
     );
     ensure!(
         parsed.applied_write_sequence <= watermark,
@@ -2049,17 +1831,17 @@ async fn turn_page_resume(
             vec![parsed.item_id.clone().into()],
         ))
         .await?
-        .context("timeline cursor Turn no longer exists; reload the window")?;
+        .context("timeline cursor Turn no longer exists; restart the page")?;
     let stored_turn: String = row.try_get("", "turn_id")?;
     ensure!(
         stored_turn == parsed.item_id,
-        "timeline cursor Turn identity changed; reload the window"
+        "timeline cursor Turn identity changed; restart the page"
     );
     let end_ordinal: i64 = row.try_get("", "last_ordinal")?;
     let after_ordinal = i64::try_from(parsed.ordinal).context("timeline cursor is out of range")?;
     ensure!(
         after_ordinal <= end_ordinal,
-        "timeline cursor is ahead of the durable Turn end; reload the window"
+        "timeline cursor is ahead of the durable Turn end; restart the page"
     );
     // 游标必须落在该 Turn 自己的条目上：位置被改写时明确失败，绝不猜一个相邻位置。
     let anchor = connection
@@ -2069,11 +1851,11 @@ async fn turn_page_resume(
             vec![after_ordinal.into()],
         ))
         .await?
-        .context("timeline cursor item no longer exists; reload the window")?;
+        .context("timeline cursor item no longer exists; restart the page")?;
     let anchor_turn: String = anchor.try_get("", "turn_id")?;
     ensure!(
         anchor_turn == parsed.item_id,
-        "timeline cursor item identity changed; reload the window"
+        "timeline cursor item identity changed; restart the page"
     );
     Ok(TurnPageResume {
         turn_id: parsed.item_id,
@@ -2176,63 +1958,6 @@ async fn query_chat_ids(
             ))
         })
         .collect()
-}
-
-async fn ordinal(connection: &HistoryConnection, item_id: &str) -> Result<i64> {
-    connection
-        .db
-        .query_one_raw(statement(
-            "SELECT ordinal FROM history_items WHERE item_id=?",
-            vec![item_id.into()],
-        ))
-        .await?
-        .context("timeline cursor does not belong to this Thread")?
-        .try_get("", "ordinal")
-        .map_err(Into::into)
-}
-
-async fn exists_before(connection: &HistoryConnection, ordinal: u64) -> Result<bool> {
-    exists(connection, "ordinal < ?", ordinal).await
-}
-
-async fn exists_after(connection: &HistoryConnection, ordinal: u64) -> Result<bool> {
-    exists(connection, "ordinal > ?", ordinal).await
-}
-
-async fn exists(connection: &HistoryConnection, predicate: &str, ordinal: u64) -> Result<bool> {
-    let row = connection
-        .db
-        .query_one_raw(statement(
-            &format!("SELECT 1 AS present FROM history_items WHERE {predicate} LIMIT 1"),
-            vec![integer(ordinal)?.into()],
-        ))
-        .await?;
-    Ok(row.is_some())
-}
-
-async fn turns_for(
-    connection: &HistoryConnection,
-    items: &[ThreadItem],
-) -> Result<Vec<TimelineTurn>> {
-    let ids = items
-        .iter()
-        .filter_map(|item| (!item.turn_id.is_empty()).then_some(item.turn_id.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut turns = Vec::new();
-    for id in ids {
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT payload FROM history_turns WHERE turn_id=?",
-                vec![id.into()],
-            ))
-            .await?;
-        if let Some(row) = row {
-            let payload: String = row.try_get("", "payload")?;
-            turns.push(serde_json::from_str(&payload)?);
-        }
-    }
-    Ok(turns)
 }
 
 /// Creates or validates the schema and returns the owning database identity.
@@ -2757,67 +2482,6 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait, thread_id: &str) ->
 
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
-}
-
-/// 页字节预算必须保留的那一端。
-///
-/// 页永远是一个连续的 ordinal 窗口；被预算丢弃的条目留在本页首/尾之外并与返回的首尾相邻，
-/// 因此分页真实返回的 cursor 继续滚动时能重新取回它们，不会被跳过。
-#[derive(Debug, Clone, Copy)]
-enum BudgetEdge {
-    /// 保留升序页中最新的一端（`Latest`、`Before`）。
-    Newest,
-    /// 保留升序页中最旧的一端（`After`）。
-    Oldest,
-    /// 保留 ordinal 不小于该锚点的第一条（`Around`），并优先从更旧的一侧收缩。
-    Around(u64),
-}
-
-/// 按总 payload 字节预算收缩一个已按 ordinal 升序排好的页，并保持窗口连续；至少保留一条。
-///
-/// 请求方向决定丢弃哪一端：`Newest` 页紧贴锚点（丢弃更旧的一端），`Oldest` 页紧贴锚点（丢弃
-/// 更新的一端），显式锚点页保留锚点行并从更旧的一侧先收缩。
-fn apply_byte_budget(rows: &mut Vec<ThreadItem>, edge: BudgetEdge) -> Result<bool> {
-    let sizes = rows
-        .iter()
-        .map(|item| serde_json::to_string(item).map(|payload| payload.len()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut total = sizes
-        .iter()
-        .fold(0_usize, |total, bytes| total.saturating_add(*bytes));
-    let mut low = 0_usize;
-    let mut high = rows.len();
-    // 锚点行是升序页里第一条 ordinal 不小于锚点的条目；`Around` 的取数保证它存在，缺失时
-    // 退化为保留最新端，绝不猜测位置。
-    let anchor = match edge {
-        BudgetEdge::Newest | BudgetEdge::Oldest => None,
-        BudgetEdge::Around(ordinal) => Some(
-            rows.iter()
-                .position(|item| item.ordinal >= ordinal)
-                .unwrap_or(rows.len()),
-        ),
-    };
-    while total > PAGE_BYTE_BUDGET && high - low > 1 {
-        let trim_newer = match edge {
-            BudgetEdge::Newest => false,
-            BudgetEdge::Oldest => true,
-            // 锚点之前（更旧）的部分先收缩；收缩到锚点后改为丢弃锚点之后（更新）的一端。
-            BudgetEdge::Around(_) => anchor.is_some_and(|anchor| low >= anchor),
-        };
-        if trim_newer {
-            high -= 1;
-            total = total.saturating_sub(sizes[high]);
-        } else {
-            total = total.saturating_sub(sizes[low]);
-            low += 1;
-        }
-    }
-    if low == 0 && high == rows.len() {
-        return Ok(false);
-    }
-    rows.truncate(high);
-    rows.drain(..low);
-    Ok(true)
 }
 
 /// Writes one minimal input identity inside the transaction of the effect that produced it.
@@ -3429,7 +3093,7 @@ mod storage_fault_tests {
         missing_order.revision = 2;
         assert!(store.commit(2, &[missing_order], &[]).await.is_err());
         assert_eq!(store.watermark().await?, 1);
-        let mut changed_order = store.read_item("input-1").await?.item;
+        let mut changed_order = store.item("input-1").await?.context("committed input")?;
         changed_order.ordinal = 2;
         changed_order.revision = 2;
         assert!(store.commit(2, &[changed_order], &[]).await.is_err());
@@ -3445,7 +3109,8 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn latest_window_only_keeps_one_hundred_committed_items() -> Result<()> {
+    async fn a_bounded_page_continues_by_its_real_boundary_and_a_session_starts_from_the_latest_page()
+    -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store =
             HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?;
@@ -3465,37 +3130,46 @@ mod storage_fault_tests {
             })
             .collect::<Vec<_>>();
         store.commit(1, &items, &[]).await?;
-        let page = store.page(&TimelineQuery::Latest, 100).await?;
+        let page = store.chat_page(None, 100).await?;
         assert_eq!(page.items.len(), 100);
-        assert_eq!(page.first_item_id.as_deref(), Some("message-20"));
-        assert_eq!(page.last_item_id.as_deref(), Some("message-119"));
+        assert_eq!(page.items.first().unwrap().item_id, "message-20");
+        assert_eq!(page.items.last().unwrap().item_id, "message-119");
+        assert!(page.has_older);
         let before = store
-            .page(
-                &TimelineQuery::Before {
-                    item_id: page.older_cursor.context("missing earlier history")?,
-                },
-                100,
-            )
+            .chat_page(Some(&pl_core::chat::ChatCursor::new(21, "message-20")), 100)
             .await?;
         assert_eq!(before.items.len(), 20);
+        assert!(!before.has_older);
 
+        // A fresh session starts from the latest small page and continues by the page boundary it
+        // proves, instead of pretending a short page reached the beginning of history.
         let session = pl_core::chat::Session::new(store.clone());
-        let view = session.open_chat(pl_core::chat::ChatFocus::Latest).await?;
-        let initial = view.snapshot();
-        assert_eq!(initial.items.len(), 32);
-        assert_eq!(initial.items.first().unwrap().item_id, "message-88");
-        assert_eq!(initial.items.last().unwrap().item_id, "message-119");
-        assert!(initial.has_older);
-        let receipt = view.load(pl_core::chat::Direction::Older).await?;
-        let older = view.snapshot();
-        assert_eq!(
-            receipt.disposition,
-            pl_core::chat::ChatControlDisposition::Applied
+        let mut initial = session.subscribe_tail().await?;
+        let baseline = initial.initial()?;
+        assert_eq!(baseline.items.len(), 32);
+        assert_eq!(baseline.items.first().unwrap().item_id, "message-88");
+        assert_eq!(baseline.items.last().unwrap().item_id, "message-119");
+        assert!(
+            baseline.has_older,
+            "the first frame carries its own boundary"
         );
-        assert_eq!(receipt.version, older.version);
-        assert_eq!(older.items.len(), 64);
+        assert_eq!(
+            baseline.before,
+            Some(pl_core::chat::ChatCursor::new(89, "message-88"))
+        );
+        let older = session
+            .page(
+                pl_core::chat::ChatPageRequest::before(pl_core::chat::ChatCursor::new(
+                    89,
+                    "message-88",
+                ))
+                .with_limit(32),
+            )
+            .await?;
+        assert_eq!(older.items.len(), 32);
         assert_eq!(older.items.first().unwrap().item_id, "message-56");
-        assert_eq!(older.items.last().unwrap().item_id, "message-119");
+        assert_eq!(older.items.last().unwrap().item_id, "message-87");
+        assert!(older.has_older);
 
         // Only persisted items seed the next Session; a discarded live allocation has no
         // durable reservation to inflate the next ordinal after a restart.
@@ -4631,7 +4305,7 @@ mod storage_fault_tests {
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
         placeholder = placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem {
             payloads: vec![],
-            notice: "This item's body is no longer resident in the live window.".into(),
+            notice: "This item's body is no longer resident in the live preview cache.".into(),
             recorded_at: 111,
         }));
         let mut resident = std::collections::BTreeMap::new();
@@ -5537,11 +5211,12 @@ mod storage_fault_tests {
         assert_eq!(restored, item);
 
         // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
-        let page = store
-            .chat_page(pl_core::chat::ChatQuery::Latest, 10)
+        let session = pl_core::chat::Session::new(store.clone());
+        let page = session
+            .page(pl_core::chat::ChatPageRequest::latest().with_limit(10))
             .await?;
         let previewed = page.items.first().context("paged item")?;
-        assert!(previewed.omitted_bytes > 0);
+        assert!(previewed.omitted_bytes() > 0);
         assert!(
             previewed
                 .field(&answer_field)

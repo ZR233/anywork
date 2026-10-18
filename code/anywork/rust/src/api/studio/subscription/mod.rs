@@ -1,6 +1,6 @@
 //! Studio 订阅句柄与任务注册表：按订阅种类拆分到同目录子模块。
 //!
-//! - `thread`：Thread 状态流（Turn/活动/交互/运行时；内容走 ChatView 窗口）。
+//! - `thread`：Thread 状态流（Turn/活动/交互/运行时；内容走 Timeline 内容源）。
 //! - `product_topic`：typed 产品 topic 订阅（首帧基线 + 该领域事件）。
 //! - `shutdown`：关机进度广播。
 //! - `startup`：pre-active 启动进度 watch，独立于 installed bridge。

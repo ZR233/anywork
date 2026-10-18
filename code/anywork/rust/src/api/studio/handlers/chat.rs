@@ -1,225 +1,216 @@
+//! Timeline 内容源的 FRB 句柄：一页读取、按身份详情与一条有界尾部连接。
+//!
+//! 句柄只捕获同一个共享 `Session`（经 `TimelineTailStream`）与自己的取消令牌。三条路径互不阻塞：
+//! `page` 与 `read_detail` 不经过取帧的锁，因此一个挂起的 `next` 不会挡住翻页或读正文；同一句柄同时
+//! 发起第二个 `next` 直接返回 `Busy`，不排队两个消费者。
+//!
+//! 关闭顺序固定：先拒绝新调用并取消在途等待，再等待所有登记调用退出，最后释放首帧、尾部基线与
+//! `Session` 引用。重复 `close` 对同一批资源执行同样的收束，不会提前确认。`Drop` 只发取消请求，不假装
+//! 完成 join。
+
 use std::sync::{
-    Mutex as SyncMutex,
-    atomic::{AtomicU64, Ordering},
+    Arc, Mutex as SyncMutex,
+    atomic::{AtomicBool, Ordering},
 };
 
-use tokio::sync::{MappedMutexGuard, Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::api::studio::bridge_runtime::active_bridge;
-use crate::api::studio::convert::chat_window;
+use crate::api::studio::convert::timeline_content;
 use crate::api::studio::types::{
-    BridgeChatDirection, BridgeChatFocus, BridgeChatItem, BridgeChatReceipt, BridgeChatSnapshot,
-    BridgeChatUpdate, BridgeError,
+    BridgeError, BridgeTimelineBaseline, BridgeTimelineDetailChunk, BridgeTimelineDetailQuery,
+    BridgeTimelinePage, BridgeTimelineUpdate,
 };
-use pl_studio_runtime::{ChatWindowHandle, ChatWindowStream};
+use pl_studio_runtime::{TimelineContentReader, TimelineTailStream};
 
-/// 一个独立定位、有界的 FRB 内容窗口。
-///
-/// 窗口差量、前值索引与基线一致性都由 runtime 的 `ChatWindowStream` 负责（HTTP 与 FRB 共用同一条
-/// 映射）；这里只把 typed 结果映射成 FRB DTO。
-///
-/// `window` 串行化所有接触窗口的操作（`load`/`focus`/取帧），让窗口差量
-/// 只有一个写入者；`handle: ChatWindowHandle` 是同一个 `ChatView`（同一个 `Session`）的**锁外**句柄，
-/// 按身份读正文走它，不经过窗口锁，因此一个挂起的帧等待不会挡住正文读取。
-///
-/// 帧等待也走**锁外**：`handle.wait_change(observed_version)` 只看版本与边界水位（不合帧、不构 diff、
-/// 不持有窗口锁），随后一个**短临界区**的同步 `take` 只算一次差量并原子推进「已交付」与「已看过」两个
-/// 水位。等待期间不持有窗口锁，因此一个挂起的取帧不会挡住 `load`/`focus`/读正文；`close` 靠 select 的
-/// cancel 分支立刻结束等待。
-///
-/// 内容交付只有一个出口 `next`：`load`/`focus`/`expand` 只返回操作回执
-/// （`BridgeChatReceipt`），不交付窗口——core 在这些操作完成时推进版本并立即唤醒，下一次 `next` 把
-/// 窗口移动表达成连续 `Patch`（或无交集跳转时的权威 `Reset`），始终以客户端自己的交付基线为 `from`。
-pub struct BridgeChatView {
-    /// 串行化所有接触窗口的操作；取帧只在短临界区里持锁（见结构体文档）。
-    window: Mutex<Option<ChatWindowStream>>,
-    /// 同一个 view 的锁外句柄：按身份读条目不经过窗口锁，也不参与窗口差量基线。
-    handle: SyncMutex<Option<ChatWindowHandle>>,
-    initial: SyncMutex<Option<BridgeChatSnapshot>>,
-    /// 控制操作计数器：回执 `operationId` 的来源，客户端据此把 pending 与回执/目标版本关联。
-    operations: AtomicU64,
+/// 一个独立的 Timeline 内容句柄。
+pub struct BridgeTimeline {
+    /// 打开时捕获的内容读取句柄：同一共享 `Session` 与 Thread 身份，`page`/`read_detail` 都走它。
+    ///
+    /// 关闭后它被真正释放，因此已关闭的句柄不可能按 thread id 读到另一个运行时实例。
+    reader: SyncMutex<Option<Arc<TimelineContentReader>>>,
+    /// 串行化取帧；`page`/`read_detail` 不经过它。
+    tail: Mutex<Option<TimelineTailStream>>,
+    initial: SyncMutex<Option<BridgeTimelineBaseline>>,
+    /// 同时只允许一个在途 `next`；第二个直接 `Busy`。
+    next_in_flight: AtomicBool,
     cancel: CancellationToken,
-    /// 注册/退出在途 API 与发布 closing 共用同一个短锁，不跨 await，也不嵌套窗口锁。
-    activity: SyncMutex<ChatViewActivity>,
+    /// 注册/退出在途调用与发布 closing 共用同一个短锁，不跨 await，也不嵌套尾部锁。
+    activity: SyncMutex<TimelineActivity>,
     idle: Notify,
 }
 
 #[flutter_rust_bridge::frb(ignore)]
 #[derive(Default)]
-struct ChatViewActivity {
+struct TimelineActivity {
     closing: bool,
     active_calls: usize,
 }
 
-/// 每个获准进入的 view API 都持有一份；future 被取消时也会退出登记。
-struct ChatViewCall<'a> {
-    view: &'a BridgeChatView,
+/// 每个获准进入的句柄 API 都持有一份；future 被取消时也会退出登记。
+struct TimelineCall<'a> {
+    timeline: &'a BridgeTimeline,
 }
 
-pub async fn open_chat_view(
-    thread_id: String,
-    focus: BridgeChatFocus,
-) -> Result<BridgeChatView, BridgeError> {
+/// 一次在途取帧；析构时释放独占标记，取消或提前返回都不会把它留成永久 Busy。
+struct NextGuard<'a> {
+    timeline: &'a BridgeTimeline,
+}
+
+pub async fn open_timeline(thread_id: String) -> Result<BridgeTimeline, BridgeError> {
     let bridge = active_bridge().await?;
     let cancel = bridge.shutdown.child_token();
-    let query = chat_window::query(focus);
-    let stream = tokio::select! {
+    // One captured reader and one tail observation share the same session, so a later page or detail
+    // can never resolve a different instance than the frames this handle delivers.
+    let reader = tokio::select! {
         biased;
-        () = cancel.cancelled() => return Err(view_closed()),
-        stream = bridge.studio.open_chat_window(&thread_id, &query) => stream?,
+        () = cancel.cancelled() => return Err(timeline_closed()),
+        reader = bridge.studio.timeline_reader(&thread_id) => Arc::new(reader?),
     };
-    let handle = stream.handle();
-    let initial = chat_window::snapshot(stream.initial()?)?;
-    Ok(BridgeChatView {
-        window: Mutex::new(Some(stream)),
-        handle: SyncMutex::new(Some(handle)),
+    let mut stream = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(timeline_closed()),
+        stream = reader.open_tail() => stream?,
+    };
+    let initial = timeline_content::baseline(stream.initial()?)?;
+    Ok(BridgeTimeline {
+        reader: SyncMutex::new(Some(reader)),
+        tail: Mutex::new(Some(stream)),
         initial: SyncMutex::new(Some(initial)),
-        operations: AtomicU64::new(0),
+        next_in_flight: AtomicBool::new(false),
         cancel,
-        activity: SyncMutex::new(ChatViewActivity::default()),
+        activity: SyncMutex::new(TimelineActivity::default()),
         idle: Notify::new(),
     })
 }
 
-/// 视图已关闭：明确的生命周期错误，而不是让调用方永久挂起。
-fn view_closed() -> BridgeError {
+/// 句柄已关闭：明确的生命周期错误，而不是让调用方永久挂起。
+fn timeline_closed() -> BridgeError {
     pl_protocol::studio::StudioError::new(
         pl_protocol::studio::StudioErrorCode::Cancelled,
-        "chat view is closed",
+        "timeline handle is closed",
         false,
     )
     .into()
 }
 
-impl BridgeChatView {
-    /// The subscription baseline is captured before returning the handle.
-    /// A closed view rejects this call rather than returning a stale baseline.
-    pub fn initial(&self) -> Result<BridgeChatSnapshot, BridgeError> {
+/// 首帧已经交付过：它是单次移交，不是可重复读取的 getter。
+fn baseline_taken() -> BridgeError {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Conflict,
+        "the timeline first frame was already delivered by this handle",
+        false,
+    )
+    .into()
+}
+
+/// 首帧尚未交付：Dart 必须先取第一帧，不能直接开始等帧。
+///
+/// 这是 transport 边界上的 gate，与 core 观察自身的单次移交纪律一致：即使句柄在打开时已经从 core
+/// 取走首帧并缓存，外部消费者没消费它之前也不允许 `next`。
+fn initial_required() -> BridgeError {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Conflict,
+        "the timeline first frame must be taken before awaiting tail frames",
+        false,
+    )
+    .into()
+}
+
+/// 同一句柄已经有一个在途取帧：不排队第二个消费者。
+fn next_busy() -> BridgeError {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Busy,
+        "timeline handle already awaits one tail frame",
+        true,
+    )
+    .into()
+}
+
+impl BridgeTimeline {
+    /// Hands the captured first frame over, once.
+    ///
+    /// The baseline is moved out and the handle keeps no second copy, so a long-lived connection costs
+    /// one bounded continuity baseline instead of "first page + continuity copy". A closed handle and
+    /// an already-delivered first frame are distinct typed errors.
+    pub fn initial(&self) -> Result<BridgeTimelineBaseline, BridgeError> {
         let _call = self.begin_call()?;
-        let initial = self
-            .initial
+        self.initial
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone()
-            .ok_or_else(view_closed)?;
-        Ok(initial)
+            .take()
+            .ok_or_else(baseline_taken)
     }
 
-    /// Waits for one consolidated batch, then returns control to the consumer.
+    /// Reads one stateless page: newest, or strictly older than the opaque `before` token.
     ///
-    /// 「锁外 readiness 等待 + 短临界区同步取帧」：等待期间不持窗口锁（见结构体文档），`close` 立刻
-    /// 打断等待。`Ok(None)` 只表示窗口流真的结束（会话不再变化或视图已关闭）。
-    pub async fn next(&self) -> Result<Option<BridgeChatUpdate>, BridgeError> {
-        let _call = self.begin_call()?;
-        let handle = self.view_handle()?;
-        loop {
-            // 短临界区：只读本消费者「已看过」的唤醒水位，不构 diff、不等待。
-            let seen = { self.lock_window().await?.observed_version() };
-            // 锁外 readiness 等待：只看版本与边界水位，cancel 可打断，不持有窗口锁。
-            let ready = tokio::select! {
-                biased;
-                () = self.cancel.cancelled() => return Ok(None),
-                ready = handle.wait_change(seen) => ready,
-            };
-            if ready.is_none() {
-                return Ok(None);
-            }
-            // 短临界区：一次同步 take，只算一次差量并原子推进两个水位。
-            let update = { self.lock_window().await?.take()? };
-            if let Some(update) = update {
-                return chat_window::update(update).map(Some);
-            }
-            // 只推进 observed、本窗口看不到的变化：回到锁外等待。
-        }
-    }
-
-    fn next_operation_id(&self) -> Result<u64, BridgeError> {
-        // 这里只分配唯一编号，不发布其他数据；API 登记与 closing 由 activity 锁同步。
-        self.operations
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
-                previous.checked_add(1)
-            })
-            .map(|previous| previous + 1)
-            .map_err(|_| {
-                pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Overloaded,
-                    "chat view operation ids are exhausted",
-                    false,
-                )
-                .into()
-            })
-    }
-
-    /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、必要时换出相反方向的一页）。
-    ///
-    /// 窗口移动由下一次 `next` 交付；`close` 会取消正在等待 history 的翻页。
-    pub async fn load(
+    /// It never waits for a pending `next`.
+    pub async fn page(
         &self,
-        direction: BridgeChatDirection,
-    ) -> Result<BridgeChatReceipt, BridgeError> {
+        before: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<BridgeTimelinePage, BridgeError> {
         let _call = self.begin_call()?;
-        let operation_id = self.next_operation_id()?;
-        let mut window = self.lock_window().await?;
-        tokio::select! {
+        let reader = self.content()?;
+        let query = timeline_content::page_query(before, limit);
+        let page = tokio::select! {
             biased;
-            () = self.cancel.cancelled() => Err(view_closed()),
-            result = window.load(chat_window::direction(direction)) => {
-                Ok(chat_window::receipt(result?, operation_id))
-            }
-        }
-    }
-
-    /// 换焦点的操作回执：窗口由下一次 `next` 以权威 `Reset` 交付。
-    pub async fn focus(&self, focus: BridgeChatFocus) -> Result<BridgeChatReceipt, BridgeError> {
-        let _call = self.begin_call()?;
-        let operation_id = self.next_operation_id()?;
-        let query = chat_window::query(focus);
-        let mut window = self.lock_window().await?;
-        tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => Err(view_closed()),
-            result = window.focus(&query) => Ok(chat_window::receipt(result?, operation_id)),
-        }
-    }
-
-    /// 按身份读一条完整条目（内存优先，必要时回落 durable history）。
-    ///
-    /// 它走的是**同一个 view** 的锁外句柄，读的是与窗口完全相同的共享会话事实：不重新 `open_chat`、
-    /// 不按 thread id 另找运行时实例，窗口句柄关闭后也不会读到别的实例的条目。一个挂起的 `next`
-    /// 同样不会挡住正文读取。
-    pub async fn read_item(&self, item_id: String) -> Result<Option<BridgeChatItem>, BridgeError> {
-        let _call = self.begin_call()?;
-        let handle = self.view_handle()?;
-        let item = tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => return Err(view_closed()),
-            item = handle.read_item(&item_id) => item?,
+            () = self.cancel.cancelled() => return Err(timeline_closed()),
+            page = reader.page(&query) => page?,
         };
-        item.map(chat_window::item).transpose()
+        timeline_content::page(page)
     }
 
-    /// 展开被有界窗口省略的条目：一次**同 view 的窗口操作**，返回操作回执。
+    /// Waits for, and returns, the next frame of this connection.
     ///
-    /// 步骤：锁外请求该身份的**完整**正文（同 view/revision，历史条目至多冷读一次并保留到身份离开
-    /// 窗口；被取消不会写回）。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并通知，
-    /// 完整正文由下一次 `next` 以 typed 字段更新从唯一出口交付——客户端不在这里收到窗口，也不需要
-    /// 自己覆一份 item 或维持另一份 baseline。`retained == false` 表示身份已不在窗口或完整正文此刻
-    /// 不可得：调用方保留预览与重试入口，不伪造正文。
-    pub async fn expand(&self, item_id: String) -> Result<BridgeChatReceipt, BridgeError> {
+    /// `Ok(None)` only means the session no longer publishes progress; an error is never turned into a
+    /// normal end of content.
+    ///
+    /// The first frame must already be handed over by [`BridgeTimeline::initial`], otherwise this
+    /// returns a typed `Conflict` without touching the tail lock: a Dart pump that calls `next` first
+    /// cannot bypass the single hand-off. `page`/`read_detail` do not require it. A second concurrent
+    /// call returns `Busy`, and a closed handle always returns `Cancelled` before any of these checks.
+    pub async fn next(&self) -> Result<Option<BridgeTimelineUpdate>, BridgeError> {
         let _call = self.begin_call()?;
-        let handle = self.view_handle()?;
-        let operation_id = self.next_operation_id()?;
-        // 锁外请求完整正文：等待 history 冷读时不阻塞帧交付与其他窗口操作。
-        let receipt = tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => return Err(view_closed()),
-            result = handle.expand(&item_id) => result?,
+        // 关闭优先由 `begin_call` 判定；随后才是「首帧必须先交付」这条外部纪律。
+        self.ensure_first_frame_delivered()?;
+        let _exclusive = self.begin_next()?;
+        let mut tail = self.lock_tail().await?;
+        let Some(stream) = tail.as_mut() else {
+            return Err(timeline_closed());
         };
-        Ok(chat_window::receipt(receipt, operation_id))
+        let update = tokio::select! {
+            biased;
+            // 关闭／取消不是内容的正常结束：返回类型化 Cancelled，由上层收束，而不是假 EOF。
+            () = self.cancel.cancelled() => return Err(timeline_closed()),
+            update = stream.next() => update?,
+        };
+        update.map(timeline_content::update).transpose()
     }
 
-    /// 同步拒绝新 view API 并取消在途等待；不关闭共享 Session、Turn 或历史 writer。
+    /// Reads one bounded block of a field's complete body.
+    ///
+    /// It never waits for a pending `next`.
+    pub async fn read_detail(
+        &self,
+        item_id: String,
+        query: BridgeTimelineDetailQuery,
+    ) -> Result<BridgeTimelineDetailChunk, BridgeError> {
+        let _call = self.begin_call()?;
+        let reader = self.content()?;
+        let query = timeline_content::detail_query(query);
+        let chunk = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Err(timeline_closed()),
+            chunk = reader.read_detail(&item_id, &query) => chunk?,
+        };
+        timeline_content::detail_chunk(chunk)
+    }
+
+    /// Synchronously rejects new calls and cancels in-flight waits.
+    ///
+    /// The shared `Session`, its Turn and the history writer keep running.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close(&self) {
         {
@@ -232,16 +223,18 @@ impl BridgeChatView {
         self.cancel.cancel();
     }
 
-    /// 幂等关闭：先请求取消，再等待所有获准进入的 view API 退出。
+    /// Idempotent close: reject new calls, wait for every registered call, then release the baseline,
+    /// the tail observation and the session reference.
     ///
-    /// close 自身不登记为活动调用，也不持窗口锁等待；多个 close 观察同一个 closing 与归零条件。
-    /// 归零后释放 view 自有窗口、句柄与首帧，客户端继续持有已关闭的 opaque 也不保留正文资源。
+    /// A second close observes the same `closing` flag and the same drain condition, so it can never
+    /// confirm earlier than the first.
     pub async fn close(&self) {
         self.request_close();
         loop {
             let idle = self.idle.notified();
             tokio::pin!(idle);
-            // 先登记通知，再查条件，避免最后一个 API 在检查/等待之间退出造成丢失唤醒。
+            // Register the notification before checking the condition so the last call cannot exit
+            // between the check and the wait.
             idle.as_mut().enable();
             let drained = self
                 .activity
@@ -254,11 +247,18 @@ impl BridgeChatView {
             }
             idle.await;
         }
-        // 所有 API 的资源借用都在活动 guard 之前释放，归零后没有 API 还能等待/持有窗口锁。
-        // 重复 close 对同一批 Option 执行 take，因此取消关闭再重试也能收束剩余释放。
-        drop(self.window.lock().await.take());
+        // Every API released its borrows before its guard dropped, so no call can still be waiting for
+        // the tail lock. Repeating close re-takes the same options, so a cancelled close still finishes
+        // releasing what is left.
+        let mut tail = self.tail.lock().await.take();
+        if let Some(tail) = tail.as_mut() {
+            tail.close();
+        }
+        drop(tail);
+        // The captured reader is the handle's whole Session reference; releasing it here is what makes
+        // a closed handle unable to read anything again.
         drop(
-            self.handle
+            self.reader
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .take(),
@@ -271,48 +271,74 @@ impl BridgeChatView {
         );
     }
 
-    fn begin_call(&self) -> Result<ChatViewCall<'_>, BridgeError> {
+    fn begin_call(&self) -> Result<TimelineCall<'_>, BridgeError> {
         let mut activity = self
             .activity
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if activity.closing || self.cancel.is_cancelled() {
-            return Err(view_closed());
+            return Err(timeline_closed());
         }
         activity.active_calls += 1;
-        Ok(ChatViewCall { view: self })
+        Ok(TimelineCall { timeline: self })
     }
 
-    /// 在途控制操作可以跨 history await 持窗口锁；锁的排队本身也必须被关闭取消。
-    async fn lock_window(&self) -> Result<MappedMutexGuard<'_, ChatWindowStream>, BridgeError> {
-        let window = tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => return Err(view_closed()),
-            window = self.window.lock() => window,
-        };
-        MutexGuard::try_map(window, Option::as_mut).map_err(|_| view_closed())
-    }
-
-    fn view_handle(&self) -> Result<ChatWindowHandle, BridgeError> {
-        self.handle
+    /// 捕获的内容读取句柄；句柄关闭后明确拒绝。
+    fn content(&self) -> Result<Arc<TimelineContentReader>, BridgeError> {
+        self.reader
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
-            .ok_or_else(view_closed)
+            .ok_or_else(timeline_closed)
+    }
+
+    /// Whether the cached first frame has been handed to the consumer.
+    ///
+    /// The check takes the short synchronous lock only; it never waits for a frame and never takes the
+    /// tail lock, so it cannot queue a second consumer.
+    fn ensure_first_frame_delivered(&self) -> Result<(), BridgeError> {
+        let delivered = self
+            .initial
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_none();
+        if delivered {
+            Ok(())
+        } else {
+            Err(initial_required())
+        }
+    }
+
+    fn begin_next(&self) -> Result<NextGuard<'_>, BridgeError> {
+        self.next_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| next_busy())?;
+        Ok(NextGuard { timeline: self })
+    }
+
+    async fn lock_tail(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<TimelineTailStream>>, BridgeError> {
+        let tail = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Err(timeline_closed()),
+            tail = self.tail.lock() => tail,
+        };
+        Ok(tail)
     }
 }
 
-impl Drop for BridgeChatView {
+impl Drop for BridgeTimeline {
     fn drop(&mut self) {
         self.request_close();
     }
 }
 
-impl Drop for ChatViewCall<'_> {
+impl Drop for TimelineCall<'_> {
     fn drop(&mut self) {
         let idle = {
             let mut activity = self
-                .view
+                .timeline
                 .activity
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -320,7 +346,13 @@ impl Drop for ChatViewCall<'_> {
             activity.active_calls == 0
         };
         if idle {
-            self.view.idle.notify_waiters();
+            self.timeline.idle.notify_waiters();
         }
+    }
+}
+
+impl Drop for NextGuard<'_> {
+    fn drop(&mut self) {
+        self.timeline.next_in_flight.store(false, Ordering::Release);
     }
 }

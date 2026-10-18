@@ -1,6 +1,6 @@
 //! 当前执行活动的 typed 投影。
 //!
-//! 活动是独立于 ChatView 历史窗口的投影：窗口决定展示哪些条目，活动只描述“当前在做什么”。
+//! 活动是独立于 Timeline 内容的投影：内容只决定有哪些条目，活动只描述“当前在做什么”。
 //! 它是 canonical 事实的**纯函数**：只读 owner 已发布的 `ThreadSnapshot`（turns/attempts/
 //! tasks/permissions/interactions/input_execution/model_progress/model_execution/tool_progress）与
 //! “上一条已发布活动”，不读会话、不读历史、不等待也不发送任何东西，因此订阅、快照与冷读得到同一
@@ -921,7 +921,7 @@ impl ToolDetailSource {
 
 /// 运行中工具输出的共享正文；没有可读文本时如实为 `None`。
 ///
-/// 正文只在读取详情时物化一次，热路径只共享内容块；因此这里物化的是**当前**有界窗口，而不是每个
+/// 正文只在读取详情时物化一次，热路径只共享内容块；因此这里物化的是**当前**有界预览，而不是每个
 /// chunk 复制一次的累计全文。
 fn progress_output(progress: &pl_core::model::ToolProgress) -> Option<String> {
     let text = progress.content().text();

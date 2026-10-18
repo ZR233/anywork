@@ -1,12 +1,9 @@
 import 'package:anywork_client/models.dart';
 
 import 'agent_workspace_view.dart';
-import 'timeline_rows.dart';
 
 // Canonical workspace values are replaced by reducers. UI-only anchor/composer
 // changes must not rebuild all row projections; old entries are weakly held.
-final _timelineRowsByWorkspace = Expando<List<TimelineRow>>();
-final _timelineRowsByItems = Expando<List<TimelineRow>>();
 
 class _StudioStateUnset {
   const _StudioStateUnset();
@@ -254,21 +251,6 @@ class StudioState {
     return ordered;
   }
 
-  List<TimelineRow> get selectedTimelineRows {
-    final workspace = selectedWorkspace;
-    if (workspace == null) return const [];
-    // Runtime/turn/activity/storage updates replace the workspace wrapper while
-    // retaining the canonical bounded item list. Cache by that list identity so
-    // a high-frequency state update does not manufacture a new timeline
-    // projection for unchanged content.
-    final cached = _timelineRowsByItems[workspace.items];
-    if (cached != null) return cached;
-    final rows = timelineRowsFromThreadItems(workspace.items);
-    _timelineRowsByItems[workspace.items] = rows;
-    _timelineRowsByWorkspace[workspace] = rows;
-    return rows;
-  }
-
   TimelineTodoListUpdate? get selectedTodoList => selectedWorkspace?.todo;
 
   List<PendingInteraction> get pendingInteractions => [
@@ -316,7 +298,6 @@ class StudioState {
       rootThread: root,
       syncState: selectedWorkspaceUi.syncState,
       loadError: selectedWorkspaceUi.loadError,
-      timelineRows: selectedTimelineRows,
       todo: selectedTodoList,
       runtime: runtime,
       turn: turn,

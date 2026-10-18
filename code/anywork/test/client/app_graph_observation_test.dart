@@ -6,7 +6,6 @@ import 'package:anywork/src/presentation/providers/composer_draft_controller.dar
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
-import 'package:anywork/src/features/timeline/timeline_session_view.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork_client/studio_client.dart'
     show DomainSyncPhase, FailedComposerThreadState, ResourceKind;
@@ -57,7 +56,7 @@ void main() {
       expect(client.budget.used(ResourceKind.draft), drafts);
       expect(client.budget.used(ResourceKind.observer), observers + 8);
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.windows, isEmpty);
+      expect(transport.timelines, isEmpty);
     } finally {
       session.close();
       composer.close();
@@ -77,10 +76,12 @@ void main() {
       await graph.client.bootstrap();
       await graph.client.directoryCommands.selectThread('thread-main');
       final session = graph.client.existingSession('thread-main')!;
-      await session.source.waitFor((state) => state.hasChatWindow);
-      final window = transport.windows.single;
-      await window.nextEntered.future;
-      final viewId = session.state.chatViewId;
+      await session.timeline.state.waitFor(
+        (state) => state.snapshot is StudioTimelineBaselineFrame,
+      );
+      final connection = transport.timelines.single;
+      await connection.nextEntered.future;
+      final attemptId = session.timeline.currentAttemptId?.value;
       final projectId = graph.client.selection.state.selectedProjectId!;
       final startOwner = graph.client.startDraft;
       final composerOwner = graph.client.existingComposer('thread-main')!;
@@ -103,10 +104,7 @@ void main() {
         composerDraftControllerProvider('thread-main'),
         (_, _) {},
       );
-      final timelineObserver = first.listen(
-        timelineSessionWindowProvider,
-        (_, _) {},
-      );
+      final timelineObserver = graph.timeline.source.watch((_) {});
       graph.client.startDraft.updateDraft(
         projectId,
         'new session survives Settings',
@@ -118,7 +116,7 @@ void main() {
       sessionObserver.close();
       startObserver.close();
       composerObserver.close();
-      timelineObserver.close();
+      timelineObserver.cancel();
       await first.pump();
       first.dispose();
 
@@ -128,10 +126,10 @@ void main() {
         reason:
             'a disposed ProviderScope must release all its observer permits',
       );
-      expect(window.requestCloseCalls, 0);
-      expect(window.closeCalls, 0);
-      expect(session.state.chatViewId, viewId);
-      expect(session.state.hasChatWindow, isTrue);
+      expect(connection.requestCloseCalls, 0);
+      expect(connection.closeCalls, 0);
+      expect(session.timeline.currentAttemptId?.value, attemptId);
+      expect(session.timeline.lastDeliveredFrame, isNotNull);
       expect(graph.client.startDraft, same(startOwner));
       expect(graph.client.composer('thread-main'), same(composerOwner));
       expect(
@@ -162,8 +160,8 @@ void main() {
       addTearDown(rebuiltComposer.close);
 
       expect(
-        rebuilt.read(threadSessionStoreProvider('thread-main')).chatViewId,
-        viewId,
+        graph.client.session('thread-main').timeline.currentAttemptId?.value,
+        attemptId,
       );
       expect(
         rebuilt.read(startSessionControllerProvider).forProject(projectId).text,
@@ -173,14 +171,14 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(transport.windows, hasLength(1));
-      expect(window.initialCalls, 1);
+      expect(transport.timelines, hasLength(1));
+      expect(connection.initialCalls, 1);
 
       final report = await graph.close(deadline: _deadline());
       expect(report.unresolved, isEmpty);
-      expect(window.requestCloseCalls, greaterThanOrEqualTo(1));
-      expect(window.closeCalls, 1);
-      expect(window.joined.isCompleted, isTrue);
+      expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
+      expect(connection.closeCalls, 1);
+      expect(connection.joined.isCompleted, isTrue);
     },
   );
 
@@ -199,12 +197,14 @@ void main() {
     await Future.wait([
       first.client
           .session('thread-main')
-          .source
-          .waitFor((s) => s.hasChatWindow),
+          .timeline
+          .state
+          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame),
       second.client
           .session('thread-main')
-          .source
-          .waitFor((s) => s.hasChatWindow),
+          .timeline
+          .state
+          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame),
     ]);
     final firstContainer = _container(first);
     final secondContainer = _container(second);
@@ -230,8 +230,8 @@ void main() {
       isNot(same(second.client.session('thread-main'))),
     );
     expect(
-      firstTransport.windows.single,
-      isNot(same(secondTransport.windows.single)),
+      firstTransport.timelines.single,
+      isNot(same(secondTransport.timelines.single)),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(second.client.startDraft.state.forProject(projectId).text, isEmpty);
@@ -247,10 +247,13 @@ void main() {
     );
 
     expect((await first.close(deadline: _deadline())).complete, isTrue);
-    expect(firstTransport.windows.single.joined.isCompleted, isTrue);
-    expect(secondTransport.windows.single.requestCloseCalls, 0);
+    expect(firstTransport.timelines.single.joined.isCompleted, isTrue);
+    expect(secondTransport.timelines.single.requestCloseCalls, 0);
     expect(second.client.isClosed, isFalse);
-    expect(second.client.session('thread-main').state.hasChatWindow, isTrue);
+    expect(
+      second.client.session('thread-main').timeline.lastDeliveredFrame,
+      isNotNull,
+    );
     expect(
       secondContainer
           .read(composerDraftControllerProvider('thread-main'))
@@ -263,13 +266,16 @@ void main() {
     'late open after selecting B is reclaimed without clearing current B',
     () async {
       final transport = DemoStudioTransport(lspActivityLoop: false);
-      final firstOpen = Completer<RecordingChatWindow>();
+      final firstOpen = Completer<RecordingTimelineConnection>();
       final releaseFirst = Completer<void>();
       var mainOpens = 0;
-      final windows = <RecordingChatWindow>[];
-      transport.chatWindowFactory = (threadId, inner) async {
-        final window = RecordingChatWindow(threadId: threadId, inner: inner);
-        windows.add(window);
+      final connections = <RecordingTimelineConnection>[];
+      transport.timelineFactory = (threadId, inner) async {
+        final window = RecordingTimelineConnection(
+          threadId: threadId,
+          inner: inner,
+        );
+        connections.add(window);
         if (threadId == 'thread-main' && ++mainOpens == 1) {
           firstOpen.complete(window);
           await releaseFirst.future;
@@ -290,11 +296,14 @@ void main() {
       await graph.client.directoryCommands.selectThread('thread-alt');
       await graph.client
           .session('thread-alt')
-          .source
-          .waitFor((s) => s.hasChatWindow);
+          .timeline
+          .state
+          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame);
       final selected = graph.client.session('thread-alt');
-      final currentViewId = selected.state.chatViewId;
-      final current = windows.lastWhere((w) => w.threadId == 'thread-alt');
+      final currentAttempt = selected.timeline.currentAttemptId?.value;
+      final current = connections.lastWhere(
+        (value) => value.threadId == 'thread-alt',
+      );
       expect(current, isNot(same(late)));
 
       releaseFirst.complete();
@@ -308,10 +317,11 @@ void main() {
       expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(late.closeCalls, 1);
       expect(current.requestCloseCalls, 0);
-      expect(selected.state.chatViewId, currentViewId);
-      expect(selected.state.hasChatWindow, isTrue);
-      expect(selected.state.items, isNotEmpty);
-      // This is the Client attempt contract over Demo windows, not native FRB.
+      expect(selected.timeline.currentAttemptId?.value, currentAttempt);
+      expect(selected.timeline.lastDeliveredFrame, isNotNull);
+      final display = graph.timeline.lease('thread-alt')!;
+      expect(display.controller.messages, isNotEmpty);
+      // This is the Client attempt contract over Demo connections, not native FRB.
     },
   );
 }

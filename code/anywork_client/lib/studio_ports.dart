@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'transport_ports.dart';
 import 'src/studio/thread_frames.dart';
-import 'src/studio/chat_contract.dart';
 import 'src/studio/bootstrap.dart';
 
 export 'src/studio/thread_frames.dart';
-export 'src/studio/chat_contract.dart';
+export 'src/studio/timeline_contract.dart';
 export 'src/studio/bootstrap.dart';
 
 abstract interface class RuntimeTransport {
@@ -56,19 +56,12 @@ abstract interface class PersistenceQueueReader {
   Future<PersistenceQueueSnapshot> readPersistenceQueue();
 }
 
-/// 生产聊天内容出口：打开该会话的有界 ChatView。
-///
-/// 这是正文显示的必要能力，不是可选后备。生产数据源与可证明内容路径的测试替身
-/// 必须实现它；缺少实现时 store 把内容同步标为失败，而不是静默当成空窗口。
-abstract interface class ChatWindowReader {
-  Future<StudioChatWindow> openChatWindow(String threadId);
-}
-
 abstract class StudioTransport
     implements
         RuntimeTransport,
         AttachmentTransport,
         BootstrapTransport,
+        TimelineTransport,
         CommandTransport {
   /// Exit admission belongs to this application transport instance.
   void sealForShutdown() {}

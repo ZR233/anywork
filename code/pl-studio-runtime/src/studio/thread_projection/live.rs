@@ -1060,7 +1060,7 @@ impl LiveProjection {
         // 身份不复查（`adopt_revisions` 跳过 `self.items` 持有的 id），只有冷恢复/被淘汰后重现的身份才
         // 由放置元数据恢复；同一条目因此绝不因为缓存淘汰而从 1 重编、被会话当成旧帧丢弃。
         self.adopt_revisions(&existing);
-        // 每一条目的窗口版本由本投影自己的内容版本给出，和 effect 序号（提交 / 可靠保存水位）无关：
+        // 每一条目的内容版本由本投影自己的内容版本给出，和 effect 序号（提交 / 可靠保存水位）无关：
         // Turn 绑定、正文、结构或终态状态真的变了才递增，否则沿用旧版本（例如只推进 saved 的保存确认，
         // 或与上次完全相同的重新投影）。该版本同时被流式预览使用，因此同一身份的预览与终态沿同一个
         // 计数器收束，终态不会被预览版本挡住，旧保存回执也无法确认它没写过的新载荷。
@@ -1499,17 +1499,16 @@ impl LiveProjection {
         revision: u64,
         entry: &LivePreview,
     ) -> Result<(), ProjectionError> {
-        chat.publish_preview(ChatItem {
+        chat.publish_preview(ChatItem::complete(pl_core::chat::ChatItemParts {
             item_id: id.to_owned(),
             turn_id: turn_id.to_owned(),
             order: entry.order,
             revision,
             fields: entry.fields.clone(),
             meta: entry.meta.clone(),
-            omitted_bytes: 0,
             saved: false,
             lifecycle: ChatLifecycle::Streaming,
-        })
+        }))
         .map_err(|error| ProjectionError::History(error.to_string()))
     }
 
@@ -1548,14 +1547,10 @@ impl LiveProjection {
         if chat.assigned_order(id).is_none() {
             return Ok(());
         }
-        let Some(item) = chat
-            .read_item(id)
-            .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-        else {
+        let Some(revision) = chat.resident_revision(id) else {
             return Ok(());
         };
-        self.raise_revision(id, item.revision);
+        self.raise_revision(id, revision);
         Ok(())
     }
 
@@ -1711,17 +1706,16 @@ impl LiveProjection {
     ) -> Result<Vec<(String, ThreadItem)>, ProjectionError> {
         self.provider_previews(attempt_id)
             .map(|(id, preview)| {
-                let item = ChatItem {
+                let item = ChatItem::complete(pl_core::chat::ChatItemParts {
                     item_id: id.clone(),
                     turn_id: turn_id.to_owned(),
                     order: preview.order,
                     revision: self.revisions.get(id).copied().unwrap_or(0),
                     fields: preview.fields.clone(),
                     meta: preview.meta.clone(),
-                    omitted_bytes: 0,
                     saved: false,
                     lifecycle: ChatLifecycle::Streaming,
-                };
+                });
                 crate::studio::runtime::chat_item::canonical_item(&item)
                     .map(|item| (id.clone(), item))
                     .map_err(|error| ProjectionError::History(error.to_string()))

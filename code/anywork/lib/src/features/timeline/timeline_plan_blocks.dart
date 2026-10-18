@@ -14,15 +14,7 @@ class TimelinePlanSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    void toggle() {
-      _TimelineItemLayoutScope.report(
-        context,
-        expanded
-            ? _TimelineLayoutChangeKind.collapse
-            : _TimelineLayoutChangeKind.expand,
-      );
-      onPressed();
-    }
+    void toggle() => onPressed();
 
     final summary = plan.summary;
     final title = plan.title.isEmpty
@@ -128,23 +120,21 @@ class TimelinePlanSummaryCard extends StatelessWidget {
 /// 不出现这张卡（那时只有唯一的摘要入口），answered 之后也不因后续修订而改写。
 /// 决定标记只用于选择本地化文案，`Approve` / `Revise` 这类内部标记不进入正文。
 class _PlanConfirmationReceipt extends StatelessWidget {
-  const _PlanConfirmationReceipt({required this.row, required this.receipt});
+  const _PlanConfirmationReceipt({required this.itemId, required this.receipt});
 
-  final TimelineUserInputRow row;
+  /// 承载这条计划回执的 canonical 工具条目身份。
+  final String itemId;
   final PlanConfirmationReceiptView receipt;
 
   @override
   Widget build(BuildContext context) {
-    final controller = _TimelineExpansionScope.controllerOf(context, row.id);
     final status = _planReceiptStatus(context, receipt.decision);
     final title = receipt.title;
     return StudioPanel(
       backgroundColor: context.colors.surfaceContainerLowest,
       radius: StudioRadii.md,
       child: ExpansionTile(
-        key: StudioDriverKeys.timelinePlanReceipt(row.id),
-        controller: controller,
-        initiallyExpanded: controller.isExpanded,
+        key: StudioDriverKeys.timelinePlanReceipt(itemId),
         maintainState: false,
         dense: true,
         minTileHeight: 44,
@@ -152,12 +142,6 @@ class _PlanConfirmationReceipt extends StatelessWidget {
         childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
         shape: const Border(),
         collapsedShape: const Border(),
-        onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
-          context,
-          expanded
-              ? _TimelineLayoutChangeKind.expand
-              : _TimelineLayoutChangeKind.collapse,
-        ),
         title: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
@@ -189,7 +173,7 @@ class _PlanConfirmationReceipt extends StatelessWidget {
               ),
         children: [
           _PlanReceiptReply(
-            key: StudioDriverKeys.timelinePlanReceiptReply(row.id),
+            key: StudioDriverKeys.timelinePlanReceiptReply(itemId),
             receipt: receipt,
           ),
         ],

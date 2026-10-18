@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,6 +5,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 import 'window_control.dart';
 
 /// Fully condition-driven realtime acceptance journey.
@@ -692,14 +692,12 @@ class RealtimeJourney {
     final terminalAt = DateTime.now().millisecondsSinceEpoch;
     final settled = await awaitSettled(turn, 'reasoning');
     await observe('reasoning_complete', settled);
-    final rows = timelineRows(settled);
-    final reasoningIndex = rows.indexWhere(
-      (row) => row['type'] == 'activityGroup',
-    );
+    final rows = TimelineObservation.parse(settled).items;
+    final reasoningIndex = rows.indexWhere((item) => item.kind == 'reasoning');
     final answerIndex = rows.indexWhere(
-      (row) =>
-          row['type'] == 'finalAnswer' &&
-          (row['text'] as String? ?? '').contains(_answers['reasoning']!),
+      (item) =>
+          item.kind == 'agentMessage' &&
+          item.text.contains(_answers['reasoning']!),
     );
     timings['reasoning'] = {
       'submittedAt': context.submittedAt,
@@ -708,9 +706,7 @@ class RealtimeJourney {
       'durableSettledAt': DateTime.now().millisecondsSinceEpoch,
       'timeToFirstContentMillis': firstContentAt - context.submittedAt,
       'terminalStatus': turnStatus(terminal),
-      'reasoningRows': rows
-          .where((row) => row['type'] == 'activityGroup')
-          .length,
+      'reasoningRows': rows.where((item) => item.kind == 'reasoning').length,
     };
     checks['reasoningThenAnswer'] =
         reasoningIndex >= 0 && answerIndex > reasoningIndex;
@@ -820,7 +816,7 @@ class RealtimeJourney {
     final previousIdentity = expandedActivityIdentity;
     final wantIdentityReset = previousIdentity != null && activityLeftExpanded;
     final samples = <Map<String, Object?>>[];
-    var projectionHasFields = false;
+    var typedToolPreviewSeen = false;
     var activityFieldSeen = false;
     var observedGrowth = false;
     var identityResetObserved = false;
@@ -847,8 +843,8 @@ class RealtimeJourney {
         checks['activityIdentityResetsCollapse'] = true;
       }
       // (b) In-flight typed stdout growth of the same call identity.
-      if (_timelineExposesInFlightToolFields(snapshot)) {
-        projectionHasFields = true;
+      if (_timelineExposesTypedToolPreview(snapshot)) {
+        typedToolPreviewSeen = true;
       }
       final sample = _liveToolProgressSample(snapshot, callId);
       if (sample != null) {
@@ -895,11 +891,10 @@ class RealtimeJourney {
     }
     counts['longCommandProgressSamples'] = samples.length;
     observations['longCommandProgress'] = samples;
-    if (!projectionHasFields) {
+    if (!typedToolPreviewSeen) {
       pendingEvidence.add(
-        'long-command in-flight output: the timeline tool projection exposes no '
-        'typed output/progressBytes/itemRevision fields, so the mid-flight stdout '
-        'growth of $callId is pending an integrated Driver build',
+        'long-command in-flight output: no typed tool preview was observed for '
+        '$callId, so the mid-flight stdout growth is pending a real observation',
       );
     } else {
       checks['longCommandInFlightOutputGrows'] = observedGrowth;
@@ -1207,7 +1202,7 @@ class RealtimeJourney {
       'switching is exercised by the stress-body journey',
     );
 
-    await _contentDeliveryContract();
+    await _loadedTimelineContract();
     await _windowResizeContract();
 
     final scroll = timelineScroll(settled);
@@ -1235,24 +1230,23 @@ class RealtimeJourney {
     if (geometry.maxScrollExtent == 0) {
       checks['shortMessageSticksBottom'] =
           geometry.pixels == 0 &&
-          (geometry.bottomSlack > 0 || geometry.followingBottom);
+          (geometry.atLiveEdge || geometry.maxScrollExtent == 0);
     } else {
       // Scrollable conversation: at rest it must follow the bottom.
       // `extentAfter` is a public field, so it is read into a local before the
       // null check: field access cannot be promoted across the `||`.
       final extentAfter = geometry.extentAfter;
       checks['timelineFollowsBottom'] =
-          geometry.followingBottom &&
-          (extentAfter == null || extentAfter <= 1.0);
+          geometry.atLiveEdge && (extentAfter == null || extentAfter <= 1.0);
     }
     // Up-scrolling into history must keep the user's anchor instead of yanking
     // the view back to the latest row.
     if (geometry.maxScrollExtent > 0) {
-      await _historyAnchorContract(settled);
+      await _historyContract(settled);
     } else {
       pendingEvidence.add(
-        'history anchor: conversation is shorter than the viewport, so '
-        'up-scroll anchor retention is pending a longer transcript',
+        'history: conversation is shorter than the viewport, so leaving the '
+        'live edge is pending a longer transcript',
       );
     }
   }
@@ -1363,37 +1357,39 @@ class RealtimeJourney {
     };
   }
 
-  /// Records the Driver-only content-delivery counters.
+  /// Records what this generation actually loaded.
   ///
-  /// `contentDelivery.bodyUtf8Bytes` counts UTF-8 bytes of the body text the UI
-  /// actually delivered, an *application payload* measure. It is deliberately
-  /// never an FRB/wire byte count and is kept apart from the fixture's synthetic
-  /// provider output bytes.
-  Future<void> _contentDeliveryContract() async {
-    final delivery = contentDelivery(await snapshot());
-    if (delivery == null) {
+  /// 计数来自当前 stock controller 的消息集合与其 typed 预览：身份数、预览字节和
+  /// 详情声明。它们是应用层已交付数据，不是 FRB/wire 字节，也从不作为常量内存证明。
+  Future<void> _loadedTimelineContract() async {
+    final state = await snapshot();
+    final timeline = TimelineObservation.optional(state);
+    if (timeline == null) {
       pendingEvidence.add(
-        'content delivery: snapshot exposes no contentDelivery field, so the '
-        'application-payload byte counters are pending an integrated Driver '
-        'build; the provider output bytes are never used as a wire measure',
+        'loaded timeline: the snapshot exposes no display facts for the selected '
+        'thread, so item identities and preview bytes are pending',
       );
       return;
     }
-    if (delivery['enabled'] != true) {
-      pendingEvidence.add(
-        'content delivery: contentDelivery is present but disabled '
-        '(enabled=${delivery['enabled']}), so no application-payload counters '
-        'were collected',
-      );
-      return;
-    }
-    counts['contentDelivery'] = delivery;
-    checks['contentDeliveryLabeled'] =
-        delivery['metric'] == 'application-payload';
+    counts['loadedItems'] = timeline.itemCount;
+    counts['loadedPreviewBytes'] = timeline.items.fold<int>(
+      0,
+      (total, item) => total + item.textBytes,
+    );
+    counts['truncatedItems'] = timeline.items
+        .where((item) => item.textTruncated)
+        .length;
+    counts['detailFields'] = timeline.items.fold<int>(
+      0,
+      (total, item) => total + item.details.length,
+    );
+    checks['loadedTimelineFacts'] =
+        timeline.itemCount == timeline.items.length &&
+        timeline.itemIds.length == timeline.itemCount;
     pendingEvidence.add(
-      'content delivery: contentDelivery.bodyUtf8Bytes is an '
-      'application-payload UTF-8 measure of the delivered body text; it is not '
-      'FRB/wire bytes and stays separate from the fixture provider output bytes',
+      'loaded timeline: preview bytes are an application-payload measure of the '
+      'currently loaded canonical items; they are not FRB/wire bytes and are not '
+      'a constant-memory claim',
     );
   }
 
@@ -1699,7 +1695,9 @@ class RealtimeJourney {
     // the actual `expanded` state.
     counts['activityExpandableCapability'] = expandedView?['expandable'];
     // The same identity must stay expanded across a *new* update. The revision
-    // token must advance, so this is never a re-read of the same snapshot. This is
+    // token must advance through some typed content domain (final text, reasoning
+    // summary/body, tool progress), so this is never a re-read of the same
+    // snapshot and never keyed on one domain only. This is
     // gathered BEFORE the window resize: the resize is the slowest observation, so
     // the revision evidence is taken first and every phase stays tied to this
     // exact activity identity instead of racing the stream window.
@@ -1722,6 +1720,10 @@ class RealtimeJourney {
     expandedActivityIdentity = identity;
     counts['activityRevisionBefore'] = revisionBefore;
     counts['activityRevisionAfter'] = _streamingRevision(advanced);
+    // 真实内容域 before/after：说明这次“新更新”来自推理/工具/文本的哪一域，
+    // 不只是聚合 token 变了。
+    counts['activityDomainBefore'] = contentDomainProgress(expanded);
+    counts['activityDomainAfter'] = contentDomainProgress(advanced);
     // The real expanded layout is recorded while the details are open: the wide
     // window first, then the narrow window (restored immediately after). Both are
     // still on the same identity that was just confirmed expanded across updates.
@@ -1768,6 +1770,8 @@ class RealtimeJourney {
     checks['activityCollapsePersists'] =
         conversationActivity(recollapsed)?['expanded'] == false;
     counts['activityCollapseRevisionAfter'] = _streamingRevision(recollapsed);
+    counts['activityCollapseDomainBefore'] = contentDomainProgress(collapsed);
+    counts['activityCollapseDomainAfter'] = contentDomainProgress(recollapsed);
     // Leave the live activity expanded again so the cross-identity contract
     // observes a real reset on the next activity rather than asserting that an
     // already-collapsed bar stays collapsed.
@@ -1797,26 +1801,26 @@ class RealtimeJourney {
   /// drags the pointer in fixed bounded steps — the same fixed-step, live-geometry
   /// mechanism the long-body stress journey uses — until the view has really left
   /// the bottom while a live assistant row is the topmost visible row, then
-  /// confirms that anchor does not move on a later poll.
-  Future<void> _historyAnchorContract(Map<String, dynamic> settled) async {
-    if (_assistantRowIds(settled).isEmpty) {
-      pendingEvidence.add(
-        'history anchor: no assistant final-answer row identity is available in '
-        'the current window to anchor on',
-      );
-      return;
-    }
+  /// 真实上翻进入 History 后，已展示结构必须冻结；新代次只由显式动作建立。
+  ///
+  /// 判定只读当前展示事实：模式、代次、已加载身份与当前标准 controller 几何。这里
+  /// 没有 anchor/restore/pin 状态，也不写 pixels。
+  Future<void> _historyContract(Map<String, dynamic> settled) async {
+    final settledTimeline = TimelineObservation.optional(settled);
     final settledScroll = timelineScroll(settled);
     final before = settledScroll == null
         ? null
         : _scrollGeometry(settledScroll);
+    if (settledTimeline == null || before == null || !before.laidOut) {
+      pendingEvidence.add(
+        'history: the selected thread exposes no laid-out timeline geometry, so '
+        'leaving the bottom is pending',
+      );
+      return;
+    }
     var current = settled;
-    var geometry = before;
+    _ScrollGeometry? geometry = before;
     var steps = 0;
-    // Per-step live geometry, including the UI10 drag diagnostics, so a reviewer
-    // can tell whether the pointer drags ever reached the scroll view
-    // (`userDragUpdates`) or were moved by a programmatic restore
-    // (`programmaticScroll`).
     final history = <Map<String, Object?>>[
       <String, Object?>{'phase': 'start', ..._historyStep(current)},
     ];
@@ -1825,12 +1829,8 @@ class RealtimeJourney {
       // negative value would keep feeding content from below. Every step is
       // bounded, so a stuck view reports real geometry instead of hanging.
       while (steps < _maxHistoryScrollSteps) {
-        final anchor = _anchorId(timelineScroll(current));
-        if (_leftBottom(geometry) &&
-            anchor != null &&
-            _assistantRowIds(current).contains(anchor)) {
-          break;
-        }
+        final timeline = TimelineObservation.parse(current);
+        if (timeline.isHistory && _leftBottom(geometry)) break;
         await driver.scrollBy(
           find.byValueKey('timeline-scrollable'),
           _historyScrollStep,
@@ -1844,57 +1844,87 @@ class RealtimeJourney {
           ..._historyStep(current),
         });
       }
-    } catch (error) {
-      await _writeJson('realtime-history-anchor.json', <String, Object?>{
+    } on Object catch (error) {
+      await _writeJson('realtime-history.json', <String, Object?>{
         'steps': history,
         'error': '$error',
       });
       pendingEvidence.add(
-        'history anchor: Driver could not scroll the timeline ($error)',
+        'history: Driver could not scroll the timeline ($error)',
       );
       return;
     }
-    await _writeJson('realtime-history-anchor.json', <String, Object?>{
+    await _writeJson('realtime-history.json', <String, Object?>{
       'steps': history,
       'final': _historyStep(current),
     });
     await observe('history_detached', current);
     await shot('history-detached');
-    final scroll = timelineScroll(current);
-    final anchorBefore = _anchorId(scroll);
-    // Leaving the bottom is proven from the live geometry, not from the scroll
-    // request: the viewport moved up (pixels decreased) with content still below.
-    final detached =
-        _leftBottom(geometry) &&
-        before != null &&
-        geometry != null &&
-        geometry.pixels < before.pixels - 1.0;
-    checks['historyScrollDetachesBottom'] = detached;
-    // The anchor row must be one of the assistant final-answer rows present in
-    // the window the observation came from, so a user or tool row cannot stand in
-    // for the reading position.
-    checks['historyAssistantAnchor'] =
-        detached &&
-        anchorBefore != null &&
-        _assistantRowIds(current).contains(anchorBefore);
+    final detachedTimeline = TimelineObservation.parse(current);
+    final detached = _leftBottom(geometry) && detachedTimeline.isHistory;
+    checks['historyScrollDetachesBottom'] = detached && steps > 0;
     counts['historyScrollSteps'] = steps;
-    counts['historyAnchorOffset'] = _anchorOffset(scroll);
-    counts['historyDetachedByUser'] = scroll?['detachedByUser'];
-    counts['historyProgrammaticScroll'] = scroll?['programmaticScroll'];
-    counts['historyUserDragUpdates'] = scroll?['userDragUpdates'];
-    counts['historyPixelsBefore'] = before?.pixels;
+    counts['historyMode'] = detachedTimeline.mode;
+    counts['historyGeneration'] = detachedTimeline.generation;
+    counts['historyPixelsBefore'] = before.pixels;
     counts['historyPixelsAfter'] = geometry?.pixels;
     counts['historyExtentAfter'] = geometry?.extentAfter;
-    // A later poll must not move the anchor the user is reading.
+    counts['historyLoadedItems'] = detachedTimeline.itemCount;
+    // 冻结：后续真实输出只提示，不替换已展示身份，也不换代。
     final after = await snapshot();
-    final anchorAfter = _anchorId(timelineScroll(after));
-    checks['historyAnchorRetained'] =
-        anchorBefore != null && anchorBefore == anchorAfter;
+    final afterTimeline = TimelineObservation.parse(after);
+    checks['historyStaysFrozen'] =
+        afterTimeline.isHistory &&
+        afterTimeline.generation == detachedTimeline.generation &&
+        detachedTimeline.itemIds.every(afterTimeline.itemIds.contains);
+    // 回到冻结集合的本地底端仍是同一个 History 代次。
+    final bottomDeadline = DateTime.now().add(const Duration(seconds: 20));
+    var atBottom =
+        TimelineScrollObservation.optional(after)?.atLiveEdge == true;
+    while (!atBottom && DateTime.now().isBefore(bottomDeadline)) {
+      await driver.scrollBy(
+        find.byValueKey('timeline-scrollable'),
+        -_historyScrollStep,
+        timeout: const Duration(seconds: 15),
+      );
+      final state = await snapshot();
+      atBottom = TimelineScrollObservation.optional(state)?.atLiveEdge == true;
+    }
+    final frozenBottom = await snapshot();
+    final frozenTimeline = TimelineObservation.parse(frozenBottom);
+    checks['historyBottomStaysFrozen'] =
+        atBottom &&
+        frozenTimeline.isHistory &&
+        frozenTimeline.generation == detachedTimeline.generation;
+    // 显式回到实时才建立新代次。
+    final beforeReturn = TimelineObservation.parse(await snapshot());
+    await driver.rawTap(find.byValueKey('timeline-return-live'));
+    final returnDeadline = DateTime.now().add(const Duration(seconds: 30));
+    var resumed = false;
+    while (DateTime.now().isBefore(returnDeadline)) {
+      final state = await snapshot();
+      final timeline = TimelineObservation.optional(state);
+      final scroll = TimelineScrollObservation.optional(state);
+      if (timeline != null &&
+          timeline.isLive &&
+          !timeline.preparingLive &&
+          timeline.generation > beforeReturn.generation &&
+          scroll != null &&
+          scroll.laidOut &&
+          !scroll.isScrolling &&
+          scroll.atLiveEdge) {
+        resumed = true;
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    checks['explicitReturnLiveNewGeneration'] = resumed;
   }
 
   bool _leftBottom(_ScrollGeometry? geometry) =>
       geometry != null &&
-      geometry.followingBottom == false &&
+      geometry.laidOut &&
+      !geometry.atLiveEdge &&
       (geometry.extentAfter ?? 0) > _minDetachedExtentAfter;
 
   _ScrollGeometry? _scrollGeometryOf(Map<String, dynamic> snapshot) {
@@ -1902,20 +1932,21 @@ class RealtimeJourney {
     return scroll == null ? null : _scrollGeometry(scroll);
   }
 
-  /// One history-step observation: the live scroll geometry plus the UI10 drag
-  /// diagnostics that say whether a real drag reached the scroll view.
+  /// One history-step observation: the current display facts plus the standard
+  /// controller geometry.
   Map<String, Object?> _historyStep(Map<String, dynamic> snapshot) {
-    final scroll = timelineScroll(snapshot);
+    final scroll = TimelineScrollObservation.optional(snapshot);
+    final timeline = TimelineObservation.optional(snapshot);
     return <String, Object?>{
-      'anchorItemId': _anchorId(scroll),
-      'anchorOffset': _anchorOffset(scroll),
-      'pixels': _num(scroll?['pixels']),
-      'maxScrollExtent': _num(scroll?['maxScrollExtent']),
-      'extentAfter': _num(scroll?['extentAfter']),
-      'followingBottom': scroll?['followingBottom'],
-      'detachedByUser': scroll?['detachedByUser'],
-      'programmaticScroll': scroll?['programmaticScroll'],
-      'userDragUpdates': scroll?['userDragUpdates'],
+      'mode': timeline?.mode,
+      'generation': timeline?.generation,
+      'itemCount': timeline?.itemCount,
+      'hasNewOutput': timeline?.hasNewOutput,
+      'pixels': scroll?.pixels,
+      'maxScrollExtent': scroll?.maxScrollExtent,
+      'extentAfter': scroll?.extentAfter,
+      'atLiveEdge': scroll?.atLiveEdge,
+      'isScrolling': scroll?.isScrolling,
     };
   }
 
@@ -2042,55 +2073,95 @@ class RealtimeJourney {
 }
 
 int assistantContentCount(Map<String, dynamic> snapshot) {
-  return timelineRows(snapshot)
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  return timeline.items
       .where(
-        (row) => const {
-          'activityGroup',
-          'commentary',
-          'finalAnswer',
-        }.contains(row['type']),
+        (item) =>
+            const {'agentMessage', 'reasoning', 'toolCall'}.contains(item.kind),
       )
       .length;
 }
 
 int reasoningCount(Map<String, dynamic> snapshot) =>
-    timelineRows(snapshot)
-        .where((row) => row['type'] == 'activityGroup')
-        .length;
+    TimelineObservation.optional(snapshot)?.ofKind('reasoning').length ?? 0;
 
 /// A token of observable content progress for the current turn.
 ///
-/// It grows whenever assistant text is appended or a row is added (and includes
-/// the Driver-only delivery counters when they are enabled), so a later
-/// observation can be proven to be a *new* update rather than a re-read of the
-/// same snapshot. It is an evidence token, never a performance measurement.
+/// 各个**内容域**独立推进：新增条目、文本长度／字节、每个 canonical 条目的 typed
+/// 内容 revision、逐字段详情引用的完整长度与预览长度（推理摘要、推理正文、工具参数
+/// 与结果、原始记录等），以及工具结果的实时进度字节。推理正文不落在 `item.text`
+/// 上，只看最终文本长度会漏掉整个推理流。
+///
+/// 只消费当前 snapshot 的 typed 事实：不读 `saved`／`terminal`／订阅版本，也不把
+/// 重读同一快照当进展（同一快照得到的 token 完全相同）。这是证据 token，不是性能
+/// 指标。
 int _streamingRevision(Map<String, dynamic> snapshot) {
-  var revision = 0;
-  final delivery = contentDelivery(snapshot);
-  if (delivery != null && delivery['enabled'] == true) {
-    final patches = delivery['patches'];
-    final changes = delivery['contentChanges'];
-    if (patches is int) revision += patches;
-    if (changes is int) revision += changes;
-  }
-  final rows = timelineRows(snapshot);
-  revision += rows.length;
-  for (final row in rows) {
-    final text = row['text'];
-    if (text is String) revision += text.length;
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  var revision = timeline.itemCount;
+  for (final item in timeline.items) {
+    // canonical 条目内容 revision：一次内容变更只推进一次；保存确认只翻转同一
+    // revision 的 saved，因此它不是“保存进度”。
+    revision += item.revision;
+    revision += item.text.length + item.textBytes;
+    for (final detail in item.details) {
+      // 详情引用的 revision 是所属条目的当前版本（不重复计入）；字段的完整长度与
+      // 预览长度反映该内容域的真实增长，包含推理摘要／推理正文等不在 text 的域。
+      revision += detail.totalBytes + detail.previewBytes;
+    }
+    revision += item.tool?.progressBytes ?? 0;
   }
   return revision;
 }
 
+/// 各内容域的真实进展事实（诊断用），说明 token 的增长来自哪个域。
+///
+/// 推理摘要/推理正文/工具参数与结果/最终文本是不同内容域：这里分别给出条目
+/// revision 之和、逐字段详情字节、文本字节、工具进度字节，以及推理条目的 revision
+/// 列表。只读当前 snapshot，不改状态、不读 `saved`／`terminal`。
+Map<String, Object?> contentDomainProgress(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) {
+    return const <String, Object?>{'present': false};
+  }
+  var itemRevisions = 0;
+  var detailBytes = 0;
+  var textBytes = 0;
+  var toolProgressBytes = 0;
+  final reasoningRevisions = <int>[];
+  for (final item in timeline.items) {
+    itemRevisions += item.revision;
+    textBytes += item.textBytes;
+    for (final detail in item.details) {
+      detailBytes += detail.totalBytes + detail.previewBytes;
+    }
+    toolProgressBytes += item.tool?.progressBytes ?? 0;
+    if (item.kind == 'reasoning') reasoningRevisions.add(item.revision);
+  }
+  return <String, Object?>{
+    'present': true,
+    'itemCount': timeline.itemCount,
+    'itemRevisions': itemRevisions,
+    'detailBytes': detailBytes,
+    'textBytes': textBytes,
+    'toolProgressBytes': toolProgressBytes,
+    'reasoningItemRevisions': reasoningRevisions,
+    'token': _streamingRevision(snapshot),
+  };
+}
+
+/// 真正的最终回答数量：只统计 `channel == finalAnswer`，不把进度/解释混入。
 int answerCount(Map<String, dynamic> snapshot) =>
-    timelineRows(snapshot).where((row) => row['type'] == 'finalAnswer').length;
+    TimelineObservation.optional(snapshot)?.items
+        .where((item) => item.isFinalAnswer)
+        .length ??
+    0;
 
 bool answerContains(Map<String, dynamic> snapshot, String needle) =>
-    timelineRows(snapshot).any(
-      (row) =>
-          row['type'] == 'finalAnswer' &&
-          (row['text'] as String? ?? '').contains(needle),
-    );
+    TimelineObservation.optional(snapshot)?.items
+        .any((item) => item.isFinalAnswer && item.text.contains(needle)) ??
+    false;
 
 /// Number of assistant answers carrying `needle`.
 ///
@@ -2098,25 +2169,33 @@ bool answerContains(Map<String, dynamic> snapshot, String needle) =>
 /// both background receipts, and the runtime may batch the delivered results
 /// into one model step, so one answer may legitimately cover both commands.
 int answerMatchCount(Map<String, dynamic> snapshot, String needle) =>
-    timelineRows(snapshot)
-        .where(
-          (row) =>
-              row['type'] == 'finalAnswer' &&
-              (row['text'] as String? ?? '').contains(needle),
-        )
-        .length;
+    TimelineObservation.optional(snapshot)?.items
+        .where((item) => item.isFinalAnswer && item.text.contains(needle))
+        .length ??
+    0;
 
+/// The typed tool previews of the current generation, in canonical order.
+///
+/// 字段来自 `TimelineToolFacts`：完整参数/结果只在详情查看器里读取，这里保留的是
+/// 后端脱敏后的有界预览。
 List<Map<String, dynamic>> execTools(Map<String, dynamic> snapshot) {
   final tools = <Map<String, dynamic>>[];
-  for (final row in timelineRows(snapshot)) {
-    final rowTools = row['tools'];
-    if (rowTools is List) {
-      tools.addAll(
-        rowTools.whereType<Map<String, dynamic>>().where(
-          (tool) => tool['name'] == 'exec',
-        ),
-      );
-    }
+  for (final item
+      in TimelineObservation.optional(snapshot)?.items ??
+          const <TimelineItemObservation>[]) {
+    final tool = item.tool;
+    if (tool == null || tool.name != 'exec') continue;
+    tools.add(<String, dynamic>{
+      'name': tool.name,
+      'status': tool.status,
+      'callId': tool.callId,
+      'arguments': tool.arguments,
+      'result': tool.result,
+      'output': tool.result,
+      'progressBytes': tool.progressBytes,
+      'itemRevision': tool.itemRevision,
+      'itemId': item.id,
+    });
   }
   return tools;
 }
@@ -2157,24 +2236,15 @@ Map<String, dynamic>? _toolByCallId(
   return null;
 }
 
-/// Whether the timeline tool projection carries the typed in-flight fields.
+/// Whether the selected thread exposes any typed tool preview at all.
 ///
-/// Detected on any tool row (not only the sampled call), so an integrated build
-/// that omits them for one identity is still distinguishable from a build that
-/// never projects them.
-bool _timelineExposesInFlightToolFields(Map<String, dynamic> snapshot) {
-  for (final row in timelineRows(snapshot)) {
-    final tools = row['tools'];
-    if (tools is! List) continue;
-    for (final tool in tools.whereType<Map<String, dynamic>>()) {
-      if (tool.containsKey('output') &&
-          tool.containsKey('progressBytes') &&
-          tool.containsKey('itemRevision')) {
-        return true;
-      }
-    }
-  }
-  return false;
+/// 契约保证每个 toolCall 预览都带 `progressBytes`/`itemRevision`，所以这个谓词只回答
+/// “有没有可采样的工具预览”，**不**声称观察到字段增长；增长由同一调用身份的连续
+/// 采样（progressBytes/outputChars/itemRevision 都前进）判定。
+bool _timelineExposesTypedToolPreview(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return false;
+  return timeline.items.any((item) => item.tool != null);
 }
 
 /// A live sample of one call's typed in-flight stdout.
@@ -2286,25 +2356,79 @@ Map<String, dynamic>? workspaceOf(Map<String, dynamic> snapshot) {
   return workspace is Map<String, dynamic> ? workspace : null;
 }
 
-List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
-  final timeline = workspaceOf(snapshot)?['timeline'];
-  if (timeline is! List) return const [];
-  return timeline.whereType<Map<String, dynamic>>().toList(growable: false);
+/// Acceptance row type of one canonical item: typed user input, authoritative text
+/// channel, tool, or the canonical kind itself.
+String _rowType(TimelineItemObservation item) {
+  if (item.userInput != null) return 'userInput';
+  if (item.isCommentary) return 'commentary';
+  if (item.isFinalAnswer) return 'finalAnswer';
+  if (item.kind == 'toolCall') return 'tool';
+  return item.kind;
 }
 
-/// The assistant final-answer row identities present in the current window.
-List<String> _assistantRowIds(Map<String, dynamic> snapshot) => <String>[
-  for (final row in timelineRows(snapshot))
-    if (row['type'] == 'finalAnswer' && row['id'] is String)
-      row['id'] as String,
-];
+/// Host-side row view over the canonical items of the current generation.
+///
+/// `type` 是验收词汇，不是第二份行模型：它来自 canonical `kind` **加上**权威
+/// `channel`/typed `userInput`。`agentMessage` 同时覆盖 commentary 与 finalAnswer，
+/// 因此回答只能由 `channel == finalAnswer` 判定；问答行保留 plan 判别与权威决定。
+List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return const [];
+  return [
+    for (final item in timeline.items)
+      <String, dynamic>{
+        'id': item.id,
+        'kind': item.kind,
+        'channel': item.channel,
+        'type': _rowType(item),
+        'text': item.text,
+        'status': item.status,
+        'revision': item.revision,
+        'saved': item.saved,
+        'terminal': item.terminal,
+        'callId': item.tool?.callId,
+        'userInput': item.userInput == null
+            ? null
+            : <String, Object?>{
+                'interactionId': item.userInput!.interactionId,
+                'state': item.userInput!.state,
+                'isPlanConfirmation': item.userInput!.isPlanConfirmation,
+                'planDecision': item.userInput!.planDecision,
+              },
+        'tools': <Map<String, dynamic>>[
+          if (item.tool case final tool?)
+            <String, dynamic>{
+              'name': tool.name,
+              'status': tool.status,
+              'callId': tool.callId,
+              'arguments': tool.arguments,
+              'result': tool.result,
+              'output': tool.result,
+              'progressBytes': tool.progressBytes,
+              'itemRevision': tool.itemRevision,
+              'itemId': item.id,
+              'attachments': [
+                for (final attachment in tool.attachments)
+                  <String, Object?>{
+                    'id': attachment.id,
+                    'modality': attachment.modality,
+                    'filename': attachment.filename,
+                    'byteSize': attachment.byteSize,
+                  },
+              ],
+            },
+        ],
+      },
+  ];
+}
 
 Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
   final workspace = workspaceOf(snapshot);
   final details = workspace ?? const {};
   final usage = details['usage'];
   final persistence = snapshot['persistence'];
-  final rows = timelineRows(snapshot);
+  final timeline = TimelineObservation.optional(snapshot);
+  final rows = timeline?.items ?? const <TimelineItemObservation>[];
   final tools = execTools(snapshot);
   return {
     'threadStatus': details['threadStatus'],
@@ -2317,13 +2441,20 @@ Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
     'outputTokens': usage is Map ? usage['outputTokens'] : null,
     'persistenceKind': persistence is Map ? persistence['kind'] : null,
     'pendingCommits': persistence is Map ? persistence['pendingCommits'] : null,
-    'rowCount': rows.length,
-    'rowIds': [for (final row in rows) row['id']],
-    'rowTypes': [for (final row in rows) row['type']],
+    'mode': timeline?.mode,
+    'generation': timeline?.generation,
+    'itemCount': timeline?.itemCount,
+    'itemIds': [for (final item in rows) item.id],
+    'itemKinds': [for (final item in rows) item.kind],
     'answerLengths': [
-      for (final row in rows)
-        if (row['type'] == 'finalAnswer') (row['text'] as String? ?? '').length,
+      for (final item in rows)
+        if (item.isFinalAnswer) item.text.length,
     ],
+    'commentaryLengths': [
+      for (final item in rows)
+        if (item.isCommentary) item.text.length,
+    ],
+    'userInputCount': rows.where((item) => item.userInput != null).length,
     'tools': [
       for (final tool in tools)
         {
@@ -2352,17 +2483,6 @@ Map<String, dynamic>? conversationActivity(Map<String, dynamic> snapshot) {
   return activity is Map<String, dynamic> ? activity : null;
 }
 
-/// The Driver-only content-delivery counters, when the GUI exposes them.
-///
-/// `bodyUtf8Bytes` is a UTF-8 measure of the body text the UI actually delivered
-/// — an *application-payload* number (metric `application-payload`). It is never
-/// an FRB/wire byte count and must not be compared with the fixture's synthetic
-/// provider output bytes.
-Map<String, dynamic>? contentDelivery(Map<String, dynamic> snapshot) {
-  final delivery = snapshot['contentDelivery'];
-  return delivery is Map<String, dynamic> ? delivery : null;
-}
-
 /// The integrated read-only timeline-scroll geometry, when the GUI exposes it.
 Map<String, dynamic>? timelineScroll(Map<String, dynamic> snapshot) {
   final scroll = snapshot['timelineScroll'];
@@ -2371,51 +2491,56 @@ Map<String, dynamic>? timelineScroll(Map<String, dynamic> snapshot) {
 
 double? _num(Object? value) => value is num ? value.toDouble() : null;
 
-String? _anchorId(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  if (anchor is Map && anchor['itemId'] is String) {
-    return anchor['itemId'] as String;
-  }
-  return null;
-}
-
-double? _anchorOffset(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  final offset = anchor is Map ? anchor['offset'] : null;
-  return offset is num ? offset.toDouble() : null;
-}
-
 double? _viewportDimension(Map<String, dynamic>? scroll) =>
     _num(scroll?['viewportDimension']);
 
 class _ScrollGeometry {
   const _ScrollGeometry({
     required this.consistent,
-    required this.followingBottom,
+    required this.atLiveEdge,
+    required this.laidOut,
+    required this.generation,
     required this.pixels,
     required this.maxScrollExtent,
     required this.extentAfter,
-    required this.bottomSlack,
   });
 
   final bool consistent;
-  final bool followingBottom;
+
+  /// 反向列表 offset 0 的几何事实，不等于 Live 模式。
+  final bool atLiveEdge;
+  final bool laidOut;
+  final int generation;
   final double pixels;
   final double maxScrollExtent;
   final double? extentAfter;
-  final double bottomSlack;
 }
 
 _ScrollGeometry? _scrollGeometry(Map<String, dynamic> scroll) {
-  final pixels = _num(scroll['pixels']);
-  final maxScrollExtent = _num(scroll['maxScrollExtent']);
-  if (pixels == null || maxScrollExtent == null) return null;
+  final parsed = TimelineScrollObservation.optional(<String, dynamic>{
+    'timelineScroll': scroll,
+  });
+  if (parsed == null) return null;
+  final pixels = parsed.pixels;
+  final maxScrollExtent = parsed.maxScrollExtent;
+  if (pixels == null || maxScrollExtent == null) {
+    return _ScrollGeometry(
+      consistent: false,
+      atLiveEdge: parsed.atLiveEdge,
+      laidOut: false,
+      generation: parsed.generation,
+      pixels: 0,
+      maxScrollExtent: 0,
+      extentAfter: parsed.extentAfter,
+    );
+  }
   return _ScrollGeometry(
     consistent: pixels >= -0.5 && pixels <= maxScrollExtent + 0.5,
-    followingBottom: scroll['followingBottom'] == true,
+    atLiveEdge: parsed.atLiveEdge,
+    laidOut: parsed.laidOut,
+    generation: parsed.generation,
     pixels: pixels,
     maxScrollExtent: maxScrollExtent,
-    extentAfter: _num(scroll['extentAfter']),
-    bottomSlack: _num(scroll['bottomSlack']) ?? 0,
+    extentAfter: parsed.extentAfter,
   );
 }

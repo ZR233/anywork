@@ -1,15 +1,17 @@
 // Manual companion to the native stress-body-large journey. Attach before the
 // stream starts: cargo dart run test_driver/timeline_scroll.dart <vm-url> <dir>.
-// It drives actual drag/wheel events; snapshots only observe product state.
+// It drives actual drag/wheel events; snapshots only observe the standard
+// timeline facts and the current ScrollController geometry.
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
-import 'pointer_scroll.dart';
 import 'pointer_drag.dart';
+import 'pointer_scroll.dart';
 import 'raw_tap.dart';
 import 'scrollbar_drag.dart';
+import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length != 2) {
@@ -18,18 +20,24 @@ Future<void> main(List<String> args) async {
   final driver = await FlutterDriver.connect(dartVmServiceUrl: args[0]);
   final output = Directory(args[1])..createSync(recursive: true);
   final observations = <String, Object?>{};
-  final timeline = find.byValueKey('timeline-scrollable');
+  final timelineFinder = find.byValueKey('timeline-scrollable');
   await driver.sendCommand(SetFrameSync(false));
 
   Future<Map<String, dynamic>> snapshot() async =>
       (jsonDecode(await driver.requestData('snapshot')) as Map)
           .cast<String, dynamic>();
 
+  Map<String, Object?> geometry(Map<String, dynamic> state) =>
+      <String, Object?>{
+        'timeline': TimelineObservation.parse(state).summary(),
+        'scroll': TimelineScrollObservation.parse(state).toJson(),
+      };
+
   void record(String phase, Map<String, dynamic> state) {
-    observations[phase] = {
-      'bodyLength': _bodyLength(state),
+    observations[phase] = <String, Object?>{
+      'bodyCharacters': _bodyCharacters(state),
       'busy': _busy(state),
-      'scroll': _scroll(state),
+      ...geometry(state),
     };
   }
 
@@ -50,124 +58,149 @@ Future<void> main(List<String> args) async {
     throw StateError('timed out: $label');
   }
 
-  bool idleGeometry(Map<String, dynamic> state) {
-    final scroll = _scroll(state);
-    return scroll['isScrolling'] == false &&
-        scroll['restorePending'] != true &&
-        (scroll['mountedRowCount'] as num? ?? 0) > 0 &&
-        scroll['anchor'] != null;
+  /// 几何与展示都处于稳定态：无在途滚动、无准备中的新代次、几何属于当前代次。
+  bool idle(Map<String, dynamic> state) {
+    final timeline = TimelineObservation.optional(state);
+    final scroll = TimelineScrollObservation.optional(state);
+    return timeline != null &&
+        !timeline.preparingLive &&
+        scroll != null &&
+        scroll.laidOut &&
+        !scroll.isScrolling &&
+        scroll.generation == timeline.generation;
+  }
+
+  bool liveAtEdge(Map<String, dynamic> state) {
+    final timeline = TimelineObservation.optional(state);
+    final scroll = TimelineScrollObservation.optional(state);
+    return timeline != null &&
+        timeline.isLive &&
+        scroll != null &&
+        scroll.atLiveEdge;
   }
 
   Future<void> drag(double dy) async {
-    final ready = await waitFor('drag start geometry', idleGeometry);
-    final before = _scroll(ready)['userDragUpdates'] as int;
+    await waitFor('drag start geometry', idle);
     final drags = observations.putIfAbsent('drags', () => <Object?>[]) as List;
-    drags.add(await driver.sendCommand(PointerDrag(timeline, dy)));
-    // Driver has sent pointer-up, but the last published geometry can still be
-    // from the middle of that drag. Compare anchors only after its idle frame.
-    await waitFor(
-      'drag idle geometry',
-      (state) =>
-          (_scroll(state)['userDragUpdates'] as int) > before &&
-          idleGeometry(state),
+    drags.add(await driver.sendCommand(PointerDrag(timelineFinder, dy)));
+    // Driver 已发出 pointer-up，但最后一次几何可能仍来自拖动中途；等它自己的
+    // 空闲帧后再比较模式与像素。
+    await waitFor('drag idle geometry', idle);
+    final state = await snapshot();
+    final scroll = TimelineScrollObservation.parse(state);
+    record('drag-${drags.length}', state);
+    _require(
+      (dy > 0 && scroll.pixels! > 0.5) || (dy < 0),
+      'drag $dy did not move the viewport',
     );
   }
 
-  Future<void> checkGrowth(Map<String, dynamic> before, String phase) async {
+  /// 阅读期间正文继续增长：已显示身份不变、冻结展示不被替换、模式保持 History。
+  Future<void> checkGrowth(
+    Map<String, dynamic> beforeState,
+    String phase,
+  ) async {
+    final before = TimelineObservation.parse(beforeState);
+    final beforeBody = _bodyCharacters(beforeState);
     final state = await waitFor(
       phase,
       (state) =>
-          (!_busy(state) || _bodyLength(state) > _bodyLength(before) + 16000) &&
-          idleGeometry(state),
+          (!_busy(state) || _bodyCharacters(state) > beforeBody + 16000) &&
+          idle(state),
     );
     record(phase, state);
-    final grew = _bodyLength(state) > _bodyLength(before) + 16000;
+    final after = TimelineObservation.parse(state);
+    final grew = _bodyCharacters(state) > beforeBody + 16000;
     _require(grew || !_busy(state), '$phase did not settle');
-    final a = _scroll(before);
-    final b = _scroll(state);
+    // History 冻结已展示结构（含保存/Remove）：先前身份必须全部保留。
     _require(
-      b['followingBottom'] == a['followingBottom'],
-      '$phase changed reading intent',
+      before.itemIds.every(after.itemIds.contains),
+      '$phase dropped already displayed identities',
     );
-    if (a['followingBottom'] == false) {
-      final beforeAnchor = a['anchor'];
-      final afterAnchor = b['anchor'];
-      if (beforeAnchor is Map && afterAnchor is Map) {
-        _require(
-          beforeAnchor['itemId'] == afterAnchor['itemId'] &&
-              ((beforeAnchor['offset'] as num) - (afterAnchor['offset'] as num))
-                      .abs() <
-                  2,
-          '$phase moved the reading anchor',
-        );
-      }
+    if (before.isHistory) {
+      _require(after.isHistory, '$phase left the frozen history display');
+      _require(
+        after.generation == before.generation,
+        '$phase changed the display generation',
+      );
     }
   }
 
   try {
     var state = await waitFor(
       'initial auto-follow',
-      (state) =>
-          _busy(state) &&
-          _bodyLength(state) > 12000 &&
-          _scroll(state)['followingBottom'] == true &&
-          idleGeometry(state),
+      (state) => _busy(state) && _bodyCharacters(state) > 12000 && idle(state),
     );
     record('autoFollow', state);
+    _require(liveAtEdge(state), 'streaming did not start at the live edge');
     // Less than the near-bottom threshold: new layout must not resume following.
     await drag(40);
     state = await snapshot();
+    var timeline = TimelineObservation.parse(state);
     record('smallUpwardDrag', state);
-    _require(_scroll(state)['followingBottom'] == false, 'drag did not detach');
+    _require(timeline.isHistory, 'drag did not enter history');
+    final historyGeneration = timeline.generation;
     await checkGrowth(state, 'outputWhileReading');
 
-    // Desktop pointer-wheel events advance in bounded platform-sized steps;
-    // issue the same downward step used by the edge journey until the latest
-    // position is reached instead of assuming one event spans the whole body.
+    // 桌面上滚轮按平台步长前进：重复同一步长直到冻结集合的本地底端。
     for (var step = 0; step < 24; step += 1) {
-      await driver.sendCommand(PointerScroll(timeline, 1000000));
+      await driver.sendCommand(PointerScroll(timelineFinder, 1000000));
       state = await snapshot();
-      if (_scroll(state)['followingBottom'] == true) break;
+      if (TimelineScrollObservation.parse(state).atLiveEdge) break;
     }
     state = await waitFor(
-      'wheel back to latest',
+      'wheel back to frozen bottom',
       (state) =>
-          _scroll(state)['followingBottom'] == true && idleGeometry(state),
+          TimelineScrollObservation.optional(state)?.atLiveEdge == true &&
+          idle(state),
     );
-    record('wheelToLatest', state);
+    record('wheelToFrozenBottom', state);
+    timeline = TimelineObservation.parse(state);
+    // 到达本地底端仍是同一个 History 代次：不跨越后台输出、不跳最新。
+    _require(
+      timeline.isHistory && timeline.generation == historyGeneration,
+      'reaching the frozen bottom created a new generation',
+    );
     await checkGrowth(state, 'outputAfterReturning');
 
     await drag(300);
     state = await snapshot();
     record('secondUpwardDrag', state);
     _require(
-      _scroll(state)['followingBottom'] == false,
+      TimelineObservation.parse(state).isHistory,
       'output prevented the second drag',
     );
     await checkGrowth(state, 'outputAfterSecondDrag');
-    final beforeThumb = _scroll(state)['userDragUpdates'] as int;
     observations['streamingThumbDrag'] = await driver.sendCommand(
-      ScrollbarDrag(timeline, -60),
+      ScrollbarDrag(timelineFinder, -60),
     );
-    state = await waitFor(
-      'thumb idle geometry',
-      (state) =>
-          (_scroll(state)['userDragUpdates'] as int) > beforeThumb &&
-          idleGeometry(state),
-    );
+    state = await waitFor('thumb idle geometry', idle);
     record('thumbWhileStreaming', state);
     _require(
-      _scroll(state)['followingBottom'] == false,
-      'thumb drag did not detach',
+      TimelineObservation.parse(state).isHistory,
+      'thumb drag did not enter history',
     );
     await checkGrowth(state, 'outputAfterThumbDrag');
-    await driver.sendCommand(RawTap(find.byValueKey('timeline-jump-latest')));
-    state = await waitFor(
-      'explicit jump to latest',
-      (state) =>
-          _scroll(state)['followingBottom'] == true && idleGeometry(state),
+    // 显式回到实时：新代次、最新小页、offset 0（不由滚轮自动完成）。
+    final beforeReturn = TimelineObservation.parse(await snapshot());
+    await driver.sendCommand(RawTap(find.byValueKey('timeline-return-live')));
+    state = await waitFor('explicit return to live', (state) {
+      final timeline = TimelineObservation.optional(state);
+      final scroll = TimelineScrollObservation.optional(state);
+      return timeline != null &&
+          timeline.isLive &&
+          !timeline.preparingLive &&
+          timeline.generation > beforeReturn.generation &&
+          scroll != null &&
+          scroll.laidOut &&
+          !scroll.isScrolling &&
+          scroll.atLiveEdge;
+    });
+    record('returnToLive', state);
+    _require(
+      (TimelineScrollObservation.parse(state).pixels ?? 1).abs() <= 0.5,
+      'explicit return to live did not start from offset 0',
     );
-    record('jumpToLatest', state);
     observations['checksPassed'] = true;
     await File('${output.path}/screen.png')
         .writeAsBytes(await driver.screenshot());
@@ -183,19 +216,14 @@ Future<void> main(List<String> args) async {
   }
 }
 
-Map<String, dynamic> _scroll(Map<String, dynamic> state) =>
-    (state['timelineScroll'] as Map?)?.cast<String, dynamic>() ?? {};
-
 bool _busy(Map<String, dynamic> state) =>
     (state['workspace'] as Map?)?['isBusy'] == true;
 
-int _bodyLength(Map<String, dynamic> state) {
-  final rows =
-      (state['workspace'] as Map?)?['timelineProgress']?['rows'] as List? ?? [];
-  return rows.fold<int>(
-    0,
-    (total, row) => total + ((row['text'] as String?)?.length ?? 0),
-  );
+/// 已加载消息的正文预览字符总数：随访问页增长，不是常量内存证明。
+int _bodyCharacters(Map<String, dynamic> state) {
+  final timeline = TimelineObservation.optional(state);
+  if (timeline == null) return 0;
+  return timeline.items.fold<int>(0, (total, item) => total + item.text.length);
 }
 
 void _require(bool condition, String message) {

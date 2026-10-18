@@ -4,7 +4,6 @@ pub mod chat;
 pub mod command;
 pub mod error;
 pub mod event;
-pub mod history;
 pub mod product_topic;
 pub mod response;
 pub mod runtime;

@@ -1023,6 +1023,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineNew => 'New';
 
   @override
+  String get timelineLoadEarlier => 'Load earlier messages';
+
+  @override
+  String get timelineBackToLive => 'Back to live';
+
+  @override
+  String get timelineDetailUnavailable => 'This content is no longer available';
+
+  @override
+  String get timelineReconnecting =>
+      'Reconnecting messages… Current content is preserved.';
+
+  @override
+  String get timelineConnectionFailed =>
+      'Unable to synchronize messages. Current content is preserved.';
+
+  @override
   String get timelineReasoningFallback => 'Thinking';
 
   @override

@@ -23,7 +23,7 @@ Cargo.toml 为准；Flutter 应用目录本身不是 workspace 成员，其 Rust
 
 | crate | 所有权 |
 | --- | --- |
-| pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session/ChatView 有界时间线协调 |
+| pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session 内容分页、尾部订阅与详情读取 |
 | pl-model | provider/transport、模型目录、配置值对象、路由、媒体编码、缓存、usage 与核心模型会话适配 |
 | pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、交互、笔记、todo、完成和协作工具 |
 | pl-protocol | Studio 与外围 adapter 使用的产品 wire、DTO、错误和业务状态类型 |
@@ -50,10 +50,10 @@ core 不提供默认工具安装、provider 配置、MCP 目录、产品 working
 ## 2.3 存储与投影
 
 Thread 内存是活动执行状态唯一事实源；core 默认纯内存，导出当前 checkpoint、不可变 effect，
-并负责有界聊天窗口对最近缓存、活动条目、待保存事实和历史查询的统一合并。core 不依赖产品协议；
+并负责 Session 对最近缓存、活动条目、待保存事实和历史查询的统一合并。core 不依赖产品协议；
 core 定义按身份与顺序查询的存储能力，并提供通用 SQLite session store 与 typed Thread checkpoint/effect 查询。
-Studio 负责产品条目投影、产品配置和自己的持久化状态。历史分页由 ChatView 协调，Studio 不能另建 GUI 专用历史缓存或消息
-交接链；冷历史浏览不激活模型、工具或执行 owner。可丢统计由全局 calls 库独立写入。Studio 使用
+Studio 负责产品条目投影、产品配置和自己的持久化状态。历史页、尾部订阅和详情统一由 Session
+内容设施提供，Studio 不能另建 GUI 专用历史缓存或消息交接链；冷历史浏览不激活模型、工具或执行 owner。可丢统计由全局 calls 库独立写入。Studio 使用
 通用扩展 CAS 保存业务状态并提交其模型上下文投影；GUI 只消费 canonical 产品 DTO。Provider 配置
 从 model、工具配置从 tool、业务协议从 protocol 导入，不借 core 镜像导出。
 

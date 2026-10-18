@@ -83,7 +83,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 18] = [
+pub const GUI_SCENARIOS: [&str; 19] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -102,6 +102,7 @@ pub const GUI_SCENARIOS: [&str; 18] = [
     "web-search",
     "shutdown",
     "provider-usage",
+    "timeline-history",
 ];
 
 /// Native compaction exhausts its budget, then a fresh input succeeds and waits
@@ -427,8 +428,8 @@ pub const GUI_STRESS_SESSION_COUNT: usize = 16;
 pub const GUI_STRESS_FOLLOWUP_PROMPT_PREFIX: &str = "Local GUI stress session";
 /// The first multi-item stress session replies with one message whose body is
 /// `Long body 1: ` followed by `content ` repeated this many times. The complete
-/// body is below the native timeline preview budget, so the acceptance can require
-/// it to be delivered whole rather than truncated to a lazy preview.
+/// body exceeds the product preview budget, so acceptance checks its bounded
+/// preview separately from the explicit detail viewer and complete clipboard copy.
 pub const GUI_STRESS_LARGE_SESSION_REPEATS: usize = 16_384;
 pub const GUI_STRESS_LARGE_SESSION_CHARACTERS: usize =
     "Long body 1: ".len() + GUI_STRESS_LARGE_SESSION_REPEATS * "content ".len();
@@ -440,11 +441,10 @@ pub const GUI_STATISTICS_PACED_EVENTS: usize = 25;
 pub const GUI_STRESS_BODY_PROMPT: &str = "Stream the local GUI stress body fixture";
 /// Large-body stress prompt.
 ///
-/// The reply keeps the same single stable item/part, the same event count and the
-/// same nominal rate as [`GUI_STRESS_BODY_PROMPT`], but every increment carries a
-/// wider marker so the delivered body exceeds the 256KiB native timeline body
-/// window. The 220,000-character body stays below that window, so it can never
-/// exercise a body that is genuinely larger than the window.
+/// The reply keeps the same single stable item/part and event count as
+/// [`GUI_STRESS_BODY_PROMPT`], but uses wider markers and separately chosen pacing.
+/// Both variants exceed the product preview budget; this full field also exceeds
+/// the core per-item preview cap. Neither requires an inline full-body upgrade.
 pub const GUI_STRESS_BODY_LARGE_PROMPT: &str = "Stream the local GUI stress body large fixture";
 /// Extra `W` marker characters appended to every large-body increment.
 pub const GUI_STRESS_BODY_LARGE_PAD: usize = 20;
@@ -465,6 +465,16 @@ pub const GUI_STRESS_BODY_LARGE_CHARACTERS: usize =
 /// This changes only the large scenario; the default `stress-body` keeps its
 /// 5,000 token/s, 4s baseline.
 pub const GUI_STRESS_BODY_LARGE_TOKENS_PER_SECOND: u64 = 2_500;
+
+/// Prompts the single `timeline-history` completion.
+///
+/// The reply reuses the [`Reply::PacedSse`] stream the multi-item stress script
+/// already produces: [`GUI_TIMELINE_HISTORY_ITEMS`] independently identified
+/// items in one response, so the native timeline can be judged on real persisted
+/// history entries instead of on one body streamed as many deltas.
+pub const GUI_TIMELINE_HISTORY_PROMPT: &str = "Generate the local timeline history fixture";
+/// Timeline items one `timeline-history` reply delivers.
+pub const GUI_TIMELINE_HISTORY_ITEMS: usize = 20_000;
 
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
@@ -1987,6 +1997,54 @@ fn gui_stress_body_script_with(prompt: &str, pad: usize, tokens_per_second: u64)
             Reply::Sse(responses_text(
                 "Fixture Session 1",
                 "title-1",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+    ]
+}
+
+/// Timeline-history script: one completion returns the shared multi-item stream.
+///
+/// The volume step replays the existing [`Reply::PacedSse`] stream with
+/// [`GUI_TIMELINE_HISTORY_ITEMS`] items, so it needs no second stream generator
+/// and no follow-up sessions: the multi-session stress script stays the only
+/// place that scripts later turns. Only that step is required. The title steps
+/// stay optional like the other GUI journeys, and nothing is scripted after the
+/// reply because the timeline acceptance reads the persisted history from a cold
+/// restart instead of asking the provider for more. A second submission
+/// therefore matches no step and is rejected explicitly rather than answered
+/// from a nearby script.
+pub fn gui_timeline_history_script() -> Vec<Step> {
+    let title_prompt = session_title_prompt(GUI_TIMELINE_HISTORY_PROMPT);
+    vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            title_prompt.clone(),
+            0,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                "title-response",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_TIMELINE_HISTORY_PROMPT,
+            1,
+            Reply::PacedSse {
+                events: GUI_TIMELINE_HISTORY_ITEMS,
+                tokens_per_second: STRESS_TOKENS_PER_SECOND,
+            },
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            title_prompt,
+            2,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                "title-response",
                 "fixture-model",
             )),
         )

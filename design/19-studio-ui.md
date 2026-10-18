@@ -195,7 +195,7 @@ composer dock 只响应 `UserInput` 与 `ToolApproval`。任务计划由 `plan_s
 历史通道，但使用计划专用回执而非普通问答表单：标题表达批准、请求修改或取消，副标题呈现
 计划标题，展开显示完整用户回复。待确认期间不重复呈现计划历史卡，交互和阅读合同见
 [13](./13-plan.md)。回执状态不从工具成功或当前计划状态推演。
-折叠状态属于局部展示意图，单行内容更新不重置用户主动展开；布局变化遵循 §19.10 的统一协调，
+折叠状态属于局部展示意图，单行内容更新不重置用户主动展开；布局与详情遵循 §19.10 的原生组件边界，
 不另加问答专用滚动或前端回答缓存。
 
 以下为 Linux 原生界面的合成问答示例，图片只裁取回执区域，不含真实凭据：
@@ -460,10 +460,10 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 这些可见需求可在隐藏时释放，保留隐藏标签的 UI 状态不要求持续处理无关数据。
 
 页面观察与业务资源寿命分开：provider 的 dispose、暂停和重建只取消它自己的观察订阅，不关闭
-当前 Session/ChatView，不清草稿或扫描附件。打开 Settings、切换设置标签和返回均保留当前
-Thread 的 Client owner、ChatView 与草稿身份；切换 Thread、关闭项目、显式放弃草稿和应用退出
-才由相应 action 改变资源需求。关闭 ChatView 只取消 View 子资源，不关闭 Rust Session、Turn
-writer 或可靠历史。快速切换的旧回调不能清除新窗口、锚点或草稿。
+当前 Session 内容连接，不清草稿或扫描附件。打开 Settings、切换设置标签和返回均保留当前
+Thread 的 Client owner、内容连接与草稿身份；切换 Thread、关闭项目、显式放弃草稿和应用退出
+才由相应 action 改变资源需求。关闭内容连接只取消自身子资源，不关闭 Rust Session、Turn、
+writer 或可靠历史。快速切换的旧回调不能清除新展示集合或草稿。
 
 每个 topic 只有一个 Client 分发点与对应领域 reducer；`lagged`、失败或关闭只影响对应资源，
 重同步期间保留最后有效内容。MCP、LSP、Skills、Provider usage、模型性能、持久化队列与
@@ -661,126 +661,39 @@ running 状态来推测最近 Turn。运行中 Turn 的阶段来自 canonical `t
 
 ## 19.10 连续历史阅读
 
-历史正文仍走 `history.sqlite` 的 keyset 分页（`latest`/`around`/`before`/`after`，大 Turn
-可跨页；窗口上限与页缓存见 [17](./17-studio-storage.md) §17.4），终态提示只属于包含对应
-typed Turn item 的窗口，不以窗口末项猜测整轮终点。完整 Turn 历史消费者保留原查询接口。
+Timeline 的内容源、Live/History、页与详情契约以 [26](./26-timeline-content.md) 为准；
+Client 所有权与关闭见 [25](./25-frontend-state.md)。历史原文仍由唯一投影与 writer 保存，
+首屏只加载最新小页，向旧按 keyset 游标读取，不以当前模型上下文重建历史。
 
-Timeline 的唯一 body owner 是 ChatView：runtime 内部按 Thread 同时持有 history（`history.sqlite`
-的 keyset 页）与 pending（尚未落盘的运行中条目），并由**同一个 view** 交付一个 typed 窗口；Dart
-只消费该窗口的 typed 条目与差量，不自行读 SQL、不合并实时 overlay，也不维护第二份
-`cachedItems` 正文缓存或独立实时尾部队列。职责按「内容窗口」与「状态流」分开：正文只由内容窗口
-（窗口版本 + `UpdateItem` 差量）交付，状态流的 `epoch`/`base_revision` 只判状态事实的新旧与
-连续性，不携带正文。订阅快照只更新 canonical 运行状态与活动预览，不把实时数据写成另一个历史
-尾部队列。
+### 原生列表与消息呈现
 
-打开正在运行的 Thread 时窗口直接包含尚未保存的 pending 条目（可见即可读），不等待 writer
-保存水位、checkpoint 或数据库确认；保存只推进 `saved`/durable 水位，不改变身份、顺序、内容
-revision 与执行终态。状态流重订阅以自己的 owner epoch 判定新旧；ChatView 重开使用新的 view
-身份与 attempt，不跨这两个版本域比较。新 view 必须接受自己的首个 Reset；旧 view 的
-`lastGood` 只供暂时显示，不能作为新 view 的 Patch baseline。旧 attempt 的晚到句柄由原 attempt
-关闭，不得装入当前绑定或清空新状态。
-显式跳到最新时，若当前窗口已包含最新尾部（`hasNewer == false`）则直接本地滚到底部；若已滑出尾部
-（`hasNewer == true`）则由同一个 view 聚焦 `Latest` 交付该 Thread 的最新窗口，不在 Dart 侧读 SQL
-`Latest` 首窗再拼 overlay。阅读历史时实时事件只更新内容与新内容提示，不抢占当前阅读锚点或跟随底部状态。
+固定使用公开 `Chat`、`ChatAnimatedListReversed` 与 `InMemoryChatController`，不替换库列表。
+展示 lease 持有唯一已加载 Message 集合，消息身份来自 canonical item/block；分页前插、流式
+原位更新与新增消息使用控制器公开操作，不逐帧重建整份行表或合并重建跨页活动组。
+视觉分组与消息身份分离，不因页边界改变先前消息的身份、排序和选择注册。
 
-GUI 的历史与实时正文统一由同一个 Client ChatChannel 消费：`initial` 作为首个 Reset 进入唯一
-reducer，然后始终只保留一个未完成的 `next`（控制操作只返回回执，见
-[07](./07-streaming.md) §7.4）；GUI 不再有只读 SQL 的 `Latest`/`before`/`after` 分页旁路，
-HTTP 侧的 `history.sqlite` keyset 只读分页保留给外部消费。增量事件按版本化封套
-（`epoch`/`base_revision`/`revision`）判连续；正文本身不由状态流交付，而是由**唯一内容窗口**
-交付：同一 item 的全部变化合批为一次 `UpdateItem`
-（`expected_revision` 一次基线校验、`revision` 一次内容版本提交，`omitted_bytes`、保存水位
-`saved`、执行终态 `lifecycle` 与可选静态元数据壳随批提交），字段按稳定 `ChatField` 身份输出
-`Append`/`Replace`/`Remove`/`Unchanged`，
-正文按具体文本字段应用而不是向 JSON 字符串追加字节。Patch 的 `from` 必须等于当前 view 已交付
-的版本，缺口只重同步该 view；不把其他 view、owner epoch 或窗口代次的 revision 当作连续基线。
-缺口或 `lagged` 时由对应 owner 从权威窗口重建
-（见 [07](./07-streaming.md) §7.4、[17](./17-studio-storage.md) §17.4）。四个事实互不替代：
-item 内容 `revision`、窗口 `version`、保存水位 `saved` 与执行终态 `ChatLifecycle`。终态只由
-执行事实决定，迟到预览不能把终态条目拉回流式；保存确认只翻 `saved`，不改变身份、顺序、内容
-revision、正文或执行终态，所以终态条目可以尚未保存、已保存条目仍可继续增量。后续 HistoryReader
-页或按身份读回返回同 item ID/revision 后，该终态才算 SQL 确认，非可见正文此时即可释放，
-之后需要时再走同一窗口回源。
+用户、助手 Markdown、推理、工具、任务、交互、图片、压缩、技能、子智能体与轮次异常使用
+封闭 typed 内容 builder。助手和活动行左边缘对齐、节奏紧凑，次级活动摘要弱化且不反复淡入。
+工具默认摘要，参数和结果按需打开有界内部区域或独立详情；图片按需缩略图与原图查看器。
+终态提示来自真实 typed Turn item，不按集合末项猜测整轮终点。
 
-ChatView 是 pending/live/history 的唯一 body owner：未落盘的流式条目与已落盘历史条目在同一个
-canonical 条目集合里按 ordinal 排序，宿主只消费窗口差量，不维护第二份 `cachedItems` 正文缓存、
-也不维护终态正文覆盖层。窗口条目按有界预览交付（`omitted_bytes` 记录省略字节），需要完整正文时用
-**同一个 view** 的按身份读取（`expand`）请求，成功保留后完整正文由下一次
-`next` 的 typed 字段更新（或权威 `Reset`）交付，命令路径只消费回执；客户端不再有
-`kTimelineItemBodyBudget` 之类的截断策略，也不在窗口过期时拼接旧载荷。同一个 view 复用同一个
-`Session`，因此回源不会另开实例、也不会读到别的 Thread 的条目；请求已发出但正文尚未可读时
-条目保持可见并可重试，不当作身份缺席。
+Live 自然位于反向列表底端；History 冻结已显示消息，后台状态与新输出提示继续更新。
+加载更早只前插，不淘汰另一端；滚轮到达冻结集合底端不等于回到实时。显式回实时或发送
+才创建最新小页和新的库列表代次，重开不恢复跨会话像素锚点。
 
-### 渲染组件与行模型
+### 布局与交互边界
 
-Timeline 基于 `flutter_chat_ui`（`Chat`、`ChatAnimatedList`）与 `flutter_chat_core`（`Message`、
-`ChatController`）构建，配合 `scrollview_observer`（`SliverViewObserver`、`SliverObserverController`）
-实现正向消息列表、原位流式更新与有界双向懒加载。每条 `TimelineRow` 映射为具有稳定 `row.id` 的
-`Message`（`TextMessage`、`TextStreamMessage`、`CustomMessage`）：单行流式增量、保存确认、正文补齐与
-状态变化通过 `ChatController.updateMessage` 原位通知对应 `ChatMessageInternal` 子树局部刷新，
-结构增删通过无动画的 `insertAllMessages`/`insertMessage`/`removeMessage` 更新，跨会话或远距跳转通过
-`setMessages(..., animated: false)` 重置，不触发整表重建或移除/插入闪烁。
+父布局分配的逻辑像素决定实际尺寸。宽窗保留最大舒适阅读宽度，窄窗自然收缩，列表使用
+导航、输入区和辅助面板后的剩余高度，不随窗口等比缩放正文、字体或轮滚。
+改变窗口宽高只重排内容，不制造阅读方向或回实时意图。应用不执行逐帧像素纠偏、锚点
+恢复、范围估算或外层边缘轮滚接管。滚轮、拖动、滚动条、键盘及嵌套输入由 Flutter 处理。
 
-展示行使用载荷必需的封闭类型；同轮相邻思考和普通工具组成一个有序活动组。正文、图片读取、
-上下文压缩、技能、智能体通知和轮次终态均独立成行并结束活动组，隐藏的执行元信息不制造
-额外可见行。投影直接遵循 canonical 条目顺序，不以组末成员排序或把早先活动移动到后文。
-图片、压缩和智能体状态直接消费已有 typed 条目，不借旧事件载荷或空值断言补齐。
-轮次异常直接展示窗口内的类型化终态条目，保持该条目的权威位置；不拿当前窗口末项
-推测整轮终点，也不为尚未进入窗口的控制条目创建副本。
+短内容不足一屏时提供显式“加载更早”，与原生分页回调复用同一动作。分页失败显示重试，
+到头与错误分开，旧回包不得修改新的 Thread 或列表代次。回实时操作区保留布局空间，
+显隐不能改变消息视口高度。选择与复制由官方 SelectionArea 管理，不读取失效选区。
 
-助手正文、活动组、图片读取、上下文压缩、技能与子智能体活动行的左边缘保持严格的零偏移垂直对齐，
-行间采用紧凑均匀的垂直节奏，不在每行下方保留固定占高的空白状态栏。活动组默认折叠，头部采用与
-图片读取一致的紧凑内联布局（左侧语义图标 + 单行次级摘要文案 + 紧邻文字右侧的折叠箭头），
-展开后在左侧细竖线引导下按原始顺序展示思考和工具，参数及完整结果按需展开；展开意图在当前有界
-窗口内仅保留一份，回收重建和有共同成员的分组变化保留选择，条目淘汰及会话切换释放。正文保持
-主要字号和对比度，活动摘要采用弱化文字，不为流式摘要文本变化重启动画。
-
-**连接组件**负责观察窗口壳层状态（会话身份、Turn 状态、分页边界与错误态）及 `ChatController`，
-向展示 owner 派发分页、聚焦、正文补齐和锚点意图；**纯显示组件**只接受 props 与回调，不在业务
-provider 与同一份 props 之间选择来源。附件展示通过 Client 公共 query 读取字节，不取得 transport。
-Widget 不直接分页、查询 SQL 或轮询。
-
-### 阅读意图、跟随与锚点
-
-Timeline 区分跟随最新、查看当前条目和主动浏览历史三种阅读意图；窗口内普通滚动由列表本地管理阅读
-位置与自动贴底抑制，不在每次滚动停止时向后端发送 `focus` 请求。Dart 阅读锚点以类型化意图保存身份和
-偏移，重连/重开查看条目时仍读取 Latest 窗口，锚点仍在窗口内则恢复原位置，已被新内容淘汰则回到最新；
-窗口快照交付不抹掉仍有效的查看锚点。主动历史滑窗（`hasNewer == true`）返回或重连时，Client 会话
-owner 在新 attempt 首帧前登记原条目的 focus 恢复；失败显示在历史边缘，用户可显式重试或跳到最新。
-普通 provider/Widget 重建不重新建立这些资源。
-
-用户上翻即暂停自动跟随，即使仍在底部阈值内也保持手动阅读；新输出、内容补齐、图片展开、
-分页和窗口缩放不能恢复跟随。只有用户向下滚回最新端或显式跳到最新，才同时恢复界面跟随
-与 ChatView 的 Latest 聚焦；锚点校正不得取消进行中的拖动。滚轮、触控板与滚动条共用同一个
-Flutter 滚动位置。
-
-### 双向懒加载、扩充与淘汰
-
-超长会话采用三级持久化有界懒加载：
-1. **首屏有界冷读**：首次打开会话仅从 `history.sqlite` 倒序读取最新一页（32 条，单条 256 KiB 预览），
-   极速呈现最新上下文，不全量读取历史。
-2. **双向按页懒加载（`onEndReached` / `onStartReached`）**：由 `ChatAnimatedList` 的向旧（`load(Older)`）
-   与向新（`load(Newer)`）回调驱动，分页能力由 canonical 窗口的 `hasOlder` / `hasNewer` 决定。
-   首屏或折叠后不足一屏且 `hasOlder == true` 时自动按页向旧补齐，直至填满视口或到达历史起点；
-   容量内（`<= 96` 条）向旧补页保持 `Latest` 聚焦与实时尾部连接，超出容量上限时自动淘汰相反方向条目并
-   进入历史滑窗。分页命令返回的 `Future` 等待对应版本的窗口差量帧被消化并写入 `ChatController` 后完成，
-   配合 `SliverObserverController` 在同一帧内恢复视口首行锚点与像素偏移，实现扩窗与滑窗零跳动。
-3. **单条完整正文按需回源（`expand`）**：`omitted_bytes > 0` 的可见正文行或用户展开的工具/推理详情
-   按 `item_id` 触发 `expand`，通过 `ChatController.updateMessage` 原位替换完整正文。
-
-失败保留正文，在对应边缘提供显式重试，另一方向不受影响；加载提示只由当前分页状态驱动，不使用定时器
-延迟或轮询。分页或聚焦改变分组边界时，仍有共同条目的活动组保留展开状态；离开窗口的分组状态随窗口释放。
-
-### 布局协调与阅读位置
-
-所有行按时间顺序使用同一个正向列表，列表只布局视口及少量缓存区域，不为计算滚动范围预先构建整个窗口的
-Markdown、工具详情或图片，也不维护每行 `GlobalKey` 映射或全树爬行测量。可见项检测、离屏索引定位与
-分页像素偏移恢复统一通过 `SliverViewObserver` 与 `SliverObserverController` 完成。长消息只要仍与视口
-相交就继续绘制，不能因行首离开视口而隐藏仍可见的正文。
-
-正文从流式到完成态保持同一选择注册结构，选择菜单和复制由官方 `SelectionArea` 管理，复制只读取当前有效
-选区。正文完整性仅由 ChatView 的省略量声明；工具详情通过有界内部滚动区限制布局高度，而不是通过删减
-正文限制高度。
+连接组件只适配 Client 公共接口、展示 owner 与纯 View；Widget 不直连 SQL、FRB、transport
+或私有 Client 实现。Settings 往返不关闭当前展示 lease，Thread 切换与退出显式释放资源。
 
 ### 正文渲染与图片
 
@@ -802,20 +715,13 @@ Markdown 展示可按内容版本复用，不改变原始文本。超长纯文�
 softWrap/maxLines/widthBasis 等配置下的单段排版等价性须独立验证，不由默认原生配置外推。
 不为指标切分普通短句，也不引入第二份正文事实源。
 
-工具读取图片独立成行，摘要、按需缩略图与大图预览遵循 §19.9 的同一约定；窗口内回收
-保留展开意图，条目淘汰和会话切换释放对应展示状态与缓存。
+工具读取图片独立呈现，摘要、缩略图与原图查看遵循 §19.9；当前 lease 内的展开意图可保留，
+详情关闭、显式回实时、切会话与 lease 退役释放载荷及附件缓存。历史不自动读全或把异步
+全文替换进消息行。可读范围与省略声明必须准确，完整原文可在详情中读取和复制。
 
-「跳到最新」的操作区保留布局空间，显隐不改变消息视口高度。阅读位置由条目身份、条目内偏移
-和跟随末尾状态表达。切回优先显示缓存，插入、淘汰、窗口变化和图片展开均按同一可见锚点校正，
-不根据总滚动高度差猜测。GUI 只保留当前有界 ChatView 的显示镜像与必要行投影，预取仍改变
-同一个窗口，不另存前后历史页（pending 与尚未确认的终态同样由该窗口交付）；正文按窗口淘汰
-释放，旧展示 owner 关闭时释放其投影与附件展示缓存。Settings 往返不等于关闭这个展示 owner。
-历史浏览只提示新内容，流式末尾跟随按帧合并渲染，不逐 token 查询 SQL，也不反复启动动画。
-
-Driver 的只读滚动诊断直接投影 Flutter 滚动活动与当前阅读意图，不缓存、不维护可写副本；
-锚点验收等待手势更新已交付且滚动空闲的布局帧，不能把手势中途缓存的位置当成稳定阅读锚点。
-原生 Driver 拖动先验证目标在所属 RenderView 的命中路径，再派发独立指针的触摸事件，并记录
-DragStart、逐步移动和抬起后的滚动诊断；命令不直接写滚动位置或阅读意图。
+Driver 诊断只读库和 Flutter 当前滚动活动、列表代次、Live/History 与数据查询状态，不保留
+可写位置副本。位移验收取真实可见行与字符坐标，不能把 ScrollPosition 范围估算当成内容位移。
+原生 Driver 拖动先验证命中路径，再派发独立指针事件；命令不直接写滚动位置或展示模式。
 人工验收 `cargo xtask manual-gui --scenario tool-scroll` 同时覆盖发送图片、工具读取图片、
 放大预览与惰性行回收；显式传入 `--ssh-target user@host` 时，在该服务器独立临时目录内
 通过真实 SSH 项目重复验收。模型使用本地 fixture，记录请求中的图片数量，不外推为真实

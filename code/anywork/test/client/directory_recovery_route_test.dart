@@ -50,11 +50,16 @@ void main() {
       );
       await pumpClientUntil(
         tester,
-        () => graph.client.existingSession('thread-main')!.state.hasChatWindow,
-        'Client opens the initial content window',
+        () =>
+            graph.client
+                .existingSession('thread-main')!
+                .timeline
+                .lastDeliveredFrame !=
+            null,
+        'Client delivers the initial content baseline',
       );
       await tester.pumpAndSettle();
-      final openedWindows = transport.windows.length;
+      final openedWindows = transport.timelines.length;
       await pumpClientFuture(
         tester,
         graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
@@ -64,9 +69,9 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(transport.windows, hasLength(openedWindows));
+      expect(transport.timelines, hasLength(openedWindows));
       expect(
-        transport.windows.every((window) => window.joined.isCompleted),
+        transport.timelines.every((entry) => entry.joined.isCompleted),
         isTrue,
       );
     },

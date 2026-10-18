@@ -151,7 +151,6 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     final selection = ref.watch(shellSelectionProvider);
     final threadId = selection.selectedThreadId;
     final workspace = ref.watch(shellComposerWorkspaceProvider);
-    final timeline = ref.watch(timelineSessionWindowProvider);
     // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
     if (threadId == null) return const _StudioStartPage();
     if (workspace == null || workspace.threadId != threadId) {
@@ -207,6 +206,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         }
         final splitPlan =
             planOpen && !fullWidthReading && presentedPlan != null;
+        final timelineDisplay = ref.watch(timelineDisplayStateProvider);
         final readingArea = _buildReadingArea(
           threadId: threadId,
           pendingPlan: pendingPlan,
@@ -249,9 +249,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                       StudioWorkspaceLoading(
                         key: const ValueKey('agent-workspace-loading'),
                         hasContent:
-                            timeline != null &&
-                            timeline.threadId == threadId &&
-                            timeline.rows.isNotEmpty,
+                            timelineDisplay != null &&
+                            timelineDisplay.threadId == threadId &&
+                            timelineDisplay.generation > 0,
                       ),
                   ],
                   footer: _AdaptiveFooter(

@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
 import 'scrolling_journey.dart';
+import 'timeline_observation.dart';
 import 'timeline_scroll.dart' as streaming_scroll;
 // The multi-item stress journey already owns the session-switch flow helpers.
 import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
@@ -17,27 +18,31 @@ import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
 /// carries the same event count and nominal rate. It records only GUI-observed
 /// timing and raw frame data: the synthetic provider's own byte count lives in
 /// the fixture report and is never treated as an FRB transfer measurement.
+///
+/// 断言只读当前展示事实：`timeline`（身份/revision/省略声明/逐字段详情引用）与
+/// `timelineScroll`（当前标准 ScrollController 几何）。正文预览有界；超过单项预览
+/// 预算的正文只在用户显式打开的详情查看器里逐块读取。
 const _prompt = 'Stream the local GUI stress body fixture';
 const _largePrompt = 'Stream the local GUI stress body large fixture';
 const _expectedTokens = 20000;
 
 /// Every fixture increment is `body-%05d ` (5 + 5 + 1 = 11 UTF-16 code units),
-/// so the strict full reply is [_expectedBodyCharacters]. A bounded preview such
-/// as 8192 code units is not a delivered body and never counts as full.
+/// so the strict full reply is [_expectedBodyCharacters]. ASCII markers keep
+/// characters and UTF-8 bytes equal.
 const _bodyUnitCharacters = 11;
 const _expectedBodyCharacters = _expectedTokens * _bodyUnitCharacters;
 
 /// Large-body increments append [_largeBodyPad] `W` characters plus a trailing
-/// space, so each increment is `_largeBodyUnitCharacters` (12 + pad) code units
-/// and the full reply exceeds the native timeline body window. ASCII markers keep
-/// code units and UTF-8 bytes equal.
+/// space, so each increment is `_largeBodyUnitCharacters` (12 + pad) characters.
 const _largeBodyPad = 20;
 const _largeBodyUnitCharacters = 12 + _largeBodyPad;
 const _expectedLargeBodyCharacters = _expectedTokens * _largeBodyUnitCharacters;
 
-/// The native timeline body window the large scenario must exceed so it can
-/// exercise a body genuinely larger than the window.
-const _nativeBodyWindowBytes = 256 * 1024;
+/// 产品动态正文的展示预算（`pl-studio-runtime` 的 `PRODUCT_PREVIEW_BYTES`）。
+///
+/// core 条目「结构 + 正文」共 256 KiB 是后端事实层预算，产品展示层再把它压到 32 KiB
+/// 共享正文额度；工具参数/结果各自 4 KiB。这里断言的是**产品展示预算**。
+const _productPreviewBudgetBytes = 32 * 1024;
 
 /// Strict follow-up session prompt the body fixture script answers with a title.
 const _secondSessionPrompt = 'Local GUI stress session 1';
@@ -130,6 +135,9 @@ Future<void> main(List<String> args) async {
   final pendingEvidence = <String>[
     'the fixture provider bytes come from the synthetic provider stream and are '
         'never an FRB transfer measurement',
+    'per-item and per-page preview budgets are backend limits: the text each '
+        'displayed item carries grows with the pages this journey actually '
+        'visited and is not a constant-memory claim',
   ];
   try {
     await mark(stage);
@@ -147,7 +155,7 @@ Future<void> main(List<String> args) async {
     await mark(stage);
     final streaming = await _waitFor(
       driver,
-      (snapshot) => _answerTextLength(snapshot) > 0,
+      (snapshot) => _bodyCharacters(snapshot) > 0,
       'streaming',
       evidence: output,
     );
@@ -155,15 +163,15 @@ Future<void> main(List<String> args) async {
     report['firstContentAt'] = firstContentAt;
     report['timeToFirstContentMillis'] = firstContentAt - submittedAt;
     report['streamingOutputTokens'] = _outputTokens(streaming);
-    report['streamingAnswerLength'] = _answerTextLength(streaming);
+    report['streamingAnswerLength'] = _bodyCharacters(streaming);
     stage = 'streaming';
     await mark(stage);
     await File('${output.path}/stress-body-streaming.png')
         .writeAsBytes(await driver.screenshot());
     // Large body only: prove the body really keeps following the stream while it
-    // is still generating *above* the 256KiB window. This is a generation-time
-    // observation, not a post-terminal one, and it never taps a load-full
-    // affordance.
+    // is still generating *above* the per-item preview budget. Preview bytes stay
+    // capped by contract, so the growing fact is the item's true total bytes and
+    // revision; the journey never taps a load-full affordance.
     if (largeBody) {
       // Observe growth while the interaction companion runs, so its screenshot
       // cannot consume the remaining stream before growth sampling starts.
@@ -178,7 +186,8 @@ Future<void> main(List<String> args) async {
       checks['largeBodyGrowingFullFollow'] =
           growing['windowPassed'] == true &&
           growing['identityStable'] == true &&
-          (growing['growthFramesAboveWindow'] as int) >= 2;
+          (growing['growthFramesAboveWindow'] as int) >= 2 &&
+          growing['stayedLiveAtEdge'] == true;
     }
     final terminal = await _waitFor(
       driver,
@@ -202,50 +211,35 @@ Future<void> main(List<String> args) async {
     );
     report['durableSettledAt'] = DateTime.now().millisecondsSinceEpoch;
     report['settledOutputTokens'] = _outputTokens(settledSnapshot);
-    final answers = _answerLengths(settledSnapshot);
-    report['answerRowCount'] = answers.length;
-    report['answerTextLengths'] = answers;
+    final settledTimeline = TimelineObservation.parse(settledSnapshot);
+    settledTimeline.requireConsistentIds();
+    report['answerItemCount'] = settledTimeline.ofKind('agentMessage').length;
     stage = 'settled';
     await mark(stage);
-    // Large body only: hold (bounded) until the full delivered body is actually
-    // displayed before asserting, so a snapshot taken mid-render cannot falsely
-    // fail and a genuinely truncated body still fails within the deadline. The
-    // hold waits on a real rendered-content condition, never a fixed sleep.
-    if (largeBody) {
-      settledSnapshot = await _waitFor(
-        driver,
-        (snapshot) => _answerTextLength(snapshot) >= expectedBodyCharacters,
-        'body_rendered',
-        evidence: output,
-      );
-      report['bodyRenderedAt'] = DateTime.now().millisecondsSinceEpoch;
-    }
+    // Hold (bounded) until the assistant item's true body length is known before
+    // asserting, so a snapshot taken mid-render cannot falsely fail while a
+    // genuinely truncated body still fails within the deadline.
+    settledSnapshot = await _waitFor(
+      driver,
+      (snapshot) =>
+          _longBodyItem(snapshot)?.textTotalBytes == expectedBodyCharacters,
+      'body_rendered',
+      evidence: output,
+    );
+    report['bodyRenderedAt'] = DateTime.now().millisecondsSinceEpoch;
     await File('${output.path}/stress-body-settled.png')
         .writeAsBytes(await driver.screenshot());
 
-    // The strict fixture appends _expectedTokens increments to one stable row, so
-    // the delivered assistant body must be the full [expectedBodyCharacters]. A
-    // bounded preview (for example 8192 code units) is not a delivered body and
-    // never counts as full, and the journey never taps a load-full/paging
-    // affordance: the full text must be present without one. The large scenario
-    // additionally requires the body to exceed the native timeline body window.
-    final longBody = _longBodyRow(settledSnapshot);
-    final bodyText = longBody?['text'] as String?;
+    final longBody = _longBodyItem(settledSnapshot);
+    final longBodyId = longBody?.id;
+    final bodyText = longBody?.text;
     final bodyCharacters = bodyText?.length;
     final bodyBytes = bodyText == null ? null : utf8.encode(bodyText).length;
+    final detail = longBody?.detail('text');
     final prefixOk = bodyText != null && bodyText.startsWith('body-00000 ');
     final suffixOk =
         bodyText != null && bodyText.endsWith(_expectedBodySuffix(largeBody));
-    final window = settledSnapshot['timelineWindow'];
-    final longBodyId = longBody?['id'];
-    final previewed = _idList(window, 'previewedItemIds').contains(longBodyId);
-    final loaded = _idList(window, 'loadedItemIds').contains(longBodyId);
-    final bodyPending = _idList(
-      window,
-      'pendingItemBodyIds',
-    ).contains(longBodyId);
-    final fullTextPresent =
-        bodyCharacters == expectedBodyCharacters && prefixOk && suffixOk;
+    final totalBytes = detail?.totalBytes;
     // Bounded boundary previews so a reviewer can re-check the content without
     // duplicating the whole reply.
     String? headPreview;
@@ -260,71 +254,82 @@ Future<void> main(List<String> args) async {
       );
     }
     report['longBody'] = <String, Object?>{
-      'rowId': longBodyId,
+      'itemId': longBodyId,
       'expectedCharacters': expectedBodyCharacters,
       'deliveredCharacters': bodyCharacters,
       'deliveredBytes': bodyBytes,
+      'detailTotalBytes': totalBytes,
+      'previewBytes': detail?.previewBytes,
+      'detailRevision': detail?.revision,
+      'itemRevision': longBody?.revision,
+      'truncated': longBody?.textTruncated,
       'largeBody': largeBody,
       'prefixOk': prefixOk,
       'suffixOk': suffixOk,
       'headPreview': headPreview,
       'tailPreview': tailPreview,
-      'fullTextPresent': fullTextPresent,
-      'previewedItem': previewed,
-      'loadedItem': loaded,
-      'pendingItemBody': bodyPending,
       'manualLoadTapped': false,
+      'viewerRequired': true,
     };
-    // Only the full body is a pass; a bounded preview (8192) is not. The
-    // delivered text length/content is the authoritative signal, so a stale
-    // paging flag can never turn a genuinely full body into a false failure.
-    checks['longBodyFullText'] = fullTextPresent;
-    // The large scenario must additionally deliver a body genuinely above the
-    // 256KiB native timeline window; the fixed 220,000-character body cannot.
+    // 两个场景的正文都超过产品 32 KiB 展示预算：行内只保留有界预览，真实总长由
+    // 详情引用给出；完整正文只能由用户显式打开查看器逐块读取。
+    final previewBytes = detail?.previewBytes;
+    checks['bodyPreviewBounded'] =
+        longBody?.textTruncated == true &&
+        totalBytes == expectedBodyCharacters &&
+        previewBytes != null &&
+        previewBytes <= _productPreviewBudgetBytes &&
+        bodyCharacters == previewBytes &&
+        prefixOk;
+    checks['bodyFullLengthDeclared'] = totalBytes == expectedBodyCharacters;
     if (largeBody) {
-      checks['largeBodyAboveNativeWindow'] =
-          bodyBytes != null && bodyBytes > _nativeBodyWindowBytes;
+      checks['largeBodyAboveProductPreview'] =
+          totalBytes == _expectedLargeBodyCharacters &&
+          (totalBytes ?? 0) > _productPreviewBudgetBytes;
     }
-    // Driver-only application-payload counters, kept apart from the provider
-    // output bytes recorded in fixture-status.json.
-    final delivery = _contentDelivery(settledSnapshot);
-    if (delivery == null) {
-      pendingEvidence.add(
-        'content delivery: snapshot exposes no contentDelivery field, so the '
-        'application-payload body byte count is pending an integrated Driver '
-        'build',
-      );
-    } else {
-      findings['contentDelivery'] = <String, Object?>{
-        'enabled': delivery['enabled'],
-        'metric': delivery['metric'],
-        'bodyUtf8Bytes': delivery['bodyUtf8Bytes'],
-        'contentChanges': delivery['contentChanges'],
-        'resets': delivery['resets'],
-        'patches': delivery['patches'],
-        'maxWindowItems': delivery['maxWindowItems'],
-        'note': 'application payload UTF-8 bytes of delivered body text; not FRB/wire bytes',
-      };
-    }
+    // suffix 只在预览确实覆盖正文尾部时才成立：有界预览不应包含尾部标记。
+    checks['bodyPreviewExcludesTail'] = !suffixOk;
+    // Evidence of what this journey actually loaded: identities, revisions and
+    // preview bytes of the current generation.
+    findings['loadedItems'] = <String, Object?>{
+      'itemCount': settledTimeline.itemCount,
+      'mode': settledTimeline.mode,
+      'generation': settledTimeline.generation,
+      'hasOlder': settledTimeline.hasOlder,
+      'olderCursor': settledTimeline.olderCursor,
+      'textBytes': settledTimeline.items.fold<int>(
+        0,
+        (total, item) => total + item.textBytes,
+      ),
+      'truncatedItems': settledTimeline.items
+          .where((item) => item.textTruncated)
+          .length,
+      'note': 'preview bytes of the currently loaded canonical items',
+    };
 
-    // Cross-block selection/copy. The production timeline renders this long
-    // plain reply through `_PlainBodyText`, which seals it into several bounded
-    // chunks that each become a real `RenderParagraph`. This phase drives the
-    // real `SelectionArea` and the product's own context-menu copy callback, then
-    // compares the platform clipboard readback with the canonical fixture body.
-    // It runs *before* the reading/session-switch phases, so a selection that
-    // disturbed the history scroll would also break those existing assertions;
-    // the phase additionally records the scroll geometry before and after.
-    stage = 'selection_copy';
+    // 完整正文只经用户显式打开的详情查看器读取并复制；行内预览另有跨块选择/复制
+    // 证据（有界，不当全文）。
+    stage = 'detail_copy';
     await mark(stage);
-    final selectionCopy = await _selectAndCopyBody(
+    final detailCopy = await _copyThroughDetailViewer(
       driver,
       output,
       expectedBodyCharacters,
       largeBody,
+      longBodyId,
     );
-    report['selectionCopy'] = selectionCopy;
-    checks['crossBlockSelectionCopy'] = selectionCopy['pass'] == true;
+    report['detailCopy'] = detailCopy;
+    checks['detailViewerFullBody'] = detailCopy['pass'] == true;
+    stage = 'preview_selection_copy';
+    await mark(stage);
+    final previewCopy = await _selectAndCopyPreview(
+      driver,
+      output,
+      detail?.previewBytes ?? 0,
+      largeBody,
+    );
+    report['previewCopy'] = previewCopy;
+    checks['crossBlockSelectionCopy'] = previewCopy['pass'] == true;
 
     await markStage('wheel_and_scrollbar');
     final scrolling = await observeTimelineScrolling(args[0], output);
@@ -332,8 +337,8 @@ Future<void> main(List<String> args) async {
     checks['wheelAndScrollbar'] = scrolling['pass'] == true;
 
     // Read into the interior of the long assistant body, then create a second
-    // session and switch back to re-check the reading anchor. The session-switch
-    // helpers are the ones the multi-item stress journey already uses.
+    // session and switch back. Reopening starts from the latest small page by
+    // contract: no pixel anchor is saved or restored.
     final originalId = selectedThread(settledSnapshot);
     await mark('reading');
     final reading = await _readIntoLongBody(driver, output, settledSnapshot);
@@ -356,155 +361,73 @@ Future<void> main(List<String> args) async {
       timeout: const Duration(seconds: 45),
     );
     await driver.tap(find.byValueKey('thread-row-$originalId'));
-    var reopened = await _waitFor(
+    final reopened = await _waitFor(
       driver,
-      (snapshot) =>
-          _selectedThreadOrNull(snapshot) == originalId &&
-          snapshot['timelineWindow'] is Map &&
-          settled(snapshot, originalId),
+      (snapshot) {
+        final timeline = TimelineObservation.optional(snapshot);
+        final scroll = TimelineScrollObservation.optional(snapshot);
+        return _selectedThreadOrNull(snapshot) == originalId &&
+            timeline != null &&
+            timeline.ready &&
+            !timeline.preparingLive &&
+            scroll != null &&
+            scroll.laidOut &&
+            !scroll.isScrolling &&
+            settled(snapshot, originalId);
+      },
       'reopen_original',
       evidence: output,
     );
-    // Switching back re-fetches the full body and then restores the reading
-    // position. Wait (bounded) until the *same* body identity is fully present
-    // and the restore has finished before reading the anchor. The wait never
-    // compares the anchor to the original position: waiting on anchor equality
-    // would let a never-restored view pass. 20s is the accepted upper bound; a
-    // body that is complete but restored wrong then fails immediately below.
-    final readingRowId = reading['rowId'];
-    final reopenStartedAt = DateTime.now().millisecondsSinceEpoch;
-    final reopenDeadline = DateTime.now().add(const Duration(seconds: 20));
-    var bodyReady = false;
-    Map<String, Object?>? reopenDiagnostics;
-    while (true) {
-      // No assistant long-body identity was established by the reading phase, so
-      // there is nothing to restore; fail fast into the diagnostics below.
-      if (readingRowId is! String) break;
-      if (_reopenBodyReady(
-        reopened,
-        readingRowId,
-        expectedBodyCharacters,
-        largeBody,
-      )) {
-        bodyReady = true;
-        break;
-      }
-      if (!DateTime.now().isBefore(reopenDeadline)) break;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      reopened = await driver.readSnapshot();
-    }
-    // The body and scroll geometry can settle one frame before the controller
-    // publishes the restored anchor. Give that final publication a short,
-    // bounded window so a transient snapshot cannot be mistaken for a failed
-    // restore; a persistent mismatch still fails below.
-    final expectedAnchorId = reading['anchorItemId'];
-    if (bodyReady && expectedAnchorId is String) {
-      final anchorDeadline = DateTime.now().add(const Duration(seconds: 3));
-      while (DateTime.now().isBefore(anchorDeadline)) {
-        final scroll = _timelineScroll(reopened);
-        if (_anchorId(scroll) == expectedAnchorId &&
-            scroll?['restorePending'] != true &&
-            scroll?['programmaticScroll'] != true) {
-          break;
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        reopened = await driver.readSnapshot();
-      }
-    }
-    final bodyWaitMillis =
-        DateTime.now().millisecondsSinceEpoch - reopenStartedAt;
-    if (!bodyReady) {
-      reopenDiagnostics = _reopenDiagnostics(
-        reopened,
-        readingRowId is String ? readingRowId : '',
-        expectedBodyCharacters,
-        largeBody,
-      );
-      try {
-        await File(
-          '${output.path}/stress-body-reopen-diagnostics.json',
-        ).writeAsString(
-          '${const JsonEncoder.withIndent('  ').convert(reopenDiagnostics)}\n',
-        );
-      } catch (_) {
-        // Evidence writes must never mask the real observation.
-      }
-    }
-    await File('${output.path}/stress-body-reopened.png')
-        .writeAsBytes(await driver.screenshot());
-    final reopenedScroll = _timelineScroll(reopened);
-    final reopenedLayout = _decodeDriverMap(
+    final reopenedTimeline = TimelineObservation.parse(reopened);
+    final reopenedScroll = TimelineScrollObservation.parse(reopened);
+    final reopenLayout = _decodeDriverMap(
       await driver.requestData('body-layout'),
     );
-    await File('${output.path}/stress-body-reopened-layout.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert(reopenedLayout)}\n',
-    );
+    await File('${output.path}/stress-body-reopened.png')
+        .writeAsBytes(await driver.screenshot());
     await File('${output.path}/stress-body-timeline-scroll.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert(reopenedScroll)}\n',
+      '${const JsonEncoder.withIndent('  ').convert(reopenedScroll.toJson())}\n',
     );
-    final reopenedRows = _rowIds(reopened);
-    final readingRow = reading['rowId'];
-    final readingAnchorAfter = _anchorId(reopenedScroll);
-    final readingOffset = reading['anchorOffset'];
-    final readingOffsetAfter = _anchorOffset(reopenedScroll);
-    // The reading position, the anchor and the restore are all asserted from the
-    // real scroll diagnostic when the UI exposes it; without the diagnostic the
-    // restoration is pending, never passed. The reading position must be inside
-    // the assistant long body and away from the bottom, so a view that was yanked
-    // back to the last line cannot pass. The anchor is compared only after the
-    // body is complete and the restore has settled; when it is complete and still
-    // wrong the run fails immediately, and the offset tolerance is never widened.
-    final diagnosticPresent = reopenedScroll != null;
-    final visibleBefore = (reading['layout'] as Map?)?['visible'] as Map?;
-    final visibleAfter = reopenedLayout?['visible'] as Map?;
-    final lineTopBefore = visibleBefore?['glyphTop'];
-    final lineTopAfter = visibleAfter?['glyphTop'];
-    final visibleTextRestored =
-        visibleBefore?['characterOffset'] is int &&
-        visibleBefore?['characterOffset'] == visibleAfter?['characterOffset'] &&
-        lineTopBefore is num &&
-        lineTopAfter is num &&
-        (lineTopBefore - lineTopAfter).abs() <= 1.0;
-    final anchorRestored =
-        bodyReady &&
-        reading['insideLongBody'] == true &&
-        reading['followingBottom'] == false &&
-        reading['anchorItemId'] is String &&
-        reading['anchorOffset'] is num &&
-        readingAnchorAfter == reading['anchorItemId'] &&
-        readingOffsetAfter != null &&
-        (readingOffsetAfter - (readingOffset as num).toDouble()).abs() <= 1.0 &&
-        visibleTextRestored;
+    await File('${output.path}/stress-body-reopened-layout.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(reopenLayout)}\n',
+    );
+    final reopenedBody = _longBodyItem(reopened);
+    final reopenedDetail = reopenedBody?.detail('text');
+    final generationAdvanced =
+        reopenedTimeline.generation != settledTimeline.generation;
+    // 重开最新小页：offset 0、几何贴底、Live 模式、没有准备中的代次；不恢复像素。
+    final latestPageOnReopen =
+        reopenedTimeline.isLive &&
+        generationAdvanced &&
+        reopenedScroll.atLiveEdge &&
+        (reopenedScroll.pixels ?? 1).abs() <= 0.5 &&
+        (reopenedScroll.extentAfter ?? 1).abs() <= 0.5 &&
+        !reopenedTimeline.preparingLive &&
+        reopenedTimeline.itemCount <= 32;
+    // 同身份正文仍在展示范围内：身份 + 真实总长一致，行内预览不因重开被替换成
+    // 另一份正文。
+    final stableBodyOnReopen =
+        reading['itemId'] == null ||
+        (reopenedBody != null &&
+            reopenedBody.id == reading['itemId'] &&
+            reopenedDetail?.totalBytes == expectedBodyCharacters);
     report['sessionSwitch'] = <String, Object?>{
       'originalThreadId': originalId,
       'secondThreadId': secondId,
       'returnedToOriginal': _selectedThreadOrNull(reopened) == originalId,
-      'bodyReadyAfterReopen': bodyReady,
-      'bodyWaitMillis': bodyWaitMillis,
-      'bodyWaitUpperBoundMillis': 20000,
-      'restorePendingAfterReopen': reopenedScroll?['restorePending'],
-      'programmaticScrollAfterReopen': reopenedScroll?['programmaticScroll'],
-      'readingRowId': readingRow,
-      'readingRowPresentAfterReopen':
-          readingRow is String && reopenedRows.contains(readingRow),
-      'readingAnchorBefore': reading['anchorItemId'],
-      'readingAnchorAfter': readingAnchorAfter,
-      'readingOffsetBefore': readingOffset,
-      'readingOffsetAfter': readingOffsetAfter,
-      'readingAnchorRestored': diagnosticPresent ? anchorRestored : null,
-      'visibleTextBefore': visibleBefore,
-      'visibleTextAfter': visibleAfter,
-      'visibleTextRestored': visibleTextRestored,
-      'reopenDiagnostics': reopenDiagnostics,
+      'generationBefore': settledTimeline.generation,
+      'generationAfter': reopenedTimeline.generation,
+      'readingItemId': reading['itemId'],
+      'latestPageOnReopen': latestPageOnReopen,
+      'stableBodyOnReopen': stableBodyOnReopen,
+      'pixelsAfterReopen': reopenedScroll.pixels,
+      'atLiveEdgeAfterReopen': reopenedScroll.atLiveEdge,
+      'itemCountAfterReopen': reopenedTimeline.itemCount,
+      'reopenedScroll': reopenedScroll.toJson(),
+      'reopenedLayout': reopenLayout,
     };
-    if (diagnosticPresent) {
-      checks['readingAnchorRestored'] = anchorRestored;
-    } else {
-      pendingEvidence.add(
-        'session switch: the reopened snapshot exposes no timelineScroll '
-        'diagnostic, so reading-anchor restoration is pending rather than passed',
-      );
-    }
+    checks['reopenStartsAtLatestPage'] =
+        latestPageOnReopen && stableBodyOnReopen;
     stage = 'session_switch_complete';
     await mark(stage);
   } catch (error, stackTrace) {
@@ -707,9 +630,12 @@ String _summarize(Map<String, dynamic>? snapshot) {
   final workspace = _workspace(snapshot);
   final persistence = snapshot['persistence'];
   final directory = snapshot['sidebarDirectory'];
+  final timeline = TimelineObservation.optional(snapshot);
   return 'threadStatus=${workspace?['threadStatus']}, '
       'busy=${workspace?['isBusy']}, '
       'sync=${workspace?['syncState']}, '
+      'mode=${timeline?.mode}, '
+      'items=${timeline?.itemCount}, '
       'turn=${_turnIdOrNull(snapshot)}, '
       'selected=${_selectedThreadOrNull(snapshot)}, '
       'saving=${persistence is Map ? persistence['kind'] : null}, '
@@ -738,35 +664,39 @@ int _outputTokens(Map<String, dynamic> snapshot) {
 bool _settled(Map<String, dynamic> snapshot) {
   final workspace = _workspace(snapshot);
   final persistence = snapshot['persistence'];
+  final timeline = TimelineObservation.optional(snapshot);
   return workspace != null &&
       workspace['isBusy'] == false &&
       workspace['threadStatus'] == 'idle' &&
       workspace['syncState'] == 'ready' &&
       persistence is Map &&
       persistence['kind'] == 'ready' &&
-      persistence['pendingCommits'] == 0;
+      persistence['pendingCommits'] == 0 &&
+      timeline != null &&
+      timeline.ready &&
+      !timeline.preparingLive;
 }
 
-List<int> _answerLengths(Map<String, dynamic> snapshot) {
-  final timeline = _workspace(snapshot)?['timeline'];
-  if (timeline is! List) return const [];
-  return [
-    for (final row in timeline)
-      if (row is Map && row['type'] == 'finalAnswer')
-        ((row['text'] as String?) ?? '').length,
-  ];
+/// 当前展示的助手正文条目：已加载 agentMessage 中正文预览最长的一条。
+TimelineItemObservation? _longBodyItem(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return null;
+  TimelineItemObservation? best;
+  for (final item in timeline.items) {
+    if (item.kind != 'agentMessage') continue;
+    if (best == null || item.text.length > best.text.length) best = item;
+  }
+  return best;
 }
 
-int _answerTextLength(Map<String, dynamic> snapshot) =>
-    _answerLengths(snapshot).fold(0, (total, length) => total + length);
+int _bodyCharacters(Map<String, dynamic> snapshot) =>
+    _longBodyItem(snapshot)?.text.length ?? 0;
 
 /// Samples the in-flight large body while it is still generating.
 ///
-/// Waits until the streamed body has passed the 256KiB native timeline window
-/// *while the Turn is still not terminal*, then collects at least two consecutive
-/// frames where the same assistant row grows and keeps the exact fixture prefix.
-/// The evidence is the real body text length and prefix, never an item revision,
-/// and the journey never taps a load-full/paging affordance.
+/// 预览字节按契约封顶，所以“正文继续增长”的事实来自同一身份的 `text` 详情引用：
+/// 真实总字节数与 revision 增长，而行内预览长度保持在上限内。判定还要求展示仍在
+/// Live 且几何贴底——即自然跟随，不依赖任何定位/锚点机制。
 Future<Map<String, Object?>> _sampleStreamingLargeBody(
   FlutterDriverSession driver,
   Directory output,
@@ -774,6 +704,7 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
   final frames = <Map<String, Object?>>[];
   var windowPassed = false;
   var identityStable = true;
+  var stayedLiveAtEdge = true;
   var growthFrames = 0;
   String? previousId;
   int? previousBytes;
@@ -783,33 +714,43 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
     final terminal =
         _outputTokens(snapshot) >= _expectedTokens && !_isBusy(snapshot);
     if (terminal) break;
-    final row = _longBodyRow(snapshot);
-    final id = row?['id'];
-    final text = row?['text'] as String?;
-    if (id is! String || text == null) {
+    final item = _longBodyItem(snapshot);
+    final id = item?.id;
+    final bytes = item?.textTotalBytes;
+    final scroll = TimelineScrollObservation.optional(snapshot);
+    final timeline = TimelineObservation.optional(snapshot);
+    if (id is! String || bytes == null) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       continue;
     }
-    final bytes = utf8.encode(text).length;
-    final scroll = _timelineScroll(snapshot);
-    if (bytes > _nativeBodyWindowBytes && scroll?['followingBottom'] == true) {
+    if (bytes > _productPreviewBudgetBytes) {
       windowPassed = true;
-      final prefixOk = text.startsWith('body-00000 ');
       final sameIdentity = previousId == id;
       final grew =
           sameIdentity && previousBytes != null && bytes > previousBytes;
       if (previousId != null && !sameIdentity) identityStable = false;
-      if (grew && prefixOk) growthFrames += 1;
+      final liveAtEdge =
+          timeline != null &&
+          timeline.isLive &&
+          scroll != null &&
+          scroll.atLiveEdge &&
+          scroll.laidOut;
+      if (!liveAtEdge) stayedLiveAtEdge = false;
+      if (grew) growthFrames += 1;
       frames.add(<String, Object?>{
         'at': DateTime.now().millisecondsSinceEpoch,
-        'rowId': id,
-        'characters': text.length,
-        'bytes': bytes,
-        'prefixOk': prefixOk,
+        'itemId': id,
+        'previewCharacters': item?.text.length,
+        'previewBytes': item?.textBytes,
+        'totalBytes': bytes,
+        'itemRevision': item?.revision,
+        'detailRevision': item?.detail('text')?.revision,
         'grewOverPrevious': grew,
         'terminal': terminal,
-        'followingBottom': scroll?['followingBottom'],
-        'extentAfter': scroll?['extentAfter'],
+        'mode': timeline?.mode,
+        'atLiveEdge': scroll?.atLiveEdge,
+        'pixels': scroll?.pixels,
+        'extentAfter': scroll?.extentAfter,
       });
       previousId = id;
       previousBytes = bytes;
@@ -819,9 +760,10 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
   final evidence = <String, Object?>{
     'windowPassed': windowPassed,
     'identityStable': identityStable,
+    'stayedLiveAtEdge': stayedLiveAtEdge,
     'growthFramesAboveWindow': growthFrames,
     'framesSampled': frames.length,
-    'thresholdBytes': _nativeBodyWindowBytes,
+    'thresholdBytes': _productPreviewBudgetBytes,
     'manualLoadTapped': false,
     // Bounded tail so a reviewer can re-check the growth without the whole list.
     'frames': frames.length > 8 ? frames.sublist(frames.length - 8) : frames,
@@ -837,80 +779,88 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
 }
 
 /// Scrolls into the *interior* of the assistant long body — the actual reply row,
-/// never the user input row — until the viewport anchor sits inside that row and
-/// the viewport has really left the pinned last line, then records the row
-/// identity and the per-step geometry that proves it.
+/// never the user input row — until a point inside that row is visibly on screen
+/// and the viewport has really left the pinned last line.
 ///
 /// The scroll step is **positive** (see [_readScrollStep]); a negative step keeps
-/// pulling content from below, so the anchor never leaves the bottom.
+/// pulling content from below, so the reading position never leaves the bottom.
+/// 可见位置来自请求时的真实行几何（按 canonical row key 现场扫描），不是生产状态。
 Future<Map<String, Object?>> _readIntoLongBody(
   FlutterDriverSession driver,
   Directory output,
   Map<String, dynamic> settledSnapshot,
 ) async {
-  final row = _longBodyRow(settledSnapshot);
-  final target = row?['id'];
-  final followingBottomBefore = _timelineScroll(
-    settledSnapshot,
-  )?['followingBottom'];
+  final item = _longBodyItem(settledSnapshot);
+  final target = item?.id;
+  final probe = TimelineRowsProbe(driver.requestData);
   if (target is! String) {
     return <String, Object?>{
-      'rowId': null,
+      'itemId': null,
       'scrolled': false,
-      'anchorItemId': null,
       'insideLongBody': false,
-      'reason':
-          'no assistant final-answer row identity was available to read into',
+      'reason': 'no assistant body identity was available to read into',
     };
   }
   var scrolled = false;
-  var scroll = _timelineScroll(
-    await _waitFor(
-      driver,
-      (snapshot) => _idleReadingGeometry(_timelineScroll(snapshot)),
-      'reading_start_geometry',
-      evidence: output,
-    ),
-  );
-  var reading = _readingGeometry(scroll, target);
-  // Every step records the real geometry before/after the scroll, so the reading
-  // position can be re-checked instead of trusted from a single frame.
-  final geometry = <Map<String, Object?>>[
-    <String, Object?>{'phase': 'start', ...reading},
-  ];
+  var mode = TimelineObservation.parse(settledSnapshot).mode;
+  final geometry = <Map<String, Object?>>[];
+  var detached = false;
   try {
-    for (
-      var step = 0;
-      step < _maxReadSteps && reading['insideLongBody'] != true;
-      step++
-    ) {
-      final beforeUpdates = scroll!['userDragUpdates'] as int;
+    for (var step = 0; step < _maxReadSteps && !detached; step++) {
+      final beforeRows = await probe.read(rowIds: [target]);
+      final row = beforeRows.row(target);
+      geometry.add(<String, Object?>{
+        'phase': 'before_scroll_${step + 1}',
+        'row': row?.toJson(),
+        'viewport': beforeRows.viewport.toJson(),
+      });
       await driver.scrollBy(
         find.byValueKey('timeline-scrollable'),
         _readScrollStep,
         timeout: const Duration(seconds: 15),
       );
       scrolled = true;
-      // The Driver command can finish before its pointer events have all
-      // reached the published geometry. Capture the reading position only
-      // after this gesture has produced updates and its idle frame; otherwise
-      // a valid reopen is compared against an intermediate drag step.
-      scroll = _timelineScroll(
-        await _waitFor(
-          driver,
-          (snapshot) {
-            final current = _timelineScroll(snapshot);
-            return _idleReadingGeometry(current) &&
-                (current!['userDragUpdates'] as int) > beforeUpdates;
-          },
-          'reading_drag_${step + 1}_idle',
-          evidence: output,
-        ),
+      final state = await _waitFor(
+        driver,
+        (snapshot) {
+          final timeline = TimelineObservation.optional(snapshot);
+          final scroll = TimelineScrollObservation.optional(snapshot);
+          return timeline != null &&
+              !timeline.preparingLive &&
+              scroll != null &&
+              scroll.laidOut &&
+              !scroll.isScrolling;
+        },
+        'reading_drag_${step + 1}_idle',
+        evidence: output,
       );
-      reading = _readingGeometry(scroll, target);
+      final timeline = TimelineObservation.parse(state);
+      final scroll = TimelineScrollObservation.parse(state);
+      mode = timeline.mode;
+      final rows = await probe.read(rowIds: [target]);
+      final after = rows.row(target);
+      final viewport = rows.viewport;
+      // 可见点在行内（顶部高于视口、底部低于视口），说明视口真的落在巨大正文内部。
+      final insideRow =
+          after != null &&
+          after.intersects &&
+          after.rect != null &&
+          after.rect!.top < 1 &&
+          after.rect!.bottom > viewport.height - 1;
+      final threshold = _detachedExtentThreshold(scroll.viewportDimension);
+      detached =
+          timeline.isHistory &&
+          insideRow &&
+          scroll.extentAfterOrZero > threshold &&
+          (scroll.pixels ?? 0) < (scroll.maxScrollExtent ?? 0) - 1.0;
       geometry.add(<String, Object?>{
         'phase': 'after_scroll_${step + 1}',
-        ...reading,
+        'row': after?.toJson(),
+        'viewport': viewport.toJson(),
+        'timeline': timeline.summary(),
+        'scroll': scroll.toJson(),
+        'insideRow': insideRow,
+        'detached': detached,
       });
     }
   } on Object catch (error) {
@@ -924,109 +874,30 @@ Future<Map<String, Object?>> _readIntoLongBody(
   final layout = _decodeDriverMap(await driver.requestData('body-layout'));
   await File('${output.path}/stress-body-reading-layout.json')
       .writeAsString('${const JsonEncoder.withIndent('  ').convert(layout)}\n');
+  final finalState = await driver.readSnapshot();
+  final finalTimeline = TimelineObservation.parse(finalState);
+  final finalScroll = TimelineScrollObservation.parse(finalState);
   await File('${output.path}/stress-body-reading-scroll.json').writeAsString(
-    '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'targetRowId': target, 'geometry': geometry, 'final': scroll})}\n',
+    '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'targetItemId': target, 'geometry': geometry, 'final': finalScroll.toJson()})}\n',
   );
-  final pixelsBefore = geometry.first['pixels'];
-  final pixelsAfter = reading['pixels'];
-  final maxScrollExtent = reading['maxScrollExtent'];
-  final extentAfter = reading['extentAfter'];
-  // A zoomed-out view of the same numbers, so a reviewer can see the viewport
-  // really moved up (pixels decreased from the bottom).
-  final double? pixelsDelta = pixelsBefore is num && pixelsAfter is num
-      ? pixelsBefore.toDouble() - pixelsAfter.toDouble()
-      : null;
-  final pixelsMoved = pixelsDelta != null && pixelsDelta > 1.0;
-  final detachedThreshold = _detachedExtentThreshold(
-    reading['viewportDimension'],
-  );
-  // Leaving the bottom is proven from live geometry, never from the scroll
-  // request alone: the viewport moved up, the view is no longer following the
-  // bottom, and a viewport's worth of content still remains below it.
-  final leftBottom =
-      reading['followingBottom'] == false &&
-      pixelsMoved &&
-      extentAfter is num &&
-      extentAfter > detachedThreshold &&
-      pixelsAfter is num &&
-      maxScrollExtent is num &&
-      pixelsAfter < maxScrollExtent - 1.0;
   return <String, Object?>{
-    // The stable row identity is the assistant long-body row id, so it can be
-    // compared against the reopened window; the anchor item and its offset are
-    // the reading position inside that row.
-    'rowId': target,
-    'rowType': row?['type'],
+    'itemId': target,
+    'kind': item?.kind,
     'scrolled': scrolled,
-    'steps': geometry.length - 1,
-    'anchorItemId': reading['anchorItemId'],
-    'anchorOffset': reading['anchorOffset'],
-    'pixelsBefore': pixelsBefore,
-    'pixelsAfter': pixelsAfter,
-    'pixelsDelta': pixelsDelta,
-    'maxScrollExtent': maxScrollExtent,
-    'extentAfter': extentAfter,
-    'detachedThreshold': detachedThreshold,
-    'pixelsMoved': pixelsMoved,
-    'leftBottom': leftBottom,
-    'insideLongBody':
-        reading['insideLongBody'] == true && pixelsMoved && leftBottom,
-    'followingBottom': reading['followingBottom'],
-    'detachedByUser': reading['detachedByUser'],
-    'followingBottomBeforeReading': followingBottomBefore,
+    'steps': geometry.length ~/ 2,
     'geometry': geometry,
     'layout': layout,
-  };
-}
-
-bool _idleReadingGeometry(Map<String, dynamic>? scroll) =>
-    scroll?['isScrolling'] == false &&
-    scroll?['restorePending'] == false &&
-    scroll?['programmaticScroll'] == false &&
-    (scroll?['mountedRowCount'] as num? ?? 0) > 0 &&
-    scroll?['anchor'] != null &&
-    scroll?['userDragUpdates'] is int;
-
-/// One reading-position observation: the anchor identity/offset plus the live
-/// scroll geometry that proves the viewport left the bottom.
-Map<String, Object?> _readingGeometry(
-  Map<String, dynamic>? scroll,
-  String target,
-) {
-  final anchorId = _anchorId(scroll);
-  final offset = _anchorOffset(scroll);
-  final pixels = _doubleOrNull(scroll?['pixels']);
-  final maxScrollExtent = _doubleOrNull(scroll?['maxScrollExtent']);
-  final extentAfter = _doubleOrNull(scroll?['extentAfter']);
-  final viewport = _doubleOrNull(scroll?['viewportDimension']);
-  final followingBottom = scroll?['followingBottom'];
-  // The anchor offset is the topmost visible row's *content* offset (the UI
-  // subtracts the bottom-alignment slack, see timeline_paging.dart
-  // `_captureAnchor`). Inside the oversized reply that row's top sits above the
-  // viewport, so the offset is negative; a positive value would mean the anchor
-  // is below the viewport, which cannot happen for the topmost visible row.
-  final inside =
-      anchorId == target &&
-      offset != null &&
-      offset < 0 &&
-      followingBottom == false &&
-      extentAfter != null &&
-      extentAfter > _detachedExtentThreshold(viewport) &&
-      pixels != null &&
-      maxScrollExtent != null &&
-      pixels < maxScrollExtent - 1.0;
-  return <String, Object?>{
-    'anchorItemId': anchorId,
-    'anchorOffset': offset,
-    'pixels': pixels,
-    'maxScrollExtent': maxScrollExtent,
-    'extentAfter': extentAfter,
-    'viewportDimension': viewport,
-    'followingBottom': followingBottom,
-    'detachedByUser': scroll?['detachedByUser'],
-    'isScrolling': scroll?['isScrolling'],
-    'userDragUpdates': scroll?['userDragUpdates'],
-    'insideLongBody': inside,
+    'mode': mode,
+    'finalMode': finalTimeline.mode,
+    'generation': finalTimeline.generation,
+    'insideLongBody': detached,
+    'detachedFromLiveEdge': !finalScroll.atLiveEdge,
+    'extentAfter': finalScroll.extentAfter,
+    'pixels': finalScroll.pixels,
+    'maxScrollExtent': finalScroll.maxScrollExtent,
+    'detachedThreshold': _detachedExtentThreshold(
+      finalScroll.viewportDimension,
+    ),
   };
 }
 
@@ -1103,7 +974,7 @@ Future<String> _createSecondSession(
     final directory = snapshot['sidebarDirectory'];
     if (directory is! Map) return false;
     final titles = directory['titles'];
-    return snapshot['timelineWindow'] is Map &&
+    return TimelineObservation.optional(snapshot) != null &&
         settled(snapshot, id) &&
         titles is Map &&
         titles[id] == 'Fixture Session 1';
@@ -1129,109 +1000,30 @@ String? _selectedThreadOrNull(Map<String, dynamic> snapshot) {
   return selected is String ? selected : null;
 }
 
-Map<String, dynamic>? _timelineScroll(Map<String, dynamic> snapshot) {
-  final scroll = snapshot['timelineScroll'];
-  return scroll is Map<String, dynamic> ? scroll : null;
-}
-
-List<String> _rowIds(Map<String, dynamic> snapshot) {
-  final timeline = _workspace(snapshot)?['timeline'];
-  if (timeline is! List) return const [];
-  return [
-    for (final row in timeline)
-      if (row is Map && row['id'] is String) row['id'] as String,
-  ];
-}
-
-List<Map<String, dynamic>> _timelineRows(Map<String, dynamic> snapshot) {
-  final timeline = _workspace(snapshot)?['timeline'];
-  if (timeline is! List) return const [];
-  return timeline.whereType<Map<String, dynamic>>().toList(growable: false);
-}
-
-/// The assistant long-body row: the final answer carrying the most text.
-Map<String, dynamic>? _longBodyRow(Map<String, dynamic> snapshot) {
-  Map<String, dynamic>? best;
-  var bestLength = -1;
-  for (final row in _timelineRows(snapshot)) {
-    if (row['type'] != 'finalAnswer' || row['id'] is! String) continue;
-    final length = (row['text'] as String?)?.length ?? 0;
-    if (length > bestLength) {
-      bestLength = length;
-      best = row;
-    }
-  }
-  return best;
-}
-
-/// The Driver-only application-payload counters, when the GUI exposes them.
-Map<String, dynamic>? _contentDelivery(Map<String, dynamic> snapshot) {
-  final delivery = snapshot['contentDelivery'];
-  return delivery is Map<String, dynamic> ? delivery : null;
-}
-
-List<String> _idList(Object? window, String key) {
-  if (window is! Map) return const [];
-  final value = window[key];
-  if (value is! List) return const [];
-  return value.whereType<String>().toList(growable: false);
-}
-
-String? _anchorId(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  if (anchor is Map && anchor['itemId'] is String) {
-    return anchor['itemId'] as String;
-  }
-  return null;
-}
-
-double? _anchorOffset(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  final offset = anchor is Map ? anchor['offset'] : null;
-  return offset is num ? offset.toDouble() : null;
-}
-
-/// The head marker every fixture body starts with.
-const _bodyHeadMarker = 'body-00000 ';
-
 /// The tail marker the strict fixture body ends with, per scenario.
 String _expectedBodySuffix(bool largeBody) =>
     largeBody ? 'body-19999 ${'W' * _largeBodyPad} ' : ' body-19999 ';
 
-/// Drives a real `SelectionArea` select/copy of the whole long-body region and
-/// verifies the clipboard readback against the canonical fixture body.
+/// Drives a real `SelectionArea` select/copy of the **bounded inline preview**.
 ///
-/// The production timeline renders the long reply through `_PlainBodyText`,
-/// which seals it into several bounded chunks that each become a real
-/// `RenderParagraph`. This phase proves a real selection/copy across those
-/// chunks keeps every character and inserts no newline:
-///
-/// * the rendered chunks must concatenate to the exact canonical body, carried
-///   by at least two distinct `RenderParagraph`s (never the domain text), and
-/// * the clipboard, read back from the platform after the product's own
-///   context-menu copy callback, must contain that exact body as one contiguous
-///   run.
-///
-/// The domain text is never written to the clipboard directly: the copy is the
-/// product callback and the readback comes from `Clipboard.getData`. The
-/// selection is cancelled with a real click and the region must then report no
-/// copyable selection, so the later reading/session-switch phases start clean.
-/// The Driver bridge reports a gap instead of passing when the production chunk
-/// paragraphs or the copyable selection are unavailable.
-Future<Map<String, Object?>> _selectAndCopyBody(
+/// 产品正文预算是 32 KiB：行内只交付有界预览，完整正文由显式详情查看器提供
+/// （[_copyThroughDetailViewer]）。这里验证真实跨块选择与产品复制回调对交付预览
+/// 逐字节一致，不把预览当成全文，也不为 Driver 写剪贴板。
+Future<Map<String, Object?>> _selectAndCopyPreview(
   FlutterDriverSession driver,
   Directory output,
-  int expectedBodyCharacters,
+  int previewCharacters,
   bool largeBody,
 ) async {
-  final expectedBody = _canonicalBody(largeBody);
-  final expectedHash = _fnv1a64(expectedBody).toRadixString(16);
-  final scrollBefore = _timelineScroll(await driver.readSnapshot());
-  final pixelsBefore = _doubleOrNull(scrollBefore?['pixels']);
-  // Bounded wait for the production chunk split to finish and stabilise, so the
-  // selection never races a frame that seals another chunk (a fresh chunk's
-  // paragraph starts unselected). Stability means the same paragraph count over
-  // consecutive polls with the full body already rendered.
+  final canonical = _canonicalBody(largeBody);
+  final expectedPreview = previewCharacters >= canonical.length
+      ? canonical
+      : canonical.substring(0, previewCharacters);
+  final expectedHash = _fnv1a64(expectedPreview).toRadixString(16);
+  final beforeTimeline = TimelineObservation.parse(await driver.readSnapshot());
+  final scrollBefore = TimelineScrollObservation.optional(
+    await driver.readSnapshot(),
+  );
   Map<String, dynamic>? rendered;
   int? stableParagraphCount;
   var stablePolls = 0;
@@ -1243,11 +1035,9 @@ Future<Map<String, Object?>> _selectAndCopyBody(
         timeout: const Duration(seconds: 20),
       ),
     );
-    // A Driver that does not implement the request answers with an error; fail
-    // immediately with that evidence instead of waiting for the deadline.
     if (rendered?['ok'] != true) break;
     final paragraphs = (rendered?['paragraphCount'] as num? ?? 0).toInt();
-    if (rendered?['characters'] == expectedBodyCharacters && paragraphs >= 2) {
+    if (rendered?['characters'] == previewCharacters && paragraphs >= 2) {
       if (paragraphs == stableParagraphCount) {
         stablePolls += 1;
       } else {
@@ -1264,23 +1054,15 @@ Future<Map<String, Object?>> _selectAndCopyBody(
   }
   final renderedReady =
       rendered != null &&
-      rendered['characters'] == expectedBodyCharacters &&
+      rendered['characters'] == previewCharacters &&
       (rendered['paragraphCount'] as num? ?? 0) >= 2 &&
       rendered['hash'] == expectedHash;
-  // Real selection of the whole timeline region.
   final selected = _decodeDriverMap(
     await driver.requestData(
       'selection-select-all',
       timeout: const Duration(seconds: 30),
     ),
   );
-  try {
-    await File('${output.path}/stress-body-selection-highlight.png')
-        .writeAsBytes(await driver.screenshot());
-  } catch (_) {
-    // Evidence capture must never replace the observation it documents.
-  }
-  // Real copy through the product context-menu callback, then the readback.
   final copied = _decodeDriverMap(
     await driver.requestData(
       'selection-copy',
@@ -1288,29 +1070,12 @@ Future<Map<String, Object?>> _selectAndCopyBody(
     ),
   );
   final copiedText = copied?['copied'] as String?;
-  final bodyContiguous =
-      copiedText != null && copiedText.contains(expectedBody);
-  // The canonical body extracted from the readback, so the summary can carry a
-  // full hash plus head/tail of exactly the body slice, not just a boolean.
-  final bodyOffset = copiedText?.indexOf(_bodyHeadMarker);
-  final copiedBody =
+  final copiedHash = copied?['copiedHash'];
+  // 复制内容必须与交付预览逐字节一致（跨块、无插入换行），不能只要求“包含”。
+  final copiedMatchesPreview =
       copiedText != null &&
-          bodyOffset != null &&
-          bodyOffset >= 0 &&
-          bodyOffset + expectedBodyCharacters <= copiedText.length
-      ? copiedText.substring(bodyOffset, bodyOffset + expectedBodyCharacters)
-      : null;
-  // The multi-paragraph proof must come from the copy's own instant, not from an
-  // earlier poll, and the chunks it copied must concatenate to the canonical
-  // body.
-  final copiedParagraphCount = (copied?['paragraphCount'] as num? ?? 0).toInt();
-  final copiedChunksMatchCanonical =
-      copiedParagraphCount >= 2 &&
-      copied?['characters'] == expectedBodyCharacters &&
-      copied?['hash'] == expectedHash;
-  // Cancel the selection with a real click, then re-read the region state: the
-  // click must leave a collapsed (non-copyable) selection so the later history
-  // and session-switch assertions run from a clean timeline.
+      copiedHash == expectedHash &&
+      copiedText.contains(expectedPreview);
   String? cancelClickError;
   var cancelClicked = false;
   try {
@@ -1329,81 +1094,177 @@ Future<Map<String, Object?>> _selectAndCopyBody(
     ),
   );
   final selectionCleared = selectionState?['copyable'] == false;
-  final scrollAfter = _timelineScroll(await driver.readSnapshot());
-  final pixelsAfter = _doubleOrNull(scrollAfter?['pixels']);
-  // Cancelling the selection must not move the reader: the viewport pixels and
-  // the follow-bottom state are compared before and after the whole phase.
+  final afterTimeline = TimelineObservation.parse(await driver.readSnapshot());
+  final scrollAfter = TimelineScrollObservation.optional(
+    await driver.readSnapshot(),
+  );
   final scrollStable =
-      pixelsBefore != null &&
-      pixelsAfter != null &&
-      (pixelsBefore - pixelsAfter).abs() <= 1.0 &&
-      scrollBefore?['followingBottom'] == scrollAfter?['followingBottom'];
+      scrollBefore != null &&
+      scrollAfter != null &&
+      scrollBefore.generation == scrollAfter.generation &&
+      ((scrollBefore.pixels ?? 0) - (scrollAfter.pixels ?? 0)).abs() <= 1.0;
+  final modeStable =
+      afterTimeline.generation == beforeTimeline.generation &&
+      afterTimeline.mode == beforeTimeline.mode;
   final pass =
+      renderedReady &&
       copied?['ok'] == true &&
-      copiedChunksMatchCanonical &&
-      bodyContiguous &&
+      copiedMatchesPreview &&
       selected?['copyable'] == true &&
       cancelClicked &&
       selectionCleared &&
-      scrollStable;
+      scrollStable &&
+      modeStable;
   final evidence = <String, Object?>{
     'method':
         'SelectionArea selectAll + product context-menu copy callback + '
-        'Clipboard.getData readback + real click cancel',
-    'expectedCharacters': expectedBodyCharacters,
+        'Clipboard.getData readback + real click cancel (inline preview only)',
+    'previewCharacters': previewCharacters,
     'expectedHash': expectedHash,
-    'expectedHead': _headOf(expectedBody),
-    'expectedTail': _tailOf(expectedBody),
+    'expectedHead': _headOf(expectedPreview),
+    'expectedTail': _tailOf(expectedPreview),
+    'fullBodyCharacters': canonical.length,
+    'note':
+        'inline preview is bounded by the product 32 KiB budget; the complete '
+        'body is read through the explicit detail viewer',
     'renderedParagraphCount': rendered?['paragraphCount'],
-    'renderedChunkCount': rendered?['chunkCount'],
     'renderedCharacters': rendered?['characters'],
     'renderedHash': rendered?['hash'],
-    'renderedHead': rendered?['head'],
-    'renderedTail': rendered?['tail'],
-    'bodyReadOk': rendered?['ok'],
-    'renderedMatchesCanonicalBody': renderedReady,
+    'renderedMatchesPreview': renderedReady,
     'selectOk': selected?['ok'],
     'copyButtonPresent': selected?['copyable'],
-    'menuTypes': selected?['menuTypes'],
     'copyOk': copied?['ok'],
-    'copiedParagraphCount': copiedParagraphCount,
-    'copiedRenderedCharacters': copied?['characters'],
-    'copiedRenderedHash': copied?['hash'],
-    'copiedChunksMatchCanonical': copiedChunksMatchCanonical,
     'copiedLength': copiedText?.length,
-    'copiedHead': copied?['copiedHead'],
-    'copiedTail': copied?['copiedTail'],
-    'copiedHash': copied?['copiedHash'],
-    'bodyOffsetInClipboard': bodyOffset,
-    'copiedBodyLength': copiedBody?.length,
-    'copiedBodyHash': copiedBody == null
-        ? null
-        : _fnv1a64(copiedBody).toRadixString(16),
-    'copiedBodyHead': copiedBody == null ? null : _headOf(copiedBody),
-    'copiedBodyTail': copiedBody == null ? null : _tailOf(copiedBody),
-    'copiedBodyMatchesCanonical': copiedBody == expectedBody,
-    'copiedContainsCanonicalBody': bodyContiguous,
-    'copyableAfterCopy': copied?['copyableAfterCopy'],
+    'copiedHash': copiedHash,
+    'copiedMatchesPreview': copiedMatchesPreview,
     'cancelClick': cancelClicked,
     'cancelClickError': cancelClickError,
     'copyableAfterCancelClick': selectionState?['copyable'],
-    'menuTypesAfterCancelClick': selectionState?['menuTypes'],
     'selectionCleared': selectionCleared,
-    'copyMillis': copied?['copyMillis'],
-    'scrollPixelsBefore': pixelsBefore,
-    'scrollPixelsAfter': pixelsAfter,
     'scrollStable': scrollStable,
+    'modeStable': modeStable,
     'pass': pass,
   };
   await File(
-    '${output.path}/stress-body-selection-copy.json',
+    '${output.path}/stress-body-preview-copy.json',
   ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
-  if (copiedText != null) {
-    // The full readback stays as a plain file so a reviewer can diff it instead
-    // of trusting the summary flags.
-    await File('${output.path}/stress-body-selection-copied.txt')
-        .writeAsString(copiedText);
+  return evidence;
+}
+
+/// Copies the complete body through the explicit detail viewer.
+///
+/// 历史行本身不会因后台补齐而升级：完整正文只来自用户打开的查看器，逐块累计到真实
+/// 总长后由产品自己的复制按钮写入剪贴板，再与 canonical fixture 正文比对。关闭后
+/// 查看器消失，行内预览长度保持不变。
+Future<Map<String, Object?>> _copyThroughDetailViewer(
+  FlutterDriverSession driver,
+  Directory output,
+  int expectedBodyCharacters,
+  bool largeBody,
+  String? itemId,
+) async {
+  final expectedBody = _canonicalBody(largeBody);
+  final expectedHash = _fnv1a64(expectedBody).toRadixString(16);
+  final before = TimelineObservation.parse(await driver.readSnapshot());
+  final rowBefore = itemId == null ? null : before.item(itemId);
+  final evidence = <String, Object?>{};
+  if (itemId == null) {
+    evidence['reason'] = 'no assistant body identity for the detail viewer';
+    evidence['pass'] = false;
+    return evidence;
   }
+  final openKey = 'timeline-detail-open-$itemId-text';
+  await driver.waitFor(
+    find.byValueKey(openKey),
+    timeout: const Duration(seconds: 30),
+  );
+  await driver.rawTap(
+    find.byValueKey(openKey),
+    timeout: const Duration(seconds: 30),
+  );
+  // 逐块累计：等待查看器报告的真实字符数达到条目声明的总长。
+  final deadline = DateTime.now().add(const Duration(seconds: 90));
+  Map<String, dynamic>? progress;
+  var sawPartial = false;
+  while (DateTime.now().isBefore(deadline)) {
+    progress = _decodeDriverMap(
+      await driver.requestData('timeline-detail-text'),
+    );
+    final characters = (progress?['characters'] as num? ?? 0).toInt();
+    if (characters > 0 && characters < expectedBodyCharacters) {
+      sawPartial = true;
+    }
+    if (characters >= expectedBodyCharacters) break;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  final loadedCharacters = (progress?['characters'] as num? ?? 0).toInt();
+  final loadedHash = progress?['hash'];
+  await File('${output.path}/stress-body-detail-viewer.png')
+      .writeAsBytes(await driver.screenshot());
+  await driver.waitFor(
+    find.byValueKey('timeline-detail-copy'),
+    timeout: const Duration(seconds: 15),
+  );
+  await driver.rawTap(
+    find.byValueKey('timeline-detail-copy'),
+    timeout: const Duration(seconds: 30),
+  );
+  final clipboard = _decodeDriverMap(
+    await driver.requestData('clipboard-text'),
+  );
+  final clipboardHash = clipboard?['hash'];
+  final clipboardCharacters = (clipboard?['characters'] as num? ?? 0).toInt();
+  await driver.rawTap(
+    find.byValueKey('timeline-detail-close'),
+    timeout: const Duration(seconds: 30),
+  );
+  // 关闭后查看器消失；等待显式的关闭事实，不用固定 sleep。
+  final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
+  var closed = false;
+  while (DateTime.now().isBefore(closeDeadline)) {
+    final state = _decodeDriverMap(
+      await driver.requestData('timeline-detail-text'),
+    );
+    if (state?['open'] == false) {
+      closed = true;
+      break;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  final after = TimelineObservation.parse(await driver.readSnapshot());
+  final rowAfter = after.item(itemId);
+  final previewUnchanged =
+      rowBefore != null &&
+      rowAfter != null &&
+      rowBefore.text.length == rowAfter.text.length &&
+      rowBefore.textTotalBytes == rowAfter.textTotalBytes &&
+      rowBefore.revision == rowAfter.revision;
+  evidence.addAll(<String, Object?>{
+    'itemId': itemId,
+    'expectedCharacters': expectedBodyCharacters,
+    'expectedHash': expectedHash,
+    'loadedCharacters': loadedCharacters,
+    'loadedHash': loadedHash,
+    'clipboardCharacters': clipboardCharacters,
+    'clipboardHash': clipboardHash,
+    'viewerClosed': closed,
+    'rowPreviewUnchanged': previewUnchanged,
+    // 理论块数只是结构推算（ceil(bytes/64KiB)）；实际读了几块不要求被帧采样到，
+    // 快速多块读取允许在一次轮询前完成。`sawPartialChunk` 仅记录。
+    'theoreticalChunks': (expectedBodyCharacters / (64 * 1024)).ceil(),
+    'sawPartialChunk': sawPartial,
+    // 完整字节 + fixture 原文 hash + 真实查看器/剪贴板一致 + 关闭即证明保真。
+    'pass':
+        loadedCharacters == expectedBodyCharacters &&
+        loadedHash == expectedHash &&
+        clipboardCharacters == expectedBodyCharacters &&
+        clipboardHash == expectedHash &&
+        closed &&
+        previewUnchanged,
+  });
+  await File(
+    '${output.path}/stress-body-detail-copy.json',
+  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
   return evidence;
 }
 
@@ -1441,96 +1302,4 @@ int _fnv1a64(String text) {
     hash = hash * 0x100000001b3;
   }
   return hash;
-}
-
-/// Whether the reopened reading session has finished showing the full body and
-/// finished restoring the reading anchor.
-///
-/// Deliberately does **not** compare the anchor to the original position: the
-/// wait must observe the *same identity* body completing (exact length + head and
-/// tail markers), no pending re-fetch for that identity, and the restore settling
-/// (`restorePending`/`programmaticScroll` false whenever the UI exposes the
-/// geometry). Waiting on anchor equality would let a position that never restores
-/// pass by masking. A baseline without the `timelineScroll` diagnostic waits only
-/// on the body and stays pending rather than passing.
-bool _reopenBodyReady(
-  Map<String, dynamic> snapshot,
-  String expectedRowId,
-  int expectedBodyCharacters,
-  bool largeBody,
-) {
-  final window = snapshot['timelineWindow'];
-  if (window is! Map) return false;
-  if (window['loading'] != false) return false;
-  if (_idList(window, 'pendingItemBodyIds').contains(expectedRowId)) {
-    return false;
-  }
-  final row = _longBodyRow(snapshot);
-  if (row == null || row['id'] != expectedRowId) return false;
-  final text = row['text'] as String?;
-  if (text == null || text.length != expectedBodyCharacters) return false;
-  if (!text.startsWith(_bodyHeadMarker)) return false;
-  if (!text.endsWith(_expectedBodySuffix(largeBody))) return false;
-  final scroll = _timelineScroll(snapshot);
-  if (scroll != null) {
-    if (scroll['restorePending'] != false) return false;
-    if (scroll['programmaticScroll'] != false) return false;
-    if (scroll['isScrolling'] != false) return false;
-  }
-  return true;
-}
-
-/// A bounded diagnostic of the reopened reading session for a wait timeout.
-///
-/// Records the same-identity body completeness (text length + head/tail), the
-/// window's omission flags for that identity, and the restore/anchor geometry, so
-/// a timeout states whether the body never completed or the restore never
-/// finished instead of guessing.
-Map<String, Object?> _reopenDiagnostics(
-  Map<String, dynamic> snapshot,
-  String expectedRowId,
-  int expectedBodyCharacters,
-  bool largeBody,
-) {
-  final window = snapshot['timelineWindow'];
-  final scroll = _timelineScroll(snapshot);
-  final row = _longBodyRow(snapshot);
-  final text = row?['text'] as String?;
-  return <String, Object?>{
-    'expectedRowId': expectedRowId,
-    'expectedCharacters': expectedBodyCharacters,
-    'longBodyRowId': row?['id'],
-    'longBodyCharacters': text?.length,
-    'sameIdentity': row?['id'] == expectedRowId,
-    'prefixOk': text != null && text.startsWith(_bodyHeadMarker),
-    'suffixOk': text != null && text.endsWith(_expectedBodySuffix(largeBody)),
-    'previewedItemId': _idList(
-      window,
-      'previewedItemIds',
-    ).contains(expectedRowId),
-    'loadedItemId': _idList(window, 'loadedItemIds').contains(expectedRowId),
-    'pendingItemBodyId': _idList(
-      window,
-      'pendingItemBodyIds',
-    ).contains(expectedRowId),
-    'previewedItemIds': _idList(window, 'previewedItemIds'),
-    'loadedItemIds': _idList(window, 'loadedItemIds'),
-    'pendingItemBodyIds': _idList(window, 'pendingItemBodyIds'),
-    'windowLoading': window is Map ? window['loading'] : null,
-    'restorePending': scroll?['restorePending'],
-    'programmaticScroll': scroll?['programmaticScroll'],
-    'restoreAnchor': scroll?['restoreAnchor'],
-    'anchor': scroll?['anchor'],
-    'geometry': scroll == null
-        ? null
-        : <String, Object?>{
-            'pixels': scroll['pixels'],
-            'maxScrollExtent': scroll['maxScrollExtent'],
-            'viewportDimension': scroll['viewportDimension'],
-            'extentAfter': scroll['extentAfter'],
-            'followingBottom': scroll['followingBottom'],
-            'bottomSlack': scroll['bottomSlack'],
-          },
-    'rowIds': _rowIds(snapshot),
-  };
 }

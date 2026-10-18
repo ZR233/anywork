@@ -6,7 +6,7 @@ import 'package:test/test.dart';
 
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
-final class _DraftTransport implements StudioTransport, ChatWindowReader {
+final class _DraftTransport implements StudioTransport {
   _DraftTransport() {
     addTearDown(() => frames.close());
   }
@@ -32,13 +32,14 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   int admissionCalls = 0;
   int settingsWrites = 0;
   bool removeSucceeds = true;
-  final window = _DraftWindow();
+  final window = _DraftConnection();
 
   @override
   Stream<ThreadStreamFrame> subscribeThread(String threadId) => frames.stream;
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async => window;
+  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
+      window;
 
   @override
   Future<SubmitPromptReceipt> submitPrompt(
@@ -121,38 +122,60 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   );
 }
 
-/// A controlled content source, with the production Session/ChatChannel reducer.
-final class _DraftWindow implements StudioChatWindow {
-  Completer<StudioChatFrame?>? _next;
-  Completer<void> _nextReady = Completer();
+/// A controlled content source driven through the production timeline channel.
+final class _DraftConnection implements StudioTimelineConnection {
+  _DraftConnection();
+
+  Completer<StudioTimelineUpdate?>? _next;
+  int _version = 1;
   bool _closed = false;
 
   @override
-  Future<StudioChatSnapshot> initial() async => const StudioChatSnapshot(
-    focusedItemId: null,
-    version: 1,
-    items: [],
+  Future<StudioTimelineBaseline> initial() async => StudioTimelineBaseline(
+    subscriptionId: 'draft',
+    version: _version,
+    items: const [],
+    before: null,
     hasOlder: false,
-    hasNewer: false,
   );
 
   @override
-  Future<StudioChatFrame?> next() {
+  Future<StudioTimelineUpdate?> next() {
     if (_closed) return Future.value(null);
     if (_next != null) throw StateError('Two outstanding next calls');
-    final pending = Completer<StudioChatFrame?>();
+    final pending = Completer<StudioTimelineUpdate?>();
     _next = pending;
-    _nextReady.complete();
     return pending.future.whenComplete(() {
       _next = null;
-      _nextReady = Completer();
     });
   }
 
-  Future<void> emit(StudioChatFrame frame) async {
-    await _nextReady.future;
-    _next!.complete(frame);
+  Future<void> emit(StudioTimelineChange change) async {
+    final pending = _next;
+    if (pending == null) throw StateError('No pending content read');
+    final from = _version;
+    _version = from + 1;
+    pending.complete(
+      StudioTimelinePatch(
+        subscriptionId: 'draft',
+        from: from,
+        to: _version,
+        changes: [change],
+        priority: StudioTimelinePriority.immediate,
+      ),
+    );
   }
+
+  @override
+  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
+    const StudioTimelinePage(items: [], before: null, hasOlder: false),
+  );
+
+  @override
+  Future<StudioTimelineDetailChunk> readDetail({
+    required String itemId,
+    required StudioTimelineDetailQuery query,
+  }) => Future.error(UnsupportedError('draft test has no detail body'));
 
   @override
   void requestClose() {
@@ -165,11 +188,6 @@ final class _DraftWindow implements StudioChatWindow {
   Future<void> close() async {
     requestClose();
   }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused content control: ${invocation.memberName}',
-  );
 }
 
 const _project = StudioProject(
@@ -191,7 +209,6 @@ ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
     ThreadWorkspace(
       thread: _thread(),
       revision: revision,
-      items: const [],
       interactions: const [],
       activeTurn: turn,
       latestTurn: turn,
@@ -429,7 +446,7 @@ void main() {
     final session = client.session('thread');
     session.applySnapshot(_workspace());
     session.start();
-    await session.source.waitFor((state) => state.chatVersion == 1);
+    await session.timeline.ready;
     final baselineObservers = client.budget.used(ResourceKind.observer);
     final owner = client.composer('thread');
     owner.updateDraft('durable input');
@@ -485,26 +502,19 @@ void main() {
       ),
     );
     await transport.window.emit(
-      StudioChatPatch(
-        from: 1,
-        to: 2,
-        changes: [
-          StudioViewSplice(
-            index: 0,
-            remove: 0,
-            items: [
-              StudioChatItem(
-                terminal,
-                saved: false,
-                lifecycle: StudioChatLifecycle.terminal,
-              ),
-            ],
-          ),
-        ],
-        hasNewer: false,
+      StudioTimelineAdd(
+        StudioTimelineItem(
+          item: terminal,
+          saved: false,
+          lifecycle: StudioTimelineLifecycle.terminal,
+          omittedBytes: 0,
+          details: const [],
+        ),
       ),
     );
-    await session.source.waitFor((state) => state.chatVersion == 2);
+    await session.timeline.state.waitFor(
+      (state) => state.snapshot is StudioTimelinePatchFrame,
+    );
     expect(
       operation.state.value.durable,
       isFalse,
@@ -512,24 +522,21 @@ void main() {
     );
     expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
     await transport.window.emit(
-      const StudioChatPatch(
-        from: 2,
-        to: 3,
-        changes: [
-          StudioViewItemUpdate(
-            itemId: 'turn-item',
-            expectedRevision: 2,
-            revision: 2,
-            omittedUnits: 0,
-            saved: true,
-            lifecycle: StudioChatLifecycle.terminal,
-            fields: [],
-          ),
-        ],
-        hasNewer: false,
+      const StudioTimelineUpdateItem(
+        itemId: 'turn-item',
+        expectedRevision: 2,
+        revision: 2,
+        omittedBytes: 0,
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        fields: [],
       ),
     );
-    await session.source.waitFor((state) => state.chatVersion == 3);
+    await session.timeline.state.waitFor(
+      (state) =>
+          state.snapshot is StudioTimelinePatchFrame &&
+          (state.snapshot! as StudioTimelinePatchFrame).patch.to == 3,
+    );
     expect(operation.state.value.durable, isTrue);
     expect(client.budget.used(ResourceKind.observer), baselineObservers);
     await _close(client, transport);
@@ -629,6 +636,86 @@ void main() {
     expect(owner.state.attachments.single.id, 'attachment-1-0');
     expect(transport.removed, isEmpty);
     await owner.discard();
+    await _close(client, transport);
+  });
+
+  test(
+    'the preparation hook runs after freezing and before the backend submit',
+    () async {
+      final transport = _DraftTransport();
+      final client = _client(transport);
+      client.session('thread').applySnapshot(_workspace());
+      final owner = client.composer('thread');
+      owner.updateDraft('prepare before sending');
+      await owner.addLocalAttachments(['/payload.bin']);
+
+      var hookCalls = 0;
+      String? frozenTarget;
+      final submission = owner.submit(
+        beforeSubmit: () async {
+          hookCalls += 1;
+          // 冻结目标与冻结附件在钩子运行前已经成立，后端此刻还没有收到提交。
+          frozenTarget = client.mutations.operations.single.target;
+          expect(transport.promptCalls, 0);
+          expect(owner.state, isA<SubmittingComposerThreadState>());
+        },
+      );
+      final input = await transport.promptEntered.future;
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: input.inputId,
+          cursor: 3,
+        ),
+      );
+      await submission;
+      expect(hookCalls, 1);
+      expect(frozenTarget, 'submit:thread');
+      expect(transport.promptCalls, 1);
+      await _close(client, transport);
+    },
+  );
+
+  test('a failing preparation is a known non-submission and keeps the draft usable', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('send after display preparation');
+    await owner.addLocalAttachments(['/payload.bin']);
+    const failure = StudioFailure(
+      code: StudioFailureCode.storage,
+      message: 'display preparation failed',
+      retryable: true,
+      correlationId: 'prepare-failure',
+    );
+
+    await owner.submit(beforeSubmit: () => Future.error(failure));
+    // 展示准备发生在 backend 提交之前：这是已知未提交，不是未知结果。
+    expect(transport.promptCalls, 0);
+    expect(
+      client.mutations.operations.single.phase,
+      isNot(OperationPhase.unknownOutcome),
+    );
+    expect(owner.state, isA<FailedComposerThreadState>());
+    expect(owner.state.draft, 'send after display preparation');
+    expect(owner.state.attachments.single.id, 'attachment-1-0');
+    expect(client.budget.used(ResourceKind.attachment), 1);
+
+    // 草稿没有被永久封住：再次提交可以真正进入后端。
+    final submission = owner.submit();
+    final input = await transport.promptEntered.future;
+    expect(transport.promptCalls, 1);
+    expect(input.attachmentDraftIds, ['attachment-1-0']);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 4,
+      ),
+    );
+    await submission;
+    expect(owner.state.draft, isEmpty);
     await _close(client, transport);
   });
 

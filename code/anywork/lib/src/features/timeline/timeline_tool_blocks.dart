@@ -1,202 +1,53 @@
 part of 'timeline_view.dart';
 
-class _TimelineExpansionScope extends InheritedWidget {
-  const _TimelineExpansionScope({
-    required this.controllers,
-    required super.child,
-  });
-  final Map<String, ExpansibleController> controllers;
-  static ExpansibleController controllerOf(BuildContext context, String id) {
-    final scope = context
-        .dependOnInheritedWidgetOfExactType<_TimelineExpansionScope>()!;
-    return scope.controllers.putIfAbsent(id, ExpansibleController.new);
-  }
+/// 一条工具 Message 的只读展示视图。
+///
+/// 它只包装这一条 Message 的 typed 事实：名字、状态、参数/结果预览与附件都来自
+/// `ThreadItemView.tool`，不另读完整参数 JSON 来推断语义，也不解析私有交互回执
+/// （design/26 §26.5、§26.8）。
+final class _ToolItem {
+  const _ToolItem(this.entry);
 
-  @override
-  bool updateShouldNotify(_TimelineExpansionScope oldWidget) =>
-      controllers != oldWidget.controllers;
+  final TimelineEntry entry;
+
+  TimelineToolPart? get tool => entry.tool;
+  String get id => entry.id;
+  String get name => tool?.name ?? '';
+  String get status => entry.status;
+  String get summary => _commandSummary(tool?.arguments ?? '') ?? '';
+  String get threadId => entry.threadId;
+  String? get error => entry.error;
+
+  /// 同一视图内的只读别名，让既有工具组件直接读单条条目事实。
+  TimelineEntry get part => entry;
 }
 
-class _ActivityGroupPart extends StatelessWidget {
-  const _ActivityGroupPart({required this.group});
-  final TimelineActivityGroup group;
-  @override
-  Widget build(BuildContext context) {
-    final controller = _TimelineExpansionScope.controllerOf(context, group.id);
-    final current = group.current;
-    final label = group.isActive
-        ? current.type == TimelineEntryType.tool
-              ? _toolTitle(context, TimelineToolItem(part: current))
-              : plainReasoningSummary(
-                      current.reasoningSummary.firstOrNull ?? '',
-                    ) ??
-                    context.l10n.timelineReasoningActive
-        : group.toolCount == 0
-        ? context.l10n.timelineReasoningCompleted
-        : '${group.hasReasoning ? context.l10n.timelineActivityTitle : context.l10n.timelineToolGroupTitle} · ${context.l10n.timelineToolGroupSummary(group.toolCount)}';
-    final firstIssue = group.firstIssue;
-    final issue = firstIssue != null;
-    return ExpansionTile(
-      key: StudioDriverKeys.timelineActivitySummary(group.id),
-      controller: controller,
-      initiallyExpanded: controller.isExpanded,
-      maintainState: false,
-      showTrailingIcon: false,
-      minTileHeight: 28,
-      dense: true,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(left: 7, bottom: 6),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
-        context,
-        expanded
-            ? _TimelineLayoutChangeKind.expand
-            : _TimelineLayoutChangeKind.collapse,
-      ),
-      title: _TimelineActivitySummary(
-        icon: _activityGroupIcon(group, issue: issue),
-        label: issue
-            ? '${context.toolStatusLabel(firstIssue.status)} · $label'
-            : label,
-        isIssue: issue,
-      ),
-      children: [
-        DecoratedBox(
-          key: const ValueKey('timeline-activity-details'),
-          decoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(color: context.colors.outlineVariant),
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.only(left: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final part in group.parts)
-                  if (part.type == TimelineEntryType.reasoning)
-                    _ReasoningActivity(part: part)
-                  else
-                    _ToolActivity(item: TimelineToolItem(part: part)),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+/// 默认显示的工具摘要来源：命令首行 / 路径 / 查询词。
+String? _commandSummary(String arguments) {
+  final json = decodeJsonObject(arguments);
+  final command = jsonStringValue(json['command']);
+  final path =
+      jsonStringValue(json['path']) ??
+      jsonStringValue(json['filePath']) ??
+      jsonStringValue(json['targetPath']) ??
+      jsonStringValue(json['workingDirectory']);
+  final query = jsonStringValue(json['query']);
+  final value = command?.isNotEmpty == true
+      ? command!.split('\n').first
+      : path?.isNotEmpty == true
+      ? path!
+      : query;
+  return value == null || value.isEmpty ? null : value;
 }
 
-IconData _activityGroupIcon(
-  TimelineActivityGroup group, {
-  required bool issue,
-}) {
-  if (issue) return Icons.error_outline;
-  if (group.toolCount == 0) return Icons.psychology_alt_outlined;
-  final toolParts = group.parts
-      .where((part) => part.type == TimelineEntryType.tool)
-      .toList(growable: false);
-  if (toolParts.length == 1) {
-    final name = toolParts.first.tool?.name;
-    return switch (name) {
-      'exec_command' ||
-      'run_command' ||
-      'write_stdin' => Icons.terminal_outlined,
-      'apply_patch' ||
-      'write_file' ||
-      'edit_file' ||
-      'replace_file_content' ||
-      'write_to_file' => Icons.edit_outlined,
-      'web_search' ||
-      'read_file' ||
-      'view_file' ||
-      'grep_search' ||
-      'find_by_name' ||
-      'list_dir' ||
-      'lsp_query' ||
-      'lsp_capabilities' => Icons.travel_explore_outlined,
-      _ => Icons.build_outlined,
-    };
-  }
-  return group.hasReasoning
-      ? Icons.psychology_alt_outlined
-      : Icons.build_outlined;
-}
-
-class _ToolActivity extends StatelessWidget {
-  const _ToolActivity({required this.item});
-  final TimelineToolItem item;
-
-  @override
-  Widget build(BuildContext context) {
-    final images = _toolImageEntries([item]);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (_isWebSearch(item))
-          _WebSearchToolCard(item: item, embedded: true)
-        else
-          _ToolDetails(item: item),
-        if (images.isNotEmpty)
-          _ThreadImageGallery(
-            threadId: item.part.threadId,
-            entries: images,
-            groupId: item.id,
-          ),
-      ],
-    );
-  }
-}
-
-class _ReasoningActivity extends StatelessWidget {
-  const _ReasoningActivity({required this.part});
-  final TimelineEntry part;
-  @override
-  Widget build(BuildContext context) {
-    final chunks = part.reasoningContent.isNotEmpty
-        ? part.reasoningContent
-        : part.reasoningSummary;
-    final text = chunks.where((chunk) => chunk.trim().isNotEmpty).join('\n\n');
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: text.isEmpty
-          ? Text(context.l10n.timelineReasoningEmpty)
-          : _AgentMarkdown(
-              id: part.id,
-              text: text,
-              surface: _MarkdownSurface.reasoning,
-            ),
-    );
-  }
-}
-
-class _ImageReadPart extends StatelessWidget {
-  const _ImageReadPart({required this.row});
-  final TimelineImageRow row;
-  @override
-  Widget build(BuildContext context) {
-    final entries = _toolImageEntries([row.tool]);
-    if (entries.isEmpty) {
-      return _ToolDetails(item: row.tool);
-    }
-    return _ThreadImageGallery(
-      threadId: row.threadId,
-      entries: entries,
-      groupId: row.id,
-    );
-  }
-}
-
-bool _isWebSearch(TimelineToolItem item) {
+bool _isWebSearch(_ToolItem item) {
   return item.tool?.name == 'web_search';
 }
 
 class _WebSearchToolCard extends StatelessWidget {
-  const _WebSearchToolCard({required this.item, this.embedded = false});
+  const _WebSearchToolCard({required this.item});
 
-  final TimelineToolItem item;
-  final bool embedded;
+  final _ToolItem item;
 
   @override
   Widget build(BuildContext context) {
@@ -292,19 +143,6 @@ class _WebSearchToolCard extends StatelessWidget {
         ],
       ),
     );
-    if (embedded) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 9),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: context.colors.surfaceContainer,
-            borderRadius: BorderRadius.circular(StudioRadii.sm),
-            border: Border.all(color: context.colors.outlineVariant),
-          ),
-          child: content,
-        ),
-      );
-    }
     return _TimelinePanel(child: content);
   }
 }
@@ -432,7 +270,7 @@ void _collectWebLinks(Object? value, Set<String> links) {
 class _ToolDetails extends StatelessWidget {
   const _ToolDetails({required this.item});
 
-  final TimelineToolItem item;
+  final _ToolItem item;
 
   @override
   Widget build(BuildContext context) {
@@ -469,16 +307,6 @@ class _ToolDetails extends StatelessWidget {
       padding: const EdgeInsets.only(top: 6),
       child: ExpansionTile(
         key: ValueKey('timeline-tool-details:${item.id}'),
-        controller: _TimelineExpansionScope.controllerOf(
-          context,
-          'tool-details:${item.id}',
-        ),
-        onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
-          context,
-          expanded
-              ? _TimelineLayoutChangeKind.expand
-              : _TimelineLayoutChangeKind.collapse,
-        ),
         expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
@@ -534,7 +362,7 @@ class _ToolDetails extends StatelessWidget {
     );
   }
 
-  String? _resultDetail(TimelineToolItem item, TimelineToolPart? tool) {
+  String? _resultDetail(_ToolItem item, TimelineToolPart? tool) {
     final result = tool?.result;
     if (result == null || result.trim().isEmpty) {
       return null;
@@ -573,7 +401,7 @@ class _ToolDetails extends StatelessWidget {
   }
 }
 
-String? _toolTarget(TimelineToolItem item) {
+String? _toolTarget(_ToolItem item) {
   final arguments = decodeJsonObject(item.tool?.arguments ?? '');
   for (final key in const [
     'path',
@@ -597,7 +425,7 @@ String _prettyToolPayload(String value) {
   }
 }
 
-String _toolTitle(BuildContext context, TimelineToolItem item) {
+String _toolTitle(BuildContext context, _ToolItem item) {
   final label = _toolDisplayName(context, item);
   if (item.name == 'view_image') {
     return switch (item.status) {
@@ -648,7 +476,7 @@ String _unknownToolStatusLabel(
 }
 
 /// 工具的展示名；LSP 工具使用本地化标题并附带参数摘要，其余保持原始领域名。
-String _toolDisplayName(BuildContext context, TimelineToolItem item) {
+String _toolDisplayName(BuildContext context, _ToolItem item) {
   final name = item.name;
   if (name == 'lsp_query') {
     final detail = _lspQueryDetail(item.tool?.arguments ?? '');

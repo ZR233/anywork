@@ -19,9 +19,10 @@ pl-remote-helper；bridge 经 Studio 的 SSH 接口类型映射，不直接组�
 Thread 不撤销其他 Thread 的租约。
 
 Session 的聊天能力见 [15](./15-session-storage.md)：Thread owner 只推进执行和生成不可变 effect；
-产品无关的 core Session 共享有界 TimelineState，按需创建多个独立 ChatView。Session/ChatView
-不依赖 Studio 协议、SQLite 或物理模型连接；宿主只注入按顺序键和 item 身份读取的历史能力。
-打开冷会话的阅读窗口无需构造模型、工具或执行 owner。宿主把同一提交投影为稳定 ChatItem
+产品无关的 core Session 共享有界 TimelineState，提供无状态历史页、独立尾部订阅与按身份详情，
+不拥有可见窗口或滚动位置，接口见 [26](./26-timeline-content.md)。Session 不依赖 Studio 协议、
+Flutter 或物理模型连接；宿主注入按顺序键和 item 身份读取的历史能力。
+读取冷会话无需构造模型、工具或执行 owner。宿主把同一提交投影为稳定 ChatItem
 并发布到 TimelineState 与可靠 writer，最终由按版本保存确认更新同一身份；它不能从 GUI
 是否订阅决定是否保留未保存事实。发布/订阅的同步边界在 core，历史事务与具体载荷投影在宿主。
 

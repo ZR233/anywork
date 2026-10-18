@@ -131,8 +131,7 @@ final class _Transport implements StudioTransport {
       throw UnsupportedError('Unused transport: ${invocation.memberName}');
 }
 
-final class _RouteConflictTransport extends _Transport
-    implements ChatWindowReader {
+final class _RouteConflictTransport extends _Transport {
   _RouteConflictTransport({this.onRuntimeCancel}) {
     addTearDown(() async {
       for (final binding in bindings) {
@@ -145,7 +144,7 @@ final class _RouteConflictTransport extends _Transport
   final Future<void> Function(int index)? onRuntimeCancel;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
-  final window = _RouteConflictWindow();
+  final window = _RouteConflictConnection();
   int windowOpens = 0;
 
   @override
@@ -163,7 +162,7 @@ final class _RouteConflictTransport extends _Transport
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async {
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     windowOpens++;
     return window;
   }
@@ -210,25 +209,37 @@ final class _RouteConflictTransport extends _Transport
   }
 }
 
-final class _RouteConflictWindow implements StudioChatWindow {
-  Completer<StudioChatFrame?>? _pending;
+final class _RouteConflictConnection implements StudioTimelineConnection {
+  Completer<StudioTimelineUpdate?>? _pending;
   bool _closed = false;
   int requestCloseCalls = 0;
 
   @override
-  Future<StudioChatSnapshot> initial() async => const StudioChatSnapshot(
-    focusedItemId: null,
-    version: 300,
-    items: [],
-    hasOlder: false,
-    hasNewer: false,
+  Future<StudioTimelineBaseline> initial() async =>
+      const StudioTimelineBaseline(
+        subscriptionId: 'route-conflict',
+        version: 300,
+        items: [],
+        before: null,
+        hasOlder: false,
+      );
+
+  @override
+  Future<StudioTimelineUpdate?> next() {
+    if (_closed) return Future.value(null);
+    return (_pending ??= Completer<StudioTimelineUpdate?>()).future;
+  }
+
+  @override
+  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
+    const StudioTimelinePage(items: [], before: null, hasOlder: false),
   );
 
   @override
-  Future<StudioChatFrame?> next() {
-    if (_closed) return Future.value(null);
-    return (_pending ??= Completer<StudioChatFrame?>()).future;
-  }
+  Future<StudioTimelineDetailChunk> readDetail({
+    required String itemId,
+    required StudioTimelineDetailQuery query,
+  }) => Future.error(UnsupportedError('route test has no detail body'));
 
   @override
   void requestClose() {
@@ -241,11 +252,6 @@ final class _RouteConflictWindow implements StudioChatWindow {
 
   @override
   Future<void> close() async => requestClose();
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused ChatView control: ${invocation.memberName}',
-  );
 }
 
 const _epoch = 'native-runtime-one';
@@ -292,7 +298,6 @@ ThreadWorkspace _workspace({
 }) => ThreadWorkspace(
   thread: _thread(),
   revision: revision,
-  items: const [],
   interactions: interactions,
   runtime: _runtime(model: model, routeRevision: routeRevision),
   activeTurn: activeTurn,
@@ -456,7 +461,7 @@ void main() {
         workspace: _workspace(revision: 40, routeRevision: 2),
       ),
     );
-    await session.chat.ready;
+    await session.timeline.ready;
     transport.bindings.first.add(
       ThreadNotificationFrame(
         threadId: 'thread',
@@ -469,7 +474,6 @@ void main() {
         ),
       ),
     );
-    final viewId = session.state.chatViewId;
     final changing = client.threadCommands.setThreadModelRoute(
       threadId: 'thread',
       providerId: 'provider',
@@ -521,8 +525,8 @@ void main() {
     expect(session.state.revision, 8);
     expect(session.state.runtime!.model, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    expect(session.state.chatVersion, 300);
-    expect(session.state.chatViewId, viewId);
+    final delivered = session.timeline.lastDeliveredFrame;
+    expect((delivered! as StudioTimelineBaselineFrame).baseline.version, 300);
     expect(transport.windowOpens, 1);
     expect(transport.window.requestCloseCalls, 0);
   });
@@ -551,7 +555,7 @@ void main() {
             workspace: _workspace(revision: 40, routeRevision: 3),
           ),
         );
-        await session.chat.ready;
+        await session.timeline.ready;
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
           providerId: 'provider',
@@ -634,7 +638,7 @@ void main() {
           workspace: _workspace(revision: 40, routeRevision: 3),
         ),
       );
-      await session.chat.ready;
+      await session.timeline.ready;
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
         providerId: 'provider',

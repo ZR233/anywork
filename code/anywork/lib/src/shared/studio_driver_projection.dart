@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
-import '../domain/models/timeline_rows.dart';
+import '../domain/models/timeline_messages.dart';
 import '../features/shell/shell_view.dart'
     show
         agentsForThreads,
@@ -9,17 +12,29 @@ import '../features/shell/shell_view.dart'
         threadsForRoot,
         projectById,
         rootThread;
+import '../presentation/view_models/timeline_session_owner.dart';
+import 'studio_driver_key_values.dart';
 import 'studio_driver_state.dart';
 
 /// The Driver borrows this application's Client. Binding creates no provider,
 /// observation, draft, Session, ChatView, or native subscription.
-void bindStudioDriver(AnyworkClient client) {
-  StudioDriverState.bindSnapshotQuery(() => queryStudioDriverFacts(client));
+///
+/// [timeline] 只被读取当前展示；绑定它不建立内容订阅、业务 demand 或展示 lease。
+void bindStudioDriver(
+  AnyworkClient client, {
+  required TimelineSessionOwner timeline,
+}) {
+  StudioDriverState.bindSnapshotQuery(
+    () => queryStudioDriverFacts(client, timeline: timeline),
+  );
 }
 
 /// Read immutable current mirrors synchronously. No business projection is
 /// retained by Driver, and owner existence never depends on a provider family.
-StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
+StudioDriverFacts queryStudioDriverFacts(
+  AnyworkClient client, {
+  required TimelineSessionOwner timeline,
+}) {
   final selection = client.selection.state;
   final directory = client.threadDirectory.state;
   final threads = directory.window.threads;
@@ -61,9 +76,6 @@ StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
       loadError: session?.sync.phase == DomainSyncPhase.failed
           ? session?.sync.errorMessage
           : null,
-      timelineRows: session == null
-          ? const []
-          : timelineRowsFromThreadItems(session.items),
       todo: session?.workspace?.todo,
       runtime: session?.runtime ?? _emptyRuntime,
       turn: session?.activeTurn,
@@ -81,10 +93,8 @@ StudioDriverFacts queryStudioDriverFacts(AnyworkClient client) {
   }
 
   return StudioDriverFacts(
-    timelineWorkspace: session?.workspace,
-    chatViewId: session?.chatViewId,
-    hasChatWindow: session?.hasChatWindow ?? false,
-    history: session?.history ?? const ThreadHistoryWindow(),
+    timeline: _timelineFacts(timeline, selectedThreadId),
+    timelineScroll: _timelineScrollFacts(timeline, selectedThreadId),
     workspacesByThread: {
       for (final state in client.sessionStates)
         if (state.workspace case final workspace?)
@@ -133,6 +143,152 @@ Map<String, Object?> studioDriverTopicDiagnostics(AnyworkClient client) {
     'projectionRevisions': _projectionRevisions(client),
   };
 }
+
+/// 当前展示代次的只读事实。
+///
+/// 它只在请求时同步读取 owner 的当前 lease 与 stock controller 的消息集合，序列化后不保留
+/// 任何投影；切换 Thread／代次后不会继续抓住旧正文（design/26 §26.9）。
+TimelineDisplayFacts? _timelineFacts(
+  TimelineSessionOwner owner,
+  String? threadId,
+) {
+  if (threadId == null) return null;
+  final view = owner.source.value;
+  if (view == null || view.threadId != threadId) return null;
+  final lease = owner.lease(threadId);
+  return TimelineDisplayFacts(
+    threadId: view.threadId,
+    generation: lease?.generation ?? view.generation,
+    ready: lease != null,
+    mode: view.mode,
+    connection: view.connection,
+    appliedVersion: lease?.appliedVersion,
+    olderCursor: view.olderCursor,
+    hasOlder: view.hasOlder,
+    loadingOlder: view.isLoadingOlder,
+    olderError: view.olderError?.toString(),
+    hasNewOutput: view.hasNewOutput,
+    preparingLive: view.isPreparingLive,
+    items: [
+      for (final message in lease?.controller.messages ?? const <Message>[])
+        if (timelinePayloadOf(message) case final payload?)
+          _timelineItemFacts(payload),
+    ],
+  );
+}
+
+/// 只读滚动几何：每次诊断请求**现场**读当前展示 lease 实测挂载的标准 controller。
+///
+/// 不消费任何通知快照、不缓存上一代几何：`ScrollEndNotification` 与 activity/notifier 的
+/// 提交不同步，缓存会在没有新几何事件时永久过期（design/26 §26.9）。
+TimelineScrollDiagnostic? _timelineScrollFacts(
+  TimelineSessionOwner owner,
+  String? threadId,
+) {
+  if (threadId == null) return null;
+  final lease = owner.lease(threadId);
+  if (lease == null || lease.isRetired) return null;
+  final controller = lease.scrollController;
+  final position = controller.hasClients ? controller.position : null;
+  final mounted = position != null && position.hasContentDimensions;
+  return TimelineScrollDiagnostic(
+    threadId: lease.threadId,
+    generation: lease.generation,
+    pixels: mounted ? position.pixels : null,
+    minScrollExtent: mounted ? position.minScrollExtent : null,
+    maxScrollExtent: mounted ? position.maxScrollExtent : null,
+    viewportDimension: mounted ? position.viewportDimension : null,
+    extentBefore: mounted ? position.extentBefore : null,
+    extentAfter: mounted ? position.extentAfter : null,
+    atLiveEdge: mounted && position.pixels <= 0.5,
+    isScrolling: mounted && position.isScrollingNotifier.value,
+  );
+}
+
+TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
+  final item = payload.item;
+  final tool = item.tool;
+  final userInput = tool?.userInput ?? item.tool?.userInput;
+  final receipt = userInput?.planReceipt;
+  return TimelineItemFacts(
+    id: item.id,
+    ordinal: item.ordinal,
+    revision: item.revision,
+    saved: payload.saved,
+    terminal: payload.terminal,
+    omittedBytes: payload.omittedBytes,
+    kind: item.kind.name,
+    status: item.status,
+    text: item.text,
+    channel: switch (item.state) {
+      ThreadTextItemStateView(:final channel) => channel,
+      _ => null,
+    },
+    details: [
+      for (final detail in payload.details)
+        TimelineDetailFacts(
+          field: StudioDriverKeyValues.timelineDetailField(detail.field),
+          revision: detail.revision,
+          totalBytes: detail.totalBytes,
+          previewBytes: detail.previewBytes,
+        ),
+    ],
+    attachments: [
+      for (final attachment in item.attachments)
+        TimelineAttachmentFacts(
+          id: attachment.id,
+          modality: attachment.modality.name,
+          filename: attachment.filename ?? '',
+          byteSize: attachment.byteSize,
+        ),
+      for (final attachment in tool?.attachments ?? const [])
+        TimelineAttachmentFacts(
+          id: attachment.id,
+          modality: attachment.modality.name,
+          filename: attachment.filename ?? '',
+          byteSize: attachment.byteSize,
+          source: 'tool',
+        ),
+    ],
+    tool: tool == null
+        ? null
+        : TimelineToolFacts(
+            name: tool.name,
+            status: item.status,
+            callId: tool.callId ?? tool.toolCallId,
+            arguments: tool.arguments,
+            result: tool.result,
+            progressBytes: _utf8Bytes(tool.result ?? ''),
+            itemRevision: item.revision,
+            denialReason: tool.denialReason,
+            workingDirectory: tool.workingDirectory,
+            exitCode: tool.exitCode,
+            attachments: [
+              for (final attachment in tool.attachments)
+                TimelineAttachmentFacts(
+                  id: attachment.id,
+                  modality: attachment.modality.name,
+                  filename: attachment.filename ?? '',
+                  byteSize: attachment.byteSize,
+                ),
+            ],
+          ),
+    userInput: userInput == null
+        ? null
+        : TimelineUserInputFacts(
+            interactionId: userInput.interactionId,
+            state: switch (userInput.state) {
+              PendingThreadToolUserInputView() => 'pending',
+              ResolvedThreadToolUserInputView() => 'resolved',
+              CancelledThreadToolUserInputView() => 'cancelled',
+            },
+            isPlanConfirmation: receipt != null,
+            planDecision: receipt?.decision.name,
+          ),
+  );
+}
+
+int _utf8Bytes(String text) => utf8.encode(text).length;
 
 ComposerThreadState _newThreadComposer(
   AnyworkClient client,

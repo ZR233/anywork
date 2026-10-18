@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 // Public snapshot helpers shared with the realtime/history-lock journeys: this
 // journey reads the same Driver projection and must not fork a second reading.
 import 'realtime_journey.dart';
@@ -87,19 +88,12 @@ bool _toolRanOrDelivered(Map<String, dynamic>? tool) =>
 /// observation is provably a *new* update and never a re-read of the same
 /// snapshot. Evidence only: it is never a performance measurement.
 int _streamingRevision(Map<String, dynamic> snapshot) {
-  var revision = 0;
-  final delivery = contentDelivery(snapshot);
-  if (delivery != null && delivery['enabled'] == true) {
-    final patches = delivery['patches'];
-    final changes = delivery['contentChanges'];
-    if (patches is int) revision += patches;
-    if (changes is int) revision += changes;
-  }
-  final rows = timelineRows(snapshot);
-  revision += rows.length;
-  for (final row in rows) {
-    final text = row['text'];
-    if (text is String) revision += text.length;
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  var revision = timeline.itemCount;
+  for (final item in timeline.items) {
+    revision += item.text.length + item.textBytes;
+    revision += item.tool?.progressBytes ?? 0;
   }
   return revision;
 }

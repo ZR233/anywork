@@ -1886,6 +1886,36 @@ abstract class AppLocalizations {
   /// **'New'**
   String get timelineNew;
 
+  /// No description provided for @timelineLoadEarlier.
+  ///
+  /// In en, this message translates to:
+  /// **'Load earlier messages'**
+  String get timelineLoadEarlier;
+
+  /// No description provided for @timelineBackToLive.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to live'**
+  String get timelineBackToLive;
+
+  /// No description provided for @timelineDetailUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This content is no longer available'**
+  String get timelineDetailUnavailable;
+
+  /// No description provided for @timelineReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting messages… Current content is preserved.'**
+  String get timelineReconnecting;
+
+  /// No description provided for @timelineConnectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to synchronize messages. Current content is preserved.'**
+  String get timelineConnectionFailed;
+
   /// No description provided for @timelineReasoningFallback.
   ///
   /// In en, this message translates to:

@@ -429,7 +429,6 @@ class StudioComposerProjection {
       rootThread: rootThread,
       syncState: syncState,
       loadError: loadError,
-      timelineRows: const [],
       todo: null,
       runtime: ThreadRuntimeView(
         model: modelRoute?.model ?? '',

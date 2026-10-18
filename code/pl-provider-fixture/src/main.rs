@@ -7,7 +7,8 @@ use pl_provider_fixture::{
     WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_plan_recovery_script,
     gui_question_history_script, gui_realtime_script, gui_script, gui_shutdown_script,
     gui_statistics_script, gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
-    gui_tool_scroll_script, gui_web_search_script, gui_websocket_recovery_script,
+    gui_timeline_history_script, gui_tool_scroll_script, gui_web_search_script,
+    gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -177,6 +178,7 @@ async fn main() -> Result<()> {
         "stress" => gui_stress_script(),
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),
+        "timeline-history" => gui_timeline_history_script(),
         "statistics" => gui_statistics_script(),
         "realtime" => gui_realtime_script(),
         "history-lock" => gui_history_lock_script(),

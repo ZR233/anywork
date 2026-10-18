@@ -87,11 +87,15 @@ class AppGraph {
   Future<CloseReport> close({required DateTime deadline}) =>
       _closing ??= _close(deadline);
 
+  /// 关闭顺序：先同步发布「无展示」促使现存 Chat 子树卸载，再同时收束 Client。
+  ///
+  /// `timeline.close` 在首次 await 之前同步清空展示元数据；视图卸载后其真实 `dispose`
+  /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
+  /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
   Future<CloseReport> _close(DateTime deadline) async {
-    final reports = await Future.wait([
-      timeline.close(deadline: deadline),
-      client.close(deadline: deadline),
-    ]);
+    final timelineClose = timeline.close(deadline: deadline);
+    final clientClose = client.close(deadline: deadline);
+    final reports = await Future.wait([timelineClose, clientClose]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
     );

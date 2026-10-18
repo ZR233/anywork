@@ -417,7 +417,7 @@ final class ShellComposerWorkspaceProvider
 }
 
 String _$shellComposerWorkspaceHash() =>
-    r'70d6e1d78d032abbac99095ffc11f793d69d4dea';
+    r'3c662e7ebe832e40877d7de3d0e61301be253051';
 
 @ProviderFor(conversationActivityInput)
 final conversationActivityInputProvider = ConversationActivityInputFamily._();
