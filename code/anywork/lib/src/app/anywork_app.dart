@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart';
 
 import '../features/settings/settings.dart';
 import '../features/shell/studio_shell.dart';
+import '../platform/desktop_tray_host.dart';
 import '../presentation/providers/studio_update_controller.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
@@ -19,7 +20,11 @@ import 'studio_shutdown.dart';
 import 'theme/material3_theme.dart';
 
 class AnyworkApp extends ConsumerStatefulWidget {
-  const AnyworkApp({super.key});
+  const AnyworkApp({super.key, this.enableDesktopTray = false});
+
+  /// Release, demo and Driver entrypoints enable the Windows tray; widget tests
+  /// keep it off because they do not run the native host.
+  final bool enableDesktopTray;
 
   @override
   ConsumerState<AnyworkApp> createState() => _AnyworkAppState();
@@ -73,8 +78,10 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
           supportedLocales: AppLocalizations.supportedLocales,
           routerConfig: _router,
           restorationScopeId: 'anywork-app',
-          builder: (context, child) =>
-              StudioShutdownOverlay(child: child ?? const SizedBox()),
+          builder: (context, child) => DesktopTrayHost(
+            enabled: widget.enableDesktopTray,
+            child: StudioShutdownOverlay(child: child ?? const SizedBox()),
+          ),
         ),
       ),
     );
@@ -130,6 +137,8 @@ class _StudioLifecycleCoordinatorState
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 隐藏到托盘会进入 hidden/inactive，而不是 detached：只有真实 engine
+    // detach 才进入退出协调器，隐藏不会取消正在运行的 Turn、工具或保存。
     if (state == AppLifecycleState.detached) {
       unawaited(StudioExitCoordinator.requestExit().catchError(_logExitError));
     }
@@ -137,7 +146,7 @@ class _StudioLifecycleCoordinatorState
 
   @override
   Future<AppExitResponse> didRequestAppExit() async {
-    // 与窗口关闭同一协调器：arm native deadline，执行有界清理并结束本实例。
+    // 与托盘退出同一协调器：arm native deadline，执行有界清理并结束本实例。
     await StudioExitCoordinator.requestExit().catchError(_logExitError);
     return AppExitResponse.exit;
   }

@@ -3,10 +3,10 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 
-#include <cstdio>
 #include <cstring>
 
 #include "resource.h"
+#include "utils.h"
 
 namespace {
 
@@ -31,40 +31,6 @@ constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme"
 
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
-
-void LogNativeLifecycle(const char* event, UINT message, WPARAM wparam,
-                        LPARAM lparam) {
-  wchar_t path[32768];
-  const DWORD length = GetEnvironmentVariableW(
-      L"ANYWORK_NATIVE_LIFECYCLE_LOG", path,
-      static_cast<DWORD>(std::size(path)));
-  if (length == 0 || length >= std::size(path)) {
-    return;
-  }
-
-  HANDLE file = CreateFileW(path, FILE_APPEND_DATA,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  SYSTEMTIME timestamp;
-  GetSystemTime(&timestamp);
-  char line[256];
-  const int bytes = sprintf_s(
-      line,
-      "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ pid=%lu tid=%lu event=%s "
-      "message=%u wparam=%llu lparam=%lld\r\n",
-      timestamp.wYear, timestamp.wMonth, timestamp.wDay, timestamp.wHour,
-      timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds,
-      GetCurrentProcessId(), GetCurrentThreadId(), event, message,
-      static_cast<unsigned long long>(wparam), static_cast<long long>(lparam));
-  if (bytes > 0) {
-    DWORD written = 0;
-    WriteFile(file, line, static_cast<DWORD>(bytes), &written, nullptr);
-  }
-  CloseHandle(file);
-}
 
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 

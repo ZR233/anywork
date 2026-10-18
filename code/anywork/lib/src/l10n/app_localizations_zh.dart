@@ -19,6 +19,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get appTitle => '糊来帮';
 
   @override
+  String get trayShowWindow => '显示主窗口';
+
+  @override
+  String get trayExit => '退出';
+
+  @override
   String get sidebarProjects => '项目';
 
   @override

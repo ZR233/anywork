@@ -72,4 +72,40 @@ void main() {
     expect(beginCalls, 1);
     expect(closes, 1);
   });
+
+  test('beforeExit runs before cleanup and its failure does not block exit', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, (
+      call,
+    ) async {
+      if (call.method == 'beginExit') return 30000;
+      return null;
+    });
+    var hookCalls = 0;
+    StudioExitCoordinator.beforeExit = () async {
+      hookCalls++;
+      throw StateError('tray dispose failed');
+    };
+    addTearDown(() {
+      StudioExitCoordinator.beforeExit = null;
+      return messenger.setMockMethodCallHandler(
+        StudioHostLifecycle.channel,
+        null,
+      );
+    });
+
+    final coordinator = StudioExitCoordinator(
+      RecordingDemoTransport(),
+      (_) {},
+      shutdownOverride: () async {},
+      closeClient: (_) async => CloseReport(),
+    );
+    StudioExitCoordinator.install(coordinator);
+    await StudioExitCoordinator.requestExit().timeout(
+      const Duration(seconds: 5),
+    );
+
+    expect(hookCalls, 1);
+  });
 }

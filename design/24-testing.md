@@ -244,6 +244,12 @@ Driver-only 注入而非真实 `dlopen` 失败。订阅故障由专用 Driver �
 人工验收结论独立于脚本退出状态，默认待评审；模拟供应商、Linux 单平台结果不外推为真实供应商
 兼容或跨平台通过；Windows 以 `notrun` 记录，不是 Linux 缺口。
 
+Windows 托盘隐藏属于独立于 `shutdown`（当前 Linux 原生）的窗口壳层验收：人工/原生证据必须
+分别证明点击 X 只隐藏且进程存活、托盘菜单可恢复主窗口、托盘退出以真实 OS 退出码和
+`anywork-exit-diagnostics.log` 收束；并额外证明隐藏期间一个已开始的 Turn 继续完成、可靠保存，
+恢复后可见最终结果且 fixture 只收到一次请求。托盘图标创建失败时必须回退到原退出路径。Linux
+未实现托盘隐藏，不能据此写成跨平台通过。
+
 现有 `pl-model/tests/provider_wire.rs` 从公开入口核对 Responses HTTP/WS、Chat、原生
 OpenAI cache 选项、文本与推理流、function/custom/programmatic 工具、托管搜索、图片、
 DeepSeek 上传与搜索方言、智谱 Chat 与 Coding Plan、远程压缩、使用量/价格、错误与取消、

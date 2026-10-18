@@ -123,13 +123,13 @@ Future<StudioShutdownReport> runStudioShutdown(
     }
   }
 
-  // 订阅创建的同步 throw 也不能阻止关窗。
+  // 订阅创建的同步 throw 也不能阻止应用退出。
   StreamSubscription<StudioShutdownProgress>? subscription;
   try {
     subscription = api.subscribeShutdownProgress().listen(
       publish,
       onError: (Object error, StackTrace stackTrace) {
-        // 进度流错误是诊断，不得取消本次关窗；累积 Object 与堆栈后继续。
+        // 进度流错误是诊断，不得取消本次应用退出；累积 Object 与堆栈后继续。
         recordProgressError(error, stackTrace, 'progress');
       },
     );

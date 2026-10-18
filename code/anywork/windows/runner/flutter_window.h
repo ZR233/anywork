@@ -25,11 +25,28 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  // Restores and foregrounds the existing window without touching the app
+  // graph, sessions or exit coordinator.
+  void ShowMainWindow();
+
+  // Hands a real window close to the existing coordinated exit path.
+  void RequestCoordinatedExit();
+
   // The project to run.
   flutter::DartProject project_;
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // True only after Dart created a visible tray icon. Until then a close must
+  // keep the existing exit path instead of hiding an unrecoverable window.
+  bool tray_available_ = false;
+
+  // True once a close/system event entered the coordinated exit path.
+  bool exit_requested_ = false;
+
+  // True between WM_QUERYENDSESSION and a cancelled WM_ENDSESSION.
+  bool session_ending_ = false;
 
   // Hosts the host-apps method channel used by the Studio UI.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>

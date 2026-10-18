@@ -20,16 +20,18 @@ const int _diagnosticsReserveMs = 2000;
 /// 清理预算上限（28 秒）。
 const int _maxCleanupMs = 28000;
 
-/// 唯一 native <-> Dart 退出契约通道。
+/// 唯一 native <-> Dart 宿主生命周期通道。
 ///
 /// 责任边界（见 design/18 §18.5、design/19）：
-///  - `beginExit` 首次武装 native 硬期限并返回剩余毫秒；重复调用不刷新，因此重复关窗
+///  - `beginExit` 首次武装 native 硬期限并返回剩余毫秒；重复调用不刷新，因此重复退出
 ///    与同一协调器共享同一条总期限。
 ///  - `updateExitDiagnostics` 只传小脱敏字段（stage / code / correlationId /
 ///    pendingCommits），不传正文或凭据。
 ///  - `finishExit` 结束本实例并带真实退出码。
 ///  - `configureDiagnostics` 提前把 canonical 日志目录交给 native 兜底写盘。
-///  - native -> Dart 的 `requestExit` 回调把窗口关闭交回同一协调器。
+///  - `setTrayAvailable`/`showMainWindow` 只服务 Windows 托盘可见性；前者决定 native
+///    X 关闭是隐藏还是进入退出协调器，后者只恢复隐藏窗口，都不是退出或暂停。
+///  - native -> Dart 的 `requestExit` 回调把应用退出请求交回同一协调器。
 abstract final class StudioHostLifecycle {
   static const MethodChannel channel = MethodChannel(
     'io.github.zr233.anywork/host_lifecycle',
@@ -137,6 +139,47 @@ abstract final class StudioHostLifecycle {
     }
   }
 
+  /// 通知 native：系统托盘已真实可见，X 关闭可以隐藏而不是退出。
+  ///
+  /// Linux native 不实现该方法，Dart 也只在 Windows 调用；失败时保留 native
+  /// 的「关闭即退出」回退，绝不假设隐藏后一定可恢复。
+  static Future<void> setTrayAvailable(bool available) async {
+    try {
+      await channel
+          .invokeMethod<void>('setTrayAvailable', <String, Object?>{
+            'available': available,
+          })
+          .timeout(const Duration(seconds: 2));
+    } on Object catch (error, stackTrace) {
+      debugPrint(
+        'host_lifecycle_set_tray_available_failed=$error\n$stackTrace',
+      );
+      recordDartError(
+        error,
+        stackTrace,
+        stage: 'host-set-tray-available',
+        correlationId: newStudioCorrelationId(),
+      );
+    }
+  }
+
+  /// 恢复被托盘隐藏或最小化的主窗口；不重启、不重建任何业务资源。
+  static Future<void> showMainWindow() async {
+    try {
+      await channel
+          .invokeMethod<void>('showMainWindow')
+          .timeout(const Duration(seconds: 2));
+    } on Object catch (error, stackTrace) {
+      debugPrint('host_lifecycle_show_main_window_failed=$error\n$stackTrace');
+      recordDartError(
+        error,
+        stackTrace,
+        stage: 'host-show-main-window',
+        correlationId: newStudioCorrelationId(),
+      );
+    }
+  }
+
   /// 安装 native -> Dart 的退出回调。重复安装会替换旧回调。
   static void onRequestExit(Future<void> Function() handler) {
     channel.setMethodCallHandler((call) async {
@@ -147,7 +190,7 @@ abstract final class StudioHostLifecycle {
   }
 }
 
-/// 进程内唯一的退出协调器：把窗口关闭、ServicesBinding、Driver 与 dispose 归一到
+/// 进程内唯一的退出协调器：把托盘退出、系统生命周期、Driver 与 dispose 归一到
 /// 同一条总期限与同一个收束 future，绝不伪 `Stopped`、不进入 retry 循环。
 class StudioExitCoordinator {
   StudioExitCoordinator(
@@ -169,9 +212,16 @@ class StudioExitCoordinator {
   final Future<CloseReport> Function(DateTime deadline)? closeClient;
 
   static StudioExitCoordinator? _active;
+
+  /// 退出开始时释放桌面壳层资源（目前是 Windows 托盘图标）。
+  ///
+  /// 在首次 [_requestExit] 进入有界清理前 fire-and-forget 调用；钩子异常只记录，
+  /// 不阻塞、不延长退出期限。托盘控制器在创建成功后安装，dispose 时清除。
+  static Future<void> Function()? beforeExit;
+
   Future<void>? _exitFuture;
   // 单一绝对 Dart 期限：首次武装时锚定，与 native 同一条 30s 总期限。用单调
-  // Stopwatch 而非墙钟，系统时间调整不会延长 duration；重复关窗 / dispose / driver
+  // Stopwatch 而非墙钟，系统时间调整不会延长 duration；重复退出 / dispose / driver
   // 只复用该期限，绝不复位、绝不延长。
   Stopwatch? _exitClock;
   int _exitAnchorRemainingMs = 0;
@@ -245,8 +295,20 @@ class StudioExitCoordinator {
   }
 
   Future<void> _requestExit() {
-    // 单一 shared future：重复关窗 / dispose / driver 复用同一次收束，期限不刷新。
+    // 单一 shared future：重复退出 / dispose / driver 复用同一次收束，期限不刷新。
     StudioDriverState.markExitRequested();
+    final hook = beforeExit;
+    if (hook != null) {
+      try {
+        unawaited(
+          hook().catchError((Object error, StackTrace stackTrace) {
+            debugPrint('studio_exit_before_exit_failed=$error\n$stackTrace');
+          }),
+        );
+      } on Object catch (error, stackTrace) {
+        debugPrint('studio_exit_before_exit_failed=$error\n$stackTrace');
+      }
+    }
     final running = _exitFuture;
     if (running != null) return running;
     final attempt = _drive();

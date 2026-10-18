@@ -116,6 +116,18 @@ abstract class AppLocalizations {
   /// **'anywork'**
   String get appTitle;
 
+  /// No description provided for @trayShowWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show main window'**
+  String get trayShowWindow;
+
+  /// No description provided for @trayExit.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit'**
+  String get trayExit;
+
   /// No description provided for @sidebarProjects.
   ///
   /// In en, this message translates to:

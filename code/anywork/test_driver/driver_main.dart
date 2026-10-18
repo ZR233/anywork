@@ -56,7 +56,7 @@ void main() {
   bindStudioDriver(graph.client);
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
-  // 与窗口关闭共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
+  // 与托盘退出共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
   StudioExitCoordinator.install(
     StudioExitCoordinator(
       graph.client.transport,

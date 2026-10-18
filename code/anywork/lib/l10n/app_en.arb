@@ -2,6 +2,8 @@
   "promptAccepted": "Accepted",
   "composerSendAndContinue": "Send and continue",
   "appTitle": "anywork",
+  "trayShowWindow": "Show main window",
+  "trayExit": "Exit",
   "sidebarProjects": "Projects",
   "sidebarSessions": "Sessions",
   "sidebarLoadingMore": "Loading more sessions…",

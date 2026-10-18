@@ -41,11 +41,21 @@ Windows 原生宿主显式选用 Skia，以规避 Impeller GLES 在高分辨率�
 Client 的各领域 reducer 是 Dart 镜像的唯一 writer；FRB adapter 只做 wire 转换、传输与 native
 句柄收束。命令回执、镜像观察、生效和持久化分别表达，成功后不以聚合状态回读补齐事实。
 Widget 只负责展示与发出意图，Driver 读取同一 Client 的可见投影和诊断，不维护平行业务状态。
-窗口关闭必须等待 AppGraph 幂等收束及 typed shutdown 完成并回收 Flutter、DTD、
+应用退出必须等待 AppGraph 幂等收束及 typed shutdown 完成并回收 Flutter、DTD、
 MCP/LSP 和本地 child process tree；远端 helper 在 GUI 退出或 SSH 失联后由心跳租约
-自行清理，窗口不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首次 close
-前独立武装，重复关闭或重试都不延长；到期强制结束本进程并以退出码 1，正常完成为退出码 0，
-清理不依赖 Dart 或 bridge 是否返回，写日志也不得延误该期限。
+自行清理，窗口不等待远端退出确认。应用退出有单一总期限 30 秒，由 native 宿主在首个
+应用退出请求前独立武装，重复退出或重试都不延长；到期强制结束本进程并以退出码 1，正常
+完成为退出码 0，清理不依赖 Dart 或 bridge 是否返回，写日志也不得延误该期限。
+
+Windows 上点击标题栏关闭按钮、Alt+F4 或任务栏关闭是「隐藏到系统托盘」而不是应用退出：
+系统托盘图标真实可见时，native 只调用 `ShowWindow(SW_HIDE)` 隐藏窗口，不调用
+`begin_runtime_exit`/`shutdown_runtime`/AppGraph 收束，不武装退出期限，也不取消正在
+进行的 Turn、工具、模型流、订阅或保存。隐藏期间 Flutter 可以暂停渲染/帧调度，但 Dart
+isolate、FRB 订阅与 Rust runtime 继续运行；恢复窗口后直接展示最新 canonical 投影，
+不重放或补发请求。需要用户确认的 Interaction 保持等待，不自动批准或取消。托盘左键/双击
+恢复窗口，右键菜单「显示主窗口」「退出」；只有托盘「退出」、系统会话结束或托盘不可用时
+的窗口关闭才进入上述退出协调器。Linux 暂不实现托盘隐藏，保留既有 `delete-event` 关闭
+入口，行为不变。
 
 bridge 以 `BridgeShutdownReport`、`BridgeShutdownOutcome`、`BridgePendingPersistence`、
 `BridgeShutdownIssue` 镜像 runtime 的 typed 报告（形状权威源见
@@ -59,17 +69,17 @@ bridge 侧彼此独立的 owner 组（bridge 持有的订阅与其他在途更�
 第二套 cleanup。
 在 Dart 侧取消之前另有轻量的早期退出入口 `begin_runtime_exit(remaining_ms)`：它同步封闭 Rust
 准入并广播 runtime 独立取消，但不触发初始化、不做真正 stop/join、不发布 `Stopped`；native
-首次 close 先调用它，同一 runtime 的 join 与 finalize 仍由 `shutdown_runtime` 的同一编排完成。
+首个应用退出请求先调用它，同一 runtime 的 join 与 finalize 仍由 `shutdown_runtime` 的同一编排完成。
 诊断收尾独立于 runtime 初始化状态，`finish_shutdown_diagnostics` 在安全 dispose 之前或退出
 之前调用，使 runtime 从未安装或安装失败时也能回收诊断资源。
 
 启动期第二实例无法取得实例锁时，界面提示「已有实例在运行」；启动失败的错误码集合
 （`instanceBusy`、`cancellationTooLate`、`overloaded` 等）在 Dart 侧以穷尽 switch 映射为稳定的
 本地化文案与诊断编号，不得因未知变体抛出解析异常而覆盖原始 typed 错误。shutdown 失败不再
-取消本次关窗去等待用户确认：失败阶段聚合成带 `code` 与 `correlation_id` 的脱敏诊断后继续关闭，
-不阻塞在用户确认上，也不提供无限重试；剩余期限只用于完成安全收束与退出，不延长总期限。
+取消本次应用退出等待用户确认：失败阶段聚合成带 `code` 与 `correlation_id` 的脱敏诊断后继续
+关闭，不阻塞在用户确认上，也不提供无限重试；剩余期限只用于完成安全收束与退出，不延长总期限。
 
-关窗前 Dart 先进入早期退出入口 `begin_runtime_exit(remaining_ms)` 封闭 Rust 准入：它与退出闩
+应用退出前 Dart 先进入早期退出入口 `begin_runtime_exit(remaining_ms)` 封闭 Rust 准入：它与退出闩
 的封闭原子地观察已发布 runtime（关闭胜出后不再安装、安装先胜出必被收束）、固定同一首个绝对
 期限，并在既定 runtime 上同步封闭 domain 准入、向包含活动 Turn/模型/工具的彼此独立在途 owner
 广播一次取消；同时预先广播 bridge 侧内容订阅与更新操作取消，其真实错误进入同一 collector。这
