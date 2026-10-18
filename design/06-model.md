@@ -345,11 +345,14 @@ OpenAI、DeepSeek 与 xAI 的默认模型目录由各自版本化 `model.json` �
 ModelInfo 声明与既有模型字段序列化契约，统一提供模型集合、推荐模型/effort 与已记录价格。
 默认定义不在 Rust 名单或 preset 中重复维护；装配失败属于程序内部定义错误，不是用户配置损坏。
 在线探测能力由目录自身声明，而不是由适配器白名单推断：声明包含该目录发现使用的 transport
-profile 与明确排除的非对话模型 slug（来自厂商文档的静态事实，精确匹配）。当前 OpenAI 使用
-Responses + WebSocket 发现，DeepSeek 与 xAI 使用 Responses + HTTP，MiMo 使用 Chat Completions +
-HTTP 发现并排除其 TTS/ASR 语音模型；智谱（通用 API 与 Coding Plan）不提供公开模型列表接口、
-openai-compatible 由用户完全自定义，因此都不声明发现能力并保持既有静态或显式语义。新增或撤销
-某目录的发现能力只改目录声明，不新增 adapter 分支。
+profile 与明确排除的非对话模型：精确 slug 列表，以及按 slug 前缀声明的非对话模型家族，两者都来自
+厂商文档的静态事实，只作用于在线观察结果，不影响内置默认名单或手工模型。当前 OpenAI 使用
+Responses + WebSocket 发现，并排除图像生成、嵌入、语音与审核家族（`gpt-image-`、`dall-e-`、
+`text-embedding-`、`tts-`、`whisper-`、`omni-moderation-`、`text-moderation-`）；DeepSeek 与 xAI
+使用 Responses + HTTP；MiMo 使用 Chat Completions + HTTP 发现并排除其 TTS/ASR 语音模型；智谱
+（通用 API 与 Coding Plan）不提供公开模型列表接口、openai-compatible 由用户完全自定义，因此都不
+声明发现能力并保持既有静态或显式语义。新增或撤销某目录的发现能力只改目录声明，不新增 adapter
+分支。
 
 在线查询由 endpoint 的窄能力执行，不要求先选择模型，且始终在当前 `base_url` 的路径前缀后
 追加 `/models`，保留既有查询参数与 provider 鉴权/header 规则。不得插入额外 `/v1`、固定请求
@@ -363,6 +366,8 @@ effort 枚举。服务端默认 effort 如有提供须属于候选，但不改�
 API 明确字段优先，显式空值域和否定不补回。输入模态参照 Codex 的默认契约：当前 API 未声明
 `input_modalities`，也未声明 `capabilities.input` 时默认文本与图片，并提供对应 Responses 图片输入编码；
 该默认与模型名称无关，不表示真实供应商已验证支持。当前显式模态声明仍优先，包括仅文本与空列表。
+服务端声明的 `context_window` 若大于继承默认定义的上限 `max_context_window`，以观测窗口抬升该上限
+（观测事实优先于过时的本地默认）；API 同时声明两个字段时仍要求自身一致，不一致仍按无效预算失败。
 其他缺失字段只按同一精确 ID 使用已有成功/默认声明补全。
 旧成功缓存中除显示名、描述外与未知 ID 默认骨架完全相同的记录不代表能力否定；
 若新二进制已收录该精确 ID，查询补全与有效目录解析均使用当前内置定义升级该骨架，
@@ -376,6 +381,9 @@ API 明确字段优先，显式空值域和否定不补回。输入模态参照 
 provider 的唯一有效目录按本次在线成功、同查询身份最后成功、从未成功时默认定义选择；成功名单
 替换上一份 API 名单，不累计历史模型，也不从默认定义补回 API 未列出的 ID。手工附加模型保留
 完整声明及优先权，原有 bundled slug 冲突规则不变；完全 explicit 目录不自动转为在线目录。
+目录声明的非对话排除（精确 slug 与前缀）在解码与读取在线缓存两处一致执行：历史缓存的
+`model.json` 若仍含已被排除的非对话 slug，解析有效目录时同样剔除，不因条件请求 304 复用旧缓存
+而复活；排除不作用于内置默认定义与手工模型。
 在线声明只进入非持久 overlay，不写入 `additional_models`，所有路由与展示复用同一解析入口。
 使用默认定义（尚无成功观察）时来源标记为 `bundled`，由目录状态表达“尚未同步”，不能伪装成
 在线名单；手工模型与在线名单同名时手工条目优先，在线条目不出现在有效目录中。被移除的模型
