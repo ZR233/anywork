@@ -29,11 +29,25 @@ const MIMO_DISCOVERY_EXCLUDED_SLUGS: &[&str] = &[
     "mimo-v2.5-tts-voicedesign",
 ];
 
+/// OpenAI 官方的非对话模型家族（图像生成、嵌入、语音与审核），按厂商文档静态声明。
+const OPENAI_DISCOVERY_EXCLUDED_PREFIXES: &[&str] = &[
+    "gpt-image-",
+    "dall-e-",
+    "text-embedding-",
+    "tts-",
+    "whisper-",
+    "omni-moderation-",
+    "text-moderation-",
+];
+
 /// 目录声明的在线探测能力；未声明时该 catalog 保持静态或显式语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCatalogDiscovery {
     pub transport: crate::model::ModelTransportProfile,
+    /// 精确排除的非对话模型 slug；只作用于在线观察结果。
     pub excluded_slugs: Vec<String>,
+    /// 按 slug 前缀声明排除的非对话模型家族；与 `excluded_slugs` 一样只作用于在线观察结果。
+    pub excluded_prefixes: Vec<String>,
 }
 
 /// 一组由 PL 维护且对产品只读的模型定义。
@@ -79,6 +93,10 @@ impl ProviderCatalogRegistry {
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_websocket(),
                     excluded_slugs: Vec::new(),
+                    excluded_prefixes: OPENAI_DISCOVERY_EXCLUDED_PREFIXES
+                        .iter()
+                        .map(|prefix| (*prefix).to_string())
+                        .collect(),
                 }),
             },
             ModelCatalog {
@@ -87,6 +105,7 @@ impl ProviderCatalogRegistry {
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_http(),
                     excluded_slugs: Vec::new(),
+                    excluded_prefixes: Vec::new(),
                 }),
             },
             ModelCatalog {
@@ -95,6 +114,7 @@ impl ProviderCatalogRegistry {
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_http(),
                     excluded_slugs: Vec::new(),
+                    excluded_prefixes: Vec::new(),
                 }),
             },
             model_catalog("zhipu", zhipu_default_model_slugs())?,
@@ -334,6 +354,7 @@ fn mimo_catalog() -> Result<ModelCatalog> {
             .iter()
             .map(|slug| (*slug).to_string())
             .collect(),
+        excluded_prefixes: Vec::new(),
     });
     Ok(catalog)
 }

@@ -587,6 +587,185 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
 }
 
 #[tokio::test]
+async fn observed_window_lifts_undeclared_inherited_budget_limit() {
+    // 真实 DeepSeek 名单只声明 context_window，且大于内置默认上限。
+    let server = Server::json(json!({
+        "data":[{"id":"deepseek-flash","context_window":1_048_576}]
+    }))
+    .await;
+    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
+    let models = updated(
+        ModelCatalogQuery::for_provider(&config)
+            .unwrap()
+            .execute(None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].slug, "deepseek-flash");
+    assert_eq!(models[0].context_window, Some(1_048_576));
+    assert_eq!(models[0].max_context_window, Some(1_048_576));
+    // 未违反上限的继承默认预算保持原值。
+    assert_eq!(models[0].max_output_tokens, Some(384_000));
+    config.set_model_catalog_overlay(models).unwrap();
+    let entry = &config.effective_catalog().unwrap()[0];
+    assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+    assert_eq!(entry.model.max_context_window, Some(1_048_576));
+    server.finish().await;
+}
+
+/// 真实 `GET https://api.deepseek.com/models` 报文的完整解码回归。
+///
+/// 正文取自 `code/pl-provider-fixture/assets/model-lists/deepseek.json`（抓取日期
+/// 2026-10-18），在测试内内联而不是读取 fixture crate 的资源路径：本文件的契约测试
+/// 只依赖 pl-model 的公开 API，不把另一个 crate 的编译期资源布局变成前置条件。
+const DEEPSEEK_MODELS_CAPTURE: &str = r#"{
+  "object": "list",
+  "data": [
+    {
+      "id": "deepseek-flash",
+      "object": "model",
+      "owned_by": "deepseek",
+      "name": "DeepSeek-V4.1-Flash",
+      "context_window": 1048576,
+      "max_output_tokens": 393216,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "effort": {
+        "supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_level": "high"
+      },
+      "api_capabilities": {
+        "anthropic_messages": {
+          "system_prompt_update": "in-history"
+        }
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "object": "model",
+      "owned_by": "deepseek",
+      "name": "DeepSeek-V4-Pro",
+      "context_window": 1048576,
+      "max_output_tokens": 393216,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "effort": {
+        "supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_level": "high"
+      },
+      "api_capabilities": {
+        "anthropic_messages": {
+          "system_prompt_update": "leading-only"
+        }
+      }
+    }
+  ]
+}
+"#;
+
+#[tokio::test]
+async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() {
+    let server = Server::responses(vec![http(200, "", DEEPSEEK_MODELS_CAPTURE)]).await;
+    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
+    let models = updated(
+        ModelCatalogQuery::for_provider(&config)
+            .unwrap()
+            .execute(None)
+            .await
+            .unwrap(),
+    );
+    server.finish().await;
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        ["deepseek-flash", "deepseek-v4-pro"]
+    );
+    // 未知字段（如 `api_capabilities`）被忽略，且不使整份名单解析失败。
+    let flash = models
+        .iter()
+        .find(|model| model.slug == "deepseek-flash")
+        .unwrap();
+    assert_eq!(flash.display_name, "DeepSeek-V4.1-Flash");
+    assert_eq!(flash.context_window, Some(1_048_576));
+    // 观测窗口高于内置上限 1_000_000 时抬升继承上限。
+    assert_eq!(flash.max_context_window, Some(1_048_576));
+    // API 明确声明的输出上限覆盖内置的 384_000。
+    assert_eq!(flash.max_output_tokens, Some(393_216));
+    assert_eq!(flash.supported_efforts(), ["low", "high", "max"]);
+    assert!(
+        flash
+            .capabilities
+            .supports_input_modality(ModelModality::Text)
+    );
+    assert!(
+        flash
+            .capabilities
+            .supports_input_modality(ModelModality::Image)
+    );
+    assert_eq!(flash.capabilities.output, vec![ModelModality::Text]);
+    // 在线探测从不采信 API 价格。
+    assert_eq!(flash.pricing, ModelPricing::Unknown);
+    config.set_model_catalog_overlay(models).unwrap();
+    let definition = bundled_model_definition("deepseek").unwrap();
+    let effective = config.effective_catalog().unwrap();
+    for slug in ["deepseek-flash", "deepseek-v4-pro"] {
+        let entry = effective
+            .iter()
+            .find(|entry| entry.model.slug == slug)
+            .unwrap();
+        assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+        // 价格只按该 provider 绑定目录的大小写敏感精确 ID 关联。
+        let local = definition
+            .models
+            .iter()
+            .find(|model| model.slug == slug)
+            .unwrap();
+        assert_eq!(entry.model.pricing, local.pricing);
+        assert_ne!(entry.model.pricing, ModelPricing::Unknown);
+    }
+}
+
+#[tokio::test]
+async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
+    let server = Server::json(json!({
+        "data":[{"id":"deepseek-flash","context_window":2_000_000,"max_context_window":1_000_000}]
+    }))
+    .await;
+    let query =
+        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::DeepSeek))
+            .unwrap();
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: None,
+        models: vec![cached_model("last-good", ProviderAdapterKind::DeepSeek)],
+    };
+    let error = query.execute(Some(&cache)).await.unwrap_err();
+    assert_eq!(error, ModelCatalogQueryError::Protocol);
+    assert_eq!(cache.models[0].slug, "last-good");
+    server.finish().await;
+}
+
+#[tokio::test]
 async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact_ids() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
