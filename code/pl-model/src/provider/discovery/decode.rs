@@ -167,17 +167,29 @@ fn normalize(
     if let Some(value) = record.description {
         model.description = Some(value);
     }
-    if let Some(value) = record.context_window {
-        model.context_window = Some(value);
-    }
-    if let Some(value) = record.max_context_window {
-        model.max_context_window = Some(value);
-    } else if let (Some(current), Some(max)) = (model.context_window, model.max_context_window)
-        && max < current
-    {
-        // 观测到的窗口是更新的服务端事实；仅在 API 未声明上限时抬升继承的默认上限。
-        // 同时显式声明两个字段仍由 validate 要求自身一致。
-        model.max_context_window = Some(current);
+    // 在线预算只覆盖它实际声明的字段；缺失的配对字段按观测事实单侧收敛，
+    // 不凭空补成固定预算。同时声明两者时仍由 validate 要求自身一致。
+    match (record.context_window, record.max_context_window) {
+        (Some(current), Some(max)) => {
+            model.context_window = Some(current);
+            model.max_context_window = Some(max);
+        }
+        (Some(current), None) => {
+            model.context_window = Some(current);
+            if model.max_context_window.is_some_and(|max| max < current) {
+                // 观测到的窗口是更新的服务端事实，抬升过时的继承上限。
+                model.max_context_window = Some(current);
+            }
+        }
+        (None, Some(max)) => {
+            // 在线只声明更小的上限：继承的当前窗口收敛到该上限，
+            // 不能因内置当前窗口更大而拒绝名单或继续使用旧容量。
+            model.max_context_window = Some(max);
+            if model.context_window.is_some_and(|current| current > max) {
+                model.context_window = Some(max);
+            }
+        }
+        (None, None) => {}
     }
     if let Some(value) = record.max_output_tokens {
         model.max_output_tokens = Some(value);
@@ -302,13 +314,14 @@ fn normalize(
         model.capabilities.output = value;
     }
     let default_reasoning_level = record.default_reasoning_level;
+    let declared_parameters = record.parameters.is_some();
     let (levels, default) = match (record.effort, record.supported_reasoning_levels) {
         (Some(effort), None) => (Some(effort.supported_levels), effort.default_level),
         (None, Some(levels)) => (Some(levels.into_iter().map(|l| l.effort).collect()), None),
         (None, None) => (None, None),
         _ => return Err(ModelCatalogQueryError::Protocol),
     };
-    if record.parameters.is_some() && levels.is_some() {
+    if declared_parameters && levels.is_some() {
         return Err(ModelCatalogQueryError::Protocol);
     }
     if let Some(parameters) = record.parameters {
@@ -330,14 +343,27 @@ fn normalize(
         }
         model.parameters = parameters;
     }
+    // 在线候选声明（含空集合）是完整的候选事实，不从内置定义补回。
+    let declared_candidates = declared_parameters || levels.is_some();
     if let Some(levels) = levels {
         model.parameters.retain(|p| p.name != "effort");
         if !levels.is_empty() {
             model.parameters.push(effort_parameter(levels, adapter));
         }
-        if explicit_reasoning.is_none() {
-            model.capabilities.reasoning = !model.supported_efforts().is_empty();
+    }
+    // 在线明确关闭 reasoning 时，继承的 effort 候选随之失效；同一报文既关闭
+    // reasoning 又给出非空候选属于在线声明自身冲突，不以任一方静默覆盖另一方。
+    if explicit_reasoning == Some(false) && !model.supported_efforts().is_empty() {
+        if declared_candidates {
+            return Err(ModelCatalogQueryError::Protocol);
         }
+        model
+            .parameters
+            .retain(|parameter| parameter.name != "effort");
+    }
+    if declared_candidates && explicit_reasoning.is_none() {
+        // 未单独声明 reasoning 能力时，能力随在线候选收敛。
+        model.capabilities.reasoning = !model.supported_efforts().is_empty();
     }
     for default in default.into_iter().chain(default_reasoning_level) {
         if !model.supported_efforts().contains(&default) {

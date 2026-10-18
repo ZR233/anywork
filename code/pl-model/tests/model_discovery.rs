@@ -614,6 +614,151 @@ async fn observed_window_lifts_undeclared_inherited_budget_limit() {
     server.finish().await;
 }
 
+/// 在线显式声明必须优先于同精确 ID 的内置定义；单侧预算声明按观测事实收敛，
+/// reasoning 关闭与空候选不补回内置项，最后一次成功结果经同身份缓存往返也不被内置骨架复活。
+#[tokio::test]
+async fn online_declarations_override_builtin_metadata_across_successful_polls() {
+    let definition = bundled_model_definition("openai").unwrap();
+    let builtin = definition
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-6.1-sol")
+        .unwrap();
+    assert!(!builtin.supported_efforts().is_empty());
+    assert!(builtin.capabilities.reasoning);
+    let server = Server::responses(vec![
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"gpt-6.1-sol","context_window":2_000_000}]}).to_string(),
+        ),
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"gpt-6.1-sol","max_context_window":300_000}]}).to_string(),
+        ),
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"gpt-6.1-sol","supports_reasoning":false}]}).to_string(),
+        ),
+        http(200, "", &json!({"data":[{"id":"gpt-6.1-sol"}]}).to_string()),
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"gpt-6.1-sol","parameters":[]}]}).to_string(),
+        ),
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"unregistered-online-effort","description":"online only","parameters":[{"name":"effort","candidates":["low","high"],"wire":{"low":{"set":[{"path":"reasoning.effort","value":"low"}]},"high":{"set":[{"path":"reasoning.effort","value":"high"}]}}}]}]}).to_string(),
+        ),
+    ])
+    .await;
+    let query =
+        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
+            .unwrap();
+    let cache = |models: &[ModelInfo]| ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: None,
+        models: models.to_vec(),
+    };
+
+    // 在线只声明当前窗口：观测值抬升过时的内置上限，其余内置元数据按精确 ID 补全。
+    let raised = updated(query.execute(None).await.unwrap());
+    assert_eq!(raised.len(), 1);
+    assert_eq!(raised[0].context_window, Some(2_000_000));
+    assert_eq!(raised[0].max_context_window, Some(2_000_000));
+    assert_eq!(raised[0].max_output_tokens, builtin.max_output_tokens);
+    assert_eq!(raised[0].display_name, builtin.display_name);
+    assert_eq!(raised[0].description, builtin.description);
+    assert_eq!(raised[0].pricing, ModelPricing::Unknown);
+    assert_eq!(raised[0].supported_efforts(), builtin.supported_efforts());
+    assert!(raised[0].capabilities.reasoning);
+    let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    config.set_model_catalog_overlay(raised.clone()).unwrap();
+    let effective = config.effective_catalog().unwrap();
+    let entry = &effective[0];
+    assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+    // 价格仍只按本地精确 ID 关联。
+    assert_eq!(entry.model.pricing, builtin.pricing);
+    assert_ne!(entry.model.pricing, ModelPricing::Unknown);
+    let descriptor = model_descriptor(entry);
+    assert_eq!(descriptor.context_window, Some(2_000_000));
+    assert_eq!(descriptor.max_context_window, Some(2_000_000));
+    assert_eq!(
+        descriptor.auto_compact_token_limit,
+        builtin.auto_compact_token_limit
+    );
+    assert_eq!(entry.model.resolved_auto_compact_limit(), Some(475_000));
+    assert!(descriptor.capabilities.reasoning);
+    assert_eq!(
+        descriptor
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.candidates.clone()),
+        Some(builtin.supported_efforts())
+    );
+
+    // 在线只声明更小的上限：继承的当前窗口收敛到在线上限，不因内置窗口更大而拒绝整份名单。
+    let narrowed = updated(query.execute(Some(&cache(&raised))).await.unwrap());
+    assert_eq!(narrowed[0].context_window, Some(300_000));
+    assert_eq!(narrowed[0].max_context_window, Some(300_000));
+    assert_eq!(narrowed[0].resolved_auto_compact_limit(), Some(270_000));
+
+    // 在线明确关闭 reasoning：清除继承的 effort 候选；随后的 id-only 响应不复活内置候选。
+    let closed = updated(query.execute(Some(&cache(&narrowed))).await.unwrap());
+    assert!(!closed[0].capabilities.reasoning);
+    assert!(closed[0].effort_parameter().is_none());
+    let id_only = updated(query.execute(Some(&cache(&closed))).await.unwrap());
+    assert!(!id_only[0].capabilities.reasoning);
+    assert!(id_only[0].effort_parameter().is_none());
+    assert_eq!(id_only[0].context_window, Some(300_000));
+    assert_eq!(id_only[0].max_output_tokens, builtin.max_output_tokens);
+
+    // 空 `parameters` 同样不继承内置候选，未单独声明的 reasoning 随在线候选收敛。
+    let empty_parameters = updated(query.execute(Some(&cache(&id_only))).await.unwrap());
+    assert!(!empty_parameters[0].capabilities.reasoning);
+    assert!(empty_parameters[0].effort_parameter().is_none());
+
+    // 在线非空候选派生 reasoning=true，描述与候选按在线值透传。
+    let online_effort = updated(
+        query
+            .execute(Some(&cache(&empty_parameters)))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(online_effort[0].slug, "unregistered-online-effort");
+    assert!(online_effort[0].capabilities.reasoning);
+    assert_eq!(online_effort[0].supported_efforts(), ["low", "high"]);
+    // 在线声明的 wire 规则原样透传到该模型的 effort 参数。
+    assert_eq!(
+        online_effort[0]
+            .effort_parameter()
+            .and_then(|parameter| parameter.wire_for("high"))
+            .map(|wire| wire.set[0].path.as_str()),
+        Some("reasoning.effort")
+    );
+    assert_eq!(online_effort[0].description.as_deref(), Some("online only"));
+    assert_eq!(online_effort[0].context_window, None);
+    server.finish().await;
+
+    // 在线声明自身冲突或越界时仍按无效预算/协议失败，不静默丢一方。
+    for body in [
+        json!({"data":[{"id":"gpt-6.1-sol","supports_reasoning":false,"effort":{"supported_levels":["low"]}}]}),
+        json!({"data":[{"id":"gpt-6.1-sol","capabilities":{"reasoning":false},"supported_reasoning_levels":[{"effort":"high"}]}]}),
+        json!({"data":[{"id":"gpt-6.1-sol","context_window":0}]}),
+    ] {
+        let conflict = Server::json(body).await;
+        let query =
+            ModelCatalogQuery::for_provider(&provider(&conflict.url, ProviderAdapterKind::OpenAi))
+                .unwrap();
+        let error = query.execute(None).await.unwrap_err();
+        assert_eq!(error, ModelCatalogQueryError::Protocol);
+        conflict.finish().await;
+    }
+}
+
 /// 真实 `GET https://api.deepseek.com/models` 报文的完整解码回归。
 ///
 /// 正文取自 `code/pl-provider-fixture/assets/model-lists/deepseek.json`（抓取日期
@@ -743,6 +888,173 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
         assert_eq!(entry.model.pricing, local.pricing);
         assert_ne!(entry.model.pricing, ModelPricing::Unknown);
     }
+}
+
+/// DeepSeek 布局：在线关闭 reasoning 时同时清除继承的 effort 候选和 `thinking` 基础 body，
+/// 在线只声明更小上限时继承的当前窗口收敛；同身份缓存往返不复活内置项，本地精确计价保持。
+#[tokio::test]
+async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inherited_window() {
+    use pl_model::{
+        completion::{CompletionRequest, ContentPart, Message, MessageContent, MessageRole},
+        runtime::{ModelInvocationContext, ModelRuntime},
+    };
+    use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+    let definition = bundled_model_definition("deepseek").unwrap();
+    let builtin = definition
+        .models
+        .iter()
+        .find(|model| model.slug == "deepseek-flash")
+        .unwrap();
+    let builtin_pro = definition
+        .models
+        .iter()
+        .find(|model| model.slug == "deepseek-v4-pro")
+        .unwrap();
+    assert!(!builtin.supported_efforts().is_empty());
+    assert!(builtin.capabilities.reasoning);
+    assert_eq!(
+        builtin.binding.request.body["thinking"]["type"],
+        serde_json::json!("enabled")
+    );
+    let server = Server::responses(vec![
+        http(
+            200,
+            "",
+            &json!({"data":[
+                {"id":"deepseek-flash","context_window":1_048_576,"max_output_tokens":393_216,"capabilities":{"reasoning":false}},
+                {"id":"deepseek-v4-pro","max_context_window":524_288,"effort":{"supported_levels":["max"],"default_level":"max"}}
+            ]})
+            .to_string(),
+        ),
+        // 同身份 304 等价路径：只给出 ID，继承的同身份成功结果不得由内置骨架补回。
+        http(
+            200,
+            "",
+            &json!({"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}).to_string(),
+        ),
+    ])
+    .await;
+    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
+    let query = ModelCatalogQuery::for_provider(&config).unwrap();
+    let models = updated(query.execute(None).await.unwrap());
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        ["deepseek-flash", "deepseek-v4-pro"]
+    );
+    let flash = &models[0];
+    assert_eq!(flash.context_window, Some(1_048_576));
+    // 在线只声明当前窗口时，继承的内置上限仍按观测值抬升。
+    assert_eq!(flash.max_context_window, Some(1_048_576));
+    assert_eq!(flash.max_output_tokens, Some(393_216));
+    assert!(!flash.capabilities.reasoning);
+    assert!(flash.effort_parameter().is_none());
+    assert!(flash.binding.request.body.get("thinking").is_none());
+    // 在线探测从不采信 API 价格。
+    assert_eq!(flash.pricing, ModelPricing::Unknown);
+    let pro = &models[1];
+    // 在线只声明更小的上限：继承的 1_000_000 当前窗口收敛到该上限。
+    assert_eq!(pro.context_window, Some(524_288));
+    assert_eq!(pro.max_context_window, Some(524_288));
+    assert_eq!(pro.max_output_tokens, builtin_pro.max_output_tokens);
+    // 在线非空候选替换内置候选，并派生 reasoning 与 thinking 基础 body。
+    assert_eq!(pro.supported_efforts(), ["max"]);
+    assert!(pro.capabilities.reasoning);
+    assert_eq!(
+        pro.binding.request.body["thinking"]["type"],
+        serde_json::json!("enabled")
+    );
+
+    // 有效目录只按精确 ID 关联本地价格，在线清除结果不被内置定义重写。
+    config.set_model_catalog_overlay(models.clone()).unwrap();
+    let effective = config.effective_catalog().unwrap();
+    let flash_entry = effective
+        .iter()
+        .find(|entry| entry.model.slug == "deepseek-flash")
+        .unwrap();
+    assert_eq!(
+        flash_entry.origin,
+        pl_model::config::ProviderModelOrigin::Online
+    );
+    assert_eq!(flash_entry.model.pricing, builtin.pricing);
+    assert_ne!(flash_entry.model.pricing, ModelPricing::Unknown);
+    assert!(!flash_entry.model.capabilities.reasoning);
+    assert!(flash_entry.model.effort_parameter().is_none());
+    let descriptor = model_descriptor(flash_entry);
+    assert!(descriptor.reasoning.is_none());
+    assert!(!descriptor.capabilities.reasoning);
+    assert_eq!(descriptor.max_context_window, Some(1_048_576));
+    let pro_entry = effective
+        .iter()
+        .find(|entry| entry.model.slug == "deepseek-v4-pro")
+        .unwrap();
+    assert_eq!(pro_entry.model.pricing, builtin_pro.pricing);
+    assert_eq!(pro_entry.model.context_window, Some(524_288));
+    assert_eq!(
+        model_descriptor(pro_entry)
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.candidates.clone()),
+        Some(vec!["max".to_string()])
+    );
+
+    // 同身份成功缓存作为下次补全来源：清除结果与在线上限保持，不复活内置 current 窗口与 thinking。
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: None,
+        models,
+    };
+    let roundtrip = updated(query.execute(Some(&cache)).await.unwrap());
+    server.finish().await;
+    let flash = &roundtrip[0];
+    assert_eq!(flash.context_window, Some(1_048_576));
+    assert!(!flash.capabilities.reasoning);
+    assert!(flash.effort_parameter().is_none());
+    assert!(flash.binding.request.body.get("thinking").is_none());
+    let pro = &roundtrip[1];
+    assert_eq!(pro.context_window, Some(524_288));
+    assert_eq!(pro.supported_efforts(), ["max"]);
+
+    // 必要运行时 wire：清除结果在真实请求体里既无 thinking 也无 reasoning_effort。
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "hello",
+        0,
+        Reply::Sse(responses_text(
+            "answer",
+            "deepseek-reasoning-closed",
+            "deepseek-flash",
+        )),
+    )])
+    .await
+    .unwrap();
+    let runtime = ModelRuntime::new(
+        ProviderEndpoint::deepseek(Some(fixture.base_url())),
+        flash.clone(),
+    )
+    .unwrap();
+    let request = CompletionRequest::builder()
+        .messages(vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::new(vec![ContentPart::Text {
+                text: "hello".into(),
+            }]),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_result: None,
+            metadata: Default::default(),
+            presentation: Default::default(),
+        }])
+        .build();
+    runtime
+        .complete(request, ModelInvocationContext::default())
+        .await
+        .unwrap();
+    let records = fixture.finish().await.unwrap();
+    assert!(records[0].body.get("thinking").is_none());
+    assert!(records[0].body.get("reasoning_effort").is_none());
 }
 
 #[tokio::test]
