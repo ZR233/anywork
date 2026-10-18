@@ -1240,9 +1240,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionPlanDetailsTitle => '实施计划';
 
   @override
-  String get interactionPlanComposerPausedHint => '普通消息输入已暂停，避免与计划反馈混淆。';
-
-  @override
   String interactionPlanConfirmFooterHint(String mode) {
     return '确认后将在$mode模式进入文档编辑检查点。';
   }
@@ -1258,6 +1255,36 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get interactionPlanAdjustSubmit => '提交修改';
+
+  @override
+  String get interactionPlanFeedbackHint => 'Enter 提交修改 · Shift+Enter 换行';
+
+  @override
+  String get planExpandReading => '展开阅读';
+
+  @override
+  String get planRestoreSplit => '恢复并排';
+
+  @override
+  String get planReceiptApproved => '计划已批准';
+
+  @override
+  String get planReceiptRevisionRequested => '已请求修改计划';
+
+  @override
+  String get planReceiptCancelled => '计划确认已取消';
+
+  @override
+  String get planReceiptAnswered => '计划确认已回答';
+
+  @override
+  String get planReceiptYourReply => '你的回复';
+
+  @override
+  String get planReceiptYourFeedback => '修改意见';
+
+  @override
+  String get planReceiptApproveReply => '批准实施该计划';
 
   @override
   String get settingsProvidersTitle => '模型服务商';

@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'key_press.dart';
+import 'pointer_drag.dart';
 import 'raw_tap.dart';
 
 typedef FlutterDriverConnector = Future<FlutterDriverClient> Function(
@@ -63,6 +65,25 @@ abstract interface class FlutterDriverClient {
   Future<void> waitForNoPendingFrame({Duration? timeout});
 
   Future<void> sendTextInputAction(TextInputAction action, {Duration? timeout});
+
+  /// Drags from the finder's centre along ([dx], [dy]) in logical pixels.
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    Duration? timeout,
+  });
+
+  /// Sends a key (optionally with shift held) through the framework's focus path.
+  ///
+  /// Pure integers on purpose: host Driver scripts run under `dart run` and must
+  /// not import `package:flutter/services.dart` (it pulls in `dart:ui`).
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  });
 
   Future<String> renderTree();
 
@@ -331,6 +352,24 @@ class FlutterDriverSession {
     return _client.sendTextInputAction(action, timeout: timeout);
   }
 
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    Duration? timeout,
+  }) {
+    return _client.dragBy(finder, dx: dx, dy: dy, timeout: timeout);
+  }
+
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  }) {
+    return _client.pressKey(keyId, usbHidUsage, shift: shift, timeout: timeout);
+  }
+
   Future<String> requestData(String message, {Duration? timeout}) {
     return _client.requestData(message, timeout: timeout);
   }
@@ -534,6 +573,30 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
     Duration? timeout,
   }) {
     return _driver.sendTextInputAction(action, timeout: timeout);
+  }
+
+  @override
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    Duration? timeout,
+  }) async {
+    await _driver.sendCommand(
+      PointerDrag(finder, dy, dx: dx, timeout: timeout),
+    );
+  }
+
+  @override
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  }) async {
+    await _driver.sendCommand(
+      KeyPress(keyId, usbHidUsage, shift: shift, timeout: timeout),
+    );
   }
 
   @override

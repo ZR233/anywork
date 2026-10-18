@@ -26,10 +26,25 @@ class KeyPressCommandExtension extends CommandExtension {
     final press = command as KeyPress;
     // Profile builds strip debug names, so the simulator cannot infer the
     // physical key from LogicalKeyboardKey.debugName.
-    await prober.sendKeyEvent(
-      LogicalKeyboardKey(press.keyId),
-      physicalKey: PhysicalKeyboardKey(press.usbHidUsage),
-    );
+    if (press.shift) {
+      await prober.sendKeyDownEvent(
+        LogicalKeyboardKey.shiftLeft,
+        physicalKey: PhysicalKeyboardKey.shiftLeft,
+      );
+    }
+    try {
+      await prober.sendKeyEvent(
+        LogicalKeyboardKey(press.keyId),
+        physicalKey: PhysicalKeyboardKey(press.usbHidUsage),
+      );
+    } finally {
+      if (press.shift) {
+        await prober.sendKeyUpEvent(
+          LogicalKeyboardKey.shiftLeft,
+          physicalKey: PhysicalKeyboardKey.shiftLeft,
+        );
+      }
+    }
     return Result.empty;
   }
 }

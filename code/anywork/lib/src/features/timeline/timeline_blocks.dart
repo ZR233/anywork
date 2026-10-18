@@ -440,7 +440,17 @@ class _RowCard extends StatelessWidget {
       ),
       TimelineActivityRow(:final group) => _ActivityGroupPart(group: group),
       TimelineImageRow() => _ImageReadPart(row: row),
-      final TimelineUserInputRow input => _UserInputReceipt(row: input),
+      // 计划确认复用同一 typed 历史通道，但用计划专用回执而不是普通问答表单；
+      // 待确认期间只保留尾部唯一摘要入口，因此这里不出现第二张计划历史卡。
+      // 普通问答的投影、脱敏与排序都不经过这条分支之外的变化。
+      final TimelineUserInputRow input => switch (input.history.planReceipt) {
+        final receipt? when receipt.isResolved => _PlanConfirmationReceipt(
+          row: input,
+          receipt: receipt,
+        ),
+        PlanConfirmationReceiptView() => const SizedBox.shrink(),
+        null => _UserInputReceipt(row: input),
+      },
       TimelineSkillRow(:final activation) => _SkillActivationPart(
         key: StudioDriverKeys.timelineSkillActivation(row.id),
         activation: activation,

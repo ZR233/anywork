@@ -1230,6 +1230,109 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('计划确认复用同一行身份：待确认不出历史卡，回答后投影原反馈', (tester) async {
+    final harness = await _mountTimeline(
+      tester,
+      theme: pureStudioTheme(),
+      height: 620,
+      initialItems: [
+        _receiptItem(
+          history: _planHistory(state: const PendingThreadToolUserInputView()),
+        ),
+      ],
+    );
+
+    // 待确认期间只有尾部唯一摘要入口，回执不出现第二张计划卡。
+    expect(
+      find.byKey(StudioDriverKeys.timelinePlanReceipt('question')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+      findsNothing,
+      reason: '计划确认不能退化成普通问答表单',
+    );
+
+    /// 同一条目身份的一次权威回答：只换 typed 载荷与 revision。
+    Future<void> applyPlanAnswer(
+      int revision,
+      ThreadToolUserInputView history,
+    ) async {
+      harness.window.emit(
+        StudioChatPatch(
+          from: revision - 1,
+          to: revision,
+          changes: [
+            StudioViewItemUpdate(
+              itemId: 'question',
+              expectedRevision: revision - 1,
+              revision: revision,
+              omittedUnits: 0,
+              saved: true,
+              lifecycle: StudioChatLifecycle.terminal,
+              itemShell: _receiptItem(
+                history: history,
+                revision: revision,
+                saved: true,
+              ).item,
+              fields: const [],
+            ),
+          ],
+          hasNewer: false,
+        ),
+      );
+      await _pumpVersion(tester, harness.session, harness.window, revision);
+      await tester.pumpAndSettle();
+    }
+
+    await applyPlanAnswer(
+      2,
+      _planHistory(
+        state: const ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: agentSessionPlanConfirmationQuestionId,
+            answers: [agentSessionPlanReviseAnswer, _planFeedback],
+          ),
+        ]),
+      ),
+    );
+
+    final receipt = find.byKey(
+      StudioDriverKeys.timelinePlanReceipt('question'),
+    );
+    expect(receipt, findsOneWidget);
+    expect(find.text('Plan changes requested'), findsOneWidget);
+    expect(
+      find.text('Delivery Blueprint'),
+      findsOneWidget,
+      reason: '副标题是计划 H1',
+    );
+    expect(
+      find.text(agentSessionPlanReviseAnswer),
+      findsNothing,
+      reason: '内部决定标记不能当正文显示',
+    );
+    expect(
+      find.text(_planFeedback),
+      findsNothing,
+      reason: '回执默认紧凑折叠，原反馈只在展开后出现',
+    );
+
+    await tester.tap(receipt);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(StudioDriverKeys.timelinePlanReceiptReply('question')),
+      findsOneWidget,
+    );
+    expect(find.text('Requested changes'), findsOneWidget);
+    expect(find.text(_planFeedback), findsOneWidget, reason: '展开后可读取并可复制完整原反馈');
+
+    // 普通问答在同一窗口里仍是普通回执，不因计划通道改变。
+    await _closeTimeline(tester, harness);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('问答回执在窄窗口里换行且不溢出', (tester) async {
     const token = 'sk-live-narrow-window-token-must-stay-hidden';
     final harness = await _mountTimeline(
@@ -1397,6 +1500,30 @@ ThreadToolUserInputView _userInputHistory({
 }) => ThreadToolUserInputView(
   interactionId: 'tool-interaction:call-question',
   questions: const [_styleQuestion, _notesQuestion, _tokenQuestion],
+  state: state,
+);
+
+/// 计划确认的原始修改意见：多段自由文本，展开后必须原样可读。
+const _planFeedback = '第三步请写清楚验收证据。\n并保留原有的交付范围说明。';
+
+/// 计划确认的 typed 问答投影：唯一 `plan_confirmation` 问题携带计划正文。
+ThreadToolUserInputView _planHistory({
+  required ThreadToolUserInputStateView state,
+}) => ThreadToolUserInputView(
+  interactionId: 'tool-interaction:call-question',
+  questions: const [
+    UserQuestionView(
+      id: agentSessionPlanConfirmationQuestionId,
+      header: '实施计划',
+      question:
+          '# Delivery Blueprint\n\n'
+          '## Steps\n\n'
+          '1. Keep the plan document readable.',
+      isOther: false,
+      isSecret: false,
+      options: [],
+    ),
+  ],
   state: state,
 );
 

@@ -305,14 +305,14 @@ void main() {
   });
 
   testWidgets(
-    'composer uses Shift+Enter for editing and Enter for submission',
+    'composer keeps Shift+Enter editing and official Enter submission',
     (tester) async {
       await tester.pumpWidget(harness(const StartPageComposerDock()));
       await tester.pumpAndSettle();
 
       final input = find.byKey(StudioDriverKeys.composerInput);
       await tester.tap(input);
-      await tester.enterText(input, '第一行\n第二行');
+      await tester.enterText(input, '第一行');
       await tester.pump();
 
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -328,12 +328,43 @@ void main() {
       );
       expect(
         tester.widget<TextField>(input).controller!.text,
-        '第一行\n第二行',
-        reason:
-            'the widget test binding does not emulate the native newline path',
+        '第一行\n',
+        reason: 'Shift+Enter inserts the line break through the local editing action',
       );
 
+      // 标准编辑语义：Shift+Enter 用换行替换当前选区，光标落到换行之后。
+      final controller = tester.widget<TextField>(input).controller!;
+      final beforeSelection = controller.text;
+      controller.selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 3,
+      );
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(
+        controller.text,
+        '\n${beforeSelection.substring(3)}',
+        reason: 'Shift+Enter 必须以换行替换选区，而不是保留选中文本再追加换行',
+      );
+      expect(
+        controller.selection,
+        const TextSelection.collapsed(offset: 1),
+        reason: '插入后光标落在新行起点',
+      );
+      expect(
+        container.read(anyworkClientProvider).startDraft.state.submitting,
+        isFalse,
+        reason: '替换选区仍是编辑动作，不是提交',
+      );
+      await tester.enterText(input, '最后一行');
+      await tester.pump();
+
+      // The engine translates Enter into the field's text input action; sending
+      // that action is the real Enter submission path shared with the button.
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await tester.pump();
       expect(
         container.read(anyworkClientProvider).startDraft.state.submitting,
         isTrue,

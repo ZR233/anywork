@@ -425,7 +425,7 @@ UI 投影当作 exit code、审批或成功状态来源。成功且具有已保�
 持有非空 accepted input identity 时才消费对应 Turn 的提交结果；启动确认清除关联后，
 后续执行失败只留在时间线，不能把空 identity 相等误判为当前输入失败。
 
-普通用户问答在原工具条目上附带可选的 typed `userInput` 历史投影，不增加第二条持久化问答
+普通用户问答与计划确认在原工具条目上附带可选的 typed `userInput` 历史投影，不增加第二条持久化问答
 记录。它包含交互身份、按原顺序的问题及 pending、resolved、cancelled 等权威状态；resolved
 答案通过 question ID 关联，保留答案列表及自由文本。状态取自同一 canonical interaction
 事实，不从工具成功状态、隐藏 continuation 或摘要文本推断。交互提交原位更新既有工具 item，
@@ -441,8 +441,12 @@ UI 投影当作 exit code、审批或成功状态来源。成功且具有已保�
 格式所有者在 Rust 边界解码原始提问与响应；FRB 和 Client 传递 typed 数据，feature 不解析
 opaque JSON。`isSecret` 对应的回答在公开历史投影中移除原值，只保留足以表达已回答/隐藏的
 状态；私有可靠回执及模型 continuation 保持原语义。问题和回答正文纳入既有内容预算与按身份
-回源契约，不能通过放进 metadata 绕过预算。未知格式保留诊断、不伪造已回答；Plan 确认仍使用
-专属投影。既有 v2 历史的补齐规则见 [17](./17-studio-storage.md) §17.4。
+回源契约，不能通过放进 metadata 绕过预算。未知格式保留诊断、不伪造已回答。
+计划确认复用格式所有者对计划正文 hash、revision、问题身份及决定的校验，再转换为同一
+typed 历史结构；不在历史投影另写一套 Plan 状态机或解码约定。唯一 `plan_confirmation`
+问题标识该结构中的计划语义，回答列表保留批准/修订决定与用户反馈，GUI 仅将决定标记映射
+为本地化状态。计划 runtime 投影仍只负责当前计划，不作为历史决定的事实源；pending 队列
+只保留尚待处理的交互。既有 v2 历史的补齐规则见 [17](./17-studio-storage.md) §17.4。
 
 Studio 拥有 Thread 产品观察任务，它是该 Thread **唯一的实时投影发布者**：直接消费 owner 发布的
 不可变 effect，持有该 Thread 唯一的 live projection，把内容发布进共享会话并投影 Agent/Thread
