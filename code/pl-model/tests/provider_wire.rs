@@ -98,16 +98,6 @@ fn bundled(slug: &str) -> ModelInfo {
         .unwrap()
 }
 
-#[test]
-fn deepseek_catalog_does_not_advertise_ignored_responses_web_search() {
-    let endpoint = ProviderEndpoint::deepseek(None);
-    assert!(!endpoint.service_capabilities.web_search.hosted_responses);
-
-    for slug in ["deepseek-flash", "deepseek-v4-pro"] {
-        assert!(!bundled(slug).capabilities.web_search, "{slug}");
-    }
-}
-
 async fn complete(
     fixture: &FixtureServer,
     model: ModelInfo,
@@ -2320,6 +2310,13 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
 
 #[tokio::test]
 async fn explicitly_enabled_deepseek_hosted_search_has_its_own_minimal_wire_dialect() {
+    // 默认声明不广告托管搜索：只有显式开启才进入下面的方言样本。
+    let defaults = ProviderEndpoint::deepseek(None);
+    assert!(!defaults.service_capabilities.web_search.hosted_responses);
+    for slug in ["deepseek-flash", "deepseek-v4-pro"] {
+        assert!(!bundled(slug).capabilities.web_search, "{slug}");
+    }
+
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "native search",

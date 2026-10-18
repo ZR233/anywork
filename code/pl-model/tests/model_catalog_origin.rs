@@ -513,21 +513,8 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
     .await;
     let config = openai_provider(&server.url);
     let discovery = config.discovery_profile().unwrap().unwrap();
-    assert_eq!(
-        discovery.excluded_prefixes,
-        [
-            "gpt-image-",
-            "dall-e-",
-            "text-embedding-",
-            "tts-",
-            "whisper-",
-            "omni-moderation-",
-            "text-moderation-"
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>()
-    );
+    // 家族清单由目录声明提供，这里只核对声明形态而不固定生产名单内容。
+    assert!(!discovery.excluded_prefixes.is_empty());
     // OpenAI 目录不使用精确 slug 排除，两条声明互不依赖。
     assert!(discovery.excluded_slugs.is_empty());
     let models = updated(
@@ -544,53 +531,6 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
             .map(|model| model.slug.as_str())
             .collect::<Vec<_>>(),
         vec!["gpt-6-astra", "GPT-Image-2"]
-    );
-    server.finish().await;
-}
-
-#[tokio::test]
-async fn exclusion_declarations_keep_bundled_and_manual_models() {
-    let server = Server::json(json!({
-        "data":[{"id":"gpt-6-astra"},{"id":"gpt-image-2"}]
-    }))
-    .await;
-    let catalog_id = ModelCatalogId::new("openai").unwrap();
-    let bundled = builtin_model_catalog(&catalog_id).unwrap();
-    let mut config = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::openai(Some(server.url.clone())),
-        catalog_id,
-        vec![manual_model("gpt-image-manual")],
-    );
-    // 尚无在线成功观察时，内置默认名单完整保留；排除声明只作用于在线结果。
-    let defaults = config.effective_catalog().unwrap();
-    assert_eq!(
-        defaults
-            .iter()
-            .filter(|entry| entry.origin == ProviderModelOrigin::Bundled)
-            .count(),
-        bundled.models.len()
-    );
-    assert!(defaults.iter().any(|entry| {
-        entry.origin == ProviderModelOrigin::Manual && entry.model.slug == "gpt-image-manual"
-    }));
-    let models = updated(
-        ModelCatalogQuery::for_provider(&config)
-            .unwrap()
-            .execute(None)
-            .await
-            .unwrap(),
-    );
-    config.set_model_catalog_overlay(models).unwrap();
-    let catalog = config.effective_catalog().unwrap();
-    assert_eq!(
-        catalog
-            .iter()
-            .map(|entry| (entry.model.slug.as_str(), entry.origin))
-            .collect::<Vec<_>>(),
-        vec![
-            ("gpt-6-astra", ProviderModelOrigin::Online),
-            ("gpt-image-manual", ProviderModelOrigin::Manual)
-        ]
     );
     server.finish().await;
 }

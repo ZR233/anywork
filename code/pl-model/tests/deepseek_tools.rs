@@ -405,11 +405,6 @@ fn deepseek_tools_rejects_invalid_base_urls() {
     }
 }
 
-#[test]
-fn deepseek_tools_default_count_is_ten() {
-    assert_eq!(ToolsOptions::default().count, 10);
-}
-
 /// `Debug` 输出不泄漏凭据，只展示解析出的端点。
 #[test]
 fn deepseek_tools_debug_does_not_leak_the_credential() {

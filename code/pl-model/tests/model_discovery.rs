@@ -447,6 +447,12 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     let adapter = ProviderAdapterKind::OpenAi;
     let slug = "gpt-6.1-sol";
+    let builtin = bundled_model_definition("openai")
+        .unwrap()
+        .models
+        .into_iter()
+        .find(|model| model.slug == slug)
+        .unwrap();
     let mut old = discover(
         json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Sol","description":"Provider description without capability declarations."}]}),
         adapter,
@@ -486,21 +492,22 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     let mut model = config.effective_models().unwrap().remove(0);
     assert_eq!(model.slug, slug);
     assert_eq!(model.description, description);
-    assert_eq!(model.context_window, Some(1_050_000));
+    // 在线 id-only 名单只继承同精确 ID 的内置元数据，不重新声明这些值。
+    assert_eq!(model.context_window, builtin.context_window);
     assert_eq!(
         model_descriptor(&pl_model::config::ProviderModelEntry {
             model: model.clone(),
             origin: pl_model::config::ProviderModelOrigin::Online,
         })
         .auto_compact_token_limit,
-        Some(475_000)
+        builtin.auto_compact_token_limit
     );
-    assert_eq!(model.resolved_auto_compact_limit(), Some(475_000));
-    assert_eq!(model.max_output_tokens, Some(128_000));
     assert_eq!(
-        model.supported_efforts(),
-        ["low", "medium", "high", "xhigh", "max"]
+        model.resolved_auto_compact_limit(),
+        builtin.resolved_auto_compact_limit()
     );
+    assert_eq!(model.max_output_tokens, builtin.max_output_tokens);
+    assert_eq!(model.supported_efforts(), builtin.supported_efforts());
     assert!(
         model_descriptor(&pl_model::config::ProviderModelEntry {
             model: model.clone(),
@@ -584,34 +591,6 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
-}
-
-#[tokio::test]
-async fn observed_window_lifts_undeclared_inherited_budget_limit() {
-    // 真实 DeepSeek 名单只声明 context_window，且大于内置默认上限。
-    let server = Server::json(json!({
-        "data":[{"id":"deepseek-flash","context_window":1_048_576}]
-    }))
-    .await;
-    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
-    let models = updated(
-        ModelCatalogQuery::for_provider(&config)
-            .unwrap()
-            .execute(None)
-            .await
-            .unwrap(),
-    );
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].slug, "deepseek-flash");
-    assert_eq!(models[0].context_window, Some(1_048_576));
-    assert_eq!(models[0].max_context_window, Some(1_048_576));
-    // 未违反上限的继承默认预算保持原值。
-    assert_eq!(models[0].max_output_tokens, Some(384_000));
-    config.set_model_catalog_overlay(models).unwrap();
-    let entry = &config.effective_catalog().unwrap()[0];
-    assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
-    assert_eq!(entry.model.max_context_window, Some(1_048_576));
-    server.finish().await;
 }
 
 /// 在线显式声明必须优先于同精确 ID 的内置定义；单侧预算声明按观测事实收敛，

@@ -78,7 +78,7 @@ void main() {
       );
       addTearDown(() => client.close());
 
-      final saved = await client.remote.saveSshServer(
+      await client.remote.saveSshServer(
         const SaveSshServerCommand(
           alias: 'lab-node',
           hostName: '192.168.100.12',
@@ -87,37 +87,23 @@ void main() {
           password: SshPasswordUpdate.replace('secret-pass'),
         ),
       );
-      expect(saved.hasPassword, isTrue);
+      // 断言落在生产侧真正转发的内容上，而不是 transport 替身自己推导的字段。
       expect(
         transport.savedServers.single.password.action,
         SshPasswordAction.replace,
       );
       expect(transport.savedServers.single.password.value, 'secret-pass');
 
-      final connection = await client.remote.authenticateSshServer(
+      await client.remote.authenticateSshServer(
         const AuthenticateSshServerCommand(
           alias: 'lab-node',
           password: 'session-pass',
           rememberPassword: false,
         ),
       );
-      expect(connection.state, 'ready');
       expect(transport.authCommands.single.alias, 'lab-node');
       expect(transport.authCommands.single.password, 'session-pass');
       expect(transport.authCommands.single.rememberPassword, isFalse);
-
-      expect(
-        isSshAuthenticationError(
-          StateError(
-            'SSH authentication required or failed: Permission denied',
-          ),
-        ),
-        isTrue,
-      );
-      expect(
-        isSshAuthenticationError(StateError('network unreachable')),
-        isFalse,
-      );
     },
   );
 
@@ -189,6 +175,14 @@ void main() {
           _sshStudioFailure(
             message: 'remote host rejected credentials',
             detailsJson: '{"sshErrorKind":"authenticationFailed"}',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isSshAuthenticationError(
+          StateError(
+            'SSH authentication required or failed: Permission denied',
           ),
         ),
         isTrue,
