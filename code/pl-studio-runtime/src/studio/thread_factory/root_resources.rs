@@ -123,6 +123,18 @@ impl StudioThreadFactory {
             .with_tools(crate::workflow_tool::workflow_registrations(mode.clone())?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
+        if !saved.extensions.contains_key("studio.mode") {
+            initial_extensions.insert(
+                "studio.mode".into(),
+                OpaquePayload::new(
+                    "pl.studio.mode",
+                    1,
+                    serde_json::to_string(&selected_mode)
+                        .map_err(|error| resource_error("encode root Mode", error))?,
+                )
+                .map_err(|error| resource_error("freeze root Mode", error))?,
+            );
+        }
         if !has_saved_route {
             initial_extensions.insert(
                 crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
@@ -148,34 +160,6 @@ impl StudioThreadFactory {
                     crate::plan_tool::PLAN_EXTENSION.into(),
                     crate::plan_tool::encode_plan_state(&Default::default())
                         .map_err(|error| resource_error("freeze initial plan state", error))?,
-                );
-            }
-
-            if let Some(workflow) = crate::mode::reconcile_workflow_for_turn(
-                None,
-                &mode,
-                id,
-                crate::studio::unix_seconds(),
-            )? {
-                if let Some(projection) =
-                    crate::mode::workflow_model_context_section(&workflow, &mode)
-                {
-                    initial_context.push(pl_core::context::ContextRecord {
-                        id: format!("workflow:{id}:initial"),
-                        turn_id: None,
-                        source: pl_core::context::ContextSource::RuntimeFact {
-                            source_id: "studio.workflow".into(),
-                        },
-                        content: vec![pl_core::context::ContextContent::Text {
-                            text: projection.content.into(),
-                        }],
-                        tool_calls: Vec::new(),
-                    });
-                }
-                initial_extensions.insert(
-                    crate::workflow_tool::WORKFLOW_EXTENSION.into(),
-                    crate::workflow_tool::encode_workflow_state(&workflow)
-                        .map_err(|error| resource_error("freeze initial workflow", error))?,
                 );
             }
 

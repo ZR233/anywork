@@ -678,6 +678,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if options.ssh_target.is_some() {
         fixture_command.arg("--posix-exec");
     }
+    if options.ssh_workspace_parent.is_some() {
+        fixture_command.arg("--resource-lifecycle");
+    }
     if catalog_control.is_some() {
         fixture_command
             .arg("--model-catalog-control")

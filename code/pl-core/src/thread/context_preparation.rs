@@ -7,6 +7,9 @@ use std::{collections::BTreeMap, fmt, future::Future};
 #[derive(Debug, Clone)]
 pub struct ContextPreparationRequest {
     pub model: ModelRequest,
+    /// The Turn's initiating input while it is still pending admission.
+    /// Later steps and steering do not turn a consumed input into a new initiation.
+    pub turn_input: Option<input::ThreadInput>,
     /// One capacity-recovery pass before a main request has been admitted.
     pub force_compaction: bool,
     pub committed_context: ContextSnapshot,
@@ -104,6 +107,18 @@ impl Owner {
         let expected_context_revision = self.state.context.revision;
         let expected_extension_sequence = self.state.extension_sequence;
         let request = ContextPreparationRequest {
+            turn_input: self
+                .state
+                .turns
+                .iter()
+                .find(|turn| turn.turn_id == input.turn_id)
+                .and_then(|turn| turn.input_id.as_deref())
+                .and_then(|id| {
+                    self.state.inputs.iter().find(|record| {
+                        record.input.id == id && record.state == input::InputState::Pending
+                    })
+                })
+                .map(|record| record.input.clone()),
             force_compaction,
             model: ModelRequest {
                 tool_call_mode: plan.call_mode(),

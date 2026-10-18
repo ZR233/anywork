@@ -18,6 +18,9 @@ struct Args {
     /// Generate POSIX commands for the tool-scroll workspace on remote Linux.
     #[arg(long)]
     posix_exec: bool,
+    /// Observe idle Mode changes and a subsequent real root input.
+    #[arg(long)]
+    resource_lifecycle: bool,
     #[arg(long)]
     ready_file: Option<PathBuf>,
     #[arg(long)]
@@ -162,13 +165,15 @@ async fn main() -> Result<()> {
         "unknown fixture scenario: {scenario}"
     );
     ensure!(
-        !args.posix_exec || scenario == "tool-scroll",
-        "--posix-exec is supported only by --scenario tool-scroll"
+        !(args.posix_exec || args.resource_lifecycle) || scenario == "tool-scroll",
+        "--posix-exec and --resource-lifecycle require --scenario tool-scroll"
     );
     let steps = match scenario {
         "gui" => gui_script(),
         "storage-compaction" => pl_provider_fixture::gui_storage_compaction_script(),
-        "tool-scroll" => gui_tool_scroll_script(cfg!(windows) && !args.posix_exec),
+        "tool-scroll" => {
+            gui_tool_scroll_script(cfg!(windows) && !args.posix_exec, args.resource_lifecycle)
+        }
         "stress" => gui_stress_script(),
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),

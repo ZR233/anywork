@@ -1,4 +1,6 @@
 mod support;
+#[path = "support/tool.rs"]
+mod tool_support;
 
 use pl_core::{
     context::{ContextContent, ContextSource},
@@ -12,6 +14,65 @@ use pl_core::{
 };
 use std::sync::{Arc, Mutex};
 use support::{ScriptedModel, text, turn};
+
+#[derive(Debug)]
+struct ObserveTurnInput(Arc<Mutex<Vec<Option<pl_core::thread::input::ThreadInput>>>>);
+
+impl ContextPreparationHook for ObserveTurnInput {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        self.0.lock().unwrap().push(request.turn_input);
+        ContextPreparation::Unchanged
+    }
+}
+
+#[tokio::test]
+async fn preparation_exposes_only_the_pending_turn_initiator_not_later_tool_steps() {
+    use pl_core::{
+        context::OpaquePayload,
+        thread::input::{QueuedTurn, ThreadInput},
+    };
+    let (model, _) = ScriptedModel::new(&["record"]);
+    let thread = ThreadHandle::start("turn-input".into(), DynModelSession::new(model)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .register_tools(vec![tool_support::tool("record", &calls)])
+        .await
+        .unwrap();
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(ObserveTurnInput(seen.clone()))))
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for id in ["first", "next"] {
+        let input = ThreadInput {
+            id: id.into(),
+            payload: OpaquePayload::text(format!("opaque {id}")),
+            context: vec![text(&format!("user input {id}"))],
+        };
+        expected.extend([Some(input.clone()), None]);
+        thread.submit_input(input).await.unwrap();
+        let request = turn(id);
+        assert!(
+            thread
+                .run_next_input(QueuedTurn {
+                    turn_id: request.turn_id,
+                    attempt_prefix: request.attempt_prefix,
+                    max_model_steps: request.max_model_steps,
+                    cancellation: request.cancellation,
+                })
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    // User-shaped context without admitted input is not a new host input identity.
+    thread.run_turn(turn("direct-context")).await.unwrap();
+    expected.extend([None, None]);
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    thread.close().await.unwrap();
+}
 
 struct CapacityModel {
     observed: Arc<Mutex<Vec<pl_core::context::ContextSnapshot>>>,

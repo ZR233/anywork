@@ -148,7 +148,7 @@ impl StudioRuntime {
             .transpose()?;
         let now = crate::studio::unix_seconds();
         let workflow =
-            crate::mode::reconcile_workflow_for_turn(previous_workflow, &mode, thread_id, now)?;
+            crate::mode::state::archive_workflow_for_mode_change(previous_workflow, &mode_id, now)?;
         let mode_record = state.extensions.get("studio.mode");
         let route_record = state
             .extensions

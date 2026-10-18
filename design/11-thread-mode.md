@@ -78,6 +78,9 @@ wait 仅用于接收已存在的后台任务、代理或定时器结果；不存
 用户输入与新 working state 在第一次 Thread checkpoint 一起提交，准备或提交失败不得调用
 provider。进入 terminal 后，下一条根用户输入创建新 lineage。切换 Mode 会归档旧活动 run，但
 不会在没有用户输入时创建新 run。
+模式选择复用归档操作，根装配只保存 `studio.mode`，不启动工作流；恢复边界仅在该扩展缺失时
+依据已核验的目录模式补写。模型准备从 core 冻结的、尚未消费的 Turn 发起输入识别新根用户
+请求，并将工作流候选与当前事实一次提交；不从聊天正文或后续工具续接推断新任务。
 
 每个 run 只保存 Mode ID、图 hash、lineage/run ID、生命周期（active/terminal）、当前 state、
 CAS revision、转换记录与归档关系，不保存 Mode Prompt 或完整图。下一个 Turn 若发现相同

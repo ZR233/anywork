@@ -84,7 +84,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         };
-        match repair_workflow_graph(&mut request, &self.modes) {
+        match prepare_workflow(&mut request, &self.modes) {
             Ok(Some(mutation)) => instruction_repair.mutations.push(mutation),
             Ok(None) => {}
             Err(error) => {
@@ -456,54 +456,82 @@ fn restore_current_instructions(
     })
 }
 
-/// Reconcile a saved graph at execution time, without mutating an idle restored checkpoint.
+/// Start only from a pending root prompt, or repair an already active graph during execution.
 /// The local preview feeds projection; core commits its mutation and facts together by CAS.
-fn repair_workflow_graph(
+fn prepare_workflow(
     request: &mut ContextPreparationRequest,
     modes: &crate::mode::ThreadModeManager,
 ) -> Result<Option<ExtensionMutation>, pl_core::model::ModelError> {
-    let Some(record) = request
+    if request
         .extensions
-        .get(crate::workflow_tool::WORKFLOW_EXTENSION)
-    else {
-        return Ok(None);
-    };
-    let state =
-        crate::workflow_tool::decode_workflow_state(&record.payload).map_err(receipt_error)?;
-    let Some(run) = &state.current_run else {
-        return Ok(None);
-    };
-    let mode = modes.snapshot().mode(&run.mode_id).ok_or_else(|| {
-        receipt_error(std::io::Error::other(
-            "current workflow mode is unavailable",
-        ))
-    })?;
-    if mode
-        .workflow()
-        .is_some_and(|graph| run.graph_hash == graph.graph_hash())
+        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
     {
         return Ok(None);
     }
-    let expected_revision = record.revision;
-    let state = crate::mode::reconcile_workflow_for_turn(
-        Some(state),
+    let mode_record = request
+        .extensions
+        .get("studio.mode")
+        .ok_or_else(|| receipt_error(std::io::Error::other("root Thread has no saved Mode")))?;
+    let mode_id = crate::mode::decode_saved_mode(&mode_record.payload).map_err(receipt_error)?;
+    let mode = modes.snapshot().mode(&mode_id).ok_or_else(|| {
+        receipt_error(std::io::Error::other("selected Thread Mode is unavailable"))
+    })?;
+    let root_prompt = request
+        .turn_input
+        .as_ref()
+        .filter(|input| input.payload.format() == "pl.studio.prompt");
+    if root_prompt.is_some_and(|input| input.payload.version() != 1) {
+        return Err(receipt_error(std::io::Error::other(
+            "unsupported root prompt payload",
+        )));
+    }
+    let record = request
+        .extensions
+        .get(crate::workflow_tool::WORKFLOW_EXTENSION);
+    let state = record
+        .map(|record| crate::workflow_tool::decode_workflow_state(&record.payload))
+        .transpose()
+        .map_err(receipt_error)?;
+    let run = state.as_ref().and_then(|state| state.current_run.as_ref());
+    if root_prompt.is_none()
+        && run.is_none_or(|run| run.lifecycle == pl_protocol::WorkflowRunLifecycle::Terminal)
+    {
+        return Ok(None);
+    }
+    if run.is_some_and(|run| {
+        run.mode_id == mode_id
+            && run.lifecycle == pl_protocol::WorkflowRunLifecycle::Active
+            && mode
+                .workflow()
+                .is_some_and(|graph| run.graph_hash == graph.graph_hash())
+    }) {
+        return Ok(None);
+    }
+    let expected_revision = record.map(|record| record.revision);
+    let Some(state) = crate::mode::reconcile_workflow_for_turn(
+        state,
         &mode,
         &request.model.thread_id,
         crate::studio::unix_seconds(),
     )
     .map_err(receipt_error)?
-    .ok_or_else(|| receipt_error(std::io::Error::other("workflow upgrade lost saved history")))?;
+    else {
+        return Ok(None);
+    };
     let payload = crate::workflow_tool::encode_workflow_state(&state).map_err(receipt_error)?;
+    if record.is_some_and(|record| record.payload == payload) {
+        return Ok(None);
+    }
     std::sync::Arc::make_mut(&mut request.extensions).insert(
         crate::workflow_tool::WORKFLOW_EXTENSION.into(),
         pl_core::thread::extensions::ExtensionRecord {
-            revision: expected_revision,
+            revision: expected_revision.unwrap_or(0),
             payload: payload.clone(),
         },
     );
     Ok(Some(ExtensionMutation::Put {
         id: crate::workflow_tool::WORKFLOW_EXTENSION.into(),
-        expected_revision: Some(expected_revision),
+        expected_revision,
         payload,
     }))
 }

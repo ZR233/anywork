@@ -27,3 +27,15 @@ pub use runtime::{new_run, reconcile_workflow_for_turn};
 
 /// 工作流上下文段的稳定标识符。
 pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
+
+/// Decode the one canonical Mode extension shared by preparation and projection.
+pub(crate) fn decode_saved_mode(
+    payload: &pl_core::context::OpaquePayload,
+) -> Result<pl_protocol::ThreadModeId, pl_protocol::PureError> {
+    if payload.format() != "pl.studio.mode" || payload.version() != 1 {
+        return Err(pl_protocol::PureError::ConfigError(
+            "unsupported saved Mode".into(),
+        ));
+    }
+    Ok(serde_json::from_str(payload.content())?)
+}

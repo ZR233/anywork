@@ -606,28 +606,60 @@ Future<void> main(List<String> args) async {
     );
     if (args.length >= 5) {
       final modes = <String>[];
+      evidence['resourceLifecycleModes'] = modes;
+      final id = (await snapshot())['workspace']['threadId'] as String;
+      Future<void> selectIdleMode(String mode) async {
+        await driver.sendCommand(
+          RawTap(find.byValueKey('session-mode-selector')),
+        );
+        await driver.sendCommand(RawTap(find.byValueKey('session-mode-$mode')));
+        final deadline = DateTime.now().add(const Duration(seconds: 30));
+        while (true) {
+          final state = await snapshot();
+          final mutations = (state['settings'] as Map)['mutations'] as List;
+          final pending = mutations.where((item) => item['key'] == 'mode:$id');
+          if (pending.any((item) => item['phase'] == 'failed')) {
+            throw StateError('Mode command failed: ${pending.single['error']}');
+          }
+          if (state['workspace']?['threadMode'] == mode && pending.isEmpty) {
+            if (state['workflow']?['currentRun'] != null) {
+              throw StateError(
+                'Selecting a mode started a workflow without input',
+              );
+            }
+            break;
+          }
+          if (DateTime.now().isAfter(deadline)) {
+            throw StateError('Mode refresh did not commit $mode');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        modes.add(mode);
+      }
+
       for (var cycle = 0; cycle < 3; cycle++) {
         for (final mode in ['mode.task', 'mode.simple']) {
-          await driver.sendCommand(
-            RawTap(find.byValueKey('session-mode-selector')),
-          );
-          await driver.sendCommand(
-            RawTap(find.byValueKey('session-mode-$mode')),
-          );
-          final deadline = DateTime.now().add(const Duration(seconds: 30));
-          while ((await snapshot())['workspace']?['threadMode'] != mode) {
-            if (DateTime.now().isAfter(deadline)) {
-              throw StateError('Mode refresh did not commit $mode');
-            }
-            await Future<void>.delayed(const Duration(milliseconds: 100));
-          }
-          modes.add(mode);
+          await selectIdleMode(mode);
         }
       }
-      evidence['resourceLifecycleModes'] = modes;
+      await selectIdleMode('mode.task');
+      evidence['resourceLifecycleNoPrematureRun'] = true;
       await File('${output.path}/resource-lifecycle.png')
           .writeAsBytes(await driver.screenshot());
-      final id = (await snapshot())['workspace']['threadId'] as String;
+      await driver.sendCommand(RawTap(find.byValueKey('composer-input')));
+      await driver.enterText('Resource lifecycle task');
+      await driver.sendCommand(RawTap(find.byValueKey('composer-submit')));
+      final taskState = await waitAnswer('Resource lifecycle task');
+      final run = taskState['workflow']?['currentRun'] as Map?;
+      if (run == null ||
+          run['modeId'] != 'mode.task' ||
+          run['currentStateId'] != 'planning' ||
+          run['terminal'] != false) {
+        throw StateError('Root input did not start the task workflow');
+      }
+      evidence['resourceLifecycleTaskRun'] = run;
+      await File('${output.path}/resource-lifecycle-task.png')
+          .writeAsBytes(await driver.screenshot());
       await driver.sendCommand(RawTap(find.byValueKey('thread-menu-$id')));
       await driver.sendCommand(
         RawTap(find.byValueKey('thread-menu-archive-$id')),

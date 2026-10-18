@@ -241,7 +241,7 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
 /// Real file listings and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
 /// `powershell` selects the workspace's command dialect, independently of this host.
-pub fn gui_tool_scroll_script(powershell: bool) -> Vec<Step> {
+pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec<Step> {
     let mut script = RealtimeScript::new();
     let title = session_title_prompt("Tool scroll short");
     script.optional_title(&title);
@@ -384,6 +384,39 @@ pub fn gui_tool_scroll_script(powershell: bool) -> Vec<Step> {
         )
     });
     script.optional_title(&title);
+    if resource_lifecycle {
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "Resource lifecycle task",
+                step,
+                Reply::Sse(responses_tool_calls(
+                    "resource-workflow",
+                    "fixture-model",
+                    &[RealtimeToolCall {
+                        item_id: "resource-workflow-item",
+                        call_id: "resource-workflow-current",
+                        name: "workflow_current",
+                        arguments: "{}".into(),
+                    }],
+                )),
+            )
+        });
+        script.add(|step| {
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "resource-workflow-current",
+                "",
+                step,
+                Reply::Sse(responses_text(
+                    "Resource lifecycle task following paragraph 44.",
+                    "resource-workflow-tail",
+                    "fixture-model",
+                )),
+            )
+        });
+        script.optional_title(&title);
+    }
     script.finish()
 }
 
