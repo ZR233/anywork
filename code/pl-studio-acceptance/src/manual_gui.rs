@@ -675,6 +675,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .arg(&stress_report_file)
         .stdout(Stdio::from(fixture_log.try_clone()?))
         .stderr(Stdio::from(fixture_log));
+    if options.ssh_target.is_some() {
+        fixture_command.arg("--posix-exec");
+    }
     if catalog_control.is_some() {
         fixture_command
             .arg("--model-catalog-control")

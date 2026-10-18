@@ -240,7 +240,8 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
 
 /// Real file listings and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
-pub fn gui_tool_scroll_script() -> Vec<Step> {
+/// `powershell` selects the workspace's command dialect, independently of this host.
+pub fn gui_tool_scroll_script(powershell: bool) -> Vec<Step> {
     let mut script = RealtimeScript::new();
     let title = session_title_prompt("Tool scroll short");
     script.optional_title(&title);
@@ -266,7 +267,7 @@ pub fn gui_tool_scroll_script() -> Vec<Step> {
         let calls = identities[next_identity..next_identity + count]
             .iter()
             .map(|&(item_id, call_id)| {
-                let command = if cfg!(windows) {
+                let command = if powershell {
                     format!("1..{lines} | ForEach-Object {{ Write-Output ('line-' + $_ + ' tool output') }} # {}", "argument ".repeat(padding / 9))
                 } else {
                     format!("i=1; while [ \"$i\" -le {lines} ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {}", "argument ".repeat(padding / 9))

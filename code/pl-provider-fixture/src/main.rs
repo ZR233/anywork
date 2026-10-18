@@ -15,6 +15,9 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     #[arg(long)]
     scenario: Option<String>,
+    /// Generate POSIX commands for the tool-scroll workspace on remote Linux.
+    #[arg(long)]
+    posix_exec: bool,
     #[arg(long)]
     ready_file: Option<PathBuf>,
     #[arg(long)]
@@ -158,10 +161,14 @@ async fn main() -> Result<()> {
         GUI_SCENARIOS.contains(&scenario),
         "unknown fixture scenario: {scenario}"
     );
+    ensure!(
+        !args.posix_exec || scenario == "tool-scroll",
+        "--posix-exec is supported only by --scenario tool-scroll"
+    );
     let steps = match scenario {
         "gui" => gui_script(),
         "storage-compaction" => pl_provider_fixture::gui_storage_compaction_script(),
-        "tool-scroll" => gui_tool_scroll_script(),
+        "tool-scroll" => gui_tool_scroll_script(cfg!(windows) && !args.posix_exec),
         "stress" => gui_stress_script(),
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),
