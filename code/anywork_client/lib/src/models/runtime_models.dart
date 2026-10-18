@@ -407,6 +407,8 @@ class ThreadRuntimeView {
     required this.activeSkills,
     required this.activeMcpServers,
     required this.activeLspServers,
+    this.maxContextWindow,
+    this.autoCompactLimit,
     this.promptTokens = 0,
     this.completionTokens = 0,
     this.cachedPromptTokens = 0,
@@ -432,6 +434,12 @@ class ThreadRuntimeView {
   final String model;
   final int contextTokens;
   final int contextWindow;
+
+  /// 绑定模型自身声明的最大上下文；未知为 `null`，不由 `contextWindow` 推断。
+  final int? maxContextWindow;
+
+  /// 最终生效的自动压缩阈值；未知为 `null`，不在展示端按当前设置重算。
+  final int? autoCompactLimit;
   final int totalTokens;
   final String costLabel;
   final List<String> activeSkills;
@@ -473,6 +481,8 @@ class ThreadRuntimeView {
             model == other.model &&
             contextTokens == other.contextTokens &&
             contextWindow == other.contextWindow &&
+            maxContextWindow == other.maxContextWindow &&
+            autoCompactLimit == other.autoCompactLimit &&
             totalTokens == other.totalTokens &&
             costLabel == other.costLabel &&
             listEquals(activeSkills, other.activeSkills) &&
@@ -505,6 +515,8 @@ class ThreadRuntimeView {
     model,
     contextTokens,
     contextWindow,
+    maxContextWindow,
+    autoCompactLimit,
     totalTokens,
     costLabel,
     Object.hashAll(activeSkills),
@@ -536,6 +548,8 @@ class ThreadRuntimeView {
     String? model,
     int? contextTokens,
     int? contextWindow,
+    Object? maxContextWindow = _threadRuntimeUnset,
+    Object? autoCompactLimit = _threadRuntimeUnset,
     int? totalTokens,
     String? costLabel,
     List<String>? activeSkills,
@@ -566,6 +580,12 @@ class ThreadRuntimeView {
       model: model ?? this.model,
       contextTokens: contextTokens ?? this.contextTokens,
       contextWindow: contextWindow ?? this.contextWindow,
+      maxContextWindow: identical(maxContextWindow, _threadRuntimeUnset)
+          ? this.maxContextWindow
+          : maxContextWindow as int?,
+      autoCompactLimit: identical(autoCompactLimit, _threadRuntimeUnset)
+          ? this.autoCompactLimit
+          : autoCompactLimit as int?,
       totalTokens: totalTokens ?? this.totalTokens,
       costLabel: costLabel ?? this.costLabel,
       activeSkills: activeSkills ?? this.activeSkills,

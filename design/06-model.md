@@ -418,10 +418,13 @@ assembler；配置中的 `[instructions].base_override` 可以完整替换它。
 压缩政策与摘要要求由 Studio 选择，model 执行辅助调用，core 校验并原子提交上下文替换与持久化，
 pl-model 不维护压缩状态。
 
-模型调用绑定在请求准备阶段冻结解析后的可选 context_window，随请求及结果 receipt 保存，供实时
-和历史消费者读取。容量来自实际绑定模型的 context_window，缺失时使用其 max_context_window；
-未知容量保持未知。旧 receipt 缺少该字段仍可解码为未知，不能读取当前模型目录补写历史容量，也
-不能把输出 token 上限或累计用量当成上下文容量。
+模型调用绑定在请求准备阶段同时冻结可选 `context_window`、`max_context_window` 与
+`auto_compact_limit`，随请求及结果 receipt 保存，供实时和历史消费者读取。有效窗口来自实际
+绑定模型的 `context_window`，缺失时使用其 `max_context_window`；模型最大窗口保留模型声明的
+`max_context_window`，没有声明时保持未知，不能把有效窗口推断为模型最大能力。压缩阈值来自
+实际绑定路由的最终解析结果，已包含用户覆盖、模型默认与安全上限，不在展示端重新计算。
+辅助调用不具有主 Thread 的压缩政策时阈值保持未知。旧记录缺少这些可选事实时在解码边界保留
+未知，不能读取当前模型目录或当前配置补写历史，也不能把输出 token 上限或累计用量当成容量。
 
 完成请求的输入使用 provider 无关的有序上下文条目，包括普通消息与专用压缩条目
 （Compaction，携带 encryptedContent）；压缩条目可以映射为 Responses 原生输入，Chat

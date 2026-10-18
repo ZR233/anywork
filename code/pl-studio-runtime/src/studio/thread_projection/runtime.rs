@@ -20,6 +20,8 @@ pub(in crate::studio) fn project_runtime(
         has_incomplete_usage: summary.has_incomplete_usage,
         model: summary.model.clone(),
         context_window: summary.context_window,
+        max_context_window: summary.max_context_window,
+        auto_compact_limit: summary.auto_compact_limit,
         latest_context_tokens: summary.latest_context_tokens,
         prompt_tokens: summary.prompt_tokens,
         completion_tokens: summary.completion_tokens,
@@ -193,14 +195,22 @@ fn fold_effect_accounting_in_place(
         summary.turn_decode_millis = 0;
     }
     if let Some(update) = &effect.attempt {
-        // 模型身份与容量来自 admission 时的绑定，因此在响应存在之前就已投影。
+        // 模型身份、窗口与阈值来自 admission 时的绑定，作为一组事实在响应存在之前就已投影。
         match update.request_metadata.as_ref() {
             Some(metadata) => {
                 let request = pl_model::runtime::model_request_receipt(metadata)?;
                 summary.model = request.binding.requested_model;
                 summary.context_window = request.binding.context_window;
+                summary.max_context_window = request.binding.max_context_window;
+                summary.auto_compact_limit = request.binding.auto_compact_limit;
             }
-            None => summary.context_window = None,
+            None => {
+                // 没有绑定时整组事实保持未知，不能沿用前一次模型的值。
+                summary.model = String::new();
+                summary.context_window = None;
+                summary.max_context_window = None;
+                summary.auto_compact_limit = None;
+            }
         }
         let output = match &update.outcome {
             AttemptOutcome::Committed(output) | AttemptOutcome::Rejected { output, .. } => {

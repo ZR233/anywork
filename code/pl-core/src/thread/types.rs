@@ -414,6 +414,18 @@ pub struct UsageSummary {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Capacity the newest binding's model declares; unknown stays unknown.
+    ///
+    /// It is never derived from `context_window`: an effective window narrowed by configuration is
+    /// not evidence about what the model supports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_window: Option<u64>,
+    /// Finally resolved automatic compaction threshold of the newest binding.
+    ///
+    /// Core only carries the frozen fact; it never recomputes a policy, so historical summaries keep
+    /// the threshold that was in effect when that request was admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact_limit: Option<u64>,
     #[serde(default)]
     pub inference_count: u64,
     #[serde(default)]

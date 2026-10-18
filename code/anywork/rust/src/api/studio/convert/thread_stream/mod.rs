@@ -654,6 +654,8 @@ fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
         has_incomplete_usage: value.has_incomplete_usage,
         model: value.model,
         context_window: value.context_window,
+        max_context_window: value.max_context_window,
+        auto_compact_limit: value.auto_compact_limit,
         latest_context_tokens: value.latest_context_tokens,
         prompt_tokens: value.prompt_tokens,
         completion_tokens: value.completion_tokens,

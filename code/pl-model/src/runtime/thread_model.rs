@@ -243,6 +243,8 @@ impl CoreModelSession for ThreadModelSession {
             route_identity: Some(binding.route_identity()),
             model: binding.requested_model.clone(),
             context_window: binding.context_window,
+            max_context_window: binding.max_context_window,
+            auto_compact_limit: binding.auto_compact_limit,
         };
         let terminal_progress = request.progress.clone();
         let observed = self.observed.clone();

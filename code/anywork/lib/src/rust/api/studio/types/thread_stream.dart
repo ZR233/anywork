@@ -665,6 +665,8 @@ class BridgeThreadRuntimeUsage {
   final bool hasIncompleteUsage;
   final String model;
   final BigInt? contextWindow;
+  final BigInt? maxContextWindow;
+  final BigInt? autoCompactLimit;
   final BigInt latestContextTokens;
   final BigInt promptTokens;
   final BigInt completionTokens;
@@ -686,6 +688,8 @@ class BridgeThreadRuntimeUsage {
     required this.hasIncompleteUsage,
     required this.model,
     this.contextWindow,
+    this.maxContextWindow,
+    this.autoCompactLimit,
     required this.latestContextTokens,
     required this.promptTokens,
     required this.completionTokens,
@@ -709,6 +713,8 @@ class BridgeThreadRuntimeUsage {
       hasIncompleteUsage.hashCode ^
       model.hashCode ^
       contextWindow.hashCode ^
+      maxContextWindow.hashCode ^
+      autoCompactLimit.hashCode ^
       latestContextTokens.hashCode ^
       promptTokens.hashCode ^
       completionTokens.hashCode ^
@@ -734,6 +740,8 @@ class BridgeThreadRuntimeUsage {
           hasIncompleteUsage == other.hasIncompleteUsage &&
           model == other.model &&
           contextWindow == other.contextWindow &&
+          maxContextWindow == other.maxContextWindow &&
+          autoCompactLimit == other.autoCompactLimit &&
           latestContextTokens == other.latestContextTokens &&
           promptTokens == other.promptTokens &&
           completionTokens == other.completionTokens &&

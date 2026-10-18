@@ -259,8 +259,15 @@ pub struct ThreadRuntimeUsage {
     #[serde(default)]
     pub has_incomplete_usage: bool,
     pub model: String,
+    /// Effective context window of the newest request binding; `None` stays unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Capacity the bound model itself declares; never inferred from `context_window`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_window: Option<u64>,
+    /// Finally resolved automatic compaction threshold of the newest request binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact_limit: Option<u64>,
     pub latest_context_tokens: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,

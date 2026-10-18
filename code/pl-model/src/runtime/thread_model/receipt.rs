@@ -44,6 +44,18 @@ pub struct ModelCallBinding {
     /// current model catalog, and an absent value never falls back to output limits or usage.
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Capacity the bound model itself declares; `None` stays unknown.
+    ///
+    /// An effective window narrowed by configuration says nothing about the model's own maximum, so
+    /// this field is never filled from `context_window`.
+    #[serde(default)]
+    pub max_context_window: Option<u64>,
+    /// Finally resolved automatic compaction threshold of the bound route; `None` stays unknown.
+    ///
+    /// Requests prepared before this field existed, and auxiliary calls without the owning Thread's
+    /// compaction policy, decode as unknown instead of a threshold recomputed from today's settings.
+    #[serde(default)]
+    pub auto_compact_limit: Option<u64>,
 }
 
 impl ModelCallBinding {
@@ -87,6 +99,8 @@ impl ModelCallBinding {
             ),
             purpose: purpose.to_owned(),
             context_window: runtime.model().resolved_context_window(),
+            max_context_window: runtime.model().max_context_window,
+            auto_compact_limit: runtime.auto_compact_limit(),
         }
     }
 }
