@@ -12,6 +12,21 @@ import '../../shared/studio_driver_keys.dart';
 import 'interaction_widgets.dart';
 import 'multiline_enter_shortcuts.dart';
 
+/// 计划决定动作的统一视觉高度与水平内边距：主/次操作大小一致，
+/// 组内间距沿用 [DockActions] 的 8px，右缘由共享 footer 对齐输入框。
+const _planActionMinHeight = 40.0;
+const _planActionPadding = EdgeInsets.symmetric(horizontal: 14);
+
+/// 桌面平台必须显式声明标准密度与标准命中区。
+///
+/// `ThemeData` 对 linux/macOS/windows 默认 `MaterialTapTargetSize.shrinkWrap`，而暹罗
+/// 主题显式 [VisualDensity.compact] 会把 [_planActionMinHeight] 再缩 8px（真实 Linux
+/// GUI 上计划按钮只有 32px 高）。计划动作显式要求 [VisualDensity.standard] +
+/// [MaterialTapTargetSize.padded]：视觉 40、布局盒 48，主/次操作仍同高同基线，
+/// 鼠标与键盘命中区都达到 Material 标准尺寸。
+const _planActionVisualDensity = VisualDensity.standard;
+const _planActionTapTargetSize = MaterialTapTargetSize.padded;
+
 /// 计划确认反馈栏：阅读在右侧详情面板，决定只在这里发生一次。
 ///
 /// Enter 提交修改、Shift+Enter 换行由标准 `TextField` 文本输入动作完成；按钮与键盘
@@ -90,9 +105,18 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
       footerHint: context.l10n.interactionPlanFeedbackHint,
       footer: DockActions(
         children: [
-          TextButton.icon(
+          // 次操作（请求修改）保持清晰的次要层级；与主操作共用同一视觉高度与
+          // 水平内边距。动作组由共享 footer 给一份有界宽度，超出时在自身范围内
+          // 折行（含英文与大字号），因此这里不固定死宽也不写无界自然宽注释。
+          OutlinedButton.icon(
             key: StudioDriverKeys.planSubmitRevision,
-            icon: const Icon(Icons.send_outlined),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(0, _planActionMinHeight),
+              padding: _planActionPadding,
+              visualDensity: _planActionVisualDensity,
+              tapTargetSize: _planActionTapTargetSize,
+            ),
+            icon: const Icon(Icons.send_outlined, size: 18),
             label: Text(context.l10n.interactionPlanAdjustSubmit),
             onPressed: available && feedback.isNotEmpty
                 ? _submitRevision
@@ -100,7 +124,13 @@ class _PlanConfirmationDockState extends ConsumerState<PlanConfirmationDock> {
           ),
           FilledButton.icon(
             key: StudioDriverKeys.planApprove,
-            icon: const Icon(Icons.check),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(0, _planActionMinHeight),
+              padding: _planActionPadding,
+              visualDensity: _planActionVisualDensity,
+              tapTargetSize: _planActionTapTargetSize,
+            ),
+            icon: const Icon(Icons.check, size: 18),
             label: Text(context.l10n.interactionPlanConfirmAction),
             onPressed: available ? _approve : null,
           ),

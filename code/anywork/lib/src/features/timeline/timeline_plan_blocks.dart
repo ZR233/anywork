@@ -296,6 +296,16 @@ String _planReceiptReplyText(
   };
 }
 
+/// 计划详情头部动作组的统一最小命中尺寸（阅读切换与关闭同高）。
+const double _planHeaderActionSize = 40;
+
+/// 头部动作组的密度与命中区：桌面 `ThemeData` 默认 `shrinkWrap`，主题的
+/// [VisualDensity.compact] 会把 40 缩到 32，因此这里显式要求标准密度与标准命中区，
+/// 视觉 40、布局盒 48，与反馈栏的计划决定动作一致（design/13-plan.md §13.5）。
+const VisualDensity _planHeaderVisualDensity = VisualDensity.standard;
+const MaterialTapTargetSize _planHeaderTapTargetSize =
+    MaterialTapTargetSize.padded;
+
 /// 计划详情：安静、可独立滚动的只读文档页。
 ///
 /// 头部只放标题、权威状态与阅读布局入口；正文自己滚动并显示滚动条，因此并排、
@@ -357,18 +367,12 @@ class _PlanDetailPanelState extends State<PlanDetailPanel> {
       fallback: context.l10n.interactionPlanDetailsTitle,
     );
     final header = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 13, 8, 11),
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        // 头部动作组与标题列垂直居中：阅读/关闭不再随标题行高漂移。
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Icon(
-              Icons.article_outlined,
-              size: 19,
-              color: context.colors.primary,
-            ),
-          ),
+          Icon(Icons.article_outlined, size: 19, color: context.colors.primary),
           const SizedBox(width: 9),
           Expanded(
             child: Column(
@@ -405,35 +409,61 @@ class _PlanDetailPanelState extends State<PlanDetailPanel> {
               ],
             ),
           ),
-          if (widget.onToggleReadingMode case final toggle?) ...[
-            const SizedBox(width: 4),
-            TextButton.icon(
-              key: StudioDriverKeys.planDetailsReadingMode,
-              icon: Icon(
-                widget.fullWidth
-                    ? Icons.vertical_split_outlined
-                    : Icons.open_in_full_rounded,
-                size: 16,
-              ),
-              label: Text(
-                widget.fullWidth
-                    ? context.l10n.planRestoreSplit
-                    : context.l10n.planExpandReading,
-              ),
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                textStyle: context.text.labelMedium,
-              ),
-              onPressed: toggle,
+          const SizedBox(width: 12),
+          // 阅读切换与关闭组成一个紧凑动作组：统一标准命中尺寸、同组间距 4px。
+          // 动作槽用紧约束 [Expanded] 填满自己那份宽度，组内再用 [MainAxisAlignment.end]
+          // 把动作贴到头部右内边距上——宽松槽会把剩余空间留在关闭按钮右侧，动作组就
+          // 停在标题旁边而不是面板右边界。紧约束同时保持有界：组内先分配固定尺寸的
+          // 关闭按钮，可变的阅读标签只在自己的份额内省略，360px 最小宽度与英文大字号下
+          // 都不会溢出，关闭始终可达；标题则在它之前的 [Expanded] 里两行截断。
+          Expanded(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (widget.onToggleReadingMode case final toggle?) ...[
+                  Flexible(
+                    child: TextButton.icon(
+                      key: StudioDriverKeys.planDetailsReadingMode,
+                      icon: Icon(
+                        widget.fullWidth
+                            ? Icons.vertical_split_outlined
+                            : Icons.open_in_full_rounded,
+                        size: 16,
+                      ),
+                      label: Text(
+                        widget.fullWidth
+                            ? context.l10n.planRestoreSplit
+                            : context.l10n.planExpandReading,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, _planHeaderActionSize),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        textStyle: context.text.labelMedium,
+                        visualDensity: _planHeaderVisualDensity,
+                        tapTargetSize: _planHeaderTapTargetSize,
+                      ),
+                      onPressed: toggle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                IconButton(
+                  key: StudioDriverKeys.planDetailsClose,
+                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size.square(_planHeaderActionSize),
+                    padding: EdgeInsets.zero,
+                    visualDensity: _planHeaderVisualDensity,
+                    tapTargetSize: _planHeaderTapTargetSize,
+                  ),
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: widget.onClose,
+                ),
+              ],
             ),
-          ],
-          IconButton(
-            key: StudioDriverKeys.planDetailsClose,
-            tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.chevron_right),
-            onPressed: widget.onClose,
           ),
         ],
       ),

@@ -96,6 +96,19 @@ const _minimumPlanWidth = 360.0;
 const _planDividerThickness = 1.0;
 const _rectEpsilon = 1.0;
 
+/// 计划详情头部的右内边距（`PlanDetailPanel` 头部 `EdgeInsets.fromLTRB(16, 12, 8, 12)`）。
+/// 关闭动作是组内最后一个控件，它的布局盒右缘必须落在面板右缘减该值处。
+const _planHeaderContentInset = 8.0;
+
+/// 计划动作组在真实桌面上的布局盒下限。
+///
+/// 桌面 `ThemeData.materialTapTargetSize` 默认 `shrinkWrap`，主题又显式
+/// `VisualDensity.compact`：未声明密度的按钮在 Linux GUI 上只有 32px 高（padded 命中区
+/// 也会因 compact 从 48 掉到 40）。计划动作显式要求标准密度 + padded 后，布局盒是 48
+/// （视觉 40）。这里用 44 作为下限，既能挡住 32/40 的退化，也不把 Material 常量复制成
+/// 精确断言。
+const _minDesktopActionBox = 44.0;
+
 /// Shift+Enter 需要的官方键值（Flutter `keyboard_key.g.dart`）：
 /// `LogicalKeyboardKey.enter == 0x0010000000d`、`PhysicalKeyboardKey.enter == 0x00070028`。
 ///
@@ -1111,6 +1124,97 @@ class PlanRecoveryJourney {
     }
   }
 
+  /// 计划动作组与输入框的真实几何对齐（读取实际 RenderBox，不看视觉猜测）。
+  ///
+  /// 容差取 [_rectEpsilon]：两侧横向 padding 一致时右缘应完全相等；按钮比较的是布局盒，
+  /// 标准的 tap-target 内边距两侧一致，因此不算作偏差。
+  void _recordActionAlignment({
+    required String prefix,
+    required DriverRect? feedback,
+    required DriverRect? revise,
+    required DriverRect? approve,
+  }) {
+    final readable = feedback != null && revise != null && approve != null;
+    checks['${prefix}ActionGeometryReadable'] = readable;
+    if (!readable) return;
+    checks['${prefix}ActionsAlignToInputEdge'] =
+        (approve.right - feedback.right).abs() <= _rectEpsilon;
+    // 布局盒同高：两侧都含标准 tap target，因此这里证明的是盒尺寸一致，
+    // 不声称 Material 视觉高度逐像素相等。
+    checks['${prefix}ActionsShareLayoutBoxHeight'] =
+        (revise.height - approve.height).abs() <= _rectEpsilon;
+    checks['${prefix}ActionsShareLayoutBoxBaseline'] =
+        ((revise.top + revise.bottom) - (approve.top + approve.bottom)).abs() <=
+        _rectEpsilon * 2;
+    checks['${prefix}PrimaryActionRightmost'] =
+        approve.left > revise.left &&
+        (approve.left - revise.right - 8).abs() <= _rectEpsilon;
+    checks['${prefix}ActionsMeetHitTarget'] =
+        revise.height >= _minDesktopActionBox &&
+        approve.height >= _minDesktopActionBox;
+    observations['${prefix}ActionRects'] = {
+      'feedback': feedback.toJson(),
+      'revise': revise.toJson(),
+      'approve': approve.toJson(),
+    };
+  }
+
+  /// 计划详情头部的阅读/关闭动作组：靠右、同一基线、标准命中尺寸。
+  ///
+  /// [expectReadingToggle] 描述该布局是否可能有并排阅读切换：宽布局必须有它；
+  /// 窄窗口本来就无法并排，此时断言它确实缺席、关闭按钮仍在且命中尺寸达标——
+  /// 不能因为 toggle 为 null 就把整组检查一起跳过。
+  ///
+  /// [panel] 是计划详情面板本身的矩形：动作组必须锚在它的内容右边界
+  /// （panel.right − 头部右内边距），旧实现的宽松动作槽会把关闭按钮留在面板中间。
+  void _recordHeaderAlignment({
+    required String prefix,
+    required bool expectReadingToggle,
+    required DriverRect? panel,
+    required DriverRect? toggle,
+    required DriverRect? close,
+  }) {
+    final anchored =
+        panel != null &&
+        close != null &&
+        (panel.right - close.right - _planHeaderContentInset).abs() <=
+            _rectEpsilon;
+    checks['${prefix}HeaderActionsAlignToContentEdge'] = anchored;
+    if (!expectReadingToggle) {
+      checks['${prefix}HeaderActionsReadable'] = close != null;
+      checks['${prefix}HeaderReadingToggleAbsent'] = toggle == null;
+      checks['${prefix}HeaderActionsMeetHitTarget'] =
+          close != null &&
+          close.width >= _minDesktopActionBox &&
+          close.height >= _minDesktopActionBox;
+      observations['${prefix}HeaderActionRects'] = {
+        'panel': panel?.toJson(),
+        'readingMode': toggle?.toJson(),
+        'close': close?.toJson(),
+      };
+      return;
+    }
+    final readable = toggle != null && close != null;
+    checks['${prefix}HeaderActionsReadable'] = readable;
+    if (!readable) return;
+    checks['${prefix}HeaderActionsShareBaseline'] =
+        ((toggle.top + toggle.bottom) - (close.top + close.bottom)).abs() <=
+        _rectEpsilon * 2;
+    // 关闭是组内最后一个动作：阅读切换必须在它左侧且保持 4px 组内间距。
+    checks['${prefix}HeaderActionsOrderedRightToLeft'] =
+        toggle.right < close.left &&
+        (close.left - toggle.right - 4).abs() <= _rectEpsilon;
+    checks['${prefix}HeaderActionsMeetHitTarget'] =
+        toggle.height >= _minDesktopActionBox &&
+        close.width >= _minDesktopActionBox &&
+        close.height >= _minDesktopActionBox;
+    observations['${prefix}HeaderActionRects'] = {
+      'panel': panel?.toJson(),
+      'readingMode': toggle.toJson(),
+      'close': close.toJson(),
+    };
+  }
+
   /// 并排阅读布局契约：计划可宽于对话、对话守住最小宽度、全宽/并排往返保持宽度。
   Future<void> _planReadingLayoutContract(
     String label,
@@ -1203,6 +1307,22 @@ class PlanRecoveryJourney {
       checks['${label}SideBySideReadable'] =
           plan.width >= _minimumPlanWidth &&
           conversation.width >= _minimumConversationWidth;
+
+      // 视觉契约：动作组沿输入框右缘、两按钮同高同基线且主操作在右；头部动作组同基线。
+      _recordActionAlignment(
+        prefix: label,
+        feedback: await _readRect('plan-feedback-input'),
+        revise: await _readRect('plan-submit-revision'),
+        approve: await _readRect('plan-approve'),
+      );
+      _recordHeaderAlignment(
+        prefix: label,
+        expectReadingToggle: true,
+        panel: plan,
+        toggle: await _readRect('plan-details-reading-mode'),
+        close: await _readRect('plan-details-close'),
+      );
+      await shot('$label-plan-actions-aligned');
 
       // 先收窄计划：这一方向在任何可用宽度下都有空间，证明拖动确实交给组件。
       await driver.dragBy(
@@ -1368,6 +1488,21 @@ class PlanRecoveryJourney {
       };
       checks['${label}NarrowInteractionCurrent'] =
           activeInteractionOf(await snapshot())?['id'] == expectedInteractionId;
+      // 窄/短窗同样要求动作组沿输入右缘、两按钮同高且完整可达。
+      _recordActionAlignment(
+        prefix: '${label}Narrow',
+        feedback: feedback,
+        revise: await _readRect('plan-submit-revision'),
+        approve: approve,
+      );
+      // 窄窗口无法并排：阅读切换本就不存在，这里断言它缺席而关闭仍可达。
+      _recordHeaderAlignment(
+        prefix: '${label}Narrow',
+        expectReadingToggle: false,
+        panel: plan,
+        toggle: await _readRect('plan-details-reading-mode'),
+        close: await _readRect('plan-details-close'),
+      );
       await shot('$label-plan-narrow-short');
     } finally {
       final restored = resizeOwnedWindow(
