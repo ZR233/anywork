@@ -150,10 +150,42 @@ pub enum ChatWindowUpdate {
 )]
 pub enum ThreadContentField {
     Text,
-    ThinkingSummary { chunk_index: u32 },
-    ThinkingContent { chunk_index: u32 },
+    ThinkingSummary {
+        chunk_index: u32,
+    },
+    ThinkingContent {
+        chunk_index: u32,
+    },
     ToolArguments,
     ToolResult,
+    /// 普通问答投影的一段正文：`question_index` 是原问题顺序，`part` 定位该问题内的具体正文。
+    ToolUserInput {
+        question_index: u32,
+        part: ThreadUserInputFieldPart,
+    },
+}
+
+/// 普通问答投影里一段可展示正文的位置。
+///
+/// 问答的标题、问题、选项说明与答案都是用户可见正文，必须共享同一份内容预算：任何一段都不留在
+/// 静态元数据里绕过有界预览。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    rename_all = "camelCase",
+    tag = "kind",
+    rename_all_fields = "camelCase"
+)]
+pub enum ThreadUserInputFieldPart {
+    /// 问题标题。
+    Header,
+    /// 完整问题正文。
+    Question,
+    /// 该问题的一个已接受答案值。
+    Answer { answer_index: u32 },
+    /// 该问题一个选项的标签。
+    OptionLabel { option_index: u32 },
+    /// 该问题一个选项的说明。
+    OptionDescription { option_index: u32 },
 }
 
 /// 一个内容字段的变化。

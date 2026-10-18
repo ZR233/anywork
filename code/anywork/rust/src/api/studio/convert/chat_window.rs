@@ -15,8 +15,8 @@ use crate::api::studio::convert::thread_stream::bridge_chat_thread_item;
 use crate::api::studio::types::{
     BridgeChatDirection, BridgeChatDisposition, BridgeChatFocus, BridgeChatItem,
     BridgeChatLifecycle, BridgeChatReceipt, BridgeChatSnapshot, BridgeChatUpdate,
-    BridgeContentField, BridgeError, BridgeFieldChange, BridgeFieldUpdate, BridgeUpdatePriority,
-    BridgeViewChange,
+    BridgeContentField, BridgeError, BridgeFieldChange, BridgeFieldUpdate,
+    BridgeThreadUserInputFieldPart, BridgeUpdatePriority, BridgeViewChange,
 };
 
 /// runtime 控制回执 → FRB DTO：机械映射，`operation_id` 由调用方的操作计数器提供。
@@ -186,5 +186,28 @@ fn content_field(field: ThreadContentField) -> BridgeContentField {
         }
         ThreadContentField::ToolArguments => BridgeContentField::ToolArguments,
         ThreadContentField::ToolResult => BridgeContentField::ToolResult,
+        ThreadContentField::ToolUserInput {
+            question_index,
+            part,
+        } => BridgeContentField::ToolUserInput {
+            question_index,
+            part: match part {
+                pl_protocol::ThreadUserInputFieldPart::Header => {
+                    BridgeThreadUserInputFieldPart::Header
+                }
+                pl_protocol::ThreadUserInputFieldPart::Question => {
+                    BridgeThreadUserInputFieldPart::Question
+                }
+                pl_protocol::ThreadUserInputFieldPart::Answer { answer_index } => {
+                    BridgeThreadUserInputFieldPart::Answer { answer_index }
+                }
+                pl_protocol::ThreadUserInputFieldPart::OptionLabel { option_index } => {
+                    BridgeThreadUserInputFieldPart::OptionLabel { option_index }
+                }
+                pl_protocol::ThreadUserInputFieldPart::OptionDescription { option_index } => {
+                    BridgeThreadUserInputFieldPart::OptionDescription { option_index }
+                }
+            },
+        },
     }
 }

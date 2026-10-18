@@ -16,7 +16,7 @@ pub(in crate::studio) use effect::project_effect_items;
 mod live;
 pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, retained_bytes,
-    seed_repaired_targets,
+    seed_interaction_targets, seed_repaired_targets,
 };
 // The retained-window bound is only read outside its own module by the storage fault test that has
 // to commit more parts than the window holds, so it stays a test-only re-export.
@@ -33,7 +33,11 @@ mod inputs;
 mod responses;
 mod tools;
 mod turns;
+mod user_input;
 pub(in crate::studio) use turns::project_active_turn;
+pub(in crate::studio) use user_input::{
+    attach as attach_tool_user_input, project_user_input as project_tool_user_input,
+};
 
 /// The canonical terminal Turn already prepared for the reliable history transaction.
 pub(in crate::studio) fn prepared_terminal_turn(
@@ -85,6 +89,8 @@ pub(crate) enum ProjectionError {
     Encoding(#[from] serde_json::Error),
     #[error("duplicate or contradictory saved tool call {0}")]
     DuplicateCall(String),
+    #[error("saved ordinary user Q&A fact is invalid: {0}")]
+    UserInput(String),
     #[error("terminal tool call {0} has no saved result")]
     MissingToolResult(String),
     #[error("saved model receipt cannot be decoded")]

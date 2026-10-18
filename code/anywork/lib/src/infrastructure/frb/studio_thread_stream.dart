@@ -355,7 +355,7 @@ ThreadItemStateView _threadItemStateFromFrb(
       content: content,
       lifecycle: _contentLifecycleFromFrb(lifecycle),
     ),
-    tool: (invocation, state) => ThreadToolItemStateView(
+    tool: (invocation, state, userInput) => ThreadToolItemStateView(
       invocation: ThreadToolInvocationView(
         taskId: invocation.taskId,
         toolCallId: invocation.toolCallId,
@@ -366,6 +366,7 @@ ThreadItemStateView _threadItemStateFromFrb(
         workingDirectory: invocation.workingDirectory,
       ),
       lifecycle: _toolLifecycleFromFrb(state),
+      userInput: userInput == null ? null : _userInputFromFrb(userInput),
     ),
     agent: (identity, state) => ThreadAgentItemStateView(
       identity: ThreadAgentIdentityView(
@@ -432,6 +433,44 @@ ThreadItemStateView _threadItemStateFromFrb(
           afterTokens?.toInt(),
           _dateFromUnix(compactedAt),
         ),
+  );
+}
+
+/// 普通问答投影 → domain typed 视图：问题顺序、权威状态与脱敏标记原样过桥。
+ThreadToolUserInputView _userInputFromFrb(
+  frb_item.BridgeThreadUserInput value,
+) {
+  return ThreadToolUserInputView(
+    interactionId: value.interactionId,
+    questions: [
+      for (final question in value.questions)
+        UserQuestionView(
+          id: question.id,
+          header: question.header,
+          question: question.question,
+          isOther: question.isOther,
+          isSecret: question.isSecret,
+          options: [
+            for (final option in question.options)
+              UserQuestionOptionView(
+                label: option.label,
+                description: option.description,
+              ),
+          ],
+        ),
+    ],
+    state: value.state.when(
+      pending: () => const PendingThreadToolUserInputView(),
+      resolved: (answers) => ResolvedThreadToolUserInputView([
+        for (final answer in answers)
+          ThreadUserInputAnswerView(
+            questionId: answer.questionId,
+            answers: answer.answers,
+            redacted: answer.redacted,
+          ),
+      ]),
+      cancelled: () => const CancelledThreadToolUserInputView(),
+    ),
   );
 }
 

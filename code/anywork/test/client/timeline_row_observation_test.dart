@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/timeline/timeline_session_view.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
@@ -996,6 +997,278 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('普通问答回执独立成行、默认折叠且更新后保留主动展开', (tester) async {
+    final now = DateTime.utc(2026);
+
+    StudioChatItem item(
+      String id,
+      int ordinal,
+      ThreadItemStateView state, {
+      bool saved = true,
+    }) {
+      final view = ThreadItemView(
+        id: id,
+        threadId: 'thread-main',
+        turnId: 'turn',
+        ordinal: ordinal,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        saved: saved,
+        state: state,
+      );
+      return StudioChatItem(
+        view,
+        saved: saved,
+        lifecycle: saved
+            ? StudioChatLifecycle.terminal
+            : StudioChatLifecycle.streaming,
+      );
+    }
+
+    ThreadToolItemStateView tool(String name) => ThreadToolItemStateView(
+      invocation: ThreadToolInvocationView(
+        toolCallId: 'call-$name',
+        name: name,
+        arguments: '{}',
+      ),
+      lifecycle: SucceededThreadToolView(
+        now,
+        ThreadToolOutputView(
+          result: '$name result',
+          attachments: const [],
+          outputArtifacts: const [],
+        ),
+      ),
+    );
+
+    ThreadTextItemStateView text(String value) => ThreadTextItemStateView(
+      channel: ThreadTextChannel.commentary,
+      text: value,
+      attachments: const [],
+      lifecycle: CompletedThreadContentView(now),
+    );
+
+    final harness = await _mountTimeline(
+      tester,
+      theme: pureStudioTheme(),
+      height: 560,
+      initialItems: [
+        item('text-before', 0, text('先确认现有的行结构。')),
+        item('tool-before', 1, tool('read_alpha')),
+        _receiptItem(
+          history: _userInputHistory(
+            state: const PendingThreadToolUserInputView(),
+          ),
+        ),
+        item('tool-after', 3, tool('read_beta')),
+        item('text-after', 4, text('问答之后的正文。')),
+      ],
+    );
+
+    // 问答回执按原工具身份独立成行：它前后是两个不同的普通活动组。
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineActivitySummary(
+          'activity-group:turn:tool-before',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        StudioDriverKeys.timelineActivitySummary(
+          'activity-group:turn:tool-after',
+        ),
+      ),
+      findsOneWidget,
+      reason: '回执不能并进前一组普通工具活动',
+    );
+
+    // 默认折叠：只有头部状态与题数，没有正文。
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsNothing,
+    );
+    expect(find.text('Awaiting your answer'), findsOneWidget);
+    expect(find.text('3 questions'), findsOneWidget);
+    expect(find.text(_styleQuestion.question), findsNothing);
+    expect(find.text('Your answer'), findsNothing);
+
+    await tester.tap(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsOneWidget,
+    );
+    expect(find.text(_styleQuestion.question), findsOneWidget);
+    expect(find.text(_styleQuestion.header), findsOneWidget);
+    expect(find.text(_notesQuestion.question), findsOneWidget);
+    expect(find.text(_tokenQuestion.question), findsOneWidget);
+    expect(find.text('Your answer'), findsNWidgets(3));
+    expect(
+      find.text('No answer provided'),
+      findsNWidgets(3),
+      reason: '待回答的每一题（含敏感题）都只是没有答案，不能说成已隐藏',
+    );
+    expect(find.text('Sensitive answer hidden'), findsNothing);
+    // 展开内容按原问题顺序排列：身份用索引键，顺序用真实几何判定。
+    double questionTop(int index) => tester
+        .getTopLeft(
+          find.byKey(
+            StudioDriverKeys.timelineUserInputQuestion('question', index),
+          ),
+        )
+        .dy;
+    expect(questionTop(0), lessThan(questionTop(1)));
+    expect(questionTop(1), lessThan(questionTop(2)));
+
+    /// 一次权威状态提交：只换 typed 问答载荷，保持同一行身份与 revision CAS。
+    Future<void> applyAnswerState(
+      int revision,
+      ThreadToolUserInputView history,
+    ) async {
+      harness.window.emit(
+        StudioChatPatch(
+          from: revision - 1,
+          to: revision,
+          changes: [
+            StudioViewItemUpdate(
+              itemId: 'question',
+              expectedRevision: revision - 1,
+              revision: revision,
+              omittedUnits: 0,
+              saved: true,
+              lifecycle: StudioChatLifecycle.terminal,
+              itemShell: _receiptItem(
+                history: history,
+                revision: revision,
+                saved: true,
+              ).item,
+              fields: const [],
+            ),
+          ],
+          hasNewer: false,
+        ),
+      );
+      await _pumpVersion(tester, harness.session, harness.window, revision);
+      await tester.pumpAndSettle();
+    }
+
+    // 已回答：同一行身份更新，且不重置用户主动展开。
+    await applyAnswerState(2, _userInputHistory(state: _resolvedAnswers()));
+
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsOneWidget,
+      reason: '同一行的内容更新不重置主动展开',
+    );
+    expect(find.text('You answered'), findsOneWidget);
+    expect(find.text('3 questions'), findsOneWidget);
+    expect(find.text('轻量回执'), findsOneWidget);
+    expect(find.text(_notesAnswer), findsOneWidget);
+    expect(find.text(_secretAnswer), findsNothing, reason: '敏感回答的原值不能出现在公开历史里');
+    expect(find.text('Sensitive answer hidden'), findsOneWidget);
+    expect(find.text('No answer provided'), findsNothing);
+
+    await tester.tap(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsNothing,
+    );
+    expect(find.text('You answered'), findsOneWidget);
+
+    // caller 错误的明文敏感答案：仍然只表达隐藏，绝不泄漏原值。
+    await tester.tap(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+    );
+    await tester.pumpAndSettle();
+    await applyAnswerState(
+      3,
+      _userInputHistory(state: _resolvedWithLeakedTokenAnswer()),
+    );
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsOneWidget,
+    );
+    expect(find.text('Sensitive answer hidden'), findsOneWidget);
+    expect(find.text(_secretAnswer), findsNothing);
+    expect(find.text('No answer provided'), findsNothing);
+
+    // 真正缺失的敏感答案：没有答案就是没有答案，不冒充已隐藏。
+    await applyAnswerState(
+      4,
+      _userInputHistory(state: _resolvedWithoutTokenAnswer()),
+    );
+    expect(find.text('No answer provided'), findsOneWidget);
+    expect(find.text('Sensitive answer hidden'), findsNothing);
+
+    // 取消的问答：三题都没有答案，也没有隐藏答案。
+    await applyAnswerState(
+      5,
+      _userInputHistory(state: const CancelledThreadToolUserInputView()),
+    );
+    expect(find.text('Questions cancelled'), findsOneWidget);
+    expect(find.text('No answer provided'), findsNWidgets(3));
+    expect(find.text('Sensitive answer hidden'), findsNothing);
+
+    await _closeTimeline(tester, harness);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('问答回执在窄窗口里换行且不溢出', (tester) async {
+    const token = 'sk-live-narrow-window-token-must-stay-hidden';
+    final harness = await _mountTimeline(
+      tester,
+      theme: pureStudioTheme(),
+      width: 300,
+      height: 520,
+      initialItems: [
+        _receiptItem(
+          history: _userInputHistory(
+            state: const ResolvedThreadToolUserInputView([
+              ThreadUserInputAnswerView(questionId: 'style', answers: ['轻量回执']),
+              ThreadUserInputAnswerView(
+                questionId: 'notes',
+                answers: [_narrowNotesAnswer],
+              ),
+              ThreadUserInputAnswerView(questionId: 'token', answers: [token]),
+            ]),
+          ),
+          saved: true,
+        ),
+      ],
+    );
+
+    await tester.tap(
+      find.byKey(StudioDriverKeys.timelineUserInput('question')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(StudioDriverKeys.timelineUserInputDetails('question')),
+      findsOneWidget,
+    );
+    expect(find.text(_narrowNotesAnswer), findsOneWidget);
+    expect(find.text(token), findsNothing);
+    expect(tester.takeException(), isNull, reason: '窄窗口不能横向溢出');
+
+    await _closeTimeline(tester, harness);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _ControlledWindow implements StudioChatWindow {
@@ -1081,6 +1354,131 @@ class _ControlledWindow implements StudioChatWindow {
       throw UnsupportedError('No control commands are used in this row test');
 }
 
+/// 普通问答场景的三题：选择、长自由文本与敏感输入，覆盖回执的三种答案渲染。
+const _styleQuestion = UserQuestionView(
+  id: 'style',
+  header: '展示风格',
+  question: '这次时间线回执你更想要哪种展示？',
+  isOther: false,
+  isSecret: false,
+  options: [
+    UserQuestionOptionView(label: '轻量回执', description: '只保留状态与答案'),
+    UserQuestionOptionView(label: '表单卡片', description: '每题一个独立输入区'),
+  ],
+);
+
+const _notesQuestion = UserQuestionView(
+  id: 'notes',
+  header: '交付说明',
+  question: '还有哪些交付说明需要记住？',
+  isOther: true,
+  isSecret: false,
+  options: [],
+);
+
+const _tokenQuestion = UserQuestionView(
+  id: 'token',
+  header: '访问令牌',
+  question: '请粘贴本次验收的临时令牌。',
+  isOther: true,
+  isSecret: true,
+  options: [],
+);
+
+const _notesAnswer = '第一行：保留换行，方便复制。\n第二行：窄窗口下也要整齐换行。';
+const _narrowNotesAnswer =
+    '第一行：这是一段足够长的交付说明，用来看清窄窗口里的换行是否整齐。\n'
+    '第二行：unbreakable-narrow-window-token-without-any-space-must-wrap-instead-of-overflowing。\n'
+    '第三行：第三行用于确认多行文本的整体节奏。';
+const _secretAnswer = 'sk-live-must-not-appear';
+
+ThreadToolUserInputView _userInputHistory({
+  required ThreadToolUserInputStateView state,
+}) => ThreadToolUserInputView(
+  interactionId: 'tool-interaction:call-question',
+  questions: const [_styleQuestion, _notesQuestion, _tokenQuestion],
+  state: state,
+);
+
+List<ThreadUserInputAnswerView> _answeredQuestions() => const [
+  ThreadUserInputAnswerView(questionId: 'style', answers: ['轻量回执']),
+  ThreadUserInputAnswerView(questionId: 'notes', answers: [_notesAnswer]),
+];
+
+/// 权威脱敏的回答：没有可见值，但用户确实提供过答案。
+const _redactedTokenAnswer = ThreadUserInputAnswerView(
+  questionId: 'token',
+  answers: [],
+  redacted: true,
+);
+
+/// caller 错误的明文敏感答案：UI 必须照样隐藏，不能泄漏原值。
+const _leakedTokenAnswer = ThreadUserInputAnswerView(
+  questionId: 'token',
+  answers: [_secretAnswer],
+);
+
+ResolvedThreadToolUserInputView _resolvedAnswers() =>
+    ResolvedThreadToolUserInputView([
+      ..._answeredQuestions(),
+      _redactedTokenAnswer,
+    ]);
+
+ResolvedThreadToolUserInputView _resolvedWithLeakedTokenAnswer() =>
+    ResolvedThreadToolUserInputView([
+      ..._answeredQuestions(),
+      _leakedTokenAnswer,
+    ]);
+
+/// 敏感题根本没有答案条目：这是「未提供回答」，不是「已隐藏」。
+ResolvedThreadToolUserInputView _resolvedWithoutTokenAnswer() =>
+    ResolvedThreadToolUserInputView(_answeredQuestions());
+
+/// 携带 typed 问答历史的工具条目：待回答时为运行中，已回答时为终态。
+StudioChatItem _receiptItem({
+  required ThreadToolUserInputView history,
+  int revision = 1,
+  bool saved = false,
+}) {
+  final now = DateTime.utc(2026);
+  const waiting = "Waiting for the user's response.";
+  final item = ThreadItemView(
+    id: 'question',
+    threadId: 'thread-main',
+    turnId: 'turn',
+    ordinal: 2,
+    revision: revision,
+    createdAt: now,
+    updatedAt: now,
+    saved: saved,
+    state: ThreadToolItemStateView(
+      invocation: const ThreadToolInvocationView(
+        toolCallId: 'call-question',
+        name: 'request_user_input',
+        arguments: '{"questions":[]}',
+      ),
+      lifecycle: saved
+          ? SucceededThreadToolView(
+              now,
+              const ThreadToolOutputView(
+                result: waiting,
+                attachments: [],
+                outputArtifacts: [],
+              ),
+            )
+          : const RunningThreadToolView(waiting),
+      userInput: history,
+    ),
+  );
+  return StudioChatItem(
+    item,
+    saved: saved,
+    lifecycle: saved
+        ? StudioChatLifecycle.terminal
+        : StudioChatLifecycle.streaming,
+  );
+}
+
 StudioChatItem _item(String id, {String? text}) {
   final now = DateTime.utc(2026);
   final streaming = id == 'second';
@@ -1132,6 +1530,8 @@ Future<_TimelineHarness> _mountTimeline(
   TextHeightBehavior textHeightBehavior = const TextHeightBehavior(),
   Brightness brightness = Brightness.light,
   double height = 320,
+  double width = 640,
+  ThemeData? theme,
 }) async {
   final transport = RecordingDemoTransport();
   final window = _ControlledWindow(
@@ -1169,14 +1569,14 @@ Future<_TimelineHarness> _mountTimeline(
     ProviderScope(
       overrides: [appGraphProvider.overrideWithValue(graph)],
       child: MaterialApp(
-        theme: ThemeData(brightness: brightness),
+        theme: theme ?? ThemeData(brightness: brightness),
         locale: const Locale('en'),
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: Center(
             child: SizedBox(
-              width: 640,
+              width: width,
               height: height,
               child: DefaultTextHeightBehavior(
                 textHeightBehavior: textHeightBehavior,

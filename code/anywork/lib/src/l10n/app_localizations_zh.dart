@@ -2683,4 +2683,27 @@ class AppLocalizationsZh extends AppLocalizations {
   String timelineCompactionDetail(int before, int after) {
     return '压缩前 $before，压缩后 $after 词元';
   }
+
+  @override
+  String get timelineUserInputAnswered => '用户已回答';
+
+  @override
+  String get timelineUserInputAwaiting => '等待你的回答';
+
+  @override
+  String get timelineUserInputCancelled => '问答已取消';
+
+  @override
+  String timelineUserInputQuestionCount(int count) {
+    return '$count 个问题';
+  }
+
+  @override
+  String get timelineUserInputYourAnswer => '你的回答';
+
+  @override
+  String get timelineUserInputNoAnswer => '未提供回答';
+
+  @override
+  String get timelineUserInputSecretHidden => '敏感回答已隐藏';
 }

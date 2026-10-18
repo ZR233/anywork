@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'item.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeRawPayload {
   final String format;
@@ -276,6 +276,9 @@ sealed class BridgeThreadItemState with _$BridgeThreadItemState {
   const factory BridgeThreadItemState.tool({
     required BridgeThreadToolInvocation invocation,
     required BridgeThreadToolState state,
+
+    /// Typed ordinary Q&A history the call asked for, when it asked one.
+    BridgeThreadUserInput? userInput,
   }) = BridgeThreadItemState_Tool;
   const factory BridgeThreadItemState.agent({
     required BridgeThreadAgentIdentity identity,
@@ -445,4 +448,133 @@ sealed class BridgeThreadToolState with _$BridgeThreadToolState {
     required PlatformInt64 cancelledAt,
     required String reason,
   }) = BridgeThreadToolState_Cancelled;
+}
+
+/// 一条普通问答的只读历史投影：问题、权威状态与已接受的回答。
+class BridgeThreadUserInput {
+  final String interactionId;
+  final List<BridgeThreadUserInputQuestion> questions;
+  final BridgeThreadUserInputState state;
+
+  const BridgeThreadUserInput({
+    required this.interactionId,
+    required this.questions,
+    required this.state,
+  });
+
+  @override
+  int get hashCode =>
+      interactionId.hashCode ^ questions.hashCode ^ state.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadUserInput &&
+          runtimeType == other.runtimeType &&
+          interactionId == other.interactionId &&
+          questions == other.questions &&
+          state == other.state;
+}
+
+class BridgeThreadUserInputAnswer {
+  final String questionId;
+
+  /// 已接受的答案值；`redacted` 为真时这里必然为空。
+  final List<String> answers;
+
+  /// 敏感回答只公开“已回答/已隐藏”的状态，原值不在公开投影内。
+  final bool redacted;
+
+  const BridgeThreadUserInputAnswer({
+    required this.questionId,
+    required this.answers,
+    required this.redacted,
+  });
+
+  @override
+  int get hashCode =>
+      questionId.hashCode ^ answers.hashCode ^ redacted.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadUserInputAnswer &&
+          runtimeType == other.runtimeType &&
+          questionId == other.questionId &&
+          answers == other.answers &&
+          redacted == other.redacted;
+}
+
+class BridgeThreadUserInputOption {
+  final String label;
+  final String description;
+
+  const BridgeThreadUserInputOption({
+    required this.label,
+    required this.description,
+  });
+
+  @override
+  int get hashCode => label.hashCode ^ description.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadUserInputOption &&
+          runtimeType == other.runtimeType &&
+          label == other.label &&
+          description == other.description;
+}
+
+class BridgeThreadUserInputQuestion {
+  final String id;
+  final String header;
+  final String question;
+  final bool isOther;
+  final bool isSecret;
+  final List<BridgeThreadUserInputOption> options;
+
+  const BridgeThreadUserInputQuestion({
+    required this.id,
+    required this.header,
+    required this.question,
+    required this.isOther,
+    required this.isSecret,
+    required this.options,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      header.hashCode ^
+      question.hashCode ^
+      isOther.hashCode ^
+      isSecret.hashCode ^
+      options.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadUserInputQuestion &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          header == other.header &&
+          question == other.question &&
+          isOther == other.isOther &&
+          isSecret == other.isSecret &&
+          options == other.options;
+}
+
+@freezed
+sealed class BridgeThreadUserInputState with _$BridgeThreadUserInputState {
+  const BridgeThreadUserInputState._();
+
+  const factory BridgeThreadUserInputState.pending() =
+      BridgeThreadUserInputState_Pending;
+  const factory BridgeThreadUserInputState.resolved({
+    /// 按原问题顺序排列的已接受回答。
+    required List<BridgeThreadUserInputAnswer> answers,
+  }) = BridgeThreadUserInputState_Resolved;
+  const factory BridgeThreadUserInputState.cancelled() =
+      BridgeThreadUserInputState_Cancelled;
 }

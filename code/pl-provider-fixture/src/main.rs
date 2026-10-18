@@ -5,8 +5,8 @@ use clap::Parser;
 use pl_provider_fixture::{
     FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS, ReadyFile, WebSearchFault,
     WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_plan_recovery_script,
-    gui_realtime_script, gui_script, gui_shutdown_script, gui_statistics_script,
-    gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
+    gui_question_history_script, gui_realtime_script, gui_script, gui_shutdown_script,
+    gui_statistics_script, gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
     gui_tool_scroll_script, gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
         "context-replay-recovery" => pl_provider_fixture::gui_context_replay_recovery_script(),
         "websocket-recovery" => gui_websocket_recovery_script(),
         "call-lifecycle-recovery" => pl_provider_fixture::gui_call_lifecycle_recovery_script(),
+        "question-history" => gui_question_history_script(),
         "web-search" => gui_web_search_script(),
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),

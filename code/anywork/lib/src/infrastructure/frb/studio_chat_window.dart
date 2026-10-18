@@ -165,8 +165,20 @@ class FrbChatWindow implements StudioChatWindow {
         for (final chunk in content) {
           StudioDriverState.recordContentBody(chunk);
         }
-      case ThreadToolItemStateView(:final invocation, :final lifecycle):
+      case ThreadToolItemStateView(
+        :final invocation,
+        :final lifecycle,
+        :final userInput,
+      ):
         StudioDriverState.recordContentBody(invocation.arguments);
+        for (final question in userInput?.questions ?? const []) {
+          StudioDriverState.recordContentBody(question.question);
+        }
+        for (final answer in userInput?.answers ?? const []) {
+          for (final value in answer.answers) {
+            StudioDriverState.recordContentBody(value);
+          }
+        }
         switch (lifecycle) {
           case RunningThreadToolView(:final streamedOutput) ||
               CancellingThreadToolView(:final streamedOutput):
@@ -239,6 +251,19 @@ class FrbChatWindow implements StudioChatWindow {
           ThreadThinkingContentFieldView(chunkIndex),
       toolArguments: () => const ThreadToolArgumentsFieldView(),
       toolResult: () => const ThreadToolResultFieldView(),
+      toolUserInput: (questionIndex, part) => ThreadToolUserInputFieldView(
+        questionIndex: questionIndex,
+        part: part.when(
+          header: () => const ThreadUserInputHeaderFieldPartView(),
+          question: () => const ThreadUserInputQuestionFieldPartView(),
+          answer: (answerIndex) =>
+              ThreadUserInputAnswerFieldPartView(answerIndex),
+          optionLabel: (optionIndex) =>
+              ThreadUserInputOptionLabelFieldPartView(optionIndex),
+          optionDescription: (optionIndex) =>
+              ThreadUserInputOptionDescriptionFieldPartView(optionIndex),
+        ),
+      ),
     );
   }
 

@@ -369,7 +369,47 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
             bytes = bytes.saturating_add(state.reason().len() as u64);
         }
     }
+    if let Some(user_input) = tool.user_input() {
+        bytes = bytes.saturating_add(user_input_bytes(user_input));
+    }
     bytes
+}
+
+/// Questions and accepted answers of one Q&A history projection.
+///
+/// The question bodies and the answer values are resident here and in the content fields the window
+/// delivers, so the residency estimate charges every one of them exactly once per item.
+fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
+    let questions = user_input
+        .questions()
+        .iter()
+        .fold(0_u64, |total, question| {
+            total
+                .saturating_add(question.header.len() as u64)
+                .saturating_add(question.question.len() as u64)
+                .saturating_add(question.options.as_ref().map_or(0, |options| {
+                    options.iter().fold(0_u64, |total, option| {
+                        total
+                            .saturating_add(option.label.len() as u64)
+                            .saturating_add(option.description.len() as u64)
+                            .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                    })
+                }))
+                .saturating_add(RETAINED_ENTRY_OVERHEAD)
+        });
+    user_input
+        .answers()
+        .iter()
+        .fold(questions, |total, answer| {
+            answer.answers().iter().fold(
+                total.saturating_add(answer.question_id().len() as u64),
+                |total, value| {
+                    total
+                        .saturating_add(value.len() as u64)
+                        .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                },
+            )
+        })
 }
 
 /// Result, attachment metadata and opaque artifacts of one terminal tool output.
@@ -769,6 +809,16 @@ impl LiveProjection {
         self.items.get(id).is_some_and(|item| {
             matches!(item.state(), ThreadItemState::Tool(tool) if tool.terminal_output().is_some())
         })
+    }
+
+    /// Whether this projection still holds the canonical tool body of `id`, in any state.
+    ///
+    /// An ordinary Q&A interaction lands on the call that asked it, and the answering effect carries
+    /// neither the call nor its task: after a restart, or once a finished Turn leaves the retained
+    /// window, this projection holds no body for that identity. Placement metadata alone is not a
+    /// body — only a real tool item can carry the answer.
+    pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
+        self.items.get(id).is_some_and(|item| item.tool().is_some())
     }
 
     /// Bytes this projection currently retains in its own tables.
@@ -2180,8 +2230,59 @@ pub(in crate::studio) async fn seed_repaired_targets(
     Ok(())
 }
 
-/// The canonical identity of one aggregate streaming channel of an attempt.
+/// Reads the tool items an effect's ordinary Q&A interactions name, when this projection holds no
+/// canonical body for them.
 ///
+/// A pending question outlives the Turn that asked it: the asking call is already terminal, its body
+/// leaves the retained window, and a projection seeded after a restart never saw the call at all.
+/// The answering effect carries only the interaction and the hidden continuation, so the answer can
+/// only land on the call's own item if the owner reads that one identity back from reliable history
+/// and hands it to the projection as a fact — the same shape as a reliable-output repair target.
+/// Nothing else is read: no Turn is scanned, no tool is activated, no model step starts, and the
+/// projection itself still performs no IO. A missing or non-tool durable item fails explicitly,
+/// because an accepted answer must never be dropped or published as a fabricated row.
+pub(in crate::studio) async fn seed_interaction_targets(
+    projection: &mut LiveProjection,
+    history: &crate::studio::storage::history::HistoryStore,
+    effect: &ThreadEffectBatch,
+) -> Result<(), ProjectionError> {
+    let mut seeded = Vec::new();
+    for record in effect.interactions.iter() {
+        let Some(user_input) = super::user_input::project_user_input(record)? else {
+            continue;
+        };
+        let tool_id =
+            match pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id()) {
+                Some(call_id) => super::order::tool_id(call_id),
+                None => {
+                    return Err(ProjectionError::UserInput(format!(
+                        "ordinary user Q&A interaction `{}` names no tool call",
+                        user_input.interaction_id()
+                    )));
+                }
+            };
+        if projection.holds_tool_body(&tool_id) {
+            continue;
+        }
+        let item = history
+            .item(&tool_id)
+            .await
+            .map_err(|error| ProjectionError::History(error.to_string()))?
+            .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
+        if item.tool().is_none() {
+            return Err(ProjectionError::UserInput(format!(
+                "durable item `{tool_id}` is not a tool call and cannot own an ordinary user Q&A"
+            )));
+        }
+        seeded.push(item);
+    }
+    if !seeded.is_empty() {
+        projection.seed(seeded, std::collections::BTreeSet::new());
+    }
+    Ok(())
+}
+
+/// The canonical identity of one aggregate streaming channel of an attempt.
 /// It is the same in-memory identity the committed effect later finalizes for the whole channel, so a
 /// preview and the terminal item it precedes never disagree on the id.
 fn aggregate_id(attempt_id: &str, generation: u32, channel: AggregateChannel) -> String {

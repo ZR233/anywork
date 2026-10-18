@@ -1043,5 +1043,19 @@
         "type": "int"
       }
     }
-  }
+  },
+  "timelineUserInputAnswered": "用户已回答",
+  "timelineUserInputAwaiting": "等待你的回答",
+  "timelineUserInputCancelled": "问答已取消",
+  "timelineUserInputQuestionCount": "{count} 个问题",
+  "@timelineUserInputQuestionCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineUserInputYourAnswer": "你的回答",
+  "timelineUserInputNoAnswer": "未提供回答",
+  "timelineUserInputSecretHidden": "敏感回答已隐藏"
 }

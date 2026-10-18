@@ -3747,6 +3747,7 @@ class _DemoChatWindow implements StudioChatWindow {
             _toolResultText(previous.lifecycle),
             _toolResultText(next.lifecycle),
           ),
+          ..._userInputFields(previous.userInput, next.userInput),
         ]);
       default:
         // 字段域与 reducer 不一致的条目种类：宁可用权威 Reset 整窗收束，也不能提交一个
@@ -3773,6 +3774,77 @@ class _DemoChatWindow implements StudioChatWindow {
       for (final field in fields)
         if (field.change is! UnchangedThreadFieldChangeView) field,
     ];
+  }
+
+  /// 普通问答正文域的变化：结构由条目本体携带，正文逐字段比对。
+  List<StudioFieldUpdateView> _userInputFields(
+    ThreadToolUserInputView? previous,
+    ThreadToolUserInputView? next,
+  ) {
+    if (next == null) return const [];
+    final fields = <StudioFieldUpdateView>[];
+    for (var index = 0; index < next.questions.length; index++) {
+      fields.add(
+        _textField(
+          ThreadToolUserInputFieldView(
+            questionIndex: index,
+            part: const ThreadUserInputHeaderFieldPartView(),
+          ),
+          previous?.headerText(index) ?? '',
+          next.headerText(index),
+        ),
+      );
+      fields.add(
+        _textField(
+          ThreadToolUserInputFieldView(
+            questionIndex: index,
+            part: const ThreadUserInputQuestionFieldPartView(),
+          ),
+          previous?.questionText(index) ?? '',
+          next.questionText(index),
+        ),
+      );
+      final options = next.questions[index].options.length;
+      for (var option = 0; option < options; option++) {
+        fields.add(
+          _textField(
+            ThreadToolUserInputFieldView(
+              questionIndex: index,
+              part: ThreadUserInputOptionLabelFieldPartView(option),
+            ),
+            previous?.optionLabel(index, option) ?? '',
+            next.optionLabel(index, option),
+          ),
+        );
+        fields.add(
+          _textField(
+            ThreadToolUserInputFieldView(
+              questionIndex: index,
+              part: ThreadUserInputOptionDescriptionFieldPartView(option),
+            ),
+            previous?.optionDescription(index, option) ?? '',
+            next.optionDescription(index, option),
+          ),
+        );
+      }
+    }
+    for (final answer in next.answers) {
+      final questionIndex = next.questionIndex(answer.questionId);
+      if (questionIndex == null) continue;
+      for (var value = 0; value < answer.answers.length; value++) {
+        fields.add(
+          _textField(
+            ThreadToolUserInputFieldView(
+              questionIndex: questionIndex,
+              part: ThreadUserInputAnswerFieldPartView(value),
+            ),
+            previous?.answerText(questionIndex, value) ?? '',
+            answer.answers[value],
+          ),
+        );
+      }
+    }
+    return fields;
   }
 
   StudioFieldUpdateView _textField(

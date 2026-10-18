@@ -299,6 +299,7 @@ fn item_state(value: &ThreadItemState) -> Result<BridgeThreadItemState> {
                 working_directory: value.invocation().working_directory().map(str::to_string),
             },
             state: tool_state(value.state())?,
+            user_input: value.user_input().map(user_input),
         },
         ThreadItemState::Agent(value) => {
             let identity = value.identity();
@@ -493,6 +494,52 @@ fn tool_state(value: &ThreadToolState) -> Result<BridgeThreadToolState> {
             reason: state.reason().to_string(),
         },
     })
+}
+
+/// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
+fn user_input(value: &pl_protocol::ThreadToolUserInput) -> BridgeThreadUserInput {
+    BridgeThreadUserInput {
+        interaction_id: value.interaction_id().to_owned(),
+        questions: value
+            .questions()
+            .iter()
+            .map(|question| BridgeThreadUserInputQuestion {
+                id: question.id.clone(),
+                header: question.header.clone(),
+                question: question.question.clone(),
+                is_other: question.is_other,
+                is_secret: question.is_secret,
+                options: question
+                    .options
+                    .iter()
+                    .flatten()
+                    .map(|option| BridgeThreadUserInputOption {
+                        label: option.label.clone(),
+                        description: option.description.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        state: match value.state() {
+            pl_protocol::ThreadToolUserInputState::Pending => BridgeThreadUserInputState::Pending,
+            pl_protocol::ThreadToolUserInputState::Cancelled => {
+                BridgeThreadUserInputState::Cancelled
+            }
+            pl_protocol::ThreadToolUserInputState::Resolved(resolved) => {
+                BridgeThreadUserInputState::Resolved {
+                    answers: resolved
+                        .answers()
+                        .iter()
+                        .map(|answer| BridgeThreadUserInputAnswer {
+                            question_id: answer.question_id().to_owned(),
+                            answers: answer.answers().to_vec(),
+                            redacted: answer.is_redacted(),
+                        })
+                        .collect(),
+                }
+            }
+        },
+    }
 }
 
 fn tool_output(value: &ThreadToolOutput) -> Result<BridgeThreadToolOutput> {

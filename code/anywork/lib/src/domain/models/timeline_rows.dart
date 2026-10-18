@@ -13,6 +13,7 @@ enum TimelineRowType {
   skillActivation,
   agentActivity,
   turnOutcome,
+  userInput,
 }
 
 /// 当前窗口的不可变呈现投影。每个封闭变体拥有渲染所需的必需载荷。
@@ -135,6 +136,25 @@ final class TimelineAgentRow extends TimelineItemRow {
   final ThreadAgentItemStateView agent;
   @override
   TimelineRowType get type => TimelineRowType.agentActivity;
+}
+
+/// 普通问答回执：一条工具条目携带的只读问答历史独立成行。
+///
+/// 它保留原工具条目的身份、序位与保存水位，只把 typed 问答投影交给 Timeline 呈现；
+/// 不解析工具载荷，也不合成新的回答账本。
+final class TimelineUserInputRow extends TimelineItemRow {
+  const TimelineUserInputRow({
+    required super.item,
+    required super.part,
+    required this.history,
+  });
+
+  final ThreadToolUserInputView history;
+
+  @override
+  TimelineRowType get type => TimelineRowType.userInput;
+
+  TimelineToolItem get tool => TimelineToolItem(part: part);
 }
 
 final class TimelineOutcomeRow extends TimelineItemRow {
@@ -310,7 +330,11 @@ final class TimelineRowProjector {
       final ordinaryTool =
           item.kind == ThreadItemKind.toolCall &&
           item.tool?.name != 'view_image';
-      if (item.kind == ThreadItemKind.reasoning || ordinaryTool) {
+      // 携带 typed 问答历史的工具是独立回执：它先结束当前活动组，不并入普通工具摘要。
+      if (item.tool?.userInput case final userInput?) {
+        flush();
+        add(TimelineUserInputRow(item: item, part: part, history: userInput));
+      } else if (item.kind == ThreadItemKind.reasoning || ordinaryTool) {
         activities.add(part);
         activitySaved = activitySaved && item.saved;
       } else if (!const {

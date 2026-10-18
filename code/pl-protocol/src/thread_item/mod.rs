@@ -175,14 +175,19 @@ impl ThreadItem {
                 item.content().to_vec(),
                 ThreadContentLifecycle::failed(failed_at, error.clone()),
             )),
-            ThreadItemState::Tool(item) => ThreadItemState::Tool(ThreadToolItem::new(
-                item.invocation().clone(),
-                ThreadToolState::Failed(FailedThreadTool::new(
-                    failed_at,
-                    ThreadToolFailure::new(ThreadToolFailureKind::Execution, error.clone()),
-                    None,
-                )),
-            )),
+            ThreadItemState::Tool(item) => ThreadItemState::Tool(
+                ThreadToolItem::new(
+                    item.invocation().clone(),
+                    ThreadToolState::Failed(FailedThreadTool::new(
+                        failed_at,
+                        ThreadToolFailure::new(ThreadToolFailureKind::Execution, error.clone()),
+                        None,
+                    )),
+                )
+                // A failed call still owns the Q&A fact it already asked for; failing the tool
+                // never makes the user's accepted answer disappear from history.
+                .with_user_input(item.user_input().cloned()),
+            ),
             ThreadItemState::Agent(item) => ThreadItemState::Agent(ThreadAgentItem::new(
                 item.identity().clone(),
                 ThreadAgentState::Failed(FailedThreadAgent::new(failed_at, error.clone())),

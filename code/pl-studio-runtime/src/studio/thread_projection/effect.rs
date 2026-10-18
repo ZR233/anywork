@@ -318,6 +318,44 @@ pub(in crate::studio) fn project_effect_items(
         }
     }
 
+    // 一次工具调用在问答之后仍会继续执行（提问 pending → resolved → 结果交付），而调用本身的重新投影
+    // 只从调用事实重建状态：问答属于 interaction 事实，不能被工具状态转移抹掉。已提交正文里的问答在
+    // 这里原地保留，随后的交互投影才覆盖成本次 effect 的权威版本。
+    preserve_user_input(&mut items, existing);
+    // 普通问答是同一个 canonical interaction 的派生投影，落在发起提问的那次工具调用自己的条目上，
+    // 不建立第二条持久化问答记录。交互身份给出它所属的 call，条目因此保留 ID、ordinal 与创建时间，
+    // 只更新问答正文；同一次 effect 里刚投影的条目优先，其次是已提交的 durable 正文。
+    for record in effect.interactions.iter() {
+        let Some(user_input) = super::user_input::project_user_input(record)? else {
+            continue;
+        };
+        let Some(call_id) =
+            pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
+        else {
+            return Err(ProjectionError::UserInput(format!(
+                "ordinary user Q&A interaction `{}` names no tool call",
+                user_input.interaction_id()
+            )));
+        };
+        let tool_id = order::tool_id(call_id);
+        if let Some(item) = items.iter_mut().find(|item| item.id == tool_id) {
+            super::user_input::attach(item, user_input)?;
+            continue;
+        }
+        // 只有真正带工具正文的已提交条目才能承载问答。原始调用只剩历史、或本投影手里只有放置
+        // 元数据占位时，都报告该 identity，让调用方补读 durable 正文后再投影一次：绝不静默丢掉
+        // 一份权威问答，也绝不凭相邻行或占位正文伪造一条回答。
+        let Some(saved) = existing.get(&tool_id).filter(|item| item.tool().is_some()) else {
+            unresolved_calls.insert(tool_id);
+            continue;
+        };
+        let mut item = saved.clone();
+        item.revision = effect.sequence;
+        item.updated_at = effect.committed_at;
+        super::user_input::attach(&mut item, user_input)?;
+        items.push(item);
+    }
+
     if effect.replacements.iter().any(|replacement| {
         replacement.reason == pl_core::thread::ContextReplacementReason::Compaction
     }) {
@@ -389,6 +427,30 @@ pub(in crate::studio) fn project_effect_items(
         unresolved_inputs,
         unresolved_calls,
     })
+}
+
+/// Keeps one call's committed Q&A history on the item that re-projects the same call.
+///
+/// A call re-projected from its execution facts (a fresh attempt record, a delivery, a repaired
+/// output) is rebuilt from the call, not from the interaction, so the committed Q&A body has to be
+/// carried over here. The interaction projection of the same effect then supersedes it in place.
+fn preserve_user_input(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadItem>) {
+    for item in items {
+        if item.tool().is_none_or(|tool| tool.user_input().is_some()) {
+            continue;
+        }
+        let Some(previous) = existing.get(&item.id).and_then(|saved| saved.tool()) else {
+            continue;
+        };
+        let Some(user_input) = previous.user_input().cloned() else {
+            continue;
+        };
+        let Some(tool) = item.tool() else {
+            continue;
+        };
+        let state = ThreadItemState::Tool(tool.clone().with_user_input(Some(user_input)));
+        *item = item.clone().with_state(state);
+    }
 }
 
 /// Ordinal phase of one identity: the committed item, an in-memory Session assignment, or zero

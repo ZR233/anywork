@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 mod context_replay_recovery;
 mod model_catalog;
 mod provider_usage;
+mod question_history;
 mod web_search;
 pub use context_replay_recovery::{
     ReplayExpectation, gui_context_replay_recovery_script, replay_output, replay_tool_arguments,
@@ -37,6 +38,12 @@ pub use provider_usage::{
     MCP_PATH as PROVIDER_USAGE_MCP_PATH, MCP_TOOL_NAME as PROVIDER_USAGE_MCP_TOOL_NAME,
     PLAN_QUOTA_KEY, ProviderUsageLiveState, RELEASE_PATH as PROVIDER_USAGE_RELEASE_PATH,
     SLOW_QUOTA_KEY, STATE_PATH as PROVIDER_USAGE_STATE_PATH,
+};
+pub use question_history::{
+    GUI_QUESTION_HISTORY_NOTES_ANSWER, GUI_QUESTION_HISTORY_NOTES_ID, GUI_QUESTION_HISTORY_PROMPT,
+    GUI_QUESTION_HISTORY_STYLE_ANSWER, GUI_QUESTION_HISTORY_STYLE_ID,
+    GUI_QUESTION_HISTORY_TOKEN_ANSWER, GUI_QUESTION_HISTORY_TOKEN_ID,
+    gui_question_history_answers_json, gui_question_history_script,
 };
 pub use web_search::{
     CHILD_PROFILE_ID, DEEPSEEK_FETCH_PATH, DEEPSEEK_SEARCH_KEY, DEEPSEEK_SEARCH_PATH,
@@ -76,7 +83,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 17] = [
+pub const GUI_SCENARIOS: [&str; 18] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -91,6 +98,7 @@ pub const GUI_SCENARIOS: [&str; 17] = [
     "tool-scroll",
     "websocket-recovery",
     "call-lifecycle-recovery",
+    "question-history",
     "web-search",
     "shutdown",
     "provider-usage",

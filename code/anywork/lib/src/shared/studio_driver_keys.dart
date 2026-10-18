@@ -393,6 +393,22 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> timelineActivitySummary(String id) =>
       ValueKey<String>('timeline-activity-summary-$id');
 
+  /// 只读问答回执的折叠头部：点击即展开/收起，折叠与展开状态下都指向同一条目身份。
+  static ValueKey<String> timelineUserInput(String id) =>
+      ValueKey<String>('timeline-user-input-$id');
+
+  /// 问答回执的展开内容；是否存在该键即代表当前是否展开。
+  static ValueKey<String> timelineUserInputDetails(String id) =>
+      ValueKey<String>('timeline-user-input-details-$id');
+
+  /// 回执里一题的标题与问题正文；序号是原问题顺序，不是文本身份。
+  static ValueKey<String> timelineUserInputQuestion(String id, int index) =>
+      ValueKey<String>('timeline-user-input-question-$id-$index');
+
+  /// 回执里一题的答案正文。
+  static ValueKey<String> timelineUserInputAnswer(String id, int index) =>
+      ValueKey<String>('timeline-user-input-answer-$id-$index');
+
   static ValueKey<String> viewImageTool(String callId) =>
       ValueKey<String>('view-image-tool-$callId');
 
