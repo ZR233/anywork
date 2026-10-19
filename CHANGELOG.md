@@ -5,6 +5,43 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.19.0](https://github.com/ZR233/anywork/compare/v6.18.0...v6.19.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** Remove ChatView/window/focus reading APIs and compatibility aliases. Consumers must migrate to typed Timeline page, bounded tail, and versioned detail interfaces. Existing user data is not deleted.
+* **studio:** ContextPreparationRequest 新增 turn_input 字段，构造该公开请求的调用方须提供尚未消费的发起输入或 None；gui_tool_scroll_script 新增 resource_lifecycle 参数。
+* **studio:** pl-provider-fixture 的 gui_tool_scroll_script 需要显式传入工作区是否使用 PowerShell，调用方须依据命令执行宿主选择。
+* **studio:** RemoteClient::spawn_process 返回 ManagedCommand，删除 RemoteProcessTransport、terminate_process 和 Backpressure；ThreadSnapshot 增加仅运行期 tool_cleanup；StudioThreadSpec 增加 preparation_guard，ThreadAssemblyError::Cleanup 使用嵌套装配错误；LspHostBackend 必须声明 path_style。调用方须使用统一命令取消与等待，并按文件所属宿主处理路径。
+* **studio:** ModelUsageBinding 等公开结构体新增 max_context_window 与 auto_compact_limit 可选字段，外部结构体字面量构造方需补齐字段；原生 bridge 与 Dart 生成物需配套升级。状态读数改为仅悬浮，不再支持点击固定详情。
+* **studio:** provider catalog schema 升到 12，ModelDescriptor 必须携带 origin； RefreshModelCatalogRequest 与手动刷新链路不再存在。
+* **studio:** 用官方 Search & Fetch 接口重构 DeepSeek 联网搜索
+
+### Features
+
+* **studio:** Windows 关闭窗口隐藏到系统托盘 ([#103](https://github.com/ZR233/anywork/issues/103)) ([ae1381a](https://github.com/ZR233/anywork/commit/ae1381ac39402231fd71961039b81eab15867c0c))
+* **studio:** 优化时间线问答历史回执展示 ([#98](https://github.com/ZR233/anywork/issues/98)) ([83be0d1](https://github.com/ZR233/anywork/commit/83be0d187db2ed6071946362f2ee744ba38c58e3))
+* **studio:** 模型目录在线同步权威化与手动模型分组删除 ([#96](https://github.com/ZR233/anywork/issues/96)) ([e43731d](https://github.com/ZR233/anywork/commit/e43731d649dd9f0f80e39376a0a0669565b7f74c))
+* **studio:** 重构计划工作区与可展开确认回执 ([#100](https://github.com/ZR233/anywork/issues/100)) ([a79118f](https://github.com/ZR233/anywork/commit/a79118f7d12ca0762f8d1bb15db0ff93086ae699))
+
+
+### Bug Fixes
+
+* **model:** 兼容真实在线目录并排除非对话模型 ([#97](https://github.com/ZR233/anywork/issues/97)) ([c04213e](https://github.com/ZR233/anywork/commit/c04213e2edff97c37197063519081973ec83a80a))
+* **model:** 在线模型参数优先并收敛冲突的继承声明 ([#99](https://github.com/ZR233/anywork/issues/99)) ([d0a5454](https://github.com/ZR233/anywork/commit/d0a5454f4b555525553407f7065139735a2d4855))
+* **studio:** 优化上下文进度与只读悬浮详情 ([#101](https://github.com/ZR233/anywork/issues/101)) ([22ea0f6](https://github.com/ZR233/anywork/commit/22ea0f6d767af9aa54fa70097c223c46953f0ef2))
+* **studio:** 使用 flutter_chat_ui 重构 Timeline 与分页内容源 ([#104](https://github.com/ZR233/anywork/issues/104)) ([1d3ee0d](https://github.com/ZR233/anywork/commit/1d3ee0de7ac0595d7c91108fbfadd6f8dcdb4df9))
+* **studio:** 修复子会话性能样本漏记 ([876bdf7](https://github.com/ZR233/anywork/commit/876bdf7162e9d8c09233c91a06cbca20dde7aa14))
+* **studio:** 将工作流启动收束到真实根用户输入 ([3a9e9f5](https://github.com/ZR233/anywork/commit/3a9e9f5ebf28f9867090a3fddc5b58767322ec70))
+* **studio:** 按执行宿主生成远程验收命令 ([24e678c](https://github.com/ZR233/anywork/commit/24e678c083beac6f69714815fa0964f93dd41800))
+* **studio:** 收束远程请求与会话资源生命周期 ([4607621](https://github.com/ZR233/anywork/commit/4607621632ec4c92f09b15378b710b9a8f3e1f6b))
+
+
+### Refactoring
+
+* **studio:** 用官方 Search & Fetch 接口重构 DeepSeek 联网搜索 ([55e22f9](https://github.com/ZR233/anywork/commit/55e22f9da51ffccf7496a6519aa86a2c71823f66))
+
 ## [6.18.0](https://github.com/ZR233/anywork/compare/v6.17.0...v6.18.0) (2026-10-17)
 
 
