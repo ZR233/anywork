@@ -12,7 +12,8 @@ use crate::chat::{
     ChatPage, ChatPageRequest, ChatTail, ChatTailBaseline, DEFAULT_PAGE_ITEMS, PAGE_PREVIEW_BYTES,
     item::merge_items,
     session::{
-        RECENT_BYTES, RECENT_ITEMS, Session, TimelineState, resident_item, withdrawals_since,
+        RECENT_BYTES, RECENT_ITEMS, Session, TimelineState, resident_item,
+        unreadable_preview_boundary, withdrawals_since,
     },
 };
 
@@ -23,8 +24,9 @@ impl Session {
     /// facts that are not durable yet, and one short keyset read of durable history — and the two are
     /// merged again under the timeline lock after the read, so a revision, save acknowledgement or
     /// terminal fact published while the read awaited is never replaced by the older copy. `has_older`
-    /// only comes from a proven older candidate (a dropped candidate or the store's own existence
-    /// check), never from a short page.
+    /// only comes from a proven older identity (a dropped candidate, a published preview frontier
+    /// or the store's existence check), never from a short page. An unreadable preview cannot be
+    /// crossed to return an older durable row as a sparse EOF.
     ///
     /// Candidate *references* are captured before the storage step, so the same commit also drops the
     /// ones the authority withdrew meanwhile: a released speculative preview must not come back through
@@ -39,25 +41,39 @@ impl Session {
     pub async fn page(&self, request: ChatPageRequest) -> Result<ChatPage, ChatError> {
         let limit = request.limit()?;
         let before = request.before;
-        let (since, memory) =
-            self.with_timeline(|state| (state.version, page_candidates(state, before.as_ref())));
+        let (since, memory, frontier) = self.with_timeline(|state| {
+            let memory = page_candidates(state, before.as_ref());
+            let frontier = unreadable_preview_boundary(state, &memory, before.as_ref());
+            (state.version, memory, frontier)
+        });
         let stored = self.0.history.page(before.as_ref(), limit).await?;
         let proven_older = stored.has_older;
-        let candidates = self.with_timeline(|state| {
+        let (candidates, preview_gap) = self.with_timeline(|state| {
             let mut memory = memory;
-            // Only a captured reference can bring a withdrawal back, so a read that captured none has
-            // nothing to reconcile and does not need the window to be provable.
-            if !memory.is_empty() {
+            // Reconcile both captured references and the captured unreadable frontier;
+            // neither can survive a withdrawal or an unprovable publication window.
+            if !memory.is_empty() || frontier.is_some() {
                 let withdrawn = withdrawals_since(state, since)?;
+                if frontier
+                    .as_ref()
+                    .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))
+                {
+                    return Err(ChatError::ReadInvalidated);
+                }
                 memory.retain(|item| !withdrawn.contains(item.item_id.as_str()));
             }
-            Ok(merge_items(
-                stored
-                    .items
-                    .into_iter()
-                    .chain(page_candidates(state, before.as_ref()))
-                    .chain(memory),
-            ))
+            readable_suffix(
+                state,
+                merge_items(
+                    stored
+                        .items
+                        .into_iter()
+                        .chain(page_candidates(state, before.as_ref()))
+                        .chain(memory),
+                ),
+                before.as_ref(),
+                frontier.as_ref().filter(|_| state.version != since),
+            )
         })?;
         // Bounding is host codec work: it runs outside every lock and may refuse a preview budget.
         let mut bounded = Vec::with_capacity(candidates.len());
@@ -67,7 +83,12 @@ impl Session {
         // Only the bounded previews enter the session's own cache: a page never makes the hot preview
         // tail resident with whole bodies, and a withdrawn identity is never seeded back.
         self.hydrate(since, &bounded)?;
-        Ok(select_page(bounded, limit, proven_older, before.as_ref()))
+        Ok(select_page(
+            bounded,
+            limit,
+            proven_older || preview_gap,
+            before.as_ref(),
+        ))
     }
 
     /// Opens one bounded tail observation over this session.
@@ -105,18 +126,27 @@ impl Session {
     /// [`ChatError::ReadInvalidated`] when the withdrawal window can no longer be proven (the caller
     /// retries the resynchronization), plus the host's own typed storage and preview failures.
     pub(crate) async fn capture_latest_baseline(&self) -> Result<ChatTailBaseline, ChatError> {
-        let (since, memory) =
-            self.with_timeline(|state| (state.version, page_candidates(state, None)));
+        let (since, memory, frontier) = self.with_timeline(|state| {
+            let memory = page_candidates(state, None);
+            let frontier = unreadable_preview_boundary(state, &memory, None);
+            (state.version, memory, frontier)
+        });
         let stored = self.0.history.page(None, DEFAULT_PAGE_ITEMS).await?;
         let proven_older = stored.has_older;
-        let (version, candidates) = self.with_timeline(|state| {
+        let (version, candidates, preview_gap) = self.with_timeline(|state| {
             let mut memory = memory;
-            if !memory.is_empty() {
+            if !memory.is_empty() || frontier.is_some() {
                 let withdrawn = withdrawals_since(state, since)?;
+                if frontier
+                    .as_ref()
+                    .is_some_and(|boundary| withdrawn.contains(boundary.item_id.as_str()))
+                {
+                    return Err(ChatError::ReadInvalidated);
+                }
                 memory.retain(|item| !withdrawn.contains(item.item_id.as_str()));
             }
-            Ok((
-                state.version,
+            let (candidates, preview_gap) = readable_suffix(
+                state,
                 merge_items(
                     stored
                         .items
@@ -124,13 +154,20 @@ impl Session {
                         .chain(page_candidates(state, None))
                         .chain(memory),
                 ),
-            ))
+                None,
+                frontier.as_ref().filter(|_| state.version != since),
+            )?;
+            Ok((state.version, candidates, preview_gap))
         })?;
         let mut bounded = Vec::with_capacity(candidates.len());
         for item in candidates {
             bounded.push(self.0.history.bounded(&item)?);
         }
-        Ok(latest_baseline(version, bounded, proven_older))
+        Ok(latest_baseline(
+            version,
+            bounded,
+            proven_older || preview_gap,
+        ))
     }
 
     /// Reads one bounded block of a field's complete body.
@@ -260,7 +297,8 @@ fn detail_chunk(
 ///
 /// 它复用同一份页契约（[`DEFAULT_PAGE_ITEMS`] 条上限、[`PAGE_PREVIEW_BYTES`] 页预览预算、真实边界与
 /// 真实 `has_older`），因此大条目时实际条数可以少于 32，但边界与 `has_older` 一定来自真实事实：
-/// `proven_older` 是存储侧的存在性证明，截断到小页同样证明更旧内容存在；条数本身从不被当作 EOF。
+/// `proven_older` 来自存储或已发布预览身份的存在性证明；截断到小页同样证明更旧内容存在，
+/// 条数本身从不被当作 EOF。
 pub(crate) fn latest_baseline(
     version: u64,
     items: Vec<ChatItem>,
@@ -273,6 +311,31 @@ pub(crate) fn latest_baseline(
         before: page.before,
         has_older: page.has_older,
     }
+}
+
+/// A readable suffix cannot cross a published preview whose body left the hot
+/// cache before reliable ownership. The missing identity proves older content;
+/// if there is no readable suffix, retry instead of reporting a sparse EOF.
+fn readable_suffix(
+    state: &TimelineState,
+    mut candidates: Vec<ChatItem>,
+    before: Option<&ChatCursor>,
+    captured_frontier: Option<&ChatCursor>,
+) -> Result<(Vec<ChatItem>, bool), ChatError> {
+    // Reliable admission can release the speculative reservation while SQL is
+    // awaiting. That does not make its body part of this read's older snapshot.
+    let boundary = unreadable_preview_boundary(state, &candidates, before)
+        .into_iter()
+        .chain(captured_frontier.cloned())
+        .max();
+    let Some(boundary) = boundary else {
+        return Ok((candidates, false));
+    };
+    candidates.retain(|item| ChatCursor::of(item) > boundary);
+    if candidates.is_empty() {
+        return Err(ChatError::ReadInvalidated);
+    }
+    Ok((candidates, true))
 }
 
 /// One page of the session's preview cache, ordered by `(order, identity)`.

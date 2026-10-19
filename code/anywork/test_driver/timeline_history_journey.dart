@@ -6,7 +6,7 @@
 //          同时记录真实持久化项目与会话身份，作为冷启动的唯一目标。
 //   restart 冷启动同一 home：冷启动允许从无选择的启动页开始（design/26 §26.9），
 //          因此这里通过正常侧栏选择与打开动作恢复首轮同一项目与会话，核对打开后
-//          的实际身份后再证明最新小页仍是 32 条、深页身份/顺序/游标与首轮一致。
+//          的实际身份后证明首屏按视口补齐、深页身份/顺序/游标与首轮一致。
 //
 // 这里不生产 seed、不写 SQL、不另建发流器：候选数据全部来自真实 provider→core→writer
 // 的持久化结果。判定只读当前展示事实与真实页请求回包。
@@ -18,6 +18,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'cold_start_navigation.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
+import 'timeline_streaming_journey.dart';
 
 /// 与 `pl_provider_fixture::GUI_TIMELINE_HISTORY_PROMPT` 完全一致的剧本提示词。
 const _prompt = 'Generate the local timeline history fixture';
@@ -46,6 +47,7 @@ Future<void> main(List<String> args) async {
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[1]);
   final report = <String, Object?>{'phase': phase, 'verdict': 'pending'};
   try {
+    report['pid'] = (jsonDecode(await driver.requestData('pid')) as Map)['pid'];
     await stage('connected');
     ColdStartIdentity? restartTarget;
     if (phase == 'restart') {
@@ -74,6 +76,10 @@ Future<void> main(List<String> args) async {
       await stage('project_opened');
       await _submit(driver, _prompt);
       await stage('prompt_submitted');
+      report['streamingHistory'] = await observeStreamingHistory(
+        driver,
+        output,
+      );
       // Turn 正常完成是独立事实：status 必须是 completed，且不再 busy。
       final completed = await _waitFor(
         driver,
@@ -112,7 +118,13 @@ Future<void> main(List<String> args) async {
       timeout: const Duration(seconds: 300),
     );
     report['settled'] = _snapshotSummary(settled);
-    final latest = TimelineObservation.parse(settled);
+    final initialStability = TimelineViewportStability();
+    final filled = await _waitFor(
+      driver,
+      initialStability.accept,
+      'viewport_filled',
+    );
+    final latest = TimelineObservation.parse(filled);
     latest.requireConsistentIds();
     if (restartTarget != null && latest.threadId != restartTarget.threadId) {
       throw StateError(
@@ -120,14 +132,14 @@ Future<void> main(List<String> args) async {
         'expected ${restartTarget.threadId}',
       );
     }
-    // 最新小页：tail 基线 32 条，Live 模式，真实贴底。
-    final latestScroll = TimelineScrollObservation.parse(settled);
+    // 小页仍由 tail 提供，展示集合在其基础上按真实视口补齐。
+    final latestScroll = TimelineScrollObservation.parse(filled);
     report['latestPage'] = <String, Object?>{
       ...latest.summary(),
       // 冷启动必须复现同一份有序身份，不只是首尾。
       'itemIds': latest.itemIds,
       'scroll': latestScroll.toJson(),
-      'atMostTailBaseline': latest.itemCount <= 32,
+      'viewportFilled': timelineViewportSettled(filled),
       'atLiveEdge': latestScroll.atLiveEdge,
       'pixelsAtTop': (latestScroll.pixels ?? 1).abs() <= 0.5,
       'hasOlder': latest.hasOlder,
@@ -136,7 +148,7 @@ Future<void> main(List<String> args) async {
     // 唯一一页全量加载。
     final latestOk =
         latest.isLive &&
-        latest.itemCount <= 32 &&
+        timelineViewportSettled(filled) &&
         latestScroll.atLiveEdge &&
         (latestScroll.pixels ?? 1).abs() <= 0.5 &&
         latest.hasOlder;
@@ -144,7 +156,7 @@ Future<void> main(List<String> args) async {
       'phase': phase,
       'live': latest.isLive,
       'loadedItems': latest.itemCount,
-      'atMostTailBaseline': latest.itemCount <= 32,
+      'viewportFilled': timelineViewportSettled(filled),
       'pixelsAtTop': (latestScroll.pixels ?? 1).abs() <= 0.5,
       'hasOlder': latest.hasOlder,
     };
@@ -166,7 +178,10 @@ Future<void> main(List<String> args) async {
         driver,
         (snapshot) {
           final timeline = TimelineObservation.optional(snapshot);
-          return timeline != null && !timeline.loadingOlder;
+          return timeline != null &&
+              !timeline.loadingOlder &&
+              timeline.itemCount > before.itemCount &&
+              timelineViewportSettled(snapshot);
         },
         'page_$page',
         timeout: const Duration(seconds: 60),
@@ -275,6 +290,7 @@ Future<void> main(List<String> args) async {
         report['shutdown'] = 'degraded';
       } else {
         report['shutdown'] = 'completed';
+        await driver.requestData('request-app-exit');
       }
     } on Object catch (error) {
       report['shutdown'] = 'failed: $error';
@@ -554,15 +570,7 @@ Future<Map<String, dynamic>> _waitFor(
 }
 
 bool _generationSettled(Map<String, dynamic> snapshot) {
-  final timeline = TimelineObservation.optional(snapshot);
-  final scroll = TimelineScrollObservation.optional(snapshot);
-  return timeline != null &&
-      timeline.ready &&
-      !timeline.preparingLive &&
-      scroll != null &&
-      scroll.laidOut &&
-      !scroll.isScrolling &&
-      scroll.generation == timeline.generation;
+  return timelineViewportSettled(snapshot);
 }
 
 bool _durable(Map<String, dynamic> snapshot) {

@@ -18,6 +18,9 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> openThread(String id) =>
       ValueKey<String>('studio-open-thread-$id');
   static const sidebar = ValueKey<String>('studio-sidebar');
+  static const sidebarResize = ValueKey<String>(
+    StudioDriverKeyValues.sidebarResize,
+  );
   static const timeline = ValueKey<String>(
     StudioDriverKeyValues.timelineScrollable,
   );
@@ -25,8 +28,8 @@ abstract final class StudioDriverKeys {
       ValueKey<String>(StudioDriverKeyValues.timelineRow(id));
 
   /// 分页与回到实时的稳定操作入口。
-  static const timelineLoadOlder = ValueKey<String>(
-    StudioDriverKeyValues.timelineLoadOlder,
+  static const timelineLoadingOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineLoadingOlder,
   );
   static const timelineRetryOlder = ValueKey<String>(
     StudioDriverKeyValues.timelineRetryOlder,

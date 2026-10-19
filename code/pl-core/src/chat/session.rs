@@ -19,7 +19,7 @@ use std::{
 use tokio::sync::watch;
 
 use crate::chat::{
-    ChatError, ChatHistory, ChatItem, history::ErasedChatHistory, item::same_content,
+    ChatCursor, ChatError, ChatHistory, ChatItem, history::ErasedChatHistory, item::same_content,
     read::memory_item,
 };
 use crate::model::ContentBlock;
@@ -70,6 +70,14 @@ pub(crate) struct ChangeEntry {
     pub(crate) overflow: bool,
 }
 
+#[derive(Clone, Copy)]
+struct OrderReservation {
+    order: u64,
+    /// None until a speculative identity has actually been published.
+    preview_revision: Option<u64>,
+    preview_terminal: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct TimelineState {
     pub(crate) recent: VecDeque<ChatItem>,
@@ -83,7 +91,7 @@ pub(crate) struct TimelineState {
     // are not reliable history. Each entry shares the producer's immutable content block; the number
     // of live identities is bounded upstream and the entries are released on terminal admission.
     active_previews: BTreeMap<String, ChatItem>,
-    allocated: BTreeMap<String, u64>,
+    allocated: BTreeMap<String, OrderReservation>,
     allocated_order: BTreeMap<u64, String>,
     // Terminal identities recalled after their item leaves the recent cache, bounded to `TERMINAL_ITEMS`.
     // Each entry keeps the stable order and terminal revision, so a late preview for a committed
@@ -314,7 +322,14 @@ impl Session {
             .filter(|order| *order <= i64::MAX as u64)
             .ok_or(ChatError::OrderExhausted)?;
         state.highest_order = order;
-        state.allocated.insert(item_id.to_owned(), order);
+        state.allocated.insert(
+            item_id.to_owned(),
+            OrderReservation {
+                order,
+                preview_revision: None,
+                preview_terminal: false,
+            },
+        );
         state.allocated_order.insert(order, item_id.to_owned());
         Ok(order)
     }
@@ -333,15 +348,21 @@ impl Session {
     }
 
     /// Abandons a reservation whose item never became visible. The number is not reused.
+    /// Published previews require explicit withdrawal, even after their body was cache-evicted.
     pub fn release_unpublished_order(&self, item_id: &str) {
         let mut state = self.lock_timeline();
         // A committed identity is never "unpublished": its order belongs to the durable row, so
         // releasing it here would let a later preview claim a placement the history already owns.
-        if committed_content(&state, item_id) {
+        if committed_content(&state, item_id)
+            || state
+                .allocated
+                .get(item_id)
+                .is_some_and(|slot| slot.preview_revision.is_some())
+        {
             return;
         }
-        if let Some(order) = state.allocated.remove(item_id) {
-            state.allocated_order.remove(&order);
+        if let Some(slot) = state.allocated.remove(item_id) {
+            state.allocated_order.remove(&slot.order);
         }
     }
 
@@ -407,15 +428,20 @@ impl Session {
         }
         // Only an identity that is visible right now is a deletion a reader can observe; a merely
         // reserved identity never reached anyone.
-        let visible: Vec<ChangedIdentity> = state
-            .recent
+        let visible: Vec<ChangedIdentity> = abandoned
             .iter()
-            .filter(|item| abandoned.contains(&item.item_id))
-            .map(|item| ChangedIdentity::removed(Arc::<str>::from(item.item_id.as_str())))
+            .filter(|id| {
+                state
+                    .allocated
+                    .get(*id)
+                    .is_some_and(|slot| slot.preview_revision.is_some())
+                    || state.recent.iter().any(|item| &item.item_id == *id)
+            })
+            .map(|id| ChangedIdentity::removed(Arc::<str>::from(id.as_str())))
             .collect();
         for id in &abandoned {
-            if let Some(order) = state.allocated.remove(id) {
-                state.allocated_order.remove(&order);
+            if let Some(slot) = state.allocated.remove(id) {
+                state.allocated_order.remove(&slot.order);
             }
             state.active_previews.remove(id);
         }
@@ -465,13 +491,31 @@ impl Session {
             || state
                 .allocated
                 .get(&item.item_id)
-                .is_some_and(|order| *order != item.order)
+                .is_some_and(|slot| slot.order != item.order)
             || state
                 .recent
                 .iter()
                 .any(|existing| existing.order == item.order && existing.item_id != item.item_id)
         {
             return Err(ChatError::Conflict(item.item_id));
+        }
+        if state.allocated.get(&item.item_id).is_some_and(|slot| {
+            slot.preview_terminal
+                && (item.is_streaming()
+                    || (!reliable
+                        && slot
+                            .preview_revision
+                            .is_some_and(|revision| item.revision > revision)))
+        }) {
+            return Err(ChatError::Conflict(item.item_id));
+        }
+        if state
+            .allocated
+            .get(&item.item_id)
+            .and_then(|slot| slot.preview_revision)
+            .is_some_and(|revision| revision > item.revision)
+        {
+            return Ok(());
         }
         let resident = state
             .unsaved
@@ -561,9 +605,23 @@ impl Session {
                 .active_previews
                 .insert(item.item_id.clone(), item.clone());
         }
-        if reliable || item.saved || item.is_terminal() {
+        if reliable || item.saved {
             state.allocated.remove(&item.item_id);
             state.allocated_order.remove(&item.order);
+        } else {
+            // Reuse the reservation's identity/order ownership as the continuity
+            // frontier. Evicting a preview body must not erase its existence.
+            state.allocated.insert(
+                item.item_id.clone(),
+                OrderReservation {
+                    order: item.order,
+                    preview_revision: Some(item.revision),
+                    preview_terminal: item.is_terminal(),
+                },
+            );
+            state
+                .allocated_order
+                .insert(item.order, item.item_id.clone());
         }
         state.recent.retain(|old| old.item_id != item.item_id);
         state.recent_bytes = state.recent.iter().map(ChatItem::resident_bytes).sum();
@@ -700,11 +758,54 @@ pub(crate) fn resident_item(state: &TimelineState, item_id: &str) -> Option<Chat
         .cloned()
 }
 
+/// Highest published speculative identity that this read cannot materialize.
+/// Unpublished reservations are not content. No body is retained by this proof.
+pub(crate) fn unreadable_preview_boundary(
+    state: &TimelineState,
+    candidates: &[ChatItem],
+    before: Option<&ChatCursor>,
+) -> Option<ChatCursor> {
+    if state.allocated_order.is_empty() {
+        return None;
+    }
+    let available: BTreeMap<_, _> = candidates
+        .iter()
+        .map(|item| {
+            (
+                item.item_id.as_str(),
+                (item.order, item.revision, item.is_terminal()),
+            )
+        })
+        .collect();
+    let ceiling = before.map_or(u64::MAX, |boundary| boundary.order);
+    state
+        .allocated_order
+        .range(..=ceiling)
+        .rev()
+        .find_map(|(&order, id)| {
+            let slot = state.allocated.get(id)?;
+            let revision = slot.preview_revision?;
+            let boundary = ChatCursor::new(order, id.clone());
+            if before.is_some_and(|before| boundary >= *before)
+                || available.get(id.as_str()).is_some_and(
+                    |&(candidate_order, candidate_revision, terminal)| {
+                        candidate_order == order
+                            && candidate_revision >= revision
+                            && (!slot.preview_terminal || terminal)
+                    },
+                )
+            {
+                return None;
+            }
+            Some(boundary)
+        })
+}
+
 pub(crate) fn order_for_identity(state: &TimelineState, item_id: &str) -> Option<u64> {
     state
         .allocated
         .get(item_id)
-        .copied()
+        .map(|slot| slot.order)
         .or_else(|| state.unsaved.get(item_id).map(|item| item.order))
         .or_else(|| {
             state

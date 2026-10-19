@@ -35,14 +35,14 @@ pub enum ChatError {
     /// payload.
     #[error("chat content exceeds the preview budget: {0}")]
     Overloaded(String),
-    /// The content changed while a read was assembled, and the bounded publication log can no longer
-    /// prove what happened in that window.
+    /// The requested range cannot currently be proven complete: the publication
+    /// window expired or a published preview is not yet reliably readable.
     ///
     /// A read captures bounded candidate references and a source version, reads storage outside every
     /// lock and commits afterwards; a withdrawal released meanwhile must not come back through the
     /// captured reference. When that window is no longer covered by the bounded continuity metadata,
     /// the read is retried instead of guessing a deletion, a resurrection or an empty page.
-    #[error("chat content changed while the read was being assembled; retry the read")]
+    #[error("chat content range is not fully readable yet; retry the read")]
     ReadInvalidated,
     /// The observation was closed; the caller must not treat it as a normal end of content.
     #[error("chat content observation is closed")]

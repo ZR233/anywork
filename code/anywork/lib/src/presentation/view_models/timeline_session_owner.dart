@@ -457,13 +457,18 @@ final class TimelineSessionOwner {
   TimelineSessionOwner({required AnyworkClient client}) : _client = client {
     final watched = client.selection.source.watchLatest(_selectionChanged);
     _selectionObservation = watched.observation;
+    _sessionObservation = client
+        .watchActiveSession((_) => _selectionChanged(client.selection.state))
+        .observation;
     _selectionChanged(watched.value);
   }
 
   final AnyworkClient _client;
   final LatestValue<TimelineSessionViewState?> source = LatestValue(null);
   Observation? _selectionObservation;
+  Observation? _sessionObservation;
   Observation? _timelineObservation;
+  StudioThreadSession? _observedSession;
   String? _observedThread;
 
   TimelineDisplayLease? _current;
@@ -488,7 +493,13 @@ final class TimelineSessionOwner {
   void _selectionChanged(SelectionStoreState selection) {
     if (_closed) return;
     final threadId = selection.needsOpen ? null : selection.selectedThreadId;
-    if (_observedThread == threadId && _timelineObservation != null) return;
+    final active = _client.activeSession;
+    final session = active?.threadId == threadId ? active : null;
+    if (_observedThread == threadId &&
+        identical(_observedSession, session) &&
+        _timelineObservation != null) {
+      return;
+    }
     _detachTimeline();
     final previous = _current;
     _current = null;
@@ -521,17 +532,28 @@ final class TimelineSessionOwner {
         isPreparingLive: false,
       ),
     );
-    final session = _sessionOf(threadId);
-    if (session == null) return;
+    if (session == null) {
+      final failure = _client.resourceFailure.value;
+      if (failure?.owner == 'session:$threadId') {
+        _publishState(
+          connection: TimelineConnectionPhase.failed,
+          connectionError: failure!.reason,
+        );
+      }
+      return;
+    }
     final watched = session.timeline.state.watchLatest(
       (state) => _onTimelineState(threadId, state),
     );
     _timelineObservation = watched.observation;
+    _observedSession = session;
+    _onTimelineState(threadId, watched.value);
   }
 
   void _detachTimeline() {
     _timelineObservation?.cancel();
     _timelineObservation = null;
+    _observedSession = null;
   }
 
   // ---- 内容帧 → 展示代次 ------------------------------------------------
@@ -545,9 +567,15 @@ final class TimelineSessionOwner {
       case ChatIdle<StudioTimelineFrame>():
         _publishState(connection: TimelineConnectionPhase.idle);
       case ChatOpening<StudioTimelineFrame>():
-        _publishState(connection: TimelineConnectionPhase.opening);
+        _publishState(
+          connection: TimelineConnectionPhase.opening,
+          connectionError: null,
+        );
       case ChatReady<StudioTimelineFrame>(:final snapshot):
-        _publishState(connection: TimelineConnectionPhase.ready);
+        _publishState(
+          connection: TimelineConnectionPhase.ready,
+          connectionError: null,
+        );
         _applyFrame(threadId, snapshot);
       case ChatReconnecting<StudioTimelineFrame>(:final error):
         _publishState(
@@ -726,7 +754,7 @@ final class TimelineSessionOwner {
       connection: connection ?? current.connection,
       connectionError: connectionError,
       olderCursor: identical(olderCursor, _unset)
-          ? (lease?.olderCursor ?? current.olderCursor)
+          ? (lease == null ? current.olderCursor : lease.olderCursor)
           : olderCursor,
       hasOlder: hasOlder ?? lease?.hasOlder ?? current.hasOlder,
       isLoadingOlder: isLoadingOlder ?? current.isLoadingOlder,
@@ -742,8 +770,6 @@ final class TimelineSessionOwner {
 
   Future<void> dispatch(String threadId, TimelineCommand command) {
     return switch (command) {
-      TimelineLoadOlder() => loadOlder(threadId),
-      TimelineRetryOlder() => retryOlder(threadId),
       TimelineEnterHistory() => _enterHistory(threadId),
       TimelineReturnLive() => returnToLive(threadId),
     };
@@ -812,11 +838,23 @@ final class TimelineSessionOwner {
     pending.result.completeError(error);
   }
 
-  /// 向前加载一页；自动触底与显式「加载更早」共用同一个在途 future。
-  Future<void> loadOlder(String threadId) {
+  /// 同一 Thread/展示代次的视口补齐与触底分页共用同一个在途 future。
+  Future<void> loadOlder(String threadId, {required int generation}) =>
+      _requestOlder(threadId, generation: generation, retry: false);
+
+  /// Retry clears the previous error only after this request is admitted.
+  Future<void> retryOlder(String threadId, {required int generation}) =>
+      _requestOlder(threadId, generation: generation, retry: true);
+
+  Future<void> _requestOlder(
+    String threadId, {
+    required int generation,
+    required bool retry,
+  }) {
+    if (lease(threadId)?.generation != generation) return Future<void>.value();
     final existing = _olderInFlight;
     if (existing != null) return existing;
-    final task = _loadOlder(threadId);
+    final task = _loadOlder(threadId, retry: retry);
     late final Future<void> tracked;
     tracked = task.whenComplete(() {
       if (identical(_olderInFlight, tracked)) _olderInFlight = null;
@@ -825,25 +863,23 @@ final class TimelineSessionOwner {
     return tracked;
   }
 
-  /// 显式重试分页：只清除错误与 loading，再复用同一分页动作。
-  Future<void> retryOlder(String threadId) {
-    final view = source.value;
-    if (view == null || view.threadId != threadId) return Future<void>.value();
-    if (view.isLoadingOlder) return _olderInFlight ?? Future<void>.value();
-    _publishState(olderError: null);
-    return loadOlder(threadId);
-  }
-
-  Future<void> _loadOlder(String threadId) async {
+  Future<void> _loadOlder(String threadId, {required bool retry}) async {
     final current = lease(threadId);
     final view = source.value;
     if (current == null || view == null || view.threadId != threadId) return;
-    if (!current.hasOlder || view.isLoadingOlder) return;
+    if (!current.hasOlder ||
+        view.isLoadingOlder ||
+        (view.olderError != null && !retry) ||
+        view.isPreparingLive ||
+        view.connection != TimelineConnectionPhase.ready) {
+      return;
+    }
     final generation = current.generation;
     final before = current.olderCursor;
     _publishState(isLoadingOlder: true, olderError: null);
+    StudioTimelineQueryScope? scope;
     try {
-      final scope = current.queries;
+      scope = current.queries;
       if (scope == null) {
         throw const StudioFailure(
           code: StudioFailureCode.unavailable,
@@ -855,16 +891,38 @@ final class TimelineSessionOwner {
       final page = await scope.page(before: before);
       final still = lease(threadId);
       if (still == null || still.generation != generation) return;
+      if (page.hasOlder && (page.before == null || page.before == before)) {
+        throw const StudioFailure(
+          code: StudioFailureCode.protocol,
+          message: 'The history page did not advance its cursor',
+          retryable: true,
+          correlationId: 'timeline-page-no-progress',
+        );
+      }
       final inserted = still.prependOlder(page);
-      _publishState(isLoadingOlder: false, olderError: null);
       if (inserted == null) {
         // 页前缀与本代次已覆盖范围无法证明连续：显式重建，不静默漏掉事实。
+        _publishState(
+          isLoadingOlder: false,
+          olderError: const StudioFailure(
+            code: StudioFailureCode.protocol,
+            message:
+                'The history page is not continuous with the current display',
+            retryable: true,
+            correlationId: 'timeline-page-not-continuous',
+          ),
+        );
         _requestResync();
         return;
       }
+      _publishState(isLoadingOlder: false, olderError: null);
     } catch (error) {
       final still = lease(threadId);
       if (still == null || still.generation != generation) return;
+      if (scope != null && !scope.isActive) {
+        _publishState(isLoadingOlder: false);
+        return;
+      }
       // 失败保留内容并暴露可重试错误；错误/取消/EOF 都必须收束 loading。
       _publishState(isLoadingOlder: false, olderError: error);
     }
@@ -881,6 +939,8 @@ final class TimelineSessionOwner {
     _closed = true;
     _selectionObservation?.cancel();
     _selectionObservation = null;
+    _sessionObservation?.cancel();
+    _sessionObservation = null;
     _detachTimeline();
     final pending = _pendingSwitch;
     _pendingSwitch = null;

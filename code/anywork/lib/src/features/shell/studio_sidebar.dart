@@ -581,7 +581,9 @@ Future<void> _saveSidebarPreferences(
   if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
   if (projectId != null && !projects.remove(projectId)) projects.add(projectId);
   final commands = ref.read(anyworkClientProvider).settingsCommands;
-  if (width != null && width != general.sidebarWidth) {
+  // A previous width can still be in flight even when this intent equals the
+  // observed snapshot. Let the Client's canonical command lane order both.
+  if (width != null) {
     await commands.applySettingsField(GeneralSidebarWidthCommand(width));
   }
   if (threadId != null) {

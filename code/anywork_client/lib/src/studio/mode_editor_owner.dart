@@ -129,7 +129,9 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     final generation = ++_generation;
     _publish(busy: true, error: null, issues: const [], preview: null);
     try {
-      final snapshot = await _client.transport.readThreadModeDefinition(id);
+      final snapshot = await _lane.run(
+        () => _client.transport.readThreadModeDefinition(id),
+      );
       if (_closed || generation != _generation) return false;
       _adoptSnapshot(snapshot, resetHistory: true);
       return true;
@@ -248,7 +250,9 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     final raw = state.jsonText;
     _publish(busy: true, error: null, issues: const []);
     try {
-      final result = await _client.transport.validateThreadModeDefinition(raw);
+      final result = await _lane.run(
+        () => _client.transport.validateThreadModeDefinition(raw),
+      );
       if (_closed || generation != _generation) return false;
       final document = result.document;
       if (document == null || result.issues.isNotEmpty) {
@@ -442,7 +446,9 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
         );
         return true;
       }
-      final snapshot = await _client.transport.readThreadModeDefinition(modeId);
+      final snapshot = await _lane.run(
+        () => _client.transport.readThreadModeDefinition(modeId),
+      );
       if (_closed || generation != _generation) return false;
       _adoptSnapshot(snapshot, resetHistory: true);
       return true;
@@ -462,8 +468,8 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     final generation = ++_generation;
     _publish(busy: true, error: null);
     try {
-      final result = await _client.transport.validateThreadModeDefinition(
-        state.jsonText,
+      final result = await _lane.run(
+        () => _client.transport.validateThreadModeDefinition(state.jsonText),
       );
       if (_closed || generation != _generation) return;
       _publish(
@@ -501,12 +507,14 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
         : state.preview?.path ?? const <String>[];
     _publish(busy: true, error: null);
     try {
-      final result = await _client.transport.previewThreadModeWorkflow(
-        WorkflowPreviewRequest(
-          document: document,
-          path: path,
-          targetStateId: targetStateId,
-          reason: reason,
+      final result = await _lane.run(
+        () => _client.transport.previewThreadModeWorkflow(
+          WorkflowPreviewRequest(
+            document: document,
+            path: path,
+            targetStateId: targetStateId,
+            reason: reason,
+          ),
         ),
       );
       if (_closed || generation != _generation) return;
@@ -523,7 +531,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
   Future<String> schema() async {
     _ensureOpen();
     try {
-      return await _client.transport.threadModeDefinitionSchema();
+      return await _lane.run(_client.transport.threadModeDefinitionSchema);
     } catch (error) {
       if (!_closed) _publish(error: error.toString());
       rethrow;

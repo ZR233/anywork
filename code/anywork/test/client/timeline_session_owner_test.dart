@@ -239,6 +239,17 @@ void main() {
     expect(ready.owner.source.value!.mode, TimelineDisplayMode.history);
     expect(ready.owner.source.value!.isPreparingLive, isFalse);
     expect(ready.owner.source.value!.connectionError, isNotNull);
+    ready.transport.holdNextOpen = true;
+    final recovering = ready.owner.returnToLive('thread');
+    expect(
+      ready.owner.source.value!.connectionError,
+      isNull,
+      reason: '新的 opening 不保留旧错误',
+    );
+    ready.transport.completeOpen(version: 7);
+    await recovering;
+    expect(ready.owner.source.value!.connection, TimelineConnectionPhase.ready);
+    expect(ready.owner.source.value!.connectionError, isNull);
   });
 
   test('同 revision 的预览补齐经生产 owner/applier 生效且不换代次', () async {
@@ -500,8 +511,17 @@ void main() {
       final watermark = lease.appliedVersion!;
       final page = Completer<StudioTimelinePage>();
       ready.connection.pageResult = page;
-      final loading = ready.owner.loadOlder('thread');
-      expect(ready.owner.loadOlder('thread'), same(loading));
+      final loading = ready.owner.loadOlder(
+        'thread',
+        generation: ready.owner.lease('thread')!.generation,
+      );
+      expect(
+        ready.owner.loadOlder(
+          'thread',
+          generation: ready.owner.lease('thread')!.generation,
+        ),
+        same(loading),
+      );
       expect(ready.owner.source.value!.isLoadingOlder, isTrue);
       page.complete(
         StudioTimelinePage(
@@ -520,15 +540,174 @@ void main() {
       expect(ready.owner.source.value!.olderCursor, 'tlp1.older');
       expect(ready.owner.source.value!.hasOlder, isTrue);
       expect(lease.appliedVersion, watermark, reason: '分页不抬高冻结展示的内容水位');
+      ready.connection.pageResult = Completer<StudioTimelinePage>()
+        ..complete(
+          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        );
+      await ready.owner.loadOlder(
+        'thread',
+        generation: ready.owner.lease('thread')!.generation,
+      );
+      expect(ready.owner.source.value!.hasOlder, isFalse);
+      expect(
+        ready.owner.source.value!.olderCursor,
+        isNull,
+        reason: 'EOF 的空游标是权威值',
+      );
     },
   );
+
+  test('无进展页停止分页并保留内容，显式重试可继续', () async {
+    final ready = await open();
+    final before = ready.owner.source.value!.olderCursor;
+    ready.connection.pageResult = Completer<StudioTimelinePage>()
+      ..complete(
+        StudioTimelinePage(items: const [], before: before, hasOlder: true),
+      );
+    await ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
+    final state = ready.owner.source.value!;
+    expect(state.isLoadingOlder, isFalse);
+    expect(
+      state.olderError,
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'code',
+        StudioFailureCode.protocol,
+      ),
+    );
+    expect(ready.owner.lease('thread')!.loadedCount, 2);
+    ready.connection.pageResult = Completer<StudioTimelinePage>()
+      ..complete(
+        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+      );
+    await ready.owner.retryOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
+    expect(ready.owner.source.value!.olderError, isNull);
+    expect(ready.owner.source.value!.hasOlder, isFalse);
+  });
+
+  test('连接尚未恢复时重试分页保留原错误，恢复后才受理', () async {
+    final ready = await open();
+    final lease = ready.owner.lease('thread')!;
+    final error = StateError('page failed');
+    ready.connection.pageResult = Completer<StudioTimelinePage>()
+      ..completeError(error);
+    await ready.owner.loadOlder('thread', generation: lease.generation);
+    expect(ready.owner.source.value!.olderError, same(error));
+    await ready.owner.dispatch('thread', const TimelineEnterHistory());
+    ready.transport.holdNextOpen = true;
+    ready.client.session('thread').timeline.refresh();
+    await _until(
+      () =>
+          ready.owner.source.value!.connection != TimelineConnectionPhase.ready,
+    );
+    await ready.owner.retryOlder('thread', generation: lease.generation);
+    expect(ready.owner.source.value!.olderError, same(error));
+    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
+    ready.transport.completeOpen(version: 23);
+    await _until(
+      () =>
+          ready.owner.source.value!.connection == TimelineConnectionPhase.ready,
+    );
+    ready.transport.connections.last.pageResult =
+        Completer<StudioTimelinePage>()..complete(
+          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        );
+    await ready.owner.retryOlder('thread', generation: lease.generation);
+    expect(ready.owner.source.value!.olderError, isNull);
+    expect(ready.owner.source.value!.hasOlder, isFalse);
+  });
+
+  test('History 页无法连接冻结范围时保留内容并显示可重试错误', () async {
+    final ready = await open();
+    final lease = ready.owner.lease('thread')!;
+    await ready.owner.dispatch('thread', const TimelineEnterHistory());
+    ready.transport.holdNextOpen = true;
+    ready.connection.pageResult = Completer<StudioTimelinePage>()
+      ..complete(
+        StudioTimelinePage(
+          items: [text('unknown-in-covered-range', 1, ordinal: 2)],
+          before: 'tlp1.earlier',
+          hasOlder: true,
+        ),
+      );
+    await ready.owner.loadOlder('thread', generation: lease.generation);
+    expect(ready.owner.source.value!.olderError, isA<StudioFailure>());
+    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
+    expect(ready.owner.lease('thread'), same(lease));
+    expect(lease.loadedCount, 2);
+    ready.transport.completeOpen(version: 25);
+    await _until(
+      () =>
+          ready.owner.source.value!.connection == TimelineConnectionPhase.ready,
+    );
+    expect(ready.owner.source.value!.olderError, isA<StudioFailure>());
+  });
+
+  test('登记观察时消费已经就绪的当前基线', () async {
+    final ready = await open();
+    final secondOwner = TimelineSessionOwner(client: ready.client);
+    addTearDown(secondOwner.close);
+    expect(secondOwner.lease('thread'), isNotNull);
+    expect(secondOwner.source.value!.generation, greaterThan(0));
+    expect(secondOwner.lease('thread')!.loadedCount, 2);
+  });
+
+  test('Session 准入失败后重试创建资源，展示重新绑定当前基线', () async {
+    final budget = ResourceBudget(
+      capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 8},
+    );
+    final held = [
+      for (var i = 0; i < 8; i++)
+        budget.acquire(ResourceKind.readModel, owner: 'held-read-model-$i'),
+    ];
+    final transport = _ScriptedTransport();
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'retry-owner',
+      budget: budget,
+    );
+    final owner = TimelineSessionOwner(client: client);
+    addTearDown(() async {
+      for (final permit in held) {
+        permit.release();
+      }
+      await owner.close();
+      await client.close();
+    });
+    client.threadDirectory.applyBaseline(
+      ThreadDirectoryPage(threads: [_thread()], revision: 1),
+      revision: 1,
+    );
+    client.workspace.selectThread('thread', projectId: 'project');
+    expect(owner.lease('thread'), isNull);
+    expect(owner.source.value!.connection, TimelineConnectionPhase.failed);
+    expect(owner.source.value!.connectionError, isNotNull);
+    for (final permit in held) {
+      permit.release();
+    }
+    client.retrySession('thread');
+    await _until(() => transport.connections.isNotEmpty);
+    await transport.connections.single.opened.future;
+    await client.existingSession('thread')!.timeline.ready;
+    expect(owner.lease('thread'), isNotNull);
+    expect(owner.lease('thread')!.loadedCount, 2);
+  });
 
   test('a page reply for a retired generation is dropped', () async {
     final ready = await open();
     final first = ready.owner.lease('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(ready.owner.source.value!.isLoadingOlder, isTrue);
 
     // 显式回实时建立新代次：旧代次的页回包不得写新展示。
@@ -552,6 +731,10 @@ void main() {
       ['a', 'b'],
       reason: '旧代次的页结果不能前插到新代次',
     );
+    await ready.owner.loadOlder('thread', generation: first.generation);
+    await ready.owner.retryOlder('thread', generation: first.generation);
+    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
+    expect(second.loadedCount, 2, reason: '旧视图的触发也不得向新代次发页');
     await first.released;
     expect(first.isReleased, isTrue);
   });
@@ -563,7 +746,10 @@ void main() {
       final lease = ready.owner.lease('thread')!;
       final page = Completer<StudioTimelinePage>();
       ready.connection.pageResult = page;
-      final loading = ready.owner.loadOlder('thread');
+      final loading = ready.owner.loadOlder(
+        'thread',
+        generation: ready.owner.lease('thread')!.generation,
+      );
       page.completeError(
         const StudioFailure(
           code: StudioFailureCode.storage,
@@ -579,7 +765,10 @@ void main() {
 
       final retried = Completer<StudioTimelinePage>();
       ready.connection.pageResult = retried;
-      final retrying = ready.owner.retryOlder('thread');
+      final retrying = ready.owner.retryOlder(
+        'thread',
+        generation: ready.owner.lease('thread')!.generation,
+      );
       expect(ready.owner.source.value!.olderError, isNull);
       retried.complete(
         const StudioTimelinePage(items: [], before: null, hasOlder: false),
@@ -887,7 +1076,10 @@ void main() {
     applied = lease.appliedVersion!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     page.complete(
       StudioTimelinePage(
         items: [item(id: 'older', revision: 5, ordinal: 0, body: '后续页的权威正文')],
@@ -942,7 +1134,10 @@ void main() {
 
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     page.complete(
       StudioTimelinePage(
         items: [
@@ -965,7 +1160,10 @@ void main() {
     final first = ready.owner.lease('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(ready.owner.source.value!.isLoadingOlder, isTrue);
 
     ready.transport.holdNextOpen = true;
@@ -992,7 +1190,10 @@ void main() {
     final secondConnection = ready.transport.connections.last;
     final nextPage = Completer<StudioTimelinePage>();
     secondConnection.pageResult = nextPage;
-    final loadingSecond = ready.owner.loadOlder('thread');
+    final loadingSecond = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(ready.owner.source.value!.isLoadingOlder, isTrue);
     nextPage.complete(
       StudioTimelinePage(
@@ -1015,7 +1216,10 @@ void main() {
     final first = ready.owner.lease('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(ready.owner.source.value!.isLoadingOlder, isTrue);
 
     ready.connection.emit(
@@ -1052,7 +1256,10 @@ void main() {
 
     final nextPage = Completer<StudioTimelinePage>();
     ready.connection.pageResult = nextPage;
-    final loadingSecond = ready.owner.loadOlder('thread');
+    final loadingSecond = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     nextPage.complete(
       StudioTimelinePage(
         items: [item(id: 'resync-older', revision: 1, ordinal: 0)],
@@ -1100,7 +1307,10 @@ void main() {
     // 不能静默丢消息，必须显式重同步。
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     page.complete(
       StudioTimelinePage(
         items: [item(id: 'y', revision: 1, ordinal: 3, body: 'body-y')],
@@ -1140,7 +1350,10 @@ void main() {
 
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     page.complete(
       StudioTimelinePage(
         items: [
@@ -1281,7 +1494,10 @@ void main() {
     final lease = ready.owner.lease('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(ready.owner.source.value!.isLoadingOlder, isTrue);
 
     // 页回包之前，尾部先交付一条更新身份（落在已覆盖范围之后）。
@@ -1588,7 +1804,10 @@ void main() {
     final lease = ready.owner.lease('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     final report = await ready.owner.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 40)),
     );
@@ -2019,7 +2238,10 @@ void main() {
     final budget = ready.client.session('thread').timeline.budget;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
-    final loading = ready.owner.loadOlder('thread');
+    final loading = ready.owner.loadOlder(
+      'thread',
+      generation: ready.owner.lease('thread')!.generation,
+    );
     expect(budget.used(ResourceKind.pendingOperation), 1);
 
     final report = await ready.owner.close(
