@@ -1,0 +1,17 @@
+{
+  "tool": "generate_image",
+  "callId": "call_c55a37b8a53140678b71f59c29e09ac4",
+  "status": "succeeded",
+  "groupId": "activity-group:input:app-872956044:1:3:tool:37:call_c55a37b8a53140678b71f59c29e09ac4",
+  "attachments": [
+    {
+      "id": "pl.studio.resource:1f9ccfc82376d9d22ccc03fe7271ffc6486fb47a4ca4cd0fc5c477636d8295a8",
+      "modality": "image",
+      "filename": null,
+      "byteSize": 2292105
+    }
+  ],
+  "thumbnailMounted": true,
+  "dialogOpened": false,
+  "capturedAt": "2026-10-19T15:24:41.764660Z"
+}
