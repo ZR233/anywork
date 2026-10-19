@@ -76,7 +76,11 @@ Future<Map<String, Object?>> observeLatestViewportFill(
           !scroll.isScrolling &&
           scroll.generation == latest.generation &&
           scroll.atLiveEdge &&
-          (scroll.extentAfter ?? 1).abs() <= 0.5 &&
+          // 标准反向列表的底端是 offset 0：贴底事实是 `extentBefore` 为 0，
+          // `extentAfter` 在那里等于全部可滚动内容（maxScrollExtent > 0），
+          // 同时要求两量为 0 是自相矛盾的。
+          scroll.extentBefore != null &&
+          scroll.extentBefore!.abs() <= 0.5 &&
           (scroll.pixels ?? 1).abs() <= 0.5;
     });
     final filledTimeline = TimelineObservation.parse(filled);

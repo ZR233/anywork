@@ -261,6 +261,210 @@ void main() {
       deadline: DateTime.now().add(const Duration(seconds: 5)),
     );
   });
+
+  test(
+    'attachment facts keep canonical modality for user and tool items',
+    () async {
+      final transport = _ScriptedTimelineTransport(
+        baseline: _attachmentBaseline,
+      );
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'attachments',
+      );
+      addTearDown(
+        () => client.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
+      client.selection.markOpened();
+      client.threadDirectory.applyBaseline(
+        ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
+        revision: 1,
+      );
+      final timeline = TimelineSessionOwner(client: client);
+      addTearDown(
+        () => timeline.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
+      client.workspace.selectThread('thread', projectId: 'project');
+      await timeline.source.waitFor((state) => state?.generation != 0);
+
+      bindStudioDriver(client, timeline: timeline);
+      final opensBefore = transport.opens;
+      final facts = StudioDriverState.readFacts();
+      expect(facts.timeline, isNotNull);
+      final items = facts.timeline!.items;
+      TimelineItemFacts itemOf(String id) =>
+          items.firstWhere((item) => item.id == id);
+
+      // 用户文本条目的附件：canonical enum 名、真实文件名与字节数，且不冒充工具产出。
+      final userItem = itemOf('user');
+      expect(userItem.tool, isNull);
+      expect(userItem.attachments.map((attachment) => attachment.id), [
+        'user-image',
+        'user-file',
+      ]);
+      expect(userItem.attachments.map((attachment) => attachment.modality), [
+        'image',
+        'file',
+      ]);
+      expect(userItem.attachments.map((attachment) => attachment.filename), [
+        'chart.png',
+        'notes.txt',
+      ]);
+      expect(userItem.attachments.map((attachment) => attachment.byteSize), [
+        2048,
+        15,
+      ]);
+      expect(userItem.attachments.map((attachment) => attachment.source), [
+        null,
+        null,
+      ]);
+
+      // 工具条目的顶层附件行带工具来源标记；nested 工具诊断给同一批附件的原始事实。
+      final toolItem = itemOf('tool-output');
+      expect(toolItem.attachments.map((attachment) => attachment.id), [
+        'tool-image',
+        'tool-video',
+      ]);
+      expect(toolItem.attachments.map((attachment) => attachment.modality), [
+        'image',
+        'video',
+      ]);
+      expect(toolItem.attachments.map((attachment) => attachment.filename), [
+        'shot.png',
+        'clip.mp4',
+      ]);
+      expect(toolItem.attachments.map((attachment) => attachment.byteSize), [
+        4096,
+        8192,
+      ]);
+      expect(toolItem.attachments.map((attachment) => attachment.source), [
+        'tool',
+        'tool',
+      ]);
+      final tool = toolItem.tool!;
+      expect(tool.name, 'bash');
+      expect(tool.attachments.map((attachment) => attachment.id), [
+        'tool-image',
+        'tool-video',
+      ]);
+      expect(tool.attachments.map((attachment) => attachment.modality), [
+        'image',
+        'video',
+      ]);
+      expect(tool.attachments.map((attachment) => attachment.filename), [
+        'shot.png',
+        'clip.mp4',
+      ]);
+      expect(tool.attachments.map((attachment) => attachment.byteSize), [
+        4096,
+        8192,
+      ]);
+      expect(tool.attachments.map((attachment) => attachment.source), [
+        null,
+        null,
+      ]);
+      // 用户与工具附件身份不串：两侧 id 无交集。
+      expect(
+        toolItem.attachments
+            .map((attachment) => attachment.id)
+            .toSet()
+            .intersection(
+              userItem.attachments.map((attachment) => attachment.id).toSet(),
+            ),
+        isEmpty,
+      );
+
+      // 序列化诊断给同一批 canonical 值，键名保持不变。
+      final json =
+          jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+      final jsonItems =
+          ((json['timeline'] as Map<String, dynamic>)['items'] as List)
+              .cast<Map<String, dynamic>>();
+      Map<String, dynamic> jsonItemOf(String id) =>
+          jsonItems.firstWhere((item) => item['id'] == id);
+      expect(jsonItemOf('user')['attachments'], [
+        {
+          'id': 'user-image',
+          'modality': 'image',
+          'filename': 'chart.png',
+          'byteSize': 2048,
+        },
+        {
+          'id': 'user-file',
+          'modality': 'file',
+          'filename': 'notes.txt',
+          'byteSize': 15,
+        },
+      ]);
+      final jsonTool =
+          jsonItemOf('tool-output')['tool'] as Map<String, dynamic>;
+      expect(jsonItemOf('tool-output')['attachments'], [
+        {
+          'id': 'tool-image',
+          'modality': 'image',
+          'filename': 'shot.png',
+          'byteSize': 4096,
+          'source': 'tool',
+        },
+        {
+          'id': 'tool-video',
+          'modality': 'video',
+          'filename': 'clip.mp4',
+          'byteSize': 8192,
+          'source': 'tool',
+        },
+      ]);
+      expect(jsonTool['attachments'], [
+        {
+          'id': 'tool-image',
+          'modality': 'image',
+          'filename': 'shot.png',
+          'byteSize': 4096,
+        },
+        {
+          'id': 'tool-video',
+          'modality': 'video',
+          'filename': 'clip.mp4',
+          'byteSize': 8192,
+        },
+      ]);
+      final history =
+          ((json['workspace'] as Map<String, dynamic>)['historyAttachments']
+                  as List)
+              .cast<Map<String, dynamic>>();
+      expect(history.map((attachment) => attachment['id']), [
+        'user-image',
+        'user-file',
+        'tool-image',
+        'tool-video',
+      ]);
+      // 读诊断不制造新的内容订阅或 transport demand。
+      expect(transport.opens, opensBefore);
+
+      // 释放展示后诊断读不到上一代附件。
+      await timeline.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      );
+      expect(timeline.lease('thread'), isNull);
+      final retired = StudioDriverState.readFacts();
+      expect(retired.timeline, isNull);
+      final retiredJson =
+          jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+      expect(retiredJson['timeline'], isNull);
+      expect(
+        ((retiredJson['workspace']
+                    as Map<String, dynamic>)['historyAttachments']
+                as List)
+            .isEmpty,
+        isTrue,
+      );
+      expect(transport.opens, opensBefore);
+    },
+  );
 }
 
 StudioThread _factsThread() => StudioThread(
@@ -274,12 +478,15 @@ StudioThread _factsThread() => StudioThread(
 
 /// 受控最小 content connection：只交付一份首帧基线，尾部保持静默。
 final class _FactsConnection implements StudioTimelineConnection {
+  _FactsConnection(this._baseline);
+
+  final StudioTimelineBaseline Function() _baseline;
   final Completer<StudioTimelineUpdate?> _pending = Completer();
   int closeCalls = 0;
   bool closed = false;
 
   @override
-  Future<StudioTimelineBaseline> initial() async => _factsBaseline();
+  Future<StudioTimelineBaseline> initial() async => _baseline();
 
   @override
   Future<StudioTimelineUpdate?> next() => _pending.future;
@@ -315,12 +522,16 @@ final class _FactsConnection implements StudioTimelineConnection {
 }
 
 final class _ScriptedTimelineTransport implements StudioTransport {
+  _ScriptedTimelineTransport({StudioTimelineBaseline Function()? baseline})
+    : _baseline = baseline ?? _factsBaseline;
+
+  final StudioTimelineBaseline Function() _baseline;
   int opens = 0;
 
   @override
   Future<StudioTimelineConnection> openTimeline(String threadId) async {
     opens++;
-    return _FactsConnection();
+    return _FactsConnection(_baseline);
   }
 
   @override
@@ -346,8 +557,9 @@ UserQuestionView _factsQuestion({required String id, String text = 'Q'}) =>
 StudioTimelineItem _textItem(
   String id,
   int ordinal,
-  ThreadTextChannel channel,
-) => StudioTimelineItem(
+  ThreadTextChannel channel, {
+  List<ThreadAttachmentView> attachments = const [],
+}) => StudioTimelineItem(
   item: ThreadItemView(
     id: id,
     threadId: 'thread',
@@ -361,7 +573,7 @@ StudioTimelineItem _textItem(
     state: ThreadTextItemStateView(
       channel: channel,
       text: 'body-$id',
-      attachments: const [],
+      attachments: attachments,
       lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
     ),
   ),
@@ -375,6 +587,9 @@ StudioTimelineItem _toolItem(
   String id,
   int ordinal, {
   ThreadToolUserInputView? userInput,
+  ThreadToolLifecycleView lifecycle = const RunningThreadToolView(''),
+  StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
+  String name = 'ask_user',
 }) => StudioTimelineItem(
   item: ThreadItemView(
     id: id,
@@ -390,15 +605,15 @@ StudioTimelineItem _toolItem(
       invocation: ThreadToolInvocationView(
         toolCallId: id,
         callId: id,
-        name: 'ask_user',
+        name: name,
         arguments: '{}',
       ),
-      lifecycle: const RunningThreadToolView(''),
+      lifecycle: lifecycle,
       userInput: userInput,
     ),
   ),
   saved: true,
-  lifecycle: StudioTimelineLifecycle.streaming,
+  lifecycle: itemLifecycle,
   omittedBytes: 0,
   details: const [],
 );
@@ -468,6 +683,70 @@ StudioTimelineBaseline _factsBaseline() => StudioTimelineBaseline(
             answers: [agentSessionPlanApproveAnswer],
           ),
         ]),
+      ),
+    ),
+  ],
+);
+
+/// 用户输入附件与工具输出附件都用 SDK 的 typed DTO 准备，不做 dynamic 替身。
+const _userImage = ThreadAttachmentView(
+  id: 'user-image',
+  modality: AttachmentModalityView.image,
+  mediaType: 'image/png',
+  byteSize: 2048,
+  filename: 'chart.png',
+);
+
+const _userFile = ThreadAttachmentView(
+  id: 'user-file',
+  modality: AttachmentModalityView.file,
+  mediaType: 'text/plain',
+  byteSize: 15,
+  filename: 'notes.txt',
+);
+
+const _toolImage = ThreadAttachmentView(
+  id: 'tool-image',
+  modality: AttachmentModalityView.image,
+  mediaType: 'image/png',
+  byteSize: 4096,
+  filename: 'shot.png',
+);
+
+const _toolVideo = ThreadAttachmentView(
+  id: 'tool-video',
+  modality: AttachmentModalityView.video,
+  mediaType: 'video/mp4',
+  byteSize: 8192,
+  filename: 'clip.mp4',
+);
+
+/// 用户条目带图片/文件附件，工具条目带真实成功输出附件：投影必须同时保留
+/// 顶层附件行与 nested 工具附件，且 modality 是 canonical enum 名。
+StudioTimelineBaseline _attachmentBaseline() => StudioTimelineBaseline(
+  subscriptionId: 'attachments',
+  version: 1,
+  before: null,
+  hasOlder: false,
+  items: [
+    _textItem(
+      'user',
+      1,
+      ThreadTextChannel.user,
+      attachments: const [_userImage, _userFile],
+    ),
+    _toolItem(
+      'tool-output',
+      2,
+      name: 'bash',
+      itemLifecycle: StudioTimelineLifecycle.terminal,
+      lifecycle: SucceededThreadToolView(
+        DateTime.utc(2026),
+        const ThreadToolOutputView(
+          result: 'ok',
+          attachments: [_toolImage, _toolVideo],
+          outputArtifacts: [],
+        ),
       ),
     ),
   ],

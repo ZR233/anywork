@@ -50,15 +50,53 @@ class ToolProbeExtension extends CommandExtension {
         of: target,
         matching: find.byType(Scrollable),
       );
+      // stock `ExpansionTile` 不显式传 controller 时会自建 controller 并交给公开的
+      // `Expansible`（`ExpansionTile.build` 返回 `Expansible(controller: …)`）。
+      // 状态只能从那个公开 widget 的 required `controller.isExpanded` 读取：不读
+      // 私有 State、不加生产 controller/test hook。`null` 不是“没有状态”。
+      bool? expanded;
+      if (widget is ExpansionTile) {
+        final expansibles = find
+            .descendant(
+              of: target,
+              // `_DescendantFinderMixin` 用 matching 自己的 `skipOffstage` 全树求值，
+              // 外层参数不会透传给它。惰性列表里尚未进入视口的行处在 offstage 子树，
+              // 因此 matching 也必须显式包含 offstage，否则会误判“没有 Expansible”。
+              matching: find.byType(Expansible, skipOffstage: false),
+              skipOffstage: false,
+            )
+            .evaluate();
+        if (expansibles.isEmpty) {
+          final descendants = find
+              .descendant(
+                of: target,
+                matching: find.byElementPredicate((_) => true),
+                skipOffstage: false,
+              )
+              .evaluate()
+              .take(100)
+              .map((element) => element.widget.runtimeType.toString())
+              .toList(growable: false);
+          throw StateError(
+            'ExpansionTile target exposes no public Expansible descendant: '
+            '$target; descendants=$descendants',
+          );
+        }
+        expanded =
+            (expansibles.first.widget as Expansible).controller.isExpanded;
+      }
+      final production = jsonDecode(StudioDriverState.snapshotJson());
+      final scroll = production is Map ? production['timelineScroll'] : null;
+      final timeline = production is Map ? production['timeline'] : null;
       return {
         'top': offset.dy,
         'left': offset.dx,
         'width': box.size.width,
         'height': box.size.height,
-        if (widget is ExpansionTile) 'expanded': widget.controller?.isExpanded,
-        'scroll': jsonDecode(
-          StudioDriverState.snapshotJson(),
-        )['timelineScroll'],
+        'expanded': ?expanded,
+        'scroll': scroll,
+        // 展示模式来自同一次只读快照，供宿主断言“同 Thread/gen/History”。
+        'mode': timeline is Map ? timeline['mode'] : null,
         'nested': [
           for (final e in nested.evaluate())
             if (e is StatefulElement && e.state is ScrollableState)

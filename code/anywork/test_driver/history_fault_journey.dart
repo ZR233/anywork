@@ -82,21 +82,61 @@ bool _toolRanOrDelivered(Map<String, dynamic>? tool) =>
         (tool['status'] == 'succeeded' &&
             (tool['result'] as String? ?? '').contains(_toolMarker)));
 
-/// Live pointer-free progress token for the current turn.
+/// 分域真实字节：正文、工具进度、逐字段详情引用。
 ///
-/// Grows whenever assistant text is appended or a row is added, so a later
-/// observation is provably a *new* update and never a re-read of the same
-/// snapshot. Evidence only: it is never a performance measurement.
-int _streamingRevision(Map<String, dynamic> snapshot) {
-  final timeline = TimelineObservation.optional(snapshot);
-  if (timeline == null) return 0;
-  var revision = timeline.itemCount;
-  for (final item in timeline.items) {
-    revision += item.text.length + item.textBytes;
-    revision += item.tool?.progressBytes ?? 0;
-  }
-  return revision;
+/// reasoning 的摘要/正文在行内 `text` 为空，只经 typed 详情引用交付，因此必须把每个
+/// 字段的 `totalBytes`/`previewBytes` 计入；这些是真实内容长度，不是 `revision`、
+/// 保存/终态、行数或运行状态。
+final class _ContentBytes {
+  const _ContentBytes({
+    required this.text,
+    required this.toolProgress,
+    required this.details,
+  });
+
+  final int text;
+  final int toolProgress;
+  final int details;
+
+  int get total => text + toolProgress + details;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'text': text,
+    'toolProgress': toolProgress,
+    'details': details,
+    'total': total,
+  };
 }
+
+_ContentBytes _contentBytes(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) {
+    return const _ContentBytes(text: 0, toolProgress: 0, details: 0);
+  }
+  var text = 0;
+  var toolProgress = 0;
+  var details = 0;
+  for (final item in timeline.items) {
+    text += item.textBytes;
+    toolProgress += item.tool?.progressBytes ?? 0;
+    for (final detail in item.details) {
+      details += detail.totalBytes + detail.previewBytes;
+    }
+  }
+  return _ContentBytes(
+    text: text,
+    toolProgress: toolProgress,
+    details: details,
+  );
+}
+
+/// Live pointer-free progress token over real typed bytes only.
+///
+/// 只累加真实内容字节（正文 UTF-8、工具进度、逐字段详情 total/preview），因此后续
+/// 观测证明的是**新内容**，不是同一快照重读、行数/状态变化或单纯 revision 抖动。
+/// Evidence only: it is never a performance measurement.
+int _streamingRevision(Map<String, dynamic> snapshot) =>
+    _contentBytes(snapshot).total;
 
 /// Whether the integrated Driver build exposes the typed storage-recovery array.
 bool _hasStorageRecovery(Map<String, dynamic> snapshot) =>
@@ -376,7 +416,8 @@ class HistoryFaultJourney {
       if (faultObserved && generation != null) generations.add(generation);
     }
 
-    var revision = _streamingRevision(running);
+    var domains = _contentBytes(running);
+    var revision = domains.total;
     var growth = 0;
     for (var step = 0; step < 8 && growth < 3; step++) {
       final next = await waitFor(
@@ -385,18 +426,23 @@ class HistoryFaultJourney {
         'history_fault_live_increment',
         timeout: const Duration(seconds: 90),
       );
-      revision = _streamingRevision(next);
+      final after = _contentBytes(next);
       growth += 1;
       recordGeneration(next);
       final recovery = _storageRecovery(next, threadId);
       samples.add(<String, Object?>{
         'step': growth,
-        'revision': revision,
+        'revision': after.total,
+        'bytesBefore': domains.toJson(),
+        'bytesAfter': after.toJson(),
+        'bytesDelta': after.total - domains.total,
         'rows': timelineRows(next).length,
         'busy': isBusy(next),
         'fault': recovery?['fault'],
         'faultGeneration': recovery?['faultGeneration'],
       });
+      domains = after;
+      revision = after.total;
     }
     checks['liveContentGrowsWhileWriterLocked'] = growth >= 3;
     counts['liveGrowthSamples'] = samples.length;

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'driver_read_commands.dart';
 import 'flutter_driver_session.dart';
 import 'scrolling_journey.dart';
 import 'timeline_observation.dart';
@@ -88,14 +89,22 @@ Future<void> main(List<String> args) async {
   try {
     driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
   } catch (error, stackTrace) {
-    await _writeReport(output, <String, Object?>{
-      'scenario': scenario,
-      'verdict': 'pending',
-      'status': 'failed',
-      'stage': 'connect_failed',
-      'error': error.toString(),
-      'shutdownError': null,
-    });
+    // 连接失败是主错；这份报告写失败只作为次级事实报告，不能覆盖原始错误与栈。
+    try {
+      await _writeReport(output, <String, Object?>{
+        'scenario': scenario,
+        'verdict': 'pending',
+        'status': 'failed',
+        'stage': 'connect_failed',
+        'error': error.toString(),
+        'shutdownError': null,
+      });
+    } catch (reportError, reportStack) {
+      stderr.writeln(
+        'stress-body connect-failure report write failed: '
+        '$reportError\n$reportStack',
+      );
+    }
     Error.throwWithStackTrace(error, stackTrace);
   }
   var stage = 'connected';
@@ -166,29 +175,39 @@ Future<void> main(List<String> args) async {
     report['streamingAnswerLength'] = _bodyCharacters(streaming);
     stage = 'streaming';
     await mark(stage);
-    await File('${output.path}/stress-body-streaming.png')
-        .writeAsBytes(await driver.screenshot());
     // Large body only: prove the body really keeps following the stream while it
     // is still generating *above* the per-item preview budget. Preview bytes stay
     // capped by contract, so the growing fact is the item's true total bytes and
     // revision; the journey never taps a load-full affordance.
+    //
+    // 两个观测必须分阶段，不能并行：增长采样要求展示仍在 Live 且贴底，而 companion
+    // 的第一步真实 drag 就会把展示推进 History。宿主截图也要排在这两者之后——一次
+    // 大帧截图会消耗数秒流窗口，先截图会让采样和 companion 都落到终态之后。
     if (largeBody) {
-      // Observe growth while the interaction companion runs, so its screenshot
-      // cannot consume the remaining stream before growth sampling starts.
-      final observations = await Future.wait<Object?>([
-        streaming_scroll
-            .main([args[0], '${output.path}/streaming-scroll'])
-            .then<Object?>((_) => null),
-        _sampleStreamingLargeBody(driver, output),
-      ]);
-      final growing = observations[1]! as Map<String, Object?>;
+      final growing = await _sampleStreamingLargeBody(driver, output);
       report['streamingGrowth'] = growing;
       checks['largeBodyGrowingFullFollow'] =
           growing['windowPassed'] == true &&
           growing['identityStable'] == true &&
           (growing['growthFramesAboveWindow'] as int) >= 2 &&
           growing['stayedLiveAtEdge'] == true;
+      // 真实 drag/滚轮/滚动条进入 History 的 companion。它仍在后台生成期间运行，
+      // 用自己的断言证明冻结行为；失败、超时或证据缺失都原样传播到本旅程。
+      await streaming_scroll.main([args[0], '${output.path}/streaming-scroll']);
+      final companion = await _companionEvidence(output);
+      // companion 自己失败会抛错；这里再核对它确实产出了“冻结中仍有后台输出”的
+      // 证据，不能因为只是跑过一遍就算覆盖。
+      if (companion['checksPassed'] != true ||
+          companion['backgroundOutputWhileFrozen'] != true) {
+        throw StateError(
+          'streaming companion did not prove a frozen history display while '
+          'the output was still generating: $companion',
+        );
+      }
+      report['streamingCompanion'] = companion;
     }
+    await File('${output.path}/stress-body-streaming.png')
+        .writeAsBytes(await driver.screenshot());
     final terminal = await _waitFor(
       driver,
       (snapshot) =>
@@ -396,12 +415,16 @@ Future<void> main(List<String> args) async {
     final generationAdvanced =
         reopenedTimeline.generation != settledTimeline.generation;
     // 重开最新小页：offset 0、几何贴底、Live 模式、没有准备中的代次；不恢复像素。
+    //
+    // 标准反向列表的底端就是 offset 0：此时 `extentBefore` 为 0、`extentAfter` 是
+    // 全部可滚动内容。用 `extentAfter ≈ 0` 判“贴底”属于非反向 ListView 的语义，
+    // 在正确实现上必然失败；这里读真实几何（`atLiveEdge` + offset 0 + extentBefore 0）。
     final latestPageOnReopen =
         reopenedTimeline.isLive &&
         generationAdvanced &&
         reopenedScroll.atLiveEdge &&
         (reopenedScroll.pixels ?? 1).abs() <= 0.5 &&
-        (reopenedScroll.extentAfter ?? 1).abs() <= 0.5 &&
+        (reopenedScroll.extentBefore ?? 1).abs() <= 0.5 &&
         !reopenedTimeline.preparingLive &&
         reopenedTimeline.itemCount <= 32;
     // 同身份正文仍在展示范围内：身份 + 真实总长一致，行内预览不因重开被替换成
@@ -473,28 +496,38 @@ Future<void> main(List<String> args) async {
       .where((entry) => entry.value != true)
       .map((entry) => entry.key)
       .toList(growable: false);
-  final status =
-      failure == null && shutdownError == null && failedChecks.isEmpty
-      ? 'complete'
-      : 'failed';
-  await _writeReport(output, <String, Object?>{
-    'scenario': scenario,
-    'verdict': 'pending',
-    'status': status,
-    'stage': stage,
-    'error': failure?.toString(),
-    'shutdownError': shutdownError,
-    'failedChecks': failedChecks,
-    'checks': checks,
-    'findings': findings,
-    'pendingEvidence': pendingEvidence,
-    'observations': report,
-    'frameSampleCount': frames?['samples'] is List
-        ? (frames!['samples'] as List).length
-        : null,
-    'completedAt': DateTime.now().toUtc().toIso8601String(),
-  });
-  await mark(status == 'complete' ? 'complete' : stage);
+  final primaryFailed =
+      failure != null || shutdownError != null || failedChecks.isNotEmpty;
+  final status = primaryFailed ? 'failed' : 'complete';
+  // 主报告是判定的一部分：写失败必须让本旅程失败。已有业务主错时保留主错与原栈，
+  // 只把报告写失败作为次级事实打到 stderr；没有主错时必须由报告写错失败收尾，
+  // 绝不 mark complete。
+  Object? reportError;
+  StackTrace? reportStack;
+  try {
+    await _writeReport(output, <String, Object?>{
+      'scenario': scenario,
+      'verdict': 'pending',
+      'status': status,
+      'stage': stage,
+      'error': failure?.toString(),
+      'shutdownError': shutdownError,
+      'failedChecks': failedChecks,
+      'checks': checks,
+      'findings': findings,
+      'pendingEvidence': pendingEvidence,
+      'observations': report,
+      'frameSampleCount': frames?['samples'] is List
+          ? (frames!['samples'] as List).length
+          : null,
+      'completedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+  } catch (error, stackTrace) {
+    reportError = error;
+    reportStack = stackTrace;
+    stderr.writeln('stress-body report write failed: $error\n$stackTrace');
+  }
+  await mark(primaryFailed || reportError != null ? stage : 'complete');
   if (failure != null) {
     Error.throwWithStackTrace(failure, failureStack!);
   }
@@ -507,17 +540,16 @@ Future<void> main(List<String> args) async {
       'longBody=${report['longBody']}; sessionSwitch=${report['sessionSwitch']}',
     );
   }
+  if (reportError != null) {
+    // 没有业务主错时，报告写失败就是本次失败，必须非零退出。
+    Error.throwWithStackTrace(reportError, reportStack!);
+  }
 }
 
 Future<void> _writeReport(Directory output, Map<String, Object?> report) async {
-  try {
-    await File(
-      '${output.path}/stress-body-report.json',
-    ).writeAsString('${const JsonEncoder.withIndent('  ').convert(report)}\n');
-  } catch (_) {
-    // Evidence directories are owned by the coordinator; writing there must not
-    // mask the real failure.
-  }
+  // 主报告不是可选旁证：直接 await 让写失败传播，由调用方按主错优先级处理。
+  await File('${output.path}/stress-body-report.json')
+      .writeAsString('${const JsonEncoder.withIndent('  ').convert(report)}\n');
 }
 
 Future<void> _openProject(FlutterDriverSession driver, String project) async {
@@ -708,7 +740,9 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
   var growthFrames = 0;
   String? previousId;
   int? previousBytes;
-  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  // 有界 deadline 覆盖合成流窗口即可：采样拖得越久，后面的真实 drag companion 越
+  // 可能落到终态之后。终态在循环内单独 break，不靠 deadline 收尾。
+  final deadline = DateTime.now().add(const Duration(seconds: 20));
   while (DateTime.now().isBefore(deadline) && growthFrames < 2) {
     final snapshot = await driver.readSnapshot();
     final terminal =
@@ -719,7 +753,12 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
     final bytes = item?.textTotalBytes;
     final scroll = TimelineScrollObservation.optional(snapshot);
     final timeline = TimelineObservation.optional(snapshot);
-    if (id is! String || bytes == null) {
+    // 观测需要已发布的展示与几何事实；缺少事实的帧只跳过，不记成“未贴边”。
+    if (id is! String ||
+        bytes == null ||
+        timeline == null ||
+        scroll == null ||
+        !scroll.laidOut) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       continue;
     }
@@ -729,12 +768,7 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
       final grew =
           sameIdentity && previousBytes != null && bytes > previousBytes;
       if (previousId != null && !sameIdentity) identityStable = false;
-      final liveAtEdge =
-          timeline != null &&
-          timeline.isLive &&
-          scroll != null &&
-          scroll.atLiveEdge &&
-          scroll.laidOut;
+      final liveAtEdge = timeline.isLive && scroll.atLiveEdge;
       if (!liveAtEdge) stayedLiveAtEdge = false;
       if (grew) growthFrames += 1;
       frames.add(<String, Object?>{
@@ -747,10 +781,11 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
         'detailRevision': item?.detail('text')?.revision,
         'grewOverPrevious': grew,
         'terminal': terminal,
-        'mode': timeline?.mode,
-        'atLiveEdge': scroll?.atLiveEdge,
-        'pixels': scroll?.pixels,
-        'extentAfter': scroll?.extentAfter,
+        'mode': timeline.mode,
+        'atLiveEdge': scroll.atLiveEdge,
+        'pixels': scroll.pixels,
+        'extentBefore': scroll.extentBefore,
+        'extentAfter': scroll.extentAfter,
       });
       previousId = id;
       previousBytes = bytes;
@@ -768,14 +803,30 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
     // Bounded tail so a reviewer can re-check the growth without the whole list.
     'frames': frames.length > 8 ? frames.sublist(frames.length - 8) : frames,
   };
-  try {
-    await File('${output.path}/stress-body-large-growth.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
-    );
-  } catch (_) {
-    // Evidence writes must never mask the observation they document.
-  }
+  // 这份证据是判定的一部分，不是可选旁证：写入失败必须原样传播到本旅程，由外层
+  // 保留原始错误并完成 shutdown 收束，不能吞掉后当“已观测”。
+  await File(
+    '${output.path}/stress-body-large-growth.json',
+  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
   return evidence;
+}
+
+/// 读取 companion 自己写出的最终证据，附在本旅程报告里。
+///
+/// companion 已按自身断言在失败时抛错，这里只补可复核事实，不重新判定。
+Future<Map<String, Object?>> _companionEvidence(Directory output) async {
+  final file = File('${output.path}/streaming-scroll/timeline-scroll.json');
+  final decoded = jsonDecode(await file.readAsString());
+  if (decoded is! Map) {
+    throw StateError('streaming companion evidence is not an object: $decoded');
+  }
+  final map = decoded.cast<String, Object?>();
+  return <String, Object?>{
+    'checksPassed': map['checksPassed'],
+    'backgroundOutputWhileFrozen': map['backgroundOutputWhileFrozen'],
+    'historyGeneration': map['historyGeneration'],
+    'error': map['error'],
+  };
 }
 
 /// Scrolls into the *interior* of the assistant long body — the actual reply row,
@@ -848,10 +899,13 @@ Future<Map<String, Object?>> _readIntoLongBody(
           after.rect!.top < 1 &&
           after.rect!.bottom > viewport.height - 1;
       final threshold = _detachedExtentThreshold(scroll.viewportDimension);
+      // 标准反向列表的底端是 offset 0：真正“离开底端”的量是 `extentBefore`
+      // （已从 0 向上滚过的距离）。`extentAfter` 是剩余可向下滚动的内容，在底端
+      // 恰为最大值，不能用来判离底。仍需视口落在巨大正文内部、且不在最早端点。
       detached =
           timeline.isHistory &&
           insideRow &&
-          scroll.extentAfterOrZero > threshold &&
+          (scroll.extentBefore ?? 0) > threshold &&
           (scroll.pixels ?? 0) < (scroll.maxScrollExtent ?? 0) - 1.0;
       geometry.add(<String, Object?>{
         'phase': 'after_scroll_${step + 1}',
@@ -892,6 +946,7 @@ Future<Map<String, Object?>> _readIntoLongBody(
     'generation': finalTimeline.generation,
     'insideLongBody': detached,
     'detachedFromLiveEdge': !finalScroll.atLiveEdge,
+    'extentBefore': finalScroll.extentBefore,
     'extentAfter': finalScroll.extentAfter,
     'pixels': finalScroll.pixels,
     'maxScrollExtent': finalScroll.maxScrollExtent,
@@ -1184,21 +1239,21 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
   );
   // 逐块累计：等待查看器报告的真实字符数达到条目声明的总长。
   final deadline = DateTime.now().add(const Duration(seconds: 90));
-  Map<String, dynamic>? progress;
+  DetailViewerRead? progress;
   var sawPartial = false;
+  var viewerOpened = false;
   while (DateTime.now().isBefore(deadline)) {
-    progress = _decodeDriverMap(
-      await driver.requestData('timeline-detail-text'),
-    );
-    final characters = (progress?['characters'] as num? ?? 0).toInt();
+    progress = await DetailViewerRead.read(driver.requestData);
+    if (progress.open) viewerOpened = true;
+    final characters = progress.characters;
     if (characters > 0 && characters < expectedBodyCharacters) {
       sawPartial = true;
     }
     if (characters >= expectedBodyCharacters) break;
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-  final loadedCharacters = (progress?['characters'] as num? ?? 0).toInt();
-  final loadedHash = progress?['hash'];
+  final loadedCharacters = progress?.characters ?? 0;
+  final loadedHash = progress?.hash;
   await File('${output.path}/stress-body-detail-viewer.png')
       .writeAsBytes(await driver.screenshot());
   await driver.waitFor(
@@ -1209,11 +1264,9 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
     find.byValueKey('timeline-detail-copy'),
     timeout: const Duration(seconds: 30),
   );
-  final clipboard = _decodeDriverMap(
-    await driver.requestData('clipboard-text'),
-  );
-  final clipboardHash = clipboard?['hash'];
-  final clipboardCharacters = (clipboard?['characters'] as num? ?? 0).toInt();
+  final clipboard = await ClipboardRead.read(driver.requestData);
+  final clipboardHash = clipboard.hash;
+  final clipboardCharacters = clipboard.characters;
   await driver.rawTap(
     find.byValueKey('timeline-detail-close'),
     timeout: const Duration(seconds: 30),
@@ -1222,10 +1275,8 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
   final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
   var closed = false;
   while (DateTime.now().isBefore(closeDeadline)) {
-    final state = _decodeDriverMap(
-      await driver.requestData('timeline-detail-text'),
-    );
-    if (state?['open'] == false) {
+    final state = await DetailViewerRead.read(driver.requestData);
+    if (!state.open) {
       closed = true;
       break;
     }
@@ -1247,6 +1298,7 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
     'loadedHash': loadedHash,
     'clipboardCharacters': clipboardCharacters,
     'clipboardHash': clipboardHash,
+    'viewerOpened': viewerOpened,
     'viewerClosed': closed,
     'rowPreviewUnchanged': previewUnchanged,
     // 理论块数只是结构推算（ceil(bytes/64KiB)）；实际读了几块不要求被帧采样到，
@@ -1255,6 +1307,7 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
     'sawPartialChunk': sawPartial,
     // 完整字节 + fixture 原文 hash + 真实查看器/剪贴板一致 + 关闭即证明保真。
     'pass':
+        viewerOpened &&
         loadedCharacters == expectedBodyCharacters &&
         loadedHash == expectedHash &&
         clipboardCharacters == expectedBodyCharacters &&

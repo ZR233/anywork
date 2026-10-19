@@ -4,6 +4,10 @@ part of 'timeline_view.dart';
 ///
 /// 默认预览不因为后台补齐而自动扩大历史行：读者必须显式打开查看器，之后才在活动查询
 /// scope 内逐块读取（design/26 §26.2「详情读取」、§26.5）。
+///
+/// 这里同时是正文选择边界（§26.8）：截断说明与详情按钮文案是界面提示，不是 canonical
+/// 正文，用官方 [SelectionContainer.disabled] 把整棵子树移出外层选择域，因此跨块选择与
+/// 复制不会带上它们；按钮的点击、键盘焦点与辅助语义不受选择边界影响。
 class _TimelineDetailNotice extends StatelessWidget {
   const _TimelineDetailNotice({
     required this.itemId,
@@ -19,41 +23,43 @@ class _TimelineDetailNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      key: StudioDriverKeys.timelineItemBodyNotice(itemId),
-      padding: const EdgeInsets.only(top: 6),
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Icon(
-            Icons.unfold_more,
-            size: 15,
-            color: context.colors.onSurfaceVariant,
-          ),
-          Text(
-            context.l10n.timelineItemBodyTruncated,
-            style: Theme.of(context).textTheme.labelSmall
-                ?.copyWith(color: context.colors.onSurfaceVariant),
-          ),
-          for (final detail in details)
-            TextButton(
-              key: StudioDriverKeys.timelineDetailOpen(
-                itemId,
-                StudioDriverKeyValues.timelineDetailField(detail.field),
-              ),
-              onPressed: () => unawaited(
-                _openTimelineDetailViewer(
-                  context,
-                  lease: lease,
-                  itemId: itemId,
-                  field: detail.field,
-                ),
-              ),
-              child: Text(_timelineFieldLabel(context, detail.field)),
+    return SelectionContainer.disabled(
+      child: Padding(
+        key: StudioDriverKeys.timelineItemBodyNotice(itemId),
+        padding: const EdgeInsets.only(top: 6),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Icon(
+              Icons.unfold_more,
+              size: 15,
+              color: context.colors.onSurfaceVariant,
             ),
-        ],
+            Text(
+              context.l10n.timelineItemBodyTruncated,
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: context.colors.onSurfaceVariant),
+            ),
+            for (final detail in details)
+              TextButton(
+                key: StudioDriverKeys.timelineDetailOpen(
+                  itemId,
+                  StudioDriverKeyValues.timelineDetailField(detail.field),
+                ),
+                onPressed: () => unawaited(
+                  _openTimelineDetailViewer(
+                    context,
+                    lease: lease,
+                    itemId: itemId,
+                    field: detail.field,
+                  ),
+                ),
+                child: Text(_timelineFieldLabel(context, detail.field)),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -61,6 +67,9 @@ class _TimelineDetailNotice extends StatelessWidget {
 
 /// typed 字段的稳定诊断身份：判别分支 + 逻辑索引，不依赖对象实例。
 /// 只有省略声明、没有任何字段引用的条目：如实提示被截断，不提供伪造入口。
+///
+/// 与 [_TimelineDetailNotice] 相同，这段提示不属于 canonical 正文，因此处在同一个
+/// 选择边界之外（§26.8）。
 class _TimelineTruncationNotice extends StatelessWidget {
   const _TimelineTruncationNotice({required this.itemId});
 
@@ -68,26 +77,28 @@ class _TimelineTruncationNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      key: StudioDriverKeys.timelineItemBodyNotice(itemId),
-      padding: const EdgeInsets.only(top: 6),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.info_outline,
-            size: 15,
-            color: context.colors.onSurfaceVariant,
-          ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(
-              context.l10n.timelineItemBodyUnavailable,
-              style: Theme.of(context).textTheme.labelSmall
-                  ?.copyWith(color: context.colors.onSurfaceVariant),
+    return SelectionContainer.disabled(
+      child: Padding(
+        key: StudioDriverKeys.timelineItemBodyNotice(itemId),
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 15,
+              color: context.colors.onSurfaceVariant,
             ),
-          ),
-        ],
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                context.l10n.timelineItemBodyUnavailable,
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: context.colors.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -139,7 +139,7 @@ struct StressSessionReport {
 }
 
 /// 显式详情查看器的完整读取/复制证据（用户打开的真实查看器 + 平台剪贴板回读）。
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DetailCopyReport {
     expected_characters: usize,
@@ -152,8 +152,104 @@ struct DetailCopyReport {
     clipboard_hash: Option<String>,
     /// 只记录，不作为通过条件：快速多块读取允许在一次轮询前完成。
     saw_partial_chunk: bool,
+    /// 只有真实点击打开的查看器才提供完整正文；两个脚本都记录该事实。
+    viewer_opened: bool,
     viewer_closed: bool,
+    /// 关闭后行内预览没有被升级成另一份正文；多会话脚本不产生该事实。
+    row_preview_unchanged: Option<bool>,
     pass: bool,
+}
+
+/// Flutter Driver 的 `stress-body-report.json`：单条长正文压力旅程的判定报告。
+///
+/// 只声明验收真正判定的顶层结论与观测段，producer 的其余观测（时间点、时间线、
+/// 滚动、分帧采样等）由 serde 忽略。字段缺失或类型不符时 serde 报出具体字段，
+/// 验收按报告契约收束并释放资源，不在 `serde_json::Map` 上按下标取值。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StressBodyReport {
+    scenario: String,
+    verdict: String,
+    status: String,
+    stage: String,
+    error: Option<String>,
+    shutdown_error: Option<String>,
+    failed_checks: Vec<String>,
+    observations: StressBodyObservations,
+}
+
+/// `stress-body-report.json` 的 `observations` 中参与判定的观测段。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StressBodyObservations {
+    session_switch: SessionSwitchReport,
+    preview_copy: PreviewCopyReport,
+    detail_copy: DetailCopyReport,
+    long_body: LongBodyReport,
+    /// 只有 `stress-body-large` 才采样的生成期增长证据；默认场景不产生该观测。
+    streaming_growth: Option<StreamingGrowthReport>,
+}
+
+/// 换会话后回到原 Thread 的事实。
+///
+/// 最新小页、同身份正文与展示代次推进由 Driver 的 `reopenStartsAtLatestPage`
+/// 检查给出；`status == "complete"` 已经排除任何未通过的检查与关停错误。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSwitchReport {
+    returned_to_original: bool,
+}
+
+/// 有界行内预览的跨渲染块选择/复制证据。
+///
+/// `renderedParagraphCount` 是实际参与选择的渲染块数；canonical 预览是连续纯文本，
+/// 渲染分块不在原文里插入分隔符，因此不存在另一份“复制段数”。复制保真由整段文本的
+/// 长度与 hash 和同一份 canonical 预览一致证明，不能用子串或两个实际副本互相相等代替。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCopyReport {
+    preview_characters: usize,
+    /// canonical 预览（fixture 原文前缀）的 hash；渲染与复制都必须与它一致。
+    expected_hash: String,
+    rendered_characters: Option<usize>,
+    rendered_hash: Option<String>,
+    rendered_paragraph_count: Option<usize>,
+    rendered_matches_preview: bool,
+    /// 产品右键菜单的复制项存在且可点。
+    copy_button_present: bool,
+    copy_ok: bool,
+    copied_length: Option<usize>,
+    copied_hash: Option<String>,
+    copied_matches_preview: bool,
+    selection_cleared: bool,
+    scroll_stable: bool,
+    mode_stable: bool,
+    pass: bool,
+}
+
+/// 长正文的行内/详情账目：声明总长、截断标记、前缀事实与有界预览额度。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LongBodyReport {
+    expected_characters: usize,
+    delivered_characters: usize,
+    delivered_bytes: usize,
+    detail_total_bytes: usize,
+    preview_bytes: usize,
+    truncated: bool,
+    large_body: bool,
+    prefix_ok: bool,
+}
+
+/// `stress-body-large` 的生成期增长采样：同一身份在预览封顶后仍真实增长且保持 Live 贴底。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamingGrowthReport {
+    window_passed: bool,
+    identity_stable: bool,
+    stayed_live_at_edge: bool,
+    threshold_bytes: usize,
+    growth_frames_above_window: usize,
 }
 
 /// The stress probe's paging evidence.
@@ -3611,7 +3707,7 @@ fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
 /// command is more than one request: the assistant `exec` call, the scripted
 /// model's supported `wait` on the task receipt, and the step that observes the
 /// delivered result (the two parallel commands add one extra `wait` for the
-/// still-running task, and the approved command is gated behind consent).
+/// still-running task). The host-cwd command uses the product's fixed full-access policy.
 const REALTIME_REQUIRED_STEPS: usize = 15;
 
 fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
@@ -3900,55 +3996,70 @@ fn run_stress_body_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    let driver_report: serde_json::Value = serde_json::from_slice(
+    let driver_report: StressBodyReport = serde_json::from_slice(
         &fs::read(output.join("stress-body-report.json"))
             .context("Flutter Driver did not write the stress-body report")?,
-    )?;
+    )
+    .context("stress-body report does not match the acceptance contract")?;
     ensure!(
-        driver_report["scenario"] == context.scenario && driver_report["verdict"] == "pending",
+        driver_report.scenario == context.scenario && driver_report.verdict == "pending",
         "stress-body report is missing its scenario or pending verdict"
     );
+    // `status == "complete"` 是 Driver 聚合后的结论：任何未通过的检查、主错或关停
+    // 错误都会让它变成 `failed`，因此先按聚合结论与原始原因收束，再逐项核对证据。
     ensure!(
-        driver_report["status"] == "complete",
-        "stress-body journey did not complete: stage={} failedChecks={}",
-        driver_report["stage"],
-        driver_report["failedChecks"],
+        driver_report.status == "complete",
+        "stress-body journey did not complete: stage={} failedChecks={:?} error={:?} \
+         shutdownError={:?}",
+        driver_report.stage,
+        driver_report.failed_checks,
+        driver_report.error,
+        driver_report.shutdown_error,
     );
-    let session_switch = driver_report["observations"]["sessionSwitch"]
-        .as_object()
-        .context("stress-body report has no session-switch or reading-restoration evidence")?;
+    let StressBodyObservations {
+        session_switch,
+        preview_copy,
+        detail_copy,
+        long_body,
+        streaming_growth,
+    } = driver_report.observations;
     ensure!(
-        session_switch["returnedToOriginal"] == true,
+        session_switch.returned_to_original,
         "stress-body journey did not return to the original session"
     );
     // 行内预览的跨块选择/复制：交付的是产品 32 KiB 预算内的有界预览，复制内容必须与
     // 该预览逐字节一致（不是全文）；完整正文由下面的详情查看器证明。
-    let preview_copy = driver_report["observations"]["previewCopy"]
-        .as_object()
-        .context("stress-body report has no preview selection-copy evidence")?;
     ensure!(
-        preview_copy["pass"] == true,
+        preview_copy.pass,
         "stress-body preview selection copy did not pass: {preview_copy:?}"
     );
     ensure!(
-        preview_copy["copyButtonPresent"] == true
-            && preview_copy["copyOk"] == true
-            && preview_copy["selectionCleared"] == true
-            && preview_copy["scrollStable"] == true
-            && preview_copy["modeStable"] == true,
+        preview_copy.copy_button_present
+            && preview_copy.copy_ok
+            && preview_copy.selection_cleared
+            && preview_copy.scroll_stable
+            && preview_copy.mode_stable,
         "stress-body preview copy did not use the product callback or disturbed the view: \
          {preview_copy:?}"
     );
+    // 跨渲染块选择分别核实际参与选择的渲染块数与整段复制文本：渲染与复制的长度必须
+    // 等于预览长度，两者的 hash 都必须等于同一份 canonical 预览，不能用子串包含或
+    // 只比较两个实际副本代替原文。
     ensure!(
-        preview_copy["renderedMatchesPreview"] == true
-            && preview_copy["copiedMatchesPreview"] == true
-            && preview_copy["renderedParagraphCount"].as_u64().unwrap_or(0) >= 2
-            && preview_copy["copiedParagraphCount"].as_u64().unwrap_or(0) >= 2,
-        "stress-body preview was not rendered/copied as multiple real paragraphs: {preview_copy:?}"
+        preview_copy.rendered_matches_preview
+            && preview_copy.copied_matches_preview
+            && preview_copy
+                .rendered_paragraph_count
+                .is_some_and(|count| count >= 2)
+            && preview_copy.rendered_characters == Some(preview_copy.preview_characters)
+            && preview_copy.rendered_hash.as_deref() == Some(preview_copy.expected_hash.as_str())
+            && preview_copy.copied_length == Some(preview_copy.preview_characters)
+            && preview_copy.copied_hash.as_deref() == Some(preview_copy.expected_hash.as_str()),
+        "stress-body preview was not rendered/copied as multiple real blocks of the canonical \
+         preview: {preview_copy:?}"
     );
-    let preview_characters = preview_copy["previewCharacters"].as_u64().unwrap_or(0);
     ensure!(
-        (1..=32 * 1024).contains(&preview_characters),
+        (1..=32 * 1024).contains(&preview_copy.preview_characters),
         "stress-body inline preview exceeded the product 32 KiB budget: {preview_copy:?}"
     );
 
@@ -3962,39 +4073,32 @@ fn run_stress_body_scenario(
     } else {
         pl_provider_fixture::STRESS_EVENT_COUNT * STRESS_BODY_UNIT_CHARACTERS
     };
-    let detail_copy = driver_report["observations"]["detailCopy"]
-        .as_object()
-        .context("stress-body report has no detail viewer copy evidence")?;
     ensure!(
-        detail_copy["pass"] == true
-            && detail_copy["viewerClosed"] == true
-            && detail_copy["rowPreviewUnchanged"] == true,
+        detail_copy.pass
+            && detail_copy.viewer_opened
+            && detail_copy.viewer_closed
+            && detail_copy.row_preview_unchanged == Some(true),
         "stress-body detail viewer did not read/copy the complete body: {detail_copy:?}"
     );
     ensure!(
-        detail_copy["expectedCharacters"].as_u64() == Some(expected_body as u64)
-            && detail_copy["loadedCharacters"].as_u64() == Some(expected_body as u64)
-            && detail_copy["clipboardCharacters"].as_u64() == Some(expected_body as u64)
-            && detail_copy["expectedHash"] == detail_copy["loadedHash"]
-            && detail_copy["expectedHash"] == detail_copy["clipboardHash"],
+        detail_copy.expected_characters == expected_body
+            && detail_copy.loaded_characters == expected_body
+            && detail_copy.clipboard_characters == expected_body
+            && detail_copy.loaded_hash.as_deref() == Some(detail_copy.expected_hash.as_str())
+            && detail_copy.clipboard_hash.as_deref() == Some(detail_copy.expected_hash.as_str()),
         "stress-body detail copy did not match the canonical fixture body: {detail_copy:?}"
     );
-    let long_body = driver_report["observations"]["longBody"]
-        .as_object()
-        .context("stress-body report has no long-body evidence")?;
     ensure!(
-        long_body["expectedCharacters"].as_u64() == Some(expected_body as u64)
-            && long_body["detailTotalBytes"].as_u64() == Some(expected_body as u64)
-            && long_body["truncated"] == true
-            && long_body["prefixOk"] == true,
+        long_body.expected_characters == expected_body
+            && long_body.detail_total_bytes == expected_body
+            && long_body.truncated
+            && long_body.prefix_ok,
         "stress-body body facts disagree with the fixture: {long_body:?}"
     );
     ensure!(
-        long_body["previewBytes"]
-            .as_u64()
-            .is_some_and(|bytes| bytes <= 32 * 1024)
-            && long_body["deliveredBytes"] == long_body["previewBytes"]
-            && long_body["deliveredCharacters"] == long_body["previewBytes"],
+        long_body.preview_bytes <= 32 * 1024
+            && long_body.delivered_bytes == long_body.preview_bytes
+            && long_body.delivered_characters == long_body.preview_bytes,
         "stress-body inline preview exceeded the product budget or lost its accounting: \
          {long_body:?}"
     );
@@ -4002,20 +4106,25 @@ fn run_stress_body_scenario(
         // Generation-time proof (large only): 640000B 正文在预览封顶后仍继续增长，
         // 同一身份至少两帧真实增长且展示保持 Live 贴底。默认 220000B 场景不产生该
         // 观测，因此这里不得读取 `streamingGrowth`，也不为默认场景造假字段。
-        let growth = &driver_report["observations"]["streamingGrowth"];
+        //
+        // 进入 History 后冻结、后台仍有新输出的 companion 事实由 Driver 在证据缺失时
+        // 抛错，使 `status` 变成 `failed`；这里不另读 `streamingCompanion`。
+        let growth = streaming_growth
+            .as_ref()
+            .context("stress-body-large report has no streaming growth observation")?;
         ensure!(
-            growth["windowPassed"] == true
-                && growth["identityStable"] == true
-                && growth["stayedLiveAtEdge"] == true
-                && growth["thresholdBytes"].as_u64() == Some(32 * 1024)
-                && growth["growthFramesAboveWindow"].as_u64().unwrap_or(0) >= 2,
+            growth.window_passed
+                && growth.identity_stable
+                && growth.stayed_live_at_edge
+                && growth.threshold_bytes == 32 * 1024
+                && growth.growth_frames_above_window >= 2,
             "stress-body-large did not prove the body kept following the stream above the \
              product preview budget: {growth:?}"
         );
         ensure!(
-            long_body["largeBody"] == true
-                && long_body["expectedCharacters"].as_u64()
-                    == Some(pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS as u64),
+            long_body.large_body
+                && long_body.expected_characters
+                    == pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS,
             "stress-body-large expected body drifted from the fixture constant: {long_body:?}"
         );
     }

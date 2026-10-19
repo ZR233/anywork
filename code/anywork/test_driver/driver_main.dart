@@ -32,6 +32,7 @@ import 'pointer_drag_extension.dart';
 import 'scrollbar_drag_extension.dart';
 import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
+import 'runtime_event_evidence.dart';
 
 /// Native-only Driver entrypoint. Product and release builds use lib/main.dart.
 void main() {
@@ -65,7 +66,12 @@ void main() {
     StudioExitCoordinator(
       graph.client.transport,
       _container.read(studioShutdownProgressStateProvider.notifier).update,
-      closeClient: (deadline) => graph.close(deadline: deadline),
+      // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
+      // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
+      closeClient: (deadline) {
+        _runtimeEvidence?.cancelForShutdown();
+        return graph.close(deadline: deadline);
+      },
     ),
   );
 }
@@ -92,6 +98,10 @@ late final ProviderContainer _container;
 AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
 Future<void>? _driverFixtureClipboardImageTask;
+
+/// Driver-only runtime 发布取证记录器：借用当前 Client 已存在的 Session 观察公开
+/// runtime read-model 发布，不创建 Session、不建立 transport 订阅、不改变 demand。
+RuntimeEventEvidenceRecorder? _runtimeEvidence;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
@@ -418,6 +428,34 @@ Future<String> _handleJsonDriverCommand(String raw) async {
         'tail': _tailOf(text),
         if (decoded['full'] == true) 'text': text,
       });
+    case 'runtime-evidence-start':
+      // Driver-only：在**已存在**的 Client Session 上登记 runtime 发布观察。命令只接受
+      // 精确身份（threadId／turnId），不创建 Session、不新建 transport 订阅、不改 demand。
+      final threadId = decoded['threadId'];
+      final turnId = decoded['turnId'];
+      if (threadId is! String || turnId is! String) {
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'cmd': 'runtime-evidence-start',
+          'error': 'targetMustBeStrings',
+        });
+      }
+      _runtimeEvidence ??= RuntimeEventEvidenceRecorder(_client);
+      return jsonEncode(
+        _runtimeEvidence!.start(threadId: threadId, turnId: turnId),
+      );
+    case 'runtime-evidence-stop':
+      // 同步取消本记录器自己的观察并返回不可变结果；未开始或重复停止明确失败。
+      final recorder = _runtimeEvidence;
+      if (recorder == null) {
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'cmd': 'runtime-evidence-stop',
+          'source': RuntimeEventEvidenceRecorder.source,
+          'error': 'notStarted',
+        });
+      }
+      return jsonEncode(recorder.stop());
     default:
       return jsonEncode(<String, Object?>{
         'ok': false,

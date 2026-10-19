@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'driver_read_commands.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
 
@@ -297,20 +298,19 @@ Future<Map<String, Object?>> _copyDetailBody(
     timeout: const Duration(seconds: 30),
   );
   final deadline = DateTime.now().add(const Duration(seconds: 90));
-  Map<String, dynamic>? progress;
+  DetailViewerRead? progress;
   var sawPartial = false;
+  var viewerOpened = false;
   while (DateTime.now().isBefore(deadline)) {
-    final decoded = jsonDecode(
-      await driver.requestData('timeline-detail-text'),
-    );
-    progress = decoded is Map<String, dynamic> ? decoded : null;
-    final characters = (progress?['characters'] as num? ?? 0).toInt();
+    progress = await DetailViewerRead.read(driver.requestData);
+    if (progress.open) viewerOpened = true;
+    final characters = progress.characters;
     if (characters > 0 && characters < canonicalBody.length) sawPartial = true;
     if (characters >= canonicalBody.length) break;
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-  final loadedCharacters = (progress?['characters'] as num? ?? 0).toInt();
-  final loadedHash = progress?['hash'];
+  final loadedCharacters = progress?.characters ?? 0;
+  final loadedHash = progress?.hash;
   await driver.waitFor(
     find.byValueKey('timeline-detail-copy'),
     timeout: const Duration(seconds: 15),
@@ -319,9 +319,7 @@ Future<Map<String, Object?>> _copyDetailBody(
     find.byValueKey('timeline-detail-copy'),
     timeout: const Duration(seconds: 30),
   );
-  final clipboard = (jsonDecode(
-    await driver.requestData('clipboard-text'),
-  ) as Map).cast<String, dynamic>();
+  final clipboard = await ClipboardRead.read(driver.requestData);
   await driver.rawTap(
     find.byValueKey('timeline-detail-close'),
     timeout: const Duration(seconds: 30),
@@ -329,10 +327,8 @@ Future<Map<String, Object?>> _copyDetailBody(
   final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
   var closed = false;
   while (DateTime.now().isBefore(closeDeadline)) {
-    final decoded = (jsonDecode(
-      await driver.requestData('timeline-detail-text'),
-    ) as Map).cast<String, dynamic>();
-    if (decoded['open'] == false) {
+    final decoded = await DetailViewerRead.read(driver.requestData);
+    if (!decoded.open) {
       closed = true;
       break;
     }
@@ -347,14 +343,16 @@ Future<Map<String, Object?>> _copyDetailBody(
     'loadedCharacters': loadedCharacters,
     'loadedHash': loadedHash,
     'sawPartialChunk': sawPartial,
-    'clipboardCharacters': clipboard['characters'],
-    'clipboardHash': clipboard['hash'],
+    'viewerOpened': viewerOpened,
+    'clipboardCharacters': clipboard.characters,
+    'clipboardHash': clipboard.hash,
     'viewerClosed': closed,
     'pass':
+        viewerOpened &&
         loadedCharacters == canonicalBody.length &&
         loadedHash == expectedHash &&
-        clipboard['characters'] == canonicalBody.length &&
-        clipboard['hash'] == expectedHash &&
+        clipboard.characters == canonicalBody.length &&
+        clipboard.hash == expectedHash &&
         closed,
   };
 }

@@ -92,10 +92,14 @@ Future<Map<String, Object?>> observeTimelineScrolling(
     final returned = returning.last;
     final returnedTimeline = TimelineObservation.parse(await snapshot());
     // 到达冻结集合的本地底端：几何贴底，但仍然是同一个 History 代次。
+    //
+    // 标准反向列表的底端是 offset 0（`extentBefore` 0、`extentAfter` 为全部可滚动
+    // 内容）；`extentAfter ≈ 0` 是非反向 ListView 的贴底语义，不能拿来判反向列表。
     observations['wheelReachedFrozenBottom'] =
         returnedTimeline.isHistory &&
         returnedTimeline.generation == afterWheel.generation &&
-        (returned['extentAfter'] as num).abs() <= 0.5 &&
+        returned['atLiveEdge'] == true &&
+        (returned['extentBefore'] as num? ?? 1).abs() <= 0.5 &&
         (returned['pixels'] as num? ?? 1).abs() <= 0.5;
     await File('${output.path}/scroll-wheel-latest.png')
         .writeAsBytes(await driver.screenshot());
@@ -139,8 +143,10 @@ Future<Map<String, Object?>> observeTimelineScrolling(
       return changes >= 12;
     }
 
-    observations['thumbUpContinuous'] = monotonic(up, false);
-    observations['thumbDownContinuous'] = monotonic(down, true);
+    // 视觉上把 thumb 向上拖（负 dy）让 offset 增长（内容向更早方向移动）；向下拖
+    // 让 offset 减少。方向写反会把正确滚动判成错误，因此按真实反向坐标断言。
+    observations['thumbUpContinuous'] = monotonic(up, true);
+    observations['thumbDownContinuous'] = monotonic(down, false);
 
     // 显式回到实时：新代次、最新小页、offset 0。滚动条/滚轮到本地底端不会自行换代。
     final beforeReturn = TimelineObservation.parse(await snapshot());

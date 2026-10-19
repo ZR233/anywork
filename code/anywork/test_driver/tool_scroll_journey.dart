@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'driver_read_commands.dart';
 import 'raw_tap.dart';
 import 'tool_probe.dart';
 import 'scrolling_journey.dart';
@@ -22,6 +23,29 @@ const _fixtureEntryCount = 240;
 
 /// 剧本给 `scroll-call-long` 的 `list_files` limit。
 const _listFilesLimit = 200;
+
+/// 图片行真实回收所需的最大外层滚轮步数（每步 0.8 个视口）。
+///
+/// 只用于有界收敛：步数用尽仍未从 render/widget 树卸载就如实失败，不靠固定 sleep。
+const _maxImageRecycleSteps = 12;
+
+/// 剧本里的 8 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
+///
+/// 每个 canonical 工具调用都是独立消息：按 callId 精确判定 name/status，既不放过
+/// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
+const _expectedToolCalls = <({String callId, String name, String status})>[
+  (callId: 'scroll-call-short', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-medium', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-long', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),
+  (callId: 'scroll-call-a', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-b', name: 'view_image', status: 'succeeded'),
+  (callId: 'scroll-call-c', name: 'view_image', status: 'succeeded'),
+  (callId: 'scroll-call-failed', name: 'list_files', status: 'failed'),
+];
+
+/// 剧本里两处独立的图片读取；它们是 b/c 两个工具身份，不是“前两个工具”。
+const _imageCallIds = <String>['scroll-call-b', 'scroll-call-c'];
 
 String _fixtureEntryName(int index) =>
     'entry-${index.toString().padLeft(3, '0')}.txt';
@@ -536,12 +560,45 @@ Future<void> main(List<String> args) async {
     await File('${output.path}/fixture-snapshot.json')
         .writeAsString(jsonEncode(s));
     final loadedTimeline = TimelineObservation.parse(s);
-    // 每个 canonical 工具调用都是独立消息，不再合并成活动组。
-    final tools = loadedTimeline.items
+    // 每个 canonical 工具调用都是独立消息，不再合并成活动组：按 fixture 的精确
+    // callId/name/status 集合判定无漏、无重、无陌生项，不依赖时间线顺序。
+    final toolItems = loadedTimeline.items
         .where((item) => item.kind == 'toolCall' && item.tool != null)
         .toList();
-    if (tools.length != 6) {
-      throw StateError('Expected 6 real tool items, got ${tools.length}');
+    final toolsByCallId = <String, TimelineItemObservation>{};
+    final duplicateCallIds = <String>[];
+    for (final item in toolItems) {
+      final callId = item.tool!.callId;
+      if (toolsByCallId.containsKey(callId)) duplicateCallIds.add(callId);
+      toolsByCallId[callId] = item;
+    }
+    final missingCallIds = <String>[
+      for (final expected in _expectedToolCalls)
+        if (!toolsByCallId.containsKey(expected.callId)) expected.callId,
+    ];
+    final unexpectedCallIds = <String>[
+      for (final callId in toolsByCallId.keys)
+        if (!_expectedToolCalls.any((expected) => expected.callId == callId))
+          callId,
+    ];
+    final mismatchedCallIds = <String>[
+      for (final expected in _expectedToolCalls)
+        if (toolsByCallId[expected.callId]?.tool?.name != expected.name ||
+            toolsByCallId[expected.callId]?.tool?.status != expected.status)
+          expected.callId,
+    ];
+    if (toolItems.length != _expectedToolCalls.length ||
+        duplicateCallIds.isNotEmpty ||
+        missingCallIds.isNotEmpty ||
+        unexpectedCallIds.isNotEmpty ||
+        mismatchedCallIds.isNotEmpty) {
+      throw StateError(
+        'Tool calls do not match the fixture identities: '
+        'count=${toolItems.length} (expected ${_expectedToolCalls.length}), '
+        'duplicates=$duplicateCallIds, missing=$missingCallIds, '
+        'unexpected=$unexpectedCallIds, '
+        'nameOrStatusMismatch=$mismatchedCallIds',
+      );
     }
     final reasoningItems = loadedTimeline.items
         .where((item) => item.kind == 'reasoning')
@@ -552,70 +609,272 @@ Future<void> main(List<String> args) async {
         '${reasoningItems.length}',
       );
     }
-    final imageItems = loadedTimeline.items
-        .where(
-          (item) =>
-              item.tool?.name == 'view_image' &&
-              item.tool!.attachments.isNotEmpty,
-        )
-        .toList();
-    if (imageItems.length != 2) {
-      throw StateError('Expected two independent image reads');
+    // 两个图片读取固定是 fixture 的 b/c 两个独立工具身份，不按时间线顺序取“前两个”。
+    final imageItems = <TimelineItemObservation>[
+      for (final callId in _imageCallIds) toolsByCallId[callId]!,
+    ];
+    final imageCallIds = <String>[
+      for (final item in toolItems)
+        if (item.tool!.name == 'view_image') item.tool!.callId,
+    ];
+    if (imageCallIds.length != _imageCallIds.length ||
+        !_imageCallIds.every(imageCallIds.contains)) {
+      throw StateError(
+        'Expected exactly the fixture image reads $_imageCallIds, got '
+        '$imageCallIds',
+      );
+    }
+    final imageEntries = <String>[];
+    for (final item in imageItems) {
+      final tool = item.tool!;
+      final attachments = tool.attachments;
+      if (tool.name != 'view_image' ||
+          tool.status != 'succeeded' ||
+          attachments.length != 1) {
+        throw StateError(
+          'view_image ${tool.callId} did not archive exactly one image: '
+          'name=${tool.name} status=${tool.status} '
+          'attachments=${attachments.length}',
+        );
+      }
+      imageEntries.add('${tool.callId}:${attachments.single.id}');
     }
     final imageItem = imageItems.first;
+    final imageEntryFirst = imageEntries.first;
+    // 另一个独立图片读取：b 展开时它的缩略图不得一起出现。
+    final imageEntryOther = imageEntries.last;
     final summary = find.byValueKey('timeline-row-${imageItem.id}');
     await place(summary, 120);
-    final imageTools = imageItems
-        .map((item) => item.tool!)
-        .toList(growable: false);
-    if (imageTools.isNotEmpty) {
-      final entries = <String>[];
-      for (final tool in imageTools) {
-        final attachments = tool.attachments;
-        if (tool.status != 'succeeded' || attachments.isEmpty) {
-          throw StateError('view_image did not archive its image');
-        }
-        entries.add('${tool.callId}:${attachments.single.id}');
-      }
-      final first = entries.first;
-      final toggle = find.byValueKey('view-image-toggle-$first');
-      final thumbnail = find.byValueKey('view-image-thumbnail-$first');
-      await driver.sendCommand(RawTap(toggle));
-      await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
-      await driver.sendCommand(RawTap(thumbnail));
-      await driver.waitFor(find.byValueKey('view-image-dialog-$first'));
-      await File('${output.path}/agent-read-image-dialog.png')
-          .writeAsBytes(await driver.screenshot());
-      await driver.sendCommand(RawTap(find.byValueKey('timeline-image-close')));
-      if ((await probe(
-            find.byValueKey('view-image-thumbnail-${entries.last}'),
-            'observe',
-          ))['samples'].last['mounted'] !=
-          false) {
-        throw StateError('Distinct image calls share expansion state');
-      }
-      // Recycle the containing row, then return without toggling it again.
-      // 显式回到实时建立新代次，再让惰性列表回收该行。
-      final jump = find.byValueKey('timeline-return-live');
-      await driver.sendCommand(RawTap(jump));
-      await driver.waitForAbsent(
-        thumbnail,
-        timeout: const Duration(seconds: 10),
-      );
-      await place(summary, 120);
-      await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
-      await File('${output.path}/agent-read-image-recycled.png')
-          .writeAsBytes(await driver.screenshot());
-      await driver.sendCommand(RawTap(toggle));
-      await driver.waitForAbsent(thumbnail);
-      evidence['agentReadImage'] = {
-        'distinctCalls': entries.length,
-        'dialogOpened': true,
-        'survivedRowRecycling': true,
-        'collapsed': true,
-      };
-      await place(summary, 120);
+    final toggle = find.byValueKey('view-image-toggle-$imageEntryFirst');
+    final thumbnail = find.byValueKey('view-image-thumbnail-$imageEntryFirst');
+    await driver.sendCommand(RawTap(toggle));
+    await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
+    await driver.sendCommand(RawTap(thumbnail));
+    await driver.waitFor(find.byValueKey('view-image-dialog-$imageEntryFirst'));
+    await File('${output.path}/agent-read-image-dialog.png')
+        .writeAsBytes(await driver.screenshot());
+    await driver.sendCommand(RawTap(find.byValueKey('timeline-image-close')));
+    if ((await probe(
+          find.byValueKey('view-image-thumbnail-$imageEntryOther'),
+          'observe',
+        ))['samples'].last['mounted'] !=
+        false) {
+      throw StateError('Distinct image calls share expansion state');
     }
+    // 同一 Thread、同一展示代次的真实用户滚动回收：正常外层滚轮把 b 行连同缩略图
+    // 滚出 render/widget 树（History 冻结，不建立新代次），再用既有 place 滚回同一
+    // ID。展开状态属于同一 lease，必须保留；不允许用显式「回到实时」换 gen，也不
+    // 允许重建/重新 toggle。
+    bool mountedOf(Map<String, dynamic> result) =>
+        (result['samples'] as List).last['mounted'] != false;
+    Map<String, Object?> recycleFacts(
+      Map<String, dynamic> state,
+      TimelineScrollObservation scroll,
+    ) {
+      final observed = TimelineObservation.parse(state);
+      return <String, Object?>{
+        'threadId': observed.threadId,
+        'generation': observed.generation,
+        'mode': observed.mode,
+        'pixels': scroll.pixels,
+        'extentBefore': scroll.extentBefore,
+        'extentAfter': scroll.extentAfter,
+        'atLiveEdge': scroll.atLiveEdge,
+      };
+    }
+
+    // 等标准 controller 自己发布空闲几何（`isScrolling` 来自生产），不按固定帧猜。
+    Future<Map<String, dynamic>> settledRecycle(String label) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      Map<String, dynamic>? last;
+      while (DateTime.now().isBefore(deadline)) {
+        last = await snapshot();
+        final scroll = TimelineScrollObservation.optional(last);
+        if (scroll != null && scroll.laidOut && !scroll.isScrolling) {
+          return last;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      throw StateError(
+        'Timeline geometry did not settle after $label: '
+        '${last == null ? 'no snapshot' : TimelineScrollObservation.optional(last)?.toJson()}',
+      );
+    }
+
+    final recycleBefore = await settledRecycle('image recycle before');
+    final beforeTimeline = TimelineObservation.parse(recycleBefore);
+    final beforeScroll = TimelineScrollObservation.parse(recycleBefore);
+    final beforeItem = beforeTimeline.item(imageItem.id);
+    final rowMountedBefore = mountedOf(await probe(summary, 'observe'));
+    final thumbMountedBefore = mountedOf(await probe(thumbnail, 'observe'));
+    if (!rowMountedBefore || !thumbMountedBefore) {
+      throw StateError(
+        'Image row was not mounted and expanded before recycling '
+        '(row=$rowMountedBefore, thumbnail=$thumbMountedBefore)',
+      );
+    }
+    // 真实外层 wheel 离开该行：方向与 place 的同一标准写法一致（向更早内容为负 dy）。
+    final recycleSteps = <Map<String, Object?>>[];
+    var away = false;
+    var awayState = recycleBefore;
+    for (var step = 1; step <= _maxImageRecycleSteps; step += 1) {
+      final view = (await probe(timeline, 'observe'))['samples'].last as Map;
+      final stepDy = -((view['height'] as num).toDouble()) * 0.8;
+      await probe(timeline, 'wheelOutside', dy: stepDy);
+      final state = await settledRecycle('image recycle step $step');
+      final scroll = TimelineScrollObservation.parse(state);
+      final rowMounted = mountedOf(await probe(summary, 'observe'));
+      final thumbMounted = mountedOf(await probe(thumbnail, 'observe'));
+      recycleSteps.add(<String, Object?>{
+        'step': step,
+        'dy': stepDy,
+        ...recycleFacts(state, scroll),
+        'rowMounted': rowMounted,
+        'thumbnailMounted': thumbMounted,
+      });
+      awayState = state;
+      if (!rowMounted && !thumbMounted) {
+        away = true;
+        break;
+      }
+    }
+    final awayTimeline = TimelineObservation.parse(awayState);
+    final awayScroll = TimelineScrollObservation.parse(awayState);
+    final sameThread = awayTimeline.threadId == beforeTimeline.threadId;
+    final sameGeneration = awayTimeline.generation == beforeTimeline.generation;
+    if (!away || !sameThread || !sameGeneration || !awayTimeline.isHistory) {
+      throw StateError(
+        'The image row never left the render tree inside the same lease: '
+        'away=$away sameThread=$sameThread sameGeneration=$sameGeneration '
+        'mode=${awayTimeline.mode} steps=$recycleSteps',
+      );
+    }
+    // 离开阶段的事实先独立落盘：即使回程断言失败也留下真实 gen/mode/mounted 与步数。
+    // 写失败直接传播（不吞、不 rethrow）。
+    await File('${output.path}/agent-read-image-recycle-away.json')
+        .writeAsString(
+          const JsonEncoder.withIndent('  ').convert(<String, Object?>{
+            'itemId': imageItem.id,
+            'imageEntry': imageEntryFirst,
+            'before': <String, Object?>{
+              ...recycleFacts(recycleBefore, beforeScroll),
+              'rowMounted': rowMountedBefore,
+              'thumbnailMounted': thumbMountedBefore,
+            },
+            'steps': recycleSteps,
+            'stepCount': recycleSteps.length,
+            'away': <String, Object?>{
+              ...recycleFacts(awayState, awayScroll),
+              'rowMounted': false,
+              'thumbnailMounted': false,
+            },
+            'sameThread': sameThread,
+            'sameGeneration': sameGeneration,
+            'stayedHistory': awayTimeline.isHistory,
+          }),
+        );
+    // 再用既有 place（同 ID）正常滚回，不 toggle：缩略图必须自动仍在。
+    await place(summary, 120);
+    await driver.waitFor(thumbnail, timeout: const Duration(seconds: 15));
+    final returnedState = await settledRecycle('image recycle return');
+    final returnedTimeline = TimelineObservation.parse(returnedState);
+    final returnedScroll = TimelineScrollObservation.parse(returnedState);
+    final returnedItem = returnedTimeline.item(imageItem.id);
+    final rowMountedReturned = mountedOf(await probe(summary, 'observe'));
+    final thumbMountedReturned = mountedOf(await probe(thumbnail, 'observe'));
+    final otherThumbMounted = mountedOf(
+      await probe(
+        find.byValueKey('view-image-thumbnail-$imageEntryOther'),
+        'observe',
+      ),
+    );
+    final returnedSameThread =
+        returnedTimeline.threadId == beforeTimeline.threadId;
+    final returnedSameGeneration =
+        returnedTimeline.generation == beforeTimeline.generation;
+    if (!rowMountedReturned ||
+        !thumbMountedReturned ||
+        otherThumbMounted ||
+        !returnedSameThread ||
+        !returnedSameGeneration ||
+        !returnedTimeline.isHistory ||
+        returnedItem == null ||
+        returnedItem.tool?.status != beforeItem?.tool?.status) {
+      throw StateError(
+        'Recycled image row did not come back expanded in the same lease: '
+        'row=$rowMountedReturned thumbnail=$thumbMountedReturned '
+        'otherThumbnail=$otherThumbMounted '
+        'sameThread=$returnedSameThread '
+        'sameGeneration=$returnedSameGeneration '
+        'mode=${returnedTimeline.mode} '
+        'toolStatus=${returnedItem?.tool?.status} '
+        'beforeToolStatus=${beforeItem?.tool?.status} '
+        'away=${recycleFacts(awayState, awayScroll)} '
+        'steps=${recycleSteps.length}',
+      );
+    }
+    await File('${output.path}/agent-read-image-recycled.png')
+        .writeAsBytes(await driver.screenshot());
+    // 真实 collapse：同一 toggle 再点一次，缩略图必须消失；另一图片仍保持折叠。
+    await driver.sendCommand(RawTap(toggle));
+    await driver.waitForAbsent(thumbnail, timeout: const Duration(seconds: 10));
+    final collapsed = !mountedOf(await probe(thumbnail, 'observe'));
+    final otherStillCollapsed = !mountedOf(
+      await probe(
+        find.byValueKey('view-image-thumbnail-$imageEntryOther'),
+        'observe',
+      ),
+    );
+    if (!collapsed || !otherStillCollapsed) {
+      throw StateError(
+        'Image collapse did not settle after recycling '
+        '(collapsed=$collapsed otherStillCollapsed=$otherStillCollapsed)',
+      );
+    }
+    // 承重回收证据：写失败直接传播（不吞、不需要额外 rethrow）。
+    final recycleEvidence = <String, Object?>{
+      'itemId': imageItem.id,
+      'imageEntry': imageEntryFirst,
+      'otherImageEntry': imageEntryOther,
+      'input': 'outer wheel (ToolProbe wheelOutside) away, existing place back',
+      'before': <String, Object?>{
+        ...recycleFacts(recycleBefore, beforeScroll),
+        'rowMounted': rowMountedBefore,
+        'thumbnailMounted': thumbMountedBefore,
+        'toolStatus': beforeItem?.tool?.status,
+      },
+      'steps': recycleSteps,
+      'stepCount': recycleSteps.length,
+      'away': <String, Object?>{
+        ...recycleFacts(awayState, awayScroll),
+        'rowMounted': false,
+        'thumbnailMounted': false,
+      },
+      'returned': <String, Object?>{
+        ...recycleFacts(returnedState, returnedScroll),
+        'rowMounted': rowMountedReturned,
+        'thumbnailMounted': thumbMountedReturned,
+        'otherImageThumbnailMounted': otherThumbMounted,
+        'toolStatus': returnedItem.tool?.status,
+      },
+      'sameThread': sameThread && returnedSameThread,
+      'sameGeneration': sameGeneration && returnedSameGeneration,
+      'stayedHistory': awayTimeline.isHistory && returnedTimeline.isHistory,
+      'survivedRowRecycling': away && thumbMountedReturned,
+      'collapsed': collapsed,
+      'otherImageStillCollapsed': otherStillCollapsed,
+    };
+    await File('${output.path}/agent-read-image-recycle.json').writeAsString(
+      const JsonEncoder.withIndent('  ').convert(recycleEvidence),
+    );
+    evidence['agentReadImage'] = <String, Object?>{
+      'distinctCalls': imageEntries.length,
+      'dialogOpened': true,
+      'survivedRowRecycling': recycleEvidence['survivedRowRecycling'],
+      'collapsed': collapsed,
+      'recycle': recycleEvidence,
+    };
+    await place(summary, 120);
     // 详情逐块读取：只有用户显式打开查看器才读取完整字段，关闭后停止。
     Future<Map<String, Object?>> readDetail(
       String itemId,
@@ -623,52 +882,62 @@ Future<void> main(List<String> args) async {
       required int expectedBytes,
     }) async {
       final openKey = 'timeline-detail-open-$itemId-$field';
-      await driver.waitFor(
-        find.byValueKey(openKey),
-        timeout: const Duration(seconds: 20),
-      );
-      await driver.sendCommand(RawTap(find.byValueKey(openKey)));
+      // loaded ≠ mounted：前面的展开/收起与内外滚动会改变几何，标准惰性列表不会因为
+      // `waitFor` 自己把下方行挂载出来。先用同一套真实外层滚轮把该 canonical item 的
+      // 详情入口带进挂载/可见区（`place` 走 ToolProbe wheelOutside，无像素写），再等待
+      // 并点击。两个 caller（long result / arguments）共用这一条路径，不做特判。
+      layoutWaits.add(<String, Object?>{
+        'reason': 'locateDetailOpen',
+        'itemId': itemId,
+        'field': field,
+        'key': openKey,
+        'expectedBytes': expectedBytes,
+      });
+      final openFinder = find.byValueKey(openKey);
+      await place(openFinder, 120);
+      await driver.waitFor(openFinder, timeout: const Duration(seconds: 20));
+      await driver.sendCommand(RawTap(openFinder));
       final deadline = DateTime.now().add(const Duration(seconds: 60));
-      Map<String, dynamic>? progress;
+      DetailViewerRead? progress;
       var sawPartial = false;
+      var viewerOpened = false;
       while (DateTime.now().isBefore(deadline)) {
-        progress = (jsonDecode(
-          await driver.requestData('timeline-detail-text'),
-        ) as Map).cast<String, dynamic>();
-        final characters = (progress['characters'] as num? ?? 0).toInt();
+        progress = await DetailViewerRead.read(driver.requestData);
+        if (progress.open) viewerOpened = true;
+        final characters = progress.characters;
         if (characters > 0 && characters < expectedBytes) sawPartial = true;
         if (characters >= expectedBytes) break;
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
       await driver.sendCommand(RawTap(find.byValueKey('timeline-detail-copy')));
       // 完整剪贴板原文：用来与 fixture 推出的期望原文/结构比较，而不是自证 hash。
-      final clipboard = (jsonDecode(
-        await driver.requestData('{"cmd":"clipboard-text","full":true}'),
-      ) as Map).cast<String, dynamic>();
+      final clipboard = await ClipboardRead.read(
+        driver.requestData,
+        full: true,
+      );
       await driver.sendCommand(
         RawTap(find.byValueKey('timeline-detail-close')),
       );
       final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
       var closed = false;
       while (DateTime.now().isBefore(closeDeadline)) {
-        final state = (jsonDecode(
-          await driver.requestData('timeline-detail-text'),
-        ) as Map).cast<String, dynamic>();
-        if (state['open'] == false) {
+        final state = await DetailViewerRead.read(driver.requestData);
+        if (!state.open) {
           closed = true;
           break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
-      final loadedCharacters = (progress?['characters'] as num? ?? 0).toInt();
-      final loadedHash = progress?['hash'];
+      final loadedCharacters = progress?.characters ?? 0;
+      final loadedHash = progress?.hash;
       // 完整字节 + 查看器/剪贴板一致 + 已关闭即可证明保真；`sawPartialChunk`
       // 只记录（快速多块读取允许在一次轮询前完成，产品不需要为观测放慢）。
       final pass =
+          viewerOpened &&
           loadedCharacters == expectedBytes &&
-          clipboard['characters'] == expectedBytes &&
+          clipboard.characters == expectedBytes &&
           loadedHash != null &&
-          clipboard['hash'] == loadedHash &&
+          clipboard.hash == loadedHash &&
           closed;
       return <String, Object?>{
         'field': field,
@@ -678,9 +947,10 @@ Future<void> main(List<String> args) async {
         'loadedCharacters': loadedCharacters,
         'loadedHash': loadedHash,
         'sawPartialChunk': sawPartial,
-        'clipboardCharacters': clipboard['characters'],
-        'clipboardHash': clipboard['hash'],
-        'clipboardText': clipboard['text'],
+        'viewerOpened': viewerOpened,
+        'clipboardCharacters': clipboard.characters,
+        'clipboardHash': clipboard.hash,
+        'clipboardText': clipboard.text,
         'closed': closed,
         'pass': pass,
       };
@@ -690,17 +960,19 @@ Future<void> main(List<String> args) async {
     evidence['cases'] = cases;
     final detailReads = <Object?>[];
     evidence['detailReads'] = detailReads;
-    for (var index = 0; index < tools.length; index++) {
-      stdout.writeln('tool_scroll_case=$index');
-      final toolItem = tools[index];
+    for (var index = 0; index < _expectedToolCalls.length; index++) {
+      final expected = _expectedToolCalls[index];
+      stdout.writeln('tool_scroll_case=$index:${expected.callId}');
+      // 用 canonical callId 定位条目；index 只用于证据文件命名与稳定输出。
+      final toolItem = toolsByCallId[expected.callId]!;
       final tool = toolItem.tool!;
       final callId = tool.callId;
-      final expectedStatus = callId == 'scroll-call-failed'
-          ? 'failed'
-          : 'succeeded';
-      if (tool.status != expectedStatus) {
+      if (callId != expected.callId ||
+          tool.name != expected.name ||
+          tool.status != expected.status) {
         throw StateError(
-          'Unexpected tool outcome in case $index: ${tool.status}',
+          'Unexpected tool identity in case $index: '
+          '${tool.name}/${tool.status} for $callId',
         );
       }
       // F2：每个字段的预览都必须落在真实预算内（参数/结果各 4 KiB，正文共享 32 KiB）。
@@ -732,6 +1004,9 @@ Future<void> main(List<String> args) async {
         inside = await probe(tile, 'wheelInner', dy: 60);
         await place(tile, 125);
       }
+      // 收起前必须把真实 header 重新带回可点区域：展开后标题可能已被原生反向布局
+      // 推到视口上方，点屏外坐标不是一次真实收起。
+      await place(tile, 125);
       final collapsed = await probe(tile, 'tap');
       var longResult = <String, Object?>{};
       var longArguments = <String, Object?>{};
@@ -827,14 +1102,28 @@ Future<void> main(List<String> args) async {
     // Leave one tool open, visit a later tool, then return to the earlier tile
     // and expand it after its row has been recycled.
     stdout.writeln('tool_scroll_reverse');
-    TimelineItemObservation toolFor(String callId) =>
-        tools.singleWhere((item) => item.tool!.callId == callId);
+    TimelineItemObservation toolFor(String callId) => toolsByCallId[callId]!;
     final earlierTile = find.byValueKey(
       'timeline-tool-details:${toolFor('scroll-call-medium').id}',
     );
     final laterTile = find.byValueKey(
       'timeline-tool-details:${toolFor('scroll-call-arguments').id}',
     );
+    // 逆序复测必须从真实的 collapsed 准备态开始：先读公开 `expanded` flag；若它仍
+    // 展开，先用一次真实点击收起，再进入“离开→返回→重新展开→收起”的序列。
+    await place(earlierTile, 125);
+    final earlierPrepared = await probe(earlierTile, 'observe');
+    final earlierExpandedBefore =
+        (earlierPrepared['samples'] as List).last['expanded'] == true;
+    if (earlierExpandedBefore) {
+      await place(earlierTile, 125);
+      final prepared = await probe(earlierTile, 'tap');
+      if ((prepared['samples'] as List).last['expanded'] != false) {
+        throw StateError(
+          'reverse expansion: the preparing collapse did not settle',
+        );
+      }
+    }
     await place(earlierTile, 125);
     await probe(earlierTile, 'tap');
     await place(laterTile, 125);
@@ -915,10 +1204,126 @@ Future<void> main(List<String> args) async {
     await driver.sendCommand(RawTap(find.byValueKey('timeline-image-close')));
     (evidence['sentImage'] as Map)['reopenedFromHistory'] = true;
 
-    bool headerStableAt(Object? probe) {
-      final samples = (probe as Map)['samples'] as List;
-      final initial = samples.first['top'] as num;
-      return samples.every((s) => ((s['top'] as num) - initial).abs() < 1);
+    double? finite(Object? value) =>
+        value is num && value.isFinite ? value.toDouble() : null;
+
+    /// 原生反向列表的逐 sample 精确 range-clamp 不变量（design/24 工具段）。
+    ///
+    /// 每个 sample 都必须：min/max 为真实有限数值且 `min <= max`、Thread/gen 与
+    /// 初样本一致、`mode == history`；实际 pixels 精确等于「初 pixels 对**本次
+    /// sample 自己** min/max 的 clamp」（±0.5）；row 最新侧 bottom（`top+height`）
+    /// 的变化精确等于 pixels 的变化（±0.5）。stock clamp 会同步移动行边缘，预览的
+    /// 展开/收起本身不写入 pixels；不额外 jump/animate。
+    ///
+    /// 初样本本身必须合法且有限；不用 `extentAfter ≈` 代替 min/max；所有 sample 都
+    /// 参与判定。返回逐 tap 事实（含 clamp 发生样本数与真实 min/max/pixel/edge 变化），
+    /// 由调用方强消费 `pass`，不让一个 bool 吞掉细节。
+    Map<String, Object?> nativeReverseGeometry(Object? probe) {
+      final samples = probe is Map && probe['samples'] is List
+          ? probe['samples'] as List
+          : const <Object?>[];
+      final evidence = <String, Object?>{
+        'sampleCount': samples.length,
+        'pass': false,
+        'rangeClampSamples': 0,
+        'clampedSamples': <Map<String, Object?>>[],
+        'failures': <Map<String, Object?>>[],
+      };
+      if (samples.length < 2) return evidence;
+      final first = samples.first as Map;
+      final firstScroll = first['scroll'];
+      if (firstScroll is! Map) return evidence;
+      final threadId = firstScroll['threadId'];
+      final generation = firstScroll['generation'];
+      final initialPixel = finite(firstScroll['pixels']);
+      final initialMin = finite(firstScroll['minScrollExtent']);
+      final initialMax = finite(firstScroll['maxScrollExtent']);
+      final initialTop = finite(first['top']);
+      final initialHeight = finite(first['height']);
+      if (threadId is! String ||
+          generation is! int ||
+          initialPixel == null ||
+          initialMin == null ||
+          initialMax == null ||
+          initialTop == null ||
+          initialHeight == null ||
+          initialMin > initialMax) {
+        return evidence;
+      }
+      final initialEdge = initialTop + initialHeight;
+      final clampedSamples = <Map<String, Object?>>[];
+      final failures = <Map<String, Object?>>[];
+      for (final sample in samples) {
+        final current = sample as Map;
+        final scroll = current['scroll'];
+        final top = finite(current['top']);
+        final height = finite(current['height']);
+        final pixels = scroll is Map ? finite(scroll['pixels']) : null;
+        final min = scroll is Map ? finite(scroll['minScrollExtent']) : null;
+        final max = scroll is Map ? finite(scroll['maxScrollExtent']) : null;
+        Map<String, Object?>? failure;
+        Map<String, Object?>? clamped;
+        if (scroll is! Map ||
+            current['mode'] != 'history' ||
+            scroll['threadId'] != threadId ||
+            scroll['generation'] != generation ||
+            min == null ||
+            max == null ||
+            min > max ||
+            pixels == null ||
+            top == null ||
+            height == null) {
+          failure = <String, Object?>{
+            'valid': false,
+            'mode': current['mode'],
+            'pixels': pixels,
+            'min': min,
+            'max': max,
+            'top': top,
+            'height': height,
+          };
+        } else {
+          final expectedPixel = initialPixel.clamp(min, max);
+          final edge = top + height;
+          final pixelOk = (pixels - expectedPixel).abs() <= 0.5;
+          final edgeOk =
+              ((edge - initialEdge) - (pixels - initialPixel)).abs() <= 0.5;
+          final rangeClamped = (expectedPixel - initialPixel).abs() > 0.5;
+          final fact = <String, Object?>{
+            'pixels': pixels,
+            'min': min,
+            'max': max,
+            'expectedPixels': expectedPixel,
+            'edge': edge,
+            'edgeDelta': edge - initialEdge,
+            'pixelDelta': pixels - initialPixel,
+            'rangeClamped': rangeClamped,
+          };
+          if (!pixelOk || !edgeOk) {
+            failure = <String, Object?>{
+              'valid': true,
+              'pixelOk': pixelOk,
+              'edgeOk': edgeOk,
+              ...fact,
+            };
+          } else if (rangeClamped) {
+            clamped = fact;
+          }
+        }
+        if (failure != null) failures.add(failure);
+        if (clamped != null) clampedSamples.add(clamped);
+      }
+      evidence['pass'] = failures.isEmpty;
+      evidence['rangeClampSamples'] = clampedSamples.length;
+      evidence['clampedSamples'] = clampedSamples;
+      evidence['failures'] = failures;
+      evidence['initial'] = <String, Object?>{
+        'pixels': initialPixel,
+        'min': initialMin,
+        'max': initialMax,
+        'edge': initialEdge,
+      };
+      return evidence;
     }
 
     bool expansionChanged(Object? probe, bool expanded) {
@@ -937,15 +1342,14 @@ Future<void> main(List<String> args) async {
       final inside = record['inside'] as Map?;
       final expandedSamples = (expanded?['samples'] as List?) ?? const [];
       final collapsedSamples = (collapsed?['samples'] as List?) ?? const [];
-      final headerStable =
-          expandedSamples.isNotEmpty &&
-          collapsedSamples.isNotEmpty &&
-          headerStableAt(expanded) &&
-          headerStableAt(collapsed);
       final expandedChanged =
           expandedSamples.length >= 2 && expansionChanged(expanded, true);
       final collapsedChanged =
           collapsedSamples.length >= 2 && expansionChanged(collapsed, false);
+      final expandedGeometry = nativeReverseGeometry(expanded);
+      final collapsedGeometry = nativeReverseGeometry(collapsed);
+      final nativeGeometry =
+          expandedGeometry['pass'] == true && collapsedGeometry['pass'] == true;
       // 展开后高度确实增长、收起后恢复：真实外层位置/尺寸证据。
       final grew =
           expandedSamples.length >= 2 &&
@@ -994,7 +1398,11 @@ Future<void> main(List<String> args) async {
       }
       final record_ = <String, Object?>{
         'label': label,
-        'headerStable': headerStable,
+        'nativeReverseGeometry': nativeGeometry,
+        'geometryEvidence': <String, Object?>{
+          'expanded': expandedGeometry,
+          'collapsed': collapsedGeometry,
+        },
         'expandedChanged': expandedChanged,
         'collapsedChanged': collapsedChanged,
         'grew': grew,
@@ -1002,7 +1410,7 @@ Future<void> main(List<String> args) async {
         'inner': ?innerChecks,
       };
       record_['pass'] =
-          headerStable &&
+          nativeGeometry &&
           expandedChanged &&
           collapsedChanged &&
           grew &&

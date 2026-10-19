@@ -1048,6 +1048,143 @@ void main() {
     });
   }
 
+  // ---- R4 正文选择边界：界面提示不是 canonical 正文 -------------------------------
+
+  /// design/26 §26.8：正文选择只包含所选内容域的文本。截断说明与详情入口文案不属于
+  /// canonical 正文，不随跨块选择进入剪贴板；入口的点击、焦点与辅助语义保留。
+  testWidgets(
+    '跨块全选的实际复制内容只含 canonical 正文，提示与按钮文案不进入剪贴板',
+    variant: TargetPlatformVariant.only(TargetPlatform.linux),
+    (tester) async {
+      final (client, owner, transport) = await _openDetailSession(
+        tester,
+        baseline: _selectionBaseline(),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      final lease = owner.lease('thread')!;
+      final connection = transport.connections.single;
+
+      await tester.pumpWidget(
+        host(
+          TimelineView(
+            threadId: 'thread',
+            view: owner.source.value!,
+            lease: lease,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 提示子树当前真实渲染的文案：不是测试自己构造的字符串。
+      final notice = find.byKey(StudioDriverKeys.timelineItemBodyNotice('big'));
+      expect(notice, findsOneWidget);
+      final hints = tester
+          .widgetList<Text>(
+            find.descendant(of: notice, matching: find.byType(Text)),
+          )
+          .map((widget) => widget.data)
+          .whereType<String>()
+          .toList();
+      expect(hints, hasLength(2), reason: '截断说明 + 详情入口文案');
+
+      // 选择边界不夺走入口：仍可点击、可进入键盘焦点、保留辅助语义标签。
+      final open = find.byKey(
+        StudioDriverKeys.timelineDetailOpen(
+          'big',
+          StudioDriverKeyValues.timelineDetailField(
+            const ThreadTextFieldView(),
+          ),
+        ),
+      );
+      expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+      final semantics = tester.ensureSemantics();
+      expect(find.bySemanticsLabel(hints[1]), findsWidgets);
+      semantics.dispose();
+      final buttonLabel = tester.element(
+        find.descendant(of: open, matching: find.byType(Text)).first,
+      );
+      Focus.of(buttonLabel).requestFocus();
+      await tester.pump();
+      expect(
+        Focus.of(buttonLabel).hasFocus,
+        isTrue,
+        reason: '正文选择边界不得移除详情入口的键盘焦点',
+      );
+
+      // 真实点击仍打开查看器，并在读完当前块后正常关闭。
+      await tester.tap(open);
+      await _pumpFrames(tester);
+      expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsOneWidget);
+      connection.detailCalls.single.reply.complete(_chunk());
+      await _pumpFrames(tester);
+      await tester.tap(find.byKey(StudioDriverKeys.timelineDetailClose));
+      await _pumpFrames(tester, frames: 16);
+      expect(find.byKey(StudioDriverKeys.timelineDetailDialog), findsNothing);
+
+      // 平台剪贴板：只截获 Flutter 自己经 `_copy()` 写出的 `Clipboard.setData`，
+      // 测试不构造、也不自行写入任何复制字符串。
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied =
+                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      final regionFinder = find.byType(SelectableRegion);
+      expect(regionFinder, findsOneWidget);
+      final region = tester.state<SelectableRegionState>(regionFinder);
+      // 跨块全选：与工具栏 Select All / Ctrl+A 同一条公开选择状态通路。
+      region.selectAll();
+      await tester.pumpAndSettle();
+      final copy = region.contextMenuButtonItems.singleWhere(
+        (item) => item.type == ContextMenuButtonType.copy,
+      );
+      copy.onPressed!();
+      await _pumpFrames(tester);
+
+      expect(copied, isNotNull, reason: '真实复制路径写入了平台剪贴板');
+      // 选区的 plainText 保留按钮内文本的硬换行，这里只做断言侧的空白规范化比较，
+      // 不改写生产复制字符串。
+      final normalized = copied!.replaceAll(RegExp(r'\s+'), ' ');
+      for (final hint in hints) {
+        expect(
+          normalized,
+          isNot(contains(hint)),
+          reason: '界面提示不属于 canonical 正文，不得进入剪贴板',
+        );
+      }
+      expect(
+        copied,
+        '前段canonical正文截断前的preview后段canonical正文',
+        reason: '精确等于所选内容域的正文（SDK 顺序拼接、不插分隔）',
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _pumpFrames(tester);
+      await tester.runAsync(() async {
+        await owner.close(deadline: deadline);
+        await client.close(deadline: deadline);
+      });
+      await _pumpFrames(tester, frames: 2);
+    },
+  );
+
   // ---- 只读滚动诊断：查询时现场读取当前 controller，不复用通知快照 -----------------
 
   testWidgets('滚动诊断每次请求读当前 position：拖动中 true，抬手归 false 后立即 false', (
@@ -1659,6 +1796,76 @@ StudioTimelineBaseline _longBaseline({int count = 40}) {
           omittedBytes: 0,
           details: const [],
         ),
+    ],
+  );
+}
+
+/// 跨块正文选择夹具：前后 canonical 正文夹一条带截断提示与详情入口的大条目。
+StudioTimelineBaseline _selectionBaseline() {
+  final timestamp = DateTime.utc(2026);
+  StudioTimelineItem canonical(String id, int ordinal, String body) =>
+      StudioTimelineItem(
+        item: ThreadItemView(
+          id: id,
+          threadId: 'thread',
+          turnId: 'turn',
+          ordinal: ordinal,
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          saved: true,
+          executionTerminal: true,
+          state: ThreadTextItemStateView(
+            channel: ThreadTextChannel.finalAnswer,
+            text: body,
+            attachments: const [],
+            lifecycle: CompletedThreadContentView(timestamp),
+          ),
+        ),
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 0,
+        details: const [],
+      );
+  return StudioTimelineBaseline(
+    subscriptionId: 'sub',
+    version: 1,
+    before: null,
+    hasOlder: false,
+    items: [
+      canonical('before', 1, '前段canonical正文'),
+      StudioTimelineItem(
+        item: ThreadItemView(
+          id: 'big',
+          threadId: 'thread',
+          turnId: 'turn',
+          ordinal: 2,
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          saved: true,
+          executionTerminal: true,
+          bodyOmittedUnits: 6,
+          state: ThreadTextItemStateView(
+            channel: ThreadTextChannel.finalAnswer,
+            text: '截断前的preview',
+            attachments: const [],
+            lifecycle: CompletedThreadContentView(timestamp),
+          ),
+        ),
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 6,
+        details: const [
+          StudioTimelineDetailRef(
+            field: ThreadTextFieldView(),
+            revision: 1,
+            totalBytes: 12,
+            previewBytes: 6,
+          ),
+        ],
+      ),
+      canonical('after', 3, '后段canonical正文'),
     ],
   );
 }

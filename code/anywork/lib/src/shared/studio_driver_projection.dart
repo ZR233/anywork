@@ -241,7 +241,11 @@ TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
           filename: attachment.filename ?? '',
           byteSize: attachment.byteSize,
         ),
-      for (final attachment in tool?.attachments ?? const [])
+      // 可空工具附件的空集合必须带元素类型：无上下文的 `const []` 会让
+      // `??` 的 LUB 退化成 `List<dynamic>`，元素随之变成 dynamic，`modality.name`
+      // 就按实例查找 `AttachmentModalityView` 而抛 NoSuchMethodError。
+      for (final attachment
+          in tool?.attachments ?? const <ThreadAttachmentView>[])
         TimelineAttachmentFacts(
           id: attachment.id,
           modality: attachment.modality.name,

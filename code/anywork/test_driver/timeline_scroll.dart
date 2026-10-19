@@ -43,10 +43,11 @@ Future<void> main(List<String> args) async {
 
   Future<Map<String, dynamic>> waitFor(
     String label,
-    bool Function(Map<String, dynamic>) condition,
-  ) async {
+    bool Function(Map<String, dynamic>) condition, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
     await File('${output.path}/stage.txt').writeAsString('$label\n');
-    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    final deadline = DateTime.now().add(timeout);
     Map<String, dynamic>? last;
     while (DateTime.now().isBefore(deadline)) {
       final state = await snapshot();
@@ -95,34 +96,61 @@ Future<void> main(List<String> args) async {
     );
   }
 
-  /// 阅读期间正文继续增长：已显示身份不变、冻结展示不被替换、模式保持 History。
+  /// 阅读期间后台继续生成，但已展示的 History 展示保持冻结。
+  ///
+  /// 冻结期间**不能**再用“行内预览字符增长”当生成证据：预览按产品 32 KiB 预算封顶，
+  /// 而 History 不向已展示 Message 应用实时正文。真实证据是 owner 从内容增量发布的
+  /// `hasNewOutput`（design/26 §26.8），它只在后台确实产出新内容时出现。
+  ///
+  /// [requireLiveBackground] 为真时，必须在**生成仍在进行**的同一时刻观察：`busy`
+  /// 为真、`hasNewOutput` 为真、此前展示的正文逐字不变。等待流结束再靠 `!busy`
+  /// 通过属于覆盖空洞，不能接受；这类阶段会持续到 deadline 并如实失败。
   Future<void> checkGrowth(
     Map<String, dynamic> beforeState,
-    String phase,
-  ) async {
+    String phase, {
+    bool requireLiveBackground = false,
+  }) async {
     final before = TimelineObservation.parse(beforeState);
-    final beforeBody = _bodyCharacters(beforeState);
+    final frozen = _frozenBodies(before);
     final state = await waitFor(
       phase,
-      (state) =>
-          (!_busy(state) || _bodyCharacters(state) > beforeBody + 16000) &&
-          idle(state),
+      (state) {
+        final timeline = TimelineObservation.optional(state);
+        if (timeline == null || !timeline.isHistory || !idle(state)) {
+          return false;
+        }
+        if (!_frozenBodiesUnchanged(timeline, frozen)) return false;
+        if (!requireLiveBackground) return true;
+        // 后台生成进行中的真实提示：这一帧同时具备 busy、新输出提示与未变的冻结正文。
+        return _busy(state) && timeline.hasNewOutput;
+      },
+      // 生成窗口只有数秒：错过就必须尽早如实失败，不能靠长等掩盖覆盖空洞。
+      timeout: requireLiveBackground
+          ? const Duration(seconds: 25)
+          : const Duration(seconds: 60),
     );
     record(phase, state);
     final after = TimelineObservation.parse(state);
-    final grew = _bodyCharacters(state) > beforeBody + 16000;
-    _require(grew || !_busy(state), '$phase did not settle');
+    _require(after.isHistory, '$phase left the frozen history display');
+    _require(
+      after.generation == before.generation,
+      '$phase changed the display generation',
+    );
     // History 冻结已展示结构（含保存/Remove）：先前身份必须全部保留。
     _require(
       before.itemIds.every(after.itemIds.contains),
       '$phase dropped already displayed identities',
     );
-    if (before.isHistory) {
-      _require(after.isHistory, '$phase left the frozen history display');
-      _require(
-        after.generation == before.generation,
-        '$phase changed the display generation',
-      );
+    _require(
+      _frozenBodiesUnchanged(after, frozen),
+      '$phase replaced an already displayed body',
+    );
+    // 后台仍在生成时，冻结展示必须带真实新输出提示。
+    if (_busy(state)) {
+      _require(after.hasNewOutput, '$phase hid real background output');
+    }
+    if (requireLiveBackground) {
+      observations['backgroundOutputWhileFrozen'] = true;
     }
   }
 
@@ -140,7 +168,9 @@ Future<void> main(List<String> args) async {
     record('smallUpwardDrag', state);
     _require(timeline.isHistory, 'drag did not enter history');
     final historyGeneration = timeline.generation;
-    await checkGrowth(state, 'outputWhileReading');
+    observations['historyGeneration'] = historyGeneration;
+    // 第一处冻结观察必须在后台仍在生成期间完成：这是本 companion 的核心证据。
+    await checkGrowth(state, 'outputWhileReading', requireLiveBackground: true);
 
     // 桌面上滚轮按平台步长前进：重复同一步长直到冻结集合的本地底端。
     for (var step = 0; step < 24; step += 1) {
@@ -201,6 +231,11 @@ Future<void> main(List<String> args) async {
       (TimelineScrollObservation.parse(state).pixels ?? 1).abs() <= 0.5,
       'explicit return to live did not start from offset 0',
     );
+    _require(
+      observations['backgroundOutputWhileFrozen'] == true,
+      'no in-progress background output was observed while the history '
+      'display stayed frozen',
+    );
     observations['checksPassed'] = true;
     await File('${output.path}/screen.png')
         .writeAsBytes(await driver.screenshot());
@@ -218,6 +253,42 @@ Future<void> main(List<String> args) async {
 
 bool _busy(Map<String, dynamic> state) =>
     (state['workspace'] as Map?)?['isBusy'] == true;
+
+/// 已展示条目的正文指纹：预览字符数 + 声明的真实总字节数 + 预览正文本身。
+///
+/// History 冻结的是“已展示内容”，因此比较这三项即可发现替换、重排成另一份正文或
+/// 预览被重新裁剪；revision 等元数据只记录，不参与冻结判定。
+Map<String, String> _frozenBodies(TimelineObservation timeline) =>
+    <String, String>{
+      for (final item in timeline.items)
+        item.id:
+            '${item.text.length}:${item.textTotalBytes}:'
+            '${_fnv1a64(item.text)}',
+    };
+
+bool _frozenBodiesUnchanged(
+  TimelineObservation timeline,
+  Map<String, String> frozen,
+) {
+  for (final entry in frozen.entries) {
+    final item = timeline.item(entry.key);
+    if (item == null) return false;
+    final current =
+        '${item.text.length}:${item.textTotalBytes}:${_fnv1a64(item.text)}';
+    if (current != entry.value) return false;
+  }
+  return true;
+}
+
+/// FNV-1a over the code units. Must stay identical to the Driver-side helper.
+int _fnv1a64(String text) {
+  var hash = 0xcbf29ce484222325;
+  for (var index = 0; index < text.length; index += 1) {
+    hash ^= text.codeUnitAt(index);
+    hash = hash * 0x100000001b3;
+  }
+  return hash;
+}
 
 /// 已加载消息的正文预览字符总数：随访问页增长，不是常量内存证明。
 int _bodyCharacters(Map<String, dynamic> state) {
