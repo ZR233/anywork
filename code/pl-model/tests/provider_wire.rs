@@ -1411,6 +1411,102 @@ async fn paced_body_reports_timing_for_throughput_diagnostics() {
 }
 
 #[tokio::test]
+async fn throughput_timing_excludes_terminal_trace_publication() {
+    use pl_protocol::trace::{
+        TraceEvent, TraceEventDraft, TraceEventSink, TraceEventSinkError, TraceOperation,
+        TracePartAction,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    #[derive(Debug)]
+    struct SlowTerminalSink {
+        inner: InMemoryTraceEventSink,
+        terminal_publications: AtomicU64,
+    }
+
+    impl TraceEventSink for SlowTerminalSink {
+        fn emit(&self, draft: TraceEventDraft) -> Result<TraceEvent, TraceEventSinkError> {
+            if matches!(
+                &draft.operation,
+                TraceOperation::Apply {
+                    action: TracePartAction::UpdateToolInvocation { invocation },
+                    ..
+                } if invocation.arguments() == "{}"
+            ) {
+                // The synchronous consumer deliberately spends time publishing the tool that
+                // the normalized terminal event finalizes. This is an input to the regression,
+                // not a sleep used to guess whether an asynchronous operation has finished.
+                self.terminal_publications.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            self.inner.emit(draft)
+        }
+
+        fn next_sequence(&self) -> u64 {
+            self.inner.next_sequence()
+        }
+    }
+
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::Chat,
+        "timed terminal publication",
+        0,
+        Reply::PacedEvents {
+            initial_delay_ms: 0,
+            step_millis: 100,
+            events: vec![
+                json!({"id":"timed-tool","model":"fixture-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":"timed-tool-call","function":{"name":"noop","arguments":"{}"}}]},"finish_reason":null}]}),
+                json!({"id":"timed-tool","choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+                json!({"id":"timed-tool","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}),
+            ],
+        },
+    )])
+    .await
+    .unwrap();
+    let sink = Arc::new(SlowTerminalSink {
+        inner: InMemoryTraceEventSink::new("timed-session", 0),
+        terminal_publications: AtomicU64::new(0),
+    });
+    let runtime = ModelRuntime::new(
+        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+        model(
+            "fixture-model",
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    )
+    .unwrap();
+    let result = runtime
+        .complete(
+            request("timed terminal publication"),
+            ModelInvocationContext::new(ModelSession::default()).with_trace(
+                CompletionTraceContext {
+                    session_id: "timed-session".into(),
+                    turn_id: "timed-turn".into(),
+                    inference_id: "timed-inference".into(),
+                },
+                sink.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sink.terminal_publications.load(Ordering::Relaxed), 1);
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].name, "noop");
+    let timing = result.timing.expect("the response streamed output");
+    assert_eq!(
+        timing.ttft_millis.checked_add(timing.decode_millis),
+        Some(timing.total_millis)
+    );
+    assert!(timing.decode_millis > 0);
+    assert!(
+        timing.decode_millis < 600,
+        "model timing must exclude the 700ms synchronous terminal trace publication: {timing:?}"
+    );
+    fixture.finish().await.unwrap();
+}
+
+#[tokio::test]
 async fn retry_uses_only_the_successful_attempt_for_timing() {
     let fixture = FixtureServer::start(vec![
         Step::prompt(

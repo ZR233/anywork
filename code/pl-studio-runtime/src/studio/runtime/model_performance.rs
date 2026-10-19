@@ -849,7 +849,7 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
         total_response_millis: row.response_millis,
         tokens_per_second: row
             .decode_millis
-            .filter(|value| *value > 0)
+            .filter(|_| row.has_throughput_sample)
             .map(|value| throughput(row.completion_tokens, value)),
     }
 }

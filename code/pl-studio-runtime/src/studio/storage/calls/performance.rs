@@ -28,6 +28,7 @@ pub(super) struct PerformanceSample {
 pub(super) fn sample_from_record(record: &CallLogRecord) -> PerformanceSample {
     let usage = record.usage.as_ref();
     let timing = record.timing.as_ref();
+    let throughput = record.throughput_sample();
     PerformanceSample {
         thread_id: record.thread_id.clone(),
         call_id: record.call_id.clone(),
@@ -44,9 +45,9 @@ pub(super) fn sample_from_record(record: &CallLogRecord) -> PerformanceSample {
         ttft_millis: timing
             .map(|timing| opt_i64(timing.ttft_millis))
             .unwrap_or(None),
-        decode_millis: timing
-            .map(|timing| opt_i64(timing.decode_millis))
-            .unwrap_or(None),
+        // This table is the bounded performance projection, not the raw call log. An invalid
+        // pair contributes neither side to SQL aggregation; its raw timing remains in JSONL.
+        decode_millis: throughput.and_then(|(_, timing)| opt_i64(timing.decode_millis)),
         response_millis: timing
             .map(|timing| opt_i64(timing.response_millis))
             .unwrap_or(None),
@@ -107,21 +108,30 @@ pub(super) async fn trim(db: &impl ConnectionTrait) -> Result<()> {
 
 /// 迁移时把旧 `model_calls` 的成功调用一次性有界投影为样本集合。
 pub(super) async fn migrate_from_legacy(db: &DatabaseConnection) -> Result<()> {
-    db.execute_raw(statement(
-        "INSERT OR REPLACE INTO performance_samples(
-            thread_id,call_id,completed_at,provider_instance_id,provider_display_name,
-            configured_model,sent_model,reported_model,reasoning_effort,output_tokens,
-            ttft_millis,decode_millis,response_millis)
-         SELECT thread_id,call_id,COALESCE(finished_at,started_at),provider_instance_id,
-                provider_display_name,configured_model,sent_model,reported_model,
-                reasoning_effort,output_tokens,ttft_millis,decode_millis,response_millis
-         FROM model_calls
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT thread_id,call_id,root_thread_id,turn_id,retry_of,revision,
+                    admitted_at,started_at,finished_at,status,terminal,retention,purpose,
+                    provider_instance_id,provider_display_name,configured_model,sent_model,
+                    reported_model,reasoning_effort,input_tokens,output_tokens,cache_read_tokens,
+                    cache_write_tokens,reasoning_tokens,total_tokens,ttft_millis,decode_millis,
+                    response_millis,cost_currency,cost_amount,has_unpriced_usage
+             FROM model_calls
          WHERE terminal=1 AND status='committed'
          ORDER BY COALESCE(finished_at,started_at) DESC,thread_id DESC,call_id DESC LIMIT ?",
-        vec![(PERFORMANCE_SAMPLE_LIMIT as i64).into()],
-    ))
-    .await?;
-    trim(db).await?;
+            vec![(PERFORMANCE_SAMPLE_LIMIT as i64).into()],
+        ))
+        .await?;
+    // Reuse the migration decoder and the live projection's paired validation. A second SQL
+    // rendition of UsageReport's rules would silently diverge for malformed legacy counters.
+    // Explicit metadata columns also keep old inline bodies out of this bounded projection.
+    let tx = db.begin().await?;
+    for row in &rows {
+        let legacy = schema::legacy_record(row)?;
+        record(&tx, &sample_from_record(&legacy)).await?;
+    }
+    trim(&tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -139,9 +149,14 @@ mod tests {
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<3005)
              INSERT INTO model_calls(thread_id,call_id,turn_id,attempt_id,revision,admitted_at,
                started_at,finished_at,status,terminal,root_thread_id,provider_instance_id,
-               sent_model,output_tokens,decode_millis,cost_currency,cost_amount)
+               sent_model,output_tokens,ttft_millis,decode_millis,response_millis,
+               cost_currency,cost_amount)
              SELECT 'thread',printf('call-%04d',i),'turn',printf('call-%04d',i),i,i,i,i,
-               'committed',1,'root','provider','model',10,100,'USD',1.0 FROM n;
+               'committed',1,'root','provider','model',10,20,100,120,'USD',1.0 FROM n;
+             UPDATE model_calls SET output_tokens=0 WHERE call_id='call-3005';
+             UPDATE model_calls SET response_millis=1 WHERE call_id='call-3004';
+             UPDATE model_calls SET output_tokens=NULL WHERE call_id='call-3003';
+             UPDATE model_calls SET reasoning_tokens=20 WHERE call_id='call-3002';
              UPDATE calls_meta SET schema_version=3;",
         )
         .await?;
@@ -152,7 +167,11 @@ mod tests {
             "expired diagnostics must not reappear from performance summaries"
         );
         let summary = upgraded.performance_summary_rows().await?;
-        assert_eq!(summary[0].sample_count, 3000);
+        // All 3000 bounded records survive migration, but invalid usage, zero/missing output and
+        // inconsistent timing contribute neither side. Their monetary facts are still retained.
+        assert_eq!(summary[0].sample_count, 2996);
+        assert_eq!(summary[0].completion_tokens, 29960);
+        assert_eq!(summary[0].total_decode_millis, 299600);
         let costs = upgraded.session_cost_rollups().await?;
         assert_eq!(costs[0].estimated_costs[0].amount, 3005.0);
 
@@ -171,9 +190,9 @@ mod tests {
                 reported_model: None,
                 reasoning_effort: None,
                 output_tokens: Some(10),
-                ttft_millis: None,
+                ttft_millis: Some(20),
                 decode_millis: Some(100),
-                response_millis: None,
+                response_millis: Some(120),
             },
         )
         .await?;

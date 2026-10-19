@@ -11,8 +11,8 @@ pub enum InferenceBillingAppend {
 
 /// 一次成功 inference 的单调时钟耗时事实。
 ///
-/// 三个值都以逻辑 inference 首次发送为起点；transport retry 与 fallback
-/// 不会创建第二份 timing。
+/// 三个值以产生成功结果的 transport attempt 发送为起点；失败尝试和重试等待不混入。
+/// decode 从首个非空模型输出增量到归一化终止事件，不包含其后的消费与保存开销。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceTiming {
@@ -22,9 +22,19 @@ pub struct InferenceTiming {
 }
 
 impl InferenceTiming {
-    /// 只有正 decode 时长才能形成吞吐样本。
+    /// 正 decode 及完整、一致的时间边界才可与输出词元组成吞吐样本。
     pub fn has_throughput_sample(self) -> bool {
         self.decode_millis > 0
+            && self.ttft_millis.checked_add(self.decode_millis) == Some(self.total_millis)
+    }
+
+    /// 校验同一次速度样本的两侧，不改写供应商原始用量。
+    /// 输出缺失或为零、计数矛盾及无效计时均保持不可用。
+    pub fn throughput_output_tokens(self, usage: &crate::UsageReport) -> Option<u64> {
+        if !self.has_throughput_sample() || usage.status() == crate::UsageStatus::Invalid {
+            return None;
+        }
+        usage.output_tokens.filter(|tokens| *tokens > 0)
     }
 }
 

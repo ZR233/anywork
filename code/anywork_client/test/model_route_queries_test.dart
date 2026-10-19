@@ -193,8 +193,9 @@ void main() {
       );
       expect(
         ModelRouteQueries.throughput(partial),
-        isNull,
-        reason: 'incomplete live sample $sample must not borrow old counters',
+        1000,
+        reason:
+            'incomplete live sample $sample must keep the confirmed Turn pair',
       );
     }
     final complete = runtime.copyWith(
@@ -208,6 +209,33 @@ void main() {
       ),
     );
     expect(ModelRouteQueries.throughput(complete), 40);
+    expect(ModelRouteQueries.throughputSource(complete)?.outputTokens, 20);
+    expect(ModelRouteQueries.throughputSource(complete)?.decodeMillis, 500);
+    expect(
+      ModelRouteQueries.throughputSource(
+        runtime.copyWith(
+          liveUsage: const ThreadRuntimeLiveUsageView(
+            turnId: 'next-turn',
+            attemptId: 'next-attempt',
+            completionTokens: 20,
+            state: ThreadRuntimeUsageState.live,
+            observationSequence: 1,
+          ),
+        ),
+      )?.outputTokens,
+      1000,
+    );
+    expect(
+      ModelRouteQueries.throughput(
+        runtime.copyWith(turnCompletionTokens: 0, turnDecodeMillis: 0),
+      ),
+      isNull,
+    );
+    expect(
+      ModelRouteQueries.throughput(runtime.copyWith(turnDecodeMillis: 0)),
+      isNull,
+      reason: 'positive tokens without decode duration stay unknown',
+    );
   });
 
   test('model selection keeps a supported effort then a declared candidate default', () {

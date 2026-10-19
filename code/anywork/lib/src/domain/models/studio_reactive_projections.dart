@@ -4,57 +4,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'agent_workspace_view.dart';
 import 'studio_state.dart';
 
-/// The runtime projection is the typed view of the selected Thread ordered
-/// state. It deliberately contains no timeline rows, composer draft, or
-/// settings collection, so high-frequency runtime changes cannot invalidate
-/// those responsibilities.
-class StudioRuntimeProjection {
-  const StudioRuntimeProjection({
-    required this.threadId,
-    required this.runtime,
-    required this.turn,
-    required this.isBusy,
-    required this.syncState,
-    required this.loadError,
-  });
-
-  factory StudioRuntimeProjection.fromState(StudioState state) {
-    final workspace = state.selectedWorkspace;
-    return StudioRuntimeProjection(
-      threadId: state.selectedThreadId,
-      runtime: state.runtime,
-      turn: workspace?.activeTurn,
-      isBusy: state.isBusy,
-      syncState: state.selectedWorkspaceUi.syncState,
-      loadError: state.selectedWorkspaceUi.loadError,
-    );
-  }
-
-  final String? threadId;
-  final ThreadRuntimeView runtime;
-  final StudioTurnView? turn;
-  final bool isBusy;
-  final AgentWorkspaceSyncState syncState;
-  final String? loadError;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioRuntimeProjection &&
-            threadId == other.threadId &&
-            runtime == other.runtime &&
-            turn == other.turn &&
-            isBusy == other.isBusy &&
-            syncState == other.syncState &&
-            loadError == other.loadError;
-  }
-
-  @override
-  int get hashCode =>
-      Object.hash(threadId, runtime, turn, isBusy, syncState, loadError);
-}
-
-/// Context values are split from [StudioRuntimeProjection] so the context
+/// Context values are split from the Thread runtime so the context
 /// ring/detail does not rebuild for a throughput-only runtime update.
 class StudioContextProjection {
   const StudioContextProjection({

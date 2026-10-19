@@ -144,6 +144,7 @@ pub(crate) struct PerformanceSampleRow {
     pub(crate) ttft_millis: Option<u64>,
     pub(crate) decode_millis: Option<u64>,
     pub(crate) response_millis: Option<u64>,
+    pub(crate) has_throughput_sample: bool,
 }
 
 /// 按（provider instance、实际发送模型、reasoning effort）的数据库聚合分组。
@@ -728,6 +729,7 @@ impl CallsStore {
             if record.status != CallStatus::Committed.as_str() {
                 continue;
             }
+            let has_throughput_sample = record.throughput_sample().is_some();
             samples.push(PerformanceSampleRow {
                 completed_at: record.recorded_at,
                 provider_instance_id: record.provider_instance_id.unwrap_or_default(),
@@ -743,6 +745,7 @@ impl CallsStore {
                 ttft_millis: record.timing.map(|timing| timing.ttft_millis),
                 decode_millis: record.timing.map(|timing| timing.decode_millis),
                 response_millis: record.timing.map(|timing| timing.response_millis),
+                has_throughput_sample,
             });
         }
         Ok(samples)
@@ -765,7 +768,9 @@ impl CallsStore {
                         COALESCE(SUM(response_millis), 0) AS total_response_millis
                  FROM performance_samples
                  WHERE provider_instance_id IS NOT NULL AND sent_model IS NOT NULL
-                   AND decode_millis > 0 AND output_tokens IS NOT NULL
+                   AND output_tokens > 0 AND decode_millis > 0
+                   AND ttft_millis >= 0 AND response_millis >= ttft_millis
+                   AND decode_millis = response_millis - ttft_millis
                  GROUP BY provider_instance_id, sent_model, reasoning_effort
                  ORDER BY provider_instance_id, sent_model,
                           reasoning_effort IS NOT NULL, reasoning_effort",

@@ -308,8 +308,14 @@ Thread 的 runtime、turn、interaction、workflow、activity 与 storage 继续
 token 保持未知，宿主不得用字符数、字节数或本地计时冒充 token。live 观察不写入 durable
 `UsageSummary`，attempt 结束时由 authoritative 事实覆盖并清除 live 标识；重订阅首帧必须
 携带当前 live/authoritative 状态。吞吐 projection 只接受同一 live 观察内同时存在的
-output token 与 decode 时长；live 观察已建立但任一字段缺失时保持未知，不回退另一 attempt
-的 authoritative 分子或分母。没有 live 观察时才可成对使用 authoritative 计数。
+有效 output token 与 decode 时长。live 任一字段缺失或无效时，不能借用另一 attempt 的字段
+拼成速度；状态栏可以改为完整采用 canonical runtime 中最近已确认的成对聚合样本。只有两类
+完整样本均不可用时才显示未知，具体选择与聚合保持语义见 [18](./18-studio-state.md) §18.8。
+
+Runtime 是同一有序状态流中的独立 typed 事件，不另开速度 transport 或 reducer。投影 owner
+先折叠本轮已受理 effect 的累计摘要，再从当前 owner 快照发布变更后的 runtime；终态计数不能
+等待无关事件或页面重开才交付。Flutter 的速度、上下文与稳定状态分别观察该镜像的不可变、
+值相等派生值；独立呈现订阅不改变底层的单一水位和事实源。
 
 所有用户可见实时字段都必须有可追踪的 owner、事件或快照、Dart reducer、watermark、selector
 和可见 lease。Widget 不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、

@@ -271,16 +271,36 @@ abstract final class ModelRouteQueries {
     runtime: runtime,
   );
 
-  /// A partial live sample is unknown; it cannot borrow the previous Turn's
-  /// missing half. All status fields are resolved from this same runtime frame.
+  /// A complete live pair replaces the display. Otherwise the canonical Turn
+  /// pair is adopted as a whole. The two samples are never mixed.
   static double? throughput(ThreadRuntimeView runtime) {
+    return throughputSource(runtime)?.tokensPerSecond;
+  }
+
+  /// Live pair first, otherwise the canonical Turn pair. Never cross samples.
+  static ({int outputTokens, int decodeMillis, double tokensPerSecond})?
+  throughputSource(ThreadRuntimeView runtime) {
     final live = runtime.liveUsage;
-    if (live == null) return runtime.turnTokensPerSecond;
-    final tokens = live.completionTokens;
-    final millis = live.decodeMillis;
-    return tokens != null && tokens > 0 && millis != null && millis > 0
-        ? tokens * 1000 / millis
-        : null;
+    return _completeThroughputPair(
+          live?.completionTokens,
+          live?.decodeMillis,
+        ) ??
+        _completeThroughputPair(
+          runtime.turnCompletionTokens,
+          runtime.turnDecodeMillis,
+        );
+  }
+
+  static ({int outputTokens, int decodeMillis, double tokensPerSecond})?
+  _completeThroughputPair(int? tokens, int? millis) {
+    if (tokens == null || tokens <= 0 || millis == null || millis <= 0) {
+      return null;
+    }
+    return (
+      outputTokens: tokens,
+      decodeMillis: millis,
+      tokensPerSecond: tokens * 1000 / millis,
+    );
   }
 
   static String defaultModelAfterRemoval({

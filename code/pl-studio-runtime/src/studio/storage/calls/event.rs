@@ -96,6 +96,32 @@ pub(super) struct CallLogRecord {
 }
 
 impl CallLogRecord {
+    /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
+    /// validation rejects them for performance statistics.
+    pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
+        if self.status != CallStatus::Committed.as_str() {
+            return None;
+        }
+        let usage = self.usage.as_ref()?;
+        let report = pl_protocol::UsageReport {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
+        };
+        let timing = self.timing?;
+        let timing = pl_protocol::InferenceTiming {
+            ttft_millis: timing.ttft_millis,
+            decode_millis: timing.decode_millis,
+            total_millis: timing.response_millis,
+        };
+        timing
+            .throughput_output_tokens(&report)
+            .map(|output_tokens| (output_tokens, timing))
+    }
+
     /// 构造一条最小身份的显式截断记录。
     pub(super) fn truncated_fallback(&self) -> Self {
         Self {
@@ -184,7 +210,7 @@ pub(super) fn billing_record(
     billing: &InferenceBillingRecord,
     status: CallStatus,
 ) -> CallLogRecord {
-    let usage = billing.accounting.usage.totals();
+    let usage = &billing.accounting.usage;
     let (configured_model, sent_model, reported_model) = match &billing.model_observation {
         Some(observation) => (
             Some(observation.configured_model.clone()),
@@ -220,12 +246,12 @@ pub(super) fn billing_record(
         reported_model,
         reasoning_effort: billing.reasoning_effort.clone(),
         usage: Some(CallUsageRecord {
-            input_tokens: Some(usage.prompt_tokens),
-            output_tokens: Some(usage.completion_tokens),
-            cache_read_tokens: Some(usage.cached_prompt_tokens),
-            cache_write_tokens: Some(usage.cache_write_tokens),
-            reasoning_tokens: Some(usage.reasoning_tokens),
-            total_tokens: Some(usage.total_tokens),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
         }),
         cost,
         has_unpriced_usage: billing.accounting.has_unpriced_usage(),

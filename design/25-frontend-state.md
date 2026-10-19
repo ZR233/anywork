@@ -107,6 +107,13 @@ Settings、标签页或 Widget 暂停不改变逻辑 demand，Thread 切换、�
 状态流快照不反写目录行；updatedAt 不充当跨资源版本，同秒晚到快照不能回滚目录终态。
 mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 
+同 Thread 的 runtime、turn、activity、storage 共用一条带水位的状态订阅，typed Runtime
+事件独立更新其镜像；速度不另建 transport、reducer 或业务缓存。Riverpod 呈现层按明确
+`threadId` 派生不可变、值相等的细粒度 projection，并由对应 Consumer 实际观察：速度、上下文
+和状态栏稳定字段互不因无关值变化而重建。`select` 或值相等的派生 provider 只筛选通知，
+不拥有第二份业务事实。参数化呈现观察自动释放时只取消自身 observer 与许可，不能关闭
+Session/ChatView 或清除草稿；完整样本的速度选择见 [18](./18-studio-state.md) §18.8。
+
 普通问答与计划确认回执由 canonical 工具条目的 typed 问答历史派生，沿用同一身份与内容版本；
 adapter 保留问题、答案列表、脱敏标记和权威状态，不让 feature 重新解析工具载荷。
 composer pending interaction 队列只服务待处理交互，resolved 后不留队，不另建回答缓存。

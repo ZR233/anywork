@@ -117,19 +117,28 @@ abstract class StatusBarView with _$StatusBarView {
 
   const factory StatusBarView({
     required StudioThread thread,
-    required ThreadRuntimeView runtime,
     required List<ProviderSettingsView> providers,
     required List<RoleSettingsView> roles,
     required bool isBusy,
+    ThreadModelRouteView? modelRoute,
+    WorkflowRunView? workflowRun,
+    @Default(<String>[]) List<String> activeSkills,
+    @Default(<String>[]) List<String> activeMcpServers,
+    @Default(<String>[]) List<String> activeLspServers,
   }) = _StatusBarView;
 
   factory StatusBarView.fromWorkspace(AgentWorkspaceView workspace) {
+    final runtime = workspace.runtime;
     return StatusBarView(
       thread: workspace.thread,
-      runtime: workspace.runtime,
       providers: workspace.providers,
       roles: workspace.roles,
       isBusy: workspace.isBusy,
+      modelRoute: runtime.modelRoute,
+      workflowRun: runtime.workflow?.currentRun,
+      activeSkills: runtime.activeSkills,
+      activeMcpServers: runtime.activeMcpServers,
+      activeLspServers: runtime.activeLspServers,
     );
   }
 }

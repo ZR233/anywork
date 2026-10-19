@@ -186,14 +186,6 @@ fn fold_effect_accounting_in_place(
     summary: &mut pl_core::thread::UsageSummary,
     effect: &pl_core::thread::ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
-    // 新的 Turn 开始时每轮计数重新累计；旧 Turn 的尝试不再改变它。
-    if let Some(turn) = &effect.turn
-        && summary.turn_id != turn.turn_id
-    {
-        summary.turn_id = turn.turn_id.clone();
-        summary.turn_completion_tokens = 0;
-        summary.turn_decode_millis = 0;
-    }
     if let Some(update) = &effect.attempt {
         // 模型身份、窗口与阈值来自 admission 时的绑定，作为一组事实在响应存在之前就已投影。
         match update.request_metadata.as_ref() {
@@ -230,14 +222,21 @@ fn fold_effect_accounting_in_place(
             let accounting = match output {
                 Ok(output) => match pl_model::runtime::model_response_receipt(output)? {
                     Some(receipt) => {
-                        if summary.turn_id == update.turn_id
+                        // Pending, failed and cancelled calls do not invalidate the last complete
+                        // speed sample. A new Turn takes ownership only with its first valid pair.
+                        if matches!(update.outcome, AttemptOutcome::Committed(_))
                             && let Some(timing) = receipt.response.timing
+                            && let Some(output_tokens) =
+                                timing.throughput_output_tokens(&receipt.response.accounting.usage)
                         {
+                            if summary.turn_id != update.turn_id {
+                                summary.turn_id.clone_from(&update.turn_id);
+                                summary.turn_completion_tokens = 0;
+                                summary.turn_decode_millis = 0;
+                            }
                             summary.turn_completion_tokens = summary
                                 .turn_completion_tokens
-                                .checked_add(
-                                    receipt.response.accounting.usage.output_tokens.unwrap_or(0),
-                                )
+                                .checked_add(output_tokens)
                                 .ok_or(ProjectionError::Count)?;
                             summary.turn_decode_millis = summary
                                 .turn_decode_millis

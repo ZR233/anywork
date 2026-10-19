@@ -980,31 +980,14 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
   final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
   final liveDecodeMillis = explicitUsageCount(observedUsage?.decodeMillis);
-  final hasCompleteLiveThroughput =
-      liveOutputTokens != null &&
-      liveOutputTokens > 0 &&
-      liveDecodeMillis != null &&
-      liveDecodeMillis > 0;
-  final hasLiveObservation = observedUsage != null;
-  final turnOutputTokens = hasCompleteLiveThroughput
-      ? liveOutputTokens
-      : hasLiveObservation
+  final throughputSource = runtime == null
       ? null
-      : defaultProneCount(runtime?.turnCompletionTokens);
-  final decodeMillis = hasCompleteLiveThroughput
-      ? liveDecodeMillis
-      : hasLiveObservation
-      ? null
-      : defaultProneCount(runtime?.turnDecodeMillis);
+      : ModelRouteQueries.throughputSource(runtime);
   // Preserve source counters for diagnostics, but only derive throughput from
-  // a positive output/decode pair from the same observation.
-  final tokensPerSecond =
-      turnOutputTokens != null &&
-          turnOutputTokens > 0 &&
-          decodeMillis != null &&
-          decodeMillis > 0
-      ? turnOutputTokens * 1000 / decodeMillis
-      : null;
+  // a complete output/decode pair chosen by the canonical Client query.
+  final turnOutputTokens = throughputSource?.outputTokens;
+  final decodeMillis = throughputSource?.decodeMillis;
+  final tokensPerSecond = throughputSource?.tokensPerSecond;
   return <String, Object?>{
     'schemaVersion': 1,
     'runtime': <String, Object?>{
@@ -1029,6 +1012,7 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'outputTokens': outputTokens,
       'reasoningTokens': reasoningTokens,
       'liveOutputTokens': liveOutputTokens,
+      'liveDecodeMillis': liveDecodeMillis,
       'turnOutputTokens': turnOutputTokens,
       'decodeMillis': decodeMillis,
       'tokensPerSecond': tokensPerSecond,

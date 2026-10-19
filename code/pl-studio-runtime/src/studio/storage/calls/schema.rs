@@ -412,7 +412,7 @@ async fn indexed(db: &impl ConnectionTrait, record: &CallLogRecord) -> Result<bo
     Ok(row.is_some())
 }
 
-fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
+pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
     let started_at: i64 = row.try_get("", "started_at")?;
     let finished_at: Option<i64> = row.try_get("", "finished_at")?;
     let admitted_at: i64 = row.try_get("", "admitted_at")?;

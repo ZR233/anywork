@@ -60,7 +60,10 @@ void main() {
       shellComposerWorkspaceProvider,
       (_, _) {},
     );
-    final status = container.listen(statusBarViewProvider, (_, _) {});
+    final status = container.listen(
+      statusBarViewProvider('thread-main'),
+      (_, _) {},
+    );
     final composer = container.listen(
       composerDockViewProvider('thread-main'),
       (_, _) {},

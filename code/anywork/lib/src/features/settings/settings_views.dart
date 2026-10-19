@@ -64,14 +64,19 @@ final settingsPageReadinessProvider =
     }, name: 'settingsPageReadinessProvider');
 
 class SettingsProvidersView {
-  const SettingsProvidersView({
+  SettingsProvidersView({
     required this.canonical,
     required this.providerCatalog,
     required this.defaultProviderId,
     required this.settingsRevision,
     required this.modelCatalogRevision,
     required this.providerCatalogRevision,
-  });
+  }) : providers = List<ProviderSettingsView>.unmodifiable(
+         providersWithCatalogMetadata(
+           canonical?.providers ?? const <ProviderSettingsView>[],
+           providerCatalog,
+         ),
+       );
 
   final SettingsStateSnapshot? canonical;
   final ProviderCatalogView providerCatalog;
@@ -79,11 +84,7 @@ class SettingsProvidersView {
   final int settingsRevision;
   final int modelCatalogRevision;
   final String providerCatalogRevision;
-
-  List<ProviderSettingsView> get providers => providersWithCatalogMetadata(
-    canonical?.providers ?? const <ProviderSettingsView>[],
-    providerCatalog,
-  );
+  final List<ProviderSettingsView> providers;
 
   @override
   bool operator ==(Object other) =>

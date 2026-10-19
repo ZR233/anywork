@@ -1412,11 +1412,11 @@ abstract class AppLocalizations {
   /// **'The SSH alias for this project is no longer in ~/.ssh/config'**
   String get sessionOpenServerMissing;
 
-  /// No description provided for @statusCurrentAgentTokenSpeed.
+  /// No description provided for @statusLastConfirmedAgentTokenSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Current agent token speed'**
-  String get statusCurrentAgentTokenSpeed;
+  /// **'Last confirmed token speed'**
+  String get statusLastConfirmedAgentTokenSpeed;
 
   /// No description provided for @settingsStatisticsTitle.
   ///

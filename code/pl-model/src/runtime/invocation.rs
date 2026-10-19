@@ -184,25 +184,43 @@ impl OpenAiTransport {
 struct InferenceTimer {
     started_at: tokio::time::Instant,
     first_token_millis: Arc<AtomicU64>,
+    terminal_millis: Arc<AtomicU64>,
 }
 
 impl InferenceTimer {
-    const FIRST_TOKEN_UNSET: u64 = u64::MAX;
+    const UNSET: u64 = u64::MAX;
 
     fn start() -> Self {
         Self {
             started_at: tokio::time::Instant::now(),
-            first_token_millis: Arc::new(AtomicU64::new(Self::FIRST_TOKEN_UNSET)),
+            first_token_millis: Arc::new(AtomicU64::new(Self::UNSET)),
+            terminal_millis: Arc::new(AtomicU64::new(Self::UNSET)),
         }
     }
 
     fn observe(&self, event: &crate::completion::stream::event::ModelStreamEvent) {
+        // One stream observes events in order; finish runs only after its collector returns. The
+        // cloned counters share this attempt's boundaries, never a retry's or a consumer's clock.
+        if self.terminal_millis.load(Ordering::Acquire) != Self::UNSET {
+            return;
+        }
+        if matches!(
+            event,
+            crate::completion::stream::event::ModelStreamEvent::Completed { .. }
+                | crate::completion::stream::event::ModelStreamEvent::Failed { .. }
+        ) {
+            self.terminal_millis.store(
+                duration_millis(self.started_at.elapsed()),
+                Ordering::Release,
+            );
+            return;
+        }
         if !event.starts_visible_output() {
             return;
         }
         let elapsed = duration_millis(self.started_at.elapsed());
         let _ = self.first_token_millis.compare_exchange(
-            Self::FIRST_TOKEN_UNSET,
+            Self::UNSET,
             elapsed,
             Ordering::AcqRel,
             Ordering::Acquire,
@@ -211,16 +229,27 @@ impl InferenceTimer {
 
     fn decode_millis(&self) -> Option<u64> {
         let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        (ttft_millis != Self::FIRST_TOKEN_UNSET)
-            .then(|| duration_millis(self.started_at.elapsed()).saturating_sub(ttft_millis))
+        if ttft_millis == Self::UNSET {
+            return None;
+        }
+        let terminal_millis = self.terminal_millis.load(Ordering::Acquire);
+        let elapsed = if terminal_millis == Self::UNSET {
+            duration_millis(self.started_at.elapsed())
+        } else {
+            terminal_millis
+        };
+        elapsed.checked_sub(ttft_millis)
     }
 
     fn finish(&self) -> Option<InferenceTiming> {
-        let total_millis = duration_millis(self.started_at.elapsed());
+        let total_millis = self.terminal_millis.load(Ordering::Acquire);
         let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        (ttft_millis != Self::FIRST_TOKEN_UNSET).then_some(InferenceTiming {
+        if total_millis == Self::UNSET || ttft_millis == Self::UNSET {
+            return None;
+        }
+        Some(InferenceTiming {
             ttft_millis,
-            decode_millis: total_millis.saturating_sub(ttft_millis),
+            decode_millis: total_millis.checked_sub(ttft_millis)?,
             total_millis,
         })
     }

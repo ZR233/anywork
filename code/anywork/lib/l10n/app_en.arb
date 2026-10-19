@@ -367,7 +367,7 @@
   "sessionZedOpenFailed": "Failed to open Zed",
   "sessionTerminalOpenFailed": "Failed to open terminal",
   "sessionOpenServerMissing": "The SSH alias for this project is no longer in ~/.ssh/config",
-  "statusCurrentAgentTokenSpeed": "Current agent token speed",
+  "statusLastConfirmedAgentTokenSpeed": "Last confirmed token speed",
   "settingsStatisticsTitle": "Statistics",
   "settingsStatisticsSubtitle": "Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.",
   "settingsStatisticsSummaryTitle": "Model performance",

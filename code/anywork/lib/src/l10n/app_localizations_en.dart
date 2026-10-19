@@ -753,7 +753,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'The SSH alias for this project is no longer in ~/.ssh/config';
 
   @override
-  String get statusCurrentAgentTokenSpeed => 'Current agent token speed';
+  String get statusLastConfirmedAgentTokenSpeed => 'Last confirmed token speed';
 
   @override
   String get settingsStatisticsTitle => 'Statistics';

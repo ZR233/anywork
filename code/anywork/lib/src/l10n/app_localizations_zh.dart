@@ -719,7 +719,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sessionOpenServerMissing => '该项目的 SSH 别名已不在 ~/.ssh/config 中';
 
   @override
-  String get statusCurrentAgentTokenSpeed => '当前智能体词元速度';
+  String get statusLastConfirmedAgentTokenSpeed => '最近已确认速度';
 
   @override
   String get settingsStatisticsTitle => '统计';

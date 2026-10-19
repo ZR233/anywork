@@ -284,7 +284,7 @@
   "sessionZedOpenFailed": "打开 Zed 失败",
   "sessionTerminalOpenFailed": "打开终端失败",
   "sessionOpenServerMissing": "该项目的 SSH 别名已不在 ~/.ssh/config 中",
-  "statusCurrentAgentTokenSpeed": "当前智能体词元速度",
+  "statusLastConfirmedAgentTokenSpeed": "最近已确认速度",
   "settingsStatisticsTitle": "统计",
   "settingsStatisticsSubtitle": "按模型服务商实例、实际模型与思考强度汇总最近成功调用。",
   "settingsStatisticsSummaryTitle": "模型性能",

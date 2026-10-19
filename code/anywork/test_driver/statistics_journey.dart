@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'sidebar_navigation.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length != 6 || !const ['first', 'restart'].contains(args[0])) {
@@ -18,16 +19,65 @@ Future<void> main(List<String> args) async {
   final coord = Directory(args[4]);
   final expected = int.parse(args[5]);
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[1]);
+  final progress = _DriverProgress(output);
   Future<void> stage(String name) =>
       File('${coord.path}/statistics-stage').writeAsString(name);
   try {
+    await progress.mark('connect', 'session');
     await stage('${phase}_connected');
-    await _openStatistics(driver);
+    await _openStatistics(driver, progress);
     final initial = await _readStatistics(driver);
     if (phase == 'restart') {
       _verifyPopulated(initial, expected);
       _verifyHealthy(initial);
       await _capture(driver, output, 'statistics-restarted', initial);
+      await progress.run(
+        'restart',
+        'settings-back',
+        () => _rawTap(driver, 'settings-back'),
+      );
+      await progress.run(
+        'restart',
+        'sidebar-search',
+        () => _waitForKey(driver, 'sidebar-search'),
+      );
+      final identityPath = File(
+        '${output.path}/statistics-paced-thread-id.txt',
+      );
+      if (!identityPath.existsSync()) {
+        throw StateError('paced thread identity missing for restart');
+      }
+      final pacedThreadId = identityPath.readAsStringSync().trim();
+      final firstEvidence = jsonDecode(
+        File('${output.path}/statistics-paced-status.json').readAsStringSync(),
+      );
+      if (firstEvidence is! Map) {
+        throw StateError('first paced throughput evidence missing');
+      }
+      await progress.mark('restart', 'reveal-thread', key: pacedThreadId);
+      await revealSidebarThread(driver, pacedThreadId);
+      await progress.run(
+        'restart',
+        'thread-row-$pacedThreadId',
+        () => _waitForKey(driver, 'thread-row-$pacedThreadId'),
+      );
+      await progress.run(
+        'restart',
+        'thread-row-$pacedThreadId',
+        () => _rawTap(driver, 'thread-row-$pacedThreadId'),
+      );
+      await progress.run(
+        'restart',
+        'thread-throughput',
+        () => _waitForKey(driver, 'thread-throughput'),
+      );
+      await _captureThroughput(
+        driver,
+        output,
+        'statistics-restarted-status',
+        pacedThreadId,
+        expected: firstEvidence.cast<String, dynamic>(),
+      );
       await stage('restart_verified');
     } else {
       if (_sampleCount(initial) != 0 ||
@@ -39,14 +89,24 @@ Future<void> main(List<String> args) async {
       }
       await _capture(driver, output, 'statistics-empty', initial);
       await stage('empty_verified');
-      await driver.tap(find.byValueKey('settings-back'));
-      await _openProject(driver, args[2]);
+      await progress.run(
+        'empty',
+        'settings-back',
+        () => _rawTap(driver, 'settings-back'),
+      );
+      await _openProject(driver, args[2], progress);
       await stage('ready_lock');
       await _waitForFile(File('${coord.path}/lock-acquired'));
-      await _submit(driver, 'Local statistics fast response');
+      await _submit(
+        driver,
+        progress,
+        'fast',
+        'Local statistics fast response',
+        newThread: true,
+      );
       await File('${coord.path}/fast-submitted').writeAsString('submitted');
       await stage('fast_submitted');
-      await _openStatistics(driver);
+      await _openStatistics(driver, progress);
       final locked = await _waitForPending(driver);
       await _captureState(output, 'statistics-locked', locked);
       await File('${coord.path}/lock-observed').writeAsString('observed');
@@ -57,11 +117,33 @@ Future<void> main(List<String> args) async {
       await _capture(driver, output, 'statistics-fast', fast);
       await stage('fast_verified');
 
-      await driver.tap(find.byValueKey('settings-back'));
-      await driver.waitFor(find.byValueKey('sidebar-new-session'));
-      await driver.tap(find.byValueKey('sidebar-new-session'));
-      await driver.waitFor(find.byValueKey('composer-input'));
-      await _submit(driver, 'Local statistics paced response');
+      await progress.run(
+        'paced',
+        'settings-back',
+        () => _rawTap(driver, 'settings-back'),
+      );
+      await progress.run(
+        'paced',
+        'sidebar-new-session',
+        () => _waitForKey(driver, 'sidebar-new-session'),
+      );
+      await progress.run(
+        'paced',
+        'sidebar-new-session',
+        () => _rawTap(driver, 'sidebar-new-session'),
+      );
+      await progress.run(
+        'paced',
+        'composer-input',
+        () => _waitForKey(driver, 'composer-input'),
+      );
+      await _submit(
+        driver,
+        progress,
+        'paced',
+        'Local statistics paced response',
+        newThread: true,
+      );
       await stage('paced_submitted');
       await _waitForTurn(driver, 25, output, 'paced');
       final workspace = (await driver.readSnapshot())['workspace'];
@@ -75,7 +157,17 @@ Future<void> main(List<String> args) async {
       await File('${output.path}/statistics-paced-turn.json').writeAsString(
         '${const JsonEncoder.withIndent('  ').convert(diagnostic)}\n',
       );
-      await _openStatistics(driver);
+      final pacedThreadId = workspace is Map ? workspace['threadId'] : null;
+      if (pacedThreadId is! String || pacedThreadId.isEmpty) {
+        throw StateError('paced thread identity missing after turn');
+      }
+      await _captureThroughput(
+        driver,
+        output,
+        'statistics-paced-status',
+        pacedThreadId,
+      );
+      await _openStatistics(driver, progress);
       final paced = await _waitForStatistics(
         driver,
         (fast['history'] as List).length + 1,
@@ -95,6 +187,13 @@ Future<void> main(List<String> args) async {
       throw StateError('native GUI shutdown failed');
     }
     await stage('${phase}_shutdown');
+  } catch (error, stack) {
+    try {
+      await progress.fail(error, driver: driver).timeout(_actionTimeout);
+    } catch (_) {
+      // Diagnostics must not hide the original interaction failure.
+    }
+    Error.throwWithStackTrace(error, stack);
   } finally {
     try {
       await driver.close().timeout(const Duration(seconds: 5));
@@ -104,40 +203,257 @@ Future<void> main(List<String> args) async {
   }
 }
 
-Future<void> _openStatistics(FlutterDriverSession driver) async {
-  await driver.waitFor(
-    find.byValueKey('settings-open'),
-    timeout: const Duration(seconds: 60),
+const _actionTimeout = Duration(seconds: 30);
+
+Future<void> _openStatistics(
+  FlutterDriverSession driver,
+  _DriverProgress progress,
+) async {
+  await progress.run(
+    'settings',
+    'settings-open',
+    () => _waitForKey(
+      driver,
+      'settings-open',
+      timeout: const Duration(seconds: 60),
+    ),
   );
-  await driver.tap(find.byValueKey('settings-open'));
-  await driver.waitFor(find.byValueKey('settings-page'));
-  await driver.tap(find.byValueKey('settings-tab-statistics'));
-  await driver.waitFor(find.byValueKey('statistics-summary'));
-  await driver.waitFor(find.byValueKey('statistics-history'));
+  await progress.run(
+    'settings',
+    'settings-open',
+    () => _rawTap(driver, 'settings-open'),
+  );
+  await progress.run(
+    'settings',
+    'settings-page',
+    () => _waitForKey(driver, 'settings-page'),
+  );
+  await progress.run(
+    'settings',
+    'settings-tab-statistics',
+    () => _rawTap(driver, 'settings-tab-statistics'),
+  );
+  await progress.run(
+    'settings',
+    'statistics-summary',
+    () => _waitForKey(driver, 'statistics-summary'),
+  );
+  await progress.run(
+    'settings',
+    'statistics-history',
+    () => _waitForKey(driver, 'statistics-history'),
+  );
 }
 
-Future<void> _openProject(FlutterDriverSession driver, String path) async {
-  await driver.waitFor(find.byValueKey('sidebar-open-project'));
-  await driver.tap(find.byValueKey('sidebar-open-project'));
-  await driver.tap(find.byValueKey('add-project-local'));
-  await driver.waitFor(find.byValueKey('add-project-continue-ready'));
-  await driver.tap(find.byValueKey('add-project-continue-ready'));
-  await driver.waitFor(find.byValueKey('project-path-input'));
-  await driver.tap(find.byValueKey('project-path-input'));
-  await driver.enterText(path);
-  await driver.waitFor(find.byValueKey('project-path-submit'));
-  await driver.tap(find.byValueKey('project-path-submit'));
-  await driver.waitFor(
-    find.byValueKey('composer-input'),
-    timeout: const Duration(seconds: 60),
+Future<void> _openProject(
+  FlutterDriverSession driver,
+  String path,
+  _DriverProgress progress,
+) async {
+  await progress.run(
+    'project',
+    'sidebar-open-project',
+    () => _waitForKey(driver, 'sidebar-open-project'),
+  );
+  await progress.run(
+    'project',
+    'sidebar-open-project',
+    () => _rawTap(driver, 'sidebar-open-project'),
+  );
+  await progress.run(
+    'project',
+    'add-project-local',
+    () => _rawTap(driver, 'add-project-local'),
+  );
+  await progress.run(
+    'project',
+    'add-project-continue-ready',
+    () => _waitForKey(driver, 'add-project-continue-ready'),
+  );
+  await progress.run(
+    'project',
+    'add-project-continue-ready',
+    () => _rawTap(driver, 'add-project-continue-ready'),
+  );
+  await progress.run(
+    'project',
+    'project-path-input',
+    () => _waitForKey(driver, 'project-path-input'),
+  );
+  await progress.run(
+    'project',
+    'project-path-input',
+    () => _rawTap(driver, 'project-path-input'),
+  );
+  await progress.run(
+    'project',
+    'project-path-enter',
+    () => driver.enterText(path).timeout(_actionTimeout),
+  );
+  await progress.run(
+    'project',
+    'project-path-submit',
+    () => _waitForKey(driver, 'project-path-submit'),
+  );
+  await progress.run(
+    'project',
+    'project-path-submit',
+    () => _rawTap(driver, 'project-path-submit'),
+  );
+  await progress.run(
+    'project',
+    'composer-input',
+    () => _waitForKey(
+      driver,
+      'composer-input',
+      timeout: const Duration(seconds: 60),
+    ),
   );
 }
 
-Future<void> _submit(FlutterDriverSession driver, String prompt) async {
-  await driver.tap(find.byValueKey('composer-input'));
-  await driver.enterText(prompt);
-  await driver.waitFor(find.byValueKey('composer-submit'));
-  await driver.tap(find.byValueKey('composer-submit'));
+Future<void> _submit(
+  FlutterDriverSession driver,
+  _DriverProgress progress,
+  String phase,
+  String prompt, {
+  required bool newThread,
+}) async {
+  await progress.run(
+    phase,
+    'composer-input',
+    () => _waitForKey(driver, 'composer-input'),
+  );
+  await progress.run(
+    phase,
+    'composer-input',
+    () => _rawTap(driver, 'composer-input'),
+  );
+  await progress.run(
+    phase,
+    'composer-enter',
+    () => driver.enterText(prompt).timeout(_actionTimeout),
+  );
+  final fieldText = await progress.run(
+    phase,
+    'composer-read',
+    () => driver
+        .getText(find.byValueKey('composer-input'))
+        .timeout(_actionTimeout),
+  );
+  if (fieldText != prompt) {
+    throw StateError(
+      'composer-input text is "$fieldText" after entering "$prompt"',
+    );
+  }
+  await _waitForComposerDraft(driver, prompt, newThread: newThread);
+  await progress.run(
+    phase,
+    'composer-submit',
+    () => _waitForKey(driver, 'composer-submit'),
+  );
+  await progress.run(
+    phase,
+    'composer-submit',
+    () => _rawTap(driver, 'composer-submit'),
+  );
+}
+
+Future<void> _waitForKey(
+  FlutterDriverSession driver,
+  String key, {
+  Duration timeout = _actionTimeout,
+}) {
+  return driver.waitFor(find.byValueKey(key), timeout: timeout);
+}
+
+Future<void> _rawTap(FlutterDriverSession driver, String key) {
+  return driver.rawTap(find.byValueKey(key), timeout: _actionTimeout);
+}
+
+Future<void> _waitForComposerDraft(
+  FlutterDriverSession driver,
+  String prompt, {
+  required bool newThread,
+}) async {
+  final deadline = DateTime.now().add(_actionTimeout);
+  Map<String, dynamic>? last;
+  while (DateTime.now().isBefore(deadline)) {
+    last = await driver.readSnapshot();
+    final draft = _composerDraft(last, newThread: newThread);
+    if (draft == prompt) return;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  throw StateError(
+    'composer draft did not become "$prompt": ${_composerDraft(last, newThread: newThread)}',
+  );
+}
+
+String? _composerDraft(
+  Map<String, dynamic>? snapshot, {
+  required bool newThread,
+}) {
+  if (snapshot == null) return null;
+  if (newThread) {
+    final navigation = snapshot['navigation'];
+    final composer = navigation is Map ? navigation['newThreadComposer'] : null;
+    return composer is Map ? composer['draft'] as String? : null;
+  }
+  final workspace = snapshot['workspace'];
+  final composer = workspace is Map ? workspace['composer'] : null;
+  return composer is Map ? composer['draft'] as String? : null;
+}
+
+final class _DriverProgress {
+  _DriverProgress(this.output);
+
+  final Directory output;
+  String phase = 'start';
+  String action = 'idle';
+  String? key;
+
+  Future<void> mark(String nextPhase, String nextAction, {String? key}) {
+    phase = nextPhase;
+    action = nextAction;
+    this.key = key;
+    return _write();
+  }
+
+  Future<T> run<T>(
+    String nextPhase,
+    String nextAction,
+    Future<T> Function() body,
+  ) async {
+    await mark(nextPhase, nextAction, key: nextAction);
+    return body();
+  }
+
+  Future<void> fail(Object error, {FlutterDriverSession? driver}) async {
+    final payload = {
+      'phase': phase,
+      'action': action,
+      'key': key,
+      'error': '$error',
+      'capturedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    await File(
+      '${output.path}/statistics-driver-progress.json',
+    ).writeAsString('${const JsonEncoder.withIndent('  ').convert(payload)}\n');
+    if (driver == null) return;
+    final snapshot = await driver.readSnapshot().timeout(_actionTimeout);
+    await File('${output.path}/statistics-driver-failure.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(_failureSummary(snapshot))}\n',
+    );
+    await File('${output.path}/statistics-driver-failure-tree.txt')
+        .writeAsString(await driver.renderTree().timeout(_actionTimeout));
+    await File('${output.path}/statistics-driver-failure.png')
+        .writeAsBytes(await driver.screenshot().timeout(_actionTimeout));
+  }
+
+  Future<void> _write() {
+    return File('${output.path}/statistics-driver-progress.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert({'phase': phase, 'action': action, 'key': key, 'capturedAt': DateTime.now().toUtc().toIso8601String()})}\n',
+    );
+  }
 }
 
 Future<void> _waitForTurn(
@@ -306,7 +622,7 @@ Future<void> _capture(
       dyScroll: -200,
       timeout: const Duration(seconds: 30),
     );
-    await driver.waitFor(find.byValueKey(key));
+    await _waitForKey(driver, key);
     await File('${output.path}/$name-history.png')
         .writeAsBytes(await driver.screenshot());
   }
@@ -341,4 +657,126 @@ Future<void> _waitForFile(File file) async {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
   throw StateError('calls.sqlite BEGIN IMMEDIATE lock was not acquired');
+}
+
+Future<void> _captureThroughput(
+  FlutterDriverSession driver,
+  Directory output,
+  String name,
+  String threadId, {
+  Map<String, dynamic>? expected,
+}) async {
+  await _waitForKey(driver, 'thread-throughput');
+  final snapshot = await _waitForSelectedThroughput(driver, threadId);
+  final workspace = snapshot['workspace'];
+  final selected = workspace is Map ? workspace['threadId'] : null;
+  if (selected != threadId) {
+    throw StateError('selected thread $selected is not paced thread $threadId');
+  }
+  final diagnostics = snapshot['driverDiagnostics'];
+  final runtime = diagnostics is Map ? diagnostics['runtime'] : null;
+  final throughput = runtime is Map ? runtime['throughput'] : null;
+  if (throughput is! Map) {
+    throw StateError('canonical throughput pair missing for $threadId');
+  }
+  final outputTokens = throughput['outputTokens'];
+  final decodeMillis = throughput['decodeMillis'];
+  final tokensPerSecond = throughput['tokensPerSecond'];
+  if (outputTokens is! num ||
+      decodeMillis is! num ||
+      tokensPerSecond is! num ||
+      outputTokens <= 0 ||
+      decodeMillis <= 0 ||
+      !tokensPerSecond.isFinite ||
+      tokensPerSecond <= 0) {
+    throw StateError('incomplete canonical throughput pair: $throughput');
+  }
+  if (expected != null) {
+    final previous = expected['throughput'];
+    if (previous is! Map ||
+        previous['outputTokens'] != outputTokens ||
+        previous['decodeMillis'] != decodeMillis ||
+        previous['tokensPerSecond'] != tokensPerSecond) {
+      throw StateError(
+        'restart throughput diverged from first sample: $previous vs $throughput',
+      );
+    }
+  }
+  final evidence = {
+    'threadId': threadId,
+    'throughput': throughput,
+    'tokensPerSecond': tokensPerSecond,
+    'turnOutputTokens': runtime is Map ? runtime['turnOutputTokens'] : null,
+    'decodeMillis': runtime is Map ? runtime['decodeMillis'] : null,
+  };
+  await File(
+    '${output.path}/$name.json',
+  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(evidence)}\n');
+  await File('${output.path}/$name.png')
+      .writeAsBytes(await driver.screenshot());
+  await File('${output.path}/$name-tree.txt')
+      .writeAsString(await driver.renderTree());
+  await File('${output.path}/statistics-paced-thread-id.txt')
+      .writeAsString(threadId);
+}
+
+Future<Map<String, dynamic>> _waitForSelectedThroughput(
+  FlutterDriverSession driver,
+  String threadId,
+) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 30));
+  Map<String, dynamic>? last;
+  while (DateTime.now().isBefore(deadline)) {
+    last = await driver.readSnapshot();
+    final workspace = last['workspace'];
+    final diagnostics = last['driverDiagnostics'];
+    final runtime = diagnostics is Map ? diagnostics['runtime'] : null;
+    final throughput = runtime is Map ? runtime['throughput'] : null;
+    if (workspace is Map &&
+        workspace['threadId'] == threadId &&
+        throughput is Map &&
+        throughput['outputTokens'] is num &&
+        throughput['decodeMillis'] is num &&
+        throughput['tokensPerSecond'] is num &&
+        throughput['outputTokens'] > 0 &&
+        throughput['decodeMillis'] > 0 &&
+        (throughput['tokensPerSecond'] as num).isFinite &&
+        throughput['tokensPerSecond'] > 0) {
+      return last;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+  throw StateError(
+    'canonical throughput was not ready for $threadId: ${last?['driverDiagnostics']}',
+  );
+}
+
+Map<String, Object?> _failureSummary(Map<String, dynamic> snapshot) {
+  final workspace = snapshot['workspace'];
+  final navigation = snapshot['navigation'];
+  final persistence = snapshot['persistence'];
+  final diagnostics = snapshot['driverDiagnostics'];
+  final composer = navigation is Map ? navigation['newThreadComposer'] : null;
+  final draft = composer is Map ? composer['draft'] : null;
+  return {
+    'workspace': workspace is Map
+        ? {
+            'threadId': workspace['threadId'],
+            'threadStatus': workspace['threadStatus'],
+            'isBusy': workspace['isBusy'],
+            'syncState': workspace['syncState'],
+          }
+        : null,
+    'navigation': navigation is Map
+        ? {
+            'selectedProjectId': navigation['selectedProjectId'],
+            'selectedThreadId': navigation['selectedThreadId'],
+            'isStartPage': navigation['isStartPage'],
+            'draftLength': draft is String ? draft.length : null,
+            'composerPhase': composer is Map ? composer['phase'] : null,
+          }
+        : null,
+    'runtime': diagnostics is Map ? diagnostics['runtime'] : null,
+    'persistence': persistence,
+  };
 }

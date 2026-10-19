@@ -633,12 +633,13 @@ class RealtimeJourney {
       timeout: const Duration(seconds: 20),
       abort: threadFaulted,
     );
-    await observe('delayed_waiting', waiting);
-    await shot('delayed-waiting');
     final turn = turnId(waiting)!;
     // 在首字之前的真实窗口里登记 runtime 发布观察：复用 fixture 既有首字时延，
-    // 不新增 sleep、不改后端 pacing、也不发模型请求。
+    // 不新增 sleep、不改后端 pacing、也不发模型请求。必须在 observe/shot
+    // 之前注册，否则截图会吃掉 delayed 窗口，只剩 baseline。
     await _startRuntimePublishEvidence(waiting);
+    await observe('delayed_waiting', waiting);
+    await shot('delayed-waiting');
     // First content is a new assistant row appearing while the Turn is live; a
     // terminal (not-busy) snapshot must never be read as the first token.
     final firstContent = await waitFor(

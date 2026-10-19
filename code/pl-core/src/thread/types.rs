@@ -460,10 +460,13 @@ pub struct UsageSummary {
     pub estimated_costs: Vec<UsageCost>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub estimated_cache_savings: Vec<UsageCost>,
-    /// Output tokens of the newest Turn, reset when a new Turn starts.
+    /// Output tokens accumulated for `turn_id`.
+    ///
+    /// A product with decode timing may retain the last sampled Turn until the next Turn's first
+    /// complete throughput sample, instead of discarding it when an untimed request starts.
     #[serde(default)]
     pub turn_completion_tokens: u64,
-    /// Decode time of the newest Turn, reset when a new Turn starts.
+    /// Decode time paired with `turn_completion_tokens`; a product without timing leaves it zero.
     #[serde(default)]
     pub turn_decode_millis: u64,
     /// Turn whose per-turn counters are currently accumulated.
