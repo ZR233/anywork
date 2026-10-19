@@ -33,6 +33,7 @@ import 'scrollbar_drag_extension.dart';
 import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
 import 'runtime_event_evidence.dart';
+import 'page_switch_extension.dart';
 
 /// Native-only Driver entrypoint. Product and release builds use lib/main.dart.
 void main() {
@@ -43,6 +44,10 @@ void main() {
     handler: _handleDriverData,
     commands: <CommandExtension>[
       RawTapCommandExtension(),
+      PageSwitchCommandExtension(
+        client: () => _client,
+        owner: () => _container.read(appGraphProvider).timeline,
+      ),
       PointerScrollCommandExtension(),
       PointerDragCommandExtension(),
       ScrollbarDragCommandExtension(),
@@ -295,12 +300,20 @@ Future<String> _handleDriverData(String? message) async {
     case 'load-older':
       final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      await _container.read(appGraphProvider).timeline.loadOlder(threadId);
+      final owner = _container.read(appGraphProvider).timeline;
+      await owner.loadOlder(
+        threadId,
+        generation: owner.lease(threadId)?.generation ?? 0,
+      );
       return jsonEncode({'loaded': true});
     case 'timeline-retry-older':
       final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      await _container.read(appGraphProvider).timeline.retryOlder(threadId);
+      final owner = _container.read(appGraphProvider).timeline;
+      await owner.retryOlder(
+        threadId,
+        generation: owner.lease(threadId)?.generation ?? 0,
+      );
       return jsonEncode({'loaded': true});
     case 'timeline-return-live':
       final threadId = _client.selection.state.selectedThreadId;
@@ -777,7 +790,10 @@ Future<Map<String, Object?>> _loadOlderOverlap({
   }
 
   // 产品自己的分页动作：同步发布 loading 后 await 真实查询。
-  final page = owner.loadOlder(target);
+  final page = owner.loadOlder(
+    target,
+    generation: owner.lease(target)?.generation ?? 0,
+  );
   final tracked = page.then<void>(
     (_) {
       if (completedAfterInputs < 0) completedAfterInputs = dispatchedInputs;

@@ -6,6 +6,51 @@
 // （design/26 §26.9）。
 import 'dart:convert';
 
+/// Current display, layout and viewport demand have all settled. EOF can be short.
+bool timelineViewportSettled(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  final scroll = TimelineScrollObservation.optional(snapshot);
+  return timeline != null &&
+      timeline.ready &&
+      timeline.connection == 'ready' &&
+      !timeline.preparingLive &&
+      !timeline.loadingOlder &&
+      timeline.olderError == null &&
+      scroll != null &&
+      scroll.laidOut &&
+      !scroll.isScrolling &&
+      scroll.generation == timeline.generation &&
+      ((scroll.maxScrollExtent ?? 0) > 0.5 || !timeline.hasOlder);
+}
+
+/// A second matching observation rules out sampling a page's layout transition.
+/// This is Driver-only observation, not a product cache or timing-based success.
+final class TimelineViewportStability {
+  Object? _previous;
+
+  bool accept(Map<String, dynamic> snapshot) {
+    if (!timelineViewportSettled(snapshot)) {
+      _previous = null;
+      return false;
+    }
+    final timeline = TimelineObservation.parse(snapshot);
+    final scroll = TimelineScrollObservation.parse(snapshot);
+    final stamp = (
+      timeline.threadId,
+      timeline.generation,
+      timeline.itemCount,
+      timeline.olderCursor,
+      timeline.hasOlder,
+      scroll.viewportDimension,
+      scroll.maxScrollExtent,
+      scroll.pixels,
+    );
+    final stable = _previous == stamp;
+    _previous = stamp;
+    return stable;
+  }
+}
+
 /// 一个展示代次的只读事实。
 final class TimelineObservation {
   TimelineObservation._({

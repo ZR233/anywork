@@ -137,6 +137,8 @@ class AnyworkClient {
   final Map<String, int> _reportGenerations = {};
   final Map<String, Future<void>> _pendingJoins = {};
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
+
+  final _activeSession = LatestValue<StudioThreadSession?>(null);
   final Map<String, ResourcePermit> _mirrorPermits = {};
   final CommandLane _queries = CommandLane();
   int _querySequence = 0;
@@ -171,6 +173,15 @@ class AnyworkClient {
       _sessions[threadId]?.state;
   StudioThreadSession? existingSession(String threadId) => _sessions[threadId];
 
+  /// The selected, admitted Session owner. Reading never admits a resource.
+  StudioThreadSession? get activeSession => _activeSession.value;
+
+  /// Atomically observes availability with its current snapshot. The publisher
+  /// stays private; an admission retry publishes the owner stored in _sessions.
+  LatestWatch<StudioThreadSession?> watchActiveSession(
+    void Function(StudioThreadSession?) listener,
+  ) => _activeSession.watchLatest(listener);
+
   /// Resource admission is an explicit workspace action, never an observation.
   void retrySession(String threadId) {
     _ensureOpen();
@@ -187,6 +198,7 @@ class AnyworkClient {
       } else {
         owner.start();
       }
+      _activeSession.publish(owner);
       if (resourceFailure.value?.owner == 'session:$threadId') {
         resourceFailure.publish(null);
       }
@@ -508,10 +520,13 @@ class AnyworkClient {
     if (_activeThread == nextId) return;
     final old = _activeThread;
     _activeThread = nextId;
+    _activeSession.publish(null);
     if (old != null) _retireSession(old);
     if (nextId != null) {
       try {
-        session(nextId).start();
+        final owner = session(nextId);
+        owner.start();
+        _activeSession.publish(owner);
       } catch (error) {
         resourceFailure.publish(
           UnresolvedResource(
@@ -587,6 +602,8 @@ class AnyworkClient {
 
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
+    _activeSession.publish(null);
+    _activeSession.close();
     _selectionObservation.cancel();
     _queries.seal();
     attachments.sealAdmissions();

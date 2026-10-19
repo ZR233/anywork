@@ -21,6 +21,7 @@ final class TimelineDisplayFacts {
     required this.hasOlder,
     required this.loadingOlder,
     required this.olderError,
+    required this.olderErrorCode,
     required this.hasNewOutput,
     required this.preparingLive,
     List<TimelineItemFacts> items = const [],
@@ -38,6 +39,7 @@ final class TimelineDisplayFacts {
   final bool hasOlder;
   final bool loadingOlder;
   final String? olderError;
+  final StudioFailureCode? olderErrorCode;
   final bool hasNewOutput;
   final bool preparingLive;
   final List<TimelineItemFacts> items;
@@ -206,6 +208,7 @@ final class StudioDriverFacts {
     this.newThreadComposer = const ComposerThreadState.idle(),
     this.threadComposer = const ComposerThreadState.idle(),
     this.settingsRevision = 0,
+    this.sidebarWidth,
     this.modelCatalogRevision = 0,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
@@ -242,6 +245,7 @@ final class StudioDriverFacts {
   final ComposerThreadState newThreadComposer;
   final ComposerThreadState threadComposer;
   final int settingsRevision;
+  final int? sidebarWidth;
   final int modelCatalogRevision;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
@@ -443,6 +447,7 @@ abstract final class StudioDriverState {
       'nativeExit': _nativeExitJson(),
       'settings': {
         'revision': facts.settingsRevision,
+        'sidebarWidth': facts.sidebarWidth,
         'modelCatalogRevision': facts.modelCatalogRevision,
         'accounts': [
           for (final account in facts.accounts)
@@ -808,6 +813,7 @@ abstract final class StudioDriverState {
       'hasOlder': timeline.hasOlder,
       'loadingOlder': timeline.loadingOlder,
       'olderError': timeline.olderError,
+      'olderErrorCode': timeline.olderErrorCode?.name,
       'hasNewOutput': timeline.hasNewOutput,
       'preparingLive': timeline.preparingLive,
       'items': [

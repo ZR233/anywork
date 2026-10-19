@@ -2,7 +2,7 @@
 //
 // 唯一列表路线是公开 `Chat` + 原生 `ChatAnimatedListReversed` + stock
 // `InMemoryChatController`；这里证明生产 `TimelineView` 的真实绑定、真实用户意图才进入
-// History、显式「加载更早」/重试、以及全文查看器只读当前 lease 的详情引用。
+// History、视口自动补齐/重试、以及全文查看器只读当前 lease 的详情引用。
 // 算法层覆盖由 test/client/timeline_display_lease_test.dart 与
 // timeline_session_owner_test.dart 承担，不在这里重复。
 import 'dart:async';
@@ -298,10 +298,11 @@ void main() {
     expect(lease.mode, TimelineDisplayMode.live, reason: '意图由 owner 改变模式');
   });
 
-  testWidgets('短内容给出显式加载更早入口，失败保留内容并可重试', (tester) async {
+  testWidgets('短内容自动加载更早，失败保留内容并可重试', (tester) async {
     final lease = leaseFor(items: [textItem('only', ordinal: 1)]);
     var loads = 0;
     var retries = 0;
+    final page = Completer<void>();
     await tester.pumpWidget(
       host(
         TimelineView(
@@ -310,6 +311,7 @@ void main() {
           lease: lease,
           onLoadOlder: () async {
             loads += 1;
+            await page.future;
           },
           onRetryOlder: () async {
             retries += 1;
@@ -320,10 +322,6 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
-    final loadOlder = find.byKey(StudioDriverKeys.timelineLoadOlder);
-    expect(loadOlder, findsOneWidget);
-    await tester.tap(loadOlder);
     await tester.pumpAndSettle();
     expect(loads, 1);
     expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
@@ -348,10 +346,191 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    page.complete();
+    await tester.pumpAndSettle();
+    expect(loads, 1, reason: '失败不能由布局或重建自动重试');
     expect(find.byKey(StudioDriverKeys.timelineRow('only')), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.timelineRetryOlder));
     await tester.pumpAndSettle();
     expect(retries, 1);
+  });
+
+  testWidgets('空基线后首条消息通过原生列表立即显示', (tester) async {
+    final lease = leaseFor(items: []);
+    await tester.pumpWidget(
+      host(
+        TimelineView(
+          threadId: 'thread',
+          view: viewState(),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () {},
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    lease.applyPatch(
+      StudioTimelinePatch(
+        subscriptionId: 'test',
+        from: 0,
+        to: 1,
+        changes: [StudioTimelineAdd(textItem('first-live', ordinal: 1))],
+        priority: StudioTimelinePriority.immediate,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(StudioDriverKeys.timelineRow('first-live')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('短内容补页被连接切换取消后，同游标可重新自动补齐', (tester) async {
+    final lease = leaseFor(
+      items: [textItem('only', ordinal: 1)],
+      before: 'cursor',
+      hasOlder: true,
+    );
+    var loads = 0;
+    final firstPage = Completer<void>();
+    Future<void> render(TimelineSessionViewState view) async {
+      await tester.pumpWidget(
+        host(
+          TimelineView(
+            threadId: 'thread',
+            view: view,
+            lease: lease,
+            onLoadOlder: () async {
+              loads++;
+              if (loads == 1) await firstPage.future;
+            },
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    final ready = viewState(mode: TimelineDisplayMode.history, hasOlder: true);
+    await render(ready);
+    await tester.pumpAndSettle();
+    expect(loads, 1);
+    // A fast retirement can finish between two frames: loading/opening are
+    // canonical transitions, but need not become separate rendered widgets.
+    firstPage.complete();
+    await tester.pump();
+    await render(ready.copyWith());
+    await tester.pumpAndSettle();
+    expect(loads, 2, reason: '取消不应永久封住同一页的视口需求');
+  });
+
+  testWidgets('窗口扩大后按实际视口补页，resize 不改变阅读模式', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 300));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final lease = leaseFor(
+      items: [for (var i = 0; i < 12; i++) textItem('row-$i', ordinal: i)],
+      before: 'cursor',
+      hasOlder: true,
+    );
+    var loads = 0;
+    var histories = 0;
+    final page = Completer<void>();
+    await tester.pumpWidget(
+      host(
+        TimelineView(
+          threadId: 'thread',
+          view: viewState(hasOlder: true),
+          lease: lease,
+          onLoadOlder: () async {
+            loads++;
+            await page.future;
+          },
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () {
+            histories++;
+          },
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(lease.scrollController.position.maxScrollExtent, greaterThan(0));
+    expect(loads, 0);
+    await tester.binding.setSurfaceSize(const Size(900, 2600));
+    await tester.pumpAndSettle();
+    expect(loads, 1);
+    expect(histories, 0);
+    expect(lease.scrollController.position.pixels, closeTo(0, 0.5));
+    await tester.binding.setSurfaceSize(const Size(900, 2500));
+    await tester.pumpAndSettle();
+    expect(loads, 1, reason: '反复几何通知共享同一个在途需求');
+    await tester.pumpWidget(host(const SizedBox.shrink()));
+    page.complete();
+    await tester.pump();
+  });
+
+  testWidgets('分页只补充折叠组而高度不变时继续检查推进后的游标', (tester) async {
+    final lease = leaseFor(
+      items: [toolItem('new-tool', ordinal: 100, arguments: '{}')],
+      before: 'cursor',
+      hasOlder: true,
+    );
+    var view = viewState(hasOlder: true);
+    var loads = 0;
+    await tester.pumpWidget(
+      host(
+        StatefulBuilder(
+          builder: (context, update) => TimelineView(
+            threadId: 'thread',
+            view: view,
+            lease: lease,
+            onLoadOlder: () async {
+              loads++;
+              final page = loads == 1
+                  ? StudioTimelinePage(
+                      items: [
+                        toolItem('older-tool', ordinal: 99, arguments: '{}'),
+                      ],
+                      before: 'next',
+                      hasOlder: true,
+                    )
+                  : StudioTimelinePage(
+                      items: [
+                        textItem('old-text', ordinal: 98, body: '历史正文\n' * 120),
+                      ],
+                      before: null,
+                      hasOlder: false,
+                    );
+              lease.prependOlder(page);
+              update(
+                () => view = view.copyWith(
+                  olderCursor: page.before,
+                  hasOlder: page.hasOlder,
+                ),
+              );
+            },
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(loads, 2);
+    expect(view.hasOlder, isFalse);
+    expect(lease.loadedCount, 3);
+    expect(lease.scrollController.position.maxScrollExtent, greaterThan(0));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('History 显示回到实时入口，并在准备期禁用重复触发', (tester) async {
@@ -469,13 +648,16 @@ void main() {
       hasOlder: true,
     );
     var enteredHistory = 0;
+    var olderLoads = 0;
     await tester.pumpWidget(
       host(
         TimelineView(
           threadId: 'thread',
           view: viewState(hasOlder: true),
           lease: lease,
-          onLoadOlder: () async {},
+          onLoadOlder: () async {
+            olderLoads++;
+          },
           onRetryOlder: () async {},
           onReturnLive: () async {},
           onEnterHistory: () => enteredHistory += 1,
@@ -518,6 +700,33 @@ void main() {
       lease.scrollController.position.pixels,
       lessThan(afterPageUp),
       reason: 'PageDown 必须真实滚动（未被 app 吞掉或改倍率）',
+    );
+    final position = lease.scrollController.position;
+    for (
+      var page = 0;
+      page < 32 && position.extentAfter > position.viewportDimension * 1.8;
+      page++
+    ) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.pageUp);
+      await tester.pumpAndSettle();
+    }
+    expect(position.extentAfter, greaterThan(position.viewportDimension));
+    expect(
+      position.extentAfter,
+      lessThanOrEqualTo(position.viewportDimension * 1.8),
+    );
+    final beforeThreshold = olderLoads;
+    await tester.sendKeyEvent(LogicalKeyboardKey.pageUp);
+    // Observe the real multi-frame ScrollAction animation, not just its last frame.
+    for (var frame = 0; frame < 8; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await tester.pumpAndSettle();
+    expect(position.extentAfter, lessThan(position.viewportDimension));
+    expect(
+      olderLoads,
+      greaterThan(beforeThreshold),
+      reason: '同一次键盘滚动动画跨入一屏范围就预取，无需再按一次',
     );
   });
 
@@ -1646,6 +1855,102 @@ void main() {
     await _pumpFrames(tester);
     await tester.runAsync(() => client.close(deadline: deadline));
     await _pumpFrames(tester, frames: 2);
+  });
+
+  testWidgets('退役展示尚未卸载时不再发布阅读意图', (tester) async {
+    final lease = leaseFor(items: longHistory());
+    var intents = 0;
+    await tester.pumpWidget(
+      host(
+        TimelineView(
+          threadId: 'thread',
+          view: viewState(),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onRetryConnection: () async {},
+          onEnterHistory: () => intents++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final released = lease.retire();
+    try {
+      final pointer = TestPointer(9, PointerDeviceKind.mouse);
+      final center = tester.getCenter(find.byKey(StudioDriverKeys.timeline));
+      await tester.sendEventToBinding(pointer.hover(center));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -120)));
+      await tester.pumpAndSettle();
+      expect(lease.scrollController.position.pixels, greaterThan(0));
+      expect(intents, 0, reason: '旧子树的最后一次滚动不能冻结已经切回的新展示');
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await released;
+    }
+  });
+
+  testWidgets('退役展示的已捕获按钮回调不再发布动作', (tester) async {
+    for (final phase in [
+      TimelineConnectionPhase.ready,
+      TimelineConnectionPhase.failed,
+    ]) {
+      final lease = leaseFor(items: [textItem('old', ordinal: 1)]);
+      var actions = 0;
+      Future<void> action() async {
+        actions++;
+      }
+
+      await tester.pumpWidget(
+        host(
+          TimelineView(
+            threadId: 'thread',
+            lease: lease,
+            view: viewState(
+              mode: TimelineDisplayMode.history,
+              connection: phase,
+              hasOlder: true,
+              olderError: 'retry',
+              connectionError: 'retry',
+            ),
+            onLoadOlder: action,
+            onRetryOlder: action,
+            onReturnLive: action,
+            onRetryConnection: action,
+            onEnterHistory: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final callbacks = <VoidCallback>[];
+      for (final key in [
+        StudioDriverKeys.timelineReturnLive,
+        StudioDriverKeys.timelineRetryOlder,
+        StudioDriverKeys.timelineRetryConnection,
+      ]) {
+        final finder = find.byKey(key);
+        if (finder.evaluate().isNotEmpty) {
+          final callback = switch (tester.widget(finder)) {
+            InkWell(:final onTap) => onTap,
+            ButtonStyleButton(:final onPressed) => onPressed,
+            _ => throw StateError('Unexpected timeline action widget'),
+          };
+          if (callback != null) callbacks.add(callback);
+        }
+      }
+      expect(callbacks, isNotEmpty);
+      final released = lease.retire();
+      try {
+        for (final callback in callbacks) {
+          callback();
+        }
+        await tester.pump();
+        expect(actions, 0, reason: '回调属于捕获它的展示寿命');
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await released;
+      }
+    }
   });
 
   // ---- R2 嵌套工具内部滚动：桌面平台语义下的承重证明 -----------------------------

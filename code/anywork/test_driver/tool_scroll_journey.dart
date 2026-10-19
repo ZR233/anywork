@@ -1559,7 +1559,7 @@ Future<void> main(List<String> args) async {
     );
     checks.add(detailPasses);
     evidence['detailReadPasses'] = detailPasses;
-    // 原始小页与 GUI 分组分别核对；折叠后的短屏必须保留真实的更早内容入口。
+    // 折叠后的短屏按真实视口自动补齐，原始身份和展示组分别核对。
     final fill = await observeLatestPagePresentation(driver, output);
     evidence['latestPagePresentation'] = fill;
     checks.add(fill['pass'] == true);

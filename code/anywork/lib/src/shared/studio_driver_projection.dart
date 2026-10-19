@@ -113,6 +113,7 @@ StudioDriverFacts queryStudioDriverFacts(
     newThreadComposer: newThreadComposer,
     threadComposer: threadComposer,
     settingsRevision: settings.settingsRevision,
+    sidebarWidth: canonical?.state.value?.general.sidebarWidth,
     modelCatalogRevision: settings.modelCatalogRevision,
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
@@ -167,6 +168,10 @@ TimelineDisplayFacts? _timelineFacts(
     hasOlder: view.hasOlder,
     loadingOlder: view.isLoadingOlder,
     olderError: view.olderError?.toString(),
+    olderErrorCode: switch (view.olderError) {
+      StudioFailure(:final code) => code,
+      _ => null,
+    },
     hasNewOutput: view.hasNewOutput,
     preparingLive: view.isPreparingLive,
     items: [

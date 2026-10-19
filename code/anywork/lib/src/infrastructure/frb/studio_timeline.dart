@@ -15,9 +15,11 @@ class FrbTimelineConnection implements StudioTimelineConnection {
   @override
   Future<StudioTimelineBaseline> initial() async {
     if (_closed) throw _timelineClosedFailure;
-    return FrbStudioTransport._bridgeCall(
-      () async => _baseline(await _timeline.initial()),
-    );
+    return FrbStudioTransport._bridgeCall(() async {
+      final baseline = await _timeline.initial();
+      if (_closed) throw _timelineClosedFailure;
+      return _baseline(baseline);
+    });
   }
 
   @override
@@ -37,6 +39,7 @@ class FrbTimelineConnection implements StudioTimelineConnection {
     if (_closed) throw _timelineClosedFailure;
     return FrbStudioTransport._bridgeCall(() async {
       final page = await _timeline.page(before: before, limit: limit);
+      if (_closed) throw _timelineClosedFailure;
       return StudioTimelinePage(
         items: List.unmodifiable(page.items.map(_item)),
         before: page.before,
@@ -61,6 +64,7 @@ class FrbTimelineConnection implements StudioTimelineConnection {
           maxBytes: query.maxBytes,
         ),
       );
+      if (_closed) throw _timelineClosedFailure;
       return StudioTimelineDetailChunk(
         itemId: chunk.itemId,
         field: _contentField(chunk.field),

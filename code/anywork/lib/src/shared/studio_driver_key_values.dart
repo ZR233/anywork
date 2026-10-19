@@ -12,6 +12,7 @@ abstract final class StudioDriverKeyValues {
   static const shell = 'studio-shell';
   static const startPage = 'studio-start-page';
   static const newSession = 'sidebar-new-session';
+  static const sidebarResize = 'sidebar-resize';
   static const settingsBack = 'settings-back';
   static const sessionMode = 'session-mode-selector';
   static const sessionModeLabel = 'session-mode-label';
@@ -26,7 +27,7 @@ abstract final class StudioDriverKeyValues {
 
   /// Timeline 的稳定操作与详情入口（canonical item + typed field 寻址）。
   static const timelineScrollable = 'timeline-scrollable';
-  static const timelineLoadOlder = 'timeline-load-older';
+  static const timelineLoadingOlder = 'timeline-loading-older';
   static const timelineRetryOlder = 'timeline-retry-older';
   static const timelineReturnLive = 'timeline-return-live';
   static const timelineNewOutput = 'timeline-new-output';

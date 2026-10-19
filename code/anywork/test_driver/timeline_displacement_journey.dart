@@ -168,14 +168,7 @@ Future<void> main(List<String> args) async {
     final deadline = DateTime.now().add(const Duration(seconds: 20));
     while (DateTime.now().isBefore(deadline)) {
       final state = await snapshot();
-      final timeline = TimelineObservation.optional(state);
-      final scroll = TimelineScrollObservation.optional(state);
-      if (timeline != null &&
-          !timeline.preparingLive &&
-          scroll != null &&
-          scroll.laidOut &&
-          !scroll.isScrolling &&
-          scroll.generation == timeline.generation) {
+      if (timelineViewportSettled(state)) {
         return state;
       }
       await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -230,6 +223,7 @@ Future<void> main(List<String> args) async {
   /// 常量镶边的轴。纵向可能存在窗口装饰这类常量镶边，因此高度按**增量**核对，不把
   /// 常量镶边误当缩放差异。
   Future<void> resize(int width, int height) async {
+    final before = TimelineObservation.parse(await settle());
     final rootBefore = await readRootBounds();
     final result = resizeOwnedWindow(
       guiPid: guiPid,
@@ -306,7 +300,21 @@ Future<void> main(List<String> args) async {
     }
     evidence['rootLayoutAfter'] = last!.toJson();
     evidence['timelineViewport'] = await readTimelineViewport();
-    await settle();
+    final afterState = await settle();
+    final after = TimelineObservation.parse(afterState);
+    evidence['loadedItemsBefore'] = before.itemCount;
+    evidence['loadedItemsAfter'] = after.itemCount;
+    evidence['viewportFilled'] = timelineViewportSettled(afterState);
+    evidence['generationStable'] = before.generation == after.generation;
+    evidence['modeStable'] = before.mode == after.mode;
+    evidence['identityRetained'] = before.itemIds.every(after.itemIds.contains);
+    check(
+      'resizeViewport:$width/$height',
+      evidence['viewportFilled'] == true &&
+          evidence['generationStable'] == true &&
+          evidence['modeStable'] == true &&
+          evidence['identityRetained'] == true,
+    );
   }
 
   /// 选一个完全落在视口内、离上下边缘足够远的非工具行作为真实输入目标与位移样本。
@@ -458,10 +466,7 @@ Future<void> main(List<String> args) async {
       'initialThreadIdentity',
       TimelineObservation.parse(initial).threadId == target.threadId,
     );
-    check(
-      'initialSmallPage',
-      TimelineObservation.parse(initial).itemCount <= 32,
-    );
+    check('initialViewportFilled', timelineViewportSettled(initial));
     if (!functionalOnly) {
       for (var phase = 0; phase < _sizes.length; phase++) {
         final (width, height) = _sizes[phase];
@@ -558,6 +563,10 @@ Future<void> main(List<String> args) async {
             .timeout(const Duration(seconds: 95)),
       );
       report['shutdown'] = shutdown is Map ? shutdown['shutdown'] : null;
+      if (report['shutdown'] == 'completed') {
+        await save();
+        await driver.requestData('request-app-exit');
+      }
     } on Object catch (error) {
       report['shutdownRequestError'] = '$error';
     }

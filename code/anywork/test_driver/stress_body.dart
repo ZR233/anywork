@@ -414,7 +414,7 @@ Future<void> main(List<String> args) async {
     final reopenedDetail = reopenedBody?.detail('text');
     final generationAdvanced =
         reopenedTimeline.generation != settledTimeline.generation;
-    // 重开最新小页：offset 0、几何贴底、Live 模式、没有准备中的代次；不恢复像素。
+    // 重开从最新端开始并按视口补齐：offset 0、Live 模式，不恢复像素。
     //
     // 标准反向列表的底端就是 offset 0：此时 `extentBefore` 为 0、`extentAfter` 是
     // 全部可滚动内容。用 `extentAfter ≈ 0` 判“贴底”属于非反向 ListView 的语义，
@@ -426,7 +426,7 @@ Future<void> main(List<String> args) async {
         (reopenedScroll.pixels ?? 1).abs() <= 0.5 &&
         (reopenedScroll.extentBefore ?? 1).abs() <= 0.5 &&
         !reopenedTimeline.preparingLive &&
-        reopenedTimeline.itemCount <= 32;
+        timelineViewportSettled(reopened);
     // 同身份正文仍在展示范围内：身份 + 真实总长一致，行内预览不因重开被替换成
     // 另一份正文。
     final stableBodyOnReopen =

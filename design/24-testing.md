@@ -132,6 +132,16 @@ Timeline 大历史验收使用单必需步骤的 `timeline-history` 模拟场景
 loopback 约束，不直接灌写 SQLite，不新增生产读取／写入测试后门，也不加入默认 CI。
 fixture 只提供数据；冷开小页、深游标分页、响应预算及进程峰值仍须通过实际 HTTP／FRB
 与持久化读取分别取证，不以模拟数据生成成功代替产品验收。
+该历史场景以每秒 1,000 条保持真实输出窗口，覆盖忙时切 History／回实时、未提交预览
+缺口的原生 Busy、完成后通过界面重试以及冻结正文不变；`stress` 保留每秒 5,000 条基线。
+同一 retained home 可用 `run-gui --driver --profile` 冷开，再运行
+`cargo dart test_driver/timeline_adaptive_journey.dart VM_URL BASELINE_SNAPSHOT OUTPUT_DIR`：
+以已有截图快照的项目／会话身份为目标，覆盖六尺寸、侧栏拖动／方向键／Home 和未发送草稿
+增高，核对同代次 Live、身份、真实视口与正常退出；方向键按住后失焦也须提交，宽度验证
+采用 canonical 设置并等待现有 mutation 结束，不能仅凭本地草稿几何通过。
+宿主须继承该 GUI 的显示与授权环境。
+长历史协调器复用 `run-gui --native-launch`；Driver 的实际 PID 必须与原生退出报告一致，
+确认本体 code 0、无 signal／取消及遗留子进程，不能把 Flutter 启动器的固定成功码当作本体退出。
 预览预算回归同时覆盖长正文与大量空／短字段，确认字段声明和稳定身份不是免费结构，
 不可缩结构超限明确失败，预算截页保留真实下一游标。core 统一准入计量、实际 wire 编码
 字节、冷读 canonical 解码峰值与 RSS 分开记录，不把前者当作后几者的精确上界；计量
