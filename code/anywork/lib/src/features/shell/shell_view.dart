@@ -241,7 +241,6 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     loadError: session?.sync.phase == DomainSyncPhase.failed
         ? session?.sync.errorMessage
         : null,
-    timelineRows: const [],
     todo: session?.workspace?.todo,
     runtime: session?.runtime ?? shellEmptyRuntime,
     turn: session?.activeTurn,

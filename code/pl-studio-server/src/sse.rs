@@ -6,8 +6,7 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
 use pl_protocol::{
-    ChatWindowQuery, ChatWindowUpdate, ThreadNotification, ThreadSubscriptionRequest,
-    ThreadSubscriptionUpdate,
+    ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, TimelineTailUpdate,
 };
 use pl_studio_runtime::StudioProductFrame;
 use serde::Serialize;
@@ -199,10 +198,10 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
 
 /// 状态订阅：只转发当前执行、活动、交互与运行时状态。
 ///
-/// 内容**不**经本流传送，也不再用一条“窗口版本已变化”的通知让客户端去重读历史页：内容窗口有自己的
-/// 实时通道 `/api/v1/threads/{id}/window/events`（初始 `/window`、分页 `?anchor=`、按身份读
-/// `/window/items/{id}`），与 FRB 的 `BridgeChatView` 用同一份共享会话事实。旧
-/// `itemStarted`/`itemDelta`/`itemCompleted` 事件已删除——内容只有窗口这一条推送源。
+/// 内容**不**经本流传送，也不再让客户端据此去重读历史页：内容有自己的通道
+/// `/api/v1/threads/{id}/timeline/events`（基线 + 连续补丁／显式重同步）与
+/// `/api/v1/threads/{id}/timeline`（无状态页），与 FRB 的 `BridgeTimeline` 用同一份共享会话事实。
+/// 旧 `itemStarted`/`itemDelta`/`itemCompleted` 事件已删除——内容只有这一条推送源。
 #[utoipa::path(
     get,
     path = "/api/v1/threads/{thread_id}/events",
@@ -302,53 +301,44 @@ pub(crate) async fn thread_events(
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
-/// 内容窗口订阅：每条连接持有**自己**的有界 `ChatView`。
+/// Timeline 内容订阅：每条连接持有自己的有界尾部观察与订阅身份。
 ///
-/// 按 `anchor` + `direction` 建立窗口（`anchor` 缺省为最新窗口；`anchor` = 当前窗口首条 +
-/// `direction=older` 是上翻一页，末条 + `newer` 是下翻一页，由 core 的窗口分页推进）后先发一次权威
-/// `reset`（整窗快照），之后转发该窗口自己的差量：同身份字段增长交付 `content` 增量、单格替换交付
-/// `splice`，无法用差量表达（含窗口镜像与共享会话失同步）时回退成权威 `reset`。换锚点/方向即换
-/// 窗口，客户端重新连接就得到新的 `reset`，因此不存在跨窗口的增量拼接。窗口版本是窗口自己的版本，
-/// 与 `/events` 状态流的 envelope revision 相互独立。
+/// 首帧是 `baseline`（最新小页 + 该连接的 `subscriptionId`），之后只交付该连接的连续 `patch`。无法连续
+/// 表达时交付一次 `resync`（同订阅身份 + 新基线），客户端按身份重新对账。没有 durable replay：带
+/// `Last-Event-ID` 重连必须建立新基线，不能当作可续读的事件日志。
+///
+/// 待发送正文最多保留一个批次：核心已经把普通正文合帧，并且只在消费者落后超出可证连续范围时给出
+/// `resync`，因此这里不在 transport 侧堆积多份大正文。读取失败会先交付可见 `error` 再关闭，不静默
+/// 循环失败伪装成 EOF。
 #[utoipa::path(
     get,
-    path = "/api/v1/threads/{thread_id}/window/events",
-    operation_id = "thread.subscribeWindow",
-    params(
-        ("thread_id" = String, Path, description = "Thread ID"),
-        ("anchor" = Option<String>, Query, description = "canonical item identity；缺省或 latest 为最新窗口"),
-        ("direction" = Option<String>, Query, description = "older/newer：相对 anchor 翻一页（缺省为跳到 anchor 的窗口）")
-    ),
-    responses(StudioApiErrors, (status = 200, description = "Live content window", body = String, content_type = "text/event-stream"))
+    path = "/api/v1/threads/{thread_id}/timeline/events",
+    operation_id = "thread.subscribeTimeline",
+    params(("thread_id" = String, Path, description = "Thread ID")),
+    responses(StudioApiErrors, (status = 200, description = "Bounded timeline tail", body = String, content_type = "text/event-stream"))
 )]
-pub(crate) async fn thread_window_events(
+pub(crate) async fn thread_timeline_events(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ChatWindowQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let permit = state
         .streams
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::overloaded())?;
-    let runtime = state.runtime.clone();
-    let mut stream = runtime
-        .open_chat_window(&thread_id, &query)
+    let mut stream = state
+        .runtime
+        .open_timeline_tail(&thread_id)
         .await
         .map_err(ApiError::from)?;
-    let initial = stream.initial().map_err(ApiError::from)?;
+    let baseline = stream.initial().map_err(ApiError::from)?;
     let shutdown = state.shutdown.clone();
-    let (sender, receiver) = mpsc::channel(128);
+    // 一个批次容量：核心已经合帧，慢消费者由核心判定连续性或重同步，而不是在 transport 堆积。
+    let (sender, receiver) = mpsc::channel(1);
     tokio::spawn(async move {
         let _permit = permit;
-        if !send_window(&sender, ChatWindowUpdate::Reset { window: initial }).await {
+        if !send_json(&sender, "baseline", None, &baseline).await {
             return;
-        }
-        // `stream` 只在 select 表达式里被借用；结果拿到后再赋值，避免与 `select!` 的 future 借用冲突。
-        enum Step {
-            Update(ChatWindowUpdate),
-            Failed(anyhow::Error),
-            End,
         }
         loop {
             let step = tokio::select! {
@@ -358,48 +348,50 @@ pub(crate) async fn thread_window_events(
                     Ok(Some(update)) => Step::Update(update),
                     Ok(None) => Step::End,
                     Err(error) => Step::Failed(error),
-                }
+                },
             };
             match step {
                 Step::Update(update) => {
-                    if !send_window(&sender, update).await {
+                    let (event_name, event_id) = match &update {
+                        TimelineTailUpdate::Patch { to, .. } => {
+                            ("patch", Some(format!("timeline:{to}")))
+                        }
+                        TimelineTailUpdate::Resync { baseline, .. } => {
+                            ("resync", Some(format!("timeline:{}", baseline.version)))
+                        }
+                    };
+                    if !send_json(&sender, event_name, event_id.as_deref(), &update).await {
                         return;
                     }
                 }
                 Step::End => break,
                 Step::Failed(error) => {
-                    // 权威重同步：重新打开同一个窗口并重发一次 `reset`，客户端直接替换本地窗口，
-                    // 不做跨版本拼接。
-                    tracing::debug!(thread_id, %error, "content window stream resynchronized");
-                    let Ok(fresh) = runtime.open_chat_window(&thread_id, &query).await else {
-                        break;
-                    };
-                    let Ok(window) = fresh.initial() else {
-                        break;
-                    };
-                    stream = fresh;
-                    if !send_window(&sender, ChatWindowUpdate::Reset { window }).await {
-                        return;
-                    }
+                    // 错误必须可见，且与 HTTP/FRB 使用同一份类型化分类：只发送映射后的 StudioError，
+                    // 不发送原始诊断文本，因此不会泄漏 SQLite/IO 等内部细节，也保留 code、可重试性与
+                    // 脱敏 details。随后结束这条流，由客户端重连建立新基线。
+                    let mapped = pl_studio_runtime::studio_error_from_anyhow(error);
+                    tracing::debug!(
+                        thread_id,
+                        code = mapped.code.label(),
+                        "timeline tail stream ended with a typed error"
+                    );
+                    let _ = send_json(&sender, "error", None, &mapped).await;
+                    break;
                 }
             }
         }
+        stream.close();
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
     });
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
-/// 无损送达一次窗口更新；事件 id 携带窗口版本，客户端据此判断本地窗口是否还能继续套用差量。
-async fn send_window(
-    sender: &mpsc::Sender<Result<Event, Infallible>>,
-    update: ChatWindowUpdate,
-) -> bool {
-    let event_id = match &update {
-        ChatWindowUpdate::Reset { window } => format!("window:{}", window.version),
-        ChatWindowUpdate::Patch { to, .. } => format!("window:{to}"),
-    };
-    send_json(sender, "window", Some(&event_id), &update).await
+/// 一次循环里要处理的结果，避免在 `select!` 表达式中借用 `stream`。
+enum Step {
+    Update(TimelineTailUpdate),
+    Failed(anyhow::Error),
+    End,
 }
 
 /// Lossless send: awaits channel capacity so transcript/turn terminal frames are never dropped.

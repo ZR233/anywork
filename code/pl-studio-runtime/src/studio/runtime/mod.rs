@@ -10,7 +10,6 @@ use pl_tool::mcp::McpRuntimeHandle;
 mod attachment_drafts;
 mod background_task;
 pub(crate) mod chat_item;
-mod chat_window;
 mod command_receipts;
 mod history;
 mod lifecycle;
@@ -33,12 +32,11 @@ mod thread_mode;
 mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
+pub(crate) mod timeline_content;
 mod tool_refresh;
-pub use chat_window::{
-    ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
-};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
+pub use timeline_content::{TimelineContentReader, TimelineTailStream};
 mod thread_observation;
 mod thread_title;
 mod updater;

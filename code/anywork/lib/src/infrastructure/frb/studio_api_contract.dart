@@ -224,8 +224,7 @@ frb.ProviderInput _providerInputFromCommand(ProviderCommand provider) {
   );
 }
 
-class FrbStudioTransport
-    implements StudioTransport, PersistenceQueueReader, ChatWindowReader {
+class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   static final startupProgress = ValueNotifier(
     StudioStartupPhase.loadingBridge,
   );
@@ -1811,15 +1810,12 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async {
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     await _ensureReady();
-    final view = await _bridgeCall(
-      () => frb_chat.openChatView(
-        threadId: threadId,
-        focus: const frb_chat_types.BridgeChatFocus.latest(),
-      ),
+    final timeline = await _bridgeCall(
+      () => frb_chat.openTimeline(threadId: threadId),
     );
-    return FrbChatWindow(view);
+    return FrbTimelineConnection(timeline);
   }
 
   @override

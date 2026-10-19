@@ -246,8 +246,16 @@ async fn collect(
             artifacts.join(format!("{id}.snapshot.json")),
             serde_json::to_vec_pretty(&snapshot)?,
         )?;
+        // 只需一次有界观察：一页最新内容（服务端合法上限 100 条），产物本身带 `hasOlder` 与下一条
+        // 边界，需要更长历史时由调用方按该不透明边界继续取，而不是在例子里把整段会话物化一遍。
         let page = runtime
-            .list_timeline_items(id, pl_protocol::TimelineQuery::Latest, 200)
+            .timeline_page(
+                id,
+                &pl_protocol::TimelinePageQuery {
+                    before: None,
+                    limit: Some(100),
+                },
+            )
             .await?;
         std::fs::write(
             artifacts.join(format!("{id}.timeline.json")),

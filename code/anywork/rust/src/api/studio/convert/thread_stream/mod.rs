@@ -254,7 +254,7 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
     }
 }
 
-/// ChatView splice indexes include hidden metadata items; preserve their positions
+/// Timeline previews include hidden metadata items in their ordinals; preserve their positions
 /// across the FFI boundary and let the widget projection choose what to render.
 pub(crate) fn bridge_chat_thread_item(value: ThreadItem) -> Result<BridgeThreadItem> {
     let state = item_state(value.state())?;

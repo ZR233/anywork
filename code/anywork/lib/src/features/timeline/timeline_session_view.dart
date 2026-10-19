@@ -6,7 +6,7 @@ import '../../presentation/providers/observe_client.dart';
 import '../../presentation/view_models/timeline_session_owner.dart';
 
 export '../../presentation/view_models/timeline_session_owner.dart'
-    show TimelineSessionOwner, TimelineSessionWindow;
+    show TimelineSessionOwner, TimelineSessionViewState, TimelineDisplayLease;
 
 part 'timeline_session_view.g.dart';
 
@@ -17,7 +17,7 @@ final timelineSessionOwnerProvider = Provider<TimelineSessionOwner>(
 );
 
 @riverpod
-TimelineSessionWindow? timelineSessionWindow(Ref ref) {
+TimelineSessionViewState? timelineDisplayState(Ref ref) {
   final owner = ref.read(timelineSessionOwnerProvider);
   return observeClient(ref, owner.source, (_) {
     if (ref.mounted) ref.invalidateSelf();

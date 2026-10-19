@@ -30,10 +30,10 @@ Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Ri
 也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。
 
 `pl-core` 仅使用测试侧的脚本化模型、工具和按锚点查询的临时历史后端，证明 Thread 的执行、
-并发、取消、恢复、effect、有界 ChatView 窗口及可选持久化契约，不依赖模型供应商适配。
-ChatView 测试覆盖新旧 revision 保存确认竞争（旧确认不得把较新的内容标记为已保存、确认对已
-打开窗口立即可见）、缓存/未保存/历史合并无空洞、被合并的多个窗口版本以单个连续 Patch 交付、
-多个聚焦位置、慢消费者 Reset、查询失败传播及被淘汰窗口数据的释放。effect window 只按 durable
+并发、取消、恢复、effect、Session 页／尾部／详情及可选持久化契约，不依赖模型供应商适配。
+内容测试覆盖新旧 revision 保存确认竞争、pending/history 无空洞合并、首帧／登记交接、
+尾部连续增量与慢消费者重同步、缓存淘汰非删除、查询错误、详情版本与 UTF-8 游标、
+取消和所有等待者关闭；不再保留几何窗口／对端裁剪／focus 回执的实现断言。effect window 只按 durable
 水位释放，而水位只能越过该 Thread 唯一实时投影 owner 已接管并交回可靠保存通道的提交（见
 [15](./15-session-storage.md) §15.3）。该水位由存储后端在自己的 pressure 报告里以 typed
 durable receipt 给出，owner 在每次提交后的内存安全边界折入并释放已覆盖批次，core 侧因此不需要
@@ -77,10 +77,10 @@ Studio 专项场景还通过真实 SQLite 写库拒绝验证两个在途工具�
 | 层级 | 被测边界 | 应证明的行为 | 证据与门禁范围 |
 | --- | --- | --- | --- |
 | 纯 Dart Client | 公共 Client API 与可控 transport | 唯一 reducer、attempt 所有权、receipt/观察顺序、草稿冻结、预算、原子观察与幂等 close | `anywork_client` 测试进入正式门禁；不加载 Flutter/native |
-| 应用 adapter | FRB DTO/句柄适配、Riverpod 只读观察、AppGraph 注入 | 首 Reset、Patch 缺口、typed control receipt、晚到句柄、取消/关闭、双实例隔离、provider 只取消自己的观察 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
-| 真实宿主 Flutter 路由 | 启动、Settings/标签/返回、Connector/View | 当前 ChatView 与草稿身份保留、提交期间继续输入、旧 intent 不覆盖新值 | 通过 Driver 与人工旅程取证；受控宿主的自动路由契约测试归应用 adapter 层 |
+| 应用 adapter | FRB DTO/句柄适配、Riverpod 只读观察、AppGraph 注入 | 内容基线、增量缺口、页／详情、晚到句柄、取消/关闭、双实例隔离、provider 只取消自己的观察 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
+| 真实宿主 Flutter 路由 | 启动、Settings/标签/返回、Connector/View | 当前内容连接与草稿身份保留、提交期间继续输入、旧 intent 不覆盖新值 | 通过 Driver 与人工旅程取证；受控宿主的自动路由契约测试归应用 adapter 层 |
 | FRB/native | 实际 Rust 动态库、sink、句柄与退出 | 真实 open→initial→next、控制回执、单一内容出口、关闭唤醒、join 与进程回收 | 原生 fixture 与 typed 诊断单独记录；纯 Dart fake 不覆盖此层 |
-| 平台与可见交互 | 实际宿主窗口、滚动/菜单/输入及退出 | Timeline 锚点、键盘/ESC/Tab、流式逐帧观感、原生资源收束 | 人工验收按 Linux/Windows 分开；未运行的平台标记未验证 |
+| 平台与可见交互 | 实际宿主窗口、滚动/菜单/输入及退出 | Timeline Live/History、键盘/ESC/Tab、流式逐帧观感、原生资源收束 | 人工验收按 Linux/Windows 分开；未运行的平台标记未验证 |
 
 `cargo xtask verify-client` 是 CI 的正式门禁，与 Rust 检查、`verify-gui` 和生成一致性各负其责。
 它锁定解析两份依赖快照，检查 Client SDK-only 依赖、import 与 provider 生命周期边界，运行
@@ -95,8 +95,8 @@ Client 自动用例使用屏障、可控 Future 和 fake clock 组织交错，�
   route 或附件，只处理该 `DraftStamp + OperationId` 冻结的所有权。
 - A→B→A 选择时旧 open 晚到句柄由原 attempt 关闭；句柄已创建但首 Reset 失败仍须关闭并可
   retry；在 open、initial、next、control 与 close 的各个 await 交错退出，无死锁或预算提前释放。
-- 新 view 首 Reset 使用自己的版本域，旧 `lastGood` 只显示；Patch `from` 不匹配仅重同步当前
-  view，`to <= from` 拒收；短窗补页、load/extend 与 `NoChange` 不形成自动循环。
+- 新内容订阅首基线使用自己的版本域，旧 `lastGood` 只显示；Patch `from` 不匹配仅重同步当前
+  连接，`to <= from` 拒收；页查询不推进尾部基线，EOF／错误不形成加载循环。
 - 回执先到、帧先到，以及 Applied 帧已观察且回执版本相等，均按 operation 与 effect point
   结算；版本相等不能推断 `NoChange`。快速 X→Y 中 X 的晚结果不清 Y 的 overlay。
 - `UnknownOutcome`、`AwaitingObservation`、`SyncFailed` 与 `Rejected` 分开；未知非幂等提交
@@ -122,6 +122,20 @@ Rust 可靠历史、SQLite 故障与 writer 的已有公开 API/专项测试继�
 
 模拟只证明当前实现与约定样本的行为，不证明供应商线上接口的最新兼容性。真实接口
 保持显式人工观察，采集证据后由人判断，不参与确定性提交门禁。
+
+Timeline 大历史验收使用单必需步骤的 `timeline-history` 模拟场景，共享现有 `stress`
+逐条事件流，一次受控回复交付 20,000 条具有独立稳定身份的消息／推理条目，经真实模型
+适配、Session 发布与正常 history writer 保存。原 `stress` 同样能交付这些独立条目，
+但另有 16 个必需的后续会话；专用入口只简化数据准备，不另建事件生成实现。
+用户输入及 Turn 元数据另计，最终按实际持久化条目核验，不能把 `stress-body` 的单条
+正文增量或 fixture 已发事件数当成两万条可靠历史。场景沿用隔离数据根、严格请求匹配与
+loopback 约束，不直接灌写 SQLite，不新增生产读取／写入测试后门，也不加入默认 CI。
+fixture 只提供数据；冷开小页、深游标分页、响应预算及进程峰值仍须通过实际 HTTP／FRB
+与持久化读取分别取证，不以模拟数据生成成功代替产品验收。
+预览预算回归同时覆盖长正文与大量空／短字段，确认字段声明和稳定身份不是免费结构，
+不可缩结构超限明确失败，预算截页保留真实下一游标。core 统一准入计量、实际 wire 编码
+字节、冷读 canonical 解码峰值与 RSS 分开记录，不把前者当作后几者的精确上界；计量
+契约见 [26](./26-timeline-content.md#预算计量边界)。
 
 worktree 协作写入的真实 API 观察使用 `collaboration_observe` 的隔离 Git 项目与根会话
 worktree 模式，经正常 Studio 创建命令派发 directory/worktree 执行者。观察者核对工具
@@ -383,9 +397,9 @@ observation 的 runtime 更新仍显示最近快照；新 turn/attempt 的 parti
 该值是 Rust bridge 与 Flutter 引擎的同一进程合计，只用于同一场景的前后对比；不据此推断单层
 分配、任意负载的内存上限或跨平台内存峰值，未运行的平台仍标记未验证。
 事件数、独立 `item_id` 数与实际 token 数须分别记录：同三个条目上的两万次 delta
-只能检验持续流和长正文，不能代替约两万条不同信息的窗口淘汰、深度分页与 GUI 压测。
+只能检验持续流和长正文，不能代替约两万条不同信息的按需页读取、深度分页与 GUI 压测。
 压力入口还要在同一隔离项目中通过 Flutter Driver 创建 16 个独立会话，给第一个新会话
-写入长正文，并重新打开原始长历史会话；逐会话核对目录身份、窗口上限、保存完成及
+写入长正文，并重新打开原始长历史会话；逐会话核对目录身份、首屏小页、资源释放、保存完成及
 模型请求的严格匹配。长历史、长正文、长 Turn 和多会话分别留存证据，不以单次流速
 代替四者的性能证据。场景脚本完成与人工验收结论分开：未观察到屏幕更新、卡死、未退出
 的子进程或未核查截图时，不得判为 GUI 压测通过。
@@ -393,34 +407,58 @@ observation 的 runtime 更新仍显示最近快照；新 turn/attempt 的 parti
 GUI 人工验收与 Client/adapter 门禁均不能证明未覆盖的 Studio、工具、远端进程、真实 HTTP/FRB
 及发布流程行为；交付报告须明确具体缺口，不把新增 Client 测试写成完整 native 回归。
 
-滚动验收使用真实拖动与滚轮信号，核对持续输出时自动跟随、小幅上翻即脱离、正文增长后
-锚点及偏移不变、手动回到最新和显式跳最新后继续跟随，以及再次拖动不被贴底打断。
-长正文场景同时保留会话切换后的阅读位置证据；不足一屏的折叠历史需另核对最早消息可达、
-双向分页到端停止及窗口有界。滚动命令执行成功不能代替可见几何、截图与窗口身份的判定。
-超长纯文本须同时核对实际可见字符在 canonical 正文中的位置和字符的视口像素位置；
-仅有 itemId 与条目顶部偏移相等，不能排除条目内排版变化。流式追加、无关行更新、非追加
-替换与全量重开应使用相同分区规则，选择复制仍须保持完整原文。处于真实底部但尚未跟随时，
-向下滚轮即使不产生 ScrollUpdate 也应恢复跟随，嵌套滚动的消费优先权仍由框架协调。
-历史往返还需覆盖连续小幅滚轮跨页后回到最新，不能被空闲恢复反复拉回旧锚点。
-分页后的边缘状态：布局改变把位置钳位到末端时，界面先保留手动阅读；
-随后向下滚轮应恢复最新窗口与跟随。分别观察仍有滚动范围和整窗内容不足一屏的情况。
+滚动验收使用真实拖动与滚轮信号，先证明无旧补偿的原生反向列表路线，再证明实际 bridge
+交付。Live 长正文自然跟随，小幅上翻进入 History 后已显示内容冻结，后台执行和保存继续，
+只显示新输出提示；到达冻结集合本地底端不自动回实时。显式回实时或发送建立最新小页和
+新列表代次；重开同样最新，不再测试旧像素锚点恢复。短内容通过显式入口加载更早，到头、
+失败、重试与取消均结束 loading。不能用 idle 后单步通过冒充分页回包与持续输入交叠通过。
+
+长会话覆盖默认、屏幕大小、变宽／变窄、变高／变矮及恢复尺寸，复用六组 96 次固定 ±60
+输入及三个主要尺寸各 600 次连续输入／反转（合计 1800 次），比较真实可见行与字符位移；记录消息身份、页游标、查询数、
+Live/History、列表代次与真实几何。缺失目标不剔除后算通过，区分合理离屏与错误删除；
+不以坐标重基、命令返回或截图最终正常替代过程判定。轮滚不得自动跨多页或跳最新。
+截图核对空白／溢出，屏幕大小与真实窗口管理器全屏分别记录，不外推未测平台。
+
+按需读取只访问最新页及实际请求旧页，不全量预热；前端已加载模型可以随访问增长，但
+后端热缓存／订阅缓冲与详情分别有界。记录查询条数、解码原文、保留载荷、Flutter heap 与
+原生进程 RSS，显式回实时、切会话和关闭后验证旧集合及详情可释放。先行纯库门禁失败
+即阻止跨层迁移，不通过加入锚点、帧数等待或另一列表路线掩盖问题。
 
 工具历史的人工观察覆盖短结果、跨屏结果、超长参数及多个连续工具；通过真实工具执行建立
-会话，再在历史中展开、收起和滚动。判定同时观察外层阅读锚点、工具标题的屏幕位置与内部
-结果滚动位置，避免仅凭正文存在或操作未报错推断滚动正确。
+会话，再在历史中展开、收起和滚动。判定同时观察 Thread／展示代次、标准外层位置、工具
+尺寸与最新侧边缘，以及内部结果滚动位置，避免仅凭正文存在或操作未报错推断滚动正确。
+展开与收起遵循库的反向布局，标题可以随内容尺寸自然移动，不要求应用把标题像素钉住；
+操作前正常滚动到可交互区域，再核对标准组件公开的真实展开状态与尺寸变化。组件未显式
+传入 controller 不等于没有内部展开状态；只读诊断不为取证向生产增加 controller 或恢复机制。
+内容收起使标准列表可滚范围缩短时，position 可以被 Flutter 夹到新的合法边界；这不同于
+应用补偿。验收逐样本核对位置等于原位置在当前真实范围内的 clamp，行最新侧边缘的变化
+与该位置变化一致；范围容纳原位置时两者仍须保持不变。不跳过边界样本，也不放宽位移
+误差来接纳无法由真实范围变化解释的移动。
 
-条目布局协调的人工观察覆盖图片摘要、工具组、工具详情、推理组与计划入口，在最新端、
-历史中及不足一屏窗口分别展开/收起，记录操作入口位置、可见锚点与 canonical 窗口身份。
-查看当前条目只暂停贴底，不产生连续旧页请求或跳到最早消息；随后真实外层滚动仍可翻页，
-返回最新后继续跟随。异步正文/图片到达保持原阅读意图，快速连续操作、滚动接管与会话
-切换取消旧校正；工具内部滚轮不改外层锚点。图片另核对数量/状态文案、按需读取、圆角
-小缩略图、多图换行、不同调用同资源身份、重试、放大/缩放/关闭、行回收重建与历史重开。
-现有 fixture 未覆盖的入口通过同一隔离 harness 的定向 Driver 操作补充，无法动态覆盖时
-明确静态证据和剩余缺口，不把场景命令退出成功等同于交互全部通过。
+内容交互覆盖图片摘要、工具、详情、推理与计划，在 Live、History 与不足一屏时操作。
+历史消息不因后台全文回包自动放大，详情／原图在有界内部区域或查看器显示，关闭和会话
+切换取消旧读取并释放缓存。核对完整内容读取／复制、页边界稳定 Message 身份、工具内外
+层输入优先、图片数量与状态、重试、缩略图、多图换行、放大和历史重开；不依赖像素校正
+通过。现有 fixture 不覆盖的入口以定向 Driver 补充，未观察到的行为不得称已验收。
 
 realtime 场景同时观察有效模型绑定在调用中及全部调用结束后保持可用，覆盖供应商错误、
 取消和继续调用，防止持久化检查点中的非持久模型状态覆盖实时路由。真实供应商的同类
 问题另记录成功响应、调用前后路由状态与 GUI 截图，不能以模拟供应商通过代替真实 API 验证。
+本地宿主目录执行沿用 [安全边界](./04-security.md#41-权限模式) 的现役固定 `full-access`
+策略：在 harness 自有、workspace 外的隔离目录执行真实命令，核对命令实际输出的工作目录、
+交付结果、执行终态与持久化收束；工作目录不能只从请求参数推断。该步骤无需用户审批动作，
+不再等待旧策略下的工具审批卡，也不恢复权限选项、覆盖 effective 配置或增加验收专用后门。
+仍须验证执行未完成时没有提前最终回答、后台任务的真实收据与最终输出，并拒绝意外的待审批交互。
+runtime 观察顺序另从 [26.9](./26-timeline-content.md#269-原生验收的只读展示诊断) 的
+Driver-only 记录器取得实际 Client 发布事实：同一 Turn／attempt 至少两次 live sequence
+递增，随后该观察被明确清除且实际发布 revision 推进。当前生产链不发布 authoritative
+观察，不能要求不存在的事件或为通过验收改变模型执行语义；终态清除有独立类型与事实，
+不为它编造计量值、sequence 或用 unknown 轮询替代。记录器缺失、溢出、错误、只有基线／
+轮询样本或缺少清除事实时保留失败，不将该证明降为非阻塞 pending。
+
+写锁／写故障场景中的实时内容进展包含推理、正文与工具输出，依据公开 typed 内容域及详情
+引用的实际字节进展观察；推理条目的顶层文本可以为空，不能只统计最终回答正文。保存确认、
+尾部水位、重复快照或执行状态变化不能代替内容增长，也不能为采样而放慢 fixture。
 
 在线模型目录的 pl-model 公开 API 证明覆盖查询地址/鉴权、两种 typed envelope、缺失与显式空
 参数语义、富声明驱动实际请求、完整名单替换以及 provider 内精确 ID 的价格关联；默认文件只
@@ -440,32 +478,24 @@ fixture。目录故障、空名单和库存变更（重启后生效）不得改�
 
 ## 24.5 单一内容链路验收
 
-单一内容出口（ChatView `next`）与控制回执协议的实施验收按下列矩阵执行；证据分级沿用本篇
-既有口径：静态审查只证明连接关系，Dart fake 只证明 reducer/组件行为，原生 FRB fixture 证明
-端到端收敛，真实供应商另走人工观察，均不互相冒充。
+Timeline 页、尾部订阅与详情按 [26](./26-timeline-content.md) 验证。静态审查只证明连接，
+Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，实际 bridge fixture 才证明
+端到端收敛；真实供应商另验，不互相冒充。
 
-- 无手动刷新的实时输出：打开会话后不滚动、不翻页，首字、连续 token、工具进度与终态均由
-  内容泵交付（对应审查 F01；`manual-gui`/Driver 快照核对 `contentDelivery` 计数）。
-- 控制操作不旁路：翻页、跳最新、锚点聚焦、正文展开后，窗口移动只经 `next` 的 Reset/Patch
-  到达；Driver 断言无 `readStudioState` 热路径调用（F02/F03）。
-- 帧时序：命令回执先到/帧先到两种顺序、`next` 挂起时 load/focus/close、低版本帧与跨版本
-  合并 Patch、缺口后的绑定重开（F05 与流协议）。
-- 生命周期：快速 A→B→A 切换回收旧 attempt 和晚到句柄；Settings、标签切换及 provider 无
-  观察者期间保留当前 ChatView 和草稿。只有显式 Thread 切换、项目关闭和退出 retire 对应资源，
-  新 view 由自己的 Reset 建立 baseline（F06）；Driver 核对 view 身份、窗口数量与关闭报告。
-- 视图单事实源：Timeline 业务 projection 由 AppGraph 的具体 owner 管理；显示组件只接受
-  props，附件读取只走 Client 公共 query（F07），预览与生产由 Connector 提供同一形状输入。
-- 旧入口移除：GUI 生产链路不存在 SQL 分页（`listTimelineItems`）与实时条目的双路合并；
-  `verify-client` 的 AST 边界检查拒绝 feature 直连 FRB/transport、Client 私有 import、provider
-  生命周期关闭资源、命令成功后聚合回读和不稳定 key；静态通过只证明这些边界，不证明 native
-  资源已实际回收，仍须结合前述运行证据。
-- 时间线确定性回归：经生产投影验证混合活动组不跨正文、图片、压缩和智能体事件；
-  固定流式完成、窗口移动、行回收与选择复制的交错，在旧实现失败后以同一输入验证修复。
-  核心历史读取使用屏障证明等待期间的新正文、保存和终态不会回退；Client 以受控正文请求
-  证明旧 attempt 不能污染新窗口。保留既有有效行为证明，删除只验证旧消息控制器内部操作的断言。
-  选择清空后的右键菜单不得继续提供旧文本复制；该回归通过真实菜单验证，不只检查内部选区状态。
-  代码块获得焦点后滚出视口时，必须证明官方保留缓存仍挂载且无法取得绘制坐标，随后检查
-  发布锚点、滚动位置与逐帧诊断均有效，不能把该行误当成可见内容。
+- 同一内容源：页查询合并 pending/history，tail initial 与登记无缝，状态流不携带正文；
+  HTTP/FRB 使用同一转换，不通过聚合回读或纯 SQL overlay 修补缺失。
+- 增量与缺口：内容 revision、tail from/to、saved 与 terminal 独立；首字和终态立即，普通
+  合帧不重复 token。慢消费者与断流必须显式新基线，缓存淘汰不删除展示消息。
+- 并发：以屏障验证查询等待期间新正文、保存确认与终态不回退，旧请求和晚到句柄不能
+  污染新 Thread／列表代次；挂起 next 不阻塞查询与 close，关闭等待真实 ACK。
+- 单一展示集合：AppGraph lease 持有 stock controller；历史只前插，Message 身份不因
+  组首成员／页边界变化。无服务端几何窗口、整表 syncWindow、像素锚点或隐藏备用列表。
+- 生命周期：A→B→A、Settings 往返、无 Widget 观察者、查询失败、关闭失败与重试均验证；
+  provider 只取消观察，旧代次控制器在子树释放后销毁，预算不提前归还。
+- 边界：SDK Client 不引 Flutter，features 不直连 FRB／transport／SQL，生成文件 canonical；
+  旧 window/focus/load/expand 回执入口、死事件和兼容别名确实删除。
+- 内容与选择：真实工具结果、长 Markdown、推理、图片、交互与失败均可读；详情不是
+  预览冒充全文，复制不丢原文，失效选区不能继续复制，离屏缓存不当作可见行测量。
 - 呈现稳定性（原生逐帧）：持续纯文本、持续推理摘要与长 Markdown 各做一组，另加历史滚动、
   保存确认、会话切换与故障重连；每组核对连续输出期间没有中间空窗、摘要不反复淡化、保存
   确认不改变正文几何、后台输出不打断历史阅读。**必须在动画尚未 settle 的帧上判定**：
@@ -514,7 +544,7 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 | --- | --- | --- | --- | --- | --- | --- |
 | Thread runtime | context、total/input/output/cache/reasoning tokens、context window、throughput、model、workflow/run、plan（状态与当前计划文档） | runtime snapshot/update、live usage | Client RuntimeChannel ordered reducer | runtime/status/context/throughput | Client selected Thread owner；Settings 保留 | paced stream 同页多次变化 |
 | Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | turn/activity/storage notifications | 同一 Client RuntimeChannel reducer | turn/activity/storage | Session 逻辑寿命，独立于 provider | 阶段变化和保存故障即时可见 |
-| Timeline | 流式正文、分页、正文补齐、图片/工具预览 | Client ChatView `initial`/`next` 与 typed receipt | Client ChatReadModel；TimelineSessionOwner lease | Connector/View props | current `threadId/viewId` | 不切页、不重读、不重复；迟到回调按 tuple 丢弃 |
+| Timeline | 流式正文、旧页、详情、图片/工具预览 | Session tail initial/next、page、detail | Client 有界 tail；展示 lease 的唯一 Message 集合 | Connector/View props | threadId/attempt/展示代次 | History 冻结；显式回实时；迟到回包不污染新代次 |
 | Composer | 文本、attachments、preview、pending/failure | Client DraftStore + admission result | Client canonical draft reducer | composer Connector/View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |
 | Product settings | providers/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Client SettingsReadModel；catalog 独立版本 | settings/provider | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
 | Usage/statistics/costs | quota、model performance、session costs | scoped product topics | Client scoped reducers | usage/statistics/costs | 可见需求由 Client 管理，observer 可取消 | 隐藏取消观察；需求重开取基线 |

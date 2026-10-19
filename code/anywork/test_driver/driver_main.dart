@@ -14,8 +14,11 @@ import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 
 import 'package:anywork/src/platform/error_log.dart';
+import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -29,6 +32,7 @@ import 'pointer_drag_extension.dart';
 import 'scrollbar_drag_extension.dart';
 import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
+import 'runtime_event_evidence.dart';
 
 /// Native-only Driver entrypoint. Product and release builds use lib/main.dart.
 void main() {
@@ -53,7 +57,8 @@ void main() {
   _container = ProviderContainer(
     overrides: [appGraphProvider.overrideWithValue(graph)],
   );
-  bindStudioDriver(graph.client);
+  // Driver 只借用当前 AppGraph 的 Client 与展示 owner；绑定不建立内容订阅。
+  bindStudioDriver(graph.client, timeline: graph.timeline);
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
   // 与托盘退出共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
@@ -61,7 +66,12 @@ void main() {
     StudioExitCoordinator(
       graph.client.transport,
       _container.read(studioShutdownProgressStateProvider.notifier).update,
-      closeClient: (deadline) => graph.close(deadline: deadline),
+      // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
+      // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
+      closeClient: (deadline) {
+        _runtimeEvidence?.cancelForShutdown();
+        return graph.close(deadline: deadline);
+      },
     ),
   );
 }
@@ -88,6 +98,10 @@ late final ProviderContainer _container;
 AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
 Future<void>? _driverFixtureClipboardImageTask;
+
+/// Driver-only runtime 发布取证记录器：借用当前 Client 已存在的 Session 观察公开
+/// runtime read-model 发布，不创建 Session、不建立 transport 订阅、不改变 demand。
+RuntimeEventEvidenceRecorder? _runtimeEvidence;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
@@ -116,6 +130,12 @@ void _recordFrameTimings(List<FrameTiming> timings) {
 }
 
 Future<String> _handleDriverData(String? message) async {
+  // JSON 命令：只用于请求时的只读几何观察。生产端没有每行测量表，这里是 Driver
+  // 现场遍历已挂载子树，不参与任何滚动/锚点决策。
+  final raw = message?.trim() ?? '';
+  if (raw.startsWith('{')) {
+    return _handleJsonDriverCommand(raw);
+  }
   switch (message) {
     case 'frame-start':
       _frameCount = 0;
@@ -213,16 +233,24 @@ Future<String> _handleDriverData(String? message) async {
             },
         ],
       });
+    // Timeline 展示意图：与界面按钮共用同一个 owner 动作，没有旧 window/focus 入口。
+    // 这些命令只转发真实用户动作，不代替滚轮产生阅读意图（进入 History 只由真实
+    // 用户滚动触发）。
     case 'load-older':
       final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      await _client.threadCommands.loadOlderHistory(threadId);
+      await _container.read(appGraphProvider).timeline.loadOlder(threadId);
       return jsonEncode({'loaded': true});
-    case 'load-newer':
+    case 'timeline-retry-older':
       final threadId = _client.selection.state.selectedThreadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      await _client.threadCommands.loadNewerHistory(threadId);
+      await _container.read(appGraphProvider).timeline.retryOlder(threadId);
       return jsonEncode({'loaded': true});
+    case 'timeline-return-live':
+      final threadId = _client.selection.state.selectedThreadId;
+      if (threadId == null) return jsonEncode({'switched': false});
+      await _container.read(appGraphProvider).timeline.returnToLive(threadId);
+      return jsonEncode({'switched': true});
     case 'selection-body':
       // Read-only: the rendered split of the long assistant body.
       return jsonEncode(<String, Object?>{'ok': true, ...?_renderedLongBody()});
@@ -316,6 +344,562 @@ Future<String> _handleDriverData(String? message) async {
     default:
       return jsonEncode({'error': 'unsupported driver request'});
   }
+}
+
+/// 一次几何请求最多观察的行数：只读诊断，不值得让一次命令遍历整棵树。
+const _timelineGeometryRowLimit = 64;
+
+/// 产品分页小页上限（条）：一次 `load-older` 必须真实增长 1..32 条。
+///
+/// 20k 条历史下 `hasOlder` 在首页之后仍为真，因此“没有增长但还报 hasOlder”或
+/// 空页/假 EOF 都不能算成功；growth 从实际 controller 与独立快照读取，不按请求值填。
+const _timelinePageSizeLimit = 32;
+
+/// JSON 命令入口（当前只有 `timeline-geometry`）。
+///
+/// 一切读取都在请求时发生：没有每帧采集、没有全局行测量表，也不向产品写回任何值。
+Future<String> _handleJsonDriverCommand(String raw) async {
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(raw);
+  } on FormatException catch (error) {
+    return jsonEncode(<String, Object?>{
+      'ok': false,
+      'error': 'invalidJson',
+      'detail': error.message,
+    });
+  }
+  if (decoded is! Map) {
+    return jsonEncode(<String, Object?>{
+      'ok': false,
+      'error': 'commandMustBeJsonObject',
+    });
+  }
+  final command = decoded['cmd'];
+  switch (command) {
+    case 'timeline-geometry':
+      final rowIds = decoded['rowIds'];
+      if (rowIds != null && rowIds is! List) {
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'error': 'rowIdsMustBeList',
+        });
+      }
+      return jsonEncode(
+        _timelineGeometry(
+          rowIds: rowIds == null
+              ? null
+              : <String>[for (final id in rowIds) '$id'],
+        ),
+      );
+    case 'timeline-detail-text':
+      // 打开着的详情查看器实际已加载到的正文：只读当前挂载子树，不触发读取、
+      // 不改变查看器状态。用于证明逐块读取累计与关闭后停止。
+      return jsonEncode(_timelineDetailText());
+    case 'load-older-overlap':
+      // 分页在途 + 滚轮交叠：在**同一个 Driver 操作**里调用产品自己的分页动作、
+      // 直接读取应用发布的真实 loading 事实，再经标准指针信号路由派发输入，
+      // 并 await 同一个真实分页 Future 收束。宿主命令往返不再被当作交叠证据。
+      return jsonEncode(
+        await _loadOlderOverlap(
+          threadId: decoded['threadId'] is String
+              ? decoded['threadId'] as String
+              : null,
+          generation: decoded['generation'] is num
+              ? (decoded['generation'] as num).toInt()
+              : null,
+          inputs: decoded['inputs'] is num
+              ? (decoded['inputs'] as num).toInt()
+              : 8,
+          dy: decoded['dy'] is num ? (decoded['dy'] as num).toDouble() : -60,
+        ),
+      );
+    case 'clipboard-text':
+      // 只读平台剪贴板当前内容（产品自己的复制动作已写入）；不修改剪贴板。
+      // `full: true` 时额外返回原文，供验收与 fixture 推出的期望原文/结构比较。
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      return jsonEncode(<String, Object?>{
+        'ok': true,
+        'characters': text.length,
+        'bytes': utf8.encode(text).length,
+        'hash': _fnv1a64Hex(text),
+        'head': _headOf(text),
+        'tail': _tailOf(text),
+        if (decoded['full'] == true) 'text': text,
+      });
+    case 'runtime-evidence-start':
+      // Driver-only：在**已存在**的 Client Session 上登记 runtime 发布观察。命令只接受
+      // 精确身份（threadId／turnId），不创建 Session、不新建 transport 订阅、不改 demand。
+      final threadId = decoded['threadId'];
+      final turnId = decoded['turnId'];
+      if (threadId is! String || turnId is! String) {
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'cmd': 'runtime-evidence-start',
+          'error': 'targetMustBeStrings',
+        });
+      }
+      _runtimeEvidence ??= RuntimeEventEvidenceRecorder(_client);
+      return jsonEncode(
+        _runtimeEvidence!.start(threadId: threadId, turnId: turnId),
+      );
+    case 'runtime-evidence-stop':
+      // 同步取消本记录器自己的观察并返回不可变结果；未开始或重复停止明确失败。
+      final recorder = _runtimeEvidence;
+      if (recorder == null) {
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'cmd': 'runtime-evidence-stop',
+          'source': RuntimeEventEvidenceRecorder.source,
+          'error': 'notStarted',
+        });
+      }
+      return jsonEncode(recorder.stop());
+    default:
+      return jsonEncode(<String, Object?>{
+        'ok': false,
+        'error': 'unknownCommand',
+        'command': command,
+      });
+  }
+}
+
+/// 只读行几何：视口 rect + 与视口真实相交的行 rect（同一坐标系）。
+///
+/// 按 canonical row key 现场遍历挂载的 element/render tree，因此它观察的是真实可见
+/// 位置，而不是另存一份布局状态。指定 [rowIds] 时逐个给出终态；没有对应 Element 的
+/// id 进入 `missing`，Element 存在但不可测则在行里给出 `reason`。
+Map<String, Object?> _timelineGeometry({List<String>? rowIds}) {
+  if (rowIds != null && rowIds.length > _timelineGeometryRowLimit) {
+    return <String, Object?>{
+      'ok': false,
+      'error': 'tooManyRowIds',
+      'limit': _timelineGeometryRowLimit,
+    };
+  }
+  final root = WidgetsBinding.instance.rootElement;
+  if (root == null) {
+    return <String, Object?>{'ok': false, 'error': 'noRootElement'};
+  }
+  final viewportKey = StudioDriverKeyValues.timelineScrollable;
+  final rowPrefix = StudioDriverKeyValues.timelineRow('');
+  RenderBox? viewport;
+  _visitElements(root, (element) {
+    if (viewport != null) return;
+    final key = element.widget.key;
+    if (key is ValueKey<String> && key.value == viewportKey) {
+      final box = element.renderObject;
+      if (box is RenderBox) viewport = box;
+    }
+  });
+  final viewportBox = viewport;
+  if (viewportBox == null || !viewportBox.attached || !viewportBox.hasSize) {
+    return <String, Object?>{'ok': false, 'error': 'viewportNotMounted'};
+  }
+  final globalOrigin = viewportBox.localToGlobal(Offset.zero);
+  final size = viewportBox.size;
+  final bounds = Offset.zero & size;
+  final requested = rowIds?.toSet();
+  final rows = <Map<String, Object?>>[];
+  final found = <String>{};
+
+  _visitElements(root, (element) {
+    final key = element.widget.key;
+    if (key is! ValueKey<String> || !key.value.startsWith(rowPrefix)) return;
+    final id = key.value.substring(rowPrefix.length);
+    if (requested != null && !requested.contains(id)) return;
+    found.add(id);
+    final render = element.renderObject;
+    if (render is! RenderBox) {
+      rows.add(<String, Object?>{
+        'id': id,
+        'mounted': true,
+        'painted': false,
+        'intersects': false,
+        'reason': 'noRenderBox',
+      });
+      return;
+    }
+    if (!render.attached) {
+      rows.add(<String, Object?>{
+        'id': id,
+        'mounted': true,
+        'painted': false,
+        'intersects': false,
+        'reason': 'detachedRenderBox',
+      });
+      return;
+    }
+    if (!render.hasSize || !render.size.isFinite || render.size.isEmpty) {
+      rows.add(<String, Object?>{
+        'id': id,
+        'mounted': true,
+        'painted': false,
+        'intersects': false,
+        'reason': 'notLaidOut',
+      });
+      return;
+    }
+    final local = render.localToGlobal(Offset.zero, ancestor: viewportBox);
+    final rect = local & render.size;
+    if (!rect.isFinite) {
+      rows.add(<String, Object?>{
+        'id': id,
+        'mounted': true,
+        'painted': false,
+        'intersects': false,
+        'reason': 'nonFiniteRect',
+      });
+      return;
+    }
+    final intersects =
+        rect.top < bounds.bottom &&
+        rect.bottom > bounds.top &&
+        rect.left < bounds.right &&
+        rect.right > bounds.left;
+    rows.add(<String, Object?>{
+      'id': id,
+      'mounted': true,
+      'painted': intersects,
+      'intersects': intersects,
+      'rect': <String, Object?>{
+        'left': rect.left,
+        'top': rect.top,
+        'width': rect.width,
+        'height': rect.height,
+      },
+    });
+  });
+
+  // 默认只返回真正可见（相交且可测）的行；指定 rowIds 时逐个给终态。
+  final List<Map<String, Object?>> visible;
+  if (requested == null) {
+    visible =
+        <Map<String, Object?>>[
+          for (final row in rows)
+            if (row['intersects'] == true) row,
+        ]..sort(
+          (left, right) => ((left['rect']! as Map)['top']! as num).compareTo(
+            (right['rect']! as Map)['top']! as num,
+          ),
+        );
+  } else {
+    visible = rows;
+  }
+  return <String, Object?>{
+    'ok': true,
+    'frame': 'viewport',
+    'viewport': <String, Object?>{
+      'left': 0.0,
+      'top': 0.0,
+      'width': size.width,
+      'height': size.height,
+    },
+    'viewportGlobal': <String, Object?>{
+      'left': globalOrigin.dx,
+      'top': globalOrigin.dy,
+      'width': size.width,
+      'height': size.height,
+    },
+    'rows': visible,
+    'missing': <String>[
+      if (requested != null)
+        for (final id in requested)
+          if (!found.contains(id)) id,
+    ],
+    'requested': requested?.length,
+  };
+}
+
+/// `timeline-scrollable` 当前挂载的视口 RenderBox；未挂载或不可测时返回 null。
+RenderBox? _timelineScrollableBox() {
+  final root = WidgetsBinding.instance.rootElement;
+  if (root == null) return null;
+  final key = StudioDriverKeyValues.timelineScrollable;
+  RenderBox? box;
+  _visitElements(root, (element) {
+    if (box != null) return;
+    final widgetKey = element.widget.key;
+    if (widgetKey is! ValueKey<String> || widgetKey.value != key) return;
+    final render = element.renderObject;
+    if (render is RenderBox && render.attached && render.hasSize) box = render;
+  });
+  return box;
+}
+
+/// 分页在途 + 滚轮交叠的复合 Driver 场景（只在验收侧使用，不进入产品）。
+///
+/// 事实来源全部是应用自身：`TimelineSessionOwner.source`（真实发布状态）与当前
+/// `TimelineDisplayLease`（同一个 controller 的已加载条目数、标准 `ScrollController`
+/// 几何）。只有应用真的受理了分页（同步发布 `isLoadingOlder == true`）才经标准
+/// 指针信号路由派发输入；所有接受的 Future 都 await 到终态，错误只记录为证据，
+/// 不抛未处理异步异常。宿主命令往返与 future 先后不再参与交叠判定。
+/// 输入有效性用同一同步块内标准 `ScrollController` 的 pixels 变化证明（不靠 frame
+/// 之后的页插入），页增长必须是 1..32 条真实小页（`hasOlder` 只作诊断）。
+Future<Map<String, Object?>> _loadOlderOverlap({
+  required String? threadId,
+  required int? generation,
+  required int inputs,
+  required double dy,
+}) async {
+  final owner = _container.read(appGraphProvider).timeline;
+  final selected = _client.selection.state.selectedThreadId;
+  final target = threadId ?? selected;
+  final evidence = <String, Object?>{
+    'inputs': inputs,
+    'dy': dy,
+    'selectedThreadId': selected,
+    'requestedThreadId': threadId,
+  };
+  Map<String, Object?> failure(
+    String reason, [
+    Map<String, Object?> extra = const <String, Object?>{},
+  ]) => <String, Object?>{'ok': false, 'reason': reason, ...evidence, ...extra};
+  if (inputs <= 0) return failure('inputsMustBePositive');
+  if (target == null) return failure('noSelectedThread');
+  if (selected != target) return failure('selectedThreadMismatch');
+  final view = owner.source.value;
+  final lease = owner.lease(target);
+  if (view == null || view.threadId != target) {
+    return failure('noCurrentDisplay', <String, Object?>{
+      'viewThreadId': view?.threadId,
+    });
+  }
+  if (lease == null) return failure('noCurrentLease');
+  evidence['connectionBefore'] = view.connection.name;
+  if (view.mode.name != 'history') {
+    return failure('modeIsNotHistory', <String, Object?>{
+      'mode': view.mode.name,
+    });
+  }
+  if (generation != null && lease.generation != generation) {
+    return failure('generationMismatch', <String, Object?>{
+      'generation': lease.generation,
+    });
+  }
+  if (!lease.hasOlder) {
+    return failure('noOlderPage', <String, Object?>{
+      'generation': lease.generation,
+    });
+  }
+  if (view.isLoadingOlder) return failure('alreadyLoadingOlder');
+  final box = _timelineScrollableBox();
+  if (box == null) return failure('scrollableNotMounted');
+  final center = box.localToGlobal(box.size.center(Offset.zero));
+  final geometryBefore = _timelineGeometry();
+  final generationBefore = lease.generation;
+  final countBefore = lease.controller.messages.length;
+  var dispatchedInputs = 0;
+  var completedAfterInputs = -1;
+  Object? pageError;
+
+  Map<String, Object?> read({required int index, required bool afterInput}) {
+    final nowView = owner.source.value;
+    final nowLease = owner.lease(target);
+    final position = nowLease != null && nowLease.scrollController.hasClients
+        ? nowLease.scrollController.position
+        : null;
+    return <String, Object?>{
+      'index': index,
+      'afterInput': afterInput,
+      'loadingOlder': nowView?.isLoadingOlder,
+      'mode': nowView?.mode.name,
+      'generation': nowLease?.generation,
+      'hasOlder': nowView?.hasOlder,
+      'olderCursor': nowView?.olderCursor,
+      'olderError': nowView?.olderError?.toString(),
+      'itemCount': nowLease?.controller.messages.length,
+      'loadedCount': nowLease?.loadedCount,
+      'pixels': position?.pixels,
+      'minScrollExtent': position?.minScrollExtent,
+      'maxScrollExtent': position?.maxScrollExtent,
+      'viewportDimension': position?.viewportDimension,
+      'pageCompleted': completedAfterInputs >= 0,
+      'pageCompletedAfterInputs': completedAfterInputs,
+    };
+  }
+
+  // 产品自己的分页动作：同步发布 loading 后 await 真实查询。
+  final page = owner.loadOlder(target);
+  final tracked = page.then<void>(
+    (_) {
+      if (completedAfterInputs < 0) completedAfterInputs = dispatchedInputs;
+    },
+    onError: (Object error, StackTrace stack) {
+      pageError ??= error;
+      if (completedAfterInputs < 0) completedAfterInputs = dispatchedInputs;
+    },
+  );
+  // 只认应用真实发布的受理事实：host future 先后不能证明在途。
+  final loadingAfterAction = owner.source.value?.isLoadingOlder;
+  evidence['loadingOlderAfterAction'] = loadingAfterAction;
+  // 从 `tracked` 成立起，本次已受理的分页必须在**所有**出口真正收束：正常完成、
+  // 提前 return、输入/几何/框架异常都走同一 join。`tracked` 已用 onError 归一页
+  // 错误；join 这里再兜一层只记录、不覆盖 primary 错误，也不放任 raw future 后台运行。
+  var pageJoined = false;
+  Future<void> joinPage() async {
+    if (pageJoined) return;
+    pageJoined = true;
+    try {
+      await tracked;
+    } on Object catch (error) {
+      pageError ??= error;
+    }
+  }
+
+  try {
+    if (loadingAfterAction != true) {
+      await joinPage();
+      return failure('loadOlderNotAccepted', <String, Object?>{
+        'pageError': pageError?.toString(),
+        'pageCompletedAfterInputs': completedAfterInputs,
+        'olderError': owner.source.value?.olderError?.toString(),
+        'hasOlder': owner.source.value?.hasOlder,
+      });
+    }
+    final inputsLog = <Map<String, Object?>>[];
+    for (var index = 0; index < inputs; index++) {
+      final sample = read(index: index, afterInput: false);
+      inputsLog.add(sample);
+      // 标准指针信号路由：与 `PointerScrollCommandExtension` 同一事件类型与通道。
+      GestureBinding.instance.handlePointerEvent(
+        PointerScrollEvent(
+          position: center,
+          scrollDelta: Offset(0, dy),
+          kind: PointerDeviceKind.mouse,
+        ),
+      );
+      dispatchedInputs = index + 1;
+      // 指针信号在同一个事件派发内同步解析：这里在任何 await/endOfFrame 之前读取标准
+      // `ScrollController` 的实际 pixels，证明这次输入真的作用到了外层列表，而不是
+      // 只 dispatch 过。frame 之后的页插入/几何变化不参与这条证据。
+      final afterDispatch = read(index: index, afterInput: true);
+      sample['afterDispatch'] = afterDispatch;
+      final beforePixels = sample['pixels'] as double?;
+      final dispatchPixels = afterDispatch['pixels'] as double?;
+      final minExtent = sample['minScrollExtent'] as double?;
+      final maxExtent = sample['maxScrollExtent'] as double?;
+      // 负 dy 是向更早内容滚动（offset 增大），正 dy 反向；可用余量按方向取。
+      final room = beforePixels == null
+          ? null
+          : dy < 0
+          ? (maxExtent == null ? null : maxExtent - beforePixels)
+          : (minExtent == null ? null : beforePixels - minExtent);
+      final delta = beforePixels == null || dispatchPixels == null
+          ? null
+          : dispatchPixels - beforePixels;
+      final moved =
+          room != null &&
+          room > 0.5 &&
+          delta != null &&
+          delta.abs() > 0.5 &&
+          (dy < 0 ? delta > 0 : delta < 0);
+      sample['outerScroll'] = <String, Object?>{
+        'beforePixels': beforePixels,
+        'afterDispatchPixels': dispatchPixels,
+        'minScrollExtent': minExtent,
+        'maxScrollExtent': maxExtent,
+        'room': room,
+        'delta': delta,
+        'moved': moved,
+      };
+      SchedulerBinding.instance.scheduleFrame();
+      await SchedulerBinding.instance.endOfFrame;
+      sample['afterFrame'] = read(index: index, afterInput: true);
+    }
+    // 正常路径：先真正等待本次分页收束，再读取发布后的终态。
+    await joinPage();
+    SchedulerBinding.instance.scheduleFrame();
+    await SchedulerBinding.instance.endOfFrame;
+    final finalFacts = read(index: inputs, afterInput: true);
+    final geometryAfter = _timelineGeometry();
+    final countAfter = finalFacts['itemCount'] as int? ?? countBefore;
+    final pageDelta = countAfter - countBefore;
+    final generationAfter =
+        finalFacts['generation'] as int? ?? generationBefore;
+    final hasOlderAfter = finalFacts['hasOlder'] == true;
+    final outerScrollMoves = <Map<String, Object?>>[
+      for (final sample in inputsLog)
+        if ((sample['outerScroll'] as Map?)?['moved'] == true) sample,
+    ];
+    final checks = <String, bool>{
+      'loadAccepted': true,
+      'historyMode': true,
+      'generationStable': generationAfter == generationBefore,
+      'pageCompleted': completedAfterInputs >= 0,
+      'pageNoError': pageError == null,
+      // 真实小页增长：一次请求必须增长 1..32 条（空页/假 EOF/多页合并都不绿）。
+      'pagePublished': pageDelta > 0 && pageDelta <= _timelinePageSizeLimit,
+      'loadingCleared': finalFacts['loadingOlder'] == false,
+      'noOlderError': finalFacts['olderError'] == null,
+      'inputDispatchedWhileInFlight': inputsLog.any(
+        (sample) => sample['loadingOlder'] == true,
+      ),
+      // 至少一格输入在有可用余量时真的改变了外层 pixels（首帧之前读取）。
+      'inputMovedOuterList': outerScrollMoves.isNotEmpty,
+      'pagePublishedAfterAnInput': completedAfterInputs >= 1,
+      'inputCountMatched': inputsLog.length == inputs,
+    };
+    return <String, Object?>{
+      'ok': true,
+      ...evidence,
+      'threadId': target,
+      'generationBefore': generationBefore,
+      'generationAfter': generationAfter,
+      'modeBefore': 'history',
+      'hasOlderBefore': true,
+      'countBefore': countBefore,
+      'countAfter': countAfter,
+      'pageDelta': pageDelta,
+      'pageSizeLimit': _timelinePageSizeLimit,
+      'hasOlderAfter': hasOlderAfter,
+      'outerScrollMoves': outerScrollMoves.length,
+      'loadingOlderAfterAction': loadingAfterAction,
+      'pageCompletedAfterInputs': completedAfterInputs,
+      'pageError': pageError?.toString(),
+      'inputsLog': inputsLog,
+      'final': finalFacts,
+      'geometryBefore': geometryBefore,
+      'geometryAfter': geometryAfter,
+      'checks': checks,
+      'pass': checks.values.every((value) => value),
+    };
+  } finally {
+    // 输入 loop、几何读取或框架等待抛错时也必须收束同一个已受理 Future，不把它
+    // 留在后台；join 已归一错误，不覆盖 primary 错误与 stack。
+    await joinPage();
+  }
+}
+
+/// 只读取挂载的 `timeline-detail-text`（`SelectableText`）与其所在对话框，不触发任何
+/// 读取、不缓存正文；关闭后自然返回 `{open: false}`。
+Map<String, Object?> _timelineDetailText() {
+  final root = WidgetsBinding.instance.rootElement;
+  if (root == null) return <String, Object?>{'ok': false, 'error': 'noRoot'};
+  final dialogKey = StudioDriverKeyValues.timelineDetailDialog;
+  final textKey = StudioDriverKeyValues.timelineDetailText;
+  var dialog = false;
+  String? text;
+  _visitElements(root, (element) {
+    final key = element.widget.key;
+    if (key is! ValueKey<String>) return;
+    if (key.value == dialogKey) dialog = true;
+    if (key.value == textKey && element.widget is SelectableText) {
+      text = (element.widget as SelectableText).data;
+    }
+  });
+  if (!dialog) return <String, Object?>{'ok': true, 'open': false};
+  final body = text ?? '';
+  return <String, Object?>{
+    'ok': true,
+    'open': true,
+    'characters': body.length,
+    'bytes': utf8.encode(body).length,
+    'hash': _fnv1a64Hex(body),
+    'head': _headOf(body),
+    'tail': _tailOf(body),
+  };
 }
 
 Future<StudioShutdownReport> _runShutdown() async {
@@ -435,7 +1019,9 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'observationSequence': metricsAvailable
           ? observedUsage.observationSequence
           : null,
-      'revision': facts.timelineWorkspace?.revision,
+      // 当前展示代次已经应用的内容版本（design/26 §26.9）；没有展示时为 null，
+      // 不用 0 或旧 workspace revision 冒充。
+      'revision': facts.timeline?.appliedVersion,
       'contextTokens': contextTokens,
       'contextWindow': contextWindow,
       'totalTokens': totalTokens,

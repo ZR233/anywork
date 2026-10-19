@@ -12,61 +12,58 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `begin_call`, `lock_window`, `next_operation_id`, `view_closed`, `view_handle`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChatViewActivity`, `ChatViewCall`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+// These functions are ignored because they are not marked as `pub`: `baseline_taken`, `begin_call`, `begin_next`, `content`, `ensure_first_frame_delivered`, `initial_required`, `lock_tail`, `next_busy`, `timeline_closed`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NextGuard`, `TimelineActivity`, `TimelineCall`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
-Future<BridgeChatView> openChatView({
-  required String threadId,
-  required BridgeChatFocus focus,
-}) => RustLib.instance.api.crateApiStudioHandlersChatOpenChatView(
-  threadId: threadId,
-  focus: focus,
-);
+Future<BridgeTimeline> openTimeline({required String threadId}) => RustLib
+    .instance
+    .api
+    .crateApiStudioHandlersChatOpenTimeline(threadId: threadId);
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeChatView>>
-abstract class BridgeChatView implements RustOpaqueInterface {
-  /// 幂等关闭：先请求取消，再等待所有获准进入的 view API 退出。
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimeline>>
+abstract class BridgeTimeline implements RustOpaqueInterface {
+  /// Idempotent close: reject new calls, wait for every registered call, then release the baseline,
+  /// the tail observation and the session reference.
   ///
-  /// close 自身不登记为活动调用，也不持窗口锁等待；多个 close 观察同一个 closing 与归零条件。
-  /// 归零后释放 view 自有窗口、句柄与首帧，客户端继续持有已关闭的 opaque 也不保留正文资源。
+  /// A second close observes the same `closing` flag and the same drain condition, so it can never
+  /// confirm earlier than the first.
   Future<void> close();
 
-  /// 展开被有界窗口省略的条目：一次**同 view 的窗口操作**，返回操作回执。
+  /// Hands the captured first frame over, once.
   ///
-  /// 步骤：锁外请求该身份的**完整**正文（同 view/revision，历史条目至多冷读一次并保留到身份离开
-  /// 窗口；被取消不会写回）。当这次请求真的升级了仍在本窗口条目的可见正文时，core 推进版本并通知，
-  /// 完整正文由下一次 `next` 以 typed 字段更新从唯一出口交付——客户端不在这里收到窗口，也不需要
-  /// 自己覆一份 item 或维持另一份 baseline。`retained == false` 表示身份已不在窗口或完整正文此刻
-  /// 不可得：调用方保留预览与重试入口，不伪造正文。
-  Future<BridgeChatReceipt> expand({required String itemId});
+  /// The baseline is moved out and the handle keeps no second copy, so a long-lived connection costs
+  /// one bounded continuity baseline instead of "first page + continuity copy". A closed handle and
+  /// an already-delivered first frame are distinct typed errors.
+  Future<BridgeTimelineBaseline> initial();
 
-  /// 换焦点的操作回执：窗口由下一次 `next` 以权威 `Reset` 交付。
-  Future<BridgeChatReceipt> focus({required BridgeChatFocus focus});
-
-  /// The subscription baseline is captured before returning the handle.
-  /// A closed view rejects this call rather than returning a stale baseline.
-  Future<BridgeChatSnapshot> initial();
-
-  /// 按方向翻页的操作回执：从**当前窗口**继续（core `ChatView::load` 换入一页、必要时换出相反方向的一页）。
+  /// Waits for, and returns, the next frame of this connection.
   ///
-  /// 窗口移动由下一次 `next` 交付；`close` 会取消正在等待 history 的翻页。
-  Future<BridgeChatReceipt> load({required BridgeChatDirection direction});
-
-  /// Waits for one consolidated batch, then returns control to the consumer.
+  /// `Ok(None)` only means the session no longer publishes progress; an error is never turned into a
+  /// normal end of content.
   ///
-  /// 「锁外 readiness 等待 + 短临界区同步取帧」：等待期间不持窗口锁（见结构体文档），`close` 立刻
-  /// 打断等待。`Ok(None)` 只表示窗口流真的结束（会话不再变化或视图已关闭）。
-  Future<BridgeChatUpdate?> next();
+  /// The first frame must already be handed over by [`BridgeTimeline::initial`], otherwise this
+  /// returns a typed `Conflict` without touching the tail lock: a Dart pump that calls `next` first
+  /// cannot bypass the single hand-off. `page`/`read_detail` do not require it. A second concurrent
+  /// call returns `Busy`, and a closed handle always returns `Cancelled` before any of these checks.
+  Future<BridgeTimelineUpdate?> next();
 
-  /// 按身份读一条完整条目（内存优先，必要时回落 durable history）。
+  /// Reads one stateless page: newest, or strictly older than the opaque `before` token.
   ///
-  /// 它走的是**同一个 view** 的锁外句柄，读的是与窗口完全相同的共享会话事实：不重新 `open_chat`、
-  /// 不按 thread id 另找运行时实例，窗口句柄关闭后也不会读到别的实例的条目。一个挂起的 `next`
-  /// 同样不会挡住正文读取。
-  Future<BridgeChatItem?> readItem({required String itemId});
+  /// It never waits for a pending `next`.
+  Future<BridgeTimelinePage> page({String? before, int? limit});
 
-  /// 同步拒绝新 view API 并取消在途等待；不关闭共享 Session、Turn 或历史 writer。
+  /// Reads one bounded block of a field's complete body.
+  ///
+  /// It never waits for a pending `next`.
+  Future<BridgeTimelineDetailChunk> readDetail({
+    required String itemId,
+    required BridgeTimelineDetailQuery query,
+  });
+
+  /// Synchronously rejects new calls and cancels in-flight waits.
+  ///
+  /// The shared `Session`, its Turn and the history writer keep running.
   void requestClose();
 }

@@ -547,6 +547,56 @@ impl ContentBlock {
         (ContentBlock::append(base, &child.chunk[..end]), kept)
     }
 
+    /// Bytes of the observed text in `[start, start + max_bytes)`, on UTF-8 boundaries.
+    ///
+    /// Returns the text and its exclusive end offset, which is always a UTF-8 boundary of the
+    /// observed text and never exceeds `start + max_bytes`. Only the chunks that intersect the
+    /// range are read, so a bounded detail block never materializes the whole prefix or the whole
+    /// remaining text first. `None` when `start` lies past the observed length or inside a code
+    /// point, so a misaligned continuation is reported instead of panicking.
+    pub fn range(&self, start: usize, max_bytes: usize) -> Option<(String, usize)> {
+        if start > self.len || max_bytes == 0 {
+            return None;
+        }
+        let limit = start.saturating_add(max_bytes).min(self.len);
+        if start == limit {
+            return Some((String::new(), start));
+        }
+        let mut chunks: Vec<&str> = Vec::new();
+        let mut node = self;
+        loop {
+            let node_start = node.prefix.as_deref().map_or(0, ContentBlock::len);
+            let node_end = node_start.saturating_add(node.chunk.len());
+            if node_end > start && node_start < limit {
+                let from = start.saturating_sub(node_start);
+                // Every chunk starts on a boundary of the observed text; an interior offset must
+                // be proven to be one before the slice is taken.
+                if from > 0 && !node.chunk.is_char_boundary(from) {
+                    return None;
+                }
+                let mut to = limit.saturating_sub(node_start).min(node.chunk.len());
+                while to > from && !node.chunk.is_char_boundary(to) {
+                    to -= 1;
+                }
+                if to > from {
+                    chunks.push(&node.chunk[from..to]);
+                }
+            }
+            match node.prefix.as_deref() {
+                Some(prefix) => node = prefix,
+                None => break,
+            }
+        }
+        if chunks.is_empty() {
+            // A non-empty range must advance; an empty result would invite an endless continuation.
+            return None;
+        }
+        chunks.reverse();
+        let text: String = chunks.concat();
+        let end = start.saturating_add(text.len());
+        Some((text, end))
+    }
+
     /// Length of the observed prefix when `text` starts with exactly the whole observed text.
     ///
     /// Comparison walks the shared chain instead of materializing the observed text, so re-sending

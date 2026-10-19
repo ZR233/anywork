@@ -968,6 +968,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineNew => '新内容';
 
   @override
+  String get timelineLoadEarlier => '加载更早消息';
+
+  @override
+  String get timelineBackToLive => '回到实时';
+
+  @override
+  String get timelineDetailUnavailable => '此内容已不可用';
+
+  @override
+  String get timelineReconnecting => '正在重新连接消息，当前内容已保留。';
+
+  @override
+  String get timelineConnectionFailed => '消息同步失败，当前内容已保留。';
+
+  @override
   String get timelineReasoningFallback => '思考';
 
   @override

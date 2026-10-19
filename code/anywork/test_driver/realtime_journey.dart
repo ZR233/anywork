@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,12 +5,13 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 import 'window_control.dart';
 
 /// Fully condition-driven realtime acceptance journey.
 ///
 /// Every wait is a real observation of the GUI's Driver state: a new turn
-/// identity, a new assistant row, a running tool, an approval prompt, a
+/// identity, a new assistant row, a running tool, a real host-cwd execution, a
 /// cancelled or failed terminal, and the durable settled projection. Timing is
 /// captured from wall-clock stamps taken at those observations, never from a
 /// fixed sleep. The fixture only issues tool calls; the tools really run.
@@ -20,9 +20,12 @@ const _answers = <String, String>{
   'reasoning': 'realtime reasoning answer',
   'longCommand': 'realtime long command complete',
   'parallel': 'realtime parallel tools complete',
-  'approval': 'realtime approval complete',
+  'hostCwd': 'realtime host cwd complete',
   'resume': 'realtime continued after cancel',
 };
+
+/// 本 journey 既定 provider-error 输入：发送后的新用户消息正文必须逐字等于它。
+const _providerErrorPrompt = 'Realtime provider error';
 
 const _activeToolStatuses = <String>{
   'queued',
@@ -46,10 +49,11 @@ const _liveToolStatuses = <String>{'started', 'streaming', 'running'};
 const _narrowWindowWidth = 640;
 const _narrowWindowHeight = 600;
 
-/// At least this many pixels of content must remain below the viewport after
-/// scrolling up, for the history reading position to count as detached from the
-/// bottom rather than pinned to the last line.
-const _minDetachedExtentAfter = 200.0;
+/// 反向列表里“离开底端”的最小真实位移（像素）。
+///
+/// 标准反向列表的底端是 offset 0，`extentBefore` 就是从 0 向上滚过的距离；
+/// 少于这个距离视为仍贴在最后一行，不能当成阅读位置。
+const _minDetachedOffset = 200.0;
 
 /// Fixed pointer-drag step used to read up into history.
 ///
@@ -138,6 +142,16 @@ const _terminalTurnStatuses = <String>{
   'budgetLimited',
 };
 
+/// 这份证据的取证范围：只证明当前这一次 Client 发布的顺序与显式清除。
+///
+/// 它不等于逐 token 的供应商原始事件，也不是传输时延或帧率证据。
+const _runtimePublishScope =
+    'one existing Client Session runtime read-model publication stream observed '
+    'passively by the Driver-only recorder: at least two actual live publishes '
+    'of one Turn/attempt with strictly increasing observation sequence and '
+    'publication revision, followed by one explicit cleared publication. It is '
+    'not a provider raw-event, transfer-latency or frame-rate proof.';
+
 Future<void> main(List<String> args) async {
   if (args.length != 4) {
     stderr.writeln(
@@ -195,9 +209,9 @@ Future<void> main(List<String> args) async {
   if (shutdownFailure != null) {
     journey.shutdownError ??= shutdownFailure.toString();
   }
-  // The current Driver has no runtime event endpoint. Record that typed
-  // limitation before resolving the stage so polling-only evidence cannot look
-  // like a completed realtime proof.
+  // Resolve the runtime publication evidence before the stage so a run whose
+  // recorder never returned facts stays explicitly pending/failed instead of
+  // looking like a completed realtime proof.
   journey.recordRuntimeEvidence();
   // Resolve the terminal stage before writing either artifact so the summary and
   // the stage file can never disagree: a clean run reports `complete`, a journey
@@ -353,14 +367,19 @@ class RealtimeJourney {
   /// the next live activity can prove a different identity starts collapsed.
   String? expandedActivityIdentity;
 
-  /// Samples come from the same read-only Driver polling loop used by the
-  /// journey. They are never synthesized from text length or a timer, but the
-  /// current build has no runtime event endpoint, so they remain readiness
-  /// observations rather than a realtime event verdict.
+  /// 快照轮询样本：只作为 UI 就绪观察，永不作发布顺序判定输入（design/24 实时验收、
+  /// design/26 §26.9）。真实发布证据只来自 Driver-only 记录器的实际 Client 发布回调。
   final List<DriverRuntimeObservation> _runtimeSamples =
       <DriverRuntimeObservation>[];
+
+  /// Driver-only 记录器返回的实际发布取证；缺失即失败，不退化成轮询样本。
+  DriverRuntimePublishEvidence? _runtimePublish;
   bool _runtimeEvidenceRecorded = false;
   bool _runtimeEvidencePending = false;
+
+  /// 记录器身份：start 时固定，stop 时用同一身份严格校验响应对应的就是这一次 run。
+  String? _runtimePublishThreadId;
+  String? _runtimePublishTurnId;
 
   /// Whether the previous live activity was left actually expanded, so the
   /// cross-identity reset has a real expanded reference to reset.
@@ -400,7 +419,7 @@ class RealtimeJourney {
     await _reasoningThenAnswer();
     await _longCommand();
     await _parallelTools();
-    await _approval();
+    await _hostCwd();
     await _providerError();
     await _cancel();
     await _resume();
@@ -617,6 +636,9 @@ class RealtimeJourney {
     await observe('delayed_waiting', waiting);
     await shot('delayed-waiting');
     final turn = turnId(waiting)!;
+    // 在首字之前的真实窗口里登记 runtime 发布观察：复用 fixture 既有首字时延，
+    // 不新增 sleep、不改后端 pacing、也不发模型请求。
+    await _startRuntimePublishEvidence(waiting);
     // First content is a new assistant row appearing while the Turn is live; a
     // terminal (not-busy) snapshot must never be read as the first token.
     final firstContent = await waitFor(
@@ -635,6 +657,9 @@ class RealtimeJourney {
     await observe('delayed_terminal', terminal);
     final settled = await awaitSettled(turn, 'delayed');
     await observe('delayed_settled', settled);
+    // 该 Turn 真实 completed 且 durable 之后停止记录并保存实际发布取证；
+    // 一次 Turn 足够，后续 Turn 不再复用本记录器。
+    await _stopRuntimePublishEvidence();
     timings['delayed'] = {
       'submittedAt': context.submittedAt,
       'firstContentAt': firstContentAt,
@@ -692,14 +717,12 @@ class RealtimeJourney {
     final terminalAt = DateTime.now().millisecondsSinceEpoch;
     final settled = await awaitSettled(turn, 'reasoning');
     await observe('reasoning_complete', settled);
-    final rows = timelineRows(settled);
-    final reasoningIndex = rows.indexWhere(
-      (row) => row['type'] == 'activityGroup',
-    );
+    final rows = TimelineObservation.parse(settled).items;
+    final reasoningIndex = rows.indexWhere((item) => item.kind == 'reasoning');
     final answerIndex = rows.indexWhere(
-      (row) =>
-          row['type'] == 'finalAnswer' &&
-          (row['text'] as String? ?? '').contains(_answers['reasoning']!),
+      (item) =>
+          item.kind == 'agentMessage' &&
+          item.text.contains(_answers['reasoning']!),
     );
     timings['reasoning'] = {
       'submittedAt': context.submittedAt,
@@ -708,9 +731,7 @@ class RealtimeJourney {
       'durableSettledAt': DateTime.now().millisecondsSinceEpoch,
       'timeToFirstContentMillis': firstContentAt - context.submittedAt,
       'terminalStatus': turnStatus(terminal),
-      'reasoningRows': rows
-          .where((row) => row['type'] == 'activityGroup')
-          .length,
+      'reasoningRows': rows.where((item) => item.kind == 'reasoning').length,
     };
     checks['reasoningThenAnswer'] =
         reasoningIndex >= 0 && answerIndex > reasoningIndex;
@@ -820,7 +841,7 @@ class RealtimeJourney {
     final previousIdentity = expandedActivityIdentity;
     final wantIdentityReset = previousIdentity != null && activityLeftExpanded;
     final samples = <Map<String, Object?>>[];
-    var projectionHasFields = false;
+    var typedToolPreviewSeen = false;
     var activityFieldSeen = false;
     var observedGrowth = false;
     var identityResetObserved = false;
@@ -847,8 +868,8 @@ class RealtimeJourney {
         checks['activityIdentityResetsCollapse'] = true;
       }
       // (b) In-flight typed stdout growth of the same call identity.
-      if (_timelineExposesInFlightToolFields(snapshot)) {
-        projectionHasFields = true;
+      if (_timelineExposesTypedToolPreview(snapshot)) {
+        typedToolPreviewSeen = true;
       }
       final sample = _liveToolProgressSample(snapshot, callId);
       if (sample != null) {
@@ -895,11 +916,10 @@ class RealtimeJourney {
     }
     counts['longCommandProgressSamples'] = samples.length;
     observations['longCommandProgress'] = samples;
-    if (!projectionHasFields) {
+    if (!typedToolPreviewSeen) {
       pendingEvidence.add(
-        'long-command in-flight output: the timeline tool projection exposes no '
-        'typed output/progressBytes/itemRevision fields, so the mid-flight stdout '
-        'growth of $callId is pending an integrated Driver build',
+        'long-command in-flight output: no typed tool preview was observed for '
+        '$callId, so the mid-flight stdout growth is pending a real observation',
       );
     } else {
       checks['longCommandInFlightOutputGrows'] = observedGrowth;
@@ -1011,76 +1031,520 @@ class RealtimeJourney {
         answerMatchCount(settled, _answers['parallel']!) >= 1;
   }
 
-  Future<void> _approval() async {
-    final context = await submitPrompt('Realtime approval command', 'approval');
-    final running = await awaitNewTurn(context, 'approval');
+  /// 现役安全模型固定为全权限（design/04 §4.1 与 config `enforce_fixed_permission_mode`
+  /// 唯一 effective 归一化），不存在真实审批交互。本步骤改为证明**真实宿主 cwd 执行**：
+  /// 一次 composer、无需任何审批动作即可 running 并产出真实内容，经真实 receipt/wait
+  /// 交付实际结果；stdout 的 cwd 标记必须与本 call 请求 cwd 指向同一真实目录，且确实
+  /// 位于本隔离 workspace 之外。
+  Future<void> _hostCwd() async {
+    const execCallId = 'realtime-host-cwd-call';
+    const waitCallId = 'realtime-host-cwd-wait-call';
+    const taskId = 'task:realtime-host-cwd-call';
+    final doneAnswer = _answers['hostCwd']!;
+    final context = await submitPrompt('Realtime host cwd command', 'host_cwd');
+    final running = await awaitNewTurn(context, 'host_cwd');
     final turn = turnId(running)!;
-    final pending = await waitFor(
+    final inflight = <Map<String, Object?>>[];
+    var approvalSeen = false;
+    var noEarlyAnswer = true;
+    var growthSeen = false;
+    var runningAt = 0;
+    Map<String, Object?>? previous;
+    final inflightDeadline = DateTime.now().add(const Duration(seconds: 60));
+    while (DateTime.now().isBefore(inflightDeadline)) {
+      final state = await snapshot();
+      if (interactionKind(state) == 'toolApproval') approvalSeen = true;
+      if (turnId(state) == turn && answerContains(state, doneAnswer)) {
+        noEarlyAnswer = false;
+      }
+      final sample = _liveToolProgressSample(state, execCallId);
+      if (sample != null) {
+        if (inflight.isEmpty) {
+          runningAt = DateTime.now().millisecondsSinceEpoch;
+        }
+        inflight.add(<String, Object?>{
+          'at': DateTime.now().millisecondsSinceEpoch,
+          'answerPresent': answerContains(state, doneAnswer),
+          ...sample,
+        });
+        if (previous != null &&
+            (sample['progressBytes']! as int) >
+                (previous['progressBytes']! as int) &&
+            (sample['outputChars']! as int) >
+                (previous['outputChars']! as int)) {
+          growthSeen = true;
+        }
+        previous = sample;
+      }
+      final tool = timelineToolByCallId(state, execCallId);
+      final terminal =
+          tool != null && _terminalToolStatuses.contains(tool.status);
+      if (growthSeen || terminal) break;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    observations['hostCwdInflight'] = inflight;
+    counts['hostCwdInflightSamples'] = inflight.length;
+    if (inflight.isNotEmpty) await observe('host_cwd_running');
+    await shot('host-cwd-running');
+    // 现役模型不产生 toolApproval：出现即硬失败，绝不点 approve 把它吞掉。
+    if (approvalSeen) {
+      throw StateError(
+        'host cwd: an unexpected toolApproval interaction appeared; the '
+        'current security model is fixed full access and this journey must '
+        'never click approve',
+      );
+    }
+    final delivered = await waitFor(
       (snapshot) =>
           turnId(snapshot) == turn &&
-          interactionKind(snapshot) == 'toolApproval',
-      'approval_pending',
-      timeout: const Duration(seconds: 60),
-      abort: turnFailed,
-    );
-    await observe('approval_pending', pending);
-    await shot('approval-pending');
-    // The gated command is a real background task, so the model Turn stays live
-    // on the supported `wait` receipt while consent is outstanding: the
-    // approval has to be granted before the Turn can finish, and the delivered
-    // command output is the only thing that may satisfy the completion check.
-    bool approved(Map<String, dynamic> snapshot) => execTools(snapshot).any(
-      (tool) =>
-          tool['callId'] == 'realtime-approval-call' &&
-          tool['status'] == 'succeeded' &&
-          (tool['result'] as String? ?? '').contains('realtime-approval-line'),
-    );
-    // Consent is requested before the model has claimed completion, and the
-    // Turn has not failed while it waits on the gated task.
-    checks['approvalHeldTurnOpen'] =
-        !turnFailed(pending) && !answerContains(pending, _answers['approval']!);
-    await driver.waitFor(
-      find.byValueKey('tool-approve'),
-      timeout: const Duration(seconds: 30),
-    );
-    await _tap('tool-approve');
-    final approvedAt = DateTime.now().millisecondsSinceEpoch;
-    final delivered = await waitFor(
-      approved,
-      'approval_tool_delivered',
+          timelineToolByCallId(snapshot, execCallId)?.status == 'succeeded' &&
+          timelineToolByCallId(snapshot, waitCallId)?.status == 'succeeded',
+      'host_cwd_delivered',
       timeout: const Duration(seconds: 120),
       abort: turnFailed,
     );
-    await observe('approval_tool_delivered', delivered);
-    await shot('approval-tool-delivered');
-    final terminal = await awaitCompleted(turn, 'approval');
-    final settled = await waitFor(
-      (snapshot) =>
-          approved(snapshot) &&
-          isDurableSettled(snapshot) &&
-          answerContains(snapshot, _answers['approval']!),
-      'approval_complete',
-      timeout: const Duration(seconds: 120),
-      abort: turnFailed,
+    final deliveredAt = DateTime.now().millisecondsSinceEpoch;
+    await observe('host_cwd_delivered', delivered);
+    await shot('host-cwd-delivered');
+    final terminal = await awaitCompleted(turn, 'host_cwd');
+    final settled = await awaitSettled(turn, 'host_cwd');
+    await observe('host_cwd_complete', settled);
+    final execTool = timelineToolByCallId(settled, execCallId);
+    final waitTool = timelineToolByCallId(settled, waitCallId);
+    if (execTool == null || waitTool == null) {
+      throw StateError(
+        'host cwd: the settled timeline lost the exec/wait tool identity',
+      );
+    }
+    final Object? execArguments = jsonDecode(execTool.arguments);
+    final requestedPath = execArguments is Map ? execArguments['cwd'] : null;
+    if (requestedPath is! String || requestedPath.isEmpty) {
+      throw StateError(
+        'host cwd: the exec call has no explicit cwd argument: '
+        '${execTool.arguments}',
+      );
+    }
+    // 只解析既有交付 envelope（Driver 边界），不拿请求 cwd 冒充 stdout。
+    final envelope = requireTaskEnvelope(execTool.result, taskId);
+    const markerPrefix = 'realtime-host-cwd-actual:';
+    const expectedLines = <String>[
+      'realtime-host-cwd-line-01',
+      'realtime-host-cwd-line-02',
+      'realtime-host-cwd-line-03',
+    ];
+    final stdoutLines = const LineSplitter().convert(envelope.stdout);
+    // stdout 必须恰为“唯一 cwd 行 + 三 paced 行”，不吞任何额外输出。
+    final exactLineCount = stdoutLines.length == expectedLines.length + 1;
+    final actualCwd =
+        exactLineCount && stdoutLines.first.startsWith(markerPrefix)
+        ? stdoutLines.first.substring(markerPrefix.length)
+        : null;
+    final linesOk =
+        exactLineCount &&
+        actualCwd != null &&
+        actualCwd.isNotEmpty &&
+        [
+          for (var index = 0; index < expectedLines.length; index += 1)
+            stdoutLines[index + 1] == expectedLines[index],
+        ].every((matches) => matches);
+    if (!linesOk) {
+      throw StateError(
+        'host cwd: unexpected stdout shape: $stdoutLines (expected exactly '
+        '${expectedLines.length + 1} lines: $markerPrefix<path> followed by '
+        '$expectedLines)',
+      );
+    }
+    final directory = await _hostCwdDirectoryProof(
+      requestedPath: requestedPath,
+      actualPath: actualCwd,
+      workspacePath: project,
     );
-    await observe('approval_complete', settled);
-    timings['approval'] = {
+    final Object? waitArguments = jsonDecode(waitTool.arguments);
+    final taskIds = waitArguments is Map ? waitArguments['taskIds'] : null;
+    final taskIdOk =
+        taskIds is List && taskIds.length == 1 && taskIds.single == taskId;
+    // wait 结果是已知的公开 JSON：严格解析 tasks 数组，不做模糊 token 匹配。
+    final waitTask = requireTaskWaitResult(waitTool.result, taskId);
+    checks['hostCwdRunningWithoutApproval'] =
+        inflight.isNotEmpty && !approvalSeen;
+    checks['hostCwdOutputGrows'] = growthSeen;
+    checks['hostCwdNoEarlyAnswer'] = noEarlyAnswer && inflight.isNotEmpty;
+    checks['hostCwdTaskSucceeded'] =
+        execTool.status == 'succeeded' &&
+        execTool.callId == execCallId &&
+        envelope.exitCode == 0;
+    checks['hostCwdOutputLines'] = linesOk;
+    checks['hostCwdActualDirectory'] =
+        directory['identical'] == true &&
+        directory['sameCanonical'] == true &&
+        directory['insideWorkspace'] == false;
+    checks['hostCwdWaitReceipt'] =
+        waitTool.status == 'succeeded' &&
+        taskIdOk &&
+        waitTask['status'] == 'succeeded' &&
+        waitTask['toolId'] == 'exec';
+    checks['hostCwdAnswer'] = answerContains(settled, doneAnswer);
+    timings['hostCwd'] = {
       'submittedAt': context.submittedAt,
-      'approvedAt': approvedAt,
+      'toolRunningAt': runningAt,
+      'firstOutputMillis': runningAt - context.submittedAt,
+      'toolDeliveredAt': deliveredAt,
+      'deliveredMillis': deliveredAt - context.submittedAt,
       'executionTerminalAt': DateTime.now().millisecondsSinceEpoch,
       'executionTerminalStatus': turnStatus(terminal),
       'terminalStatus': turnStatus(settled),
     };
-    checks['approvalResolved'] =
-        approved(settled) && answerContains(settled, _answers['approval']!);
+    // 承重证据：写失败直接传播，不吞、不 rethrow。
+    await _writeRequiredJson('realtime-host-cwd.json', <String, Object?>{
+      'prompt': 'Realtime host cwd command',
+      'execCallId': execCallId,
+      'waitCallId': waitCallId,
+      'taskId': taskId,
+      'submittedAt': context.submittedAt,
+      'inflight': <String, Object?>{
+        'samples': inflight,
+        'count': inflight.length,
+        'firstProgressBytes': inflight.isEmpty
+            ? null
+            : inflight.first['progressBytes'],
+        'lastProgressBytes': inflight.isEmpty
+            ? null
+            : inflight.last['progressBytes'],
+        'answerAbsent': noEarlyAnswer,
+        'growthObserved': growthSeen,
+        'approvalSeen': approvalSeen,
+      },
+      'delivery': <String, Object?>{
+        'deliveredAt': deliveredAt,
+        'deliveredMillis': deliveredAt - context.submittedAt,
+        'execStatus': execTool.status,
+        'waitStatus': waitTool.status,
+      },
+      'turn': <String, Object?>{
+        'turnId': turn,
+        'terminalStatus': turnStatus(terminal),
+        'durableSettled': isDurableSettled(settled),
+      },
+      'request': <String, Object?>{
+        'arguments': execTool.arguments,
+        'cwd': requestedPath,
+      },
+      'directory': directory,
+      'stdoutLines': stdoutLines,
+      'task': <String, Object?>{
+        'exitCode': envelope.exitCode,
+        'stderr': envelope.stderr,
+        'stdout': envelope.stdout,
+      },
+      'wait': <String, Object?>{
+        'arguments': waitTool.arguments,
+        'taskIdsExact': taskIdOk,
+        'resultTask': waitTask,
+        'result': waitTool.result,
+      },
+      'checks': <String, Object?>{
+        'runningWithoutApproval': checks['hostCwdRunningWithoutApproval'],
+        'outputGrows': checks['hostCwdOutputGrows'],
+        'noEarlyAnswer': checks['hostCwdNoEarlyAnswer'],
+        'taskSucceeded': checks['hostCwdTaskSucceeded'],
+        'outputLines': checks['hostCwdOutputLines'],
+        'actualDirectory': checks['hostCwdActualDirectory'],
+        'waitReceipt': checks['hostCwdWaitReceipt'],
+        'answer': checks['hostCwdAnswer'],
+      },
+    });
+  }
+
+  /// 由真实用户意图离开 Live：标准 pointer 拖拽，不调用「回到实时」、不触发分页，
+  /// 也不写 pixels。
+  ///
+  /// 内容短到不足一屏时，先展开已加载 reasoning 的公开 `ExpansionTile`，让标准列表
+  /// 真正可滚；展开只是用户可见的 UI 状态，不产生任何 fixture 请求。
+  Future<
+    ({
+      String threadId,
+      int generation,
+      Map<String, Object?> before,
+      Map<String, Object?> history,
+      Map<String, Object?>? expansion,
+    })
+  >
+  _enterHistoryForDirectSend() async {
+    await mark('provider_error_history_enter');
+    final beforeSnapshot = await snapshot();
+    final beforeTimeline = TimelineObservation.parse(beforeSnapshot);
+    final beforeScroll = TimelineScrollObservation.parse(beforeSnapshot);
+    final before = <String, Object?>{
+      'threadId': beforeTimeline.threadId,
+      'generation': beforeTimeline.generation,
+      'mode': beforeTimeline.mode,
+      'itemCount': beforeTimeline.itemCount,
+      'userItemCount': _userItemCount(beforeTimeline),
+      'lastUserItemId': _lastUserItemId(beforeTimeline),
+      'turnId': turnId(beforeSnapshot),
+      'pixels': beforeScroll.pixels,
+      'extentBefore': beforeScroll.extentBefore,
+      'extentAfter': beforeScroll.extentAfter,
+      'maxScrollExtent': beforeScroll.maxScrollExtent,
+      'atLiveEdge': beforeScroll.atLiveEdge,
+    };
+    Map<String, Object?>? expansion;
+    if ((beforeScroll.maxScrollExtent ?? 0) <= 0) {
+      expansion = await _expandLoadedReasoningForScroll(beforeTimeline);
+    }
+    final steps = <Map<String, Object?>>[];
+    var current = beforeSnapshot;
+    var geometry = _scrollGeometryOf(current);
+    var entered = false;
+    for (var step = 0; step < _maxHistoryScrollSteps; step += 1) {
+      final timeline = TimelineObservation.parse(current);
+      if (timeline.isHistory && _leftBottom(geometry)) {
+        entered = true;
+        break;
+      }
+      await driver.scrollBy(
+        find.byValueKey('timeline-scrollable'),
+        _historyScrollStep,
+        timeout: const Duration(seconds: 15),
+      );
+      current = await snapshot();
+      geometry = _scrollGeometryOf(current);
+      steps.add(<String, Object?>{
+        'step': step + 1,
+        'mode': TimelineObservation.parse(current).mode,
+        'generation': TimelineObservation.parse(current).generation,
+        'pixels': geometry?.pixels,
+        'extentBefore': geometry?.extentBefore,
+        'extentAfter': geometry?.extentAfter,
+        'atLiveEdge': geometry?.atLiveEdge,
+      });
+    }
+    final historyTimeline = TimelineObservation.parse(current);
+    final history = <String, Object?>{
+      'entered': entered,
+      'threadId': historyTimeline.threadId,
+      'sameThread': historyTimeline.threadId == beforeTimeline.threadId,
+      'mode': historyTimeline.mode,
+      'generation': historyTimeline.generation,
+      'pixels': geometry?.pixels,
+      'extentBefore': geometry?.extentBefore,
+      'atLiveEdge': geometry?.atLiveEdge,
+      'detachThreshold': _minDetachedOffset,
+      'dragSteps': steps.length,
+    };
+    await _writeRequiredJson(
+      'realtime-provider-error-history-enter.json',
+      <String, Object?>{
+        'beforeHistory': before,
+        'expansion': expansion,
+        'dragSteps': steps,
+        'history': history,
+      },
+    );
+    await observe('provider_error_history_entered', current);
+    await shot('provider-error-history-entered');
+    // 真实进入 History、同一 Thread，并且真的离开底端（阈值沿用 200）；空内容或
+    // 贴底都不能算离底。
+    if (!entered ||
+        !historyTimeline.isHistory ||
+        historyTimeline.threadId != beforeTimeline.threadId ||
+        (geometry?.extentBefore ?? 0) <= _minDetachedOffset ||
+        geometry?.atLiveEdge != false) {
+      throw StateError(
+        'history direct send: the display did not really leave the bottom '
+        'before sending ($history)',
+      );
+    }
+    return (
+      threadId: beforeTimeline.threadId,
+      generation: historyTimeline.generation,
+      before: before,
+      history: history,
+      expansion: expansion,
+    );
+  }
+
+  /// 展开已加载 reasoning 的公开折叠行，使标准列表真正可滚。
+  ///
+  /// 只做用户可见的展开动作：不发请求、不写 pixels、不调用分页或「回到实时」。
+  /// `timeline-activity-details` 只在展开时渲染，因此它的可读几何就是展开事实。
+  Future<Map<String, Object?>> _expandLoadedReasoningForScroll(
+    TimelineObservation timeline,
+  ) async {
+    TimelineItemObservation? target;
+    for (final item in timeline.items) {
+      if (item.kind == 'reasoning') target = item;
+    }
+    if (target == null) {
+      throw StateError(
+        'history direct send: the loaded timeline exposes no reasoning row to '
+        'expand, and its content does not fill the viewport '
+        '(itemCount=${timeline.itemCount})',
+      );
+    }
+    final summaryKey = _activitySummaryKey(target.id);
+    await driver.waitFor(
+      find.byValueKey(summaryKey),
+      timeout: const Duration(seconds: 20),
+    );
+    await driver.rawTap(
+      find.byValueKey(summaryKey),
+      timeout: const Duration(seconds: 30),
+    );
+    await driver.waitFor(
+      find.byValueKey('timeline-activity-details'),
+      timeout: const Duration(seconds: 20),
+    );
+    final rect = await _readRect('timeline-activity-details');
+    // 展开后的真实可滚动范围来自标准 controller，只等它自己发布，不按固定帧。
+    final scrollable = await waitFor(
+      (snapshot) =>
+          (TimelineScrollObservation.optional(snapshot)?.maxScrollExtent ?? 0) >
+          0,
+      'provider_error_history_expand',
+      timeout: const Duration(seconds: 20),
+    );
+    final expandedScroll = TimelineScrollObservation.optional(scrollable);
+    final evidence = <String, Object?>{
+      'reasoningItemId': target.id,
+      'summaryKey': summaryKey,
+      'detailsRect': rect?.toJson(),
+      'expanded': rect != null,
+      'maxScrollExtent': expandedScroll?.maxScrollExtent,
+      'pixels': expandedScroll?.pixels,
+      'extentBefore': expandedScroll?.extentBefore,
+    };
+    if (rect == null || (expandedScroll?.maxScrollExtent ?? 0) <= 0) {
+      throw StateError(
+        'history direct send: expanding the loaded reasoning did not make the '
+        'timeline scrollable ($evidence)',
+      );
+    }
+    return evidence;
+  }
+
+  /// 发送后：同一 Thread 由新的 Live 代次接管，stock 几何属于该新代次且从 offset 0
+  /// 开始；等生产自己发布空闲几何，不按固定帧或 sleep。
+  Future<Map<String, dynamic>> _awaitDirectSendLive({
+    required String threadId,
+    required int historyGeneration,
+  }) {
+    return waitFor(
+      (snapshot) {
+        final timeline = TimelineObservation.optional(snapshot);
+        final scroll = TimelineScrollObservation.optional(snapshot);
+        if (timeline == null || scroll == null) return false;
+        return timeline.threadId == threadId &&
+            timeline.isLive &&
+            !timeline.preparingLive &&
+            timeline.generation > historyGeneration &&
+            scroll.laidOut &&
+            !scroll.isScrolling &&
+            scroll.generation == timeline.generation &&
+            scroll.atLiveEdge &&
+            (scroll.pixels ?? 1).abs() <= 0.5 &&
+            (scroll.extentBefore ?? 1).abs() <= 0.5;
+      },
+      'provider_error_direct_send_live',
+      timeout: const Duration(seconds: 30),
+      abort: threadFaulted,
+    );
+  }
+
+  /// 发送后新出现的用户消息身份：必须是此前没有出现过的 id。
+  Future<String> _awaitNewUserIdentity({
+    required String threadId,
+    required String? previousUserId,
+    required String expectedText,
+  }) async {
+    final seen = await waitFor(
+      (snapshot) {
+        final timeline = TimelineObservation.optional(snapshot);
+        if (timeline == null || timeline.threadId != threadId) return false;
+        final item = _lastUserItem(timeline);
+        // canonical 用户条目的正文必须逐字等于本次输入：任意新用户消息不算。
+        return item != null &&
+            item.id != previousUserId &&
+            item.text == expectedText;
+      },
+      'provider_error_direct_send_user',
+      timeout: const Duration(seconds: 20),
+      abort: threadFaulted,
+    );
+    return _lastUserItem(TimelineObservation.parse(seen))!.id;
   }
 
   Future<void> _providerError() async {
-    final context = await submitPrompt(
-      'Realtime provider error',
-      'provider_error',
-    );
+    // History 直接发送：先由真实用户意图进入 History（不显式回实时、不分页、不写
+    // pixels），随后用同一 composer 发送这一条既定输入。新代次必须由发送自身建立。
+    final history = await _enterHistoryForDirectSend();
+    final context = await submitPrompt(_providerErrorPrompt, 'provider_error');
     final running = await awaitNewTurn(context, 'provider_error');
+    final afterLive = await _awaitDirectSendLive(
+      threadId: history.threadId,
+      historyGeneration: history.generation,
+    );
+    final liveTimeline = TimelineObservation.parse(afterLive);
+    final liveScroll = TimelineScrollObservation.parse(afterLive);
+    final newTurnId = turnId(running);
+    final newUserItemId = await _awaitNewUserIdentity(
+      threadId: history.threadId,
+      previousUserId: history.before['lastUserItemId'] as String?,
+      expectedText: _providerErrorPrompt,
+    );
+    // 只有真实观察到这些事实才置真：同一 Thread、Live、新代次、非 preparing、
+    // 几何绑定新代次且 offset 0，并且新用户/Turn 身份确实出现。
+    checks['historyDirectSendNewGeneration'] =
+        liveTimeline.threadId == history.threadId &&
+        liveTimeline.isLive &&
+        !liveTimeline.preparingLive &&
+        liveTimeline.generation > history.generation &&
+        liveScroll.generation == liveTimeline.generation &&
+        liveScroll.atLiveEdge &&
+        (liveScroll.pixels ?? 1).abs() <= 0.5 &&
+        (liveScroll.extentBefore ?? 1).abs() <= 0.5 &&
+        newTurnId != null;
+    await observe('provider_error_direct_send_live', afterLive);
+    await _writeRequiredJson(
+      'realtime-history-direct-send.json',
+      <String, Object?>{
+        'beforeHistory': history.before,
+        'expansion': history.expansion,
+        'history': history.history,
+        'tap': <String, Object?>{
+          'label': 'provider_error',
+          'prompt': _providerErrorPrompt,
+          'composerInputKey': 'composer-input',
+          'composerSubmitKey': 'composer-submit',
+          'submittedAt': context.submittedAt,
+        },
+        'afterLive': <String, Object?>{
+          'threadId': liveTimeline.threadId,
+          'mode': liveTimeline.mode,
+          'generation': liveTimeline.generation,
+          'preparingLive': liveTimeline.preparingLive,
+          'pixels': liveScroll.pixels,
+          'extentBefore': liveScroll.extentBefore,
+          'extentAfter': liveScroll.extentAfter,
+          'atLiveEdge': liveScroll.atLiveEdge,
+          'scrollGeneration': liveScroll.generation,
+          'newTurnId': newTurnId,
+          'newUserItemId': newUserItemId,
+        },
+        'priorTurnId': context.priorTurnId,
+        'priorTimelineItemCount': history.before['itemCount'],
+        'priorUserItemCount': history.before['userItemCount'],
+        'historyDirectSendNewGeneration':
+            checks['historyDirectSendNewGeneration'],
+      },
+    );
+    if (checks['historyDirectSendNewGeneration'] != true) {
+      final unexpected = await snapshot();
+      throw StateError(
+        'history direct send did not establish a new live generation: '
+        'history=${history.history}, afterLive=${summarize(unexpected)}',
+      );
+    }
     final turn = turnId(running)!;
     final failed = await waitFor(
       (snapshot) =>
@@ -1207,7 +1671,7 @@ class RealtimeJourney {
       'switching is exercised by the stress-body journey',
     );
 
-    await _contentDeliveryContract();
+    await _loadedTimelineContract();
     await _windowResizeContract();
 
     final scroll = timelineScroll(settled);
@@ -1235,24 +1699,27 @@ class RealtimeJourney {
     if (geometry.maxScrollExtent == 0) {
       checks['shortMessageSticksBottom'] =
           geometry.pixels == 0 &&
-          (geometry.bottomSlack > 0 || geometry.followingBottom);
+          (geometry.atLiveEdge || geometry.maxScrollExtent == 0);
     } else {
       // Scrollable conversation: at rest it must follow the bottom.
-      // `extentAfter` is a public field, so it is read into a local before the
-      // null check: field access cannot be promoted across the `||`.
-      final extentAfter = geometry.extentAfter;
+      //
+      // 标准反向列表的底端是 offset 0，此时 `extentBefore` 为 0、`extentAfter` 是
+      // 全部剩余内容；用 `extentAfter ≈ 0` 判贴底属于非反向 ListView 语义。缺失
+      // `extentBefore` 不能默认通过：那是几何事实不可读，不是“贴底成立”。
+      final extentBefore = geometry.extentBefore;
       checks['timelineFollowsBottom'] =
-          geometry.followingBottom &&
-          (extentAfter == null || extentAfter <= 1.0);
+          geometry.atLiveEdge &&
+          extentBefore != null &&
+          extentBefore.abs() <= 1.0;
     }
     // Up-scrolling into history must keep the user's anchor instead of yanking
     // the view back to the latest row.
     if (geometry.maxScrollExtent > 0) {
-      await _historyAnchorContract(settled);
+      await _historyContract(settled);
     } else {
       pendingEvidence.add(
-        'history anchor: conversation is shorter than the viewport, so '
-        'up-scroll anchor retention is pending a longer transcript',
+        'history: conversation is shorter than the viewport, so leaving the '
+        'live edge is pending a longer transcript',
       );
     }
   }
@@ -1363,37 +1830,39 @@ class RealtimeJourney {
     };
   }
 
-  /// Records the Driver-only content-delivery counters.
+  /// Records what this generation actually loaded.
   ///
-  /// `contentDelivery.bodyUtf8Bytes` counts UTF-8 bytes of the body text the UI
-  /// actually delivered, an *application payload* measure. It is deliberately
-  /// never an FRB/wire byte count and is kept apart from the fixture's synthetic
-  /// provider output bytes.
-  Future<void> _contentDeliveryContract() async {
-    final delivery = contentDelivery(await snapshot());
-    if (delivery == null) {
+  /// 计数来自当前 stock controller 的消息集合与其 typed 预览：身份数、预览字节和
+  /// 详情声明。它们是应用层已交付数据，不是 FRB/wire 字节，也从不作为常量内存证明。
+  Future<void> _loadedTimelineContract() async {
+    final state = await snapshot();
+    final timeline = TimelineObservation.optional(state);
+    if (timeline == null) {
       pendingEvidence.add(
-        'content delivery: snapshot exposes no contentDelivery field, so the '
-        'application-payload byte counters are pending an integrated Driver '
-        'build; the provider output bytes are never used as a wire measure',
+        'loaded timeline: the snapshot exposes no display facts for the selected '
+        'thread, so item identities and preview bytes are pending',
       );
       return;
     }
-    if (delivery['enabled'] != true) {
-      pendingEvidence.add(
-        'content delivery: contentDelivery is present but disabled '
-        '(enabled=${delivery['enabled']}), so no application-payload counters '
-        'were collected',
-      );
-      return;
-    }
-    counts['contentDelivery'] = delivery;
-    checks['contentDeliveryLabeled'] =
-        delivery['metric'] == 'application-payload';
+    counts['loadedItems'] = timeline.itemCount;
+    counts['loadedPreviewBytes'] = timeline.items.fold<int>(
+      0,
+      (total, item) => total + item.textBytes,
+    );
+    counts['truncatedItems'] = timeline.items
+        .where((item) => item.textTruncated)
+        .length;
+    counts['detailFields'] = timeline.items.fold<int>(
+      0,
+      (total, item) => total + item.details.length,
+    );
+    checks['loadedTimelineFacts'] =
+        timeline.itemCount == timeline.items.length &&
+        timeline.itemIds.length == timeline.itemCount;
     pendingEvidence.add(
-      'content delivery: contentDelivery.bodyUtf8Bytes is an '
-      'application-payload UTF-8 measure of the delivered body text; it is not '
-      'FRB/wire bytes and stays separate from the fixture provider output bytes',
+      'loaded timeline: preview bytes are an application-payload measure of the '
+      'currently loaded canonical items; they are not FRB/wire bytes and are not '
+      'a constant-memory claim',
     );
   }
 
@@ -1487,6 +1956,15 @@ class RealtimeJourney {
   }
 
   /// Writes one evidence JSON file under the output directory.
+  /// 承重证据的严格写入口：写失败直接向 main 抛，由既有 failure/shutdown 收束。
+  ///
+  /// 只用于判定本身依赖的新证据（History 进入、直接发送后的 offset 0 几何）；
+  /// 旧 `_writeJson` 的“不掩盖观测”语义与其调用点不变。内容按 JSON 逐字落盘。
+  Future<void> _writeRequiredJson(String name, Object? data) async {
+    await File('${output.path}/$name')
+        .writeAsString(const JsonEncoder.withIndent('  ').convert(data));
+  }
+
   Future<void> _writeJson(String name, Object? data) async {
     try {
       await File(
@@ -1699,7 +2177,9 @@ class RealtimeJourney {
     // the actual `expanded` state.
     counts['activityExpandableCapability'] = expandedView?['expandable'];
     // The same identity must stay expanded across a *new* update. The revision
-    // token must advance, so this is never a re-read of the same snapshot. This is
+    // token must advance through some typed content domain (final text, reasoning
+    // summary/body, tool progress), so this is never a re-read of the same
+    // snapshot and never keyed on one domain only. This is
     // gathered BEFORE the window resize: the resize is the slowest observation, so
     // the revision evidence is taken first and every phase stays tied to this
     // exact activity identity instead of racing the stream window.
@@ -1722,6 +2202,10 @@ class RealtimeJourney {
     expandedActivityIdentity = identity;
     counts['activityRevisionBefore'] = revisionBefore;
     counts['activityRevisionAfter'] = _streamingRevision(advanced);
+    // 真实内容域 before/after：说明这次“新更新”来自推理/工具/文本的哪一域，
+    // 不只是聚合 token 变了。
+    counts['activityDomainBefore'] = contentDomainProgress(expanded);
+    counts['activityDomainAfter'] = contentDomainProgress(advanced);
     // The real expanded layout is recorded while the details are open: the wide
     // window first, then the narrow window (restored immediately after). Both are
     // still on the same identity that was just confirmed expanded across updates.
@@ -1768,6 +2252,8 @@ class RealtimeJourney {
     checks['activityCollapsePersists'] =
         conversationActivity(recollapsed)?['expanded'] == false;
     counts['activityCollapseRevisionAfter'] = _streamingRevision(recollapsed);
+    counts['activityCollapseDomainBefore'] = contentDomainProgress(collapsed);
+    counts['activityCollapseDomainAfter'] = contentDomainProgress(recollapsed);
     // Leave the live activity expanded again so the cross-identity contract
     // observes a real reset on the next activity rather than asserting that an
     // already-collapsed bar stays collapsed.
@@ -1797,26 +2283,26 @@ class RealtimeJourney {
   /// drags the pointer in fixed bounded steps — the same fixed-step, live-geometry
   /// mechanism the long-body stress journey uses — until the view has really left
   /// the bottom while a live assistant row is the topmost visible row, then
-  /// confirms that anchor does not move on a later poll.
-  Future<void> _historyAnchorContract(Map<String, dynamic> settled) async {
-    if (_assistantRowIds(settled).isEmpty) {
-      pendingEvidence.add(
-        'history anchor: no assistant final-answer row identity is available in '
-        'the current window to anchor on',
-      );
-      return;
-    }
+  /// 真实上翻进入 History 后，已展示结构必须冻结；新代次只由显式动作建立。
+  ///
+  /// 判定只读当前展示事实：模式、代次、已加载身份与当前标准 controller 几何。这里
+  /// 没有 anchor/restore/pin 状态，也不写 pixels。
+  Future<void> _historyContract(Map<String, dynamic> settled) async {
+    final settledTimeline = TimelineObservation.optional(settled);
     final settledScroll = timelineScroll(settled);
     final before = settledScroll == null
         ? null
         : _scrollGeometry(settledScroll);
+    if (settledTimeline == null || before == null || !before.laidOut) {
+      pendingEvidence.add(
+        'history: the selected thread exposes no laid-out timeline geometry, so '
+        'leaving the bottom is pending',
+      );
+      return;
+    }
     var current = settled;
-    var geometry = before;
+    _ScrollGeometry? geometry = before;
     var steps = 0;
-    // Per-step live geometry, including the UI10 drag diagnostics, so a reviewer
-    // can tell whether the pointer drags ever reached the scroll view
-    // (`userDragUpdates`) or were moved by a programmatic restore
-    // (`programmaticScroll`).
     final history = <Map<String, Object?>>[
       <String, Object?>{'phase': 'start', ..._historyStep(current)},
     ];
@@ -1825,12 +2311,8 @@ class RealtimeJourney {
       // negative value would keep feeding content from below. Every step is
       // bounded, so a stuck view reports real geometry instead of hanging.
       while (steps < _maxHistoryScrollSteps) {
-        final anchor = _anchorId(timelineScroll(current));
-        if (_leftBottom(geometry) &&
-            anchor != null &&
-            _assistantRowIds(current).contains(anchor)) {
-          break;
-        }
+        final timeline = TimelineObservation.parse(current);
+        if (timeline.isHistory && _leftBottom(geometry)) break;
         await driver.scrollBy(
           find.byValueKey('timeline-scrollable'),
           _historyScrollStep,
@@ -1844,78 +2326,116 @@ class RealtimeJourney {
           ..._historyStep(current),
         });
       }
-    } catch (error) {
-      await _writeJson('realtime-history-anchor.json', <String, Object?>{
+    } on Object catch (error) {
+      await _writeJson('realtime-history.json', <String, Object?>{
         'steps': history,
         'error': '$error',
       });
       pendingEvidence.add(
-        'history anchor: Driver could not scroll the timeline ($error)',
+        'history: Driver could not scroll the timeline ($error)',
       );
       return;
     }
-    await _writeJson('realtime-history-anchor.json', <String, Object?>{
+    await _writeJson('realtime-history.json', <String, Object?>{
       'steps': history,
       'final': _historyStep(current),
     });
     await observe('history_detached', current);
     await shot('history-detached');
-    final scroll = timelineScroll(current);
-    final anchorBefore = _anchorId(scroll);
-    // Leaving the bottom is proven from the live geometry, not from the scroll
-    // request: the viewport moved up (pixels decreased) with content still below.
-    final detached =
-        _leftBottom(geometry) &&
-        before != null &&
-        geometry != null &&
-        geometry.pixels < before.pixels - 1.0;
-    checks['historyScrollDetachesBottom'] = detached;
-    // The anchor row must be one of the assistant final-answer rows present in
-    // the window the observation came from, so a user or tool row cannot stand in
-    // for the reading position.
-    checks['historyAssistantAnchor'] =
-        detached &&
-        anchorBefore != null &&
-        _assistantRowIds(current).contains(anchorBefore);
+    final detachedTimeline = TimelineObservation.parse(current);
+    final detached = _leftBottom(geometry) && detachedTimeline.isHistory;
+    checks['historyScrollDetachesBottom'] = detached && steps > 0;
     counts['historyScrollSteps'] = steps;
-    counts['historyAnchorOffset'] = _anchorOffset(scroll);
-    counts['historyDetachedByUser'] = scroll?['detachedByUser'];
-    counts['historyProgrammaticScroll'] = scroll?['programmaticScroll'];
-    counts['historyUserDragUpdates'] = scroll?['userDragUpdates'];
-    counts['historyPixelsBefore'] = before?.pixels;
+    counts['historyMode'] = detachedTimeline.mode;
+    counts['historyGeneration'] = detachedTimeline.generation;
+    counts['historyPixelsBefore'] = before.pixels;
     counts['historyPixelsAfter'] = geometry?.pixels;
+    counts['historyExtentBefore'] = geometry?.extentBefore;
     counts['historyExtentAfter'] = geometry?.extentAfter;
-    // A later poll must not move the anchor the user is reading.
+    counts['historyLoadedItems'] = detachedTimeline.itemCount;
+    // 冻结：后续真实输出只提示，不替换已展示身份，也不换代。
     final after = await snapshot();
-    final anchorAfter = _anchorId(timelineScroll(after));
-    checks['historyAnchorRetained'] =
-        anchorBefore != null && anchorBefore == anchorAfter;
+    final afterTimeline = TimelineObservation.parse(after);
+    checks['historyStaysFrozen'] =
+        afterTimeline.isHistory &&
+        afterTimeline.generation == detachedTimeline.generation &&
+        detachedTimeline.itemIds.every(afterTimeline.itemIds.contains);
+    // 回到冻结集合的本地底端仍是同一个 History 代次。
+    final bottomDeadline = DateTime.now().add(const Duration(seconds: 20));
+    var atBottom =
+        TimelineScrollObservation.optional(after)?.atLiveEdge == true;
+    while (!atBottom && DateTime.now().isBefore(bottomDeadline)) {
+      await driver.scrollBy(
+        find.byValueKey('timeline-scrollable'),
+        -_historyScrollStep,
+        timeout: const Duration(seconds: 15),
+      );
+      final state = await snapshot();
+      atBottom = TimelineScrollObservation.optional(state)?.atLiveEdge == true;
+    }
+    final frozenBottom = await snapshot();
+    final frozenTimeline = TimelineObservation.parse(frozenBottom);
+    checks['historyBottomStaysFrozen'] =
+        atBottom &&
+        frozenTimeline.isHistory &&
+        frozenTimeline.generation == detachedTimeline.generation;
+    // 显式回到实时才建立新代次。
+    final beforeReturn = TimelineObservation.parse(await snapshot());
+    await driver.rawTap(find.byValueKey('timeline-return-live'));
+    final returnDeadline = DateTime.now().add(const Duration(seconds: 30));
+    var resumed = false;
+    while (DateTime.now().isBefore(returnDeadline)) {
+      final state = await snapshot();
+      final timeline = TimelineObservation.optional(state);
+      final scroll = TimelineScrollObservation.optional(state);
+      if (timeline != null &&
+          timeline.isLive &&
+          !timeline.preparingLive &&
+          timeline.generation > beforeReturn.generation &&
+          scroll != null &&
+          scroll.laidOut &&
+          !scroll.isScrolling &&
+          scroll.atLiveEdge) {
+        resumed = true;
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    checks['explicitReturnLiveNewGeneration'] = resumed;
   }
 
+  /// 视口是否真的离开了视觉底端。
+  ///
+  /// 标准反向列表里 `extentBefore` 是已经从 offset 0 向上滚过的距离，`extentAfter`
+  /// 是剩余可向下滚动的内容（贴底时恰为最大值）。因此“离底”只能看 `extentBefore`
+  /// 是否超过原阈值；缺失该事实按 0 处理，即判定不成立，不默认通过。
   bool _leftBottom(_ScrollGeometry? geometry) =>
       geometry != null &&
-      geometry.followingBottom == false &&
-      (geometry.extentAfter ?? 0) > _minDetachedExtentAfter;
+      geometry.laidOut &&
+      !geometry.atLiveEdge &&
+      (geometry.extentBefore ?? 0) > _minDetachedOffset;
 
   _ScrollGeometry? _scrollGeometryOf(Map<String, dynamic> snapshot) {
     final scroll = timelineScroll(snapshot);
     return scroll == null ? null : _scrollGeometry(scroll);
   }
 
-  /// One history-step observation: the live scroll geometry plus the UI10 drag
-  /// diagnostics that say whether a real drag reached the scroll view.
+  /// One history-step observation: the current display facts plus the standard
+  /// controller geometry.
   Map<String, Object?> _historyStep(Map<String, dynamic> snapshot) {
-    final scroll = timelineScroll(snapshot);
+    final scroll = TimelineScrollObservation.optional(snapshot);
+    final timeline = TimelineObservation.optional(snapshot);
     return <String, Object?>{
-      'anchorItemId': _anchorId(scroll),
-      'anchorOffset': _anchorOffset(scroll),
-      'pixels': _num(scroll?['pixels']),
-      'maxScrollExtent': _num(scroll?['maxScrollExtent']),
-      'extentAfter': _num(scroll?['extentAfter']),
-      'followingBottom': scroll?['followingBottom'],
-      'detachedByUser': scroll?['detachedByUser'],
-      'programmaticScroll': scroll?['programmaticScroll'],
-      'userDragUpdates': scroll?['userDragUpdates'],
+      'mode': timeline?.mode,
+      'generation': timeline?.generation,
+      'itemCount': timeline?.itemCount,
+      'hasNewOutput': timeline?.hasNewOutput,
+      'pixels': scroll?.pixels,
+      'maxScrollExtent': scroll?.maxScrollExtent,
+      'extentBefore': scroll?.extentBefore,
+      'extentAfter': scroll?.extentAfter,
+      'atLiveEdge': scroll?.atLiveEdge,
+      'isScrolling': scroll?.isScrolling,
     };
   }
 
@@ -1975,48 +2495,143 @@ class RealtimeJourney {
     ).writeAsString('${const JsonEncoder.withIndent('  ').convert(summary)}\n');
   }
 
+  /// Registers the Driver-only runtime publication recorder for the Turn that
+  /// [snapshot] shows running.
+  ///
+  /// 记录器观察的是**已存在** Client Session 的公开 runtime read-model 发布：它不创建
+  /// Session、不建立 transport 订阅、不改变业务 demand。登记成功即固定本次 run 的
+  /// Thread／Turn 身份，stop 时用同一身份严格校验响应。
+  Future<void> _startRuntimePublishEvidence(
+    Map<String, dynamic> snapshot,
+  ) async {
+    final threadId = TimelineObservation.optional(snapshot)?.threadId;
+    final turn = turnId(snapshot);
+    if (threadId == null || turn == null) {
+      throw StateError(
+        'runtime publish evidence: the running Turn exposes no thread/turn '
+        'identity (${summarize(snapshot)})',
+      );
+    }
+    final raw = await driver.requestData(
+      jsonEncode(<String, Object?>{
+        'cmd': 'runtime-evidence-start',
+        'threadId': threadId,
+        'turnId': turn,
+      }),
+      timeout: const Duration(seconds: 20),
+    );
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map || decoded['ok'] != true) {
+      throw StateError('runtime-evidence-start was rejected: $raw');
+    }
+    _runtimePublishThreadId = threadId;
+    _runtimePublishTurnId = turn;
+  }
+
+  /// Stops the recorder and keeps the actual Client publication facts as strict evidence.
+  ///
+  /// 就绪门与判定分开：轮询只等到同一 `LatestValue` 的 runtime 投影不再带本 attempt 的
+  /// live 观察（此时记录器必然已同步收到那条清除发布），判定完全来自记录器的真实回调事实。
+  Future<void> _stopRuntimePublishEvidence() async {
+    final threadId = _runtimePublishThreadId;
+    final turn = _runtimePublishTurnId;
+    if (threadId == null || turn == null) {
+      throw StateError(
+        'runtime publish evidence: stop requested without a recorded start',
+      );
+    }
+    await waitFor(
+      (snapshot) =>
+          TimelineObservation.optional(snapshot)?.threadId == threadId &&
+          driverRuntimeObservation(snapshot).usageState !=
+              DriverRuntimeUsageState.live,
+      'delayed_runtime_publish_cleared_readiness',
+      timeout: const Duration(seconds: 15),
+      abort: threadFaulted,
+    );
+    final raw = await driver.requestData(
+      jsonEncode(<String, Object?>{'cmd': 'runtime-evidence-stop'}),
+      timeout: const Duration(seconds: 20),
+    );
+    final decoded = jsonDecode(raw);
+    final DriverRuntimePublishEvidence evidence;
+    try {
+      evidence = DriverRuntimePublishEvidence.parse(
+        decoded,
+        expectedThreadId: threadId,
+        expectedTurnId: turn,
+      );
+    } on Object {
+      // 形状或身份不符也要留证：先落盘真实响应，再让失败继续向上传播。
+      await _writeRequiredJson(
+        'realtime-runtime-publish.json',
+        <String, Object?>{
+          'scenario': 'realtime',
+          'source': 'clientRuntimePublish',
+          'scope': _runtimePublishScope,
+          'target': <String, Object?>{'threadId': threadId, 'turnId': turn},
+          'driver': decoded,
+          'verdict': null,
+        },
+      );
+      rethrow;
+    }
+    _runtimePublish = evidence;
+    await _writeRequiredJson('realtime-runtime-publish.json', <String, Object?>{
+      'scenario': 'realtime',
+      'source': 'clientRuntimePublish',
+      'scope': _runtimePublishScope,
+      'target': <String, Object?>{'threadId': threadId, 'turnId': turn},
+      'driver': decoded,
+      'verdict': evidence.toJson(),
+    });
+    checks['runtimePublishLiveSequenceIncreasing'] =
+        evidence.liveSequenceIncreasing &&
+        evidence.livePublicationRevisionsIncreasing;
+    checks['runtimePublishIdentityStable'] = evidence.identityStable;
+    checks['runtimePublishClearedAfterLive'] = evidence.clearedAfterLive;
+    checks['runtimePublishBoundedAndClosed'] = evidence.boundedAndClosed;
+  }
+
+  /// Resolves the runtime publication evidence into the summary.
+  ///
+  /// 记录器事实是唯一判定来源：没有 stop 结果时保持显式 pending/失败，绝不把轮询样本
+  /// 升格成发布证明。
   void recordRuntimeEvidence() {
     if (_runtimeEvidenceRecorded) return;
     _runtimeEvidenceRecorded = true;
-    final evidence = evaluatePacedRuntime(_runtimeSamples);
+    observations['runtimeReadiness'] = DriverRuntimeReadiness(_runtimeSamples)
+        .toJson();
+    final evidence = _runtimePublish;
+    if (evidence == null) {
+      _runtimeEvidencePending = true;
+      pendingEvidence.add(
+        'runtime publish evidence: the Driver-only recorder returned no stop '
+        'result for this run, so no actual Client runtime publication facts exist',
+      );
+      return;
+    }
     observations['runtime'] = evidence.toJson();
-
-    // There is no Driver runtime-event endpoint in this build. Snapshot
-    // polling may be retained for UI readiness, but it cannot be promoted to a
-    // paced event pass merely because two reads happened 100ms apart.
-    _runtimeEvidencePending = true;
-    pendingEvidence.add(
-      'runtime paced event verdict: unsupported; no Driver runtime event '
-      'endpoint is available, so snapshot polling remains pending evidence',
-    );
-
-    // A build exposing typed live usage must produce multiple observations from
-    // one attempt. Older fixtures may not expose partial usage; that remains an
-    // explicit pending gap rather than a fake pass or a zero-valued reading.
-    if (evidence.liveSamples.length >= 2) {
-      checks['runtimeLiveSequenceStrictlyIncreasing'] =
-          evidence.liveSequenceStrictlyIncreasing;
-    } else {
+    counts['runtimePublishFacts'] = evidence.facts.length;
+    counts['runtimePublishLiveFacts'] = evidence.liveFacts.length;
+    if (!evidence.liveSequenceIncreasing ||
+        !evidence.livePublicationRevisionsIncreasing) {
       pendingEvidence.add(
-        'runtime live usage: fewer than two typed live samples from one '
-        'turn/attempt were exposed; paced live freshness remains pending',
+        'runtime publish evidence: the actual Client publications did not '
+        'advance one identity with at least two strictly increasing live '
+        'observations and increasing publication revisions',
       );
     }
-    if (evidence.authoritativeSamples.isEmpty) {
+    if (!evidence.identityStable) {
       pendingEvidence.add(
-        'runtime authoritative usage: no authoritative typed sample was '
-        'exposed after the fixture turn',
+        'runtime publish evidence: the recorded publications did not stay on '
+        'one Thread/Turn/attempt and stream epoch',
       );
-    } else if (evidence.liveSamples.isNotEmpty) {
-      checks['runtimeAuthoritativeAfterLive'] = evidence.authoritativeAfterLive;
     }
-    if (evidence.terminalSamples.isNotEmpty &&
-        evidence.liveSamples.isNotEmpty) {
-      checks['runtimeTerminalAfterLive'] = evidence.terminalAfterLive;
-    } else {
+    if (!evidence.clearedAfterLive) {
       pendingEvidence.add(
-        'runtime terminal usage: no same-identity authoritative/unknown '
-        'sample was observed after live samples',
+        'runtime publish evidence: no explicit cleared runtime publication '
+        'followed the live observations of this Turn/attempt',
       );
     }
   }
@@ -2034,63 +2649,129 @@ class RealtimeJourney {
     }
     if (evidencePending) {
       throw StateError(
-        'realtime evidence remains pending: runtime live/authoritative '
-        'event proof is unsupported by the current Driver seam',
+        'realtime evidence remains pending: the Driver-only runtime publication '
+        'recorder returned no actual Client publish facts for this run',
       );
     }
   }
 }
 
 int assistantContentCount(Map<String, dynamic> snapshot) {
-  return timelineRows(snapshot)
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  return timeline.items
       .where(
-        (row) => const {
-          'activityGroup',
-          'commentary',
-          'finalAnswer',
-        }.contains(row['type']),
+        (item) =>
+            const {'agentMessage', 'reasoning', 'toolCall'}.contains(item.kind),
       )
       .length;
 }
 
 int reasoningCount(Map<String, dynamic> snapshot) =>
-    timelineRows(snapshot)
-        .where((row) => row['type'] == 'activityGroup')
-        .length;
+    TimelineObservation.optional(snapshot)?.ofKind('reasoning').length ?? 0;
+
+/// 已加载时间线里的用户消息条数（evidence 用，不参与判定）。
+int _userItemCount(TimelineObservation timeline) =>
+    timeline.items.where((item) => item.kind == 'userMessage').length;
+
+/// 当前已加载的最后一条用户消息（canonical 正文与身份来自同一 typed item）。
+TimelineItemObservation? _lastUserItem(TimelineObservation timeline) {
+  TimelineItemObservation? last;
+  for (final item in timeline.items) {
+    if (item.kind == 'userMessage') last = item;
+  }
+  return last;
+}
+
+/// 当前已加载的最后一条用户消息身份（本次发送新出现的用户身份）。
+String? _lastUserItemId(TimelineObservation timeline) =>
+    _lastUserItem(timeline)?.id;
+
+/// reasoning 行公开折叠头的宿主侧 key。
+///
+/// 与 `StudioDriverKeys.timelineActivitySummary(id)` 是同一个字面量
+/// （`timeline-activity-summary-<$id>`）。宿主脚本运行在纯 Dart VM，不能 import
+/// `package:flutter`；共享 key 值文件不在本任务可写范围，因此这里保留单一定义并
+/// 注明唯一来源，不另建第二套命名规则。
+String _activitySummaryKey(String reasoningId) =>
+    'timeline-activity-summary-$reasoningId';
 
 /// A token of observable content progress for the current turn.
 ///
-/// It grows whenever assistant text is appended or a row is added (and includes
-/// the Driver-only delivery counters when they are enabled), so a later
-/// observation can be proven to be a *new* update rather than a re-read of the
-/// same snapshot. It is an evidence token, never a performance measurement.
+/// 各个**内容域**独立推进：新增条目、文本长度／字节、每个 canonical 条目的 typed
+/// 内容 revision、逐字段详情引用的完整长度与预览长度（推理摘要、推理正文、工具参数
+/// 与结果、原始记录等），以及工具结果的实时进度字节。推理正文不落在 `item.text`
+/// 上，只看最终文本长度会漏掉整个推理流。
+///
+/// 只消费当前 snapshot 的 typed 事实：不读 `saved`／`terminal`／订阅版本，也不把
+/// 重读同一快照当进展（同一快照得到的 token 完全相同）。这是证据 token，不是性能
+/// 指标。
 int _streamingRevision(Map<String, dynamic> snapshot) {
-  var revision = 0;
-  final delivery = contentDelivery(snapshot);
-  if (delivery != null && delivery['enabled'] == true) {
-    final patches = delivery['patches'];
-    final changes = delivery['contentChanges'];
-    if (patches is int) revision += patches;
-    if (changes is int) revision += changes;
-  }
-  final rows = timelineRows(snapshot);
-  revision += rows.length;
-  for (final row in rows) {
-    final text = row['text'];
-    if (text is String) revision += text.length;
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return 0;
+  var revision = timeline.itemCount;
+  for (final item in timeline.items) {
+    // canonical 条目内容 revision：一次内容变更只推进一次；保存确认只翻转同一
+    // revision 的 saved，因此它不是“保存进度”。
+    revision += item.revision;
+    revision += item.text.length + item.textBytes;
+    for (final detail in item.details) {
+      // 详情引用的 revision 是所属条目的当前版本（不重复计入）；字段的完整长度与
+      // 预览长度反映该内容域的真实增长，包含推理摘要／推理正文等不在 text 的域。
+      revision += detail.totalBytes + detail.previewBytes;
+    }
+    revision += item.tool?.progressBytes ?? 0;
   }
   return revision;
 }
 
+/// 各内容域的真实进展事实（诊断用），说明 token 的增长来自哪个域。
+///
+/// 推理摘要/推理正文/工具参数与结果/最终文本是不同内容域：这里分别给出条目
+/// revision 之和、逐字段详情字节、文本字节、工具进度字节，以及推理条目的 revision
+/// 列表。只读当前 snapshot，不改状态、不读 `saved`／`terminal`。
+Map<String, Object?> contentDomainProgress(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) {
+    return const <String, Object?>{'present': false};
+  }
+  var itemRevisions = 0;
+  var detailBytes = 0;
+  var textBytes = 0;
+  var toolProgressBytes = 0;
+  final reasoningRevisions = <int>[];
+  for (final item in timeline.items) {
+    itemRevisions += item.revision;
+    textBytes += item.textBytes;
+    for (final detail in item.details) {
+      detailBytes += detail.totalBytes + detail.previewBytes;
+    }
+    toolProgressBytes += item.tool?.progressBytes ?? 0;
+    if (item.kind == 'reasoning') reasoningRevisions.add(item.revision);
+  }
+  return <String, Object?>{
+    'present': true,
+    'itemCount': timeline.itemCount,
+    'itemRevisions': itemRevisions,
+    'detailBytes': detailBytes,
+    'textBytes': textBytes,
+    'toolProgressBytes': toolProgressBytes,
+    'reasoningItemRevisions': reasoningRevisions,
+    'token': _streamingRevision(snapshot),
+  };
+}
+
+/// 真正的最终回答数量：只统计 `channel == finalAnswer`，不把进度/解释混入。
 int answerCount(Map<String, dynamic> snapshot) =>
-    timelineRows(snapshot).where((row) => row['type'] == 'finalAnswer').length;
+    TimelineObservation.optional(snapshot)?.items
+        .where((item) => item.isFinalAnswer)
+        .length ??
+    0;
 
 bool answerContains(Map<String, dynamic> snapshot, String needle) =>
-    timelineRows(snapshot).any(
-      (row) =>
-          row['type'] == 'finalAnswer' &&
-          (row['text'] as String? ?? '').contains(needle),
-    );
+    TimelineObservation.optional(snapshot)?.items
+        .any((item) => item.isFinalAnswer && item.text.contains(needle)) ??
+    false;
 
 /// Number of assistant answers carrying `needle`.
 ///
@@ -2098,25 +2779,33 @@ bool answerContains(Map<String, dynamic> snapshot, String needle) =>
 /// both background receipts, and the runtime may batch the delivered results
 /// into one model step, so one answer may legitimately cover both commands.
 int answerMatchCount(Map<String, dynamic> snapshot, String needle) =>
-    timelineRows(snapshot)
-        .where(
-          (row) =>
-              row['type'] == 'finalAnswer' &&
-              (row['text'] as String? ?? '').contains(needle),
-        )
-        .length;
+    TimelineObservation.optional(snapshot)?.items
+        .where((item) => item.isFinalAnswer && item.text.contains(needle))
+        .length ??
+    0;
 
+/// The typed tool previews of the current generation, in canonical order.
+///
+/// 字段来自 `TimelineToolFacts`：完整参数/结果只在详情查看器里读取，这里保留的是
+/// 后端脱敏后的有界预览。
 List<Map<String, dynamic>> execTools(Map<String, dynamic> snapshot) {
   final tools = <Map<String, dynamic>>[];
-  for (final row in timelineRows(snapshot)) {
-    final rowTools = row['tools'];
-    if (rowTools is List) {
-      tools.addAll(
-        rowTools.whereType<Map<String, dynamic>>().where(
-          (tool) => tool['name'] == 'exec',
-        ),
-      );
-    }
+  for (final item
+      in TimelineObservation.optional(snapshot)?.items ??
+          const <TimelineItemObservation>[]) {
+    final tool = item.tool;
+    if (tool == null || tool.name != 'exec') continue;
+    tools.add(<String, dynamic>{
+      'name': tool.name,
+      'status': tool.status,
+      'callId': tool.callId,
+      'arguments': tool.arguments,
+      'result': tool.result,
+      'output': tool.result,
+      'progressBytes': tool.progressBytes,
+      'itemRevision': tool.itemRevision,
+      'itemId': item.id,
+    });
   }
   return tools;
 }
@@ -2157,24 +2846,15 @@ Map<String, dynamic>? _toolByCallId(
   return null;
 }
 
-/// Whether the timeline tool projection carries the typed in-flight fields.
+/// Whether the selected thread exposes any typed tool preview at all.
 ///
-/// Detected on any tool row (not only the sampled call), so an integrated build
-/// that omits them for one identity is still distinguishable from a build that
-/// never projects them.
-bool _timelineExposesInFlightToolFields(Map<String, dynamic> snapshot) {
-  for (final row in timelineRows(snapshot)) {
-    final tools = row['tools'];
-    if (tools is! List) continue;
-    for (final tool in tools.whereType<Map<String, dynamic>>()) {
-      if (tool.containsKey('output') &&
-          tool.containsKey('progressBytes') &&
-          tool.containsKey('itemRevision')) {
-        return true;
-      }
-    }
-  }
-  return false;
+/// 契约保证每个 toolCall 预览都带 `progressBytes`/`itemRevision`，所以这个谓词只回答
+/// “有没有可采样的工具预览”，**不**声称观察到字段增长；增长由同一调用身份的连续
+/// 采样（progressBytes/outputChars/itemRevision 都前进）判定。
+bool _timelineExposesTypedToolPreview(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return false;
+  return timeline.items.any((item) => item.tool != null);
 }
 
 /// A live sample of one call's typed in-flight stdout.
@@ -2215,6 +2895,202 @@ bool execDelivered(
       tool['status'] == 'succeeded' &&
       (tool['result'] as String? ?? '').contains(outputNeedle),
 );
+
+/// 当前展示里指定 callId 的工具事实（exec 与 wait 等非 exec 工具都适用）。
+TimelineToolObservation? timelineToolByCallId(
+  Map<String, dynamic> snapshot,
+  String callId,
+) {
+  for (final item
+      in TimelineObservation.optional(snapshot)?.items ??
+          const <TimelineItemObservation>[]) {
+    final tool = item.tool;
+    if (tool != null && tool.callId == callId) return tool;
+  }
+  return null;
+}
+
+/// 严格解析既有后台交付 envelope：
+/// `Task <taskId> for tool exec finished: Succeeded.<payload-json>`。
+///
+/// `pl-core` 用它把已提交的后台工具结果交给模型；这里只在 Driver 边界读取同一段
+/// 文本（不新增生产 API、不拿请求参数冒充 stdout）。payload 必须是 final/succeeded
+/// 且带 `exit_code`、`stdout`、`stderr`。
+({int exitCode, String stdout, String stderr}) requireTaskEnvelope(
+  String? result,
+  String taskId,
+) {
+  final prefix = 'Task $taskId for tool exec finished: Succeeded.';
+  if (result == null || !result.startsWith(prefix)) {
+    final preview = result == null
+        ? 'null'
+        : (result.length <= 160 ? result : '${result.substring(0, 160)}…');
+    throw StateError(
+      'host cwd: tool result is not the expected delivery envelope for '
+      '$taskId: $preview',
+    );
+  }
+  final Object? payload;
+  try {
+    payload = jsonDecode(result.substring(prefix.length));
+  } on FormatException catch (error) {
+    throw StateError(
+      'host cwd: delivery payload is not JSON (${error.message})',
+    );
+  }
+  if (payload is! Map) {
+    throw StateError('host cwd: delivery payload is not an object: $payload');
+  }
+  final state = payload['state'];
+  final stdout = payload['stdout'];
+  final stderr = payload['stderr'];
+  final stateMap = state is Map ? state : null;
+  final data = stateMap?['data'];
+  final resultNode = data is Map ? data['result'] : null;
+  final resultFact = resultNode is Map ? resultNode : null;
+  final resultData = resultFact?['data'];
+  final exitCode = resultData is Map ? resultData['exit_code'] : null;
+  if (stateMap == null ||
+      stateMap['kind'] != 'final' ||
+      resultFact == null ||
+      resultFact['kind'] != 'succeeded' ||
+      exitCode is! int) {
+    throw StateError(
+      'host cwd: delivery state is not a successful final result: $state',
+    );
+  }
+  if (stdout is! String || stderr is! String) {
+    throw StateError(
+      'host cwd: delivery payload has no string stdout/stderr: $payload',
+    );
+  }
+  return (exitCode: exitCode, stdout: stdout, stderr: stderr);
+}
+
+String _boundedText(String value, [int limit = 200]) =>
+    value.length <= limit ? value : '${value.substring(0, limit)}…';
+
+/// 严格解析 wait 工具的公开结果 JSON（字段：`messagesReady`、`tasks`、
+/// `cancelRequested`、`status`、`taskId`、`toolId`、`timedOut`）。
+///
+/// 只接受恰好一条 task，且 `taskId` 精确相等、`toolId == 'exec'`、
+/// `status == 'succeeded'`、`cancelRequested == false`、`timedOut == false`；
+/// 形状不符直接抛出（响亮诊断），不做模糊 token 兜底。
+Map<String, Object?> requireTaskWaitResult(String? result, String taskId) {
+  if (result == null) {
+    throw StateError('host cwd: wait tool has no result for $taskId');
+  }
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(result);
+  } on FormatException catch (error) {
+    throw StateError(
+      'host cwd: wait result is not JSON (${error.message}): '
+      '${_boundedText(result)}',
+    );
+  }
+  if (decoded is! Map) {
+    throw StateError(
+      'host cwd: wait result is not an object: ${_boundedText(result)}',
+    );
+  }
+  final tasks = decoded['tasks'];
+  final timedOut = decoded['timedOut'];
+  if (tasks is! List || tasks.length != 1 || timedOut != false) {
+    throw StateError(
+      'host cwd: wait result does not carry exactly one completed task: '
+      '${_boundedText(result)}',
+    );
+  }
+  final task = tasks.single;
+  if (task is! Map) {
+    throw StateError(
+      'host cwd: wait task entry is not an object: ${_boundedText(result)}',
+    );
+  }
+  final status = task['status'];
+  final returnedTaskId = task['taskId'];
+  final toolId = task['toolId'];
+  final cancelRequested = task['cancelRequested'];
+  if (returnedTaskId != taskId ||
+      toolId != 'exec' ||
+      status != 'succeeded' ||
+      cancelRequested != false) {
+    throw StateError(
+      'host cwd: wait task entry does not match $taskId/exec/succeeded: '
+      '${_boundedText(result)}',
+    );
+  }
+  return <String, Object?>{
+    'taskId': returnedTaskId,
+    'toolId': toolId,
+    'status': status,
+    'cancelRequested': cancelRequested,
+    'timedOut': timedOut,
+    'messagesReady': decoded['messagesReady'],
+  };
+}
+
+/// 用官方 dart:io API 证明“实际 cwd == 请求 cwd”且位于隔离 workspace 之外。
+///
+/// 不自制路径安全算法：同一目录用 `FileSystemEntity.identical` 与
+/// `resolveSymbolicLinks()` 双证；是否位于 workspace 内用 `Directory.parent` 逐级
+/// 上溯到根、每级做 `identical` 比较。只读取这几个目录自身的元数据，不列举内容。
+Future<Map<String, Object?>> _hostCwdDirectoryProof({
+  required String requestedPath,
+  required String actualPath,
+  required String workspacePath,
+}) async {
+  final requested = Directory(requestedPath);
+  final actual = Directory(actualPath);
+  final workspace = Directory(workspacePath);
+  for (final entry in <(String, Directory)>[
+    ('requested', requested),
+    ('actual', actual),
+    ('workspace', workspace),
+  ]) {
+    if (!entry.$2.isAbsolute) {
+      throw StateError(
+        'host cwd: ${entry.$1} path is not absolute: ${entry.$2.path}',
+      );
+    }
+    if (!await entry.$2.exists()) {
+      throw StateError(
+        'host cwd: ${entry.$1} directory does not exist: ${entry.$2.path}',
+      );
+    }
+  }
+  final requestedReal = await requested.resolveSymbolicLinks();
+  final actualReal = await actual.resolveSymbolicLinks();
+  final workspaceReal = await workspace.resolveSymbolicLinks();
+  final identical = await FileSystemEntity.identical(requestedReal, actualReal);
+  var current = Directory(actualReal);
+  var insideWorkspace = false;
+  while (true) {
+    if (await FileSystemEntity.identical(current.path, workspaceReal)) {
+      insideWorkspace = true;
+      break;
+    }
+    final parent = current.parent;
+    if (parent.path == current.path) break;
+    current = parent;
+  }
+  final evidence = <String, Object?>{
+    'requestedPath': requestedPath,
+    'requestedCanonical': requestedReal,
+    'actualPath': actualPath,
+    'actualCanonical': actualReal,
+    'workspacePath': workspacePath,
+    'workspaceCanonical': workspaceReal,
+    'identical': identical,
+    'sameCanonical': requestedReal == actualReal,
+    'insideWorkspace': insideWorkspace,
+  };
+  if (!identical || requestedReal != actualReal || insideWorkspace) {
+    throw StateError('host cwd: directory proof failed: $evidence');
+  }
+  return evidence;
+}
 
 String? threadStatus(Map<String, dynamic> snapshot) {
   final status = workspaceOf(snapshot)?['threadStatus'];
@@ -2286,25 +3162,79 @@ Map<String, dynamic>? workspaceOf(Map<String, dynamic> snapshot) {
   return workspace is Map<String, dynamic> ? workspace : null;
 }
 
-List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
-  final timeline = workspaceOf(snapshot)?['timeline'];
-  if (timeline is! List) return const [];
-  return timeline.whereType<Map<String, dynamic>>().toList(growable: false);
+/// Acceptance row type of one canonical item: typed user input, authoritative text
+/// channel, tool, or the canonical kind itself.
+String _rowType(TimelineItemObservation item) {
+  if (item.userInput != null) return 'userInput';
+  if (item.isCommentary) return 'commentary';
+  if (item.isFinalAnswer) return 'finalAnswer';
+  if (item.kind == 'toolCall') return 'tool';
+  return item.kind;
 }
 
-/// The assistant final-answer row identities present in the current window.
-List<String> _assistantRowIds(Map<String, dynamic> snapshot) => <String>[
-  for (final row in timelineRows(snapshot))
-    if (row['type'] == 'finalAnswer' && row['id'] is String)
-      row['id'] as String,
-];
+/// Host-side row view over the canonical items of the current generation.
+///
+/// `type` 是验收词汇，不是第二份行模型：它来自 canonical `kind` **加上**权威
+/// `channel`/typed `userInput`。`agentMessage` 同时覆盖 commentary 与 finalAnswer，
+/// 因此回答只能由 `channel == finalAnswer` 判定；问答行保留 plan 判别与权威决定。
+List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return const [];
+  return [
+    for (final item in timeline.items)
+      <String, dynamic>{
+        'id': item.id,
+        'kind': item.kind,
+        'channel': item.channel,
+        'type': _rowType(item),
+        'text': item.text,
+        'status': item.status,
+        'revision': item.revision,
+        'saved': item.saved,
+        'terminal': item.terminal,
+        'callId': item.tool?.callId,
+        'userInput': item.userInput == null
+            ? null
+            : <String, Object?>{
+                'interactionId': item.userInput!.interactionId,
+                'state': item.userInput!.state,
+                'isPlanConfirmation': item.userInput!.isPlanConfirmation,
+                'planDecision': item.userInput!.planDecision,
+              },
+        'tools': <Map<String, dynamic>>[
+          if (item.tool case final tool?)
+            <String, dynamic>{
+              'name': tool.name,
+              'status': tool.status,
+              'callId': tool.callId,
+              'arguments': tool.arguments,
+              'result': tool.result,
+              'output': tool.result,
+              'progressBytes': tool.progressBytes,
+              'itemRevision': tool.itemRevision,
+              'itemId': item.id,
+              'attachments': [
+                for (final attachment in tool.attachments)
+                  <String, Object?>{
+                    'id': attachment.id,
+                    'modality': attachment.modality,
+                    'filename': attachment.filename,
+                    'byteSize': attachment.byteSize,
+                  },
+              ],
+            },
+        ],
+      },
+  ];
+}
 
 Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
   final workspace = workspaceOf(snapshot);
   final details = workspace ?? const {};
   final usage = details['usage'];
   final persistence = snapshot['persistence'];
-  final rows = timelineRows(snapshot);
+  final timeline = TimelineObservation.optional(snapshot);
+  final rows = timeline?.items ?? const <TimelineItemObservation>[];
   final tools = execTools(snapshot);
   return {
     'threadStatus': details['threadStatus'],
@@ -2317,13 +3247,20 @@ Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
     'outputTokens': usage is Map ? usage['outputTokens'] : null,
     'persistenceKind': persistence is Map ? persistence['kind'] : null,
     'pendingCommits': persistence is Map ? persistence['pendingCommits'] : null,
-    'rowCount': rows.length,
-    'rowIds': [for (final row in rows) row['id']],
-    'rowTypes': [for (final row in rows) row['type']],
+    'mode': timeline?.mode,
+    'generation': timeline?.generation,
+    'itemCount': timeline?.itemCount,
+    'itemIds': [for (final item in rows) item.id],
+    'itemKinds': [for (final item in rows) item.kind],
     'answerLengths': [
-      for (final row in rows)
-        if (row['type'] == 'finalAnswer') (row['text'] as String? ?? '').length,
+      for (final item in rows)
+        if (item.isFinalAnswer) item.text.length,
     ],
+    'commentaryLengths': [
+      for (final item in rows)
+        if (item.isCommentary) item.text.length,
+    ],
+    'userInputCount': rows.where((item) => item.userInput != null).length,
     'tools': [
       for (final tool in tools)
         {
@@ -2352,17 +3289,6 @@ Map<String, dynamic>? conversationActivity(Map<String, dynamic> snapshot) {
   return activity is Map<String, dynamic> ? activity : null;
 }
 
-/// The Driver-only content-delivery counters, when the GUI exposes them.
-///
-/// `bodyUtf8Bytes` is a UTF-8 measure of the body text the UI actually delivered
-/// — an *application-payload* number (metric `application-payload`). It is never
-/// an FRB/wire byte count and must not be compared with the fixture's synthetic
-/// provider output bytes.
-Map<String, dynamic>? contentDelivery(Map<String, dynamic> snapshot) {
-  final delivery = snapshot['contentDelivery'];
-  return delivery is Map<String, dynamic> ? delivery : null;
-}
-
 /// The integrated read-only timeline-scroll geometry, when the GUI exposes it.
 Map<String, dynamic>? timelineScroll(Map<String, dynamic> snapshot) {
   final scroll = snapshot['timelineScroll'];
@@ -2371,51 +3297,62 @@ Map<String, dynamic>? timelineScroll(Map<String, dynamic> snapshot) {
 
 double? _num(Object? value) => value is num ? value.toDouble() : null;
 
-String? _anchorId(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  if (anchor is Map && anchor['itemId'] is String) {
-    return anchor['itemId'] as String;
-  }
-  return null;
-}
-
-double? _anchorOffset(Map<String, dynamic>? scroll) {
-  final anchor = scroll?['anchor'];
-  final offset = anchor is Map ? anchor['offset'] : null;
-  return offset is num ? offset.toDouble() : null;
-}
-
 double? _viewportDimension(Map<String, dynamic>? scroll) =>
     _num(scroll?['viewportDimension']);
 
 class _ScrollGeometry {
   const _ScrollGeometry({
     required this.consistent,
-    required this.followingBottom,
+    required this.atLiveEdge,
+    required this.laidOut,
+    required this.generation,
     required this.pixels,
     required this.maxScrollExtent,
+    required this.extentBefore,
     required this.extentAfter,
-    required this.bottomSlack,
   });
 
   final bool consistent;
-  final bool followingBottom;
+
+  /// 反向列表 offset 0 的几何事实，不等于 Live 模式。
+  final bool atLiveEdge;
+  final bool laidOut;
+  final int generation;
   final double pixels;
   final double maxScrollExtent;
+
+  /// 反向列表里已从 offset 0 向上滚过的距离；“离底”看它，不看 [extentAfter]。
+  final double? extentBefore;
   final double? extentAfter;
-  final double bottomSlack;
 }
 
 _ScrollGeometry? _scrollGeometry(Map<String, dynamic> scroll) {
-  final pixels = _num(scroll['pixels']);
-  final maxScrollExtent = _num(scroll['maxScrollExtent']);
-  if (pixels == null || maxScrollExtent == null) return null;
+  final parsed = TimelineScrollObservation.optional(<String, dynamic>{
+    'timelineScroll': scroll,
+  });
+  if (parsed == null) return null;
+  final pixels = parsed.pixels;
+  final maxScrollExtent = parsed.maxScrollExtent;
+  if (pixels == null || maxScrollExtent == null) {
+    return _ScrollGeometry(
+      consistent: false,
+      atLiveEdge: parsed.atLiveEdge,
+      laidOut: false,
+      generation: parsed.generation,
+      pixels: 0,
+      maxScrollExtent: 0,
+      extentBefore: parsed.extentBefore,
+      extentAfter: parsed.extentAfter,
+    );
+  }
   return _ScrollGeometry(
     consistent: pixels >= -0.5 && pixels <= maxScrollExtent + 0.5,
-    followingBottom: scroll['followingBottom'] == true,
+    atLiveEdge: parsed.atLiveEdge,
+    laidOut: parsed.laidOut,
+    generation: parsed.generation,
     pixels: pixels,
     maxScrollExtent: maxScrollExtent,
-    extentAfter: _num(scroll['extentAfter']),
-    bottomSlack: _num(scroll['bottomSlack']) ?? 0,
+    extentBefore: parsed.extentBefore,
+    extentAfter: parsed.extentAfter,
   );
 }

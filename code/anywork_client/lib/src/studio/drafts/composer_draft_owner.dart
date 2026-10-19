@@ -143,7 +143,14 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
     );
   }
 
-  Future<void> submit() {
+  /// 提交一次已冻结的输入。
+  ///
+  /// [beforeSubmit] 是 SDK-only 的可等待展示准备钩子：它在本草稿冻结目标、payload、route、
+  /// OperationId 与冻结附件引用之后，在调用后端 `submitComposer` **之前**执行。app 用它把
+  /// “当前仍在显示该 Thread 时先回到实时新代次首帧”插在发送前；钩子失败保留草稿、附件与
+  /// 原 History，后端从未收到该提交。钩子不写 canonical 事实，也不替代提交回执、保存观察或
+  /// 附件所有权（design/26 §26.8）。
+  Future<void> submit({Future<void> Function()? beforeSubmit}) {
     if (_pending != null ||
         (state.draft.trim().isEmpty && state.attachments.isEmpty)) {
       return Future<void>.value();
@@ -165,14 +172,46 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
         inputId: frozen.input.inputId,
       ),
     );
-    final task = _submit(frozen);
+    final task = _submit(frozen, beforeSubmit);
     _pending = task;
     return task.whenComplete(() {
       if (identical(_pending, task)) _pending = null;
     });
   }
 
-  Future<void> _submit(FrozenComposerSubmission frozen) async {
+  Future<void> _submit(
+    FrozenComposerSubmission frozen,
+    Future<void> Function()? beforeSubmit,
+  ) async {
+    if (beforeSubmit != null) {
+      try {
+        await beforeSubmit();
+      } catch (error) {
+        // 展示准备失败：后端尚未收到提交，这是**已知未受理**，不是未知结果。
+        frozen.operation.reject(error);
+        await _client.attachments.completeFrozen(
+          operationId: frozen.operation.id,
+          accepted: false,
+          clearCurrent: false,
+          projectId: frozen.projectId,
+          threadId: threadId,
+        );
+        if (!_closed && stamp == frozen.stamp) {
+          apply(
+            ComposerThreadState.failure(
+              error: error.toString(),
+              draft: state.draft,
+              attachments: state.attachments,
+              submissionRevision: state.submissionRevision,
+              attachmentGeneration: state.attachmentGeneration,
+              cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+              inputId: frozen.input.inputId,
+            ),
+          );
+        }
+        return;
+      }
+    }
     SubmitPromptReceipt? acceptedReceipt;
     try {
       final receipt = await _client.threadCommands.submitComposer(

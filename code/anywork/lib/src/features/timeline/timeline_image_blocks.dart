@@ -1,25 +1,109 @@
 part of 'timeline_view.dart';
 
+/// 一条 Message 当前引用的图片附件 id 与图片工具调用 id。
+class _MessageImageRefs {
+  const _MessageImageRefs({required this.attachments, required this.calls});
+
+  static const empty = _MessageImageRefs(
+    attachments: <String>{},
+    calls: <String>{},
+  );
+
+  final Set<String> attachments;
+  final Set<String> calls;
+}
+
 class _ThreadImageLoader {
   final Map<String, Future<Uint8List>> _images = {};
+
+  /// 图片组的展开状态只来自用户明确 toggle：新增/历史条目默认折叠，内容更新不改它。
   final Set<String> expandedCalls = {};
 
-  void retainWindow(String? threadId, List<TimelineRow> rows) {
-    final attachments = <String>{};
-    final entries = <String>{};
-    for (final row in rows) {
-      attachments.addAll(
-        row.part?.attachments.map((item) => item.id) ?? const <String>[],
-      );
-      for (final entry in _toolImageEntries(row.tools.toList())) {
-        attachments.add(entry.attachment.id);
-        entries.add(_toolImageCallId(entry));
+  /// 每条已加载 Message 的引用账目：按 stock operation 做差量，不重建、不全表扫描。
+  final Map<String, _MessageImageRefs> _refs = {};
+  final Map<String, int> _attachmentRefs = {};
+  final Map<String, int> _callRefs = {};
+
+  /// 基线（stock `set`/首次挂载）：一次性重建引用账目。
+  void reset(String? threadId, Iterable<Message> messages) {
+    clear();
+    for (final message in messages) {
+      _apply(threadId, message.id, _refsOf(message));
+    }
+  }
+
+  /// 一条 Message 出现或内容变化：只结算差量，未变化的附件与调用保持原状。
+  void retainMessage(String? threadId, Message message) =>
+      _apply(threadId, message.id, _refsOf(message));
+
+  /// 一条 Message 消失：只释放它自己引用的附件。
+  void dropMessage(String? threadId, Message message) =>
+      _apply(threadId, message.id, null);
+
+  _MessageImageRefs _refsOf(Message message) {
+    final item = timelinePayloadOf(message)?.item;
+    if (item == null) return _MessageImageRefs.empty;
+    final attachments = <String>{
+      for (final attachment in item.attachments) attachment.id,
+    };
+    final calls = <String>{};
+    final tool = item.tool;
+    if (tool != null) {
+      final callId = tool.callId ?? tool.toolCallId;
+      for (final attachment in tool.attachments) {
+        if (attachment.modality != AttachmentModalityView.image) continue;
+        attachments.add(attachment.id);
+        calls.add(callId);
       }
     }
-    expandedCalls.retainAll(entries);
-    _images.removeWhere(
-      (key, _) => !attachments.any((id) => key == '$threadId\u0000$id'),
-    );
+    if (attachments.isEmpty && calls.isEmpty) return _MessageImageRefs.empty;
+    return _MessageImageRefs(attachments: attachments, calls: calls);
+  }
+
+  void _apply(String? threadId, String messageId, _MessageImageRefs? next) {
+    final previous = _refs[messageId];
+    if (previous == null && next == null) return;
+    if (next == null || next.attachments.isEmpty && next.calls.isEmpty) {
+      _refs.remove(messageId);
+    } else {
+      _refs[messageId] = next;
+    }
+    final removedAttachments = <String>{...?previous?.attachments}
+      ..removeAll(next?.attachments ?? const <String>{});
+    final addedAttachments = <String>{...?next?.attachments}
+      ..removeAll(previous?.attachments ?? const <String>{});
+    final removedCalls = <String>{...?previous?.calls}
+      ..removeAll(next?.calls ?? const <String>{});
+    final addedCalls = <String>{...?next?.calls}
+      ..removeAll(previous?.calls ?? const <String>{});
+
+    final prefix = '$threadId\u0000';
+    for (final id in removedAttachments) {
+      final refs = (_attachmentRefs[id] ?? 0) - 1;
+      if (refs <= 0) {
+        // 最后一个引用消失才丢已解码字节；共享附件被别的 Message 引用时保留。
+        _attachmentRefs.remove(id);
+        _images.remove('$prefix$id');
+      } else {
+        _attachmentRefs[id] = refs;
+      }
+    }
+    for (final id in addedAttachments) {
+      _attachmentRefs[id] = (_attachmentRefs[id] ?? 0) + 1;
+    }
+    for (final id in removedCalls) {
+      final refs = (_callRefs[id] ?? 0) - 1;
+      if (refs <= 0) {
+        _callRefs.remove(id);
+        // 调用真正消失：展开状态随之失效；新增调用绝不自动展开。
+        expandedCalls.remove(id);
+      } else {
+        _callRefs[id] = refs;
+      }
+    }
+    for (final id in addedCalls) {
+      _callRefs[id] = (_callRefs[id] ?? 0) + 1;
+    }
   }
 
   Future<Uint8List> load(
@@ -35,6 +119,9 @@ class _ThreadImageLoader {
   void clear() {
     _images.clear();
     expandedCalls.clear();
+    _refs.clear();
+    _attachmentRefs.clear();
+    _callRefs.clear();
   }
 }
 
@@ -186,7 +273,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
 /// 内出现相同资源时追加稳定序号；该序号只取决于同一调用自身的附件列表，不随其它
 /// 调用流式新增而变化。
 typedef _ToolImageEntryRef = ({
-  TimelineToolItem item,
+  _ToolItem item,
   ThreadAttachmentView attachment,
   String entryId,
 });
@@ -196,7 +283,7 @@ typedef _ToolImageEntryRef = ({
 /// 不按资源去重、不丢弃调用：同一调用重复引用同一资源时追加 `#<序号>`；跨调用同一
 /// 资源仍各自保留独立条目与展开状态。字节读取仍由 Thread 附件缓存按
 /// `threadId + attachmentId` 去重。
-List<_ToolImageEntryRef> _toolImageEntries(List<TimelineToolItem> items) {
+List<_ToolImageEntryRef> _toolImageEntries(List<_ToolItem> items) {
   final entries = <_ToolImageEntryRef>[];
   final occurrences = <String, int>{};
   for (final item in items) {
@@ -277,17 +364,11 @@ class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
     final item = first.item;
     final count = widget.entries.length;
     final label = item.name == 'view_image'
-        ? item.part.status == 'succeeded'
+        ? item.status == 'succeeded'
               ? context.l10n.timelineImagesViewed(count)
               : _toolTitle(context, item)
         : context.l10n.timelineImagesProduced(count);
     void toggle() {
-      _TimelineItemLayoutScope.report(
-        context,
-        expanded
-            ? _TimelineLayoutChangeKind.collapse
-            : _TimelineLayoutChangeKind.expand,
-      );
       setState(() {
         if (!loader.expandedCalls.remove(widget.callId)) {
           loader.expandedCalls.add(widget.callId);

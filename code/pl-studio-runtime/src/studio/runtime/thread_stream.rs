@@ -8,8 +8,9 @@
 //! forwards the owner's typed frames as continuous `notification` envelopes. It never publishes
 //! content, never reads the effect window, never runs a model/tool query and never opens a second
 //! content source: the current activity is the owner's own typed projection of the state it
-//! published, and content itself is delivered only by the shared ChatView window — this status
-//! stream carries no window version, so one body update never costs a second status frame. A frame
+//! published, and content itself is delivered only by the shared Timeline content source — this
+//! status stream carries no content version, so one body update never costs a second status frame. A
+//! frame
 //! the owner could not prove continuous becomes `lagged`, and the client resynchronizes from the
 //! authoritative window instead of splicing a hole.
 use super::StudioRuntime;
@@ -398,12 +399,12 @@ impl LiveSubscription {
         self.push_frame(ThreadNotification::Lagged { dropped });
     }
 
-    /// The status stream only forwards status frames; content is delivered by the ChatView window.
+    /// The status stream only forwards status frames; content is delivered by the Timeline source.
     ///
     /// The projection owner's feed is already content-free — the same bodies are written once into
     /// the shared session and read from that one window — so no `state_only` end-of-pipe filter is
     /// needed and no content revision hole can be manufactured here. 状态流只保留活动、交互、运行时
-    /// 与 lagged 事实：窗口版本不属于状态流，正文更新不会再额外走一遍状态流。
+    /// 与 lagged 事实：内容版本不属于状态流，正文更新不会再额外走一遍状态流。
     fn push(&mut self, event: LiveEvent) {
         let notification = match event {
             LiveEvent::Turn { turn, event } => {
@@ -443,7 +444,7 @@ impl LiveSubscription {
     /// watermark and `revision` advances it by exactly one.
     fn enqueue(&mut self, notification: ThreadNotification) {
         // 未交付的观察帧就地合并：活动帧只带小型摘要（同一身份最多留一条，身份变化必须按顺序交付），
-        // 内容窗口帧只带版本（始终只留最新一条）。
+        // 内容通知只带版本（始终只留最新一条）。
         if self.coalesce_pending(&notification) {
             return;
         }

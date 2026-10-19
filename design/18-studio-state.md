@@ -39,7 +39,8 @@ Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由�
 服务端启动 snapshot 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
 recovery、MCP/LSP、provider usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
 Thread workspace 单独包含当前
-状态、pending Interaction、ThreadRuntimeView、workflow 投影、Plan 投影和有界 Timeline 窗口；
+状态、pending Interaction、ThreadRuntimeView、workflow 投影和 Plan 投影；Timeline 内容通过
+独立的小页、尾部订阅与详情读取交付，不放入工作区轻状态；
 不存在 taskDirectory。Client 只将聚合读取用于一次 typed bootstrap，拆入各自 read model；正常命令成功
 不重读聚合状态。runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
 epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner epoch。Thread 目录条目携带
@@ -118,7 +119,7 @@ replay。重同步只读取受影响领域，不触发 activation、扫描或 mu
 Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应用实例的 Client 统一持有
 与释放，帧经单一分发点进入对应领域 read model reducer，再由 Riverpod 只读适配和 Connector
 派生读取。页面不得复制 reducer 或直接消费底层 stream；最后一个页面观察者退出只取消自己的
-观察，不关闭仍有应用逻辑 demand 的 topic、ChatView 或草稿。Settings 往返不重建当前会话资源。
+观察，不关闭仍有应用逻辑 demand 的 topic、会话内容源或草稿。Settings 往返不重建当前会话资源。
 收到 `lagged` 时只使对应 topic/作用域进入局部重同步，取消旧句柄并重新建立“先接收后
 基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默
 空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在关闭与新 lease 建立期间继续生效，
@@ -127,7 +128,7 @@ Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应
 设置领域保持真实职责边界：MCP、LSP、项目 Skills、Provider usage、模型性能、持久化队列、
 Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
 topic；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循
-[25](./25-frontend-state.md) §25.8：导航不产生业务写入，会话窗口、费用与草稿锚点不因
+[25](./25-frontend-state.md) §25.8：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因
 页面往返被清除或重建。
 
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
@@ -169,7 +170,8 @@ settlement。审计结果按当前 lease revision 和已清理问题过滤，不
 选择冷 Thread、提交输入或后台 child 继续时显式 activation。runtime 在一致读视图中校验
 并加载 Thread checkpoint、working state 与 pending Interaction，全部成功后一次安装 owner。
 Mode snapshot 和 workflow projection 与 session 同时恢复，不存在独立任务 runtime 恢复扫描。
-Timeline 首窗在订阅建立后由 HistoryReader 查询；产品交互回答前按保存的父子顺序激活所需 Thread。
+Timeline 初始最新小页与尾部基线读取同一 Session 权威内容，历史分页与详情查询不激活
+执行 owner，契约见 [26](./26-timeline-content.md)；产品交互回答前按保存的父子顺序激活所需 Thread。
 已退役子会话的显式打开同样先迁移既有 v2 检查点，但只发布冷状态与历史，不安装执行 owner；
 普通快照查询和历史分页不触发这一步 SQLite 升级。
 GUI 首个可用画面之后若已选中 Thread，复用普通打开命令激活该 Thread，不遍历其他 Thread，
@@ -411,7 +413,7 @@ unspecified。Thread runtime 的模型身份、有效上下文窗口 `contextWin
 透明模型恢复按 [16](./16-core-contracts.md) §16.3 的观察代次投影，实时及最终回执遵循
 [07](./07-streaming.md)。失败子尝试与当前子尝试分开呈现，原 provider part 身份不改写；
 不能因最终逻辑调用成功把先前失败片段收束为成功，也不能把旧预览的空占位当成正文。
-重试、恢复及耗尽显示为 Runtime 来源的 commentary 项目，与正文共用唯一内容窗口；提示
+重试、恢复及耗尽显示为 Runtime 来源的 commentary 项目，与正文共用同一 Timeline 内容源；提示
 从类型化恢复事实生成，不从供应商错误正文反推状态。无 GUI 时仍保留同一回执事实，慢消费者
 与历史重开可获得相同失败边界，不在 Flutter 维护另一个重试计数或片段合并器。
 
@@ -436,7 +438,7 @@ UI 投影当作 exit code、审批或成功状态来源。成功且具有已保�
 交互更新需要原工具条目正文，而不是放置元数据。待回答交互可跨 owner 回收或进程重启继续，
 当前投影未持有该正文时，投影 owner 按已验证工具身份从可靠历史补齐所需条目，再发布同一
 交互变更；不扫描整轮历史、不激活模型或工具，也不建立第二份问答缓存。缺失、损坏或身份
-矛盾仍显式失败，不能因正文已从驻留窗口释放而跳过用户回答。
+矛盾仍显式失败，不能因预览受限或热缓存已回收而跳过用户回答。
 
 格式所有者在 Rust 边界解码原始提问与响应；FRB 和 Client 传递 typed 数据，feature 不解析
 opaque JSON。`isSecret` 对应的回答在公开历史投影中移除原值，只保留足以表达已回答/隐藏的
@@ -526,11 +528,11 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
 用原始 workspace 文件补回。已完成的工具交付从 Thread history 中的完整 delivery 读取；
 尚未落库的交付从当前未持久化 effect 读取，不能依赖已被回收的 resident snapshot。
 
-### 18.8.1 活动、内容窗口与存储状态（本轮已落地）
+### 18.8.1 活动、Timeline 内容与存储状态
 
 三条事实各自有唯一所有者，互不代替：
 
-- **活动（activity）**：`ThreadActivity` 是当前“在做什么”的 typed 小摘要，与 ChatView 历史窗口
+- **活动（activity）**：`ThreadActivity` 是当前“在做什么”的 typed 小摘要，与 Timeline 阅读内容
   正交。它由该 Thread **唯一的投影 owner**（观察任务里的 `ActivityProjection`）从它刚发布的
   `ThreadSnapshot` 推导（turns/attempts/tasks/permissions/interactions/input_execution/
   `model_execution`/`model_progress`/`tool_progress`），是**纯内存纯函数**：不读 `Session`、不做
@@ -545,7 +547,7 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
   `ContentBlock` 链，只把变化的部分作为该调用自己 opaque 身份（例如 `command-output`）的
   `Append{chunk}` / `Replace{text}` 交回 owner（契约见 [07-streaming](./07-streaming.md) §7.4）。
   owner 把它存成该调用的 `ToolProgress`，实时投影直接共享最新 block、按该身份的 `version` 去重，
-  不逐 chunk 复制或物化整段正文；只有 canonical/DTO 交付与详情展开才把当前有界窗口物化一次文本。
+  不逐 chunk 复制或物化整段正文；canonical 保存、展示预览交付与显式详情读取按各自契约物化文本。
   活动行与 `retained_bytes` 因此按 `ToolProgress::bytes()` 计量而不物化正文，天然计入同一可靠
   保留预算。工具条目的 `ordinal` 取 owner 写在该任务上的真实开始序号（`TaskRecord.started_sequence`），
   不再恒为 `None`；Unix `started_at` 本会话没有该事实仍如实为 `None`。`latest_started` 取真实
@@ -556,16 +558,19 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
   `#[serde(default)]`，旧 v2 的 `state.toml`/history payload 缺少该字段时解码为 `None`（回落到
   该 Turn 的调用次序，并发工具的真实启动次序就是调用次序，语义仍正确），不升 schema、不清库、
   不改旧目录。
-- **内容窗口（ChatView）**：一个内容窗口只有一份所有者——core 的 `ChatView`/`ChatUpdates`，HTTP
-  `/window`（`ChatWindowStream`）与 FRB `BridgeChatView` 都只映射它的差量。窗口统一
-  pending/live/history：未落盘的流式条目与已落盘历史条目在同一个 canonical 条目集合里按
-  ordinal 排序，窗口版本只在窗口事实变化时前进。订阅**只读**：状态流不再生成或转发 `Item*`/
-  `Delta` 帧（过滤发生在生产端），正文更新不会再走一遍状态流，因此客户端也不必靠“末端丢弃内容
-  帧”来避免重复，不会因此制造 revision 空洞。滚动/跳转统一用“锚点 + 方向”，窗口条目数恒有界。
-  窗口正文按稳定 `ChatField` 字段身份输出 typed 增量（`Append`/`Replace`/`Remove`/`Unchanged`，
-  一次 `UpdateItem` 只提交一次 item 内容 revision），item 内容 `revision`、窗口 `version`、保存
-  水位 `saved` 与执行终态 `ChatLifecycle` 是四个互不替代的事实，宿主不再按 JSON 字符串拼正文；
-  完整契约见 [07-streaming](./07-streaming.md) §7.4。
+- **内容（Timeline）**：core Session 的最新／更早小页、有界尾部订阅与版本化详情读取
+  消费同一 canonical 已发布事实及历史存储，合并未落盘内容与持久化历史，按稳定顺序和身份
+  交付。HTTP 与 FRB 共用 Studio 唯一 typed 映射，不再暴露几何窗口、focus、对端裁剪或
+  窗口操作回执。状态流不生成或转发正文条目帧，正文也不因交付到尾部就重复进入轻状态。
+  条目内容 revision、尾部交付版本、保存确认与执行终态相互独立；热缓存淘汰不表示删除。
+  数据源与单次查询有预算，当前展示 lease 的唯一 stock controller 则保留本次实际加载的
+  Message 集合。History 冻结已有展示内容、更早页可前插且不裁另一端，后台执行与保存
+  继续；显式回实时或发送触发最新小页读取，仅在新首帧成功后切换展示代次，不保存或
+  恢复旧像素锚点。慢消费者
+  与断流显式重同步，不能把错误当 EOF，也不能以尾部重同步覆盖正在阅读的 History。
+  大字段经稳定字段身份显式分块读取，预览额度与原文完整性分开核验。内容、预算、关闭
+  及展示所有权的完整契约见 [26](./26-timeline-content.md)，流式事实见
+  [07-streaming](./07-streaming.md) §7.4。
 - **存储状态（storage）**：`ThreadStorageState` 是 typed 事实，不由错误文本推断。故障类别与
   generation、history 的 accepted/durable 水位来自 runtime 持久化协调器的 typed 值；执行阶段
   （`running`/`pausing`/`paused`）与压力暂停来自 core 的存储执行事实；core 的原始错误文本只作为

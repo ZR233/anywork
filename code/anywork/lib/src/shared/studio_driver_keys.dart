@@ -18,9 +18,53 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> openThread(String id) =>
       ValueKey<String>('studio-open-thread-$id');
   static const sidebar = ValueKey<String>('studio-sidebar');
-  static const timeline = ValueKey<String>('timeline-scrollable');
+  static const timeline = ValueKey<String>(
+    StudioDriverKeyValues.timelineScrollable,
+  );
   static ValueKey<String> timelineRow(String id) =>
-      ValueKey<String>('timeline-row-$id');
+      ValueKey<String>(StudioDriverKeyValues.timelineRow(id));
+
+  /// 分页与回到实时的稳定操作入口。
+  static const timelineLoadOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineLoadOlder,
+  );
+  static const timelineRetryOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineRetryOlder,
+  );
+  static const timelineReturnLive = ValueKey<String>(
+    StudioDriverKeyValues.timelineReturnLive,
+  );
+  static const timelineNewOutput = ValueKey<String>(
+    StudioDriverKeyValues.timelineNewOutput,
+  );
+
+  /// 全文查看器：只在用户显式打开后存在，按 canonical item + typed field 打开。
+  static const timelineDetailDialog = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailDialog,
+  );
+  static const timelineDetailText = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailText,
+  );
+  static const timelineDetailCopy = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailCopy,
+  );
+  static const timelineDetailClose = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailClose,
+  );
+  static const timelineDetailRetry = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailRetry,
+  );
+  static const timelineDetailTerminal = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailTerminal,
+  );
+  static const timelineConnectionNotice = ValueKey<String>(
+    StudioDriverKeyValues.timelineConnectionNotice,
+  );
+  static const timelineRetryConnection = ValueKey<String>(
+    StudioDriverKeyValues.timelineRetryConnection,
+  );
+  static ValueKey<String> timelineDetailOpen(String id, String field) =>
+      ValueKey<String>(StudioDriverKeyValues.timelineDetailOpen(id, field));
   static ValueKey<String> parentAgentLabel(String id) =>
       ValueKey<String>('timeline-parent-agent-label-$id');
   static const workspaceFooterScroll = ValueKey<String>(

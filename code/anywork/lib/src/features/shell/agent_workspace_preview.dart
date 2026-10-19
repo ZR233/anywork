@@ -46,13 +46,7 @@ Widget _agentWorkspacePreview(StudioState state) {
           workspace == null ||
               workspace.syncState == AgentWorkspaceSyncState.loading
           ? const Center(child: CircularProgressIndicator())
-          : TimelineView(
-              threadId: workspace.threadId,
-              rows: workspace.timelineRows,
-              body: const ThreadHistoryWindow(),
-              turn: workspace.turn,
-              onCommand: (_) {},
-            ),
+          : TimelinePreview(threadId: workspace.threadId),
     ),
   );
 }
@@ -93,23 +87,6 @@ StudioState _agentWorkspacePreviewState({
     workspacePath: project.path,
   );
   final selected = selectChild ? child : root;
-  final item = ThreadItemView(
-    id: '${selected.id}-item',
-    threadId: selected.id,
-    turnId: '${selected.id}-turn',
-    ordinal: 0,
-    revision: 0,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    state: ThreadTextItemStateView(
-      channel: ThreadTextChannel.finalAnswer,
-      text: selectChild
-          ? 'Reviewer is checking the workspace boundary.'
-          : 'Main agent owns this root workspace and its editable composer.',
-      attachments: const [],
-      lifecycle: CompletedThreadContentView(timestamp),
-    ),
-  );
   final runtime = ThreadRuntimeView(
     model: selectChild ? 'reviewer/model' : 'planner/model',
     contextTokens: selectChild ? 4800 : 12800,
@@ -211,7 +188,6 @@ StudioState _agentWorkspacePreviewState({
             selected.id: ThreadWorkspace(
               thread: selected,
               revision: 1,
-              items: [item],
               interactions: const [],
               runtime: runtime,
               activeTurn: !selectChild

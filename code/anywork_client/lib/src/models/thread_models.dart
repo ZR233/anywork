@@ -53,28 +53,76 @@ class ThreadAttachmentView {
 /// 指定。推理分块用逻辑 `chunkIndex` 保持块身份，删除一块不会让其它块移动。
 sealed class ThreadContentFieldView {
   const ThreadContentFieldView();
+
+  /// 值语义键：判别分支 + 逻辑索引（分块、payload、问答位置与子字段）。
+  ///
+  /// 字段身份是**值**，不是对象实例：FRB 每帧解码出的参数化字段都是新实例，独立解码的
+  /// 同值字段必须相等，否则详情引用表会随帧增长（design/26 §26.7）。
+  Object get identityKey;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadContentFieldView && other.identityKey == identityKey;
+
+  @override
+  int get hashCode => identityKey.hashCode;
 }
 
 final class ThreadTextFieldView extends ThreadContentFieldView {
   const ThreadTextFieldView();
+
+  @override
+  Object get identityKey => (ThreadTextFieldView,);
 }
 
 final class ThreadThinkingSummaryFieldView extends ThreadContentFieldView {
   const ThreadThinkingSummaryFieldView(this.chunkIndex);
   final int chunkIndex;
+
+  @override
+  Object get identityKey => (ThreadThinkingSummaryFieldView, chunkIndex);
 }
 
 final class ThreadThinkingContentFieldView extends ThreadContentFieldView {
   const ThreadThinkingContentFieldView(this.chunkIndex);
   final int chunkIndex;
+
+  @override
+  Object get identityKey => (ThreadThinkingContentFieldView, chunkIndex);
 }
 
 final class ThreadToolArgumentsFieldView extends ThreadContentFieldView {
   const ThreadToolArgumentsFieldView();
+
+  @override
+  Object get identityKey => (ThreadToolArgumentsFieldView,);
 }
 
 final class ThreadToolResultFieldView extends ThreadContentFieldView {
   const ThreadToolResultFieldView();
+
+  @override
+  Object get identityKey => (ThreadToolResultFieldView,);
+}
+
+/// 工具一次执行附加的开放产物正文：只在 canonical 映射与详情查看边界编码。
+///
+/// 预览里的产物数组可以为空而原文仍然存在；只要本字段的详情引用还在，消费者就保留按需
+/// 读取入口，不能按预览数组长度判断“没有产物”。
+final class ThreadToolOutputArtifactsFieldView extends ThreadContentFieldView {
+  const ThreadToolOutputArtifactsFieldView();
+
+  @override
+  Object get identityKey => (ThreadToolOutputArtifactsFieldView,);
+}
+
+/// 原始记录的一段正文：`payloadIndex` 是它在原记录里的顺序。
+final class ThreadRawPayloadFieldView extends ThreadContentFieldView {
+  const ThreadRawPayloadFieldView(this.payloadIndex);
+  final int payloadIndex;
+
+  @override
+  Object get identityKey => (ThreadRawPayloadFieldView, payloadIndex);
 }
 
 /// 普通问答正文域：问题位置 + 该问题内的一段可展示正文。
@@ -88,39 +136,70 @@ final class ThreadToolUserInputFieldView extends ThreadContentFieldView {
 
   final int questionIndex;
   final ThreadUserInputFieldPartView part;
+
+  @override
+  Object get identityKey =>
+      (ThreadToolUserInputFieldView, questionIndex, part.identityKey);
 }
 
 /// 普通问答投影里一段可展示正文的位置（与后端 `BridgeThreadUserInputFieldPart` 一一对应）。
 sealed class ThreadUserInputFieldPartView {
   const ThreadUserInputFieldPartView();
+
+  /// 值语义键：判别分支 + 选项/答案索引。
+  Object get identityKey;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadUserInputFieldPartView && other.identityKey == identityKey;
+
+  @override
+  int get hashCode => identityKey.hashCode;
 }
 
 final class ThreadUserInputHeaderFieldPartView
     extends ThreadUserInputFieldPartView {
   const ThreadUserInputHeaderFieldPartView();
+
+  @override
+  Object get identityKey => (ThreadUserInputHeaderFieldPartView,);
 }
 
 final class ThreadUserInputQuestionFieldPartView
     extends ThreadUserInputFieldPartView {
   const ThreadUserInputQuestionFieldPartView();
+
+  @override
+  Object get identityKey => (ThreadUserInputQuestionFieldPartView,);
 }
 
 final class ThreadUserInputAnswerFieldPartView
     extends ThreadUserInputFieldPartView {
   const ThreadUserInputAnswerFieldPartView(this.answerIndex);
   final int answerIndex;
+
+  @override
+  Object get identityKey => (ThreadUserInputAnswerFieldPartView, answerIndex);
 }
 
 final class ThreadUserInputOptionLabelFieldPartView
     extends ThreadUserInputFieldPartView {
   const ThreadUserInputOptionLabelFieldPartView(this.optionIndex);
   final int optionIndex;
+
+  @override
+  Object get identityKey =>
+      (ThreadUserInputOptionLabelFieldPartView, optionIndex);
 }
 
 final class ThreadUserInputOptionDescriptionFieldPartView
     extends ThreadUserInputFieldPartView {
   const ThreadUserInputOptionDescriptionFieldPartView(this.optionIndex);
   final int optionIndex;
+
+  @override
+  Object get identityKey =>
+      (ThreadUserInputOptionDescriptionFieldPartView, optionIndex);
 }
 
 /// 一个字段的 typed 变化（与后端 `BridgeFieldChange` 一一对应）。
@@ -996,8 +1075,9 @@ class ThreadItemView {
 
   /// 窗口条目的执行终态事实（后端 `BridgeChatLifecycle`）。
   ///
-  /// 与保存水位 [saved] 严格独立：终态可以尚未保存，已保存也仍可继续增量。终态身份
-  /// 拒绝任何迟到的流式字段变化，只接受保存/省略量的版本帧。
+  /// 与保存水位 [saved] 严格独立：终态可以尚未保存，已保存也仍可继续增量。终态身份不会
+  /// 回退成 streaming，但仍接受可靠权威修订（正文补齐或更高 revision 的扩展）；`Append`
+  /// 只是正文前缀差量的编码，不是执行权限。
   final bool executionTerminal;
 
   /// Execution completion and history durability are independent.
@@ -1250,13 +1330,17 @@ class ThreadItemView {
   /// 3. 全部字段应用完成后**一次**提交 [revision]、[omittedUnits] 与保存水位 [saved]；即使
   ///    字段全为 `Unchanged`（仅版本推进 / 仅保存确认）也要提交，不能当成空帧丢弃。
   ///
-  /// 终态身份（[executionTerminal]）区分两类帧：
-  /// - **执行内容更新**（流式 `Append` / `Remove` / 新 revision 的正文推进）一律拒绝，终态
-  ///   不再改变执行内容。
-  /// - **显示完整性升级**允许一次：同 identity、同 `revision`，且 [omittedUnits] 严格小于本地
-  ///   省略量、字段只用 `Replace`（可含 `Unchanged`）携带权威完整正文。core `read_complete`
-  ///   可能先 notify 一帧同 revision 的 preview→full `Replace`，再让 `expand` 重新对齐快照；
-  ///   这条合法性不能靠 Reset 绕过。终态真正的迟到 `Append` / 新 revision 仍被拒绝。
+  /// 真正的不变量（不在此重做 producer 准入）：
+  /// - 身份与顺序稳定：`itemShell` 的 item/ordinal 必须与本条一致；Turn 关联不是 identity，
+  ///   可靠的更高 revision 允许重新绑定 Turn。
+  /// - revision 不倒退（`revision >= this.revision`），且同 revision 不得回退已交付的省略量或
+  ///   保存水位。
+  /// - 终态身份保持终态：不得 `terminal → streaming`；终态仍可接受可靠权威修订（含
+  ///   `Append`/`Replace` 的正文补齐或更高 revision 的扩展），因为 `Append` 只是正文前缀差量
+  ///   的编码，不是执行权限。
+  /// - 同 revision 的预览补齐是合法更新：core 允许预览被权威完整正文在**不伪增 revision** 的
+  ///   情况下补齐（`pl-core/tests/chat_page.rs` 的同 revision 用例），差量可以是 `Append` 或
+  ///   `Replace`。
   ThreadItemView? applyFieldUpdates({
     required List<ThreadFieldUpdateView> fields,
     required int expectedRevision,
@@ -1267,43 +1351,19 @@ class ThreadItemView {
     ThreadItemView? itemShell,
   }) {
     if (this.revision != expectedRevision) return null;
-    if (executionTerminal) {
-      if (!terminal || revision < this.revision) return null;
-      if (revision == this.revision) {
-        if (itemShell != null) return null;
-        final unchangedOnly = fields.every(
-          (update) => update.change is UnchangedThreadFieldChangeView,
-        );
-        // 仅保存确认帧：正文、revision 与省略量都不变，只翻转保存水位。
-        final savedOnly = unchangedOnly && omittedUnits == bodyOmittedUnits;
-        // 一次性的显示完整性升级：同 revision、省略量严格减少、只用权威 Replace 携带完整正文。
-        final completenessUpgrade =
-            omittedUnits < bodyOmittedUnits &&
-            fields.any(
-              (update) => update.change is ReplaceThreadFieldChangeView,
-            ) &&
-            fields.every(
-              (update) =>
-                  update.change is ReplaceThreadFieldChangeView ||
-                  update.change is UnchangedThreadFieldChangeView,
-            );
-        if (!savedOnly && !completenessUpgrade) return null;
-      } else {
-        // 权威终态修订（如已接受输入绑定 turnId、或终态工具补充资源引用）：
-        // revision 严格递增，且不得对终态条目继续 Append 流式增量。
-        final authoritativeOnly = fields.every(
-          (update) => update.change is! AppendThreadFieldChangeView,
-        );
-        if (!authoritativeOnly) return null;
-      }
+    // revision 是内容版本：任何帧都不能让它倒退。
+    if (revision < this.revision) return null;
+    // 终态只能保持终态；终态仍可接受可靠权威修订（见上文不变量）。
+    if (executionTerminal && !terminal) return null;
+    if (revision == this.revision) {
+      // 同 revision 只能推进或保持事实：省略量不得回升，已保存不得回退。
+      if (omittedUnits > bodyOmittedUnits) return null;
+      if (this.saved && !saved) return null;
     }
     var nextState = state;
     if (itemShell != null) {
-      if (itemShell.id != id ||
-          itemShell.ordinal != ordinal ||
-          (turnId.isNotEmpty && itemShell.turnId != turnId)) {
-        return null;
-      }
+      // 身份与顺序必须稳定；Turn 关联不是 identity，允许可靠修订重新绑定。
+      if (itemShell.id != id || itemShell.ordinal != ordinal) return null;
       final seeded = _seedDynamicFieldsFromCurrent(state, itemShell.state);
       if (seeded == null) return null;
       nextState = seeded;
@@ -1507,6 +1567,20 @@ class ThreadItemView {
               ),
               omittedUnits: omittedUnits,
             );
+          case ThreadToolOutputArtifactsFieldView():
+            // 产物正文是**独立内容字段**：完整文本只在详情查看器里读取，typed 预览数组由
+            // 权威条目修订携带。这里接受整段替换/追加而不在 reducer 里解析 JSON，只推进
+            // 字节账目；`Remove` 才清掉预览数组里那一份已交付值。
+            return (
+              state: ThreadToolItemStateView(
+                invocation: invocation,
+                lifecycle: change is RemoveThreadFieldChangeView
+                    ? _withToolArtifacts(lifecycle, const [])
+                    : lifecycle,
+                userInput: userInput,
+              ),
+              omittedUnits: omittedUnits,
+            );
           case ThreadToolUserInputFieldView(:final questionIndex, :final part):
             if (userInput == null) return null;
             final current = switch (part) {
@@ -1540,6 +1614,30 @@ class ThreadItemView {
           default:
             return null;
         }
+      case ThreadRawItemStateView(
+        :final payloads,
+        :final notice,
+        :final recordedAt,
+      ):
+        final target = switch (field) {
+          ThreadRawPayloadFieldView(:final payloadIndex) => payloadIndex,
+          _ => null,
+        };
+        if (target == null || target < 0 || target >= payloads.length) {
+          return null;
+        }
+        // 原始记录正文同样有独立详情字段：替换/追加只推进字节账目，不在 reducer 里解析
+        // 载荷；删除该段才从 typed 预览里移除对应载荷。
+        return (
+          state: ThreadRawItemStateView(
+            change is RemoveThreadFieldChangeView
+                ? ([...payloads]..removeAt(target))
+                : payloads,
+            notice,
+            recordedAt,
+          ),
+          omittedUnits: omittedUnits,
+        );
       default:
         return null;
     }
@@ -1571,13 +1669,367 @@ class ThreadItemView {
       saved: saved ?? this.saved,
     );
   }
+
+  /// 权威整条预览落在**已交付**的同 revision 事实上（design/26 §26.7）。
+  ///
+  /// 尾部 `Add` 携带权威整条预览，既不保证该身份从未被页查询加载，也不保证随后还会
+  /// 补发同一事实的 `UpdateItem`；因此已加载身份必须在这里原位收敛，而不是等待更新。
+  /// 调用方按 revision 分派：更高 revision 直接采纳权威条目（它自带自己的保存水位），
+  /// 更旧 revision 不得覆盖已加载的新 revision。
+  ///
+  /// 本方法只处理**同 revision**：逐字段取更完整者，保存水位与执行终态不回退，Turn 关联、
+  /// 更新时间与上下文处置采用权威条目。返回 null 表示两者无法证明是同一条事实（调用方
+  /// 必须显式重同步）。
+  ///
+  /// 本 helper **不**自行计算整体省略量：它不拥有别的条目的字段总长，无法验证合成后的
+  /// 账目。`omittedBytes` 由持有逐字段详情引用、已核实预览支配关系与产品预算的调用方传入
+  /// （design/26 §26.8）；负数直接拒绝。
+  ///
+  /// 稳定身份只要求 `id`/`ordinal` 不变，**不**要求保持同一个 Dart 对象实例；条目正文与
+  /// 元数据字段由实现各自收敛，不做为了指针复用的全字段值相等优化。
+  ThreadItemView? convergeWith(
+    ThreadItemView incoming, {
+    required int omittedBytes,
+  }) {
+    if (omittedBytes < 0) {
+      throw ArgumentError.value(
+        omittedBytes,
+        'omittedBytes',
+        'omitted bytes must be non-negative',
+      );
+    }
+    if (id != incoming.id || ordinal != incoming.ordinal) return null;
+    if (revision != incoming.revision) return null;
+    final merged = _convergeState(state, incoming.state);
+    if (merged == null) return null;
+    return incoming.copyWith(
+      revision: revision,
+      state: merged,
+      bodyOmittedUnits: omittedBytes,
+      executionTerminal: executionTerminal || incoming.executionTerminal,
+      saved: saved || incoming.saved,
+    );
+  }
+}
+
+/// 同一身份的权威整条预览落在**已交付**的同 revision 事实上（design/26 §26.7）。
+///
+/// 语义是「同一事实的更完整交付」：逐字段取更完整者，保存水位、执行终态与省略量不回退，
+/// Turn 关联／更新时间／上下文处置采用权威条目。返回 null 表示两者无法证明是同一事实，
+/// 调用方必须显式重同步，不能把片段当成正文继续应用。
+ThreadItemStateView? _convergeState(
+  ThreadItemStateView current,
+  ThreadItemStateView incoming,
+) {
+  switch ((current, incoming)) {
+    case (ThreadTextItemStateView a, ThreadTextItemStateView b):
+      if (a.channel != b.channel) return null;
+      final text = _convergeText(a.text, b.text);
+      if (text == null) return null;
+      return ThreadTextItemStateView(
+        channel: b.channel,
+        text: text,
+        attachments: a.attachments.length <= b.attachments.length
+            ? b.attachments
+            : a.attachments,
+        lifecycle: _convergeContentLifecycle(a.lifecycle, b.lifecycle),
+      );
+    case (ThreadThinkingItemStateView a, ThreadThinkingItemStateView b):
+      // chunk base 是分块坐标系的一部分：坐标系变了就不是同一份内容。
+      if (a.summaryChunkBase != b.summaryChunkBase ||
+          a.contentChunkBase != b.contentChunkBase) {
+        return null;
+      }
+      final summary = _convergeChunks(a.summary, b.summary);
+      if (summary == null) return null;
+      final content = _convergeChunks(a.content, b.content);
+      if (content == null) return null;
+      return ThreadThinkingItemStateView(
+        summary: summary,
+        content: content,
+        lifecycle: _convergeContentLifecycle(a.lifecycle, b.lifecycle),
+        summaryChunkBase: b.summaryChunkBase,
+        contentChunkBase: b.contentChunkBase,
+      );
+    case (ThreadToolItemStateView a, ThreadToolItemStateView b):
+      final invocation = _convergeInvocation(a.invocation, b.invocation);
+      if (invocation == null) return null;
+      final userInput = _convergeUserInput(a.userInput, b.userInput);
+      if (identical(userInput, _incompatibleUserInput)) return null;
+      return ThreadToolItemStateView(
+        invocation: invocation,
+        lifecycle: _convergeToolLifecycle(a.lifecycle, b.lifecycle),
+        userInput: userInput as ThreadToolUserInputView?,
+      );
+    case (ThreadRawItemStateView a, ThreadRawItemStateView b):
+      final payloads = _convergeRawPayloads(a.payloads, b.payloads);
+      if (payloads == null) return null;
+      final notice = _convergeText(a.notice, b.notice);
+      if (notice == null) return null;
+      return ThreadRawItemStateView(payloads, notice, b.recordedAt);
+    case (ThreadFileItemStateView a, ThreadFileItemStateView b):
+      return a.path == b.path ? b : null;
+    case (ThreadSkillItemStateView a, ThreadSkillItemStateView b):
+      return a.name == b.name ? b : null;
+    case (ThreadAgentItemStateView a, ThreadAgentItemStateView b):
+      return a.identity.id == b.identity.id ? b : null;
+    case (ThreadTurnItemStateView a, ThreadTurnItemStateView b):
+      return a.inputId == b.inputId ? b : null;
+    case (ThreadInferenceItemStateView a, ThreadInferenceItemStateView b):
+      return a.inferenceId == b.inferenceId ? b : null;
+    case (
+      ThreadContextCompactionItemStateView(),
+      ThreadContextCompactionItemStateView(),
+    ):
+      return incoming;
+    default:
+      // 种类不同说明本地副本与权威条目已经不是同一条事实。
+      return null;
+  }
+}
+
+/// 同 revision 的两份文本只能是「同一正文的不同完整度」：互为前缀才可收敛。
+String? _convergeText(String current, String incoming) {
+  if (current == incoming) return current;
+  if (incoming.startsWith(current)) return incoming;
+  if (current.startsWith(incoming)) return current;
+  return null;
+}
+
+/// 分块列表的收敛：除最后一块外必须逐块相同，最后一块按前缀规则取更完整者；
+/// 多出来的块只能是后续追加块。
+List<String>? _convergeChunks(List<String> current, List<String> incoming) {
+  final common = current.length <= incoming.length
+      ? current.length
+      : incoming.length;
+  for (var index = 0; index < common - 1; index++) {
+    if (current[index] != incoming[index]) return null;
+  }
+  if (common == 0) {
+    return current.length >= incoming.length ? current : incoming;
+  }
+  final last = _convergeText(current[common - 1], incoming[common - 1]);
+  if (last == null) return null;
+  final longer = current.length >= incoming.length ? current : incoming;
+  return [...current.take(common - 1), last, ...longer.skip(common)];
+}
+
+/// 内容生命周期只允许前进：流式让位于任何已收束事实，其余保持本地已交付事实。
+ThreadContentLifecycleView _convergeContentLifecycle(
+  ThreadContentLifecycleView current,
+  ThreadContentLifecycleView incoming,
+) {
+  if (current is StreamingThreadContentView &&
+      incoming is! StreamingThreadContentView) {
+    return incoming;
+  }
+  return current;
+}
+
+/// 工具生命周期的阶段单调前进；同阶段只在同一变体内合并已交付流式正文。
+ThreadToolLifecycleView _convergeToolLifecycle(
+  ThreadToolLifecycleView current,
+  ThreadToolLifecycleView incoming,
+) {
+  if (current is RunningThreadToolView && incoming is RunningThreadToolView) {
+    final output = _convergeText(
+      current.streamedOutput,
+      incoming.streamedOutput,
+    );
+    return output == null ? current : RunningThreadToolView(output);
+  }
+  if (current is CancellingThreadToolView &&
+      incoming is CancellingThreadToolView) {
+    final output = _convergeText(
+      current.streamedOutput,
+      incoming.streamedOutput,
+    );
+    return output == null ? current : CancellingThreadToolView(output);
+  }
+  if (current is SucceededThreadToolView &&
+      incoming is SucceededThreadToolView) {
+    return SucceededThreadToolView(
+      current.completedAt,
+      _convergeToolOutput(current.output, incoming.output),
+    );
+  }
+  if (current.runtimeType == incoming.runtimeType) return current;
+  return _toolLifecycleRank(incoming) > _toolLifecycleRank(current)
+      ? incoming
+      : current;
+}
+
+int _toolLifecycleRank(ThreadToolLifecycleView lifecycle) =>
+    switch (lifecycle) {
+      QueuedThreadToolView() => 0,
+      StartedThreadToolView() => 1,
+      StreamingThreadToolView() => 2,
+      AwaitingApprovalThreadToolView() => 3,
+      ApprovedThreadToolView() => 4,
+      RunningThreadToolView() => 5,
+      CancellingThreadToolView() => 6,
+      InterruptedThreadToolView() ||
+      SucceededThreadToolView() ||
+      FailedThreadToolView() ||
+      DeniedThreadToolView() ||
+      CancelledThreadToolView() => 7,
+    };
+
+/// 工具输出正文按前缀规则收敛；附件与产物数组取更完整的一份。
+ThreadToolOutputView _convergeToolOutput(
+  ThreadToolOutputView current,
+  ThreadToolOutputView incoming,
+) {
+  return ThreadToolOutputView(
+    result: _convergeText(current.result, incoming.result) ?? current.result,
+    attachments: current.attachments.length <= incoming.attachments.length
+        ? incoming.attachments
+        : current.attachments,
+    outputArtifacts:
+        current.outputArtifacts.length <= incoming.outputArtifacts.length
+        ? incoming.outputArtifacts
+        : current.outputArtifacts,
+    exitCode: incoming.exitCode ?? current.exitCode,
+  );
+}
+
+/// 调用身份必须一致；参数正文按前缀规则取更完整者。
+ThreadToolInvocationView? _convergeInvocation(
+  ThreadToolInvocationView current,
+  ThreadToolInvocationView incoming,
+) {
+  if (current.toolCallId != incoming.toolCallId ||
+      current.name != incoming.name ||
+      current.callId != incoming.callId ||
+      current.providerItemId != incoming.providerItemId ||
+      current.taskId != incoming.taskId ||
+      current.workingDirectory != incoming.workingDirectory) {
+    return null;
+  }
+  final arguments = _convergeText(current.arguments, incoming.arguments);
+  if (arguments == null) return null;
+  return incoming.withArguments(arguments);
+}
+
+/// 问答正文的收敛：结构来自权威副本，已交付正文与已解决状态不回退。
+///
+/// 返回 [_incompatibleUserInput] 表示两份问答已经不是同一个交互。
+Object? _convergeUserInput(
+  ThreadToolUserInputView? current,
+  ThreadToolUserInputView? incoming,
+) {
+  if (current == null) return incoming;
+  if (incoming == null) return current;
+  if (current.interactionId != incoming.interactionId) {
+    return _incompatibleUserInput;
+  }
+  // 结构来自权威副本；已交付正文（含已解决状态的答案）先按原样搬回，再看权威副本里
+  // 是否存在更完整的同段正文。
+  var merged = incoming.withTextsFrom(current);
+  if (current.state is ResolvedThreadToolUserInputView &&
+      merged.state is! ResolvedThreadToolUserInputView) {
+    // 已解决是更强的权威事实：不能因为权威副本暂时只剩结构就退回待回答。
+    merged = ThreadToolUserInputView(
+      interactionId: merged.interactionId,
+      questions: merged.questions,
+      state: current.state,
+    ).withTextsFrom(current);
+  }
+  for (var index = 0; index < incoming.questions.length; index++) {
+    merged = _preferFullerPart(
+      merged,
+      index,
+      const ThreadUserInputHeaderFieldPartView(),
+      incoming.headerText(index),
+    );
+    merged = _preferFullerPart(
+      merged,
+      index,
+      const ThreadUserInputQuestionFieldPartView(),
+      incoming.questionText(index),
+    );
+    final options = incoming.questions[index].options.length;
+    for (var option = 0; option < options; option++) {
+      merged = _preferFullerPart(
+        merged,
+        index,
+        ThreadUserInputOptionLabelFieldPartView(option),
+        incoming.optionLabel(index, option),
+      );
+      merged = _preferFullerPart(
+        merged,
+        index,
+        ThreadUserInputOptionDescriptionFieldPartView(option),
+        incoming.optionDescription(index, option),
+      );
+    }
+  }
+  for (final answer in incoming.answers) {
+    final index = merged.questionIndex(answer.questionId);
+    if (index == null) continue;
+    for (var value = 0; value < answer.answers.length; value++) {
+      merged = _preferFullerPart(
+        merged,
+        index,
+        ThreadUserInputAnswerFieldPartView(value),
+        answer.answers[value],
+      );
+    }
+  }
+  return merged;
+}
+
+const Object _incompatibleUserInput = Object();
+
+/// 只在候选正文是当前正文的前缀扩展时替换：不猜测、不回退。
+ThreadToolUserInputView _preferFullerPart(
+  ThreadToolUserInputView view,
+  int questionIndex,
+  ThreadUserInputFieldPartView part,
+  String candidate,
+) {
+  final current = switch (part) {
+    ThreadUserInputHeaderFieldPartView() => view.headerText(questionIndex),
+    ThreadUserInputQuestionFieldPartView() => view.questionText(questionIndex),
+    ThreadUserInputOptionLabelFieldPartView(:final optionIndex) =>
+      view.optionLabel(questionIndex, optionIndex),
+    ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) =>
+      view.optionDescription(questionIndex, optionIndex),
+    ThreadUserInputAnswerFieldPartView(:final answerIndex) => view.answerText(
+      questionIndex,
+      answerIndex,
+    ),
+  };
+  if (current == candidate || !candidate.startsWith(current)) return view;
+  return view.withText(questionIndex, part, candidate);
+}
+
+/// 原始记录正文按段收敛：格式与版本必须一致，正文按前缀规则取更完整者。
+List<RawHistoryPayload>? _convergeRawPayloads(
+  List<RawHistoryPayload> current,
+  List<RawHistoryPayload> incoming,
+) {
+  final common = current.length <= incoming.length
+      ? current.length
+      : incoming.length;
+  final merged = <RawHistoryPayload>[];
+  for (var index = 0; index < common; index++) {
+    final a = current[index];
+    final b = incoming[index];
+    if (a.format != b.format || a.version != b.version) return null;
+    final content = _convergeText(a.content, b.content);
+    if (content == null) return null;
+    merged.add(RawHistoryPayload(b.format, b.version, content));
+  }
+  final longer = current.length >= incoming.length ? current : incoming;
+  merged.addAll(longer.skip(common));
+  return merged;
 }
 
 class ThreadWorkspace {
   const ThreadWorkspace({
     required this.thread,
     required this.revision,
-    required this.items,
     required this.interactions,
     required this.runtime,
     this.activeTurn,
@@ -1592,10 +2044,6 @@ class ThreadWorkspace {
 
   /// 当前状态 revision（snapshot 与实时事件共用）；历史页 watermark 不属于它。
   final int revision;
-
-  /// 消息窗口的唯一正文：canonical 有界窗口（由 ChatView 交付），不叠加任何 state
-  /// snapshot 正文或第二份 live overlay。
-  final List<ThreadItemView> items;
 
   final List<PendingInteraction> interactions;
   final ThreadRuntimeView runtime;
@@ -1626,7 +2074,6 @@ class ThreadWorkspace {
   ThreadWorkspace copyWith({
     StudioThread? thread,
     int? revision,
-    List<ThreadItemView>? items,
     List<PendingInteraction>? interactions,
     ThreadRuntimeView? runtime,
     Object? activeTurn = _workspaceUnset,
@@ -1638,7 +2085,6 @@ class ThreadWorkspace {
     return ThreadWorkspace(
       thread: thread ?? this.thread,
       revision: revision ?? this.revision,
-      items: items ?? this.items,
       interactions: interactions ?? this.interactions,
       runtime: runtime ?? this.runtime,
       activeTurn: identical(activeTurn, _workspaceUnset)
@@ -1666,7 +2112,6 @@ class WorkspaceUiState {
     this.syncState = AgentWorkspaceSyncState.loading,
     this.loadError,
     this.subscriptionGeneration = 0,
-    this.history = const ThreadHistoryWindow(),
     this.activityDetail = const ThreadActivityDetailState(),
   });
 
@@ -1674,7 +2119,6 @@ class WorkspaceUiState {
   final AgentWorkspaceSyncState syncState;
   final String? loadError;
   final int subscriptionGeneration;
-  final ThreadHistoryWindow history;
 
   /// 按活动身份缓存的完整详情读取状态；身份变化即失效。
   final ThreadActivityDetailState activityDetail;
@@ -1684,7 +2128,6 @@ class WorkspaceUiState {
     AgentWorkspaceSyncState? syncState,
     String? loadError,
     int? subscriptionGeneration,
-    ThreadHistoryWindow? history,
     ThreadActivityDetailState? activityDetail,
   }) {
     return WorkspaceUiState(
@@ -1697,7 +2140,6 @@ class WorkspaceUiState {
           : loadError ?? this.loadError,
       subscriptionGeneration:
           subscriptionGeneration ?? this.subscriptionGeneration,
-      history: history ?? this.history,
       activityDetail: activityDetail ?? this.activityDetail,
     );
   }
@@ -1750,196 +2192,6 @@ class ThreadActivityDetailState {
       error: identical(error, _workspaceUnset) ? this.error : error as String?,
     );
   }
-}
-
-enum TimelineDirection { older, newer }
-
-/// Reading position and permission to move the canonical window are distinct.
-enum TimelineReadingIntent { followLatest, inspectItem, browseHistory }
-
-/// 阅读锚点上的一次**定位意图动作**；与锚点本身（持续状态）分开。
-///
-/// 只有真正的意图切换才带动作：进入历史阅读、显式查看某条目、跳回最新。普通滚动换顶行
-/// 只更新锚点，不改变后端窗口焦点。
-enum TimelineViewAction { enterHistory, inspectItem, backToLatest }
-
-class TimelineAnchor {
-  const TimelineAnchor(
-    this.itemId,
-    this.offset, {
-    this.readingIntent = TimelineReadingIntent.browseHistory,
-  });
-  final String itemId;
-  final double offset;
-  final TimelineReadingIntent readingIntent;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is TimelineAnchor &&
-            itemId == other.itemId &&
-            offset == other.offset &&
-            readingIntent == other.readingIntent;
-  }
-
-  @override
-  int get hashCode => Object.hash(itemId, offset, readingIntent);
-}
-
-/// Reading-window ownership is independent from subscription ownership.
-class ThreadHistoryWindow {
-  const ThreadHistoryWindow({
-    this.hasOlder = false,
-    this.hasNewer = false,
-    this.olderCursor,
-    this.newerCursor,
-    this.isLoading = false,
-    this.direction = TimelineDirection.older,
-    this.epoch = 0,
-    this.errorMessage,
-    this.newerError,
-    this.detached = false,
-    this.anchor,
-    this.previewedItemIds = const {},
-    this.loadingItemIds = const {},
-    this.itemBodyErrors = const {},
-    this.pendingItemBodyIds = const {},
-    this.unavailableItemIds = const {},
-  });
-  final bool hasOlder;
-  final bool hasNewer;
-  final String? olderCursor;
-  final String? newerCursor;
-  final bool isLoading;
-  final TimelineDirection direction;
-  final int epoch;
-  final String? errorMessage;
-  final String? newerError;
-  final bool detached;
-  final TimelineAnchor? anchor;
-
-  /// 窗口内因超单条预览预算而只以预览呈现的条目 ID。
-  final Set<String> previewedItemIds;
-
-  /// 正在按 item identity 回源完整正文的条目 ID。
-  final Set<String> loadingItemIds;
-
-  /// 回源完整正文失败的条目 ID 与其错误文案；下次成功回源时清除。
-  final Map<String, String> itemBodyErrors;
-
-  /// 回源请求已发出、但完整正文尚未可取（例如历史事务尚未 durable）的条目 ID。
-  ///
-  /// 这类条目**仍然可见可重试**：数据源没有给出完整正文，也没说身份不存在，因此只是
-  /// “在途/尚未落盘”，不能像 [unavailableItemIds] 那样永久禁用入口。
-  final Set<String> pendingItemBodyIds;
-
-  /// 数据源明确无法解析该身份（真正缺席）的条目 ID；这些条目不再假装可回源。
-  final Set<String> unavailableItemIds;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is ThreadHistoryWindow &&
-            hasOlder == other.hasOlder &&
-            hasNewer == other.hasNewer &&
-            olderCursor == other.olderCursor &&
-            newerCursor == other.newerCursor &&
-            isLoading == other.isLoading &&
-            direction == other.direction &&
-            epoch == other.epoch &&
-            errorMessage == other.errorMessage &&
-            newerError == other.newerError &&
-            detached == other.detached &&
-            anchor == other.anchor &&
-            _sameStringSet(previewedItemIds, other.previewedItemIds) &&
-            _sameStringSet(loadingItemIds, other.loadingItemIds) &&
-            _sameStringMap(itemBodyErrors, other.itemBodyErrors) &&
-            _sameStringSet(pendingItemBodyIds, other.pendingItemBodyIds) &&
-            _sameStringSet(unavailableItemIds, other.unavailableItemIds);
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    hasOlder,
-    hasNewer,
-    olderCursor,
-    newerCursor,
-    isLoading,
-    direction,
-    epoch,
-    errorMessage,
-    newerError,
-    detached,
-    anchor,
-    Object.hashAll(previewedItemIds.toList()..sort()),
-    Object.hashAll(loadingItemIds.toList()..sort()),
-    Object.hashAll(
-      itemBodyErrors.entries
-          .map((entry) => Object.hash(entry.key, entry.value))
-          .toList()
-        ..sort(),
-    ),
-    Object.hashAll(pendingItemBodyIds.toList()..sort()),
-    Object.hashAll(unavailableItemIds.toList()..sort()),
-  );
-
-  ThreadHistoryWindow copyWith({
-    bool? hasOlder,
-    bool? hasNewer,
-    Object? olderCursor = _workspaceUnset,
-    Object? newerCursor = _workspaceUnset,
-    bool? isLoading,
-    TimelineDirection? direction,
-    int? epoch,
-    Object? errorMessage = _workspaceUnset,
-    Object? newerError = _workspaceUnset,
-    bool? detached,
-    Object? anchor = _workspaceUnset,
-    Set<String>? previewedItemIds,
-    Set<String>? loadingItemIds,
-    Map<String, String>? itemBodyErrors,
-    Set<String>? pendingItemBodyIds,
-    Set<String>? unavailableItemIds,
-  }) => ThreadHistoryWindow(
-    hasOlder: hasOlder ?? this.hasOlder,
-    hasNewer: hasNewer ?? this.hasNewer,
-    olderCursor: identical(olderCursor, _workspaceUnset)
-        ? this.olderCursor
-        : olderCursor as String?,
-    newerCursor: identical(newerCursor, _workspaceUnset)
-        ? this.newerCursor
-        : newerCursor as String?,
-    isLoading: isLoading ?? this.isLoading,
-    direction: direction ?? this.direction,
-    epoch: epoch ?? this.epoch,
-    detached: detached ?? this.detached,
-    errorMessage: identical(errorMessage, _workspaceUnset)
-        ? this.errorMessage
-        : errorMessage as String?,
-    newerError: identical(newerError, _workspaceUnset)
-        ? this.newerError
-        : newerError as String?,
-    anchor: identical(anchor, _workspaceUnset)
-        ? this.anchor
-        : anchor as TimelineAnchor?,
-    previewedItemIds: previewedItemIds ?? this.previewedItemIds,
-    loadingItemIds: loadingItemIds ?? this.loadingItemIds,
-    itemBodyErrors: itemBodyErrors ?? this.itemBodyErrors,
-    pendingItemBodyIds: pendingItemBodyIds ?? this.pendingItemBodyIds,
-    unavailableItemIds: unavailableItemIds ?? this.unavailableItemIds,
-  );
-}
-
-bool _sameStringSet(Set<String> left, Set<String> right) {
-  return left.length == right.length && left.containsAll(right);
-}
-
-bool _sameStringMap(Map<String, String> left, Map<String, String> right) {
-  if (left.length != right.length) return false;
-  for (final entry in left.entries) {
-    if (right[entry.key] != entry.value) return false;
-  }
-  return true;
 }
 
 const _workspaceUnset = Object();
@@ -2033,4 +2285,38 @@ ThreadToolOutputView _withToolResult(
     outputArtifacts: output.outputArtifacts,
     exitCode: output.exitCode,
   );
+}
+
+/// 清空/替换工具终态输出里那份已交付的产物预览；流式阶段没有产物数组可清。
+ThreadToolLifecycleView _withToolArtifacts(
+  ThreadToolLifecycleView lifecycle,
+  List<Object?> artifacts,
+) {
+  switch (lifecycle) {
+    case SucceededThreadToolView(:final completedAt, :final output):
+      return SucceededThreadToolView(
+        completedAt,
+        ThreadToolOutputView(
+          result: output.result,
+          attachments: output.attachments,
+          outputArtifacts: artifacts,
+          exitCode: output.exitCode,
+        ),
+      );
+    case FailedThreadToolView(:final failedAt, :final failure, :final output):
+      final current = output;
+      if (current == null) return lifecycle;
+      return FailedThreadToolView(
+        failedAt,
+        failure,
+        ThreadToolOutputView(
+          result: current.result,
+          attachments: current.attachments,
+          outputArtifacts: artifacts,
+          exitCode: current.exitCode,
+        ),
+      );
+    default:
+      return lifecycle;
+  }
 }

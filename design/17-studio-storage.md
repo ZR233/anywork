@@ -119,7 +119,7 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 3. 先由该会话的唯一历史 writer 完成既有 v2 SQLite 结构与检查点迁移，再在短 SQLite 读事务读取并验证最新 checkpoint 与上下文；旧 v2 TOML 同样先按需迁移；
 4. 纯恢复内存 owner，不执行模型/工具；
 5. 建立增量订阅；
-6. ChatView 在同一订阅边界取得当前内存首帧（最近最多 32 条）；Session 的尾部缓存按需
+6. Session 尾部订阅在同一边界取得当前内存首帧（最近最多 32 条）；共享缓存按需
    从历史 keyset 查询补齐最多 100 条，活跃/待保存条目直接按同一身份合并，无需等待 writer。
 
 显式继续父会话会先核对子会话的终态通知。未加载的子会话也须先由其唯一历史 writer 完成
@@ -274,31 +274,26 @@ ordinal；重试同一身份保持原值，未落盘的分配在进程重启后�
 Thread owner
 ├─ 当前状态 snapshot → 状态订阅
 ├─ Item/Turn/task effect → reliable history channel → history writer
-├─ TimelineState → ChatView 快照/批量差量 → GUI
+├─ TimelineState → keyset 页 / 有界尾部订阅 / 详情 → GUI 与 HTTP
 └─ model/tool statistics → lossy call recorder
 ```
 
-首次 Thread snapshot 只包含当前状态、pending interaction、runtime、workflow 和目录引用，不含
-完整 Timeline。core ChatView 是热/冷 Thread 的同一历史阅读入口：`Latest` 首帧 32 条、
-按身份 `Around`、Older/Newer 每次 32 条、每窗口上限 96 条；Session 共享最近最多 100 条，
-另外按字节约束。core 负责尾部缓存、活动条目、可靠未保存事实与 SQLite 页的合并、去重和
-窗口版本；Studio 的 HistoryStore 只实现按顺序键查询/按身份正文读取及写入，不能另设
-100 条 SQL 页缓存。GUI 不再维护“实时转历史”的两个对象，也不持有随会话增长的消息列表。
-活跃 Thread 的 reader 与 writer 复用同一数据库身份与初始化状态；新库创建至 schema/meta
-完成之间，reader 等待本句柄 writer 初始化，而冷读不存在的库仍返回空且不创建文件。损坏库
-继续按错误上报，不以重试将其伪装成空历史。
+首次 Thread snapshot 只包含当前状态、pending interaction、runtime、workflow 和目录引用，
+不含完整 Timeline。core Session 是热／冷历史页、最新端订阅和详情的同一权威内容源，
+接口、预算与 Live/History 见 [26](./26-timeline-content.md)。没有几何窗口、Around 聚焦、
+对端裁剪或 canExtendLatest；页查询不改变任何消费者的阅读位置或订阅版本。
 
-打开或重连在 core 同一窗口版本边界取得首帧与下一次通知；首帧不能等待当前 effect 的
-history/checkpoint 水位，也不能让 GUI 自行合并 SQL 与实时 overlay。历史查询先持有可靠
-未保存引用，再读短 SQL 事务；并发 commit 造成的重叠按 item_id/revision 合并，不能漏行。
-`Latest` 跟随尾部，`Around` 保持旧阅读窗口并提示新消息；返回 Latest 读取首窗，后续视口填充
-独立请求扩充，不继承历史浏览累计的窗口范围。
-最新窗口另提供按页扩充操作与 `canExtendLatest` 能力：仅在 Latest 且有旧历史和剩余容量时
-向旧增加条目，保持最新端及跟随意图；到容量上限即停止，不通过淘汰最新条目继续扩充。
-扩充与普通双向翻页共用历史读取、去重及窗口版本机制；异步读取期间聚焦或边界已变化时，
-迟到结果不得改变新的阅读意图。GUI 根据实际布局请求扩充，core 不依赖视口尺寸或展示分组。
-慢消费者基线过期由 core 给 Reset；普通滚动分页不经过执行 owner、不 flush writer、不
-激活冷会话。存储故障以独立 watch 发布，不排在可能积压的 GUI/历史增量之后。
+HistoryStore 只提供顺序键／身份读取与保存，不额外维护 GUI SQL 页缓存。活跃 reader 与
+writer 复用同一数据库身份与初始化状态；新库 schema/meta 尚未完成时等待本句柄 writer，
+冷读缺失库仍为空且不创建文件。损坏继续报错，不能重试后当作空历史。
+
+查询先保留内存未保存引用，再读短 SQL 事务，返回前重新合入最新事实；并发 commit
+重叠按身份版本收敛，不漏行或回退内容。打开尾部订阅在同一同步边界登记接收者及建立
+首帧，首帧不等待当前 effect 的 history/checkpoint 水位。普通分页不经过执行 owner、
+不 flush writer、不激活冷会话。存储故障使用独立状态观察，不被 GUI 内容缓冲阻塞。
+
+前端按需保留已访问的轻量消息，不等于加载完整可靠历史；读取原文和详情均有明确预算。
+本次内容 API 变化不重写历史 payload 或清库，任何实际 schema 变化按既有 v2 事务迁移执行。
 
 ## 17.5 保存与诊断
 

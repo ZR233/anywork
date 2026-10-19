@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:anywork_client/anywork_client.dart';
 import 'package:test/test.dart';
 
-import 'support/chat_transport.dart';
+import 'support/timeline_transport.dart';
 
 void main() {
   for (final pendingOpen in [false, true]) {
@@ -11,31 +11,33 @@ void main() {
       'A B A waits for real capacity after ${pendingOpen ? 'late open' : 'slow close'}',
       () async {
         final budget = ResourceBudget();
-        final firstTransport = TestTransport();
-        final secondTransport = TestTransport();
-        final first = channel(firstTransport, budget: budget);
-        final second = channel(secondTransport, budget: budget);
+        final firstTransport = TestTimelineTransport();
+        final secondTransport = TestTimelineTransport();
+        final first = timelineChannel(firstTransport, budget: budget);
+        final second = timelineChannel(secondTransport, budget: budget);
         first.start();
         final oldOpen = firstTransport.opens.single;
-        final old = TestHandle(initial: snapshot(8, viewId: 'old'))
-          ..closeGate = Completer<void>();
+        final old = TestTimelineConnection(
+          initial: baseline(8, subscriptionId: 'old'),
+        )..closeGate = Completer<void>();
         if (!pendingOpen) {
           oldOpen.complete(old);
           await first.ready;
         }
         first.setDemand(false);
         second.start();
-        final middle = TestHandle(initial: snapshot(1, viewId: 'middle'))
-          ..closeGate = Completer<void>();
+        final middle = TestTimelineConnection(
+          initial: baseline(1, subscriptionId: 'middle'),
+        )..closeGate = Completer<void>();
         secondTransport.opens.single.complete(middle);
         await second.ready;
         second.setDemand(false);
         first.start();
-        expect(first.state.value, isA<ChatFailed<TestSnapshot>>());
+        expect(first.state.value, isA<ChatFailed<StudioTimelineFrame>>());
         expect(budget.used(ResourceKind.chatHandle), 2);
         expect(firstTransport.opens, hasLength(1));
         final reopening = first.state.waitFor(
-          (state) => state is ChatOpening<TestSnapshot>,
+          (state) => state is ChatOpening<StudioTimelineFrame>,
         );
         if (pendingOpen) oldOpen.complete(old);
         await old.closeStarted.future;
@@ -43,13 +45,19 @@ void main() {
         old.closeGate!.complete();
         await reopening.timeout(const Duration(seconds: 2));
         expect(firstTransport.opens, hasLength(2));
-        final current = TestHandle(initial: snapshot(1, viewId: 'returned'));
+        final current = TestTimelineConnection(
+          initial: baseline(1, subscriptionId: 'returned'),
+        );
         firstTransport.opens.last.complete(current);
-        expect((await first.ready).stamp.viewId, 'returned');
+        expect((await first.ready).baseline.subscriptionId, 'returned');
         expect(budget.used(ResourceKind.chatHandle), 2);
         middle.closeGate!.complete();
         await second.joinRetired();
-        expect(first.state.value.snapshot?.stamp.viewId, 'returned');
+        final delivered = first.state.value.snapshot;
+        expect(
+          (delivered as StudioTimelineBaselineFrame).baseline.subscriptionId,
+          'returned',
+        );
         expect((await first.close()).complete, isTrue);
         expect((await second.close()).complete, isTrue);
         expect(budget.usage, isEmpty);
@@ -61,20 +69,20 @@ void main() {
     'closing a capacity-blocked channel cancels its observation demand',
     () async {
       final budget = ResourceBudget(capacities: {ResourceKind.chatHandle: 1});
-      final firstTransport = TestTransport();
-      final secondTransport = TestTransport();
-      final first = channel(firstTransport, budget: budget);
-      final second = channel(secondTransport, budget: budget);
+      final firstTransport = TestTimelineTransport();
+      final secondTransport = TestTimelineTransport();
+      final first = timelineChannel(firstTransport, budget: budget);
+      final second = timelineChannel(secondTransport, budget: budget);
       first.start();
-      final handle = TestHandle(initial: snapshot(1));
-      firstTransport.opens.single.complete(handle);
+      final connection = TestTimelineConnection(initial: baseline(1));
+      firstTransport.opens.single.complete(connection);
       await first.ready;
       second.start();
-      expect(second.state.value, isA<ChatFailed<TestSnapshot>>());
+      expect(second.state.value, isA<ChatFailed<StudioTimelineFrame>>());
       expect((await second.close()).complete, isTrue);
       await first.close();
       expect(secondTransport.opens, isEmpty);
-      expect(second.state.value, isA<ChatClosed<TestSnapshot>>());
+      expect(second.state.value, isA<ChatClosed<StudioTimelineFrame>>());
       expect(budget.usage, isEmpty);
     },
   );
@@ -82,21 +90,21 @@ void main() {
   test(
     'close joins the pending next without publishing another Ready',
     () async {
-      final transport = TestTransport();
+      final transport = TestTimelineTransport();
       final budget = ResourceBudget();
-      final owner = channel(transport, budget: budget);
+      final owner = timelineChannel(transport, budget: budget);
       owner.start();
-      final handle = TestHandle(initial: snapshot(1));
-      transport.opens.single.complete(handle);
+      final connection = TestTimelineConnection(initial: baseline(1));
+      transport.opens.single.complete(connection);
       await owner.ready;
-      await handle.nextStarted.future;
-      final states = <ChatUiState<TestSnapshot>>[];
+      await connection.nextStarted.future;
+      final states = <ChatUiState<StudioTimelineFrame>>[];
       final observation = owner.state.watch(states.add);
       expect((await owner.close()).complete, isTrue);
-      expect(states.whereType<ChatReady<TestSnapshot>>(), isEmpty);
+      expect(states.whereType<ChatReady<StudioTimelineFrame>>(), isEmpty);
       expect(owner.ownedAttemptCount, 0);
-      expect(handle.nextCalls, 1);
-      expect(handle.closeCalls, 1);
+      expect(connection.nextCalls, 1);
+      expect(connection.closeCalls, 1);
       expect(budget.usage, isEmpty);
       observation.cancel();
     },
@@ -105,29 +113,29 @@ void main() {
   test(
     'repeated EOF exhausts observation retries and retirement never reopens',
     () async {
-      final transport = TestTransport();
-      final owner = ChatChannel<TestSnapshot, TestFrame, int>(
+      final transport = TestTimelineTransport();
+      final owner = StudioTimelineChannel(
         threadId: 'thread',
         transport: transport,
-        reducer: const ChatSnapshotReducer<String>(),
         retryPolicy: const RetryPolicy(delays: [Duration.zero, Duration.zero]),
       );
       owner.start();
       for (var index = 0; index < 3; index++) {
-        final handle = TestHandle(initial: snapshot(1));
-        transport.opens[index].complete(handle);
+        final connection = TestTimelineConnection(initial: baseline(1));
+        transport.opens[index].complete(connection);
         await owner.ready;
-        await handle.nextStarted.future;
+        await connection.nextStarted.future;
         final attempt = owner.currentAttemptId;
         final next = owner.state.waitFor(
           (value) => index < 2
-              ? value is ChatOpening<TestSnapshot> &&
+              ? value is ChatOpening<StudioTimelineFrame> &&
                     owner.currentAttemptId != attempt
-              : value is ChatFailed<TestSnapshot>,
+              : value is ChatFailed<StudioTimelineFrame>,
         );
-        handle.emit(null);
+        // EOF 是显式错误，不是“正常结束”：它必须走重试/失败路径。
+        connection.emit(null);
         await next;
-        await handle.closeCompleted.future;
+        await connection.closeCompleted.future;
       }
       expect(transport.opens, hasLength(3));
       owner.setDemand(false);
@@ -137,124 +145,101 @@ void main() {
   );
 
   test(
-    'retired control keeps its handle and operation budget until it joins',
-    () async {
-      final transport = TestTransport();
-      final budget = ResourceBudget();
-      final owner = channel(transport, budget: budget);
-      owner.start();
-      final handle = TestHandle(initial: snapshot(1));
-      transport.opens.single.complete(handle);
-      await owner.ready;
-      final command = owner.control((view) => view.focus('item'));
-      final rejected = expectLater(command, throwsA(isA<StaleChatAttempt>()));
-      await handle.controlStarted.future;
-      expect(budget.used(ResourceKind.pendingOperation), 1);
-      final report = await owner.close(deadline: DateTime.utc(2000));
-      expect(report.complete, isFalse);
-      await handle.closeCompleted.future;
-      expect(budget.used(ResourceKind.chatHandle), 1);
-      handle.controlResult.complete(4);
-      await rejected;
-      expect((await owner.retryCleanup()).complete, isTrue);
-      expect(budget.used(ResourceKind.chatHandle), 0);
-      expect(budget.used(ResourceKind.pendingOperation), 0);
-    },
-  );
-
-  test(
     'late open is closed by its retired attempt without replacing new view',
     () async {
-      final transport = TestTransport();
-      final owner = channel(transport);
+      final transport = TestTimelineTransport();
+      final owner = timelineChannel(transport);
       owner.start();
       final oldOpen = transport.opens.single;
       owner.setDemand(false);
       owner.start();
-      final active = TestHandle(initial: snapshot(1, viewId: 'new'));
+      final active = TestTimelineConnection(
+        initial: baseline(1, subscriptionId: 'new'),
+      );
       transport.opens.last.complete(active);
-      expect((await owner.ready).stamp.viewId, 'new');
+      expect((await owner.ready).baseline.subscriptionId, 'new');
 
-      final old = TestHandle(initial: snapshot(40, viewId: 'old'));
+      final old = TestTimelineConnection(
+        initial: baseline(40, subscriptionId: 'old'),
+      );
       oldOpen.complete(old);
       await old.closeCompleted.future;
       expect(old.initialCalls, 0);
-      expect(owner.state.value.snapshot?.stamp.viewId, 'new');
+      final delivered =
+          owner.state.value.snapshot! as StudioTimelineBaselineFrame;
+      expect(delivered.baseline.subscriptionId, 'new');
       expect((await owner.close()).complete, isTrue);
     },
   );
 
   test(
-    'first Reset failure closes created handle and remains an error',
+    'first baseline failure closes created handle and remains an error',
     () async {
-      final transport = TestTransport();
-      final owner = channel(transport);
+      final transport = TestTimelineTransport();
+      final owner = timelineChannel(transport);
       owner.start();
-      final handle = TestHandle();
-      transport.opens.single.complete(handle);
-      await handle.initialStarted.future;
+      final connection = TestTimelineConnection();
+      transport.opens.single.complete(connection);
+      await connection.initialStarted.future;
       final failed = owner.state.waitFor(
-        (state) => state is ChatFailed<TestSnapshot>,
+        (state) => state is ChatFailed<StudioTimelineFrame>,
       );
-      handle.initialResult.completeError(StateError('missing first Reset'));
+      connection.initialResult.completeError(
+        StateError('missing first baseline'),
+      );
 
       final state = await failed;
       expect(state.snapshot, isNull);
-      expect((state as ChatFailed<TestSnapshot>).error, isStateError);
-      await handle.closeCompleted.future;
+      expect((state as ChatFailed<StudioTimelineFrame>).error, isStateError);
+      await connection.closeCompleted.future;
       expect((await owner.close()).complete, isTrue);
     },
   );
 
   test(
-    'Patch gap retains last good snapshot and closes only that attempt',
+    'patch gap retains last good frame and closes only that attempt',
     () async {
-      final transport = TestTransport();
-      final owner = channel(transport);
+      final transport = TestTimelineTransport();
+      final owner = timelineChannel(transport);
       owner.start();
-      final handle = TestHandle(initial: snapshot(3));
-      transport.opens.single.complete(handle);
+      final connection = TestTimelineConnection(initial: baseline(3));
+      transport.opens.single.complete(connection);
       await owner.ready;
-      await handle.nextStarted.future;
+      await connection.nextStarted.future;
       final failed = owner.state.waitFor(
-        (state) => state is ChatFailed<TestSnapshot>,
+        (state) => state is ChatFailed<StudioTimelineFrame>,
       );
-      handle.emit(
-        ChatPatch(
-          from: snapshot(8).stamp,
-          to: snapshot(9).stamp,
-          changes: const [],
-          hasNewer: false,
-        ),
-      );
+      // from 既不等于已交付版本：连续性无法证明，必须显式失败而不是猜测删除。
+      connection.emit(patch(8, 9));
       final state = await failed;
-      expect(state.snapshot?.stamp.version, 3);
+      final lastGood = state.snapshot! as StudioTimelineBaselineFrame;
+      expect(lastGood.baseline.version, 3);
       expect(
-        (state as ChatFailed<TestSnapshot>).error,
-        isA<ChatProtocolError>(),
+        (state as ChatFailed<StudioTimelineFrame>).error,
+        isA<TimelineContinuityError>(),
       );
-      await handle.closeCompleted.future;
-      expect(handle.nextCalls, 1);
+      await connection.closeCompleted.future;
+      expect(connection.nextCalls, 1);
       await owner.close();
     },
   );
 
   test(
-    'close during initial cancels the view without publishing Ready',
+    'close during initial cancels the connection without publishing Ready',
     () async {
-      final transport = TestTransport();
-      final owner = channel(transport);
+      final transport = TestTimelineTransport();
+      final owner = timelineChannel(transport);
       owner.start();
-      final handle = TestHandle();
-      transport.opens.single.complete(handle);
-      await handle.initialStarted.future;
-      final states = <ChatUiState<TestSnapshot>>[];
+      final connection = TestTimelineConnection();
+      transport.opens.single.complete(connection);
+      await connection.initialStarted.future;
+      final states = <ChatUiState<StudioTimelineFrame>>[];
       final observation = owner.state.watch(states.add);
 
       expect((await owner.close()).complete, isTrue);
-      expect(states.whereType<ChatReady<TestSnapshot>>(), isEmpty);
-      expect(owner.state.value, isA<ChatClosed<TestSnapshot>>());
-      expect(handle.closeCalls, 1);
+      expect(states.whereType<ChatReady<StudioTimelineFrame>>(), isEmpty);
+      expect(owner.state.value, isA<ChatClosed<StudioTimelineFrame>>());
+      expect(connection.closeCalls, 1);
       observation.cancel();
     },
   );
@@ -262,9 +247,9 @@ void main() {
   test(
     'deadline keeps late open owned and a repeated close joins same result',
     () async {
-      final transport = TestTransport();
+      final transport = TestTimelineTransport();
       final budget = ResourceBudget();
-      final owner = channel(transport, budget: budget);
+      final owner = timelineChannel(transport, budget: budget);
       owner.start();
       final closing = owner.close(deadline: DateTime.utc(2000));
       expect(
@@ -275,7 +260,7 @@ void main() {
       expect(report.unresolved, hasLength(1));
       expect(budget.used(ResourceKind.chatHandle), 1);
 
-      final late = TestHandle(initial: snapshot(1));
+      final late = TestTimelineConnection(initial: baseline(1));
       transport.opens.single.complete(late);
       await late.closeCompleted.future;
       expect(late.initialCalls, 0);
@@ -287,63 +272,81 @@ void main() {
   test(
     'close failure holds a permit until explicit cleanup succeeds',
     () async {
-      final transport = TestTransport();
+      final transport = TestTimelineTransport();
       final budget = ResourceBudget();
-      final owner = channel(transport, budget: budget);
+      final owner = timelineChannel(transport, budget: budget);
       owner.start();
-      final handle = TestHandle(initial: snapshot(1));
-      transport.opens.single.complete(handle);
+      final connection = TestTimelineConnection(initial: baseline(1));
+      transport.opens.single.complete(connection);
       await owner.ready;
-      handle.closeFailure = StateError('native close failed');
+      connection.closeFailure = StateError('native close failed');
 
       final report = await owner.close();
       expect(report.complete, isFalse);
       expect(budget.used(ResourceKind.chatHandle), 1);
       expect(budget.usage.single.phase, ResourcePhase.unresolved);
-      handle.closeFailure = null;
+      connection.closeFailure = null;
       expect((await owner.retryCleanup()).complete, isTrue);
       expect(budget.used(ResourceKind.chatHandle), 0);
     },
   );
 
-  test('late control reply cannot complete a replacement attempt', () async {
-    final transport = TestTransport();
-    final owner = channel(transport);
-    owner.start();
-    final handle = TestHandle(initial: snapshot(1));
-    transport.opens.single.complete(handle);
-    await owner.ready;
-    final command = owner.control((view) => view.focus('item'));
-    final assertion = expectLater(command, throwsA(isA<StaleChatAttempt>()));
-    await handle.controlStarted.future;
-    owner.setDemand(false);
-    handle.controlResult.complete(4);
-    await assertion;
-    expect(owner.state.value, isA<ChatIdle<TestSnapshot>>());
-    await owner.close();
-  });
-
   test('old cleanup failure cannot replace a newer Ready attempt', () async {
-    final transport = TestTransport();
-    final owner = channel(transport);
+    final transport = TestTimelineTransport();
+    final owner = timelineChannel(transport);
     owner.start();
-    final old = TestHandle(initial: snapshot(3, viewId: 'old'))
-      ..closeGate = Completer<void>()
-      ..closeFailure = StateError('old native cleanup failed');
+    final old =
+        TestTimelineConnection(initial: baseline(3, subscriptionId: 'old'))
+          ..closeGate = Completer<void>()
+          ..closeFailure = StateError('old native cleanup failed');
     transport.opens.single.complete(old);
     await owner.ready;
     old.emit(null);
     await old.closeStarted.future;
-    owner.retry();
-    final replacement = TestHandle(initial: snapshot(1, viewId: 'new'));
+    owner.refresh();
+    final replacement = TestTimelineConnection(
+      initial: baseline(1, subscriptionId: 'new'),
+    );
     transport.opens.last.complete(replacement);
     await owner.ready;
     old.closeGate!.complete();
     await owner.joinRetired();
-    expect(owner.state.value, isA<ChatReady<TestSnapshot>>());
-    expect(owner.state.value.snapshot?.stamp.viewId, 'new');
+    expect(owner.state.value, isA<ChatReady<StudioTimelineFrame>>());
+    final delivered =
+        owner.state.value.snapshot! as StudioTimelineBaselineFrame;
+    expect(delivered.baseline.subscriptionId, 'new');
     old.closeFailure = null;
     await owner.retryCleanup();
     await owner.close();
   });
+
+  test(
+    'a new subscription identity cannot adopt the delivered baseline',
+    () async {
+      final transport = TestTimelineTransport();
+      final owner = timelineChannel(transport);
+      owner.start();
+      final connection = TestTimelineConnection(initial: baseline(1));
+      transport.opens.single.complete(connection);
+      await owner.ready;
+      await connection.nextStarted.future;
+      final failed = owner.state.waitFor(
+        (state) => state is ChatFailed<StudioTimelineFrame>,
+      );
+      connection.emit(
+        StudioTimelineResync(
+          subscriptionId: 'other',
+          reason: StudioTimelineResyncReason.lagging,
+          baseline: baseline(4, subscriptionId: 'other'),
+        ),
+      );
+      final state = await failed;
+      expect(
+        (state as ChatFailed<StudioTimelineFrame>).error,
+        isA<TimelineContinuityError>(),
+      );
+      await connection.closeCompleted.future;
+      await owner.close();
+    },
+  );
 }

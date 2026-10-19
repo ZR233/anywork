@@ -5,13 +5,9 @@
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
-// Public Studio chat signatures use the core timeline types; adapters need no direct
+// Public Studio timeline signatures use the core content types; adapters need no direct
 // dependency on the execution kernel to name them.
-pub use pl_core::chat::Direction as ChatDirection;
-pub use pl_core::chat::{
-    ChatError, ChatField, ChatFocus, ChatItem, ChatLifecycle, ChatSnapshot, ChatUpdate,
-    ChatUpdates, ChatView, ViewChange,
-};
+pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
 pub use pl_core::model::ContentBlock;
 mod hash;
 
@@ -80,8 +76,7 @@ pub use provider_usage::{
     ZhipuToolUsageDetail, zhipu_limit_by_window,
 };
 pub use studio::{
-    AttachmentRecord, ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
-    PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProjectRecord,
+    AttachmentRecord, PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProjectRecord,
     ProviderUsageStateData, ProviderUsageStateSnapshot, ShutdownExternalHook, SkillSearchResult,
     SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
     StudioHostKind, StudioProductTopicSubscription, StudioRecoveryIssue, StudioRecoveryIssueAction,
@@ -89,7 +84,8 @@ pub use studio::{
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
-    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadRecord,
+    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadRecord, TimelineContentReader,
+    TimelineTailStream,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

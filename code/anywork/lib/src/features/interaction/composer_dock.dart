@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
+import '../../app/app_graph.dart';
 import '../../app/theme/studio_tokens.dart';
 
 import '../../l10n/studio_l10n.dart';
@@ -573,7 +574,17 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                 )
               : null,
           onChanged: draftController.updateDraft,
-          onSubmit: () => unawaited(draftController.submit()),
+          onSubmit: () {
+            // 草案 owner 先同步冻结目标、payload、route 与 operation，再等待展示准备；
+            // 这里只捕当前 Thread 身份，不改动已冻结的目标（design/26 §26.8）。
+            final target = thread.id;
+            unawaited(
+              draftController.submit(
+                beforeSubmit: () =>
+                    ref.read(appGraphProvider).timeline.prepareSend(target),
+              ),
+            );
+          },
           onStop: () => unawaited(
             ref.read(anyworkClientProvider).threadCommands.stop(thread.id),
           ),

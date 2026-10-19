@@ -1,8 +1,6 @@
 import 'package:anywork_client/models.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
-import 'timeline_rows.dart';
-
 part 'agent_workspace_view.freezed.dart';
 
 enum AgentComposerMode { editable, runtimeDriven }
@@ -16,7 +14,6 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     required StudioThread rootThread,
     required AgentWorkspaceSyncState syncState,
     String? loadError,
-    required List<TimelineRow> timelineRows,
     required TimelineTodoListUpdate? todo,
     required ThreadRuntimeView runtime,
     required StudioTurnView? turn,

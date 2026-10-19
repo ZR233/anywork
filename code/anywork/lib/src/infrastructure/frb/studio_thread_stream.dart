@@ -83,13 +83,12 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
   );
 }
 
-/// 订阅首帧只投影当前状态；条目正文由权威 ChatView 窗口交付，
-/// 因此这里不产生任何条目、Turn 摘要或回源锚点。
+/// 订阅首帧只投影当前状态；条目正文由独立的 Timeline 内容尾部（一致小页基线 +
+/// 连续补丁）交付，因此这里不产生条目正文、Turn 摘要或回源锚点。
 ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   return ThreadWorkspace(
     thread: _threadFromFrb(value.thread),
     revision: value.revision.toInt(),
-    items: const [],
     interactions: value.interactions
         .where(_interactionIsPending)
         .map(_interactionFromFrb)
@@ -318,13 +317,18 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
 ThreadItemView _threadItemFromFrb(
   frb_item.BridgeThreadItem value, {
   ThreadContextDisposition contextDisposition = ThreadContextDisposition.active,
+  bool exactNumbers = false,
 }) {
   return ThreadItemView(
     id: value.id,
     threadId: value.threadId,
     turnId: value.turnId,
-    ordinal: value.ordinal.toInt(),
-    revision: value.revision.toInt(),
+    ordinal: exactNumbers
+        ? _exactTimelineInt(value.ordinal, 'item ordinal')
+        : value.ordinal.toInt(),
+    revision: exactNumbers
+        ? _exactTimelineInt(value.revision, 'item revision')
+        : value.revision.toInt(),
     createdAt: _dateFromUnix(value.createdAt),
     updatedAt: _dateFromUnix(value.updatedAt),
     state: _threadItemStateFromFrb(value.state),

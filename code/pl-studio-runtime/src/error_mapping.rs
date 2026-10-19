@@ -43,6 +43,9 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     {
         return StudioError::storage();
     }
+    if let Some(error) = error.downcast_ref::<pl_core::chat::ChatError>() {
+        return chat_error(error);
+    }
     if let Some(error) = error.downcast_ref::<ConfigRuntimeError>() {
         return match error {
             ConfigRuntimeError::StaleRevision { expected, actual } => StudioError::new(
@@ -121,6 +124,66 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
             format!("{code:?}: {message}"),
             false,
         ),
+    }
+}
+
+/// Maps one Timeline content failure to its public category.
+///
+/// The classification comes from the typed variant; no error text is parsed. Messages stay generic
+/// and the structured details carry only identities, field keys and sizes — never content.
+fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
+    use pl_core::chat::ChatError as Chat;
+    match error {
+        Chat::InvalidArgument(reason) => StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            "Studio received an invalid timeline request",
+            false,
+        )
+        .with_details(serde_json::json!({ "reason": reason })),
+        Chat::NotFound(identity) => StudioError::new(
+            StudioErrorCode::NotFound,
+            "The requested timeline content is not available",
+            false,
+        )
+        .with_details(serde_json::json!({ "identity": identity })),
+        Chat::StaleRevision {
+            item_id,
+            field,
+            revision,
+        } => StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "Timeline content changed; reload the item before reading it again",
+            true,
+        )
+        .with_details(serde_json::json!({
+            "itemId": item_id,
+            "field": field.to_string(),
+            "revision": revision,
+        })),
+        Chat::Cancelled => StudioError::new(
+            StudioErrorCode::Cancelled,
+            "The timeline content observation is closed",
+            false,
+        ),
+        Chat::Overloaded(reason) => StudioError::new(
+            StudioErrorCode::Overloaded,
+            "Timeline content exceeds the display budget",
+            false,
+        )
+        .with_details(serde_json::json!({ "reason": reason })),
+        Chat::ReadInvalidated => StudioError::new(
+            StudioErrorCode::Busy,
+            "The timeline changed while the page was being read; retry the read",
+            true,
+        ),
+        Chat::Conflict(identity) => StudioError::new(
+            StudioErrorCode::Conflict,
+            "Timeline content conflicts with the fact this Thread already holds",
+            false,
+        )
+        .with_details(serde_json::json!({ "identity": identity })),
+        Chat::History(_) => StudioError::storage(),
+        Chat::OrderExhausted | Chat::OrderNotInitialized => StudioError::internal(),
     }
 }
 

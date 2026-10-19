@@ -7,7 +7,6 @@ use axum::extract::{FromRequest, FromRequestParts, Multipart, Path, Query, Reque
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use pl_protocol::ChatWindowQuery;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
@@ -18,9 +17,9 @@ use pl_protocol::studio::{
     SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
     StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    TimelinePageQuery, UpdatePermissionSettingsRequest, UpdateProviderRequest,
-    UpdateSettingsFieldRequest,
+    UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
 };
+use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
 use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -208,9 +207,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(list_thread_timeline))
-        .routes(routes!(read_thread_timeline_item))
-        .routes(routes!(read_thread_window))
-        .routes(routes!(read_thread_window_item))
+        .routes(routes!(read_thread_timeline_detail))
         .routes(routes!(submit_prompt))
         .routes(routes!(interrupt_turn))
         .routes(routes!(admit_attachment_drafts))
@@ -247,7 +244,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(check_update))
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
-        .routes(routes!(sse::thread_window_events))
+        .routes(routes!(sse::thread_timeline_events))
         .merge(attachment_upload)
 }
 
@@ -497,84 +494,42 @@ async fn list_thread_turns(
     ))
 }
 
-/// **已落盘历史**分页（纯 SQL 的 `history.sqlite` 读取）。
+/// 一页 Timeline 内容：升序轻量预览、真实更旧边界与 `hasOlder`。
 ///
-/// 它只回答“数据库里已经写了哪些条目”，因此输入再长也稳定、可分页；它**不**含尚未落盘的流式正文，也
-/// 不是实时窗口。实时内容请用 `/window`（初始/分页/按身份读）与 `/window/events`（订阅）。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/timeline", operation_id = "thread.listTimeline", params(("thread_id" = String, Path), ("kind" = Option<String>, Query), ("itemId" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
+/// 读取的是共享会话的同一内容源（已落盘行 + 尚未落盘的已成立事实），因此实时与冷历史没有两套入口。
+/// `before` 必须是上一页返回的不透明 token；旧 `kind`/`itemId`/`anchor`/`cursor` 参数一律拒绝。
+#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/timeline", operation_id = "thread.listTimeline", params(("thread_id" = String, Path), ("before" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
 async fn list_thread_timeline(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     ApiQuery(query): ApiQuery<TimelinePageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let timeline = query
-        .timeline_query()
-        .map_err(|message| ApiError(StudioError::invalid_argument(message)))?;
     Ok(Json(
         state
             .runtime
-            .list_timeline_items(&thread_id, timeline, query.limit())
+            .timeline_page(&thread_id, &query)
             .await
             .map_err(ApiError::from)?,
     ))
 }
 
-/// 按 item identity 直接读取一条**已落盘**完整条目正文，绕过 `/timeline` 的单条预览预算。
+/// 按 `item`／`field`／`revision` 分块读取完整正文。
 ///
-/// 与分页返回同一 `databaseId` 与 `watermark`，因此客户端能按 identity 把完整载荷合并进既有历史
-/// 页并替换同身份的预览条目。只读数据库：不激活 owner、不 flush writer、不触发恢复。实时（含未落盘）
-/// 条目的按身份读取用 `/window/items/{item_id}`。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/timeline/items/{item_id}", operation_id = "thread.readTimelineItem", params(("thread_id" = String, Path), ("item_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_timeline_item(
+/// 请求体是 typed 查询（字段身份、revision、不透明 continuation、块大小），不是把带索引的字段压成
+/// 临时字符串路径。读取绑定同一 revision：内容变化时报 `staleRevision`，绝不混版本拼接。
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/items/{item_id}/detail", operation_id = "thread.readTimelineDetail", params(("thread_id" = String, Path), ("item_id" = String, Path)), request_body = TimelineDetailQuery, responses(StudioApiErrors, (status = 200)))]
+async fn read_thread_timeline_detail(
     State(state): State<AppState>,
     Path((thread_id, item_id)): Path<(String, String)>,
+    Json(query): Json<TimelineDetailQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .read_timeline_item(&thread_id, &item_id)
+            .read_timeline_detail(&thread_id, &item_id, &query)
             .await
             .map_err(ApiError::from)?,
     ))
-}
-
-/// **实时内容窗口**：共享 `ChatSession` 上的当前窗口（含尚未落盘的流式条目）。
-///
-/// `anchor` 缺省或 `latest` 时是最新窗口；给 canonical item identity 时跳到该条目（响应 `focus` 如实
-/// 给出 `around`）。**翻页用方向**：`anchor=` 当前窗口首条 + `direction=older` 是上翻一页，`anchor=`
-/// 末条 + `direction=newer` 是下翻一页，由 core 的窗口分页推进，因此窗口有界且每次翻页都前进。窗口
-/// 版本是窗口自己的版本，与状态流水位相互独立；客户端按版本判断新旧。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/window", operation_id = "thread.readWindow", params(("thread_id" = String, Path), ("anchor" = Option<String>, Query), ("direction" = Option<String>, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_window(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ChatWindowQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    let window = state
-        .runtime
-        .open_chat_window(&thread_id, &query)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(window.initial().map_err(ApiError::from)?))
-}
-
-/// 按 identity 读取窗口内一条完整条目：**内存优先**，因此未落盘的流式条目同样可读。
-///
-/// 纯 durable history 的同类读取仍是 `/timeline/items/{item_id}`；这条入口读的是共享会话当前事实。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/window/items/{item_id}", operation_id = "thread.readWindowItem", params(("thread_id" = String, Path), ("item_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
-async fn read_thread_window_item(
-    State(state): State<AppState>,
-    Path((thread_id, item_id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
-    match state
-        .runtime
-        .read_chat_window_item(&thread_id, &item_id)
-        .await
-        .map_err(ApiError::from)?
-    {
-        Some(item) => Ok(Json(item)),
-        None => Err(ApiError::from(StudioError::not_found("Thread item"))),
-    }
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/prompts", operation_id = "prompt.submit", params(("thread_id" = String, Path)), request_body = SubmitPromptRequest, responses(StudioApiErrors, (status = 200)))]

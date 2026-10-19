@@ -4,7 +4,6 @@ mod agent;
 mod agent_profile;
 pub mod agent_session;
 mod billing;
-mod chat_window;
 mod error;
 mod event;
 mod id;
@@ -22,6 +21,7 @@ pub mod session_runtime;
 pub mod studio;
 pub mod thread;
 mod thread_item;
+pub mod timeline_content;
 mod tool;
 mod turn;
 mod turn_failure;
@@ -52,11 +52,6 @@ pub use billing::{
     InferenceBillingAppend, InferenceBillingRecord, InferenceModelObservation,
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
     ModelPricingSnapshot, TurnBillingRecord,
-};
-pub use chat_window::{
-    ChatWindowChange, ChatWindowDirection, ChatWindowFocus, ChatWindowItem, ChatWindowLifecycle,
-    ChatWindowPriority, ChatWindowQuery, ChatWindowSnapshot, ChatWindowUpdate, ThreadContentField,
-    ThreadFieldChange, ThreadFieldUpdate, ThreadUserInputFieldPart,
 };
 pub use error::{PureError, Result};
 pub use event::{
@@ -98,6 +93,13 @@ pub use provider_catalog::{
     ProviderPresetDescriptor, ProviderServiceCapabilitiesDescriptor,
     WebSearchProviderCapabilitiesDescriptor, WebSearchResolutionDescriptor,
 };
+pub use timeline_content::{
+    ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
+    TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange,
+    TimelineFieldUpdate, TimelineItem, TimelineLifecycle, TimelinePage, TimelinePageCursor,
+    TimelinePageQuery, TimelinePriority, TimelineResyncReason, TimelineTailBaseline,
+    TimelineTailUpdate,
+};
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。
 pub use studio::{
@@ -109,8 +111,7 @@ pub use thread::{
     ThreadModelRouteSnapshot, ThreadNotification, ThreadNotificationEnvelope,
     ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage, ThreadRuntimeUsageState,
     ThreadSnapshot, ThreadStatus, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
-    ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineItemQuery, TimelineItemRead,
-    TimelinePage, TimelineQuery, TimelineTurn,
+    ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineTurn,
 };
 mod session_entry;
 pub use session_entry::SessionEntry;

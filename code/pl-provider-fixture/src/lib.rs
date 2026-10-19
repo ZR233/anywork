@@ -83,7 +83,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 18] = [
+pub const GUI_SCENARIOS: [&str; 19] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -102,6 +102,7 @@ pub const GUI_SCENARIOS: [&str; 18] = [
     "web-search",
     "shutdown",
     "provider-usage",
+    "timeline-history",
 ];
 
 /// Native compaction exhausts its budget, then a fresh input succeeds and waits
@@ -340,8 +341,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         });
         script.optional_title(&title);
     }
-    // More than a first page of raw tools collapses to one visible row. Returning to Latest
-    // must fill the remaining viewport from the preceding long reply without user scrolling.
+    // More than one page of independent tool items exercises the latest small-page
+    // baseline after an explicit return to Live, without grouping canonical identities.
     let identities: Vec<_> = (0..40)
         .map(|index| {
             (
@@ -427,8 +428,8 @@ pub const GUI_STRESS_SESSION_COUNT: usize = 16;
 pub const GUI_STRESS_FOLLOWUP_PROMPT_PREFIX: &str = "Local GUI stress session";
 /// The first multi-item stress session replies with one message whose body is
 /// `Long body 1: ` followed by `content ` repeated this many times. The complete
-/// body is below the native timeline preview budget, so the acceptance can require
-/// it to be delivered whole rather than truncated to a lazy preview.
+/// body exceeds the product preview budget, so acceptance checks its bounded
+/// preview separately from the explicit detail viewer and complete clipboard copy.
 pub const GUI_STRESS_LARGE_SESSION_REPEATS: usize = 16_384;
 pub const GUI_STRESS_LARGE_SESSION_CHARACTERS: usize =
     "Long body 1: ".len() + GUI_STRESS_LARGE_SESSION_REPEATS * "content ".len();
@@ -440,11 +441,10 @@ pub const GUI_STATISTICS_PACED_EVENTS: usize = 25;
 pub const GUI_STRESS_BODY_PROMPT: &str = "Stream the local GUI stress body fixture";
 /// Large-body stress prompt.
 ///
-/// The reply keeps the same single stable item/part, the same event count and the
-/// same nominal rate as [`GUI_STRESS_BODY_PROMPT`], but every increment carries a
-/// wider marker so the delivered body exceeds the 256KiB native timeline body
-/// window. The 220,000-character body stays below that window, so it can never
-/// exercise a body that is genuinely larger than the window.
+/// The reply keeps the same single stable item/part and event count as
+/// [`GUI_STRESS_BODY_PROMPT`], but uses wider markers and separately chosen pacing.
+/// Both variants exceed the product preview budget; this full field also exceeds
+/// the core per-item preview cap. Neither requires an inline full-body upgrade.
 pub const GUI_STRESS_BODY_LARGE_PROMPT: &str = "Stream the local GUI stress body large fixture";
 /// Extra `W` marker characters appended to every large-body increment.
 pub const GUI_STRESS_BODY_LARGE_PAD: usize = 20;
@@ -466,6 +466,16 @@ pub const GUI_STRESS_BODY_LARGE_CHARACTERS: usize =
 /// 5,000 token/s, 4s baseline.
 pub const GUI_STRESS_BODY_LARGE_TOKENS_PER_SECOND: u64 = 2_500;
 
+/// Prompts the single `timeline-history` completion.
+///
+/// The reply reuses the [`Reply::PacedSse`] stream the multi-item stress script
+/// already produces: [`GUI_TIMELINE_HISTORY_ITEMS`] independently identified
+/// items in one response, so the native timeline can be judged on real persisted
+/// history entries instead of on one body streamed as many deltas.
+pub const GUI_TIMELINE_HISTORY_PROMPT: &str = "Generate the local timeline history fixture";
+/// Timeline items one `timeline-history` reply delivers.
+pub const GUI_TIMELINE_HISTORY_ITEMS: usize = 20_000;
+
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
 /// strict script can tell the original request from the post-tool continuation.
@@ -473,7 +483,7 @@ pub const GUI_REALTIME_DELAYED_PROMPT: &str = "Realtime delayed first token";
 pub const GUI_REALTIME_REASONING_PROMPT: &str = "Realtime reasoning then answer";
 pub const GUI_REALTIME_LONG_COMMAND_PROMPT: &str = "Realtime long command";
 pub const GUI_REALTIME_PARALLEL_PROMPT: &str = "Realtime parallel tools";
-pub const GUI_REALTIME_APPROVAL_PROMPT: &str = "Realtime approval command";
+pub const GUI_REALTIME_HOST_CWD_PROMPT: &str = "Realtime host cwd command";
 pub const GUI_REALTIME_ERROR_PROMPT: &str = "Realtime provider error";
 pub const GUI_REALTIME_CANCEL_PROMPT: &str = "Realtime cancellable stream";
 pub const GUI_REALTIME_RESUME_PROMPT: &str = "Realtime continue after cancel";
@@ -546,13 +556,20 @@ pub const GUI_REALTIME_PARALLEL_A_OUTPUT_LINES: usize = 5;
 pub const GUI_REALTIME_PARALLEL_B_OUTPUT_LINES: usize = 7;
 /// Milliseconds between parallel-tool output lines.
 pub const GUI_REALTIME_PARALLEL_OUTPUT_STEP_MILLIS: u64 = 800;
-/// `echo`/`Write-Output` lines the approved command prints after consent.
-pub const GUI_REALTIME_APPROVAL_OUTPUT_LINES: usize = 3;
-/// Milliseconds between approved-command output lines (each step is a real `sleep`).
-pub const GUI_REALTIME_APPROVAL_OUTPUT_STEP_MILLIS: u64 = 900;
+/// Prefix of the host-cwd command's first line: the working directory the real
+/// host shell reports at execution time.
+///
+/// The value after the prefix is produced by the shell that runs the command,
+/// never by the scripted model, so the acceptance compares the delivered output
+/// with the requested `cwd` instead of trusting the request.
+pub const GUI_REALTIME_HOST_CWD_ACTUAL_PREFIX: &str = "realtime-host-cwd-actual:";
+/// Paced `echo`/`Write-Output` lines the host-cwd command prints after that line.
+pub const GUI_REALTIME_HOST_CWD_OUTPUT_LINES: usize = 3;
+/// Milliseconds between host-cwd output lines (each step is a real `sleep`).
+pub const GUI_REALTIME_HOST_CWD_OUTPUT_STEP_MILLIS: u64 = 900;
 /// Longest wait the scripted model asks the task-control tool for.
 ///
-/// `wait` accepts at most 300000 ms; approval and multi-second commands finish
+/// `wait` accepts at most 300000 ms; host-cwd and multi-second commands finish
 /// well inside it, and a command that outlived even that would be re-observed
 /// through a follow-up `wait` on its still-running task identity.
 pub const GUI_REALTIME_WAIT_TIMEOUT_MILLIS: u64 = 300_000;
@@ -913,9 +930,9 @@ pub const SHUTDOWN_REQUIRED_STEPS: usize = 15;
 /// produced while the command is still running.
 pub const GUI_REALTIME_LONG_DONE_TEXT: &str = "realtime long command complete";
 pub const GUI_REALTIME_PARALLEL_DONE_TEXT: &str = "realtime parallel tools complete";
-pub const GUI_REALTIME_APPROVAL_DONE_TEXT: &str = "realtime approval complete";
-/// Output prefix of the approved command; the answer keeps its own wording.
-pub const GUI_REALTIME_APPROVAL_OUTPUT_PREFIX: &str = "realtime-approval-line";
+pub const GUI_REALTIME_HOST_CWD_DONE_TEXT: &str = "realtime host cwd complete";
+/// Output prefix of the paced host-cwd lines; the answer keeps its own wording.
+pub const GUI_REALTIME_HOST_CWD_OUTPUT_PREFIX: &str = "realtime-host-cwd-line";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -1904,12 +1921,13 @@ pub fn gui_stress_body_script() -> Vec<Step> {
 /// Large-body variant of [`gui_stress_body_script`].
 ///
 /// Same single stable item/part and the same event count, but each increment is
-/// padded so the delivered body exceeds the 256KiB native timeline body window,
-/// and the paced rate is slowed (only for this scenario) so the window *above*
-/// the threshold stays long enough to sample at least two growing frames while
-/// the stream is still generating. The default `stress-body` keeps its 5,000
-/// token/s, 4s baseline. The title and follow-up sessions are identical, so the
-/// same Driver journey (session switch and reading restoration) applies.
+/// padded so the delivered body exceeds both the product preview budget and the
+/// core per-item budget. The paced rate is slowed only for this scenario so the
+/// live phase above the preview budget permits multiple real growth samples
+/// before the interaction journey enters History. The default `stress-body`
+/// keeps its 5,000 token/s, 4s baseline. The title and follow-up sessions are
+/// identical, so the same Driver journey (session switch and reopening the
+/// latest page) applies.
 pub fn gui_stress_body_large_script() -> Vec<Step> {
     gui_stress_body_script_with(
         GUI_STRESS_BODY_LARGE_PROMPT,
@@ -1922,7 +1940,7 @@ fn gui_stress_body_script_with(prompt: &str, pad: usize, tokens_per_second: u64)
     let title_prompt = session_title_prompt(prompt);
     // One strict follow-up session, mirroring the multi-item stress sessions, so
     // the body journey can switch conversations after reading into the long
-    // reply and then switch back to re-check the reading anchor.
+    // reply and then switch back to check the latest page without pixel restoration.
     let followup_prompt = format!("{GUI_STRESS_FOLLOWUP_PROMPT_PREFIX} 1");
     let followup_title = session_title_prompt(&followup_prompt);
     vec![
@@ -1987,6 +2005,54 @@ fn gui_stress_body_script_with(prompt: &str, pad: usize, tokens_per_second: u64)
             Reply::Sse(responses_text(
                 "Fixture Session 1",
                 "title-1",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+    ]
+}
+
+/// Timeline-history script: one completion returns the shared multi-item stream.
+///
+/// The volume step replays the existing [`Reply::PacedSse`] stream with
+/// [`GUI_TIMELINE_HISTORY_ITEMS`] items, so it needs no second stream generator
+/// and no follow-up sessions: the multi-session stress script stays the only
+/// place that scripts later turns. Only that step is required. The title steps
+/// stay optional like the other GUI journeys, and nothing is scripted after the
+/// reply because the timeline acceptance reads the persisted history from a cold
+/// restart instead of asking the provider for more. A second submission
+/// therefore matches no step and is rejected explicitly rather than answered
+/// from a nearby script.
+pub fn gui_timeline_history_script() -> Vec<Step> {
+    let title_prompt = session_title_prompt(GUI_TIMELINE_HISTORY_PROMPT);
+    vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            title_prompt.clone(),
+            0,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                "title-response",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_TIMELINE_HISTORY_PROMPT,
+            1,
+            Reply::PacedSse {
+                events: GUI_TIMELINE_HISTORY_ITEMS,
+                tokens_per_second: STRESS_TOKENS_PER_SECOND,
+            },
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            title_prompt,
+            2,
+            Reply::Sse(responses_text(
+                "Fixture Session",
+                "title-response",
                 "fixture-model",
             )),
         )
@@ -2064,7 +2130,12 @@ pub fn gui_statistics_script() -> Vec<Step> {
 /// prompt, so the delivery steps match that exact synthesized identity. No step
 /// tolerates an unknown request; a mismatch is recorded as rejected and fails
 /// the fixture.
-pub fn gui_realtime_script() -> Vec<Step> {
+///
+/// `host_cwd` is the existing absolute host directory outside the session
+/// project that the host-cwd command runs in. The caller owns it and keeps it
+/// alive for the whole run; the command reports the directory it really runs in,
+/// so the delivered output never depends on this argument alone.
+pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
@@ -2249,52 +2320,52 @@ pub fn gui_realtime_script() -> Vec<Step> {
     script.add(|step| {
         Step::prompt(
             Protocol::ResponsesHttp,
-            GUI_REALTIME_APPROVAL_PROMPT,
+            GUI_REALTIME_HOST_CWD_PROMPT,
             step,
             Reply::Sse(responses_tool_calls(
-                "realtime-approval",
+                "realtime-host-cwd",
                 "fixture-model",
                 &[RealtimeToolCall {
-                    item_id: "realtime-approval-item",
-                    call_id: "realtime-approval-call",
+                    item_id: "realtime-host-cwd-item",
+                    call_id: "realtime-host-cwd-call",
                     name: TOOL_EXEC_NAME,
                     arguments: realtime_exec_arguments(
-                        &realtime_approval_command(),
-                        Some(&realtime_approval_directory()),
+                        &realtime_host_cwd_command(),
+                        Some(host_cwd),
                     ),
                 }],
             )),
         )
     });
-    // Consent is still pending, so the gated command is a real background task:
-    // the model waits for its receipt, and the runtime keeps this Turn blocked on
-    // that foreground wait until the user consents and the command exits.
+    // The command outlives the runtime's one-second foreground window on its own,
+    // so the model waits for its receipt; the runtime keeps this Turn blocked on
+    // that foreground wait until the real process exits.
     script.add(|step| {
         Step::prompt(
             Protocol::ResponsesHttp,
-            GUI_REALTIME_APPROVAL_PROMPT,
+            GUI_REALTIME_HOST_CWD_PROMPT,
             step,
             Reply::Sse(responses_tool_calls(
-                "realtime-approval-wait",
+                "realtime-host-cwd-wait",
                 "fixture-model",
                 &[RealtimeToolCall {
-                    item_id: "realtime-approval-wait-item",
-                    call_id: "realtime-approval-wait-call",
+                    item_id: "realtime-host-cwd-wait-item",
+                    call_id: "realtime-host-cwd-wait-call",
                     name: TOOL_WAIT_NAME,
-                    arguments: realtime_wait_arguments(&["realtime-approval-call"]),
+                    arguments: realtime_wait_arguments(&["realtime-host-cwd-call"]),
                 }],
             )),
         )
     });
-    // Only the committed result of the approved command reaches this step.
+    // Only the committed result of the host-cwd command reaches this step.
     script.add(|step| {
         Step::delivery(
             Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-approval-call"),
+            realtime_delivery_marker("realtime-host-cwd-call"),
             step,
             Reply::Sse(responses_text(
-                GUI_REALTIME_APPROVAL_DONE_TEXT,
-                "realtime-approval-done",
+                GUI_REALTIME_HOST_CWD_DONE_TEXT,
+                "realtime-host-cwd-done",
                 "fixture-model",
             )),
         )
@@ -2893,7 +2964,7 @@ impl RealtimeScript {
     }
 }
 
-/// The `exec` tool identifier shared by the long-command, parallel and approval steps.
+/// The `exec` tool identifier shared by the long-command, parallel and host-cwd steps.
 const TOOL_EXEC_NAME: &str = "exec";
 
 /// The language-service tool the model uses in the shutdown LSP turn. It is the
@@ -2997,18 +3068,22 @@ fn realtime_parallel_command(tag: &str, lines: usize) -> String {
     steps
 }
 
-/// Approved-command script. The command outlives the runtime's one-second
-/// foreground window on its own, so its receipt and delivered result stay
-/// deterministic regardless of when consent is granted.
-fn realtime_approval_command() -> String {
-    let mut steps = String::new();
-    for line in 1..=GUI_REALTIME_APPROVAL_OUTPUT_LINES {
-        if !steps.is_empty() {
-            steps.push_str("; ");
-        }
+/// Host-cwd script. Its first line is the working directory the real host shell
+/// reports at execution time, so the delivered output proves where the command
+/// actually ran; the paced lines that follow keep the command running past the
+/// runtime's one-second foreground window on its own, which keeps its receipt
+/// and delivered result deterministic.
+fn realtime_host_cwd_command() -> String {
+    let mut steps = if cfg!(windows) {
+        format!("Write-Output ('{GUI_REALTIME_HOST_CWD_ACTUAL_PREFIX}' + (Get-Location).Path)")
+    } else {
+        format!("printf '{GUI_REALTIME_HOST_CWD_ACTUAL_PREFIX}%s\\n' \"$(pwd -P)\"")
+    };
+    for line in 1..=GUI_REALTIME_HOST_CWD_OUTPUT_LINES {
+        steps.push_str("; ");
         steps.push_str(&realtime_echo_step(
-            &format!("{GUI_REALTIME_APPROVAL_OUTPUT_PREFIX}-{line:02}"),
-            GUI_REALTIME_APPROVAL_OUTPUT_STEP_MILLIS,
+            &format!("{GUI_REALTIME_HOST_CWD_OUTPUT_PREFIX}-{line:02}"),
+            GUI_REALTIME_HOST_CWD_OUTPUT_STEP_MILLIS,
         ));
     }
     steps
@@ -3024,14 +3099,6 @@ fn realtime_echo_step(label: &str, delay_millis: u64) -> String {
     } else {
         format!("echo {label}; sleep {:.1}", delay_millis as f64 / 1000.0)
     }
-}
-
-/// Isolated directory outside the workspace; the approval step executes here only after consent.
-fn realtime_approval_directory() -> String {
-    let directory =
-        std::env::temp_dir().join(format!("anywork-realtime-approval-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&directory);
-    directory.to_string_lossy().into_owned()
 }
 
 /// Safe fault-acceptance tool: prints one marker and touches nothing else.
