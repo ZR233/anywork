@@ -120,34 +120,53 @@ impl ScopedCostEntry {
 }
 
 /// 最近 inference 身份窗口（固定上限、不持久化）。
+///
+/// inference ID 只在执行它的 Thread 内唯一；根 Thread 只用于清理整棵会话树的缓存。
 #[derive(Debug, Clone, Default)]
 struct RecentIdentities {
-    fingerprints: BTreeMap<(String, String), String>,
+    entries: BTreeMap<(String, String), RecentInference>,
     order: VecDeque<(String, String)>,
 }
 
+#[derive(Debug, Clone)]
+struct RecentInference {
+    root_thread_id: String,
+    fingerprint: String,
+}
+
 impl RecentIdentities {
-    fn get(&self, root_thread_id: &str, identity: &str) -> Option<&String> {
-        self.fingerprints
-            .get(&(root_thread_id.to_owned(), identity.to_owned()))
+    fn get(&self, thread_id: &str, identity: &str) -> Option<&String> {
+        self.entries
+            .get(&(thread_id.to_owned(), identity.to_owned()))
+            .map(|entry| &entry.fingerprint)
     }
 
-    fn insert(&mut self, root_thread_id: &str, identity: &str, fingerprint: String) {
-        let key = (root_thread_id.to_owned(), identity.to_owned());
-        if self.fingerprints.insert(key.clone(), fingerprint).is_none() {
+    fn insert(
+        &mut self,
+        root_thread_id: &str,
+        thread_id: &str,
+        identity: &str,
+        fingerprint: String,
+    ) {
+        let key = (thread_id.to_owned(), identity.to_owned());
+        let entry = RecentInference {
+            root_thread_id: root_thread_id.to_owned(),
+            fingerprint,
+        };
+        if self.entries.insert(key.clone(), entry).is_none() {
             self.order.push_back(key);
         }
         while self.order.len() > RECENT_IDENTITY_LIMIT {
             if let Some(oldest) = self.order.pop_front() {
-                self.fingerprints.remove(&oldest);
+                self.entries.remove(&oldest);
             }
         }
     }
 
     fn remove_root(&mut self, root_thread_id: &str) {
-        self.fingerprints
-            .retain(|(root, _), _| root != root_thread_id);
-        self.order.retain(|(root, _)| root != root_thread_id);
+        self.entries
+            .retain(|_, entry| entry.root_thread_id != root_thread_id);
+        self.order.retain(|key| self.entries.contains_key(key));
     }
 }
 
@@ -474,7 +493,7 @@ impl ModelPerformanceOwner {
         let fingerprint = billing_fingerprint(billing)?;
         let conflict = {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.recent.get(root_thread_id, &billing.inference_id) {
+            match state.recent.get(thread_id, &billing.inference_id) {
                 Some(existing) if existing == &fingerprint => return Ok(()),
                 Some(_) => true,
                 None => false,
@@ -486,7 +505,7 @@ impl ModelPerformanceOwner {
             // 终端 `Blocked` 只留给调用库真实不可恢复的持久化冲突，避免一次应用级拒绝让整个
             // Studio 的写者健康永久失效。已受理事实与写者健康都不因这次拒绝改变。
             return Err(PureError::MemoryError(format!(
-                "inference {} conflicts with the model performance owner",
+                "Thread {thread_id} inference {} conflicts with the model performance owner",
                 billing.inference_id
             )));
         }
@@ -510,9 +529,12 @@ impl ModelPerformanceOwner {
         {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if ticket.is_some() {
-                state
-                    .recent
-                    .insert(root_thread_id, &billing.inference_id, fingerprint);
+                state.recent.insert(
+                    root_thread_id,
+                    thread_id,
+                    &billing.inference_id,
+                    fingerprint,
+                );
             }
             state.revision = state.revision.saturating_add(1);
             state.updated_at = unix_seconds();
