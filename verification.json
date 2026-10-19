@@ -1,0 +1,1034 @@
+{
+  "schema": "anywork-viewport-history-evidence/1",
+  "sourceCommit": "bfd6821087d3762ca58db7e21479823b48e85890",
+  "baseCommit": "37b9b59dc162096498f08cc45bc84a223674f1d7",
+  "platform": "Linux native / Xvfb / Flutter Driver / real FRB / synthetic local provider",
+  "humanVerdict": "pending",
+  "codeGates": {
+    "fmt": true,
+    "clippyWorkspaceAllTargets": true,
+    "plModel": 159,
+    "plCoreSqlite": 169,
+    "plStudioRuntime": 93,
+    "client": 170,
+    "clientAdapters": 183,
+    "timelineWidgetsOptIn": 27,
+    "verifyGuiCanonicalAndAnalyze": true,
+    "linuxReleaseBuild": true,
+    "diffCheck": true
+  },
+  "coldReopen": {
+    "case": "viewport-cold-delivery",
+    "loadedItems": 64,
+    "mode": "live",
+    "generation": 1,
+    "restore": {
+      "autoOpened": false
+    },
+    "nativeProcess": {
+      "driverExit": 0,
+      "guiExit": 0,
+      "nativeExit": {
+        "schema": "anywork-native-exit/1",
+        "pid": 1531277,
+        "exitCode": 0,
+        "signal": null,
+        "status": "exit status: 0",
+        "descendantsAtRootExit": [],
+        "reclaimedDescendants": [],
+        "cancelled": false
+      },
+      "pass": true
+    },
+    "resizes": [
+      {
+        "size": [
+          1280,
+          900
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 624.0,
+          "maxScrollExtent": 5191.5428571428565,
+          "atLiveEdge": true
+        }
+      },
+      {
+        "size": [
+          1920,
+          1200
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 924.0,
+          "maxScrollExtent": 4891.5428571428565,
+          "atLiveEdge": true
+        }
+      },
+      {
+        "size": [
+          900,
+          760
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 484.0,
+          "maxScrollExtent": 5331.5428571428565,
+          "atLiveEdge": true
+        }
+      },
+      {
+        "size": [
+          1280,
+          900
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 624.0,
+          "maxScrollExtent": 5191.5428571428565,
+          "atLiveEdge": true
+        }
+      },
+      {
+        "size": [
+          1280,
+          600
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 363.0,
+          "maxScrollExtent": 5452.5428571428565,
+          "atLiveEdge": true
+        }
+      },
+      {
+        "size": [
+          1100,
+          900
+        ],
+        "beforeItems": 64,
+        "afterItems": 64,
+        "pass": true,
+        "scroll": {
+          "generation": 1,
+          "pixels": 0.0,
+          "viewportDimension": 624.0,
+          "maxScrollExtent": 5191.5428571428565,
+          "atLiveEdge": true
+        }
+      }
+    ],
+    "sidebarResize": {
+      "beforeWidth": 759.0,
+      "afterWidth": 679.0,
+      "expectedDelta": 80.0,
+      "canonicalWidth": 416,
+      "pass": true
+    },
+    "sidebarKeyboard": {
+      "arrowsAndHome": true,
+      "focusLossSaved": true,
+      "widths": [
+        {
+          "stage": "Right",
+          "expected": 743.0,
+          "actual": 743.0,
+          "canonicalWidth": 352,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "Right twice",
+          "expected": 727.0,
+          "actual": 727.0,
+          "canonicalWidth": 368,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "Left",
+          "expected": 743.0,
+          "actual": 743.0,
+          "canonicalWidth": 352,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "rapid Right then Left",
+          "expected": 743.0,
+          "actual": 743.0,
+          "canonicalWidth": 352,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "Home canonical default",
+          "expected": 759.0,
+          "actual": 759.0,
+          "canonicalWidth": 336,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "Right held",
+          "expected": 743.0,
+          "actual": 743.0,
+          "canonicalWidth": 336,
+          "saved": false,
+          "settingsSettled": true
+        },
+        {
+          "stage": "focus loss saves held key",
+          "expected": 743.0,
+          "actual": 743.0,
+          "canonicalWidth": 352,
+          "saved": true,
+          "settingsSettled": true
+        },
+        {
+          "stage": "Home after focus loss",
+          "expected": 759.0,
+          "actual": 759.0,
+          "canonicalWidth": 336,
+          "saved": true,
+          "settingsSettled": true
+        }
+      ],
+      "pass": true
+    },
+    "composerResize": {
+      "beforeViewport": 624.0,
+      "afterViewport": 504.0,
+      "pass": true
+    }
+  },
+  "history": {
+    "case": "viewport-history-delivery",
+    "providerEvents": 20000,
+    "providerRate": 1000,
+    "pageCountPerPhase": 40,
+    "orderedPageIdsAndCursorsMatchAcrossRestart": true,
+    "pageDigests": [
+      {
+        "page": 1,
+        "beforeItems": 32,
+        "afterItems": 64,
+        "delivered": 32,
+        "orderedIdsSha256": "49796138abe306d637651632dd852bb27421b65658b43d460bbc6ef2df8ef1ca",
+        "cursorSha256": "4a94a7356f207697deda569ad907723ad5b64b4dd40fdc1bd7fa60865b3f7fc9"
+      },
+      {
+        "page": 2,
+        "beforeItems": 64,
+        "afterItems": 96,
+        "delivered": 32,
+        "orderedIdsSha256": "668a4fb752128d82f3f6c6de3fee86f2f03429e614a377780e158ad6ed154320",
+        "cursorSha256": "eb0d5ad0988ac0bfb7d912148a16822a69864ae39b36032607c5079bdedfdafb"
+      },
+      {
+        "page": 3,
+        "beforeItems": 96,
+        "afterItems": 128,
+        "delivered": 32,
+        "orderedIdsSha256": "f7578d3acddbaac78cbc3b831505b0d1b54a1741a09b34bc3a3ab51e51909bd9",
+        "cursorSha256": "b1f118152f387b70a8addb9cc11880db0220d2b92c6c216f1406ae536143a103"
+      },
+      {
+        "page": 4,
+        "beforeItems": 128,
+        "afterItems": 160,
+        "delivered": 32,
+        "orderedIdsSha256": "1fccc2790074790feb33f37c01e0ba90cb933d61aae92d3e336bc9f5de1cad85",
+        "cursorSha256": "de88a573b3d2cf1880343dce0ce8e537bef5750bffdba18789fa40862d402313"
+      },
+      {
+        "page": 5,
+        "beforeItems": 160,
+        "afterItems": 192,
+        "delivered": 32,
+        "orderedIdsSha256": "95c7f67a68fad69ed260d7a15c54191f4cf3332b3fbd585d4e9efd0505b92689",
+        "cursorSha256": "af9a1b88e077f507e46dc3ba00015cc4defd40dc6b08ce688b4e817779a50984"
+      },
+      {
+        "page": 6,
+        "beforeItems": 192,
+        "afterItems": 224,
+        "delivered": 32,
+        "orderedIdsSha256": "09a6c57a3969c62cd2314e37efdd5d6e1c3d2f10fc2ee559793ddfe79a245928",
+        "cursorSha256": "67330f73178b1b0b366e9a8a8fbde349f5f0c60b8cd84bf4043e01ca8c7a6f82"
+      },
+      {
+        "page": 7,
+        "beforeItems": 224,
+        "afterItems": 256,
+        "delivered": 32,
+        "orderedIdsSha256": "1b200a196fd2a76bf7cdee338049138954067c50c9e6f2734acfba649b42f46e",
+        "cursorSha256": "f68111121fc6025a45ce74c20f4dccaa905583a3e00933b373623b94b4c0aaa4"
+      },
+      {
+        "page": 8,
+        "beforeItems": 256,
+        "afterItems": 288,
+        "delivered": 32,
+        "orderedIdsSha256": "bba003f9d92e2d10768aba9f083e0cde5e2d1c79a892f427a508cfbc734b285e",
+        "cursorSha256": "b513cdb0fec8b11448f22cbbb611321aef33b1234af5862ab08d4cb71d3707cd"
+      },
+      {
+        "page": 9,
+        "beforeItems": 288,
+        "afterItems": 320,
+        "delivered": 32,
+        "orderedIdsSha256": "b3b1ff7a9ef2173527db52c85c699ac5ee4d4699702c381e4e955f0c4ad193ab",
+        "cursorSha256": "167ec8224958304b4f0bd28340ef25fe1a42cd0db26f8ca05d687919a41e3f6d"
+      },
+      {
+        "page": 10,
+        "beforeItems": 320,
+        "afterItems": 352,
+        "delivered": 32,
+        "orderedIdsSha256": "28ee7cbcaf53076bd6e962f03c7b9c3c125bc3329a801f43909a09d0ce768a63",
+        "cursorSha256": "b5be9402df8199177ae31ff52a1d596ec7dcd8f4ad4dc6d493472ac38b086bc5"
+      },
+      {
+        "page": 11,
+        "beforeItems": 352,
+        "afterItems": 384,
+        "delivered": 32,
+        "orderedIdsSha256": "af799723c4bd0158d3749c5747f20beefeb694cb2e35706a238f874cef0757ff",
+        "cursorSha256": "2abde4e2b5433032537119d4ee6a54af154c4af7b9aeaf7e2bc437844a12256b"
+      },
+      {
+        "page": 12,
+        "beforeItems": 384,
+        "afterItems": 416,
+        "delivered": 32,
+        "orderedIdsSha256": "c51caf298339dd8c9e7884b512425e28517693b1d44c5843d5bc65f619a32735",
+        "cursorSha256": "62f96e2b1860624a8312488702937ac5c440ace9e0c74da80450efe470050c2e"
+      },
+      {
+        "page": 13,
+        "beforeItems": 416,
+        "afterItems": 448,
+        "delivered": 32,
+        "orderedIdsSha256": "b970d5edb405f952803db9fd7aefee5b1b8721eaa7ecc9e2758e940c61baf61c",
+        "cursorSha256": "e517525c0727a9bfea2097574402f490091a1030141a61bcb6eaf1eafd45e129"
+      },
+      {
+        "page": 14,
+        "beforeItems": 448,
+        "afterItems": 480,
+        "delivered": 32,
+        "orderedIdsSha256": "424aaea9df3a10ae9e4e9f39fe357f20fc7c590075aa54e06ea0c38310f28c49",
+        "cursorSha256": "38e950cbd7a11122a5fb84590e2e221b61ae39e197cf8911c998cba41a5210fb"
+      },
+      {
+        "page": 15,
+        "beforeItems": 480,
+        "afterItems": 512,
+        "delivered": 32,
+        "orderedIdsSha256": "aab1923f2fc0ebe4b665f289e6791c4decd0f4e658dd769a5c97277294336dd0",
+        "cursorSha256": "8dc1a4b909562dd518fab26d9e42ac38dc9475320a9406d38e60832742e54bec"
+      },
+      {
+        "page": 16,
+        "beforeItems": 512,
+        "afterItems": 544,
+        "delivered": 32,
+        "orderedIdsSha256": "6a1e1ff360346826f5df03f00a1e5a07c5b5d58958a6a5a9b0c6c29d0a508c34",
+        "cursorSha256": "84db2e269b5df2fbd26effa31505eda73abdd05e1f6909a5e24b7e279d6c2b83"
+      },
+      {
+        "page": 17,
+        "beforeItems": 544,
+        "afterItems": 576,
+        "delivered": 32,
+        "orderedIdsSha256": "d8eee4ac5581a9745b934e6acbfc8fdbe44d59ee09e300e6201a33c343c65cff",
+        "cursorSha256": "ec490dba27840be6f27dd90762a0b3e38459e13685e584a9638d16da64274b04"
+      },
+      {
+        "page": 18,
+        "beforeItems": 576,
+        "afterItems": 608,
+        "delivered": 32,
+        "orderedIdsSha256": "42a6af73f805e88056f6f090956ea5ff2d1de7b6a4d3ac5ff29640b62a3d32c4",
+        "cursorSha256": "d1fbfc8f4f2e8e2b536b71d8fcf934015432f0e50f64eeb4704f2d81ef5fa8f0"
+      },
+      {
+        "page": 19,
+        "beforeItems": 608,
+        "afterItems": 640,
+        "delivered": 32,
+        "orderedIdsSha256": "ea5de83cdeb742df5409ee57d99121abec617ffca7b5357cd5f89fd71c0ad7b8",
+        "cursorSha256": "209ca5890876db4c34201b03bf88108d77125dffb3bf117da42e1a7a48a39899"
+      },
+      {
+        "page": 20,
+        "beforeItems": 640,
+        "afterItems": 672,
+        "delivered": 32,
+        "orderedIdsSha256": "e454d7789b87691ce238ec437f9352516ed2fab78d6e19ee25395f337f3c1cc1",
+        "cursorSha256": "a89d9066aec49f9e1adde94efcf569c57c51c896a10e2e4a40b693bb5293bdfa"
+      },
+      {
+        "page": 21,
+        "beforeItems": 672,
+        "afterItems": 704,
+        "delivered": 32,
+        "orderedIdsSha256": "e085026faf7a949d9990eb43e29d43c772160663d569eab9298206907df31515",
+        "cursorSha256": "14ff94a6b3a9c065698753feb275c8ed699c5e01282e52d404c9591ae3c540a2"
+      },
+      {
+        "page": 22,
+        "beforeItems": 704,
+        "afterItems": 736,
+        "delivered": 32,
+        "orderedIdsSha256": "6c462f76dd46cd52bf8ff31fc8cf2351f08b1d802a6d2ea502208d6821d68bb8",
+        "cursorSha256": "f1b53d2e01353500af001edd156c0f04c816d2779232b077323af100418ce745"
+      },
+      {
+        "page": 23,
+        "beforeItems": 736,
+        "afterItems": 768,
+        "delivered": 32,
+        "orderedIdsSha256": "15116a8c8f4cab0f54f7cd904203480a226cdeff13b74c44c4aa8aaed18cbf5d",
+        "cursorSha256": "98c3df15b326097df5b7c56804ea9109bcd61424de859f123efc0df5202815e3"
+      },
+      {
+        "page": 24,
+        "beforeItems": 768,
+        "afterItems": 800,
+        "delivered": 32,
+        "orderedIdsSha256": "a464d9fed5cb93f4e4689c7f226bb4c81149aee3475d41f2139888318df9b7ad",
+        "cursorSha256": "2a6f8379d36f114e41e64895e6c9968226c071043355e12c622bcba32c71d428"
+      },
+      {
+        "page": 25,
+        "beforeItems": 800,
+        "afterItems": 832,
+        "delivered": 32,
+        "orderedIdsSha256": "518643584aadd4a40cc45eecf5c4ed3cda54eed97ec34177963235e245a11ee3",
+        "cursorSha256": "da547b90a66509a6f45f0104f6a16d71f8ce8ed558962b2da6249cc811177b25"
+      },
+      {
+        "page": 26,
+        "beforeItems": 832,
+        "afterItems": 864,
+        "delivered": 32,
+        "orderedIdsSha256": "64a4eebc3bff05f9c34184b1f85341f2a63a13955668e359fd89a385c9986ef2",
+        "cursorSha256": "d9dc9d6abccfd4a5d7a2066d618c4d04f743680885f0de91d805209146fddcce"
+      },
+      {
+        "page": 27,
+        "beforeItems": 864,
+        "afterItems": 896,
+        "delivered": 32,
+        "orderedIdsSha256": "1cfbe6af2ba68c6ea9a51bcf2929292b7503cdb692436a4b88a0fc19092cabf1",
+        "cursorSha256": "96b72de7b0698f71cf2029d7e6b39e5a5637ba823521cf9b56b03ac86f8a6f13"
+      },
+      {
+        "page": 28,
+        "beforeItems": 896,
+        "afterItems": 928,
+        "delivered": 32,
+        "orderedIdsSha256": "1512b3c675c3d576c46b4d67556150a5d90cc8a81f6a71cae822bfec0e759bac",
+        "cursorSha256": "1f7ce393a0ac621f98debda57275a95ba60d28df344b98854131b25eecbb53dd"
+      },
+      {
+        "page": 29,
+        "beforeItems": 928,
+        "afterItems": 960,
+        "delivered": 32,
+        "orderedIdsSha256": "55006634b04506d592dad8b403736a6bc4616af5e558c6904c51d8a0193653e6",
+        "cursorSha256": "e9d0776cc4760d788df167500236d43c6ff19f4c847cdea66c017984c46ed436"
+      },
+      {
+        "page": 30,
+        "beforeItems": 960,
+        "afterItems": 992,
+        "delivered": 32,
+        "orderedIdsSha256": "6c46aff525c065ad1a80ddaee62bfa5469b71b1f139d832a10c15679c5e245be",
+        "cursorSha256": "4526523518aedf96af391f5b00cb87abcd65cbd5cc68aef71bf6490141162607"
+      },
+      {
+        "page": 31,
+        "beforeItems": 992,
+        "afterItems": 1024,
+        "delivered": 32,
+        "orderedIdsSha256": "1f549283bb4f3113b377855b628976b3910f92126dad4892d30da93bced89e53",
+        "cursorSha256": "7b898e745db53d2fda030cb649782156939e16eedfce19da524e440e4a918793"
+      },
+      {
+        "page": 32,
+        "beforeItems": 1024,
+        "afterItems": 1056,
+        "delivered": 32,
+        "orderedIdsSha256": "4e9fd01525e66cf3c11adc22f02fbd29b851f3e4bb90aa5cab1abca283af1fa5",
+        "cursorSha256": "d273763b51a0d8a3ee847cdc2db770b8b9e15a835407370e1e926ed32a6d9c80"
+      },
+      {
+        "page": 33,
+        "beforeItems": 1056,
+        "afterItems": 1088,
+        "delivered": 32,
+        "orderedIdsSha256": "0a34472a42ae2a9b531f48290cce24da0ae4825ec6a20935b277bcf15b3ad486",
+        "cursorSha256": "5330db2eca7706975fa5e8eeb90c60ef56c1adbf4292e0a69f2ae1d8bad93b3c"
+      },
+      {
+        "page": 34,
+        "beforeItems": 1088,
+        "afterItems": 1120,
+        "delivered": 32,
+        "orderedIdsSha256": "fc8478deb5ecd971c9ec026fcac6e7b2e74d672601c02e50dbc643343d8e221f",
+        "cursorSha256": "671e220307a752117b1289ef5cc65c2eebbe6086842748d80e36feb0fec6f7bb"
+      },
+      {
+        "page": 35,
+        "beforeItems": 1120,
+        "afterItems": 1152,
+        "delivered": 32,
+        "orderedIdsSha256": "c50b305d8ca2d37559ebc65c2c24703110f9dd95c57c0d89a00ba8f4f2c3acc0",
+        "cursorSha256": "96afba84755e8d6527e4ef9f73f3addbd4ef0fa8017d243e099c1994c01a235b"
+      },
+      {
+        "page": 36,
+        "beforeItems": 1152,
+        "afterItems": 1184,
+        "delivered": 32,
+        "orderedIdsSha256": "c53430be9c367242cf2b3eeb1b1750f2d3d0320000ac6d10d03f2375f4a5fdbb",
+        "cursorSha256": "474d1619016a99e32c11534232f08ea3e9333b99a1fcf978c6eb5ea5667ad969"
+      },
+      {
+        "page": 37,
+        "beforeItems": 1184,
+        "afterItems": 1216,
+        "delivered": 32,
+        "orderedIdsSha256": "3102868c25fb236fcd732b594c4a80379ad8b9d6d26882abd64bdff85d948a97",
+        "cursorSha256": "1ea01b0b82950dd44b0d89ef8f50a26fe8140cae728353667c243129cb0445c7"
+      },
+      {
+        "page": 38,
+        "beforeItems": 1216,
+        "afterItems": 1248,
+        "delivered": 32,
+        "orderedIdsSha256": "8b94697028561aa6dfed82954b838a784b9501aa03a148543b1ef62c433098dc",
+        "cursorSha256": "514bdc77cc0c78c30fd96e4f8eab64431da4762ff4c7a926754f3cf6f6408b88"
+      },
+      {
+        "page": 39,
+        "beforeItems": 1248,
+        "afterItems": 1280,
+        "delivered": 32,
+        "orderedIdsSha256": "378d89a11c0417aeb0f4c960f2ab6dcf373d94a54e9d7b7e97878ef59601747a",
+        "cursorSha256": "470df76b6a815116e34ddbac7b76b6a7697ecadc97e6cf87258bf87114cf1188"
+      },
+      {
+        "page": 40,
+        "beforeItems": 1280,
+        "afterItems": 1312,
+        "delivered": 32,
+        "orderedIdsSha256": "f84f4cad56f04084b02cfc8893e217c8740e0ebec557a60b3f0e3b6ffaf24c4f",
+        "cursorSha256": "545664b5a19d65fd223cc72459fa0d02a71b7253d995d943be2e0c3ca6e33946"
+      }
+    ],
+    "nativeExit": [
+      {
+        "phase": "live",
+        "schema": "anywork-native-exit/1",
+        "pid": 1542933,
+        "exitCode": 0,
+        "signal": null,
+        "status": "exit status: 0",
+        "descendantsAtRootExit": [],
+        "reclaimedDescendants": [],
+        "cancelled": false
+      },
+      {
+        "phase": "restart",
+        "schema": "anywork-native-exit/1",
+        "pid": 1544817,
+        "exitCode": 0,
+        "signal": null,
+        "status": "exit status: 0",
+        "descendantsAtRootExit": [],
+        "reclaimedDescendants": [],
+        "cancelled": false
+      }
+    ],
+    "busyDuringFailure": true,
+    "failureCode": "busy",
+    "bodyUnchanged": true,
+    "before": {
+      "generation": 2,
+      "mode": "history",
+      "appliedVersion": 1117,
+      "itemCount": 386
+    },
+    "afterRetry": {
+      "generation": 2,
+      "mode": "history",
+      "appliedVersion": 1117,
+      "itemCount": 418
+    },
+    "returnLive": {
+      "generation": 3,
+      "mode": "live",
+      "appliedVersion": 60014,
+      "itemCount": 32,
+      "lastId": "model:25:input:app-481646003:1:3:0:presentation:item:17:stress-item-19999:reasoning:0"
+    }
+  },
+  "sessions": {
+    "case": "viewport-sessions-delivery",
+    "sessionCount": 16,
+    "directoryCount": 17,
+    "originalReopened": true,
+    "originalLoadedItems": 32,
+    "originalMode": "live",
+    "rapidSwitchOk": true,
+    "openingOverlap": {
+      "threadId": "thread-65e322e16d449-3",
+      "generation": 62,
+      "destination": "thread-65e323218d668-8",
+      "loadingAtTap": true,
+      "switchedWhilePending": true,
+      "pendingQueriesAtTap": 1,
+      "pendingQueriesAtSwitch": 1,
+      "oldDisplayReleased": true,
+      "openingAtReturn": true,
+      "openingAttemptId": 4,
+      "openingReleased": true,
+      "pass": true
+    },
+    "rapidRounds": 3,
+    "unhandledErrors": 0,
+    "records": [
+      {
+        "ordinal": 1,
+        "threadId": "thread-65e323218d668-8",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 40,
+        "orderedIdsSha256": "0566ed3fb8af929b47e3270f165b564c8663e9b7e26dcb90ade42ca417be1dec"
+      },
+      {
+        "ordinal": 2,
+        "threadId": "thread-65e3232918868-c",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 41,
+        "orderedIdsSha256": "93ef241feb04165d3fd40a0e5622b44993a56045e4a78c522e9695ece3f66271"
+      },
+      {
+        "ordinal": 3,
+        "threadId": "thread-65e3232e9caa1-10",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 42,
+        "orderedIdsSha256": "377febe781c7d0d669a5e6f177d0e1558cad582477945c20331d3e4d221a0319"
+      },
+      {
+        "ordinal": 4,
+        "threadId": "thread-65e323344095d-14",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 43,
+        "orderedIdsSha256": "162a27a2812c5e0f64a35d6b7a55a8019cd704ea4c9226bb2adc394b806f7140"
+      },
+      {
+        "ordinal": 5,
+        "threadId": "thread-65e32339e3170-18",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 44,
+        "orderedIdsSha256": "10558efcf75dfc9992df1d9c79244481e2483fc8d009b7ef44299dfb8efa2b95"
+      },
+      {
+        "ordinal": 6,
+        "threadId": "thread-65e3233f8bd2a-1c",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 45,
+        "orderedIdsSha256": "4a3d4dffd4073b2ad87d04a32b4881dc4f6993530913535f5f64d63888c5c291"
+      },
+      {
+        "ordinal": 7,
+        "threadId": "thread-65e32345246d7-20",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 46,
+        "orderedIdsSha256": "1dd80e8d6926af7b5b14946731618938a344df50475dd7ac2951d845c84a5938"
+      },
+      {
+        "ordinal": 8,
+        "threadId": "thread-65e3234aa2829-24",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 47,
+        "orderedIdsSha256": "96e78cced7001f382e23a0407a689a8a52a30ccf9258aa00d0575c32fcc9d4ef"
+      },
+      {
+        "ordinal": 9,
+        "threadId": "thread-65e3235027a2e-28",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 48,
+        "orderedIdsSha256": "a0d1a1769d03781e5b2b37ca2c852e040570d4f4e3484123d9726cde783c011d"
+      },
+      {
+        "ordinal": 10,
+        "threadId": "thread-65e32355ce936-2c",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 49,
+        "orderedIdsSha256": "7e68b53f5e5cdd0c17be3355df6a814f025180b62d364674a12c6ffad88ae0bb"
+      },
+      {
+        "ordinal": 11,
+        "threadId": "thread-65e3235b4b4e7-30",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 50,
+        "orderedIdsSha256": "2b8128cbe0055ce64093738b44843d9e31fe8b11ab2270aec3899334b20a5f0d"
+      },
+      {
+        "ordinal": 12,
+        "threadId": "thread-65e323611a344-34",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 51,
+        "orderedIdsSha256": "62c663165c00d81857a9c334180d323046dbc6a80f44ef939dede6dbae13f32a"
+      },
+      {
+        "ordinal": 13,
+        "threadId": "thread-65e32366875c9-38",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 52,
+        "orderedIdsSha256": "56f0e20266c36253e243da1a321ef3135727edceac0982cc115ff81aaf0227a0"
+      },
+      {
+        "ordinal": 14,
+        "threadId": "thread-65e3236c011c1-3c",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 53,
+        "orderedIdsSha256": "71a89de9fbfbd0658d1ef3e39b0549487b8aa7dad197099922dd9fbc67b38aba"
+      },
+      {
+        "ordinal": 15,
+        "threadId": "thread-65e3237183b8d-40",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 54,
+        "orderedIdsSha256": "4ba61d23dae6f385f456d51a715945c79a3f4ab58f389dfe6cfe4c7cb3c5c70d"
+      },
+      {
+        "ordinal": 16,
+        "threadId": "thread-65e3237712011-44",
+        "loadedItems": 4,
+        "savedItems": 4,
+        "mode": "live",
+        "generation": 55,
+        "orderedIdsSha256": "071e08d22e5f7649dc660728f7a20eea4d44422b3c9be0d22d6a2e2342d61a8c"
+      }
+    ]
+  },
+  "inputMatrix": {
+    "case": "viewport-history-final-v2",
+    "sourceScope": "Feature working tree on main 7c6b4d42 before subsequent upstream integrations; final cold, history and sessions are separate runs.",
+    "checksPassed": true,
+    "failureCount": 0,
+    "single": [
+      {
+        "size": [
+          1280,
+          900
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      },
+      {
+        "size": [
+          1920,
+          1200
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      },
+      {
+        "size": [
+          1100,
+          760
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      },
+      {
+        "size": [
+          1600,
+          760
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      },
+      {
+        "size": [
+          1600,
+          1100
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      },
+      {
+        "size": [
+          1280,
+          900
+        ],
+        "inputs": 96,
+        "upInputs": 48,
+        "downInputs": 48
+      }
+    ],
+    "rapid": [
+      {
+        "size": [
+          1920,
+          1200
+        ],
+        "inputs": 600,
+        "upInputs": 360,
+        "downInputs": 240
+      },
+      {
+        "size": [
+          900,
+          760
+        ],
+        "inputs": 600,
+        "upInputs": 360,
+        "downInputs": 240
+      },
+      {
+        "size": [
+          1280,
+          900
+        ],
+        "inputs": 600,
+        "upInputs": 360,
+        "downInputs": 240
+      }
+    ],
+    "continuousBurst": {
+      "inputs": 40,
+      "ticksSampled": 40,
+      "pass": true,
+      "identityRetained": true
+    },
+    "pageOverlap": {
+      "inputs": 8,
+      "inFlightObserved": true,
+      "inFlightSamples": 1,
+      "pageCompletedAfterInputs": 1,
+      "pageDelta": 32,
+      "generationBefore": 1,
+      "generationAfter": 1,
+      "identityRetained": true,
+      "pass": true
+    }
+  },
+  "realtime": {
+    "case": "viewport-realtime-final",
+    "sourceScope": "Feature working tree on main 7c6b4d42",
+    "checks": {
+      "modelBindingAvailableDuringCalls": true,
+      "runtimePublishLiveSequenceIncreasing": true,
+      "runtimePublishIdentityStable": true,
+      "runtimePublishClearedAfterLive": true,
+      "runtimePublishBoundedAndClosed": true,
+      "delayedFirstToken": true,
+      "delayedCompleted": true,
+      "activityIdentityExposed": true,
+      "activityExpandableDuringActiveTurn": true,
+      "activityExpandedAcrossUpdates": true,
+      "reasoning_wide_activityLayoutReadable": true,
+      "reasoning_wide_composerInsideViewport": true,
+      "reasoning_wide_actionButtonInsideViewport": true,
+      "reasoning_wide_detailsBounded": true,
+      "reasoning_wide_detailsUsable": true,
+      "reasoning_narrow_activityLayoutReadable": true,
+      "reasoning_narrow_composerInsideViewport": true,
+      "reasoning_narrow_actionButtonInsideViewport": true,
+      "reasoning_narrow_detailsBounded": true,
+      "reasoning_narrow_detailsUsable": true,
+      "activityCollapse": true,
+      "activityCollapsePersists": true,
+      "activityExpandedBeforeSwitch": true,
+      "reasoningThenAnswer": true,
+      "activityIdentityResetsCollapse": true,
+      "longCommandInFlightOutputGrows": true,
+      "longCommandRunning": true,
+      "longCommandNoEarlyCompletion": true,
+      "longCommandOutput": true,
+      "parallelConcurrentRunning": true,
+      "parallelNoEarlyCompletion": true,
+      "parallelTools": true,
+      "hostCwdRunningWithoutApproval": true,
+      "hostCwdOutputGrows": true,
+      "hostCwdNoEarlyAnswer": true,
+      "hostCwdTaskSucceeded": true,
+      "hostCwdOutputLines": true,
+      "hostCwdActualDirectory": true,
+      "hostCwdWaitReceipt": true,
+      "hostCwdAnswer": true,
+      "historyDirectSendNewGeneration": true,
+      "providerErrorSurfaced": true,
+      "cancelSurfaced": true,
+      "cancelThenContinue": true,
+      "modelBindingAvailableAfterCalls": true,
+      "loadedTimelineFacts": true,
+      "narrowWindowUsable": true,
+      "narrowWindowNarrower": true,
+      "timelineScrollGeometry": true,
+      "timelineFollowsBottom": true,
+      "historyScrollDetachesBottom": true,
+      "historyStaysFrozen": true,
+      "historyBottomStaysFrozen": true,
+      "explicitReturnLiveNewGeneration": true
+    },
+    "failedChecks": []
+  },
+  "stressPerformance": {
+    "case": "viewport-sessions-delivery",
+    "coordinatorExit": 1,
+    "frameThresholdPassed": false,
+    "renderEnvironment": {
+      "platform": "Linux native Xvfb",
+      "mode": "profile",
+      "processes": [
+        {
+          "pid": 1546752,
+          "softwareRendererThreads": [
+            "llvmpipe-0",
+            "llvmpipe-1",
+            "llvmpipe-2",
+            "llvmpipe-3",
+            "llvmpipe-4",
+            "llvmpipe-5",
+            "llvmpipe-6",
+            "llvmpipe-7",
+            "llvmpipe-8",
+            "llvmpipe-9",
+            "llvmpipe-10",
+            "llvmpipe-11",
+            "llvmpipe-12",
+            "llvmpipe-13",
+            "llvmpipe-14",
+            "llvmpipe-15",
+            "llvmpipe-0",
+            "llvmpipe-1",
+            "llvmpipe-2",
+            "llvmpipe-3",
+            "llvmpipe-4",
+            "llvmpipe-5",
+            "llvmpipe-6",
+            "llvmpipe-7",
+            "llvmpipe-8",
+            "llvmpipe-9",
+            "llvmpipe-10",
+            "llvmpipe-11",
+            "llvmpipe-12",
+            "llvmpipe-13",
+            "llvmpipe-14",
+            "llvmpipe-15"
+          ]
+        }
+      ]
+    },
+    "measurements": {
+      "failed": 0,
+      "fullSessionFrameTimings": {
+        "frames": 265,
+        "maxFrameMillis": 937.542,
+        "over33Millis": 263
+      },
+      "guiCompletionLagMillis": 9924,
+      "providerStreamMillis": 4025,
+      "samplesDuringStream": 19,
+      "slowestSnapshotMillis": 279,
+      "streamAndDrainFrames": 18,
+      "streamAndDrainMaxFrameMillis": 826.64,
+      "streamAndDrainOver33Millis": 18,
+      "verdict": "pending"
+    },
+    "note": "Functional assertions and unhandled-error checks are separate from frame thresholds. No hardware-accelerated or valid pre-fix frame-rate comparison is claimed."
+  },
+  "regressions": {
+    "sameCasesRedThenGreen": [
+      "viewport initial fill / ready snapshot / empty first message / EOF cursor / late FRB result",
+      "coalesced cancelled fill",
+      "connection recovery and continuity",
+      "retired widget callbacks",
+      "evicted speculative preview gap",
+      "evicted terminal revision protection",
+      "six Mode editor query-close cases",
+      "Driver default deadline and hung-drag no replay"
+    ],
+    "modeCloseOldOwnerFailures": 6,
+    "driverBefore": {
+      "drag-default": false,
+      "wheel-default": false,
+      "drag-hang": false
+    },
+    "driverAfter": {
+      "drag-default": true,
+      "wheel-default": true,
+      "drag-hang": true
+    }
+  },
+  "coverageGaps": [
+    "Stress frame thresholds failed on the default Xvfb software-rendering host.",
+    "No effective old-version frame-rate baseline; hardware-accelerated performance remains unverified.",
+    "Windows/macOS native GUI and real provider compatibility were not manually exercised.",
+    "Human acceptance verdict remains pending."
+  ]
+}

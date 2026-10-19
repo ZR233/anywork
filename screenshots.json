@@ -1,0 +1,67 @@
+{
+  "before-manual-load.png": {
+    "case": "viewport-before-r3",
+    "source": "viewport-manual-before.png",
+    "sha256": "abb71ae49147b1e1ef07b7dff9eb3869cd51fa08cedb770e781bad96fc464e54"
+  },
+  "after-cold-autofill.png": {
+    "case": "viewport-cold-delivery",
+    "source": "cold-reopen-autofill.png",
+    "sha256": "6028338e87ef0756d4410d8ad09b1ffaed5ccf46ddc66b7225bc726ba0e5ebba"
+  },
+  "responsive-900.png": {
+    "case": "viewport-cold-delivery",
+    "source": "responsive-900x760.png",
+    "sha256": "d1bfe0bdc58f680f1c7fa818e44c14f56abc8aa113dd5a10d02eeb7b8edfcdfe"
+  },
+  "responsive-1920.png": {
+    "case": "viewport-cold-delivery",
+    "source": "responsive-1920x1200.png",
+    "sha256": "3b29dceac0bc2376ada7a3484e502223e4df9a17cba23da324525c634ee336cb"
+  },
+  "composer-height.png": {
+    "case": "viewport-cold-delivery",
+    "source": "composer-grown.png",
+    "sha256": "bf4d842da25349d0b7c12dc3de5a5f2fb84caade33cd0102701f658bfb338b30"
+  },
+  "sidebar-keyboard.png": {
+    "case": "viewport-cold-delivery",
+    "source": "sidebar-keyboard.png",
+    "sha256": "8f71f3f270eb2b5aea29ad7bb98ae2f36605f8de74e047014af5598ef5312baa"
+  },
+  "switch-B.png": {
+    "case": "viewport-sessions-delivery",
+    "source": "session-switch-other.png",
+    "sha256": "58a640eb647f1441a76afcbac9e8d99a448da5701ca80464a61ada35b097f1ff"
+  },
+  "switch-C.png": {
+    "case": "viewport-sessions-delivery",
+    "source": "session-switch-third.png",
+    "sha256": "e53a6d696a90bcb82686f058b1975d7e1dd7b9bbf858b0cfefd61126ffb85b34"
+  },
+  "switch-A.png": {
+    "case": "viewport-sessions-delivery",
+    "source": "session-switch-return.png",
+    "sha256": "ad535133a5b2115aae6f35acaf3bb1928eada0d07ccc5df6bcdddc4155bf3fb0"
+  },
+  "streaming-busy.png": {
+    "case": "viewport-history-delivery",
+    "source": "streaming-history-busy.png",
+    "sha256": "8b7f5d2e4e8250d9f03453197cfcc8853726e8e8ba808f7fe3f7c36e0aec77ae"
+  },
+  "history-frozen.png": {
+    "case": "viewport-history-delivery",
+    "source": "streaming-history-frozen.png",
+    "sha256": "ba1280b87a109d021d713eb8a8cd265e092246c4247f40b97dc16554d6739263"
+  },
+  "history-recovered.png": {
+    "case": "viewport-history-delivery",
+    "source": "streaming-history-recovered.png",
+    "sha256": "b2a12672220c61eb9b85da904c9de1abfb5639f1cded5b941025e7803c3c921b"
+  },
+  "return-live.png": {
+    "case": "viewport-history-delivery",
+    "source": "streaming-history-live.png",
+    "sha256": "b9be4a5abca2bcc77910c0173d1277877045323d940ad67841cf9d63262e0df5"
+  }
+}
