@@ -5,6 +5,25 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.21.0](https://github.com/ZR233/anywork/compare/v6.20.0...v6.21.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 用 pl_protocol::ThreadModeDefinition 替换 ThreadModeRegistration；ContextPreparation::Prepared 增加 excluded_tool_ids，所有项目内消费者与生成绑定已同步迁移。
+* **studio:** Studio 的 turnCompletionTokens/turnDecodeMillis 表示最近已有有效样本的 Turn 聚合，新 Turn 在首个有效样本前保留旧对。消费者如需当前未完成调用的计量应读取独立 liveUsage，不能把保持值当作该调用的新测量。
+
+### Features
+
+* **studio:** 实现工作模式编辑器与可恢复的自定义工作流 ([#108](https://github.com/ZR233/anywork/issues/108)) ([70b0137](https://github.com/ZR233/anywork/commit/70b0137b5c98de7d4cf71ba264c6246a69f269d4))
+
+
+### Bug Fixes
+
+* **studio:** 修复简洁模式模型请求预览的工具约束 ([#109](https://github.com/ZR233/anywork/issues/109)) ([37b9b59](https://github.com/ZR233/anywork/commit/37b9b59dc162096498f08cc45bc84a223674f1d7))
+* **studio:** 修复词元速率与状态栏观察隔离 ([7c6b4d4](https://github.com/ZR233/anywork/commit/7c6b4d42973a9aa421fe571785c18daa9e3a935a))
+* **studio:** 按视口加载历史并隔离会话分页 ([#110](https://github.com/ZR233/anywork/issues/110)) ([793653b](https://github.com/ZR233/anywork/commit/793653b780642afe6306dfe6b2e043200edb956c))
+
 ## [6.20.0](https://github.com/ZR233/anywork/compare/v6.19.0...v6.20.0) (2026-10-19)
 
 
