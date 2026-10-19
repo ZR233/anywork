@@ -266,10 +266,12 @@ class _ThreadToolImageThumbnail extends ConsumerStatefulWidget {
   const _ThreadToolImageThumbnail({
     required this.threadId,
     required this.entry,
+    this.onShowDetails,
     super.key,
   });
   final String threadId;
   final _ToolImageEntryRef entry;
+  final void Function(BuildContext)? onShowDetails;
   @override
   ConsumerState<_ThreadToolImageThumbnail> createState() =>
       _ThreadToolImageThumbnailState();
@@ -348,6 +350,8 @@ class _ThreadToolImageThumbnailState
       dialogKey: StudioDriverKeys.viewImageDialog(widget.entry.entryId),
       label: widget.entry.attachment.filename,
       sourcePath: _toolTarget(widget.entry.item),
+      onShowDetails: widget.onShowDetails,
+      detailsKey: ValueKey('timeline-image-details-${widget.entry.entryId}'),
     );
   }
 }
@@ -436,6 +440,8 @@ Future<void> _showStudioImageDialog(
   required Key dialogKey,
   String? label,
   String? sourcePath,
+  void Function(BuildContext)? onShowDetails,
+  Key? detailsKey,
 }) async {
   await showDialog<void>(
     context: context,
@@ -485,7 +491,8 @@ Future<void> _showStudioImageDialog(
               ),
             ),
             if ((label?.isNotEmpty ?? false) ||
-                (sourcePath?.isNotEmpty ?? false))
+                (sourcePath?.isNotEmpty ?? false) ||
+                onShowDetails != null)
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
@@ -497,31 +504,48 @@ Future<void> _showStudioImageDialog(
                   horizontal: 20,
                   vertical: 14,
                 ),
-                child: SelectionArea(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (label?.isNotEmpty == true)
-                        Text(label!, style: context.text.titleSmall),
-                      if (sourcePath?.isNotEmpty == true && sourcePath != label)
-                        Padding(
-                          padding: EdgeInsets.only(
-                            top: label?.isNotEmpty == true ? 4 : 0,
-                          ),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 96),
-                            child: SingleChildScrollView(
-                              child: Text(
-                                sourcePath!,
-                                style: context.text.bodySmall?.copyWith(
-                                  color: context.colors.onSurfaceVariant,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SelectionArea(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (label?.isNotEmpty == true)
+                              Text(label!, style: context.text.titleSmall),
+                            if (sourcePath?.isNotEmpty == true &&
+                                sourcePath != label)
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  top: label?.isNotEmpty == true ? 4 : 0,
+                                ),
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxHeight: 96,
+                                  ),
+                                  child: SingleChildScrollView(
+                                    child: Text(
+                                      sourcePath!,
+                                      style: context.text.bodySmall?.copyWith(
+                                        color: context.colors.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
+                          ],
                         ),
-                    ],
-                  ),
+                      ),
+                    ),
+                    if (onShowDetails != null)
+                      IconButton(
+                        key: detailsKey,
+                        tooltip: context.l10n.timelineToolOutput,
+                        onPressed: () => onShowDetails(context),
+                        icon: const Icon(Icons.info_outline),
+                      ),
+                  ],
                 ),
               ),
           ],

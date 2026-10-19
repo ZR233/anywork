@@ -124,7 +124,11 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
           children: [body!],
         ),
         child: item is TimelineImageReadGroup
-            ? _TimelineImageGroupContents(item: item, threadId: widget.threadId)
+            ? _TimelineImageGroupContents(
+                item: item,
+                lease: widget.lease,
+                threadId: widget.threadId,
+              )
             : _TimelineGroupContents(
                 item: item,
                 lease: widget.lease,
@@ -242,9 +246,11 @@ class _TimelineGroupContents extends StatelessWidget {
 class _TimelineImageGroupContents extends StatelessWidget {
   const _TimelineImageGroupContents({
     required this.item,
+    required this.lease,
     required this.threadId,
   });
   final TimelineImageReadGroup item;
+  final TimelineDisplayLease lease;
   final String threadId;
 
   @override
@@ -253,15 +259,22 @@ class _TimelineImageGroupContents extends StatelessWidget {
     builder: (context, _) {
       // Flatten only this group's previews, retaining the owning call even when
       // it has no image yet. Bytes are still read by mounted thumbnails only.
-      final entries = <({_ToolItem call, _ToolImageEntryRef? image})>[];
+      final entries =
+          <
+            ({
+              TimelineMessagePayload payload,
+              _ToolItem call,
+              _ToolImageEntryRef? image,
+            })
+          >[];
       for (final payload in item.payloads) {
         final call = _ToolItem(_entryViewOf(payload.item));
         final images = _toolImageEntries([call]);
         if (images.isEmpty) {
-          entries.add((call: call, image: null));
+          entries.add((payload: payload, call: call, image: null));
         } else {
           for (final image in images) {
-            entries.add((call: call, image: image));
+            entries.add((payload: payload, call: call, image: image));
           }
         }
       }
@@ -292,13 +305,37 @@ class _TimelineImageGroupContents extends StatelessWidget {
                   itemBuilder: (context, index) {
                     final entry = entries[index];
                     final image = entry.image;
+                    void showDetails(BuildContext context) {
+                      unawaited(
+                        _showImageCallDetails(
+                          context,
+                          payload: entry.payload,
+                          lease: lease,
+                          threadId: threadId,
+                        ),
+                      );
+                    }
+
                     if (image == null) {
-                      return _TimelineImageReadStatus(item: entry.call);
+                      return _TimelineImageReadStatus(
+                        item: entry.call,
+                        onShowDetails: showDetails,
+                      );
                     }
                     return _ThreadToolImageThumbnail(
                       key: ValueKey(image.entryId),
                       threadId: threadId,
                       entry: image,
+                      onShowDetails:
+                          entry.call.name != 'view_image' ||
+                              entry.call.tool?.result?.trim().isNotEmpty ==
+                                  true ||
+                              entry.call.error?.isNotEmpty == true ||
+                              entry.payload.details.any(
+                                (detail) => detail.truncated,
+                              )
+                          ? showDetails
+                          : null,
                     );
                   },
                 ),
@@ -314,27 +351,16 @@ class _TimelineImageGroupContents extends StatelessWidget {
 /// A call without an attachment keeps a small gallery slot. Diagnostics are
 /// available on demand, without adding paths and payloads below the gallery.
 class _TimelineImageReadStatus extends StatelessWidget {
-  const _TimelineImageReadStatus({required this.item});
+  const _TimelineImageReadStatus({
+    required this.item,
+    required this.onShowDetails,
+  });
   final _ToolItem item;
+  final void Function(BuildContext) onShowDetails;
 
   @override
   Widget build(BuildContext context) => OutlinedButton(
-    onPressed: () => showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(_toolTitle(context, item)),
-        content: SizedBox(
-          width: 560,
-          child: SingleChildScrollView(child: _ToolDetails(item: item)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text(context.l10n.timelineImageClose),
-          ),
-        ],
-      ),
-    ),
+    onPressed: () => onShowDetails(context),
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -354,3 +380,32 @@ class _TimelineImageReadStatus extends StatelessWidget {
     ),
   );
 }
+
+Future<void> _showImageCallDetails(
+  BuildContext context, {
+  required TimelineMessagePayload payload,
+  required TimelineDisplayLease lease,
+  required String threadId,
+}) => showDialog<void>(
+  context: context,
+  builder: (context) => AlertDialog(
+    title: Text(context.l10n.timelineToolOutput),
+    content: SizedBox(
+      width: 560,
+      child: SingleChildScrollView(
+        child: _TimelineMessageBlock(
+          payload: payload,
+          lease: lease,
+          threadId: threadId,
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        key: const ValueKey('timeline-image-details-close'),
+        onPressed: () => Navigator.of(context).pop(),
+        child: Text(context.l10n.timelineImageClose),
+      ),
+    ],
+  ),
+);

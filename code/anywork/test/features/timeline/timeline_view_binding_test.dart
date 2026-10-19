@@ -108,6 +108,7 @@ void main() {
     String id, {
     required int ordinal,
     String attachmentId = 'att-shared',
+    String name = 'view_image',
     String result = 'ok',
     int revision = 1,
   }) => StudioTimelineItem(
@@ -125,7 +126,7 @@ void main() {
         invocation: ThreadToolInvocationView(
           toolCallId: id,
           callId: id,
-          name: 'view_image',
+          name: name,
           arguments: '{"path":"/workspace/images/shot.png"}',
         ),
         lifecycle: SucceededThreadToolView(
@@ -1457,7 +1458,7 @@ void main() {
 
     final lease = leaseFor(
       items: [
-        imageToolItem('call-a', ordinal: 1),
+        imageToolItem('call-a', ordinal: 1, name: 'mcp__plot'),
         imageToolItem('call-b', ordinal: 2),
       ],
     );
@@ -1555,6 +1556,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('/workspace/images/shot.png'), findsOneWidget);
     expect(find.text('shot.png'), findsOneWidget);
+    // Tools may return text alongside images (including MCP). Keep that result
+    // available inside the viewer without adding tool rows below thumbnails.
+    await tester.tap(find.byKey(ValueKey('timeline-image-details-$entryA')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('timeline-tool-details:call-a')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('timeline-image-details-close')),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.timelineImageClose));
     await tester.pumpAndSettle();
 
@@ -1564,6 +1577,7 @@ void main() {
         imageToolItem(
           'call-a',
           ordinal: 1,
+          name: 'mcp__plot',
           result: 'ok (streamed)',
           revision: 2,
         ),
@@ -1587,7 +1601,13 @@ void main() {
     );
     patch([
       StudioTimelineAdd(
-        imageToolItem('call-a', ordinal: 1, result: 'ok (final)', revision: 3),
+        imageToolItem(
+          'call-a',
+          ordinal: 1,
+          name: 'mcp__plot',
+          result: 'ok (final)',
+          revision: 3,
+        ),
       ),
     ]);
     await _pumpFrames(tester);
@@ -1613,7 +1633,9 @@ void main() {
     // 最后一个引用消失 → 缓存释放：重新插入并展开会重新读取。
     patch([const StudioTimelineRemove('call-b')]);
     await _pumpFrames(tester);
-    patch([StudioTimelineAdd(imageToolItem('call-a', ordinal: 3))]);
+    patch([
+      StudioTimelineAdd(imageToolItem('call-a', ordinal: 3, name: 'mcp__plot')),
+    ]);
     await _pumpFrames(tester);
     await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
