@@ -1,0 +1,82 @@
+{
+  "sourceCommit": "248816e31963711d5efb7f9cb5388356170adbd5",
+  "platform": "linux",
+  "provider": "isolated local fixture",
+  "screenshots": {
+    "activity-error.png": {
+      "sha256": "fb69baff37618d459f906107247d06eea6510f417040812e2d6f811a65b940d3",
+      "bytes": 95509,
+      "width": 1280,
+      "height": 720
+    },
+    "activity-expanded.png": {
+      "sha256": "d56793704df6ef7a3493d4d38322f5b8d147c7e05a811b5ebab9d6b9db1013f3",
+      "bytes": 84894,
+      "width": 1280,
+      "height": 720
+    },
+    "image-dialog.png": {
+      "sha256": "1a29ead72d9e6d49bcafa0e4d057d9a8930370356a05c52fb29352fd56ca5d37",
+      "bytes": 37267,
+      "width": 1280,
+      "height": 720
+    },
+    "image-retry.png": {
+      "sha256": "d1e7b93f9ba7b97234c9b7fc646ff7cda42f422fbc23501b9fbe588153a35346",
+      "bytes": 84150,
+      "width": 1280,
+      "height": 720
+    },
+    "images-expanded.png": {
+      "sha256": "01bbc6bdfa4df6f302c7148d30c2085f7f9bd32b2c9d852b1033b9f3651dbd09",
+      "bytes": 83488,
+      "width": 1280,
+      "height": 720
+    },
+    "images-narrow.png": {
+      "sha256": "520007d6787027262a96d7eb9079f9646a0a2efc2a45761a48a64b6d0c8d009e",
+      "bytes": 47554,
+      "width": 640,
+      "height": 600
+    },
+    "recovery-collapsed.png": {
+      "sha256": "b7197eaa037cb2df694bc18d7a323e1010446cd460b2400607c27f8f78ad8140",
+      "bytes": 69089,
+      "width": 1280,
+      "height": 720
+    },
+    "recovery-expanded.png": {
+      "sha256": "803694671fc8cdb1e5b603db5c42ea5b0731e1b543612494505d14d546c6a151",
+      "bytes": 74165,
+      "width": 1280,
+      "height": 720
+    },
+    "recovery-restored.png": {
+      "sha256": "5d4c8cbe105cce367d1e20977a43e17e6fbc0249fd4b29216d79c2bb9cb36e16",
+      "bytes": 83836,
+      "width": 1280,
+      "height": 720
+    },
+    "thinking-expanded.png": {
+      "sha256": "66dcbcad8c67837001b708c2d39075e592bc4d470959e9647d8426a9440a9921",
+      "bytes": 81726,
+      "width": 1280,
+      "height": 720
+    },
+    "timeline-overview.png": {
+      "sha256": "1dcff286744a0205aed181af7fdf321483bb53dfd40bc66b757627cb455f220a",
+      "bytes": 92553,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "observations": {
+    "toolJourneyPassed": true,
+    "recoveryJourneyComplete": true,
+    "stressBodyComplete": true,
+    "imageFailureThenRetry": true,
+    "coldHistoryCallsPreserved": 9,
+    "nativeNarrowWindow": "640x600",
+    "humanVerdict": "pending"
+  }
+}
