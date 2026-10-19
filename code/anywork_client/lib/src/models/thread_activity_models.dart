@@ -1,3 +1,4 @@
+import 'thread_wait_models.dart';
 import 'collection_equality.dart';
 
 /// 当前执行活动的 typed 事实（后端投影的 Dart 映射）。
@@ -52,6 +53,7 @@ class ThreadActivityToolEntry {
     this.taskId,
     this.ordinal,
     this.startedAt,
+    this.wait,
   });
 
   final String callId;
@@ -62,6 +64,7 @@ class ThreadActivityToolEntry {
   final ThreadActivityToolState state;
   final int? ordinal;
   final int? startedAt;
+  final ThreadWaitPresentationView? wait;
 
   /// 单行工具预览：命令行摘要优先，缺完整参数时为工具名称。
   String get singleLineLabel {
@@ -80,7 +83,8 @@ class ThreadActivityToolEntry {
             arguments == other.arguments &&
             state == other.state &&
             ordinal == other.ordinal &&
-            startedAt == other.startedAt;
+            startedAt == other.startedAt &&
+            wait == other.wait;
   }
 
   @override
@@ -93,6 +97,7 @@ class ThreadActivityToolEntry {
     state,
     ordinal,
     startedAt,
+    wait,
   );
 }
 
@@ -323,6 +328,7 @@ class ThreadActivityToolDetail {
     this.output,
     this.ordinal,
     this.startedAt,
+    this.wait,
   });
 
   final String callId;
@@ -337,6 +343,7 @@ class ThreadActivityToolDetail {
   final String? output;
   final int? ordinal;
   final int? startedAt;
+  final ThreadWaitPresentationView? wait;
 }
 
 /// 按活动身份读取的详情结果；只有 [CurrentThreadActivityDetail] 携带正文。

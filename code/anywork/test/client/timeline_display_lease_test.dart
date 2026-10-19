@@ -286,6 +286,72 @@ void main() {
     expect(first.controller, isA<InMemoryChatController>());
   });
 
+  StudioTimelineItem waitCall(String id, int order) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: order,
+      revision: 1,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'wait',
+          arguments: '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
+        ),
+        lifecycle: const RunningThreadToolView(''),
+        wait: const ThreadWaitPresentationView(
+          intent: ThreadWaitEventsIntentView(
+            targets: [
+              ThreadWaitTargetView(
+                taskId: 'task:exec-1',
+                toolName: 'exec',
+                summary: 'cargo test',
+                status: ThreadWaitTargetStatusView.running,
+              ),
+            ],
+            timeoutMs: 60000,
+          ),
+          state: ThreadWaitStateView.waiting,
+        ),
+      ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  StudioTimelineItem sleepCall(String id, int order) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: order,
+      revision: 1,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'sleep',
+          arguments: '{"durationMs":3000}',
+        ),
+        lifecycle: const RunningThreadToolView(''),
+        wait: const ThreadWaitPresentationView(
+          intent: ThreadWaitTimerIntentView(durationMs: 3000),
+          state: ThreadWaitStateView.waiting,
+        ),
+      ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
   StudioTimelineItem activity(
     String id,
     int order, {
@@ -352,6 +418,45 @@ void main() {
       );
     },
   );
+
+  test('typed wait/sleep stay independent cards and split ordinary activity groups', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          activity('command', 2, toolName: 'run_command'),
+          waitCall('wait-1', 3),
+          activity('later', 4, toolName: 'run_command'),
+          sleepCall('sleep-1', 5),
+        ],
+      ),
+    );
+    final groups = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    expect(groups.map((g) => g!.kind).toList(), [
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+    ]);
+    expect(groups.map((g) => g!.memberIds).toList(), [
+      ['thinking', 'command'],
+      ['wait-1'],
+      ['later'],
+      ['sleep-1'],
+    ]);
+    expect(groups[1]!.id, 'wait-1');
+    expect(groups[3]!.id, 'sleep-1');
+    expect(groups[1]!.first.item.tool?.wait, isNotNull);
+    expect(groups[3]!.first.item.tool?.wait, isNotNull);
+  });
 
   test('retry and result records of one attempt share one GUI item', () {
     StudioTimelineItem recovery(

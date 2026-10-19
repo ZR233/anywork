@@ -119,6 +119,9 @@ pub struct ThreadActivityToolEntry {
     /// 该调用 canonical 接纳时间；内存投影不可读时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
+    /// Typed wait/sleep presentation when this call is a wait or sleep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::ThreadWaitPresentation>,
 }
 
 /// 当前并行执行的工具集合。
@@ -237,6 +240,9 @@ pub struct ThreadActivityToolDetail {
     pub ordinal: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
+    /// Typed wait/sleep presentation when this call is a wait or sleep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::ThreadWaitPresentation>,
 }
 
 /// 活动详情的生命周期结果。

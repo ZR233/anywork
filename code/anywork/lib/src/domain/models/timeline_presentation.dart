@@ -222,7 +222,8 @@ TimelinePresentationKind _kindOf(TimelineMessagePayload payload) {
   }
   return switch (payload.item.state) {
     ThreadThinkingItemStateView() => TimelinePresentationKind.activity,
-    ThreadToolItemStateView(:final userInput) when userInput == null =>
+    ThreadToolItemStateView(:final userInput, :final wait)
+        when userInput == null && wait == null =>
       payload.item.tool?.name == 'view_image' ||
               (payload.item.tool?.attachments.any(
                     (a) => a.modality == AttachmentModalityView.image,

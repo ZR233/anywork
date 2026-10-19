@@ -29,6 +29,7 @@ mod context_replay_recovery;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
+mod wait_events;
 mod web_search;
 pub use context_replay_recovery::{
     ReplayExpectation, gui_context_replay_recovery_script, replay_output, replay_tool_arguments,
@@ -44,6 +45,11 @@ pub use question_history::{
     GUI_QUESTION_HISTORY_STYLE_ANSWER, GUI_QUESTION_HISTORY_STYLE_ID,
     GUI_QUESTION_HISTORY_TOKEN_ANSWER, GUI_QUESTION_HISTORY_TOKEN_ID,
     gui_question_history_answers_json, gui_question_history_script,
+};
+pub use wait_events::{
+    CHILD_REPORT_TEXT, MARK_ALREADY_READY, MARK_CANCEL, MARK_CANCEL_PREPARE, MARK_CANCEL_QUERY,
+    MARK_CHILD, MARK_CHILD_CONFIRM, MARK_CHILD_WORK, MARK_SLEEP_FIRST, MARK_TIMEOUT,
+    MARK_TOOL_FIRST, gui_wait_events_script,
 };
 pub use web_search::{
     CHILD_PROFILE_ID, DEEPSEEK_FETCH_PATH, DEEPSEEK_SEARCH_KEY, DEEPSEEK_SEARCH_PATH,
@@ -83,7 +89,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 20] = [
+pub const GUI_SCENARIOS: [&str; 21] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -104,6 +110,7 @@ pub const GUI_SCENARIOS: [&str; 20] = [
     "shutdown",
     "provider-usage",
     "timeline-history",
+    "wait-events",
 ];
 
 /// Root prompts consumed by the native Mode editor acceptance, in order.
@@ -1509,6 +1516,10 @@ pub struct FixtureOptions {
     pub model_catalog: Option<ModelCatalogControl>,
     /// Bind the listener to this loopback port instead of an ephemeral one.
     pub bind_port: Option<u16>,
+    /// Serve the dynamic wait/sleep/child observation endpoint instead of the
+    /// strict ordinal script. Child Threads share this listener, so a cursor
+    /// script cannot accept their requests.
+    pub wait_events: bool,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1553,6 +1564,8 @@ impl FixtureServer {
         };
         let responses_route = if web_search_enabled {
             post(web_search::responses)
+        } else if options.wait_events {
+            post(wait_events::responses)
         } else {
             post(handle)
         };

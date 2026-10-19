@@ -82,7 +82,16 @@ extension StudioLocalizationsX on BuildContext {
       ConversationActivityKind.responding => l10n.statusTurnResponding,
       ConversationActivityKind.planning => l10n.statusTurnPlanning,
       ConversationActivityKind.runningTool =>
-        l10n.conversationActivityRunningTool,
+        view.wait == null
+            ? l10n.conversationActivityRunningTool
+            : switch (view.wait!.intent) {
+                ThreadWaitEventsIntentView(:final targets) =>
+                  targets.isEmpty
+                      ? l10n.conversationActivityWaitingMessages
+                      : l10n.conversationActivityWaitingTools,
+                ThreadWaitTimerIntentView() =>
+                  l10n.conversationActivityWaitingTimer,
+              },
       ConversationActivityKind.awaitingApproval =>
         l10n.statusInteractionToolApproval,
       ConversationActivityKind.awaitingInput => l10n.statusInteractionUserInput,

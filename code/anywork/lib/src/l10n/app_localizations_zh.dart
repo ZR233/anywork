@@ -3384,4 +3384,88 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modeDeletedBadge => '已删除';
+
+  @override
+  String get timelineWaitToolsTitle => '等待工具完成';
+
+  @override
+  String get timelineWaitMessagesTitle => '等待子代理或新消息';
+
+  @override
+  String get timelineWaitTimerTitle => '计时器';
+
+  @override
+  String get timelineWaitTimerElapsed => '计时完成';
+
+  @override
+  String get timelineWaitReady => '已有等待来源就绪';
+
+  @override
+  String get timelineWaitMessagesReady => '已有新消息';
+
+  @override
+  String get timelineWaitTimedOut => '等待超时';
+
+  @override
+  String get timelineWaitCancelled => '等待已取消';
+
+  @override
+  String get timelineWaitFailed => '等待失败';
+
+  @override
+  String get timelineWaitInterrupted => '等待已中断';
+
+  @override
+  String timelineWaitTargetCount(int count) {
+    return '$count 个任务';
+  }
+
+  @override
+  String get timelineWaitMessageSource => '新消息';
+
+  @override
+  String timelineWaitMaxDuration(String duration) {
+    return '最多 $duration';
+  }
+
+  @override
+  String timelineWaitTimerDuration(String duration) {
+    return '$duration';
+  }
+
+  @override
+  String get timelineWaitMessagesMayWake => '新消息可以提前唤醒';
+
+  @override
+  String get timelineWaitAnyReadyRule => '任一所选任务或新消息就绪即返回';
+
+  @override
+  String get timelineWaitDiagnostics => '诊断信息';
+
+  @override
+  String get timelineWaitUnknownStatus => '未知';
+
+  @override
+  String get timelineWaitStatusRunning => '运行中';
+
+  @override
+  String get timelineWaitStatusSucceeded => '已成功';
+
+  @override
+  String get timelineWaitStatusFailed => '已失败';
+
+  @override
+  String get timelineWaitStatusCancelled => '已取消';
+
+  @override
+  String get timelineWaitStatusInterrupted => '已中断';
+
+  @override
+  String get conversationActivityWaitingTools => '等待工具完成';
+
+  @override
+  String get conversationActivityWaitingMessages => '等待子代理或新消息';
+
+  @override
+  String get conversationActivityWaitingTimer => '计时器';
 }

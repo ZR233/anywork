@@ -161,7 +161,11 @@ pub(in crate::studio) fn attach(
             item.id
         )));
     }
-    let state = ThreadItemState::Tool(tool.clone().with_user_input(Some(user_input)));
+    let state = ThreadItemState::Tool(
+        tool.clone()
+            .with_user_input(Some(user_input))
+            .with_wait(tool.wait().cloned()),
+    );
     *item = item.clone().with_state(state);
     Ok(())
 }

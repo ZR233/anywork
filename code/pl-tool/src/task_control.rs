@@ -1,10 +1,7 @@
 //! Model-callable task controls over the Thread's restricted task capability.
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    thread::{
-        TaskAccess, ThreadError,
-        task::{TaskRecord, TaskStatus},
-    },
+    thread::{TaskAccess, ThreadError},
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
@@ -13,6 +10,8 @@ use pl_core::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
+
+pub use pl_core::thread::task::{TaskRecord, TaskStatus};
 
 /// Task control appearance; scheduling and state transitions remain in core.
 #[derive(Debug, Clone, Copy)]
@@ -56,13 +55,32 @@ impl TaskControlTool {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WaitTasksInput {
-    /// Task IDs to observe. An empty list waits for Thread messages.
+    /// Exact receipt task IDs to observe, including sleep timers. Any selected terminal task or new
+    /// Thread message wakes the wait; an empty list observes messages only.
     #[serde(default)]
     pub task_ids: Vec<String>,
     /// Maximum wait in milliseconds; defaults to sixty seconds.
     #[serde(default)]
     #[schemars(range(min = 1, max = 300000))]
     pub timeout_ms: Option<u64>,
+}
+
+/// Committed task and inbox readiness, without consuming or duplicating their result bodies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitTasksOutput {
+    pub tasks: Vec<TaskRecord>,
+    pub messages_ready: bool,
+    pub timed_out: bool,
+}
+
+/// The exact lightweight result saved as delivered context and used by product projections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitTasksView {
+    pub tasks: Vec<TaskStatusView>,
+    pub messages_ready: bool,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -90,19 +108,20 @@ enum ControlError {
     Cursor,
 }
 
-#[derive(Serialize)]
+/// Task metadata in the model-visible status view, without the complete task's internal links.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Status<'a> {
-    task_id: &'a str,
-    tool_id: &'a str,
-    status: TaskStatus,
-    cancel_requested: bool,
+pub struct TaskStatusView {
+    pub task_id: String,
+    pub tool_id: String,
+    pub status: TaskStatus,
+    pub cancel_requested: bool,
 }
-impl<'a> From<&'a TaskRecord> for Status<'a> {
-    fn from(task: &'a TaskRecord) -> Self {
+impl From<&TaskRecord> for TaskStatusView {
+    fn from(task: &TaskRecord) -> Self {
         Self {
-            task_id: &task.id,
-            tool_id: &task.tool_id,
+            task_id: task.id.clone(),
+            tool_id: task.tool_id.clone(),
             status: task.status,
             cancel_requested: task.cancel_requested,
         }
@@ -127,29 +146,24 @@ impl Tool for TaskControlTool {
                 if !(1..=300_000).contains(&timeout) {
                     return Err(ToolError::new(ControlError::Timeout));
                 }
-                let result = tokio::time::timeout(
-                    Duration::from_millis(timeout),
-                    access.wait(&input.task_ids, context.cancellation.clone()),
-                )
-                .await;
-                let (tasks, messages_ready, timed_out) = match result {
-                    Ok(result) => {
-                        let result = result.map_err(ToolError::new)?;
-                        (result.tasks, result.messages_ready, false)
-                    }
-                    Err(_) => (
-                        input
-                            .task_ids
-                            .iter()
-                            .map(|id| access.get(id))
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(ToolError::new)?,
-                        false,
-                        true,
-                    ),
+                let result = access
+                    .wait(
+                        &input.task_ids,
+                        Duration::from_millis(timeout),
+                        context.cancellation.clone(),
+                    )
+                    .await
+                    .map_err(ToolError::new)?;
+                let payload = WaitTasksOutput {
+                    tasks: result.tasks,
+                    messages_ready: result.messages_ready,
+                    timed_out: result.timed_out,
                 };
-                let view = serde_json::json!({"tasks":tasks.iter().map(Status::from).collect::<Vec<_>>(),"messagesReady":messages_ready,"timedOut":timed_out});
-                let payload = serde_json::json!({"tasks":tasks,"messagesReady":messages_ready,"timedOut":timed_out});
+                let view = WaitTasksView {
+                    tasks: payload.tasks.iter().map(TaskStatusView::from).collect(),
+                    messages_ready: payload.messages_ready,
+                    timed_out: payload.timed_out,
+                };
                 output("pl.tool.wait", &payload, &view)
             }
             TaskControlKind::Query => {
@@ -191,7 +205,7 @@ async fn query(access: &TaskAccess, input: QueryTaskInput) -> Result<ToolOutput,
         },
         Err(error) => return Err(ToolError::new(error)),
     };
-    let mut view = serde_json::json!({"task":Status::from(&task)});
+    let mut view = serde_json::json!({"task":TaskStatusView::from(&task)});
     if let Some(start) = input.result_cursor
         && let Some(delivery) = read_result(access, &input.task_id).await?
     {
@@ -292,7 +306,7 @@ impl Tool for ListTasksTool {
             .as_ref()
             .ok_or_else(|| ToolError::new(ControlError::MissingRuntime))?;
         let tasks = access.list();
-        let view = tasks.iter().map(Status::from).collect::<Vec<_>>();
+        let view = tasks.iter().map(TaskStatusView::from).collect::<Vec<_>>();
         output("pl.tool.list-tasks", &tasks, &view)
     }
 }

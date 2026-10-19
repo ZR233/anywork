@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'interaction_models.dart';
 import 'studio_enums.dart';
 import 'thread_activity_models.dart';
+import 'thread_wait_models.dart';
 
 /// 固定活动条（输入框上方单行）唯一的展示阶段。
 ///
@@ -87,6 +88,7 @@ class ConversationActivityView {
     this.detailsError,
     this.expandable = false,
     this.storage,
+    this.wait,
   });
 
   /// 稳定活动身份：展开态以它为准，身份变化即重置。
@@ -122,6 +124,9 @@ class ConversationActivityView {
   /// 派生 `storageBlocked` 阶段的 typed 存储事实；其它阶段为空。
   final ThreadStorageStateView? storage;
 
+  /// Typed wait/sleep presentation of the current wait/sleep tool, when one is running.
+  final ThreadWaitPresentationView? wait;
+
   bool get hasDetails => expandable || details.isNotEmpty;
 
   /// 是否以“等待”脉冲呈现：准备/等待模型/思考/执行/审批/输入/停止。
@@ -148,7 +153,8 @@ class ConversationActivityView {
             detailsLoading == other.detailsLoading &&
             detailsError == other.detailsError &&
             expandable == other.expandable &&
-            storage == other.storage;
+            storage == other.storage &&
+            wait == other.wait;
   }
 
   @override
@@ -164,6 +170,7 @@ class ConversationActivityView {
     detailsError,
     expandable,
     storage,
+    wait,
   );
 }
 
@@ -223,7 +230,7 @@ ConversationActivityView _typedActivity(
     ThreadActivityKind.awaitingInput => ConversationActivityKind.awaitingInput,
     ThreadActivityKind.stopping => ConversationActivityKind.stopping,
   };
-  final summary = _singleLine(activity.summary);
+  final summary = _waitAwareSummary(activity) ?? _singleLine(activity.summary);
   final tools = activity.tools;
   final currentDetail =
       detail is CurrentThreadActivityDetail &&
@@ -246,6 +253,7 @@ ConversationActivityView _typedActivity(
     detailsLoading: detailsLoading,
     detailsError: detailsError,
     expandable: detailResolved && _expandable(activity, kind),
+    wait: _activityWait(activity),
   );
 }
 
@@ -302,6 +310,39 @@ String _toolDetailBody(ThreadActivityToolDetail tool) {
     if (tool.output?.trim().isNotEmpty == true) tool.output!.trim(),
   ];
   return lines.join('\n\n');
+}
+
+ThreadWaitPresentationView? _activityWait(ThreadActivityView activity) {
+  final latest = activity.tools.latestStarted?.wait;
+  if (latest != null) return latest;
+  for (final tool in activity.tools.active) {
+    final wait = tool.wait;
+    if (wait != null) return wait;
+  }
+  return null;
+}
+
+String? _waitAwareSummary(ThreadActivityView activity) {
+  final wait = _activityWait(activity);
+  if (wait == null) return null;
+  return _waitCollapsedSummary(wait);
+}
+
+String? _waitCollapsedSummary(ThreadWaitPresentationView wait) {
+  return switch (wait.intent) {
+    ThreadWaitEventsIntentView(:final targets) => () {
+      for (final target in targets) {
+        final summary = target.summary?.trim();
+        if (summary != null && summary.isNotEmpty) {
+          return target.summaryTruncated ? '$summary…' : summary;
+        }
+        final toolName = target.toolName?.trim();
+        if (toolName != null && toolName.isNotEmpty) return toolName;
+      }
+      return null;
+    }(),
+    ThreadWaitTimerIntentView() => null,
+  };
 }
 
 ConversationActivityView _storageActivity(ThreadStorageStateView storage) {

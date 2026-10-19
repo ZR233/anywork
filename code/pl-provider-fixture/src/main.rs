@@ -12,7 +12,7 @@ use pl_provider_fixture::{
     gui_plan_recovery_script, gui_question_history_script, gui_realtime_script, gui_script,
     gui_shutdown_script, gui_statistics_script, gui_stress_body_large_script,
     gui_stress_body_script, gui_stress_script, gui_timeline_history_script, gui_tool_scroll_script,
-    gui_web_search_script, gui_websocket_recovery_script,
+    gui_wait_events_script, gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -215,6 +215,7 @@ async fn main() -> Result<()> {
         "web-search" => gui_web_search_script(),
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
+        "wait-events" => gui_wait_events_script(),
         value => bail!("unknown fixture scenario: {value}"),
     };
     let fault = match args.fault.as_deref() {
@@ -229,6 +230,7 @@ async fn main() -> Result<()> {
         provider_usage: scenario == "provider-usage",
         model_catalog,
         bind_port: args.bind_port,
+        wait_events: scenario == "wait-events",
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict

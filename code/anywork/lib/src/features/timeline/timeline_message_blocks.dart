@@ -186,6 +186,21 @@ class _TimelineMessageBlock extends StatelessWidget {
       }
       return _UserInputReceipt(itemId: item.id, history: history);
     }
+    final wait = item.tool?.wait;
+    if (wait != null) {
+      final toolItem = _ToolItem(_entryViewOf(item));
+      return TimelineWaitPanel(
+        presentation: wait,
+        identity: item.id,
+        diagnostics: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _ToolDetails(item: toolItem),
+            ?_detailNotice(context, payload),
+          ],
+        ),
+      );
+    }
     final toolItem = _ToolItem(_entryViewOf(item));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

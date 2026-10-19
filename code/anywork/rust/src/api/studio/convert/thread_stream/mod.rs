@@ -300,6 +300,7 @@ fn item_state(value: &ThreadItemState) -> Result<BridgeThreadItemState> {
             },
             state: tool_state(value.state())?,
             user_input: value.user_input().map(user_input),
+            wait: value.wait().cloned().map(wait_presentation).map(Box::new),
         },
         ThreadItemState::Agent(value) => {
             let identity = value.identity();
@@ -494,6 +495,57 @@ fn tool_state(value: &ThreadToolState) -> Result<BridgeThreadToolState> {
             reason: state.reason().to_string(),
         },
     })
+}
+
+pub(super) fn wait_presentation(
+    value: pl_protocol::ThreadWaitPresentation,
+) -> BridgeThreadWaitPresentation {
+    BridgeThreadWaitPresentation {
+        intent: match value.intent() {
+            pl_protocol::ThreadWaitIntent::Events {
+                targets,
+                timeout_ms,
+            } => BridgeThreadWaitIntent::Events {
+                targets: targets.iter().map(wait_target).collect(),
+                timeout_ms: *timeout_ms,
+            },
+            pl_protocol::ThreadWaitIntent::Timer { duration_ms } => BridgeThreadWaitIntent::Timer {
+                duration_ms: *duration_ms,
+            },
+        },
+        state: match value.state() {
+            pl_protocol::ThreadWaitState::Waiting => BridgeThreadWaitState::Waiting,
+            pl_protocol::ThreadWaitState::Ready => BridgeThreadWaitState::Ready,
+            pl_protocol::ThreadWaitState::TimedOut => BridgeThreadWaitState::TimedOut,
+            pl_protocol::ThreadWaitState::Elapsed => BridgeThreadWaitState::Elapsed,
+            pl_protocol::ThreadWaitState::Cancelled => BridgeThreadWaitState::Cancelled,
+            pl_protocol::ThreadWaitState::Failed => BridgeThreadWaitState::Failed,
+            pl_protocol::ThreadWaitState::Interrupted => BridgeThreadWaitState::Interrupted,
+        },
+        messages_ready: value.messages_ready(),
+    }
+}
+
+fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget {
+    BridgeThreadWaitTarget {
+        task_id: value.task_id().to_owned(),
+        tool_name: value.tool_name().map(str::to_owned),
+        summary: value.summary().map(str::to_owned),
+        summary_truncated: value.summary_truncated(),
+        status: value.status().map(|status| match status {
+            pl_protocol::ThreadWaitTargetStatus::Running => BridgeThreadWaitTargetStatus::Running,
+            pl_protocol::ThreadWaitTargetStatus::Succeeded => {
+                BridgeThreadWaitTargetStatus::Succeeded
+            }
+            pl_protocol::ThreadWaitTargetStatus::Failed => BridgeThreadWaitTargetStatus::Failed,
+            pl_protocol::ThreadWaitTargetStatus::Cancelled => {
+                BridgeThreadWaitTargetStatus::Cancelled
+            }
+            pl_protocol::ThreadWaitTargetStatus::Interrupted => {
+                BridgeThreadWaitTargetStatus::Interrupted
+            }
+        }),
+    }
 }
 
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。

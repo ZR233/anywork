@@ -2164,13 +2164,13 @@ return contextCompaction(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput)?  tool,TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult Function( BridgeTurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult Function( BridgeTurnState state,  String? inputId)?  turn,TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeThreadItemState_Raw() when raw != null:
 return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool() when tool != null:
-return tool(_that.invocation,_that.state,_that.userInput);case BridgeThreadItemState_Agent() when agent != null:
+return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent() when agent != null:
 return agent(_that.identity,_that.state);case BridgeThreadItemState_Turn() when turn != null:
 return turn(_that.state,_that.inputId);case BridgeThreadItemState_Inference() when inference != null:
 return inference(_that.inferenceId,_that.model,_that.state);case BridgeThreadItemState_Skill() when skill != null:
@@ -2194,13 +2194,13 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)  raw,required TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)  thinking,required TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput)  tool,required TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)  agent,required TResult Function( BridgeTurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)  inference,required TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)  skill,required TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)  file,required TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)  contextCompaction,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)  raw,required TResult Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)  text,required TResult Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)  thinking,required TResult Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)  tool,required TResult Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)  agent,required TResult Function( BridgeTurnState state,  String? inputId)  turn,required TResult Function( String inferenceId,  String model,  BridgeThreadInferenceState state)  inference,required TResult Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)  skill,required TResult Function( String path,  String? mediaType,  PlatformInt64 completedAt)  file,required TResult Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)  contextCompaction,}) {final _that = this;
 switch (_that) {
 case BridgeThreadItemState_Raw():
 return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text():
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking():
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool():
-return tool(_that.invocation,_that.state,_that.userInput);case BridgeThreadItemState_Agent():
+return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent():
 return agent(_that.identity,_that.state);case BridgeThreadItemState_Turn():
 return turn(_that.state,_that.inputId);case BridgeThreadItemState_Inference():
 return inference(_that.inferenceId,_that.model,_that.state);case BridgeThreadItemState_Skill():
@@ -2220,13 +2220,13 @@ return contextCompaction(_that.beforeTokens,_that.afterTokens,_that.compactedAt)
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult? Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult? Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput)?  tool,TResult? Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult? Function( BridgeTurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult? Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult? Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<BridgeRawPayload> payloads,  String notice,  PlatformInt64 recordedAt)?  raw,TResult? Function( BridgeThreadTextChannel channel,  String text,  List<BridgeThreadAttachment> attachments,  BridgeThreadContentLifecycle lifecycle)?  text,TResult? Function( List<String> summary,  List<String> content,  BridgeThreadContentLifecycle lifecycle)?  thinking,TResult? Function( BridgeThreadToolInvocation invocation,  BridgeThreadToolState state,  BridgeThreadUserInput? userInput,  BridgeThreadWaitPresentation? wait)?  tool,TResult? Function( BridgeThreadAgentIdentity identity,  BridgeThreadAgentState state)?  agent,TResult? Function( BridgeTurnState state,  String? inputId)?  turn,TResult? Function( String inferenceId,  String model,  BridgeThreadInferenceState state)?  inference,TResult? Function( String name,  String source,  String providerId,  BridgeSkillResourceBase resourceBase,  BridgeSkillActivationCause cause,  PlatformInt64 activatedAt)?  skill,TResult? Function( String path,  String? mediaType,  PlatformInt64 completedAt)?  file,TResult? Function( BigInt? beforeTokens,  BigInt? afterTokens,  PlatformInt64 compactedAt)?  contextCompaction,}) {final _that = this;
 switch (_that) {
 case BridgeThreadItemState_Raw() when raw != null:
 return raw(_that.payloads,_that.notice,_that.recordedAt);case BridgeThreadItemState_Text() when text != null:
 return text(_that.channel,_that.text,_that.attachments,_that.lifecycle);case BridgeThreadItemState_Thinking() when thinking != null:
 return thinking(_that.summary,_that.content,_that.lifecycle);case BridgeThreadItemState_Tool() when tool != null:
-return tool(_that.invocation,_that.state,_that.userInput);case BridgeThreadItemState_Agent() when agent != null:
+return tool(_that.invocation,_that.state,_that.userInput,_that.wait);case BridgeThreadItemState_Agent() when agent != null:
 return agent(_that.identity,_that.state);case BridgeThreadItemState_Turn() when turn != null:
 return turn(_that.state,_that.inputId);case BridgeThreadItemState_Inference() when inference != null:
 return inference(_that.inferenceId,_that.model,_that.state);case BridgeThreadItemState_Skill() when skill != null:
@@ -2504,13 +2504,15 @@ $BridgeThreadContentLifecycleCopyWith<$Res> get lifecycle {
 
 
 class BridgeThreadItemState_Tool extends BridgeThreadItemState {
-  const BridgeThreadItemState_Tool({required this.invocation, required this.state, this.userInput}): super._();
+  const BridgeThreadItemState_Tool({required this.invocation, required this.state, this.userInput, this.wait}): super._();
 
 
  final  BridgeThreadToolInvocation invocation;
  final  BridgeThreadToolState state;
 /// Typed ordinary Q&A history the call asked for, when it asked one.
  final  BridgeThreadUserInput? userInput;
+/// Typed wait/sleep presentation when this call is a wait or sleep.
+ final  BridgeThreadWaitPresentation? wait;
 
 /// Create a copy of BridgeThreadItemState
 /// with the given fields replaced by the non-null parameter values.
@@ -2522,18 +2524,18 @@ $BridgeThreadItemState_ToolCopyWith<BridgeThreadItemState_Tool> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadItemState_Tool&&(identical(other.invocation, invocation) || other.invocation == invocation)&&(identical(other.state, state) || other.state == state)&&(identical(other.userInput, userInput) || other.userInput == userInput));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadItemState_Tool&&(identical(other.invocation, invocation) || other.invocation == invocation)&&(identical(other.state, state) || other.state == state)&&(identical(other.userInput, userInput) || other.userInput == userInput)&&(identical(other.wait, wait) || other.wait == wait));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,invocation,state,userInput);
+    return Object.hash(runtimeType,invocation,state,userInput,wait);
 }
 
 @override
 String toString() {
-    return 'BridgeThreadItemState.tool(invocation: $invocation, state: $state, userInput: $userInput)';
+    return 'BridgeThreadItemState.tool(invocation: $invocation, state: $state, userInput: $userInput, wait: $wait)';
 }
 
 
@@ -2544,7 +2546,7 @@ abstract mixin class $BridgeThreadItemState_ToolCopyWith<$Res> implements $Bridg
   factory $BridgeThreadItemState_ToolCopyWith(BridgeThreadItemState_Tool value, $Res Function(BridgeThreadItemState_Tool) _then) = _$BridgeThreadItemState_ToolCopyWithImpl;
 @useResult
 $Res call({
- BridgeThreadToolInvocation invocation, BridgeThreadToolState state, BridgeThreadUserInput? userInput
+ BridgeThreadToolInvocation invocation, BridgeThreadToolState state, BridgeThreadUserInput? userInput, BridgeThreadWaitPresentation? wait
 });
 
 
@@ -2561,12 +2563,13 @@ class _$BridgeThreadItemState_ToolCopyWithImpl<$Res>
 
 /// Create a copy of BridgeThreadItemState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? invocation = null,Object? state = null,Object? userInput = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? invocation = null,Object? state = null,Object? userInput = freezed,Object? wait = freezed,}) {
   return _then(BridgeThreadItemState_Tool(
 invocation: null == invocation ? _self.invocation : invocation // ignore: cast_nullable_to_non_nullable
 as BridgeThreadToolInvocation,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
 as BridgeThreadToolState,userInput: freezed == userInput ? _self.userInput : userInput // ignore: cast_nullable_to_non_nullable
-as BridgeThreadUserInput?,
+as BridgeThreadUserInput?,wait: freezed == wait ? _self.wait : wait // ignore: cast_nullable_to_non_nullable
+as BridgeThreadWaitPresentation?,
   ));
 }
 
@@ -4234,5 +4237,309 @@ String toString() {
 
 
 
+
+/// @nodoc
+mixin _$BridgeThreadWaitIntent {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadWaitIntent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeThreadWaitIntent()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeThreadWaitIntentCopyWith<$Res>  {
+$BridgeThreadWaitIntentCopyWith(BridgeThreadWaitIntent _, $Res Function(BridgeThreadWaitIntent) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeThreadWaitIntent].
+extension BridgeThreadWaitIntentPatterns on BridgeThreadWaitIntent {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeThreadWaitIntent_Events value)?  events,TResult Function( BridgeThreadWaitIntent_Timer value)?  timer,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events() when events != null:
+return events(_that);case BridgeThreadWaitIntent_Timer() when timer != null:
+return timer(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeThreadWaitIntent_Events value)  events,required TResult Function( BridgeThreadWaitIntent_Timer value)  timer,}){
+final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events():
+return events(_that);case BridgeThreadWaitIntent_Timer():
+return timer(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeThreadWaitIntent_Events value)?  events,TResult? Function( BridgeThreadWaitIntent_Timer value)?  timer,}){
+final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events() when events != null:
+return events(_that);case BridgeThreadWaitIntent_Timer() when timer != null:
+return timer(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<BridgeThreadWaitTarget> targets,  BigInt timeoutMs)?  events,TResult Function( BigInt durationMs)?  timer,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events() when events != null:
+return events(_that.targets,_that.timeoutMs);case BridgeThreadWaitIntent_Timer() when timer != null:
+return timer(_that.durationMs);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<BridgeThreadWaitTarget> targets,  BigInt timeoutMs)  events,required TResult Function( BigInt durationMs)  timer,}) {final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events():
+return events(_that.targets,_that.timeoutMs);case BridgeThreadWaitIntent_Timer():
+return timer(_that.durationMs);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<BridgeThreadWaitTarget> targets,  BigInt timeoutMs)?  events,TResult? Function( BigInt durationMs)?  timer,}) {final _that = this;
+switch (_that) {
+case BridgeThreadWaitIntent_Events() when events != null:
+return events(_that.targets,_that.timeoutMs);case BridgeThreadWaitIntent_Timer() when timer != null:
+return timer(_that.durationMs);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeThreadWaitIntent_Events extends BridgeThreadWaitIntent {
+  const BridgeThreadWaitIntent_Events({required  List<BridgeThreadWaitTarget> targets, required this.timeoutMs}): _targets = targets,super._();
+
+
+ final  List<BridgeThreadWaitTarget> _targets;
+ List<BridgeThreadWaitTarget> get targets {
+  if (_targets is EqualUnmodifiableListView) return _targets;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_targets);
+}
+
+ final  BigInt timeoutMs;
+
+/// Create a copy of BridgeThreadWaitIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadWaitIntent_EventsCopyWith<BridgeThreadWaitIntent_Events> get copyWith => _$BridgeThreadWaitIntent_EventsCopyWithImpl<BridgeThreadWaitIntent_Events>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadWaitIntent_Events&&const DeepCollectionEquality().equals(other.targets, _targets)&&(identical(other.timeoutMs, timeoutMs) || other.timeoutMs == timeoutMs));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_targets),timeoutMs);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadWaitIntent.events(targets: $targets, timeoutMs: $timeoutMs)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadWaitIntent_EventsCopyWith<$Res> implements $BridgeThreadWaitIntentCopyWith<$Res> {
+  factory $BridgeThreadWaitIntent_EventsCopyWith(BridgeThreadWaitIntent_Events value, $Res Function(BridgeThreadWaitIntent_Events) _then) = _$BridgeThreadWaitIntent_EventsCopyWithImpl;
+@useResult
+$Res call({
+ List<BridgeThreadWaitTarget> targets, BigInt timeoutMs
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeThreadWaitIntent_EventsCopyWithImpl<$Res>
+    implements $BridgeThreadWaitIntent_EventsCopyWith<$Res> {
+  _$BridgeThreadWaitIntent_EventsCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadWaitIntent_Events _self;
+  final $Res Function(BridgeThreadWaitIntent_Events) _then;
+
+/// Create a copy of BridgeThreadWaitIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? targets = null,Object? timeoutMs = null,}) {
+  return _then(BridgeThreadWaitIntent_Events(
+targets: null == targets ? _self._targets : targets // ignore: cast_nullable_to_non_nullable
+as List<BridgeThreadWaitTarget>,timeoutMs: null == timeoutMs ? _self.timeoutMs : timeoutMs // ignore: cast_nullable_to_non_nullable
+as BigInt,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeThreadWaitIntent_Timer extends BridgeThreadWaitIntent {
+  const BridgeThreadWaitIntent_Timer({required this.durationMs}): super._();
+
+
+ final  BigInt durationMs;
+
+/// Create a copy of BridgeThreadWaitIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadWaitIntent_TimerCopyWith<BridgeThreadWaitIntent_Timer> get copyWith => _$BridgeThreadWaitIntent_TimerCopyWithImpl<BridgeThreadWaitIntent_Timer>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadWaitIntent_Timer&&(identical(other.durationMs, durationMs) || other.durationMs == durationMs));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,durationMs);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadWaitIntent.timer(durationMs: $durationMs)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadWaitIntent_TimerCopyWith<$Res> implements $BridgeThreadWaitIntentCopyWith<$Res> {
+  factory $BridgeThreadWaitIntent_TimerCopyWith(BridgeThreadWaitIntent_Timer value, $Res Function(BridgeThreadWaitIntent_Timer) _then) = _$BridgeThreadWaitIntent_TimerCopyWithImpl;
+@useResult
+$Res call({
+ BigInt durationMs
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeThreadWaitIntent_TimerCopyWithImpl<$Res>
+    implements $BridgeThreadWaitIntent_TimerCopyWith<$Res> {
+  _$BridgeThreadWaitIntent_TimerCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadWaitIntent_Timer _self;
+  final $Res Function(BridgeThreadWaitIntent_Timer) _then;
+
+/// Create a copy of BridgeThreadWaitIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? durationMs = null,}) {
+  return _then(BridgeThreadWaitIntent_Timer(
+durationMs: null == durationMs ? _self.durationMs : durationMs // ignore: cast_nullable_to_non_nullable
+as BigInt,
+  ));
+}
+
+
+}
 
 // dart format on
