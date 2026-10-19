@@ -20,7 +20,11 @@ class StatisticsTab extends ConsumerStatefulWidget {
 }
 
 class _StatisticsTabState extends ConsumerState<StatisticsTab> {
+  /// 顶层模型筛选：唯一的账户模型复合身份 key（不含 effort）。
   String? _filter;
+
+  /// 组内思考强度筛选：独立于顶层模型身份；`null` 表示不筛选强度。
+  String? _effortFilter;
   bool _mismatchesOnly = false;
 
   /// 最近一次可用的 canonical 统计快照；后续刷新保留 last-known，不整页闪回。
@@ -47,12 +51,18 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
         !snapshot.summaries.any((item) => item.filterKey == filter)) {
       _filter = null;
     }
+    final effortFilter = _effortFilter;
+    if (effortFilter != null &&
+        !snapshot.history.any((item) => item.effortKey == effortFilter)) {
+      _effortFilter = null;
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 760;
         final history = [
           for (final item in snapshot.history)
             if ((_filter == null || item.filterKey == _filter) &&
+                (_effortFilter == null || item.effortKey == _effortFilter) &&
                 (!_mismatchesOnly ||
                     item.modelMatchState == ModelMatchState.mismatched))
               item,
@@ -97,6 +107,9 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                     summaries: snapshot.summaries,
                     value: _filter,
                     onChanged: (value) => setState(() => _filter = value),
+                    effortValue: _effortFilter,
+                    onEffortChanged: (value) =>
+                        setState(() => _effortFilter = value),
                     mismatchesOnly: _mismatchesOnly,
                     onMismatchesOnlyChanged: (value) =>
                         setState(() => _mismatchesOnly = value),
@@ -127,9 +140,9 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                   itemBuilder: (context, index) {
                     final sample = history[index];
                     final key = StudioDriverKeys.statisticsHistoryRow(
-                      sample.providerInstanceId,
-                      sample.model,
-                      sample.reasoningEffort,
+                      sample.accountId,
+                      sample.modelId ?? '',
+                      sample.effort,
                       index,
                     );
                     return compact
@@ -246,27 +259,19 @@ class _SummarySection extends StatelessWidget {
                 DataColumn(label: Text(context.l10n.statisticsAverageResponse)),
               ],
               rows: [
-                for (final summary in summaries)
+                for (final summary in summaries) ...[
                   DataRow(
                     cells: [
                       DataCell(
                         _ModelLabel(
                           key: StudioDriverKeys.statisticsSummaryRow(
-                            summary.providerInstanceId,
-                            summary.model,
-                            summary.reasoningEffort,
+                            summary.accountId,
+                            summary.modelId,
                           ),
                           summary: summary,
                         ),
                       ),
-                      DataCell(
-                        Text(
-                          _formatReasoningEffort(
-                            context,
-                            summary.reasoningEffort,
-                          ),
-                        ),
-                      ),
+                      DataCell(Text(context.l10n.statisticsGroupTotal)),
                       DataCell(
                         Text(
                           context.tokenThroughputLabel(summary.tokensPerSecond),
@@ -282,6 +287,42 @@ class _SummarySection extends StatelessWidget {
                       ),
                     ],
                   ),
+                  for (final effort in summary.effortBreakdowns)
+                    DataRow(
+                      cells: [
+                        // 行身份挂在真实渲染的单元格内容上：`DataRow.key` 由
+                        // `Table` 消费，不进入元素树，无法作为可见身份。
+                        DataCell(
+                          KeyedSubtree(
+                            key: StudioDriverKeys.statisticsSummaryEffortRow(
+                              summary.accountId,
+                              summary.modelId,
+                              effort.effort,
+                            ),
+                            child: const SizedBox.shrink(),
+                          ),
+                        ),
+                        DataCell(
+                          Text(_formatReasoningEffort(context, effort.effort)),
+                        ),
+                        DataCell(
+                          Text(
+                            context.tokenThroughputLabel(
+                              effort.tokensPerSecond,
+                            ),
+                          ),
+                        ),
+                        DataCell(Text('${effort.sampleCount}')),
+                        DataCell(
+                          Text(formatTokenCount(effort.completionTokens)),
+                        ),
+                        DataCell(Text(_formatMillis(effort.averageTtftMillis))),
+                        DataCell(
+                          Text(_formatMillis(effort.averageResponseMillis)),
+                        ),
+                      ],
+                    ),
+                ],
               ],
             ),
           ),
@@ -298,13 +339,12 @@ class _CompactSummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SettingsResourceRow(
     key: StudioDriverKeys.statisticsSummaryRow(
-      summary.providerInstanceId,
-      summary.model,
-      summary.reasoningEffort,
+      summary.accountId,
+      summary.modelId,
     ),
-    title: _identityLabel(context, summary.model),
+    title: _identityLabel(context, summary.modelId),
     subtitle:
-        '${_identityLabel(context, summary.providerDisplayName)} · ${_identityLabel(context, summary.providerInstanceId)}',
+        '${_identityLabel(context, summary.accountDisplayName)} · ${_identityLabel(context, summary.accountId)}',
     children: [
       Wrap(
         spacing: 16,
@@ -312,7 +352,7 @@ class _CompactSummaryCard extends StatelessWidget {
         children: [
           SettingsMetric(
             context.l10n.statisticsReasoningEffort,
-            _formatReasoningEffort(context, summary.reasoningEffort),
+            context.l10n.statisticsGroupTotal,
           ),
           SettingsMetric(
             context.l10n.statisticsSpeed,
@@ -336,6 +376,32 @@ class _CompactSummaryCard extends StatelessWidget {
           ),
         ],
       ),
+      if (summary.effortBreakdowns.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text(
+          context.l10n.statisticsEffortBreakdownTitle,
+          style: context.text.labelSmall?.copyWith(
+            color: context.colors.onSurfaceVariant,
+          ),
+        ),
+        for (final effort in summary.effortBreakdowns)
+          Padding(
+            key: StudioDriverKeys.statisticsSummaryEffortRow(
+              summary.accountId,
+              summary.modelId,
+              effort.effort,
+            ),
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              '${_formatReasoningEffort(context, effort.effort)} · '
+              '${context.tokenThroughputLabel(effort.tokensPerSecond)} · '
+              '${context.l10n.statisticsSamples} ${effort.sampleCount}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.text.bodySmall,
+            ),
+          ),
+      ],
       const Divider(height: 24),
     ],
   );
@@ -352,12 +418,12 @@ class _ModelLabel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          _identityLabel(context, summary.model),
+          _identityLabel(context, summary.modelId),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
         Text(
-          '${_identityLabel(context, summary.providerDisplayName)} · ${_identityLabel(context, summary.providerInstanceId)}',
+          '${_identityLabel(context, summary.accountDisplayName)} · ${_identityLabel(context, summary.accountId)}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.labelSmall
@@ -374,6 +440,8 @@ class _HistoryHeader extends StatelessWidget {
     required this.summaries,
     required this.value,
     required this.onChanged,
+    required this.effortValue,
+    required this.onEffortChanged,
     required this.mismatchesOnly,
     required this.onMismatchesOnlyChanged,
   });
@@ -382,6 +450,8 @@ class _HistoryHeader extends StatelessWidget {
   final List<ModelPerformanceSummaryView> summaries;
   final String? value;
   final ValueChanged<String?> onChanged;
+  final String? effortValue;
+  final ValueChanged<String?> onEffortChanged;
   final bool mismatchesOnly;
   final ValueChanged<bool> onMismatchesOnlyChanged;
 
@@ -422,18 +492,16 @@ class _HistoryHeader extends StatelessWidget {
                     value: sample.filterKey,
                     label: _formatPerformanceIdentity(
                       context,
-                      sample.providerDisplayName,
-                      sample.providerInstanceId,
-                      sample.model,
-                      sample.reasoningEffort,
+                      sample.accountDisplayName,
+                      sample.accountId,
+                      sample.displayModel,
                     ),
                     labelWidget: Text(
                       _formatPerformanceIdentity(
                         context,
-                        sample.providerDisplayName,
-                        sample.providerInstanceId,
-                        sample.model,
-                        sample.reasoningEffort,
+                        sample.accountDisplayName,
+                        sample.accountId,
+                        sample.displayModel,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -444,24 +512,51 @@ class _HistoryHeader extends StatelessWidget {
                     value: summary.filterKey,
                     label: _formatPerformanceIdentity(
                       context,
-                      summary.providerDisplayName,
-                      summary.providerInstanceId,
-                      summary.model,
-                      summary.reasoningEffort,
+                      summary.accountDisplayName,
+                      summary.accountId,
+                      summary.modelId,
                     ),
                     labelWidget: Text(
                       _formatPerformanceIdentity(
                         context,
-                        summary.providerDisplayName,
-                        summary.providerInstanceId,
-                        summary.model,
-                        summary.reasoningEffort,
+                        summary.accountDisplayName,
+                        summary.accountId,
+                        summary.modelId,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
             ],
             onSelected: onChanged,
+          ),
+        );
+        final seenEfforts = <String>{};
+        final effortFilter = SizedBox(
+          key: StudioDriverKeys.statisticsEffortFilter,
+          width: filterWidth,
+          child: DropdownMenu<String?>(
+            // 强度筛选是顶层模型身份的组内细分，独立于模型筛选。
+            initialSelection: effortValue,
+            hintText: context.l10n.statisticsAllEfforts,
+            expandedInsets: EdgeInsets.zero,
+            dropdownMenuEntries: [
+              DropdownMenuEntry<String?>(
+                value: null,
+                label: context.l10n.statisticsAllEfforts,
+                labelWidget: Text(context.l10n.statisticsAllEfforts),
+              ),
+              for (final sample in history)
+                if (seenEfforts.add(sample.effortKey))
+                  DropdownMenuEntry<String?>(
+                    value: sample.effortKey,
+                    label: _formatReasoningEffort(context, sample.effort),
+                    labelWidget: Text(
+                      _formatReasoningEffort(context, sample.effort),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+            ],
+            onSelected: onEffortChanged,
           ),
         );
         final mismatchFilter = InkWell(
@@ -488,25 +583,14 @@ class _HistoryHeader extends StatelessWidget {
             ),
           ),
         );
-        if (constraints.maxWidth < 376) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              title,
-              const SizedBox(height: 12),
-              filter,
-              const SizedBox(height: 8),
-              mismatchFilter,
-            ],
-          );
-        }
-        return Row(
-          children: [
-            Expanded(child: title),
-            mismatchFilter,
-            const SizedBox(width: 12),
-            filter,
-          ],
+        // 筛选区域按可用宽度换行：标题与三个控件都保持自身宽度，空间不足时整组
+        // 换到下一行，不隐藏、不压缩，也不依赖固定机型阈值。
+        return Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 8,
+          children: [title, mismatchFilter, filter, effortFilter],
         );
       },
     );
@@ -543,7 +627,7 @@ class _WideHistoryRow extends StatelessWidget {
       children: [
         Text(_formatCompletedAt(context, sample.completedAt)),
         _ModelIdentity(sample: sample),
-        Text(_formatReasoningEffort(context, sample.reasoningEffort)),
+        Text(_formatReasoningEffort(context, sample.effort)),
         Text(formatTokenCount(sample.completionTokens)),
         Text(_formatSampleMillis(context, sample.ttftMillis)),
         Text(_formatSampleMillis(context, sample.decodeMillis)),
@@ -624,7 +708,7 @@ class _CompactHistoryCard extends StatelessWidget {
             children: [
               SettingsMetric(
                 context.l10n.statisticsReasoningEffort,
-                _formatReasoningEffort(context, sample.reasoningEffort),
+                _formatReasoningEffort(context, sample.effort),
               ),
               SettingsMetric(
                 context.l10n.statisticsSpeed,
@@ -665,7 +749,7 @@ class _ModelIdentity extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final configured = sample.configuredModel;
+    final configured = sample.modelId;
     final sent = sample.sentModel;
     final reported = sample.reportedModel;
     final hasMapping = configured != null && sent != null && configured != sent;
@@ -843,15 +927,15 @@ String _modelIdentityDescription(
     ModelMatchState.unreported => context.l10n.statisticsModelUnreported,
     ModelMatchState.legacyUnknown => context.l10n.statisticsModelLegacyUnknown,
   };
-  final providerName = _identityLabel(context, sample.providerDisplayName);
-  final instanceId = _identityLabel(context, sample.providerInstanceId);
-  final provider = sample.providerDisplayName == sample.providerInstanceId
-      ? providerName
-      : '$providerName · $instanceId';
+  final accountName = _identityLabel(context, sample.accountDisplayName);
+  final instanceId = _identityLabel(context, sample.accountId);
+  final account = sample.accountDisplayName == sample.accountId
+      ? accountName
+      : '$accountName · $instanceId';
   final unavailable = context.l10n.statisticsModelUnavailable;
   return [
-    provider,
-    '${context.l10n.statisticsConfiguredModel}: ${sample.configuredModel == null ? unavailable : _identityLabel(context, sample.configuredModel!)}',
+    account,
+    '${context.l10n.statisticsConfiguredModel}: ${sample.modelId == null ? unavailable : _identityLabel(context, sample.modelId!)}',
     '${context.l10n.statisticsSentModel}: ${sample.sentModel == null ? unavailable : _identityLabel(context, sample.sentModel!)}',
     '${context.l10n.statisticsReportedModel}: ${sample.reportedModel == null ? unavailable : _identityLabel(context, sample.reportedModel!)}',
     status,
@@ -860,16 +944,14 @@ String _modelIdentityDescription(
 
 String _formatPerformanceIdentity(
   BuildContext context,
-  String providerDisplayName,
-  String providerInstanceId,
-  String model,
-  String? reasoningEffort,
+  String accountDisplayName,
+  String accountId,
+  String modelId,
 ) {
   return [
-    _identityLabel(context, providerDisplayName),
-    _identityLabel(context, providerInstanceId),
-    _identityLabel(context, model),
-    _formatReasoningEffort(context, reasoningEffort),
+    _identityLabel(context, accountDisplayName),
+    _identityLabel(context, accountId),
+    _identityLabel(context, modelId),
   ].join(' · ');
 }
 

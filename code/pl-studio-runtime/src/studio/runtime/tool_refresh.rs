@@ -79,7 +79,7 @@ impl CatalogSources {
             | StudioProductEventKind::ModelCatalogStateChanged(_)
             | StudioProductEventKind::RecoveryStateChanged(_)
             | StudioProductEventKind::McpStateChanged(_)
-            | StudioProductEventKind::ProviderUsageStateChanged(_)
+            | StudioProductEventKind::AccountUsageStateChanged(_)
             | StudioProductEventKind::ModelPerformanceStateChanged(_)
             | StudioProductEventKind::SessionCostsChanged(_)
             | StudioProductEventKind::UpdaterStateChanged(_)

@@ -16,9 +16,9 @@
 
 use super::context_replay_recovery::wait_driver;
 use super::*;
-use pl_model::provider::{
-    HostedWebSearchDialect, ProviderAdapterKind, ProviderEndpoint, ProviderServiceCapabilities,
-    StandaloneWebSearchDialect, WebSearchProviderCapabilities,
+use pl_model::protocol::{
+    HostedWebSearchDialect, ProtocolEndpoint, ProtocolKind, ProtocolServiceCapabilities,
+    StandaloneWebSearchDialect, WebSearchServiceCapabilities,
 };
 use pl_studio_runtime::config::{
     McpServerTransport, StudioMcpServerEntry as McpServerConfig, WebSearchContextSize,
@@ -34,7 +34,7 @@ const OPENAI_MODEL: &str = "fixture-openai";
 const DEEPSEEK_MODEL: &str = "fixture-deepseek";
 const ZHIPU_MODEL: &str = "fixture-glm";
 
-/// Provider credential environment variables the coordinator injects into the
+/// Account credential environment variables the coordinator injects into the
 /// isolated GUI process. The names are this scenario's own; the values match the
 /// fixture's per-endpoint expected keys.
 const OPENAI_KEY_ENV: &str = "ANYWORK_FIXTURE_WEB_SEARCH_OPENAI_KEY";
@@ -82,40 +82,40 @@ impl WebSearchFault {
     }
 }
 
-fn openai_capabilities() -> ProviderServiceCapabilities {
-    ProviderServiceCapabilities {
-        web_search: WebSearchProviderCapabilities {
+fn openai_capabilities() -> ProtocolServiceCapabilities {
+    ProtocolServiceCapabilities {
+        web_search: WebSearchServiceCapabilities {
             hosted_responses: false,
             hosted_dialect: HostedWebSearchDialect::OpenAiResponses,
             standalone: Some(StandaloneWebSearchDialect::OpenAiSearchApi),
         },
-        ..ProviderServiceCapabilities::default()
+        ..ProtocolServiceCapabilities::default()
     }
 }
 
-fn deepseek_capabilities() -> ProviderServiceCapabilities {
-    ProviderServiceCapabilities {
-        web_search: WebSearchProviderCapabilities {
+fn deepseek_capabilities() -> ProtocolServiceCapabilities {
+    ProtocolServiceCapabilities {
+        web_search: WebSearchServiceCapabilities {
             hosted_responses: false,
             hosted_dialect: HostedWebSearchDialect::DeepSeekResponses,
             // DeepSeek standalone search uses the official Search & Fetch tools API.
             standalone: Some(StandaloneWebSearchDialect::DeepSeekToolsApi),
         },
-        ..ProviderServiceCapabilities::default()
+        ..ProtocolServiceCapabilities::default()
     }
 }
 
 fn build_provider(
     name: &str,
-    adapter: ProviderAdapterKind,
+    adapter: ProtocolKind,
     base_url: &str,
     credential_env: Option<&str>,
     model_id: &str,
-    capabilities: ProviderServiceCapabilities,
+    capabilities: ProtocolServiceCapabilities,
     model_web_search: bool,
-) -> ProviderConfig {
-    let mut endpoint = ProviderEndpoint::compatible(name, base_url);
-    endpoint.adapter = adapter;
+) -> AccountConfig {
+    let mut endpoint = ProtocolEndpoint::compatible(name, base_url);
+    endpoint.protocol = adapter;
     endpoint.service_capabilities = capabilities;
     let mut model = ModelInfo::compatible(model_id);
     model.display_name = format!("Fixture {name}");
@@ -124,9 +124,9 @@ fn build_provider(
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     model.binding.request.api_model = None;
-    let mut provider = ProviderConfig::from_explicit_models(endpoint, vec![model]);
-    provider.bearer_token_env = credential_env.map(str::to_owned);
-    provider
+    let mut account = AccountConfig::from_explicit_models(endpoint, vec![model]);
+    account.bearer_token_env = credential_env.map(str::to_owned);
+    account
 }
 
 /// Writes the isolated config: three fixture session models (OpenAI / DeepSeek /
@@ -142,7 +142,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             OPENAI_PROVIDER_ID,
             build_provider(
                 "Fixture OpenAI",
-                ProviderAdapterKind::OpenAiCompatible,
+                ProtocolKind::OpenAiCompatible,
                 &base_url,
                 search_env,
                 OPENAI_MODEL,
@@ -154,7 +154,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             DEEPSEEK_PROVIDER_ID,
             build_provider(
                 "Fixture DeepSeek",
-                ProviderAdapterKind::DeepSeek,
+                ProtocolKind::DeepSeek,
                 &base_url,
                 deepseek_env,
                 DEEPSEEK_MODEL,
@@ -166,31 +166,28 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             ZHIPU_PROVIDER_ID,
             build_provider(
                 "Fixture GLM",
-                ProviderAdapterKind::Zhipu,
+                ProtocolKind::Zhipu,
                 &base_url,
                 None,
                 ZHIPU_MODEL,
-                ProviderServiceCapabilities::default(),
+                ProtocolServiceCapabilities::default(),
                 false,
             ),
         ),
     ];
-    config.models.providers.clear();
-    for (id, provider) in providers {
-        config
-            .models
-            .providers
-            .insert(ProviderId::new(id)?, provider);
+    config.models.accounts.clear();
+    for (id, account) in providers {
+        config.models.accounts.insert(AccountId::new(id)?, account);
     }
-    let openai_id = ProviderId::new(OPENAI_PROVIDER_ID)?;
+    let openai_id = AccountId::new(OPENAI_PROVIDER_ID)?;
     for route in config
         .models
         .routes
         .values_mut()
         .chain(config.mode_model_routes.values_mut())
     {
-        route.provider = openai_id.clone();
-        route.model = OPENAI_MODEL.to_string();
+        route.account_id = openai_id.clone();
+        route.model_id = OPENAI_MODEL.to_string();
         route.effort = None;
     }
     config.web_search.mode = WebSearchMode::Live;
@@ -468,8 +465,8 @@ pub(super) fn run(
                 .stdout(Stdio::from(log.try_clone()?))
                 .stderr(Stdio::from(log))
                 .env("ANYWORK_HOME", context.home);
-            if let Some(providers) = context.providers {
-                command.arg(format!("--provider-ids={providers}"));
+            if let Some(providers) = context.accounts {
+                command.arg(format!("--account-ids={providers}"));
             }
             if let Some(models) = context.models {
                 command.arg(format!("--models={models}"));
@@ -854,7 +851,7 @@ pub(super) fn run(
         "fixture shutdown failed: {rejected_categories:?}"
     );
     if context.probe_mode == "real" {
-        // The real-provider probe is driven directly by the coordinator against
+        // The real-account probe is driven directly by the coordinator against
         // its own GUI; the acceptance fixture endpoints are not claimed here.
         println!(
             "Evidence: {} (probe mode real, human verdict pending)",

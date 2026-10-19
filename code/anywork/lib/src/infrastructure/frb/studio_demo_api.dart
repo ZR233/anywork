@@ -36,13 +36,13 @@ class DemoStudioTransport extends StudioTransport
 
   DemoStudioTransport({
     this.lspActivityLoop = false,
-    this._providerCatalog = demoProviderCatalogFixture,
+    this._accountCatalog = demoAccountCatalogFixture,
   });
 
   /// 目录分页窗口的页大小；Driver 模式填充大量历史会话以验收触底加载。
   static const int directoryPageSize = 20;
 
-  final ProviderCatalogView _providerCatalog;
+  final AccountCatalogView _accountCatalog;
 
   /// 是否周期推进 demo LSP 索引活动；GUI demo 构建开启，测试默认关闭保持确定性。
   final bool lspActivityLoop;
@@ -122,8 +122,8 @@ class DemoStudioTransport extends StudioTransport
   /// Driver 模式注入的历史会话数量；普通 demo 为 0。
   int get directoryPageFillCount => 0;
 
-  List<ProviderSettingsView>? _providers;
-  String? _defaultProviderId;
+  List<AccountSettingsView>? _accounts;
+  String? _defaultAccountId;
   List<ModeModelRouteView>? _modeRoutes;
   List<RoleSettingsView>? _roles;
   InstructionsSettingsView _instructions = const InstructionsSettingsView();
@@ -132,8 +132,8 @@ class DemoStudioTransport extends StudioTransport
   WebSearchSettingsView _webSearch = const WebSearchSettingsView(
     effectiveMode: 'disabled',
     availability: 'available',
-    providerId: 'openai',
-    model: 'gpt-5',
+    accountId: 'openai',
+    modelId: 'gpt-5',
   );
   DeepSeekWebSearchSettingsView _deepSeekWebSearch =
       const DeepSeekWebSearchSettingsView(
@@ -141,7 +141,7 @@ class DemoStudioTransport extends StudioTransport
         configuredFetchEnabled: true,
         effectiveFetchEnabled: true,
         availability: 'available',
-        providerId: 'deepseek-primary',
+        accountId: 'deepseek-primary',
       );
   PermissionMode _permissionMode = PermissionMode.requestApproval;
   int _turnSequence = 0;
@@ -149,8 +149,8 @@ class DemoStudioTransport extends StudioTransport
   int _settingsRevision = 1;
   int _attachmentSequence = 0;
   int _skillsRevision = 1;
-  int _providerUsageRevision = 1;
-  final Map<String, ProviderUsageView> _providerUsages = {};
+  int _accountUsageRevision = 1;
+  final Map<String, AccountUsageView> _accountUsages = {};
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -278,7 +278,7 @@ class DemoStudioTransport extends StudioTransport
           project.id: _demoSkillsState(project.id, _skillsRevision),
       },
       threadModeCatalog: _demoThreadModeCatalog(),
-      providerUsageState: _demoProviderUsageState(),
+      accountUsageState: _demoAccountUsageState(),
       modelPerformance: _demoModelPerformance(_fixtureTime),
       updaterState: _demoUpdaterState(),
       persistenceState: _demoPersistenceState(),
@@ -366,35 +366,35 @@ class DemoStudioTransport extends StudioTransport
   RecoveryStateSnapshot _demoRecoveryState() =>
       RecoveryStateSnapshot.fromState(state: _demoInitialResource());
 
-  ProviderSettingsView _demoDefaultProvider() {
-    final preset = _providerCatalog.presets.first;
-    return preset
-        .createProvider(
-          preset.id,
-          _providerCatalog.modelsFor(preset.modelCatalogId),
+  AccountSettingsView _demoDefaultAccount() {
+    final template = _accountCatalog.templates.first;
+    return template
+        .createAccount(
+          template.id,
+          _accountCatalog.modelsFor(template.modelCatalogId),
         )
         .copyWith(hasBearerToken: true, status: 'ready', updatedAt: 'Loaded');
   }
 
   SettingsStateSnapshot _demoSettingsState() {
-    final defaultProvider = _demoDefaultProvider();
-    final defaultModel = defaultProvider.models
-        .where((model) => model.modelId == defaultProvider.defaultModel)
+    final defaultAccount = _demoDefaultAccount();
+    final defaultModel = defaultAccount.models
+        .where((model) => model.modelId == defaultAccount.defaultModelId)
         .firstOrNull;
     final effort = defaultModel?.defaultReasoningEffort;
     final resolvedEffort = effort?.isNotEmpty == true
         ? effort!
         : defaultModel?.reasoningEfforts.firstOrNull ?? '';
     return _settingsSnapshot(
-      providers: _providers ?? [defaultProvider],
+      accounts: _accounts ?? [defaultAccount],
       modeRoutes:
           _modeRoutes ??
           [
             for (final mode in [ThreadModeId.simple, ThreadModeId.task])
               ModeModelRouteView(
                 modeId: mode,
-                providerId: defaultProvider.id,
-                model: defaultProvider.defaultModel,
+                accountId: defaultAccount.id,
+                modelId: defaultAccount.defaultModelId,
                 effort: resolvedEffort,
               ),
           ],
@@ -409,24 +409,24 @@ class DemoStudioTransport extends StudioTransport
             ])
               RoleSettingsView(
                 key: role,
-                providerId: defaultProvider.id,
-                model: defaultProvider.defaultModel,
+                accountId: defaultAccount.id,
+                modelId: defaultAccount.defaultModelId,
                 effort: resolvedEffort,
               ),
           ],
     );
   }
 
-  ProviderUsageStateSnapshot _demoProviderUsageState() {
-    final providers = _providers ?? [_demoDefaultProvider()];
+  AccountUsageStateSnapshot _demoAccountUsageState() {
+    final accounts = _accounts ?? [_demoDefaultAccount()];
     final usages = [
-      for (final provider in providers)
-        _providerUsages[provider.id] ?? _demoProviderUsage(provider),
+      for (final account in accounts)
+        _accountUsages[account.id] ?? _demoAccountUsage(account),
     ];
-    return ProviderUsageStateSnapshot.fromState(
+    return AccountUsageStateSnapshot.fromState(
       state: _demoReadyResource(
-        _providerUsageRevision,
-        ProviderUsageStateData(configFingerprint: 'demo', usages: usages),
+        _accountUsageRevision,
+        AccountUsageStateData(configFingerprint: 'demo', usages: usages),
       ),
     );
   }
@@ -478,7 +478,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   SettingsStateSnapshot _settingsSnapshot({
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
     required List<ModeModelRouteView> modeRoutes,
     required List<RoleSettingsView> roles,
   }) {
@@ -486,8 +486,8 @@ class DemoStudioTransport extends StudioTransport
       state: _demoReadyResource(
         _settingsRevision,
         SettingsStateData(
-          providers: providers,
-          defaultProviderId: _defaultProviderId ?? providers.firstOrNull?.id,
+          accounts: accounts,
+          defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
           modeModelRoutes: modeRoutes,
           roles: roles,
           instructions: _instructions,
@@ -508,17 +508,19 @@ class DemoStudioTransport extends StudioTransport
             ?.where((route) => route.modeId == ThreadModeId.simple)
             .firstOrNull;
     if (saved != null) return saved;
-    final preset = _providerCatalog.presets.first;
-    final models = _providerCatalog.modelsFor(preset.modelCatalogId);
+    final template = _accountCatalog.templates.first;
+    final models = _accountCatalog.modelsFor(template.modelCatalogId);
     final model =
         models
-            .where((candidate) => candidate.modelId == preset.suggestedModel)
+            .where(
+              (candidate) => candidate.modelId == template.suggestedModelId,
+            )
             .firstOrNull ??
         models.first;
     return ModeModelRouteView(
       modeId: mode,
-      providerId: preset.id,
-      model: model.modelId,
+      accountId: template.id,
+      modelId: model.modelId,
       effort: model.defaultReasoningEffort.isNotEmpty
           ? model.defaultReasoningEffort
           : model.reasoningEfforts.firstOrNull ?? '',
@@ -526,38 +528,48 @@ class DemoStudioTransport extends StudioTransport
   }
 
   ModelPerformanceSnapshotView _demoModelPerformance(DateTime now) {
-    const deepseekHigh = ModelPerformanceSummaryView(
-      providerInstanceId: 'deepseek-primary',
-      providerDisplayName: 'DeepSeek',
-      model: 'deepseek-flash',
-      reasoningEffort: 'high',
-      sampleCount: 1,
-      completionTokens: 150,
-      totalTtftMillis: 410,
-      totalDecodeMillis: 1000,
-      totalResponseMillis: 1410,
+    // 顶层身份是 (accountId, 配置 modelId)；同一账号模型的强度细分留在组内。
+    const deepseek = ModelPerformanceSummaryView(
+      accountId: 'deepseek-primary',
+      accountDisplayName: 'DeepSeek',
+      modelId: 'deepseek-flash',
+      sampleCount: 2,
+      completionTokens: 300,
+      totalTtftMillis: 760,
+      totalDecodeMillis: 2000,
+      totalResponseMillis: 2760,
       tokensPerSecond: 150,
-      averageTtftMillis: 410,
-      averageResponseMillis: 1410,
-    );
-    const deepseekNone = ModelPerformanceSummaryView(
-      providerInstanceId: 'deepseek-primary',
-      providerDisplayName: 'DeepSeek',
-      model: 'deepseek-flash',
-      reasoningEffort: 'none',
-      sampleCount: 1,
-      completionTokens: 150,
-      totalTtftMillis: 350,
-      totalDecodeMillis: 1000,
-      totalResponseMillis: 1350,
-      tokensPerSecond: 150,
-      averageTtftMillis: 350,
-      averageResponseMillis: 1350,
+      averageTtftMillis: 380,
+      averageResponseMillis: 1380,
+      effortBreakdowns: [
+        ModelPerformanceEffortSummaryView(
+          effort: 'high',
+          sampleCount: 1,
+          completionTokens: 150,
+          totalTtftMillis: 410,
+          totalDecodeMillis: 1000,
+          totalResponseMillis: 1410,
+          tokensPerSecond: 150,
+          averageTtftMillis: 410,
+          averageResponseMillis: 1410,
+        ),
+        ModelPerformanceEffortSummaryView(
+          effort: 'none',
+          sampleCount: 1,
+          completionTokens: 150,
+          totalTtftMillis: 350,
+          totalDecodeMillis: 1000,
+          totalResponseMillis: 1350,
+          tokensPerSecond: 150,
+          averageTtftMillis: 350,
+          averageResponseMillis: 1350,
+        ),
+      ],
     );
     const openai = ModelPerformanceSummaryView(
-      providerInstanceId: 'openai-work',
-      providerDisplayName: 'OpenAI Work',
-      model: 'gpt-5.6-codex',
+      accountId: 'openai-work',
+      accountDisplayName: 'OpenAI Work',
+      modelId: 'gpt-5.6-codex',
       sampleCount: 1,
       completionTokens: 216,
       totalTtftMillis: 620,
@@ -566,17 +578,33 @@ class DemoStudioTransport extends StudioTransport
       tokensPerSecond: 86.4,
       averageTtftMillis: 620,
       averageResponseMillis: 3120,
+      effortBreakdowns: [
+        ModelPerformanceEffortSummaryView(
+          effort: null,
+          sampleCount: 1,
+          completionTokens: 216,
+          totalTtftMillis: 620,
+          totalDecodeMillis: 2500,
+          totalResponseMillis: 3120,
+          tokensPerSecond: 86.4,
+          averageTtftMillis: 620,
+          averageResponseMillis: 3120,
+        ),
+      ],
     );
     return ModelPerformanceSnapshotView(
       revision: 3,
       updatedAt: now,
-      summaries: const [deepseekHigh, deepseekNone, openai],
+      summaries: const [deepseek, openai],
       history: [
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(seconds: 12)),
-          providerInstanceId: openai.providerInstanceId,
-          providerDisplayName: openai.providerDisplayName,
-          model: openai.model,
+          accountId: openai.accountId,
+          accountDisplayName: openai.accountDisplayName,
+          modelId: openai.modelId,
+          sentModel: openai.modelId,
+          reportedModel: openai.modelId,
+          modelMatchState: ModelMatchState.matched,
           completionTokens: 216,
           ttftMillis: 620,
           decodeMillis: 2500,
@@ -585,10 +613,13 @@ class DemoStudioTransport extends StudioTransport
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(seconds: 34)),
-          providerInstanceId: deepseekHigh.providerInstanceId,
-          providerDisplayName: deepseekHigh.providerDisplayName,
-          model: deepseekHigh.model,
-          reasoningEffort: deepseekHigh.reasoningEffort,
+          accountId: deepseek.accountId,
+          accountDisplayName: deepseek.accountDisplayName,
+          modelId: deepseek.modelId,
+          sentModel: 'deepseek-flash-0724',
+          reportedModel: 'deepseek-flash',
+          modelMatchState: ModelMatchState.mismatched,
+          effort: 'high',
           completionTokens: 150,
           ttftMillis: 410,
           decodeMillis: 1000,
@@ -597,15 +628,30 @@ class DemoStudioTransport extends StudioTransport
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(minutes: 2)),
-          providerInstanceId: deepseekNone.providerInstanceId,
-          providerDisplayName: deepseekNone.providerDisplayName,
-          model: deepseekNone.model,
-          reasoningEffort: deepseekNone.reasoningEffort,
+          accountId: deepseek.accountId,
+          accountDisplayName: deepseek.accountDisplayName,
+          modelId: deepseek.modelId,
+          sentModel: deepseek.modelId,
+          modelMatchState: ModelMatchState.unreported,
+          effort: 'none',
           completionTokens: 150,
           ttftMillis: 350,
           decodeMillis: 1000,
           totalResponseMillis: 1350,
           tokensPerSecond: 150,
+        ),
+        // 旧记录没有配置模型证据：保持历史身份未知，不从当前目录补写。
+        ModelPerformanceSampleView(
+          completedAt: now.subtract(const Duration(minutes: 8)),
+          accountId: 'legacy-account',
+          accountDisplayName: 'Legacy account',
+          sentModel: 'legacy-alias-model',
+          modelMatchState: ModelMatchState.legacyUnknown,
+          completionTokens: 90,
+          ttftMillis: 500,
+          decodeMillis: 900,
+          totalResponseMillis: 1400,
+          tokensPerSecond: 100,
         ),
       ],
     );
@@ -895,10 +941,10 @@ class DemoStudioTransport extends StudioTransport
       revision: 1,
       interactions: const [],
       runtime: ThreadRuntimeView(
-        model: 'planner/local-responses',
+        modelId: 'planner/local-responses',
         modelRoute: ThreadModelRouteView(
-          providerId: route.providerId,
-          model: route.model,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
           revision: 1,
           available: true,
@@ -937,7 +983,7 @@ class DemoStudioTransport extends StudioTransport
   ThreadWorkspace _singleMessageWorkspace(
     StudioThread thread,
     String text,
-    String model,
+    String modelId,
     DateTime createdAt,
   ) {
     _threadItems[thread.id] = List.unmodifiable([
@@ -957,10 +1003,10 @@ class DemoStudioTransport extends StudioTransport
       revision: 1,
       interactions: const [],
       runtime: ThreadRuntimeView(
-        model: model,
+        modelId: modelId,
         modelRoute: ThreadModelRouteView(
-          providerId: _demoModeRoute(thread.mode).providerId,
-          model: model,
+          accountId: _demoModeRoute(thread.mode).accountId,
+          modelId: modelId,
           effort: null,
           revision: 1,
           available: true,
@@ -981,7 +1027,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<ProviderCatalogView> loadProviderCatalog() async => _providerCatalog;
+  Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
 
   @override
   Future<AgentProfilesStateView> readAgentProfilesState() async =>
@@ -1047,8 +1093,8 @@ class DemoStudioTransport extends StudioTransport
       description: draft.description,
       whenToUse: draft.whenToUse,
       systemInstructions: draft.systemInstructions,
-      providerId: draft.providerId,
-      model: draft.model,
+      accountId: draft.accountId,
+      modelId: draft.modelId,
       effort: draft.effort,
       source: '~/.anywork/agents/${draft.id}.toml',
       revision: 'demo-user-${draft.id}',
@@ -1281,10 +1327,10 @@ class DemoStudioTransport extends StudioTransport
     final workspace = _workspaces[thread.id]!;
     _workspaces[thread.id] = workspace.copyWith(
       runtime: workspace.runtime.copyWith(
-        model: route.model,
+        modelId: route.modelId,
         modelRoute: ThreadModelRouteView(
-          providerId: route.providerId,
-          model: route.model,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
           revision: 1,
           available: true,
@@ -1460,24 +1506,25 @@ class DemoStudioTransport extends StudioTransport
   // Compare canonical business values, excluding resource clocks and diagnostics.
   // This is a value comparison of the one demo owner, not a second state store.
   List<Object?> _demoSettingsFacts(SettingsStateSnapshot s) => [
-    s.defaultProviderId,
+    s.defaultAccountId,
     s.permissionMode,
     {
-      for (final p in s.providers)
+      for (final p in s.accounts)
         p.id: [
           p.name,
-          p.templateKind,
+          p.templateId,
+          p.protocol,
           p.baseUrl,
           p.bearerToken,
           p.hasBearerToken,
-          p.defaultModel,
+          p.defaultModelId,
           p.pricingEnabled,
           [
             for (final m in p.customModels)
               [
                 m.modelId,
                 m.displayName,
-                m.wireProtocol,
+                m.wireApi,
                 m.contextWindow,
                 m.maxOutputTokens,
               ],
@@ -1491,11 +1538,11 @@ class DemoStudioTransport extends StudioTransport
     },
     {
       for (final route in s.modeModelRoutes)
-        route.modeId.id: [route.providerId, route.model, route.effort],
+        route.modeId.id: [route.accountId, route.modelId, route.effort],
     },
     {
       for (final role in s.roles)
-        role.key: [role.providerId, role.model, role.effort],
+        role.key: [role.accountId, role.modelId, role.effort],
     },
     {
       for (final server in s.mcpServers)
@@ -1600,8 +1647,8 @@ class DemoStudioTransport extends StudioTransport
         description: '只读探索代码、文档和现场事实。',
         whenToUse: '需要定位边界、依赖或验证事实时。',
         systemInstructions: '优先收集事实并引用文件与命令。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v1',
@@ -1616,8 +1663,8 @@ class DemoStudioTransport extends StudioTransport
         description: '在项目目录内实施边界明确的修改。',
         whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
         systemInstructions: '遵守冻结的 writablePaths。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1632,8 +1679,8 @@ class DemoStudioTransport extends StudioTransport
         description: '在独立 Git worktree 内实施修改。',
         whenToUse: '需要物理隔离并显式整合 commit 时。',
         systemInstructions: '只修改分配的 worktree，不自动整合。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1648,8 +1695,8 @@ class DemoStudioTransport extends StudioTransport
         description: '独立审查实现和验证证据。',
         whenToUse: '需要复核实现质量时。',
         systemInstructions: '只读审查并报告具体证据。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1905,16 +1952,16 @@ class DemoStudioTransport extends StudioTransport
         _deepSeekWebSearch = _deepSeekWebSearch.withConfiguredFetchEnabled(
           value,
         );
-      case ModeModelCommand(:final modeId, :final providerId, :final model):
+      case ModeModelCommand(:final modeId, :final accountId, :final modelId):
         final mode = ThreadModeId.fromId(modeId);
-        final selected = _findDemoModel(settings.providers, providerId, model);
+        final selected = _findDemoModel(settings.accounts, accountId, modelId);
         final previous = settings.modeModelRoutes
             .where((route) => route.modeId == mode)
             .firstOrNull;
         final effort =
             previous != null &&
-                previous.providerId == providerId &&
-                previous.model == model
+                previous.accountId == accountId &&
+                previous.modelId == modelId
             ? previous.effort
             : selected.defaultReasoningEffort.isNotEmpty
             ? selected.defaultReasoningEffort
@@ -1924,8 +1971,8 @@ class DemoStudioTransport extends StudioTransport
             if (route.modeId != mode) route,
           ModeModelRouteView(
             modeId: mode,
-            providerId: providerId,
-            model: model,
+            accountId: accountId,
+            modelId: modelId,
             effort: effort,
           ),
         ];
@@ -1936,9 +1983,9 @@ class DemoStudioTransport extends StudioTransport
             .firstOrNull;
         final route = previous ?? _demoModeRoute(mode);
         final selected = _findDemoModel(
-          settings.providers,
-          route.providerId,
-          route.model,
+          settings.accounts,
+          route.accountId,
+          route.modelId,
         );
         final resolvedEffort =
             effort != null && selected.reasoningEfforts.contains(effort)
@@ -1951,28 +1998,28 @@ class DemoStudioTransport extends StudioTransport
             if (candidate.modeId != mode) candidate,
           ModeModelRouteView(
             modeId: mode,
-            providerId: route.providerId,
-            model: route.model,
+            accountId: route.accountId,
+            modelId: route.modelId,
             effort: resolvedEffort,
           ),
         ];
-      case RoleModelCommand(:final role, :final providerId, :final model):
-        final selected = _findDemoModel(settings.providers, providerId, model);
+      case RoleModelCommand(:final role, :final accountId, :final modelId):
+        final selected = _findDemoModel(settings.accounts, accountId, modelId);
         final previous = settings.roles
             .where((candidate) => candidate.key == role)
             .firstOrNull;
         final effort =
             previous != null &&
-                previous.providerId == providerId &&
-                previous.model == model
+                previous.accountId == accountId &&
+                previous.modelId == modelId
             ? previous.effort
             : selected.defaultReasoningEffort.isNotEmpty
             ? selected.defaultReasoningEffort
             : selected.reasoningEfforts.firstOrNull ?? '';
         final next = RoleSettingsView(
           key: role,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         );
         _roles = [
@@ -1988,9 +2035,9 @@ class DemoStudioTransport extends StudioTransport
           throw StateError('unknown demo Agent role: $role');
         }
         final selected = _findDemoModel(
-          settings.providers,
-          previous.providerId,
-          previous.model,
+          settings.accounts,
+          previous.accountId,
+          previous.modelId,
         );
         final resolvedEffort =
             effort != null && selected.reasoningEfforts.contains(effort)
@@ -2003,8 +2050,8 @@ class DemoStudioTransport extends StudioTransport
             candidate.key == role
                 ? RoleSettingsView(
                     key: candidate.key,
-                    providerId: candidate.providerId,
-                    model: candidate.model,
+                    accountId: candidate.accountId,
+                    modelId: candidate.modelId,
                     effort: resolvedEffort,
                   )
                 : candidate,
@@ -2024,8 +2071,8 @@ class DemoStudioTransport extends StudioTransport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final current = _demoSettingsState();
@@ -2044,10 +2091,10 @@ class DemoStudioTransport extends StudioTransport
     if (previousRoute.revision != expectedModelRouteRevision) {
       throw StateError('model route revision conflict');
     }
-    final selected = current.providers
-        .firstWhere((provider) => provider.id == providerId)
+    final selected = current.accounts
+        .firstWhere((account) => account.id == accountId)
         .models
-        .firstWhere((candidate) => candidate.modelId == model);
+        .firstWhere((candidate) => candidate.modelId == modelId);
     final selectedEffort = selected.reasoningEfforts.contains(effort)
         ? effort
         : selected.reasoningEfforts.firstOrNull ?? '';
@@ -2056,16 +2103,16 @@ class DemoStudioTransport extends StudioTransport
         if (route.modeId != thread.mode) route,
       ModeModelRouteView(
         modeId: thread.mode,
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: selectedEffort ?? '',
       ),
     ];
     _settingsRevision += 1;
     final runtime = workspace.runtime.copyWith(
       modelRoute: ThreadModelRouteView(
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: selectedEffort,
         revision: previousRoute.revision + 1,
         available: true,
@@ -2083,8 +2130,8 @@ class DemoStudioTransport extends StudioTransport
       receipt: _demoReceipt(
         operationId,
         changed:
-            previousRoute.providerId != providerId ||
-            previousRoute.model != model ||
+            previousRoute.accountId != accountId ||
+            previousRoute.modelId != modelId ||
             previousRoute.effort != selectedEffort ||
             !_sameDemoFacts(
               _demoSettingsFacts(current),
@@ -2155,8 +2202,8 @@ class DemoStudioTransport extends StudioTransport
               ? workspace.runtime
               : workspace.runtime.copyWith(
                   modelRoute: ThreadModelRouteView(
-                    providerId: route.providerId,
-                    model: route.model,
+                    accountId: route.accountId,
+                    modelId: route.modelId,
                     effort: route.effort,
                     revision: (workspace.runtime.modelRoute?.revision ?? 0) + 1,
                     available: true,
@@ -2622,7 +2669,7 @@ class DemoStudioTransport extends StudioTransport
       ThreadModeCatalogTopic() => ThreadModeCatalogBaseline(
         _demoThreadModeCatalog(),
       ),
-      ProviderUsageTopic() => ProviderUsageBaseline(_demoProviderUsageState()),
+      AccountUsageTopic() => AccountUsageBaseline(_demoAccountUsageState()),
       ModelPerformanceTopic() => ModelPerformanceBaseline(
         _demoModelPerformance(_fixtureTime),
       ),
@@ -2649,7 +2696,7 @@ class DemoStudioTransport extends StudioTransport
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
-      ProviderUsageBaseline(:final state) => state.revision,
+      AccountUsageBaseline(:final state) => state.revision,
       ModelPerformanceBaseline(:final state) => state.revision,
       SessionCostsBaseline(:final state) => state.revision,
       UpdaterBaseline(:final state) => state.revision,
@@ -2893,7 +2940,7 @@ class DemoStudioTransport extends StudioTransport
     _emitThreadUpdate(
       threadId,
       ThreadRuntimeUpdate(
-        runtime: workspace.runtime.copyWith(model: route.model),
+        runtime: workspace.runtime.copyWith(modelId: route.modelId),
         todo: null,
       ),
     );
@@ -2984,7 +3031,7 @@ class DemoStudioTransport extends StudioTransport
     const reasoningSummary =
         '## Inspecting the request\n\nChecking the live ThreadItem projection.';
     const reasoningContent =
-        'The provider is folding summary and raw reasoning independently.';
+        'The account is folding summary and raw reasoning independently.';
     _upsertChatItem(
       threadId,
       ThreadItemView(
@@ -3439,9 +3486,9 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
@@ -3449,13 +3496,12 @@ class DemoStudioTransport extends StudioTransport
     final current = before;
     final converted = _providersFromCommands(
       [command],
-      previous: current.providers,
-      catalog: _providerCatalog,
+      previous: current.accounts,
+      catalog: _accountCatalog,
     );
-    final originalId = command.originalId ?? command.id;
-    _providers = [
-      for (final provider in current.providers)
-        if (provider.id != originalId && provider.id != command.id) provider,
+    _accounts = [
+      for (final account in current.accounts)
+        if (account.id != command.id) account,
       ...converted,
     ];
     _settingsRevision += 1;
@@ -3463,78 +3509,76 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
-    if (!before.providers.any((provider) => provider.id == providerId)) {
-      throw StateError('Provider is unavailable: $providerId');
+    if (!before.accounts.any((account) => account.id == accountId)) {
+      throw StateError('Account is unavailable: $accountId');
     }
-    _defaultProviderId = providerId;
+    _defaultAccountId = accountId;
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
   }
 
   @override
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
+    String accountId,
     String modelId,
   ) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     if (modelId.trim().isEmpty) {
-      throw StateError('Model modelId must not be empty');
+      throw StateError('Account modelId must not be empty');
     }
-    final providers = [
-      for (final provider in before.providers)
-        if (provider.id == providerId)
-          _demoRemoveManualModel(provider, modelId)
+    final accounts = [
+      for (final account in before.accounts)
+        if (account.id == accountId)
+          _demoRemoveManualModel(account, modelId)
         else
-          provider,
+          account,
     ];
-    if (!providers.any((provider) => provider.id == providerId)) {
-      throw StateError('unknown demo provider: $providerId');
+    if (!accounts.any((account) => account.id == accountId)) {
+      throw StateError('unknown demo account: $accountId');
     }
-    _providers = providers;
+    _accounts = accounts;
     _settingsRevision += 1;
     return _demoSettingsReply(
-      OperationId('remove-provider-model:$providerId:$modelId'),
+      OperationId('remove-account-modelId:$accountId:$modelId'),
       before,
     );
   }
 
   @override
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     final current = before;
-    if (current.providers.length <= 1) {
-      throw StateError('At least one provider is required');
+    if (current.accounts.length <= 1) {
+      throw StateError('At least one account is required');
     }
     final replacement =
-        replacementProviderId ??
-        current.providers
-            .firstWhere((provider) => provider.id != providerId)
-            .id;
-    if (!current.providers.any((provider) => provider.id == replacement)) {
-      throw StateError('Replacement provider is unavailable: $replacement');
+        replacementAccountId ??
+        current.accounts.firstWhere((account) => account.id != accountId).id;
+    if (!current.accounts.any((account) => account.id == replacement)) {
+      throw StateError('Replacement account is unavailable: $replacement');
     }
-    _providers = [
-      for (final provider in current.providers)
-        if (provider.id != providerId) provider,
+    _accounts = [
+      for (final account in current.accounts)
+        if (account.id != accountId) account,
     ];
-    _defaultProviderId = _defaultProviderId == providerId
+    _defaultAccountId = _defaultAccountId == accountId
         ? replacement
-        : _defaultProviderId;
+        : _defaultAccountId;
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
   }
@@ -3544,21 +3588,17 @@ class DemoStudioTransport extends StudioTransport
       _demoSettingsState();
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(
-    String providerId,
-  ) async {
-    final providers = _providers ?? [_demoDefaultProvider()];
-    final provider = providers
-        .where((item) => item.id == providerId)
-        .firstOrNull;
-    if (provider != null) {
-      _providerUsages[providerId] = _demoProviderUsage(provider);
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
+    final accounts = _accounts ?? [_demoDefaultAccount()];
+    final account = accounts.where((item) => item.id == accountId).firstOrNull;
+    if (account != null) {
+      _accountUsages[accountId] = _demoAccountUsage(account);
     } else {
-      _providerUsages.remove(providerId);
+      _accountUsages.remove(accountId);
     }
-    _providerUsageRevision += 1;
-    final state = _demoProviderUsageState();
-    _publishProductPayload(ProviderUsageStateChangedPayload(state));
+    _accountUsageRevision += 1;
+    final state = _demoAccountUsageState();
+    _publishProductPayload(AccountUsageStateChangedPayload(state));
     return state;
   }
 
@@ -3707,49 +3747,47 @@ class DemoStudioTransport extends StudioTransport
     }
   }
 
-  ProviderSettingsView _demoRemoveManualModel(
-    ProviderSettingsView provider,
+  AccountSettingsView _demoRemoveManualModel(
+    AccountSettingsView account,
     String modelId,
   ) {
-    final target = provider.models
+    final target = account.models
         .where((model) => model.modelId == modelId)
         .firstOrNull;
-    if (target == null || target.origin != ProviderModelOrigin.manual) {
-      throw StateError('unknown demo manual model: ${provider.id} / $modelId');
+    if (target == null || target.origin != ModelOrigin.manual) {
+      throw StateError('unknown demo manual modelId: ${account.id} / $modelId');
     }
     final models = [
-      for (final model in provider.models)
+      for (final model in account.models)
         if (model.modelId != modelId) model,
     ];
-    final connections = {...provider.modelConnectionModes}..remove(modelId);
-    final limits = {...provider.autoCompactLimits}..remove(modelId);
-    return provider.copyWith(
+    final connections = {...account.modelConnectionModes}..remove(modelId);
+    final limits = {...account.autoCompactLimits}..remove(modelId);
+    return account.copyWith(
       models: models,
       modelConnectionModes: connections,
       autoCompactLimits: limits,
       modelCount: '${models.length}',
       usageLabel: models.isEmpty
-          ? provider.defaultModel
+          ? account.defaultModelId
           : '${models.length} models',
     );
   }
 
-  ProviderModelView _findDemoModel(
-    List<ProviderSettingsView> providers,
-    String providerId,
-    String model,
+  AccountModelView _findDemoModel(
+    List<AccountSettingsView> accounts,
+    String accountId,
+    String modelId,
   ) {
-    final provider = providers
-        .where((item) => item.id == providerId)
-        .firstOrNull;
-    if (provider == null) {
-      throw StateError('unknown demo provider: $providerId');
+    final account = accounts.where((item) => item.id == accountId).firstOrNull;
+    if (account == null) {
+      throw StateError('unknown demo account: $accountId');
     }
-    final selected = provider.models
-        .where((candidate) => candidate.modelId == model)
+    final selected = account.models
+        .where((candidate) => candidate.modelId == modelId)
         .firstOrNull;
     if (selected == null) {
-      throw StateError('unknown demo model: $providerId / $model');
+      throw StateError('unknown demo modelId: $accountId / $modelId');
     }
     return selected;
   }
@@ -5933,7 +5971,7 @@ SkillsStateSnapshot _demoSkillsState(
                 'runtime-review' =>
                   'Review runtime behavior, lifecycle, and concurrency.',
                 'studio-settings' =>
-                  'Manage Studio providers, skills, and application settings.',
+                  'Manage Studio accounts, skills, and application settings.',
                 _ => 'Installed Studio skill.',
               },
               source: 'demo',

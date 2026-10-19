@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{AgentRoleId, ProviderConfig, ProviderId};
+use super::{AccountConfig, AccountId, AccountModelKey, AgentRoleId};
 use crate::model::ModelInfo;
-use crate::provider::{ProviderConnectionMode, ProviderEndpoint};
+use crate::protocol::{ConnectionMode, ProtocolEndpoint};
 
 /// 模型推理强度的产品无关字符串值。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,19 +29,26 @@ impl ReasoningEffort {
     }
 }
 
-/// 动态 agent 角色到 provider/model 的唯一路由。
+/// 动态 agent 角色到 account/model 的唯一路由。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRouteConfig {
-    pub provider: ProviderId,
-    pub model: String,
+    pub account_id: AccountId,
+    pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffort>,
+}
+
+impl ModelRouteConfig {
+    /// 返回该选择对应的稳定目录身份。
+    pub fn key(&self) -> Result<AccountModelKey> {
+        AccountModelKey::new(self.account_id.as_str(), self.model_id.clone())
+    }
 }
 
 /// 可嵌入任意产品配置文档的模型配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentModelConfig {
-    pub providers: BTreeMap<ProviderId, ProviderConfig>,
+    pub accounts: BTreeMap<AccountId, AccountConfig>,
     pub routes: BTreeMap<AgentRoleId, ModelRouteConfig>,
 }
 
@@ -50,34 +57,42 @@ pub struct AgentModelConfig {
 pub enum ModelRouteAvailability {
     Available,
     ModelUnavailable {
-        provider: ProviderId,
-        model: String,
+        account_id: AccountId,
+        model_id: String,
     },
     EffortUnavailable {
-        provider: ProviderId,
-        model: String,
+        account_id: AccountId,
+        model_id: String,
     },
     ConnectionUnavailable {
-        provider: ProviderId,
-        model: String,
-        connection_mode: ProviderConnectionMode,
+        account_id: AccountId,
+        model_id: String,
+        connection_mode: ConnectionMode,
     },
 }
 
-/// 完成引用校验后可直接创建模型 provider 的角色路由。
+/// 完成引用校验后可直接创建模型 account 的角色路由。
 #[derive(Debug, Clone)]
 pub struct ResolvedModelRoute {
     pub pricing_mode: pl_protocol::PricingMode,
     pub role: AgentRoleId,
-    pub provider_id: ProviderId,
-    pub endpoint: ProviderEndpoint,
+    pub account_id: AccountId,
+    pub endpoint: ProtocolEndpoint,
     pub model: ModelInfo,
-    /// 该 provider 实例与模型下实际生效的上下文压缩阈值；`None` 表示不自动压缩。
+    /// 该 account 实例与模型下实际生效的上下文压缩阈值；`None` 表示不自动压缩。
     pub auto_compact_limit: Option<u64>,
     pub effort: Option<ReasoningEffort>,
 }
 
 impl ResolvedModelRoute {
+    /// 返回该已解析路由的稳定目录身份。
+    pub fn key(&self) -> AccountModelKey {
+        AccountModelKey {
+            account_id: self.account_id.as_str().to_owned(),
+            model_id: self.model.model_id.clone(),
+        }
+    }
+
     /// Interprets this route's reasoning choice once for model request preparation.
     pub fn reasoning_config(&self) -> Option<crate::completion::ReasoningConfig> {
         self.effort
@@ -95,16 +110,16 @@ impl ResolvedModelRoute {
 
 impl AgentModelConfig {
     /// Check declaration integrity without discarding persisted choices removed by an endpoint.
-    /// Malformed providers, profiles, duplicate declarations, missing providers and empty routes
+    /// Malformed accounts, profiles, duplicate declarations, missing accounts and empty routes
     /// still fail. Call `route_availability` separately; edits must use strict `validate`.
     pub fn validate_declarations(&self) -> Result<()> {
-        if self.providers.is_empty() {
+        if self.accounts.is_empty() {
             return Err(PureError::ConfigError(
-                "at least one provider is required".into(),
+                "at least one account is required".into(),
             ));
         }
-        for (id, provider) in &self.providers {
-            provider.validate_declarations(id)?;
+        for (id, account) in &self.accounts {
+            account.validate_declarations(id)?;
         }
         for route in self.routes.values() {
             self.route_availability(route)?;
@@ -114,32 +129,32 @@ impl AgentModelConfig {
 
     /// Typed availability, not English error-message matching. This is not edit authorization.
     /// # Errors
-    /// Structural/provider errors remain fatal, rather than becoming model unavailability.
+    /// Structural/account errors remain fatal, rather than becoming model unavailability.
     pub fn route_availability(&self, route: &ModelRouteConfig) -> Result<ModelRouteAvailability> {
-        if route.model.trim().is_empty() {
+        if route.model_id.trim().is_empty() {
             return Err(PureError::ConfigError("model route has empty model".into()));
         }
-        let provider = self.providers.get(&route.provider).ok_or_else(|| {
+        let account = self.accounts.get(&route.account_id).ok_or_else(|| {
             PureError::ConfigError(format!(
-                "model route references missing provider: {}",
-                route.provider
+                "model route references missing account: {}",
+                route.account_id
             ))
         })?;
-        provider.validate_declarations(&route.provider)?;
-        let models = provider.effective_models(None)?;
-        let Some(model) = models.iter().find(|model| model.model_id == route.model) else {
-            if provider.discovery_profile()?.is_none() {
+        account.validate_declarations(&route.account_id)?;
+        let models = account.effective_models(None)?;
+        let Some(model) = models.iter().find(|model| model.model_id == route.model_id) else {
+            if account.discovery_profile()?.is_none() {
                 return Err(PureError::ConfigError(format!(
                     "model route references missing model: {}",
-                    route.model
+                    route.model_id
                 )));
             }
             return Ok(ModelRouteAvailability::ModelUnavailable {
-                provider: route.provider.clone(),
-                model: route.model.clone(),
+                account_id: route.account_id.clone(),
+                model_id: route.model_id.clone(),
             });
         };
-        if let Some(connection_mode) = provider.connection_overrides().get(&route.model)
+        if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
                 .binding
                 .transport
@@ -148,8 +163,8 @@ impl AgentModelConfig {
         {
             // Declaration validation already rejects unsupported manual/Explicit choices.
             return Ok(ModelRouteAvailability::ConnectionUnavailable {
-                provider: route.provider.clone(),
-                model: route.model.clone(),
+                account_id: route.account_id.clone(),
+                model_id: route.model_id.clone(),
                 connection_mode: *connection_mode,
             });
         }
@@ -170,33 +185,33 @@ impl AgentModelConfig {
                         .contains_key(&crate::model::ModelMetadataField::Reasoning)
             });
             if !observed_candidates
-                && (provider.discovery_profile()?.is_none()
-                    || provider
+                && (account.discovery_profile()?.is_none()
+                    || account
                         .editable_models()
                         .iter()
-                        .any(|manual| manual.model_id == route.model))
+                        .any(|manual| manual.model_id == route.model_id))
             {
                 return Err(PureError::ConfigError(
                     "model route has invalid effort selection".into(),
                 ));
             }
             return Ok(ModelRouteAvailability::EffortUnavailable {
-                provider: route.provider.clone(),
-                model: route.model.clone(),
+                account_id: route.account_id.clone(),
+                model_id: route.model_id.clone(),
             });
         }
         Ok(ModelRouteAvailability::Available)
     }
 
-    /// 校验所有 provider 与动态角色路由引用。
+    /// 校验所有 account 与动态角色路由引用。
     pub fn validate(&self) -> Result<()> {
-        if self.providers.is_empty() {
+        if self.accounts.is_empty() {
             return Err(PureError::ConfigError(
-                "at least one provider is required".to_string(),
+                "at least one account is required".to_string(),
             ));
         }
-        for (provider_id, provider) in &self.providers {
-            provider.validate(provider_id)?;
+        for (account_id, account) in &self.accounts {
+            account.validate(account_id)?;
         }
         for role in self.routes.keys() {
             self.resolve(role)?;
@@ -204,7 +219,7 @@ impl AgentModelConfig {
         Ok(())
     }
 
-    /// 解析一个动态角色，并返回选中的 provider、模型和推理强度。
+    /// 解析一个动态角色，并返回选中的 account、模型和推理强度。
     pub fn resolve(&self, role: &AgentRoleId) -> Result<ResolvedModelRoute> {
         let route = self.routes.get(role).ok_or_else(|| {
             PureError::ConfigError(format!("missing model route for role: {role}"))
@@ -218,29 +233,29 @@ impl AgentModelConfig {
         role: AgentRoleId,
         route: &ModelRouteConfig,
     ) -> Result<ResolvedModelRoute> {
-        if route.model.trim().is_empty() {
+        if route.model_id.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
                 "role {role} has empty model"
             )));
         }
-        let provider = self.providers.get(&route.provider).ok_or_else(|| {
+        let account = self.accounts.get(&route.account_id).ok_or_else(|| {
             PureError::ConfigError(format!(
-                "role {role} references missing provider: {}",
-                route.provider
+                "role {role} references missing account: {}",
+                route.account_id
             ))
         })?;
-        let models = provider.effective_models(None)?;
+        let models = account.effective_models(None)?;
         let model = models
             .iter()
-            .find(|model| model.model_id == route.model)
+            .find(|model| model.model_id == route.model_id)
             .cloned()
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
                     "role {role} references missing model: {}.{}",
-                    route.provider, route.model
+                    route.account_id, route.model_id
                 ))
             })?;
-        if let Some(connection_mode) = provider.connection_overrides().get(&route.model)
+        if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
                 .binding
                 .transport
@@ -251,7 +266,7 @@ impl AgentModelConfig {
             // Never silently bind an actual request to the declaration's default instead.
             return Err(PureError::ConfigError(format!(
                 "role {role} uses unsupported connection mode {connection_mode:?} for model {}.{}",
-                route.provider, route.model
+                route.account_id, route.model_id
             )));
         }
         let candidates = model.supported_efforts();
@@ -259,13 +274,13 @@ impl AgentModelConfig {
             (Some(_), true) => {
                 return Err(PureError::ConfigError(format!(
                     "role {role} sets effort for model without an effort parameter: {}.{}",
-                    route.provider, route.model
+                    route.account_id, route.model_id
                 )));
             }
             (None, false) => {
                 return Err(PureError::ConfigError(format!(
                     "role {role} must select an effort for model {}.{}",
-                    route.provider, route.model
+                    route.account_id, route.model_id
                 )));
             }
             (Some(effort), false)
@@ -276,18 +291,18 @@ impl AgentModelConfig {
                 return Err(PureError::ConfigError(format!(
                     "role {role} uses unsupported effort '{}' for model {}.{}",
                     effort.as_str(),
-                    route.provider,
-                    route.model
+                    route.account_id,
+                    route.model_id
                 )));
             }
             _ => {}
         }
         Ok(ResolvedModelRoute {
-            pricing_mode: provider.pricing_mode,
+            pricing_mode: account.pricing_mode,
             role,
-            provider_id: route.provider.clone(),
-            endpoint: provider.to_endpoint()?,
-            auto_compact_limit: provider.resolved_auto_compact_limit(&model),
+            account_id: route.account_id.clone(),
+            endpoint: account.to_endpoint()?,
+            auto_compact_limit: account.resolved_auto_compact_limit(&model),
             model,
             effort: route.effort.clone(),
         })

@@ -22,13 +22,13 @@ class AgentRouteConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsAgentsViewProvider);
-    final providers = settings.providers;
+    final accounts = settings.accounts;
     final route = ModelRouteQueries.roleRoute(
-      providers: providers,
+      accounts: accounts,
       roles: settings.roles,
       role: role,
     );
-    final options = buildModelSelectionOptions(providers, type: ModelType.text);
+    final options = buildModelSelectionOptions(accounts, type: ModelType.text);
     final pending = ref.watch(
       settingsRoleCommandPendingProvider(role).select((state) => state.pending),
     );
@@ -37,8 +37,8 @@ class AgentRouteConnector extends ConsumerWidget {
         (route.unavailable
             ? context.l10n.settingsAgentRouteUnavailable(
                 [
-                  route.providerId,
-                  route.model,
+                  route.accountId,
+                  route.modelId,
                 ].where((part) => part.isNotEmpty).join(' / '),
               )
             : route.descriptor == null
@@ -61,23 +61,23 @@ class AgentRouteConnector extends ConsumerWidget {
 
     return AgentRouteView(
       role: role,
-      selectedProviderId: route.providerId,
-      selectedModel: route.model,
+      selectedAccountId: route.accountId,
+      selectedModel: route.modelId,
       selectedEffort: route.effort,
       options: options,
       efforts: route.descriptor?.reasoningEfforts ?? const [],
       unresolvedLabel: unresolvedLabel,
       pending: pending,
       onModelChanged: (option) {
-        if (option.providerId == route.providerId &&
-            option.model == route.model) {
+        if (option.accountId == route.accountId &&
+            option.modelId == route.modelId) {
           return Future<void>.value();
         }
         return report(
           () => commands.setRoleModelField(
             roleKey: role,
-            providerId: option.providerId,
-            model: option.model,
+            accountId: option.accountId,
+            modelId: option.modelId,
           ),
         );
       },
@@ -94,7 +94,7 @@ class AgentRouteView extends StatelessWidget {
   const AgentRouteView({
     super.key,
     required this.role,
-    required this.selectedProviderId,
+    required this.selectedAccountId,
     required this.selectedModel,
     required this.selectedEffort,
     required this.options,
@@ -106,7 +106,7 @@ class AgentRouteView extends StatelessWidget {
   });
 
   final String role;
-  final String selectedProviderId;
+  final String selectedAccountId;
   final String selectedModel;
   final String? selectedEffort;
   final List<ModelSelectionOption> options;
@@ -129,16 +129,16 @@ class AgentRouteView extends StatelessWidget {
             selectorKey: StudioDriverKeys.settingsRoleModel(role),
             fieldLabel: context.l10n.settingsModelField,
             options: options,
-            providerId: selectedProviderId,
-            model: selectedModel,
+            accountId: selectedAccountId,
+            modelId: selectedModel,
             unresolvedLabel: unresolvedLabel,
             enabled: options.isNotEmpty,
             onSelected: onModelChanged,
             optionKeyBuilder: (option) =>
                 StudioDriverKeys.settingsRoleModelOption(
                   role,
-                  option.providerId,
-                  option.model,
+                  option.accountId,
+                  option.modelId,
                 ),
           ),
         ),

@@ -52,9 +52,9 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.threadModeCatalog(
     BridgeThreadModeCatalogSnapshot field0,
   ) = BridgeProductBaseline_ThreadModeCatalog;
-  const factory BridgeProductBaseline.providerUsage(
-    BridgeProviderUsageStateSnapshot field0,
-  ) = BridgeProductBaseline_ProviderUsage;
+  const factory BridgeProductBaseline.accountUsage(
+    BridgeAccountUsageStateSnapshot field0,
+  ) = BridgeProductBaseline_AccountUsage;
   const factory BridgeProductBaseline.modelPerformance(
     BridgeModelPerformanceSnapshot field0,
   ) = BridgeProductBaseline_ModelPerformance;
@@ -96,8 +96,8 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_Skills;
   const factory BridgeProductTopic.threadModeCatalog() =
       BridgeProductTopic_ThreadModeCatalog;
-  const factory BridgeProductTopic.providerUsage() =
-      BridgeProductTopic_ProviderUsage;
+  const factory BridgeProductTopic.accountUsage() =
+      BridgeProductTopic_AccountUsage;
   const factory BridgeProductTopic.modelPerformance() =
       BridgeProductTopic_ModelPerformance;
   const factory BridgeProductTopic.sessionCosts({

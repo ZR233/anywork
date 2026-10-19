@@ -5,10 +5,10 @@ use crate::completion::{
     ModelCompactionResponse,
 };
 use crate::model::{ModelCapabilities, ModelInfo};
-use crate::provider::{ProviderClient, ProviderEndpoint, ProviderWireProtocol};
+use crate::protocol::{ProtocolClient, ProtocolEndpoint, WireApi};
 use pl_protocol::{PricingMode, Result};
 
-/// One resolved model route. Native capabilities remain available through `provider()`.
+/// One resolved model route. Native capabilities remain available through `protocol_client()`.
 #[derive(Debug, Clone)]
 pub struct ModelRuntime {
     runner: InvocationRunner,
@@ -21,13 +21,13 @@ pub struct ModelRuntime {
 }
 
 impl ModelRuntime {
-    /// Constructs the selected provider and freezes its configured accounting policy.
+    /// Constructs the selected account route and freezes its configured accounting policy.
     ///
     /// # Errors
     /// Rejects invalid endpoint or model configuration.
     pub fn from_route(route: &crate::config::ResolvedModelRoute) -> Result<Self> {
-        let runtime = Self::new_with_provider_id(
-            route.provider_id.as_str(),
+        let runtime = Self::new_with_account_id(
+            route.account_id.as_str(),
             route.endpoint.clone(),
             route.model.clone(),
         )?
@@ -38,39 +38,32 @@ impl ModelRuntime {
         })
     }
 
-    /// Binds a concrete adapter and one model.
+    /// Binds a route with its stable account identity.
     /// # Errors
     /// Returns invalid model or endpoint configuration.
-    pub fn new(endpoint: ProviderEndpoint, model: ModelInfo) -> Result<Self> {
-        Self::new_with_provider_id(endpoint.name.clone(), endpoint, model)
-    }
-
-    /// Binds a route with its stable provider instance identity.
-    /// # Errors
-    /// Returns invalid model or endpoint configuration.
-    pub fn new_with_provider_id(
+    pub fn new_with_account_id(
         id: impl Into<String>,
-        endpoint: ProviderEndpoint,
+        endpoint: ProtocolEndpoint,
         model: ModelInfo,
     ) -> Result<Self> {
         Ok(Self {
-            runner: InvocationRunner::new_with_provider_id(id, endpoint, model)?,
+            runner: InvocationRunner::new_with_account_id(id, endpoint, model)?,
             auto_compact_limit: None,
         })
     }
 
     /// Explicit native access, preserving the concrete vendor types.
-    pub fn provider(&self) -> ProviderClient<'_> {
-        ProviderClient::new(self.runner.endpoint(), &self.runner)
+    pub fn protocol_client(&self) -> ProtocolClient<'_> {
+        ProtocolClient::new(self.runner.endpoint(), &self.runner)
     }
     pub fn model(&self) -> &ModelInfo {
         self.runner.model()
     }
-    pub fn endpoint(&self) -> &ProviderEndpoint {
+    pub fn endpoint(&self) -> &ProtocolEndpoint {
         self.runner.endpoint()
     }
-    pub fn provider_instance_id(&self) -> &str {
-        self.runner.provider_instance_id()
+    pub fn account_id(&self) -> &str {
+        self.runner.account_id()
     }
     pub fn effective_model_capabilities(&self) -> ModelCapabilities {
         self.runner.effective_model_capabilities()
@@ -84,7 +77,7 @@ impl ModelRuntime {
         self.auto_compact_limit
     }
 
-    /// Freezes this provider's monetary accounting choice for subsequent invocations.
+    /// Freezes this account route's monetary accounting choice for subsequent invocations.
     pub fn with_pricing_mode(mut self, mode: PricingMode) -> Self {
         self.runner.pricing_mode = mode;
         self
@@ -111,7 +104,7 @@ impl ModelRuntime {
     pub fn compaction(&self) -> Option<RemoteCompaction<'_>> {
         let runner = &self.runner;
         (runner.endpoint().service_capabilities.remote_compaction
-            && runner.model().binding.transport.protocol == ProviderWireProtocol::Responses)
+            && runner.model().binding.transport.protocol == WireApi::Responses)
             .then_some(RemoteCompaction { runner })
     }
 }

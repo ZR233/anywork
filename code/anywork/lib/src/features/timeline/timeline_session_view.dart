@@ -10,7 +10,7 @@ export '../../presentation/view_models/timeline_session_owner.dart'
 
 part 'timeline_session_view.g.dart';
 
-/// The application graph owns the projection and session leases. This provider
+/// The application graph owns the projection and session leases. This account
 /// exposes that owner without opening or retiring a business resource.
 final timelineSessionOwnerProvider = Provider<TimelineSessionOwner>(
   (ref) => ref.read(appGraphProvider).timeline,

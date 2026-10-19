@@ -345,7 +345,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSystemGroup => 'System';
 
   @override
-  String get settingsProvidersTab => 'Providers';
+  String get settingsAccountsTab => 'Accounts';
 
   @override
   String get settingsInstructionsTab => 'Instructions';
@@ -616,7 +616,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get statusModelRouteUnavailableFallback =>
-      'The current model route is unavailable. Check the provider and model settings.';
+      'The current model route is unavailable. Check the account and model settings.';
 
   @override
   String get statusModelSwitchWhileRunning =>
@@ -760,7 +760,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsStatisticsSubtitle =>
-      'Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.';
+      'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.';
 
   @override
   String get settingsStatisticsSummaryTitle => 'Model performance';
@@ -810,7 +810,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'No model mismatches match these filters.';
 
   @override
-  String get statisticsModel => 'Provider / model';
+  String get statisticsModel => 'Account / model';
 
   @override
   String get statisticsHistoryModelHeader => 'Model';
@@ -1392,86 +1392,86 @@ class AppLocalizationsEn extends AppLocalizations {
   String get planReceiptApproveReply => 'Approved this plan for execution';
 
   @override
-  String get settingsProvidersTitle => 'Providers';
+  String get settingsAccountsTitle => 'Accounts';
 
   @override
-  String get settingsProvidersSubtitle =>
-      'Model providers, credentials, models, and usage';
+  String get settingsAccountsSubtitle =>
+      'Accounts, credentials, models, and usage';
 
   @override
   String get settingsRefreshUsage => 'Refresh usage';
 
   @override
-  String get settingsAddProvider => 'Add provider';
+  String get settingsAddAccount => 'Add account';
 
   @override
-  String get settingsSearchProviders => 'Search providers';
+  String get settingsSearchAccounts => 'Search accounts';
 
   @override
-  String get settingsNoProvidersMatchTitle => 'No providers match this filter';
+  String get settingsNoAccountsMatchTitle => 'No accounts match this filter';
 
   @override
-  String get settingsNoProvidersMatchMessage =>
-      'Clear the search to see all configured providers.';
+  String get settingsNoAccountsMatchMessage =>
+      'Clear the search to see all configured accounts.';
 
   @override
-  String get settingsNoProvidersTitle => 'No providers found';
+  String get settingsNoAccountsTitle => 'No accounts found';
 
   @override
-  String get settingsNoProvidersMessage =>
-      'Add a provider to configure credentials and models.';
+  String get settingsNoAccountsMessage =>
+      'Add an account to configure credentials and models.';
 
   @override
-  String get settingsDefaultProvider => 'Default provider';
+  String get settingsDefaultAccount => 'Default account';
 
   @override
-  String get settingsSetAsDefaultProvider => 'Set as default';
+  String get settingsSetAsDefaultAccount => 'Set as default';
 
   @override
   String get settingsOpenDetails => 'Open details';
 
   @override
-  String get settingsProviderActions => 'Provider actions';
+  String get settingsAccountActions => 'Account actions';
 
   @override
-  String get settingsEditProvider => 'Edit provider';
+  String get settingsEditAccount => 'Edit account';
 
   @override
-  String get settingsDeleteProvider => 'Delete provider';
+  String get settingsDeleteAccount => 'Delete account';
 
   @override
-  String get settingsNoProviderSelected => 'No provider selected';
+  String get settingsNoAccountSelected => 'No account selected';
 
   @override
-  String get settingsProviderTitle => 'Provider';
+  String get settingsAccountTitle => 'Account';
 
   @override
-  String get settingsProviderModelsTitle => 'Models';
+  String get settingsAccountModelsTitle => 'Models';
 
   @override
-  String get settingsProviderConnectionTitle => 'Connection';
+  String get settingsAccountConnectionTitle => 'Connection';
 
   @override
-  String get settingsProviderDefaultModelsTitle =>
+  String get settingsAccountDefaultModelsTitle =>
       'Default catalog (not yet synced)';
 
   @override
-  String get settingsProviderCustomModelsTitle => 'Manual models';
+  String get settingsAccountCustomModelsTitle => 'Manual models';
 
   @override
-  String get settingsProviderOnlineModelsTitle => 'Online models';
+  String get settingsAccountOnlineModelsTitle => 'Online models';
 
   @override
-  String get settingsNewProvider => 'New provider';
+  String get settingsNewAccount => 'New account';
 
   @override
-  String get settingsProviderKey => 'Provider key';
+  String get settingsAccountId => 'Account ID';
 
   @override
-  String get settingsTemplate => 'Template';
+  String get settingsAccountTemplate => 'Account template';
 
   @override
-  String get settingsCustomProvider => 'Custom provider';
+  String get settingsCustomAccount => 'Custom account';
 
   @override
   String get settingsDefaultModel => 'Default model';
@@ -1637,11 +1637,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsUsageQueryFailed => 'Usage query failed';
 
   @override
-  String get settingsUsageApiKeyMissing => 'Provider API key is not configured';
+  String get settingsUsageApiKeyMissing => 'Account API key is not configured';
 
   @override
-  String settingsUsageUnsupportedForProvider(String providerName) {
-    return 'Usage is not supported for $providerName';
+  String settingsUsageUnsupportedForAccount(String accountName) {
+    return 'Usage is not supported for $accountName';
   }
 
   @override
@@ -1911,7 +1911,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWebSearchEffectiveMode => 'Effective mode';
 
   @override
-  String get settingsWebSearchProvider => 'OpenAI provider';
+  String get settingsWebSearchAccount => 'OpenAI account';
 
   @override
   String get settingsWebSearchModel => 'Search model';
@@ -1974,18 +1974,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWebSearchMissingCredential => 'Missing credential';
 
   @override
-  String get settingsWebSearchUnsupportedProvider => 'Unsupported provider';
+  String get settingsWebSearchUnsupportedAccount => 'Unsupported account';
 
   @override
   String get settingsWebSearchUnsupportedModel => 'Unsupported model';
 
   @override
   String get settingsWebSearchMissingCredentialReason =>
-      'No credentialed provider originating from the OpenAI preset is available. Remote web search is fully disabled.';
+      'No credentialed account originating from the OpenAI template is available. Remote web search is fully disabled.';
 
   @override
-  String get settingsWebSearchUnsupportedProviderReason =>
-      'The current provider does not expose this web search backend.';
+  String get settingsWebSearchUnsupportedAccountReason =>
+      'The current account does not expose this web search backend.';
 
   @override
   String get settingsWebSearchUnsupportedModelReason =>
@@ -2008,7 +2008,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.';
 
   @override
-  String get settingsDeepSeekWebSearchProvider => 'DeepSeek provider';
+  String get settingsDeepSeekWebSearchAccount => 'DeepSeek account';
 
   @override
   String get settingsDeepSeekWebSearchConfigured => 'Search configured';
@@ -2238,7 +2238,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAgentProfileInstructionsField => 'System instructions';
 
   @override
-  String get settingsAgentProfileProviderField => 'Provider';
+  String get settingsAgentProfileAccountField => 'Account';
 
   @override
   String get settingsAgentProfileEffortDefault => 'Use model default';
@@ -2286,7 +2286,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsCapabilitySourceField => 'Capability source';
 
   @override
-  String get settingsCapabilitySourcePreset => 'Follow preset defaults';
+  String get settingsCapabilitySourceTemplate => 'Follow template defaults';
 
   @override
   String get settingsCapabilitySourceExplicit => 'Explicit override';
@@ -2727,15 +2727,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get toolStatusCancelling => 'Cancelling';
 
   @override
-  String get settingsProviderCatalogUnavailable =>
-      'Provider catalog is unavailable.';
+  String get settingsAccountCatalogUnavailable =>
+      'Account catalog is unavailable.';
 
   @override
-  String get settingsProviderPresetUnavailable =>
-      'Provider preset is unavailable.';
+  String get settingsAccountTemplateUnavailable =>
+      'Account template is unavailable.';
 
   @override
-  String get settingsProviderMissingCredential => 'Missing credential';
+  String get settingsAccountMissingCredential => 'Missing credential';
 
   @override
   String get settingsSshStateDisconnected => 'Disconnected';
@@ -2853,7 +2853,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelCatalogCached => 'Last successful model list';
 
   @override
-  String get settingsModelCatalogOnline => 'Models from this provider';
+  String get settingsModelCatalogOnline => 'Models from this account';
 
   @override
   String get settingsModelCatalogChecked => 'Last checked';
@@ -2867,7 +2867,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'The saved model list could not be loaded. Showing bundled models.';
 
   @override
-  String get settingsModelCatalogEmpty => 'This provider has no models.';
+  String get settingsModelCatalogEmpty => 'This account has no models.';
 
   @override
   String get settingsModelCatalogRestartHint =>
@@ -2935,7 +2935,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modelTextFilterEmpty =>
-      'No matching text models. Check model parameters in provider settings.';
+      'No matching text models. Check model parameters in account settings.';
 
   @override
   String get modeEditorTitle => 'Work modes';
@@ -3570,4 +3570,34 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modeDeletedBadge => 'Deleted';
+
+  @override
+  String get settingsAccountProtocol => 'Account protocol';
+
+  @override
+  String get statisticsGroupTotal => 'Group total';
+
+  @override
+  String get statisticsAllEfforts => 'All effort levels';
+
+  @override
+  String get statisticsEffortBreakdownTitle => 'Effort breakdown';
+
+  @override
+  String get accountProtocolOpenAi => 'OpenAI';
+
+  @override
+  String get accountProtocolDeepSeek => 'DeepSeek';
+
+  @override
+  String get accountProtocolZhipu => 'Zhipu';
+
+  @override
+  String get accountProtocolMiMo => 'MiMo';
+
+  @override
+  String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolCustom => 'Custom (OpenAI compatible)';
 }

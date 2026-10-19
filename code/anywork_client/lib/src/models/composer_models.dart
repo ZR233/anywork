@@ -563,22 +563,22 @@ class StartSessionProjectDraft {
 
 class StartSessionModelIntent {
   const StartSessionModelIntent({
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
   });
 
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is StartSessionModelIntent &&
-          providerId == other.providerId &&
-          model == other.model;
+          accountId == other.accountId &&
+          modelId == other.modelId;
 
   @override
-  int get hashCode => Object.hash(providerId, model);
+  int get hashCode => Object.hash(accountId, modelId);
 }
 
 /// 显示规则：显式 intent 优先，否则使用命令 lane 已组合的 `pending.target ?? canonical`。
@@ -592,23 +592,23 @@ ModeModelRouteView? overlayStartSessionRoute({
       ? effortIntent
       : null;
   if (modelIntent == null && explicitEffort == null) return laneRoute;
-  final providerId = modelIntent?.providerId ?? laneRoute?.providerId;
-  final model = modelIntent?.model ?? laneRoute?.model;
-  if (providerId == null ||
-      model == null ||
-      providerId.isEmpty ||
-      model.isEmpty) {
+  final accountId = modelIntent?.accountId ?? laneRoute?.accountId;
+  final modelId = modelIntent?.modelId ?? laneRoute?.modelId;
+  if (accountId == null ||
+      modelId == null ||
+      accountId.isEmpty ||
+      modelId.isEmpty) {
     return laneRoute;
   }
   return ModeModelRouteView(
     modeId: mode,
-    providerId: providerId,
-    model: model,
+    accountId: accountId,
+    modelId: modelId,
     effort:
         explicitEffort ??
         (laneRoute != null &&
-                laneRoute.providerId == providerId &&
-                laneRoute.model == model
+                laneRoute.accountId == accountId &&
+                laneRoute.modelId == modelId
             ? laneRoute.effort
             : ''),
   );

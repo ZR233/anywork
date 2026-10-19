@@ -590,11 +590,11 @@ void _verifyPopulated(Map<String, dynamic> data, int minimum) {
   if (_sampleCount(data) < 1 ||
       (data['history'] as List).length < minimum ||
       !(data['summaries'] as List).any(
-        (item) => item['model'] == 'fixture-model' && item['tokens'] > 0,
+        (item) => item['modelId'] == 'fixture-model' && item['tokens'] > 0,
       ) ||
       !(data['history'] as List).any(
         (item) =>
-            item['model'] == 'fixture-model' &&
+            item['modelId'] == 'fixture-model' &&
             item['tokens'] >= 25 &&
             item['responseMillis'] > 0,
       )) {
@@ -615,7 +615,7 @@ Future<void> _capture(
   if ((data['history'] as List).isNotEmpty) {
     final item = (data['history'] as List).first as Map;
     final key =
-        'statistics-history-row:${jsonEncode([item['providerInstanceId'], item['model'], item['effort'], 0])}';
+        'statistics-history-row:${jsonEncode([item['accountId'], item['modelId'], item['effort'], 0])}';
     await driver.scrollUntilVisible(
       find.byValueKey('statistics-history'),
       find.byValueKey(key),
@@ -642,9 +642,9 @@ Future<void> _captureState(
       'samples': _sampleCount(data),
       'summaries': (data['summaries'] as List).length,
       'history': (data['history'] as List).length,
-      'models': [for (final row in data['summaries'] as List) row['model']],
+      'models': [for (final row in data['summaries'] as List) row['modelId']],
       'metrics': [
-        for (final row in data['history'] as List) {'model': row['model'], 'tokens': row['tokens'], 'decodeMillis': row['decodeMillis'], 'responseMillis': row['responseMillis']},
+        for (final row in data['history'] as List) {'modelId': row['modelId'], 'tokens': row['tokens'], 'decodeMillis': row['decodeMillis'], 'responseMillis': row['responseMillis']},
       ],
     })}\n',
   );

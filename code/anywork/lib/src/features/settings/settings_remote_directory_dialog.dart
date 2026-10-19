@@ -169,7 +169,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
           );
     } on Object {
       // Controller failures are normally converted to false; retain the same
-      // retryable dialog state if provider access or another boundary fails.
+      // retryable dialog state if account access or another boundary fails.
     }
     if (!mounted) return;
     if (opened) {

@@ -25,7 +25,7 @@ Turn 不被参数刷新中途替换，后台工具任务与模型切换互相独
 
 路由 selector 与 pending model update 必须由同一 owner mailbox 操作提交：扩展 CAS 失败不改变
 pending update，反之亦然；selector 表示 desired route，实际模型仍在下一 Turn 边界替换。
-provider 设置更新可触发模型和工具刷新，但刷新必须逐 Thread 读取自身 selector 并重新解析，
+account 设置更新可触发模型和工具刷新，但刷新必须逐 Thread 读取自身 selector 并重新解析，
 不得广播某个全局角色路由。selector 已失效时 Thread 进入明确 unavailable 状态，不猜测 fallback。
 
 ## 14.2 输入受理与驱动
@@ -89,8 +89,8 @@ Unlimited，不因累计模型调用次数或活动总时长停止；子会话�
 状态；中断在命令队列之外生效，不取消调用方复用的父 token，也不影响下一执行代次。
 
 模型调用被运行时定向中断（插入消息、停止、关闭或重定向）取消时，模型实现必须把结果以取消
-语义上报，不得归类为 provider 不可用或传输失败。宿主据此把该次 Turn 收束为取消终态并继续
-消费已受理输入，而不是把定向中断记成失败并暂停驱动；真实 provider 故障、超时与传输错误保持
+语义上报，不得归类为 account 不可用或传输失败。宿主据此把该次 Turn 收束为取消终态并继续
+消费已受理输入，而不是把定向中断记成失败并暂停驱动；真实 account 故障、超时与传输错误保持
 原语义。判定依据必须是调用自身的取消事实，不能仅凭错误文本或同一时刻的其他信号推断。
 
 ## 14.4 后台工具任务与交付
@@ -168,5 +168,5 @@ Mode 切换使用 idle reconfigure：核对水位并拒绝活动 Turn/任务/输
 目标 Mode 默认模型 selector、下一 Turn pending model update、上下文及工具目录；旧历史正文不按当前 Mode 重新渲染。普通用户提问、Plan 确认和执行许可
 共用 Studio 类型化交互路由：路由从 core snapshot 读取事实，不建立另一套可写交互状态；
 用户回答作为一次原子响应与隐藏续接输入提交，模型只接收保存时确定的内容。对外交互 ID
-包含 Thread 与 core 本地交互身份的无歧义编码，客户端只透传不透明 ID，provider 在不同
+包含 Thread 与 core 本地交互身份的无歧义编码，客户端只透传不透明 ID，account 在不同
 Thread 中重用调用 ID 不会造成回答串路。

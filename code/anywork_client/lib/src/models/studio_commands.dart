@@ -1,40 +1,39 @@
-import 'provider_models.dart';
+import 'account_models.dart';
 
-enum ProviderSecretAction { preserve, replace, clear }
+enum AccountSecretAction { preserve, replace, clear }
 
-class ProviderSecretCommand {
-  const ProviderSecretCommand._(this.action, this.value);
+class AccountSecretCommand {
+  const AccountSecretCommand._(this.action, this.value);
 
-  const ProviderSecretCommand.preserve()
-    : this._(ProviderSecretAction.preserve, null);
+  const AccountSecretCommand.preserve()
+    : this._(AccountSecretAction.preserve, null);
 
-  const ProviderSecretCommand.replace(String value)
-    : this._(ProviderSecretAction.replace, value);
+  const AccountSecretCommand.replace(String value)
+    : this._(AccountSecretAction.replace, value);
 
-  const ProviderSecretCommand.clear()
-    : this._(ProviderSecretAction.clear, null);
+  const AccountSecretCommand.clear() : this._(AccountSecretAction.clear, null);
 
-  final ProviderSecretAction action;
+  final AccountSecretAction action;
   final String? value;
 }
 
-class ProviderModelCommand {
-  const ProviderModelCommand({
+class AccountModelCommand {
+  const AccountModelCommand({
     required this.modelId,
     required this.displayName,
-    required this.wireProtocol,
+    required this.wireApi,
     required this.contextWindow,
     required this.maxOutputTokens,
   });
   final String modelId;
   final String displayName;
-  final String wireProtocol;
+  final String wireApi;
   final int contextWindow;
   final int maxOutputTokens;
 }
 
-class ProviderModelConnectionCommand {
-  const ProviderModelConnectionCommand({
+class AccountModelConnectionCommand {
+  const AccountModelConnectionCommand({
     required this.modelId,
     required this.connectionMode,
   });
@@ -44,8 +43,8 @@ class ProviderModelConnectionCommand {
 }
 
 /// 某模型上下文压缩阈值用户覆盖的命令项；`limit` 为正整数 tokens。
-class ProviderModelAutoCompactCommand {
-  const ProviderModelAutoCompactCommand({
+class AccountModelAutoCompactCommand {
+  const AccountModelAutoCompactCommand({
     required this.modelId,
     required this.limit,
   });
@@ -54,89 +53,93 @@ class ProviderModelAutoCompactCommand {
   final int limit;
 }
 
-class ProviderCommand {
-  const ProviderCommand({
+/// 一个账号资源的完整保存意图。
+///
+/// 账号 ID 创建后稳定：payload 只带同一个 stable ID，没有重命名路径。
+/// 默认账号、模式路由和角色路由是独立意图，不从本编辑草稿复制。
+class AccountCommand {
+  const AccountCommand({
     required this.id,
-    this.originalId,
-    required this.templateKind,
+    required this.templateId,
+    required this.protocol,
     required this.name,
     required this.baseUrl,
     required this.secret,
     required this.pricingEnabled,
-    required this.defaultModel,
     required this.customModels,
     required this.modelConnectionModes,
     required this.modelAutoCompactLimits,
   });
 
   final String id;
-  final String? originalId;
-  final String templateKind;
+
+  /// 可选的内置账号模板引用；完全自定义账号为 `null`。
+  final String? templateId;
+
+  /// 明确的厂商协议适配选择；不从地址、模板 ID 或名称推断。
+  final String protocol;
   final String name;
   final String baseUrl;
-  final ProviderSecretCommand secret;
+  final AccountSecretCommand secret;
   final bool pricingEnabled;
-  final String defaultModel;
-  final List<ProviderModelCommand> customModels;
-  final List<ProviderModelConnectionCommand> modelConnectionModes;
-  final List<ProviderModelAutoCompactCommand> modelAutoCompactLimits;
+  final List<AccountModelCommand> customModels;
+  final List<AccountModelConnectionCommand> modelConnectionModes;
+  final List<AccountModelAutoCompactCommand> modelAutoCompactLimits;
 }
 
-abstract final class ProviderCommandBuilder {
-  /// Builds the payload for one provider only.  Default provider, mode routes
+abstract final class AccountCommandBuilder {
+  /// Builds the payload for one account only.  Default account, mode routes
   /// and role routes use separate commands and are never copied from this
-  /// provider editor snapshot.
-  static ProviderCommand buildProvider(
-    ProviderSettingsView value, {
-    String? originalId,
-    ProviderSecretCommand? secret,
+  /// account editor snapshot.
+  static AccountCommand buildAccount(
+    AccountSettingsView value, {
+    AccountSecretCommand? secret,
   }) {
-    final provider = normalizeProvider(value);
-    return ProviderCommand(
-      id: provider.id,
-      originalId: originalId,
-      templateKind: provider.templateKind,
-      name: provider.name,
-      baseUrl: provider.baseUrl,
+    final account = normalizeAccount(value);
+    return AccountCommand(
+      id: account.id,
+      templateId: account.templateId,
+      protocol: account.protocol,
+      name: account.name,
+      baseUrl: account.baseUrl,
       secret:
           secret ??
-          (provider.bearerToken.trim().isNotEmpty
-              ? ProviderSecretCommand.replace(provider.bearerToken.trim())
-              : provider.hasBearerToken
-              ? const ProviderSecretCommand.preserve()
-              : const ProviderSecretCommand.clear()),
-      pricingEnabled: provider.pricingEnabled,
-      defaultModel: provider.defaultModel,
+          (account.bearerToken.trim().isNotEmpty
+              ? AccountSecretCommand.replace(account.bearerToken.trim())
+              : account.hasBearerToken
+              ? const AccountSecretCommand.preserve()
+              : const AccountSecretCommand.clear()),
+      pricingEnabled: account.pricingEnabled,
       customModels: [
-        for (final model in provider.customModels)
-          ProviderModelCommand(
+        for (final model in account.customModels)
+          AccountModelCommand(
             modelId: model.modelId.trim(),
             displayName: model.displayName.trim(),
-            wireProtocol: model.wireProtocol,
+            wireApi: model.wireApi,
             contextWindow: model.contextWindow ?? 32000,
             maxOutputTokens: model.maxOutputTokens ?? 4096,
           ),
       ],
       modelConnectionModes: [
-        for (final override in provider.modelConnectionModes.entries)
-          ProviderModelConnectionCommand(
+        for (final override in account.modelConnectionModes.entries)
+          AccountModelConnectionCommand(
             modelId: override.key.trim(),
             connectionMode: override.value,
           ),
       ],
-      modelAutoCompactLimits: _autoCompactCommands(provider),
+      modelAutoCompactLimits: _autoCompactCommands(account),
     );
   }
 
-  /// 该 provider 实例完整的压缩阈值覆盖集合；未列出模型恢复默认，未修改模型保留覆盖。
+  /// 该 account 实例完整的压缩阈值覆盖集合；未列出模型恢复默认，未修改模型保留覆盖。
   ///
   /// 覆盖值与模型默认相同或为空时不下发，交由服务端按默认解析；只保留正整数值。
-  static List<ProviderModelAutoCompactCommand> _autoCompactCommands(
-    ProviderSettingsView provider,
+  static List<AccountModelAutoCompactCommand> _autoCompactCommands(
+    AccountSettingsView account,
   ) {
-    final commands = <ProviderModelAutoCompactCommand>[];
+    final commands = <AccountModelAutoCompactCommand>[];
     // 完整覆盖集合还包括在线目录暂时撤下的模型，不可只遍历可见模型。
-    for (final entry in provider.autoCompactLimits.entries) {
+    for (final entry in account.autoCompactLimits.entries) {
       final limit = entry.value;
       final override = limit.overrideLimit;
       final modelId = entry.key;
@@ -147,26 +150,20 @@ abstract final class ProviderCommandBuilder {
         continue;
       }
       commands.add(
-        ProviderModelAutoCompactCommand(modelId: modelId, limit: override),
+        AccountModelAutoCompactCommand(modelId: modelId, limit: override),
       );
     }
     return commands;
   }
 
-  static ProviderSettingsView normalizeProvider(ProviderSettingsView provider) {
-    final models = provider.models
+  static AccountSettingsView normalizeAccount(AccountSettingsView account) {
+    final models = account.models
         .where((model) => model.modelId.trim().isNotEmpty)
         .toList();
-    // canonical defaultModel 非空时始终保留（含当前无法解析的 modelId），只有
-    // 空值才回退到首个模型；仅用户显式选择才替换。
-    final defaultModel = provider.defaultModel.isNotEmpty
-        ? provider.defaultModel
-        : models.firstOrNull?.modelId ?? '';
-    return provider.copyWith(
-      id: provider.id.trim(),
-      name: provider.name.trim(),
-      baseUrl: provider.baseUrl.trim(),
-      defaultModel: defaultModel.trim(),
+    return account.copyWith(
+      id: account.id.trim(),
+      name: account.name.trim(),
+      baseUrl: account.baseUrl.trim(),
       models: models,
     );
   }
@@ -336,12 +333,12 @@ class DeepSeekWebFetchEnabledCommand extends SettingsFieldCommand {
 class ModeModelCommand extends SettingsFieldCommand {
   const ModeModelCommand({
     required this.modeId,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
   });
   final String modeId;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
 }
 
 class ModeReasoningEffortCommand extends SettingsFieldCommand {
@@ -353,20 +350,16 @@ class ModeReasoningEffortCommand extends SettingsFieldCommand {
 class RoleModelCommand extends SettingsFieldCommand {
   const RoleModelCommand({
     required this.role,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
   });
   final String role;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
 }
 
 class RoleReasoningEffortCommand extends SettingsFieldCommand {
   const RoleReasoningEffortCommand({required this.role, this.effort});
   final String role;
   final String? effort;
-}
-
-extension<T> on List<T> {
-  T? get firstOrNull => isEmpty ? null : first;
 }

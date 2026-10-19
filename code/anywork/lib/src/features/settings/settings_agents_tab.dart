@@ -41,7 +41,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
       builder: (context) => Consumer(
         builder: (context, ref, child) => AgentProfileDialog(
           profile: profile,
-          providers: ref.watch(settingsAgentsViewProvider).providers,
+          accounts: ref.watch(settingsAgentsViewProvider).accounts,
         ),
       ),
     );

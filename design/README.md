@@ -14,10 +14,10 @@
 | 04 | [安全边界](./04-security.md) | 权限模式（唯一权威源）、路径与凭据边界、transport 边界 |
 | 05 | [通用约定](./05-conventions.md) | 参数与类型设计、模块导出、生命周期状态机模式、后台进程与外部服务 |
 | 二、模型与流 | | |
-| 06 | [模型层](./06-model.md) | provider 适配、模型目录、transport、流归一化、effort 机制、计量 |
+| 06 | [模型层](./06-model.md) | 厂商协议组合适配、账号模型目录、transport、流归一化、effort 机制、计量 |
 | 07 | [Thread 实时流](./07-streaming.md) | 帧模型、通知、背压、reducer、product stream、transport |
 | 三、工具与扩展 | | |
-| 08 | [扩展点索引](./08-extension.md) | Provider / Skill / Mode / Profile / 工具的扩展入口 |
+| 08 | [扩展点索引](./08-extension.md) | Account / 厂商协议 / Skill / Mode / Profile / 工具的扩展入口 |
 | 09 | [工具调用运行时](./09-tool-runtime.md) | 不透明工具身份、注册与撤销、调度声明、MCP 租约、文件缓存 |
 | 10 | [项目级 Skills](./10-skills.md) | 目录优先级、格式、工具合同、注入与召回、自学习 |
 | 四、协作与编排 | | |
@@ -32,7 +32,7 @@
 | 18 | [Studio 状态查询](./18-studio-state.md) | CQS、公共 snapshot、activation、shutdown、title、产品投影 |
 | 六、Studio 产品 | | |
 | 19 | [anywork UI](./19-studio-ui.md) | UI 边界、模式与状态、主题、设置页组织、Timeline、历史阅读 |
-| 20 | [Studio 持久化配置](./20-config.md) | 配置 schema、provider/model、提示词、MCP/Skills/LSP、凭据 |
+| 20 | [Studio 持久化配置](./20-config.md) | 配置 schema、账号与模板、模型路由、保全迁移、MCP/Skills/LSP、凭据 |
 | 21 | [LSP Runtime](./21-lsp.md) | catalog 与 driver、registry CQS、状态模型、工具能力 |
 | 22 | [SSH 远程开发](./22-ssh-remote.md) | helper 能力代理、最小协议、连接管理、凭据与路径、helper 随包资源 |
 | 23 | [发布与更新](./23-release-update.md) | 发布渠道与信任根、Windows 包边界、更新清单与状态机、诊断 |

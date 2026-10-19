@@ -12,7 +12,7 @@ impl ConfigRuntime {
     /// Called on a blocking worker. No network or asynchronous lock is held here.
     pub(crate) fn begin_model_catalog_probe(
         &self,
-        provider_id: ProviderId,
+        account_id: AccountId,
     ) -> ConfigRuntimeResult<Option<CatalogProbe>> {
         let _command = self
             .command_lock
@@ -22,22 +22,22 @@ impl ConfigRuntime {
         if state.closing {
             return Ok(None);
         }
-        let provider = state
+        let account = state
             .desired
             .models
-            .providers
-            .get(&provider_id)
+            .accounts
+            .get(&account_id)
             .ok_or_else(|| {
-                PureError::ConfigError("model catalog provider no longer exists".into())
+                PureError::ConfigError("model catalog account no longer exists".into())
             })?;
-        if provider.discovery_profile()?.is_none() {
+        if account.discovery_profile()?.is_none() {
             return Ok(None);
         }
-        let query = match pl_model::provider::discovery::ModelCatalogQuery::for_provider(provider) {
+        let query = match pl_model::protocol::discovery::ModelCatalogQuery::for_account(account) {
             Ok(query) => query,
             Err(error) => {
                 let error = model_catalog::query_error(error)?;
-                if let Some(observation) = state.observations.get_mut(&provider_id) {
+                if let Some(observation) = state.observations.get_mut(&account_id) {
                     observation.status.error = Some(error);
                     observation.status.checked_at = Some(unix_seconds());
                 }
@@ -47,7 +47,7 @@ impl ConfigRuntime {
         };
         let observation = state
             .observations
-            .get_mut(&provider_id)
+            .get_mut(&account_id)
             .ok_or_else(|| PureError::ConfigError("model observation is missing".into()))?;
         if observation.status.probing {
             return Ok(None);
@@ -55,15 +55,21 @@ impl ConfigRuntime {
         observation.status.probing = true;
         observation.status.error = None;
         let probe = CatalogProbe {
-            provider: provider_id,
+            account: account_id,
             generation: observation.generation,
-            previous: observation.cache.as_ref().map(|cache| {
-                pl_model::provider::discovery::ModelCatalogQueryCache {
-                    identity: query.identity().to_owned(),
-                    etag: cache.query_etag().map(str::to_owned),
-                    models: cache.models.clone(),
-                }
-            }),
+            // 迁移来的历史快照没有记录厂商协议：在完整响应重新验证前，它既不继承旧声明
+            // 也不参与条件请求，因此不交给解码器。
+            previous: observation
+                .cache
+                .as_ref()
+                .filter(|cache| cache.is_verified())
+                .map(
+                    |cache| pl_model::protocol::discovery::ModelCatalogQueryCache {
+                        identity: query.identity().to_owned(),
+                        etag: cache.query_etag().map(str::to_owned),
+                        models: cache.models.clone(),
+                    },
+                ),
             query,
             cancellation: observation.cancellation.child_token(),
         };
@@ -77,11 +83,11 @@ impl ConfigRuntime {
         &self,
         probe: CatalogProbe,
         result: std::result::Result<
-            pl_model::provider::discovery::ModelCatalogQueryResult,
-            pl_model::provider::discovery::ModelCatalogQueryError,
+            pl_model::protocol::discovery::ModelCatalogQueryResult,
+            pl_model::protocol::discovery::ModelCatalogQueryError,
         >,
     ) -> ConfigRuntimeResult<()> {
-        use pl_model::provider::discovery::ModelCatalogQueryResult;
+        use pl_model::protocol::discovery::ModelCatalogQueryResult;
         let _command = self
             .command_lock
             .lock()
@@ -90,7 +96,7 @@ impl ConfigRuntime {
         if state.closing || probe.cancellation.is_cancelled() {
             return Ok(());
         }
-        let Some(old) = state.observations.get(&probe.provider).cloned() else {
+        let Some(old) = state.observations.get(&probe.account).cloned() else {
             return Ok(());
         };
         if old.generation != probe.generation
@@ -124,7 +130,7 @@ impl ConfigRuntime {
                             }
                         }
                         Ok(SuccessCache::new(
-                            &probe.provider,
+                            &probe.account,
                             &identity,
                             etag,
                             models,
@@ -147,10 +153,10 @@ impl ConfigRuntime {
         };
         let mut next_observations = state.observations.clone();
         let desired = state.desired.clone();
-        let current_providers = state.snapshot.config.models.providers.clone();
+        let current_accounts = state.snapshot.config.models.accounts.clone();
         drop(state);
         let next = next_observations
-            .get_mut(&probe.provider)
+            .get_mut(&probe.account)
             .ok_or_else(|| PureError::ConfigError("model observation is missing".into()))?;
         next.status.probing = false;
         next.status.checked_at = Some(unix_seconds());
@@ -167,19 +173,19 @@ impl ConfigRuntime {
                         .validate_declarations()
                         .map_err(|_| StudioModelCatalogError::Protocol)?;
                     cache
-                        .persist(self.store.paths(), &probe.provider, probe.query.identity())
+                        .persist(self.store.paths(), &probe.account, probe.query.identity())
                         .map_err(|_| StudioModelCatalogError::CacheWrite)?;
                     Ok(effective)
                 })();
                 match accepted {
                     Ok(effective) => {
-                        for (id, provider) in &effective.models.providers {
-                            if current_providers.get(id) != Some(provider) {
+                        for (id, account) in &effective.models.accounts {
+                            if current_accounts.get(id) != Some(account) {
                                 affected.push(id.clone());
                             }
                         }
                         effective_config = Some(effective);
-                        let next = next_observations.get_mut(&probe.provider).ok_or_else(|| {
+                        let next = next_observations.get_mut(&probe.account).ok_or_else(|| {
                             PureError::ConfigError("model observation is missing".into())
                         })?;
                         next.status.source = StudioModelCatalogSource::Online;
@@ -189,7 +195,7 @@ impl ConfigRuntime {
                         next.status.cache_warning = None;
                     }
                     Err(error) => {
-                        let next = next_observations.get_mut(&probe.provider).ok_or_else(|| {
+                        let next = next_observations.get_mut(&probe.account).ok_or_else(|| {
                             PureError::ConfigError("model observation is missing".into())
                         })?;
                         next.cache = old.cache.clone();
@@ -208,7 +214,7 @@ impl ConfigRuntime {
         Ok(())
     }
 
-    fn publish_catalog_locked(&self, state: &mut RuntimeState, affected: Vec<ProviderId>) {
+    fn publish_catalog_locked(&self, state: &mut RuntimeState, affected: Vec<AccountId>) {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
         state.catalog.updated_at = unix_seconds();
         state.catalog.catalogs = statuses(&state.observations);

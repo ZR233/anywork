@@ -65,8 +65,8 @@ impl StudioRuntime {
         let selector = super::super::settings_api::validated_route(
             &config.config,
             "new Thread",
-            &request.route.provider_id,
-            &request.route.model,
+            &request.route.account_id,
+            &request.route.model_id,
             request.route.effort.as_deref(),
         )?;
         let route = config

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::model::capabilities::ModelModality;
 use crate::model::info::{MediaWireFormat, ModelTransportProfile};
-use crate::provider::ProviderWireProtocol;
+use crate::protocol::WireApi;
 
 /// 模型 profile 校验失败的具体规则。
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -24,10 +24,7 @@ pub enum ModelProfileError {
         source: super::pricing::PricingError,
     },
     #[error("model {model} request options do not match {protocol:?}")]
-    ProtocolOptionsMismatch {
-        model: String,
-        protocol: ProviderWireProtocol,
-    },
+    ProtocolOptionsMismatch { model: String, protocol: WireApi },
 
     /// 默认上下文压缩阈值必须为正整数。
     #[error("model {model} auto compact token limit must be a positive integer")]
@@ -92,7 +89,7 @@ pub enum ModelProfileError {
     WireProtocolMismatch {
         model: String,
         wire: MediaWireFormat,
-        protocol: ProviderWireProtocol,
+        protocol: WireApi,
     },
 
     /// 首发或重放表示重复。
@@ -170,10 +167,10 @@ impl ModelTransportProfile {
                 model: model.to_string(),
             });
         }
-        if self.protocol == ProviderWireProtocol::ChatCompletions
+        if self.protocol == WireApi::ChatCompletions
             && self
                 .supported_connection_modes
-                .contains(&crate::provider::ProviderConnectionMode::WebSocket)
+                .contains(&crate::protocol::ConnectionMode::WebSocket)
         {
             return Err(ModelProfileError::ChatCompletionsOverWebSocket {
                 model: model.to_string(),

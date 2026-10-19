@@ -1,3 +1,4 @@
+mod account_catalog;
 mod accounting;
 mod activity;
 mod agent;
@@ -15,7 +16,6 @@ mod model_context;
 mod observed_state;
 mod permission;
 pub mod process_worker;
-mod provider_catalog;
 pub mod remote;
 pub mod session_runtime;
 pub mod studio;
@@ -27,6 +27,14 @@ mod turn;
 mod turn_failure;
 mod workflow;
 
+pub use account_catalog::{
+    ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
+    AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
+    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor, ModelInputCapabilityDto,
+    ModelInputSourceDto, ModelModalityDto, ModelOriginDto, ModelPriceTierDto, ModelPricingDto,
+    ModelReasoningDescriptor, ModelTransportDescriptor, ModelType, ModelTypeExclusion,
+    ModelTypeSupport, WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
+};
 pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport, UsageStatus,
 };
@@ -85,15 +93,6 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
-pub use provider_catalog::{
-    CredentialDescriptorDto, ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor,
-    ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto, ModelOriginDto,
-    ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor, ModelTransportDescriptor,
-    ModelType, ModelTypeExclusion, ModelTypeSupport, PROVIDER_CATALOG_SCHEMA_VERSION,
-    ProviderCatalogSnapshot, ProviderConnectionModeDescriptor, ProviderPresetDescriptor,
-    ProviderServiceCapabilitiesDescriptor, WebSearchProviderCapabilitiesDescriptor,
-    WebSearchResolutionDescriptor,
-};
 pub use timeline_content::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
     TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange,

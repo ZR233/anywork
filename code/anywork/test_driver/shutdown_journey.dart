@@ -55,7 +55,7 @@ const _requestTimeout = Duration(seconds: 20);
 
 /// True when any visible timeline row already carries [needle] as its text.
 ///
-/// Used only to prove a paced provider reply actually streamed: unlike
+/// Used only to prove a paced account reply actually streamed: unlike
 /// `answerContains` this does not depend on the row already having the terminal
 /// `finalAnswer` type while the turn is still in flight.
 bool _rowTextContains(Map<String, dynamic> snapshot, String needle) =>
@@ -560,7 +560,7 @@ class ShutdownJourney {
 
   // ------------------------------------------------------ service unresponsive ---
 
-  /// The local provider fixture is frozen (SIGSTOP) mid-turn; the real exit must
+  /// The local account fixture is frozen (SIGSTOP) mid-turn; the real exit must
   /// still complete without waiting on the unresponsive service.
   Future<void> _runServiceUnresponsive() async {
     await mark('service_connected');

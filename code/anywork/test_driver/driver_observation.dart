@@ -222,62 +222,62 @@ DriverComposerAttachmentObservation driverComposerAttachments(
   );
 }
 
-List<Map<String, dynamic>> driverProviderListObservation(
+List<Map<String, dynamic>> driverAccountListObservation(
   Map<String, dynamic> snapshot,
 ) {
-  final providers = _providerObservation(snapshot)?['list'];
-  if (providers is! List) return const [];
+  final accounts = _accountObservation(snapshot)?['list'];
+  if (accounts is! List) return const [];
   return [
-    for (final provider in providers)
-      if (provider is Map) provider.cast<String, dynamic>(),
+    for (final account in accounts)
+      if (account is Map) account.cast<String, dynamic>(),
   ];
 }
 
-List<Map<String, dynamic>> driverProviderDetailsObservation(
+List<Map<String, dynamic>> driverAccountDetailsObservation(
   Map<String, dynamic> snapshot,
 ) {
-  final providers = _providerObservation(snapshot)?['details'];
-  if (providers is! List) return const [];
+  final accounts = _accountObservation(snapshot)?['details'];
+  if (accounts is! List) return const [];
   return [
-    for (final provider in providers)
-      if (provider is Map) provider.cast<String, dynamic>(),
+    for (final account in accounts)
+      if (account is Map) account.cast<String, dynamic>(),
   ];
 }
 
-Map<String, dynamic>? _providerObservation(Map<String, dynamic> snapshot) {
+Map<String, dynamic>? _accountObservation(Map<String, dynamic> snapshot) {
   final diagnostics = snapshot['driverDiagnostics'];
-  final providers = diagnostics is Map ? diagnostics['providers'] : null;
-  return providers is Map ? providers.cast<String, dynamic>() : null;
+  final accounts = diagnostics is Map ? diagnostics['accounts'] : null;
+  return accounts is Map ? accounts.cast<String, dynamic>() : null;
 }
 
 /// Verifies the list/detail split without treating a detail model modelId as a
 /// list label. The list projection is deliberately metadata-only; model model_ids
 /// remain observable only in the detail projection.
-void verifyProviderListRedacted(
+void verifyAccountListRedacted(
   Map<String, dynamic> snapshot, {
   required String fixtureModelId,
-  String? providerId,
+  String? accountId,
 }) {
-  final list = driverProviderListObservation(snapshot);
+  final list = driverAccountListObservation(snapshot);
   if (list.isEmpty) {
-    throw StateError('provider list observation is unavailable');
+    throw StateError('account list observation is unavailable');
   }
   final encodedList = jsonEncode(list);
   if (encodedList.contains(fixtureModelId)) {
     throw StateError(
-      'provider list observation leaked fixture model modelId $fixtureModelId',
+      'account list observation leaked fixture model modelId $fixtureModelId',
     );
   }
   if (RegExp(r'\+\d+').hasMatch(encodedList)) {
-    throw StateError('provider list observation leaked a +N model label');
+    throw StateError('account list observation leaked a +N model label');
   }
 
-  final details = driverProviderDetailsObservation(snapshot);
-  final matchingProvider = providerId == null
+  final details = driverAccountDetailsObservation(snapshot);
+  final matchingAccount = accountId == null
       ? details
-      : details.where((provider) => provider['id'] == providerId).toList();
-  final hasModelDetail = matchingProvider.any((provider) {
-    final models = provider['models'];
+      : details.where((account) => account['id'] == accountId).toList();
+  final hasModelDetail = matchingAccount.any((account) {
+    final models = account['models'];
     return models is List &&
         models.any(
           (model) => model is Map && model['modelId'] == fixtureModelId,
@@ -285,7 +285,7 @@ void verifyProviderListRedacted(
   });
   if (!hasModelDetail) {
     throw StateError(
-      'provider detail observation omitted fixture model $fixtureModelId',
+      'account detail observation omitted fixture model $fixtureModelId',
     );
   }
 }

@@ -176,10 +176,8 @@ pub(crate) fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: Mod
                     // Protocol-specific effort encoding is an existing boundary contract.
                     if parameter.name == "effort" {
                         let path = match target.binding.transport.protocol {
-                            crate::provider::ProviderWireProtocol::Responses => "reasoning.effort",
-                            crate::provider::ProviderWireProtocol::ChatCompletions => {
-                                "reasoning_effort"
-                            }
+                            crate::protocol::WireApi::Responses => "reasoning.effort",
+                            crate::protocol::WireApi::ChatCompletions => "reasoning_effort",
                         };
                         resolved
                             .wire

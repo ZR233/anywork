@@ -37,7 +37,7 @@ void main() {
 
   ThreadToolUserInputView userInput({
     required ThreadToolUserInputStateView state,
-    String firstQuestion = 'Which provider should the release use?',
+    String firstQuestion = 'Which account should the release use?',
     String secretQuestion = '',
     String firstHeader = 'Provider',
   }) {
@@ -45,7 +45,7 @@ void main() {
       interactionId: 'tool-interaction:call-1',
       questions: [
         UserQuestionView(
-          id: 'provider',
+          id: 'account',
           header: firstHeader,
           question: firstQuestion,
           isOther: true,
@@ -74,7 +74,7 @@ void main() {
     final part = toolItem(
       userInput: userInput(
         state: const PendingThreadToolUserInputView(),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
         secretQuestion: 'Paste the token',
       ),
     ).tool;
@@ -84,10 +84,10 @@ void main() {
     expect(projected!.isResolved, isFalse);
     expect(projected.answers, isEmpty);
     expect(projected.questions.map((question) => question.id), [
-      'provider',
+      'account',
       'token',
     ]);
-    expect(projected.questions.first.question, 'Which provider?');
+    expect(projected.questions.first.question, 'Which account?');
     expect(projected.questions.last.isSecret, isTrue);
   });
 
@@ -106,7 +106,7 @@ void main() {
     final shell = toolItem(
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(questionId: 'provider', answers: ['']),
+          ThreadUserInputAnswerView(questionId: 'account', answers: ['']),
         ]),
         firstQuestion: '',
         secretQuestion: '',
@@ -117,7 +117,7 @@ void main() {
     final current = toolItem(
       userInput: userInput(
         state: const PendingThreadToolUserInputView(),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
         secretQuestion: 'Paste the token',
       ),
       terminal: false,
@@ -137,7 +137,7 @@ void main() {
             questionIndex: 0,
             part: ThreadUserInputQuestionFieldPartView(),
           ),
-          change: ReplaceThreadFieldChangeView('Which provider?'),
+          change: ReplaceThreadFieldChangeView('Which account?'),
         ),
         ThreadFieldUpdateView(
           field: ThreadToolUserInputFieldView(
@@ -173,7 +173,7 @@ void main() {
     expect(projected, isNotNull);
     expect(projected!.isResolved, isTrue);
     expect(projected.headerText(0), 'Provider');
-    expect(projected.questionText(0), 'Which provider?');
+    expect(projected.questionText(0), 'Which account?');
     expect(projected.answerText(0, 0), 'anthropic');
     expect(projected.optionLabel(0, 0), 'anthropic');
     expect(projected.optionDescription(0, 0), 'Verify the Claude route');
@@ -186,11 +186,11 @@ void main() {
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
-            questionId: 'provider',
+            questionId: 'account',
             answers: ['anthropic'],
           ),
         ]),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
       ),
       revision: 3,
     );
@@ -215,11 +215,11 @@ void main() {
     final projected = updated?.tool?.userInput;
     expect(projected?.answerText(0, 0), 'openai\nand a second line');
     // 未被这次更新点名的正文保持原样，问答结构也不因字段变化重建。
-    expect(projected?.questionText(0), 'Which provider?');
+    expect(projected?.questionText(0), 'Which account?');
     expect(projected?.headerText(0), 'Provider');
     expect(projected?.optionLabel(0, 0), 'anthropic');
     expect(projected?.questions.map((question) => question.id), [
-      'provider',
+      'account',
       'token',
     ]);
   });
@@ -230,7 +230,7 @@ void main() {
       const CancelledThreadToolUserInputView(),
     ]) {
       final item = toolItem(
-        userInput: userInput(state: pending, firstQuestion: 'Which provider?'),
+        userInput: userInput(state: pending, firstQuestion: 'Which account?'),
       );
       final updated = item.applyFieldUpdates(
         fields: const [
@@ -263,7 +263,7 @@ void main() {
       userInput: userInput(
         state: const ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
-            questionId: 'provider',
+            questionId: 'account',
             answers: ['anthropic'],
           ),
           ThreadUserInputAnswerView(questionId: 'token', redacted: true),
@@ -283,7 +283,7 @@ void main() {
     final item = toolItem(
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(questionId: 'provider', answers: ['a']),
+          ThreadUserInputAnswerView(questionId: 'account', answers: ['a']),
         ]),
       ),
       omittedUnits: 2048,
@@ -389,7 +389,7 @@ void main() {
         toolItem(
           userInput: userInput(
             state: const ResolvedThreadToolUserInputView([
-              ThreadUserInputAnswerView(questionId: 'provider', answers: ['a']),
+              ThreadUserInputAnswerView(questionId: 'account', answers: ['a']),
             ]),
           ),
         ).tool!.userInput!.planReceipt,

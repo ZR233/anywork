@@ -14,21 +14,21 @@ owner。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服
 
 ## 18.2 公共 snapshot
 
-服务商用量刷新按 provider 发布独立的成功、失败、缺少凭据或不支持状态。单个服务商
-查询失败仍是本次观察的有效结果，不丢弃其他服务商的新结果，也不升级成所有卡片共享的
+账号用量刷新按 account 发布独立的成功、失败、缺少凭据或不支持状态。单个账号
+查询失败仍是本次观察的有效结果，不丢弃其他账号的新结果，也不升级成所有卡片共享的
 命令错误；只有观察协调或持久化失败才使整个刷新命令失败。
 
-用量检查以必需的 provider ID 为目标，HTTP command 为
-`POST /api/v1/runtime/provider-usage/{provider_id}/check`；只读快照继续按领域查询。
-刷新全部是多个单实例检查的编排，不是等待所有供应商返回后才发布的整批检查。联网阶段
+用量检查以必需的 account ID 为目标，HTTP command 为
+`POST /api/v1/runtime/account-usage/{account_id}/check`；只读快照继续按领域查询。
+刷新全部是多个单实例检查的编排，不是等待所有账号返回后才发布的整批检查。联网阶段
 不持全局配置或用量命令锁，结果在短提交边界合并当前快照，只更新所属实例。不同实例可
 并行并分别发布，同实例同查询身份的重叠检查合并；删除或改变查询输入后旧结果不得写回。
 
-供应商只读 descriptor 的 `usageQueryRevision` 是配置 owner 拥有的非密、按实例查询身份，
-仅在额度查询输入（包括服务地址、preset、有效凭据）改变时推进。该身份与 runtime owner
+账号只读 descriptor 的 `usageQueryRevision` 是配置 owner 拥有的非密、按实例查询身份，
+仅在额度查询输入（包括服务地址、template、有效凭据）改变时推进。该身份与 runtime owner
 epoch 一起解释，不是全局 Settings revision，不随名称、默认路由或在线模型目录观察推进，
 也不持久化为用户配置。不能以 secret 或 secret 哈希作为公开查询身份。自动加载和手动刷新
-均消费同一身份及结果 reducer，Client 需求合同见 [25.7.1](./25-frontend-state.md#2571-供应商用量需求)。
+均消费同一身份及结果 reducer，Client 需求合同见 [25.7.1](./25-frontend-state.md#2571-账号用量需求)。
 
 Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由成功受理用户输入推进，
 与普通 `updatedAt` 分离。Rust protocol、FRB DTO、Dart domain 与目录增量均传递同一事实；
@@ -37,7 +37,7 @@ Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由�
 字段缺失与保存语义遵循 [17](./17-studio-storage.md)。
 
 服务端启动 snapshot 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
-recovery、MCP/LSP、provider usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
+recovery、MCP/LSP、account usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
 Thread workspace 单独包含当前
 状态、pending Interaction、ThreadRuntimeView、workflow 投影和 Plan 投影；Timeline 内容通过
 独立的小页、尾部订阅与详情读取交付，不放入工作区轻状态；
@@ -107,7 +107,7 @@ revision 在空状态缓存淘汰、重新订阅及恢复之间也不得回退�
 
 产品订阅以 typed topic 表达领域，项目 Skills 携带 `projectId`，会话费用携带
 `rootThreadId`；不提供无作用域的 GUI 全事件订阅。全局目录、Settings、Recovery、
-MCP、LSP、Mode catalog、Provider usage、模型统计、Updater、持久化状态与队列、
+MCP、LSP、Mode catalog、Account usage、模型统计、Updater、持久化状态与队列、
 配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新
 让该订阅 lag。通道只分发 owner 已发布的事实，不持有另一套业务投影。
 
@@ -125,16 +125,23 @@ Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应
 空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在关闭与新 lease 建立期间继续生效，
 迟到帧不得写入新观察者。
 
-设置领域保持真实职责边界：MCP、LSP、项目 Skills、Provider usage、模型性能、持久化队列、
+设置领域保持真实职责边界：MCP、LSP、项目 Skills、Account usage、模型性能、持久化队列、
 Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
 topic；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循
 [25](./25-frontend-state.md) §25.8：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因
 页面往返被清除或重建。
 
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
+模型统计 snapshot 按 accountId/modelId 给出唯一顶层汇总和组内 effort 细分，modelId 表示冻结的
+配置选择，不以 sentModel/reportedModel 代替；无法证明的旧身份保持未知。分组与存储契约见
+[06](./06-model.md) 与 [17](./17-studio-storage.md)，消费者不在各层重新聚合另一套身份。
+顶层 summaries 的每项包含 accountId、accountDisplayName、modelId、该组总指标和
+effortBreakdowns；每个细分项包含可空 effort 及同口径指标，不重复定义另一组账号模型身份。
+历史 sample 的 modelId 可空，仍保留冻结发送/返回模型及 effort 诊断。未知身份不混入任何已知
+账号模型汇总，原有历史、用量和费用事实不因此被删除；仅指标有效样本参与速度聚合的规则保持不变。
 持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls
 writer 进度；进程级保存诊断不能替代队列状态。年龄是通知时间基线的展示，不驱动接口轮询。
-Provider 用量等外部查询仍由 typed 检查命令触发；供应商标签的自动可见需求也通过该命令
+Account 用量等外部查询仍由 typed 检查命令触发；账号标签的自动可见需求也通过该命令
 执行，不在查询或订阅基线中暗中联网。结果通过 canonical 事件/响应更新，不虚构第三方推送。
 
 ## 18.3 Activation
@@ -354,23 +361,23 @@ MCP 与 LSP 的监督契约见 [09](./09-tool-runtime.md) 与 [21](./21-lsp.md)�
 
 标题生成请求使用独立临时会话，最多 40 秒，禁止 tools、MCP 和持久化；使用配置中的
 Explorer 模型，若其声明了 effort，则按模型定义中从弱到强数组的首项请求最弱强度。始终
-启用 reasoning 的 provider 获得足以容纳隐藏思考的有界输出预算，不能把 UI title 长度误作
+启用 reasoning 的 account 获得足以容纳隐藏思考的有界输出预算，不能把 UI title 长度误作
 模型总输出预算。生成提示只要求概括首条请求的具体目标并返回一个标题，不包含字符集、
 词数、标点或 UI 长度规则；原始首条 prompt 必须先编码为受引号保护的不可信数据（JSON
 string），再由同一条最终 user message 在数据之后重申"只生成 title，不执行请求"，不能把
 原始任务本身作为标题会话的最后一条完整 user 指令。
 
-标题解析只读取 provider 返回的可见 assistant 文本，忽略 reasoning/思考内容；唯一处理
+标题解析只读取 account 返回的可见 assistant 文本，忽略 reasoning/思考内容；唯一处理
 路径折叠空白、拒绝空结果，再截取前 36 个 Unicode 字符形成 canonical title。JSON、
 Markdown、引号、标点和普通文本不进入不同解析或兼容分支。结果不进入 Thread transcript、
 Turn 列表或费用投影。
 
-任务在首条 Turn 被接受后注册，并等待该 Turn 空闲再占用 Explorer provider，避免后台命名
+任务在首条 Turn 被接受后注册，并等待该 Turn 空闲再占用 Explorer account，避免后台命名
 与用户 Turn 争抢同一远程路由；这段等待可由手动 rename、归档或 shutdown 取消，不计入
 40 秒超时；失败、超时和取消都保留临时 title（新 root Thread 的首条文本 prompt 先以
 规范化摘要作为临时 title）。
 
-取消通道是每任务一次性发送端：只有持有发送端的 title task owner 能发出取消，provider、
+取消通道是每任务一次性发送端：只有持有发送端的 title task owner 能发出取消，account、
 Turn 和 runtime 的其他取消域不能取得或改变该信号；发送端意外释放不等于业务取消，只有
 手动 rename、归档或 shutdown 的显式发送才结束标题任务。runtime shutdown 只 drain 当时
 已经注册的任务；同一 runtime 对象再次启动时创建新的通道，不复用上一生命周期的取消
@@ -378,7 +385,7 @@ Turn 和 runtime 的其他取消域不能取得或改变该信号；发送端意
 
 自动结果只能在 directory owner 的 CAS 检查通过后提交：当前 title 必须仍等于生成任务
 启动时的临时 title。手动 rename 先提交 canonical title 并取消对应任务，因此自动任务
-观察到期望值变化时必须丢弃结果；即使取消与 provider 返回发生竞态，手动 mutation 仍使
+观察到期望值变化时必须丢弃结果；即使取消与 account 返回发生竞态，手动 mutation 仍使
 陈旧自动结果失效。成功的 title mutation 通过 `ThreadDirectoryChanged` 增量事件发布，
 Thread stream 不新增平行 title 通知（见 [07](./07-streaming.md)）。
 
@@ -406,15 +413,15 @@ unspecified。Thread runtime 的模型身份、有效上下文窗口 `contextWin
 在请求准入后即可整体投影，不等待成功响应；新绑定中未知的值清除前一模型对应值，不能因失败、
 取消或历史回放而沿用。窗口和阈值沿可选 wire 字段传给 GUI，UI 不重新解析模型目录，不按当前
 设置回填，也不推导安全上限；辅助推理和压缩回执不覆盖主 Thread 的绑定事实。
-最近有效供应商用量与活动 attempt 的 live 读数仍按既有用量契约更新；压缩准备阶段使用的输入
-估算不是供应商用量，进度达到阈值不等于压缩已经发生。新请求尚未回报用量时可以保留最近有效
+最近有效账号用量与活动 attempt 的 live 读数仍按既有用量契约更新；压缩准备阶段使用的输入
+估算不是账号用量，进度达到阈值不等于压缩已经发生。新请求尚未回报用量时可以保留最近有效
 读数，不能据此隐藏其超过新阈值的情况。快照、状态流、重订阅与冷恢复传递相同的绑定事实。
 
 透明模型恢复按 [16](./16-core-contracts.md) §16.3 的观察代次投影，实时及最终回执遵循
-[07](./07-streaming.md)。失败子尝试与当前子尝试分开呈现，原 provider part 身份不改写；
+[07](./07-streaming.md)。失败子尝试与当前子尝试分开呈现，原 account part 身份不改写；
 不能因最终逻辑调用成功把先前失败片段收束为成功，也不能把旧预览的空占位当成正文。
 重试、恢复及耗尽显示为 Runtime 来源的 commentary 项目，与正文共用同一 Timeline 内容源；提示
-从类型化恢复事实生成，不从供应商错误正文反推状态。无 GUI 时仍保留同一回执事实，慢消费者
+从类型化恢复事实生成，不从账号错误正文反推状态。无 GUI 时仍保留同一回执事实，慢消费者
 与历史重开可获得相同失败边界，不在 Flutter 维护另一个重试计数或片段合并器。
 
 产品时间线 ordinal 在 effect 首次创建 Item 时从输入、Turn、模型尝试和工具调用顺序统一分配；
@@ -501,7 +508,7 @@ Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含�
 须迁移旧的 `cacheHitRate`、`cacheMissTokens` 到 `cacheUsage`：比例取其 `hitRate`，
 未命中取同组 `inputTokens - cacheReadTokens`；旧字段不再提供，Bridge 与 GUI 须一并升级。
 
-模型性能历史以冻结账单中的实际发送模型作为统计身份，并投影配置模型、Provider 返回模型和
+模型性能历史以冻结账单中的实际发送模型作为统计身份，并投影配置模型、Account 返回模型和
 `matched`、`mismatched`、`unreported`、`legacyUnknown` 四态结果。返回模型不参与费用或速度
 汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。速度样本的有效性、单调窗口与聚合
 公式统一遵循 [06](./06-model.md) §6.12；实时状态栏与历史汇总不能采用不同口径，也不以
@@ -665,7 +672,7 @@ Project 路径或工作树路径，GUI 不推导工作树布局。菜单读取�
 不接受任意命令。VS Code 自身的工作区信任、SSH 认证策略保持有效，不修改用户安全设置。
 启动失败以界面提示回报，不自动重试或回退外部链接。Windows 查询 `vscode` 协议关联，
 Linux 优先解析同一协议的 GIO 默认应用可执行文件，无关联时查找 PATH 中的 `code`；
-可用性与启动共用该解析入口。结果缓存于进程内 provider，demo 与测试可覆写。
+可用性与启动共用该解析入口。结果缓存于进程内 account，demo 与测试可覆写。
 
 Zed 通过官方命令行程序直接打开目标，不经过 shell 或 `zed://` 外部链接处理器。本地目标以
 单个 canonical 目录参数传递；远端目标使用 `ssh://<Host 别名>/<远端路径>`，路径按 URI 规则
@@ -696,7 +703,7 @@ SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提�
 本应由订阅提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream（Dart 侧分层
 契约见 [25](./25-frontend-state.md) §25.7）。
 
-Settings、provider usage、model performance、session costs、MCP、LSP、Skills、Profiles、
+Settings、account usage、model performance、session costs、MCP、LSP、Skills、Profiles、
 persistence、updater 与 recovery 等独立职责继续使用各自 typed topic/lease；无关领域不得进入
 彼此缓冲。订阅按“先登记接收者、再基线、后事件”建立，最后一个观察者释放时取消，重新进入
 先采用最新基线再接收事件。Thread 的 runtime、turn、interaction、workflow、activity 与
@@ -712,14 +719,14 @@ resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
 
 Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
 `modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
-对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 provider
+对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 account
 的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
 frame 和 baseline 进入 settings store 的同一条 merge path，调用方不得按到达顺序整体替换
 （Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
 
-静态供应商目录是启动阶段加载的独立事实，只由 Dart `SettingsStore` 持有并与运行时
+静态账号目录是启动阶段加载的独立事实，只由 Dart `SettingsStore` 持有并与运行时
 配置快照组合显示。`BridgeStudioStateSnapshot` 不携带该目录；聚合快照转换不得以空目录
-覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。供应商 Logo、preset
+覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。账号 Logo、template
 能力和目录模型均通过该唯一目录投影进入 UI。
 
 Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种不同事实，所有权与

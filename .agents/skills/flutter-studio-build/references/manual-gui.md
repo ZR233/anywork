@@ -8,7 +8,9 @@
 - 先明确要验证的交互、状态变化、异常路径及证据；通过 `code/pl-studio-acceptance/src/`
   核实当前 CLI 与场景参数，不为绕过终端检查选择无关场景。
 - `cargo xtask verify-gui` 负责生成一致性、格式及静态分析，不包含 GUI 人工结论。
-- 真实供应商验收使用 `cargo xtask run-gui --driver`，不把模拟通过外推为真实模型兼容。
+- 真实厂商验收使用 `cargo xtask run-gui --driver`，不把模拟通过外推为真实模型兼容。
+  用户数据根已被其它 Studio 占用时，使用受保护的配置/Profile 副本与同一凭据关联建立独立验收
+  home，进程级指定 ANYWORK_HOME；不复制正在写入的历史库，不修改用户密钥或原历史。
   使用外部 helper 模式的 Linux Studio/Server 入口按根 `AGENTS.md` 预先安装 remote helper；
   桌面 xtask 入口使用 bundle 内的 `data/remote-helper/`，不能以 PATH 中的程序代替资源校验。
 
@@ -53,8 +55,9 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 
 ## 涉及系统凭据的隔离场景
 
-`ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `provider:<id>` account 不随数据根改变。
-预置实例优先使用唯一 ID；若验收必须通过真实 UI 新增供应商（由 UI 自动生成 preset ID），
+`ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `account:<id>` 项不随数据根改变；
+账号升级还可能读取迁移前 `provider:<id>` 项并创建新关联，隔离模拟必须覆盖这两个命名空间。
+预置实例优先使用唯一 ID；若验收必须通过真实 UI 新增账号（由 UI 自动生成账号 ID），
 不能仅靠临时 home 就读写这些 account，也不能新增生产内存凭据开关绕过真实边界。
 
 Linux 可为该场景创建私有 D-Bus 会话，并把 `XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和
@@ -63,7 +66,8 @@ Unix socket。移除继承的 `GNOME_KEYRING_CONTROL`，不复用用户 keyring 
 需要 Secret Service 时，在该隔离环境中前台启动 `gnome-keyring-daemon --unlock --components=secrets`，
 仅向新建测试 keyring 提供空的合成密码；使用 `gdbus wait` 等待服务注册，不以 sleep 猜测就绪。
 daemon 必须归属本次进程树，并在正常完成、失败和取消时停止、wait 和核对 PID；不能尝试解锁
-或清空用户已有 keyring。可参考现有 `pl-studio-acceptance` 的 `provider_usage` 场景封装。
+或清空用户已有 keyring。可参考现有 `pl-studio-acceptance` 的 `account_usage` 模块封装
+（CLI 场景名仍为 `provider-usage`）。
 
 证据脱敏应保留当前场景的判定信息：安全的 HTTP method/path、凭据 alias、请求计数与错误
 类别，而不是 Authorization 或完整请求正文。通用日志投影可能只保留启动计时；扩展场景时
@@ -78,7 +82,7 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
    根据本次子进程/日志定位；不要硬编码端口、PID、临时目录或以广泛扫描他人临时目录代替定位。
    不占用项目保留端口 `1420`，不对外暴露调试服务。
 3. 先读当前源码中的 `StudioDriverKeys`、实际控件 key 与快照，再构建 Finder。
-   动态 key 可包含 provider/profile ID，不能猜测为空或照抄上次 ID。
+   动态 key 可包含 account/profile ID，不能猜测为空或照抄上次 ID。
    Linux 原生环境中普通 tap 的 hit-test 可能超时，项目已有 `rawTap` 扩展会验证目标及
    模态遮挡，应复用该入口而不是屏幕坐标点击；查找超时先核对 key、滚动位置及模态状态。
 4. 临时定向客户端可放在忽略的 `target/gui-acceptance/probe.dart`，无需增加永久测试。
@@ -111,6 +115,8 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
   `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
   `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
   宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
+- Driver 的 DTO 列表投影使用显式类型的空集合，避免 `?? const []` 将循环元素降为 dynamic、
+  令分析器漏报已删除的 getter。统计等接口须以非空真实记录调用取证，空列表成功不能证明字段迁移完整。
 - 不对聚焦文本框使用「全局动画全部停止」作为编辑完成条件，光标闪烁可以持续产生帧。
   优先读 `TextField.controller.text` 的 Driver `getText` 结果、当前交互身份及精确后置状态。
   产品会自动打开的面板或菜单先观察当前状态，再决定是否点击，避免把已打开状态反向关闭；

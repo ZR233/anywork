@@ -77,7 +77,7 @@ const _revisionFeedback =
 const _failedTurnStatuses = <String>{'failed', 'cancelled', 'budgetLimited'};
 
 /// Marker files the coordinator writes after it proved the reopened card window
-/// recorded no additional provider request.
+/// recorded no additional account request.
 const _quietRestartMarker = 'plan-recovery-quiet-restart';
 const _quietRecheckMarker = 'plan-recovery-quiet-recheck';
 
@@ -230,7 +230,7 @@ Future<void> _recordConnectFailure(
 /// The `first` phase submits a real `plan_submit` through the GUI and shuts the
 /// GUI down normally while the confirmation is pending. The `restart` phase
 /// proves the reopened session restores the exact Plan body and interaction
-/// identity, that no provider request happens before the answer (the
+/// identity, that no account request happens before the answer (the
 /// coordinator's quiet marker), then approves and creates the Revise-branch
 /// session before a second normal shutdown. The `recheck` phase restores that
 /// second pending Plan, answers Revise (which must produce a rewritten Plan
@@ -259,7 +259,7 @@ class PlanRecoveryJourney {
   String? shutdownError;
 
   /// Observations that stay with the human reviewer rather than being asserted
-  /// here; the coordinator records the provider-side request counts.
+  /// here; the coordinator records the account-side request counts.
   final List<String> pendingEvidence = <String>[
     'the coordinator owns the fixture request counters: the quiet windows '
         'before each answer are proved from the fixture status file, not from '
@@ -359,7 +359,7 @@ class PlanRecoveryJourney {
     await _openPlanDetails('restart');
     await shot('restart-card-restored');
     await mark('plan_recovery_reopened');
-    // The coordinator proves this window recorded no provider request before
+    // The coordinator proves this window recorded no account request before
     // the journey is allowed to answer.
     await _awaitMarker(
       _quietRestartMarker,

@@ -68,7 +68,7 @@ void main() {
   });
 
   test(
-    'provider cancellation, disposal and rebuilding preserve app resources',
+    'account cancellation, disposal and rebuilding preserve app resources',
     () async {
       final transport = RecordingDemoTransport();
       final graph = AppGraph(transport: transport, clientId: 'observer-owner');

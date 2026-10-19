@@ -176,15 +176,17 @@ void main() {
     final initial = container.read(startPageComposerViewProvider);
     final route = initial.displayRoute(initial.mode);
     expect(route, isNotNull);
-    final options = modelOptions(initial.providers);
+    final options = modelOptions(initial.accounts);
     expect(options.length, greaterThan(1), reason: '模型目录需要至少两个候选');
     final current = options.firstWhere(
       (option) =>
-          option.providerId == route!.providerId && option.model == route.model,
+          option.accountId == route!.accountId &&
+          option.modelId == route.modelId,
     );
     final next = options.firstWhere(
       (option) =>
-          option.providerId != route!.providerId || option.model != route.model,
+          option.accountId != route!.accountId ||
+          option.modelId != route.modelId,
     );
 
     await tester.pumpWidget(harness(const _ModelSelectorHost()));
@@ -195,7 +197,7 @@ void main() {
     expect(find.text(before), findsOneWidget);
     await tester.tap(trigger);
     await tester.pumpAndSettle();
-    final nextKey = StudioDriverKeys.modelOption(next.providerId, next.model);
+    final nextKey = StudioDriverKeys.modelOption(next.accountId, next.modelId);
     expect(selectedRow(nextKey), findsNothing);
 
     await tester.tap(find.byKey(nextKey));
@@ -207,8 +209,8 @@ void main() {
     final after = container
         .read(startPageComposerViewProvider)
         .displayRoute(initial.mode);
-    expect(after?.providerId, next.providerId);
-    expect(after?.model, next.model);
+    expect(after?.accountId, next.accountId);
+    expect(after?.modelId, next.modelId);
     final expectedEffort = ModelRouteQueries.effortAfterModelSelection(
       next.descriptor,
       null,
@@ -401,9 +403,9 @@ class _EffortSelectorHost extends ConsumerWidget {
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return ReasoningEffortSelector(
-      providers: page.providers,
-      providerId: route.providerId,
-      model: route.model,
+      accounts: page.accounts,
+      accountId: route.accountId,
+      modelId: route.modelId,
       effort: route.effort,
       onEffortSelected: (effort) {
         ref
@@ -426,21 +428,21 @@ class _ModelSelectorHost extends ConsumerWidget {
     return Wrap(
       children: [
         ModelRoleSelector(
-          providers: page.providers,
-          providerId: route.providerId,
-          model: route.model,
+          accounts: page.accounts,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
-          onModelSelected: (providerId, model) {
+          onModelSelected: (accountId, model) {
             ref
                 .read(anyworkClientProvider)
                 .startDraft
-                .setModelIntent(page.mode, providerId, model);
+                .setModelIntent(page.mode, accountId, model);
           },
         ),
         ReasoningEffortSelector(
-          providers: page.providers,
-          providerId: route.providerId,
-          model: route.model,
+          accounts: page.accounts,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
           onEffortSelected: (effort) {
             ref
@@ -464,7 +466,7 @@ String? _otherEffort(ProviderContainer container, String current) {
   final page = container.read(startPageComposerViewProvider);
   final route = page.displayRoute(page.mode);
   if (route == null) return null;
-  final model = modelForRoute(page.providers, route.providerId, route.model);
+  final model = modelForRoute(page.accounts, route.accountId, route.modelId);
   return model?.reasoningEfforts
       .where((effort) => effort != current)
       .firstOrNull;

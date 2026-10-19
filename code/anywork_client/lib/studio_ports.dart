@@ -104,7 +104,7 @@ abstract class StudioTransport
   }) async => const [];
 
   Future<RecoveryStateSnapshot> retryRecovery();
-  Future<ProviderCatalogView> loadProviderCatalog();
+  Future<AccountCatalogView> loadAccountCatalog();
 
   /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。
   Future<AgentProfilesStateView> readAgentProfilesState();
@@ -194,8 +194,8 @@ abstract class StudioTransport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   });
   Future<ThreadModeCommandReply> setThreadMode({
@@ -273,25 +273,25 @@ abstract class StudioTransport
     PermissionMode mode, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   });
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
+    String accountId,
     String modelId,
   );
   Future<SettingsCommandReply> applySettingsField(
@@ -302,7 +302,7 @@ abstract class StudioTransport
 
   /// 重新读取 backend canonical settings 快照（不依赖本地缓存）。
   Future<SettingsStateSnapshot> readSettingsState();
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(String providerId);
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId);
   Future<SkillsStateSnapshot> readSkillsState(String projectId);
   Future<SkillsStateSnapshot> discoverSkills(String projectId);
   Future<SkillSearchResultView> searchSkills(

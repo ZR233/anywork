@@ -394,8 +394,8 @@ impl StateStore {
             }
             let receipt = pl_model::runtime::model_request_receipt(&payload)?;
             return Ok(Some(pl_model::config::ModelRouteConfig {
-                provider: pl_model::config::ProviderId::new(receipt.binding.provider_instance_id)?,
-                model: receipt.binding.requested_model,
+                account_id: pl_model::config::AccountId::new(receipt.binding.account_id)?,
+                model_id: receipt.binding.model_id,
                 effort: receipt
                     .reasoning
                     .and_then(|reasoning| reasoning.effort)

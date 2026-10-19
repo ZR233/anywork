@@ -17,7 +17,7 @@ import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
 /// The fixture appends every increment to one stable item/part, so this journey
 /// is recorded separately from the multi-item stress journey even though it
 /// carries the same event count and nominal rate. It records only GUI-observed
-/// timing and raw frame data: the synthetic provider's own byte count lives in
+/// timing and raw frame data: the synthetic account's own byte count lives in
 /// the fixture report and is never treated as an FRB transfer measurement.
 ///
 /// 断言只读当前展示事实：`timeline`（身份/revision/省略声明/逐字段详情引用）与
@@ -142,7 +142,7 @@ Future<void> main(List<String> args) async {
   final checks = <String, Object?>{};
   final findings = <String, Object?>{};
   final pendingEvidence = <String>[
-    'the fixture provider bytes come from the synthetic provider stream and are '
+    'the fixture account bytes come from the synthetic account stream and are '
         'never an FRB transfer measurement',
     'per-item and per-page preview budgets are backend limits: the text each '
         'displayed item carries grows with the pages this journey actually '
@@ -1321,7 +1321,7 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
   return evidence;
 }
 
-/// The exact body the scripted provider streams: every increment is
+/// The exact body the scripted account streams: every increment is
 /// `body-%05d ` (plus the large-scenario `W` pad), reconstructed here so the
 /// clipboard comparison never trusts the delivered domain text.
 String _canonicalBody(bool largeBody) {

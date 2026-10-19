@@ -6,7 +6,7 @@ use pl_protocol::{
 };
 
 use crate::completion::ReasoningConfig;
-use crate::provider::{EffectivePromptCachePolicy, ProviderEndpoint};
+use crate::protocol::{EffectivePromptCachePolicy, ProtocolEndpoint};
 use pl_protocol::ToolSpec;
 use sha2::{Digest, Sha256};
 
@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 #[derive(Debug)]
 pub struct PromptCacheInput<'a> {
     pub scope: &'a str,
-    pub provider: &'a ProviderEndpoint,
+    /// 稳定账号身份；诊断身份必须来自它，不能来自 endpoint 显示名。
+    pub account_id: &'a str,
+    pub account: &'a ProtocolEndpoint,
     pub model: &'a str,
     pub instructions: &'a str,
     pub prelude_messages: &'a [Message],
@@ -34,7 +36,7 @@ pub struct PromptCacheInput<'a> {
 
 struct PromptHashes<'a> {
     context: &'a str,
-    provider: &'a str,
+    account: &'a str,
     fixed_prefix: &'a str,
     request_properties: &'a str,
     tool_schema: &'a str,
@@ -51,9 +53,9 @@ pub fn prompt_diagnostics(
     let context_hash = input.context_hash.to_owned();
     let stable_tools = stable_tool_schemas(input.tools.to_vec());
     let tool_schema_hash = canonical_json_hash(&serde_json::to_value(&stable_tools)?);
-    let provider_hash = provider_hash(input.provider)?;
-    let request_properties_hash = request_properties_hash(&input, &provider_hash)?;
-    let fixed_prefix_hash = fixed_prefix_hash(&input, &provider_hash)?;
+    let account_hash = account_hash(input.account_id, input.account)?;
+    let request_properties_hash = request_properties_hash(&input, &account_hash)?;
+    let fixed_prefix_hash = fixed_prefix_hash(&input, &account_hash)?;
     let previous_prompt = previous_metadata.slots.get(input.scope);
     let previous_active_scope = (!previous_metadata.active_scope.is_empty())
         .then_some(previous_metadata.active_scope.as_str());
@@ -69,7 +71,7 @@ pub fn prompt_diagnostics(
         previous_active_scope,
         PromptHashes {
             context: &context_hash,
-            provider: &provider_hash,
+            account: &account_hash,
             fixed_prefix: &fixed_prefix_hash,
             request_properties: &request_properties_hash,
             tool_schema: &tool_schema_hash,
@@ -90,9 +92,9 @@ pub fn prompt_diagnostics(
     let prompt = ThreadPromptSnapshot {
         scope: input.scope.to_string(),
         generation,
-        provider: input.provider.name.clone(),
-        provider_hash,
-        model: input.model.to_string(),
+        account_id: input.account_id.to_string(),
+        account_hash,
+        model_id: input.model.to_string(),
         fixed_prefix_hash,
         fixed_prefix_section_hashes: input.fixed_prefix_section_hashes.clone(),
         request_properties_hash,
@@ -127,10 +129,15 @@ fn changed_reason(
     if previous.prefix_changed_reason == PromptPrefixChangedReason::ContextRecovered {
         return Some(PromptPrefixChangedReason::ContextRecovered);
     }
-    if previous.provider_hash != hashes.provider {
-        return Some(PromptPrefixChangedReason::ProviderChanged);
+    // A legacy snapshot that recorded no stable account ID cannot prove the same identity;
+    // its old display name is not an identity and is never used to match.
+    if previous.account_id.is_empty() || input.account_id.trim().is_empty() {
+        return Some(PromptPrefixChangedReason::AccountChanged);
     }
-    if previous.model != input.model {
+    if previous.account_hash != hashes.account {
+        return Some(PromptPrefixChangedReason::AccountChanged);
+    }
+    if previous.model_id != input.model {
         return Some(PromptPrefixChangedReason::ModelChanged);
     }
     if previous.tool_schema_hash != hashes.tool_schema {
@@ -148,23 +155,25 @@ fn changed_reason(
     (previous.context_hash != hashes.context).then_some(PromptPrefixChangedReason::ContextAppended)
 }
 
-fn provider_hash(provider: &ProviderEndpoint) -> Result<String, PureError> {
+/// 稳定账号 ID 参与指纹；endpoint 显示名不是身份，也不进入 hash。
+fn account_hash(account_id: &str, account: &ProtocolEndpoint) -> Result<String, PureError> {
     let value = serde_json::json!({
-        "adapter": provider.adapter,
-        "baseUrl": provider.base_url,
-        "toolWirePolicy": provider.tool_wire_policy,
-        "applyPatchToolType": provider.apply_patch_tool_type,
-        "serviceCapabilities": provider.service_capabilities,
+        "accountId": account_id,
+        "protocol": account.protocol,
+        "baseUrl": account.base_url,
+        "toolWirePolicy": account.tool_wire_policy,
+        "applyPatchToolType": account.apply_patch_tool_type,
+        "serviceCapabilities": account.service_capabilities,
     });
     Ok(canonical_json_hash(&value))
 }
 
 fn fixed_prefix_hash(
     input: &PromptCacheInput<'_>,
-    provider_hash: &str,
+    account_hash: &str,
 ) -> Result<String, PureError> {
     let value = serde_json::json!({
-        "providerHash": provider_hash,
+        "accountHash": account_hash,
         "model": input.model,
         "instructions": input.instructions,
         "preludeMessages": input.prelude_messages,
@@ -180,10 +189,10 @@ fn fixed_prefix_hash(
 
 fn request_properties_hash(
     input: &PromptCacheInput<'_>,
-    provider_hash: &str,
+    account_hash: &str,
 ) -> Result<String, PureError> {
     let value = serde_json::json!({
-        "providerHash": provider_hash,
+        "accountHash": account_hash,
         "model": input.model,
         "toolChoice": input.tool_choice,
         "parallelToolCalls": input.parallel_tool_calls,

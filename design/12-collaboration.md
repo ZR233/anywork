@@ -62,7 +62,7 @@ system_instructions = """
 """
 
 [model]
-provider = "deepseek"
+account = "deepseek"
 model = "deepseek-flash"
 effort = "high"
 ```
@@ -70,7 +70,7 @@ effort = "high"
 用户 Profile 可选择四种模式，`review` 与系统 reviewer 语义一致（spawn 必须提供
 `reviewTargetAgentId`）。旧文件缺少 `workspace_mode` 时按 `directory` 解释，下一次保存
 写回 canonical 字段。文件分别解析、校验和原子保存；无效文件保留原字节、从有效目录排除，
-并以脱敏 warning 暴露。合法但 provider/model 当前不可解析的 Profile 保留在 Settings 中并
+并以脱敏 warning 暴露。合法但 account_id/model_id 当前不可解析的 Profile 保留在 Settings 中并
 标记 unavailable。
 
 主智能体（Main agent）是 root，负责理解需求、制定计划、协调子代理、整合与验证结果。
@@ -78,32 +78,32 @@ effort = "high"
 保存值作为新建或切换默认值。主智能体不是可派发 Profile，也不在 Agents 设置页提供独立配置。
 Studio 注册四个系统子代理 Profile：`explorer` 固定为 unrestricted，`reviewer` 固定为
 review，`executor` 固定为 directory，`worktree_executor` 固定为 worktree。系统 id、名称、用途、指令
-和模式不可编辑；Agents 设置页可以配置其启用状态、provider/model 和模型声明的 effort。
+和模式不可编辑；Agents 设置页可以配置其启用状态、account_id/model_id 和模型声明的 effort。
 `planner` 是保留标识，用户 Profile 不可占用；目录查询和 spawn 均不接受它。
 历史 planner child 保留身份、消息和执行记录，仅供查看；恢复或续跑在资源创建前拒绝，
 界面显示“该子代理角色已停用”。历史订阅直接重放日志并发布只读快照，不装配运行资源；
 后续等待随订阅取消而释放。该限制仅针对 child，不影响使用同一路由的 root。
 
-每个 child 创建时冻结 Profile id、正文与工作区分配快照，保存初建 provider、model、effort
-与配置 revision。后续 Profile 更新只影响未来 child；已有 child 在 provider 配置刷新时仅用
+每个 child 创建时冻结 Profile id、正文与工作区分配快照，保存初建 account、model、effort
+与配置 revision。后续 Profile 更新只影响未来 child；已有 child 在 account 配置刷新时仅用
 当前 endpoint、凭据与模型目录重新解析已冻结 selector，不改写 selector、创建指令或物理工作区，
 也不在每轮回读 SQLite。产品在准备初始
 外部资源时接收同一冻结 Profile 快照，不能从父 Agent 配置或非类型化 metadata 猜测权限和
 系统指令。本文保留的是公共功能语义而不是固定 Rust 签名：任何实现 PL host 的产品都必须能
-在外部资源产生副作用之前取得"本次 spawn 已冻结的完整 Profile"，用于按同一 provider、
+在外部资源产生副作用之前取得"本次 spawn 已冻结的完整 Profile"，用于按同一 account、
 model、effort、system instructions 和 workspace mode 创建容器、远端会话或审计收据；后续
 可以重命名请求类型或拆分生命周期阶段，但不得删除这项能力，也不得把重新解析 Profile 的
 责任推回产品层。
 
 Plan 属于各自的 Thread，不随 Profile 或 workspace assignment 复制到 child，也不
 存在 lineage 共享句柄。child 始终使用独立上下文，不继承父 Thread 的对话记录、附件、资源引用或
-provider 私有历史；`spawn_agent` 不接受历史继承选项。root 必须把 child 所需的已批准基线写入
+厂商私有历史；`spawn_agent` 不接受历史继承选项。root 必须把 child 所需的已批准基线写入
 `spawn_agent.message`；
 child 不装配 `plan_*` 工具；方案与问题通过 Turn 报告交给 root。配置冻结与 Plan session
 隔离是两条独立边界。`spawn_agent.message` 和 root 后续通过 `send_message` 发送的补充输入
 都在 child Timeline 中显示为 `parentAgent` 文本消息，并由 Studio 标记为"主智能体 / Main
 agent"；`send_message` 对运行中 child 请求打断并在清理后携带新内容自动继续，对空闲 child 启动执行。
-它复用用户 prompt 的 owner 控制入口，`interrupt_agent` 则仅停止，不自动续跑。消息收据只表示受理。它们对 provider 仍是普通 user role，不得改变上下文隔离、Plan 隔离、预算刷新或
+它复用用户 prompt 的 owner 控制入口，`interrupt_agent` 则仅停止，不自动续跑。消息收据只表示受理。它们对 account 仍是普通 user role，不得改变上下文隔离、Plan 隔离、预算刷新或
 parent→direct-child 授权语义。
 
 ## 12.3 spawn 与目录写策略
@@ -296,7 +296,7 @@ root 保存任务读写范围与原执行者 `agentId` 的映射，交付后保�
 已有成功证据时复用；修改或依赖变化、冲突、失败诊断、覆盖缺口与强制门禁要求重跑时，报告
 具体原因。执行者只做局部验证，root 承担最终整合验证与项目强制门禁；reviewer 可执行只读
 检查与必要验证命令，但不修改代码，补测试仍由执行者完成。验证记录使用报告正文，不新增生产协议、持久化字段或
-GUI 接口。复用会话增加上下文及 provider prompt cache 复用机会，缓存命中只按上游实际
+GUI 接口。复用会话增加上下文及 account prompt cache 复用机会，缓存命中只按上游实际
 usage 报告，不承诺固定收益。阶段完成标准消费可复用的验证记录，只补缺失或失效的检查，
 不为阶段切换机械重复全量测试。
 
@@ -397,7 +397,7 @@ worktree 清理尊重 Git 锁与注册身份拒绝：注销失败且目录仍存
 ## 12.6 GUI
 
 Agents 是 canonical Agent 配置中心，不保留重复 Roles 设置页。系统卡片显示固定模式徽标、
-启用开关、provider/model/effort 控件，用户编辑器额外显示三模式选择。所有设置 mutation
+启用开关、account_id/model_id/effort 控件，用户编辑器额外显示三模式选择。所有设置 mutation
 携带 `expectedSettingsRevision`，成功后以返回的完整 canonical settings snapshot 原子刷新
 UI（设置页整体契约见 [19](./19-studio-ui.md)）。
 

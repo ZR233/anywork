@@ -67,7 +67,7 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
     // re-checked from evidence; no message text is duplicated here.
     'timelineScroll': _timelineScroll(snapshot),
     // Activity stage identity plus expand state only; summary/error stay as
-    // lengths so no provider text or credential can leak into the snapshot.
+    // lengths so no account text or credential can leak into the snapshot.
     'conversationActivity': _conversationActivity(snapshot),
     // 展示代次的只读事实：身份、数量、模式、分页与预览字节。
     'timeline': TimelineObservation.optional(snapshot)?.summary(),

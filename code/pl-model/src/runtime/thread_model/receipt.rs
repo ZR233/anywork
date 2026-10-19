@@ -2,7 +2,7 @@
 use crate::completion::{CompletionPresentationItemKind, CompletionPresentationPartKind};
 use crate::{
     completion::CompletionResponse,
-    provider::{ProviderAdapterKind, ProviderWireProtocol},
+    protocol::{ProtocolKind, WireApi},
     runtime::ModelRuntime,
 };
 use pl_core::context::{ContextContent, OpaquePayload};
@@ -10,6 +10,7 @@ use pl_core::model::{
     AggregateChannel, ModelError, ModelFailureKind, ModelProgress, ModelStepOutput,
     ObservedItemKind, ObservedPart, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
 };
+use pl_protocol::PromptPrefixChangedReason;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -20,10 +21,19 @@ use std::sync::Arc;
 /// current structure only at the persistence decode boundary in [`model_failure_receipt`], so a
 /// receipt written by an earlier incarnation of this same data version still recovers every byte of
 /// partial text it had already received. The running producer and live path handle version 2 only.
-pub const FAILURE_RECEIPT_VERSION: u32 = 2;
+pub const FAILURE_RECEIPT_VERSION: u32 = 3;
+
+/// Failure receipt encoding from before the account model-binding field migration.
+const LEGACY_FAILURE_RECEIPT_VERSION_V2: u32 = 2;
 
 /// Failure receipt encoding written before the live observation became typed parts.
 const LEGACY_FAILURE_RECEIPT_VERSION: u32 = 1;
+
+/// Version of the prepared-request record owned by this crate.
+pub const REQUEST_RECEIPT_VERSION: u32 = 2;
+
+/// Prepared-request encoding from before the account model-binding field migration.
+const LEGACY_REQUEST_RECEIPT_VERSION: u32 = 1;
 
 /// Format of the version 1 preview payload holding one encoded presentation item.
 const PRESENTATION_PREVIEW_FORMAT: &str = "pl.model.presentation-item";
@@ -32,10 +42,10 @@ const PRESENTATION_PREVIEW_FORMAT: &str = "pl.model.presentation-item";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCallBinding {
-    pub provider_instance_id: String,
-    pub requested_model: String,
-    pub adapter: ProviderAdapterKind,
-    pub protocol: ProviderWireProtocol,
+    pub account_id: String,
+    pub model_id: String,
+    pub protocol: ProtocolKind,
+    pub wire_api: WireApi,
     pub isolation: String,
     pub purpose: String,
     /// Context capacity frozen with the bound model before execution; `None` stays unknown.
@@ -59,13 +69,13 @@ pub struct ModelCallBinding {
 }
 
 impl ModelCallBinding {
-    /// Stable provenance for the selected account, adapter, protocol and model.
+    /// Stable provenance for the selected account, vendor protocol, wire API and model.
     pub fn route_identity(&self) -> String {
         crate::runtime::derive_prompt_cache_key(
             &self.isolation,
-            &format!("{}:{:?}", self.provider_instance_id, self.adapter),
-            &self.requested_model,
-            self.protocol,
+            &format!("{}:{:?}", self.account_id, self.protocol),
+            &self.model_id,
+            self.wire_api,
         )
     }
 
@@ -76,12 +86,12 @@ impl ModelCallBinding {
         source_family: Option<&str>,
         target_family: Option<&str>,
     ) -> bool {
-        let same_origin = self.provider_instance_id == target.provider_instance_id
+        let same_origin = self.account_id == target.account_id
             && self.isolation == target.isolation
-            && self.adapter == target.adapter
-            && self.protocol == target.protocol;
+            && self.protocol == target.protocol
+            && self.wire_api == target.wire_api;
         same_origin
-            && (self.requested_model == target.requested_model
+            && (self.model_id == target.model_id
                 || source_family
                     .filter(|family| !family.is_empty())
                     .is_some_and(|family| Some(family) == target_family))
@@ -89,18 +99,277 @@ impl ModelCallBinding {
 
     pub(super) fn capture(runtime: &ModelRuntime, purpose: &str) -> Self {
         Self {
-            provider_instance_id: runtime.provider_instance_id().to_owned(),
-            requested_model: runtime.model().model_id.clone(),
-            adapter: runtime.endpoint().adapter,
-            protocol: runtime.model().binding.transport.protocol,
+            account_id: runtime.account_id().to_owned(),
+            model_id: runtime.model().model_id.clone(),
+            protocol: runtime.endpoint().protocol,
+            wire_api: runtime.model().binding.transport.protocol,
             isolation: crate::runtime::binding_cache_namespace(
-                runtime.provider_instance_id(),
+                runtime.account_id(),
                 runtime.endpoint(),
             ),
             purpose: purpose.to_owned(),
             context_window: runtime.model().resolved_context_window(),
             max_context_window: runtime.model().max_context_window,
             auto_compact_limit: runtime.auto_compact_limit(),
+        }
+    }
+}
+
+/// Vendor protocol spelling stored by the pre-account binding; decoded only to migrate.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum LegacyProtocolKind {
+    OpenAi,
+    DeepSeek,
+    Zhipu,
+    MiMo,
+    Xai,
+    OpenAiCompatible,
+}
+
+impl From<LegacyProtocolKind> for ProtocolKind {
+    fn from(kind: LegacyProtocolKind) -> Self {
+        match kind {
+            LegacyProtocolKind::OpenAi => Self::OpenAi,
+            LegacyProtocolKind::DeepSeek => Self::DeepSeek,
+            LegacyProtocolKind::Zhipu => Self::Zhipu,
+            LegacyProtocolKind::MiMo => Self::MiMo,
+            LegacyProtocolKind::Xai => Self::Xai,
+            LegacyProtocolKind::OpenAiCompatible => Self::OpenAiCompatible,
+        }
+    }
+}
+
+/// Wire API spelling stored by the pre-account binding; decoded only to migrate.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyWireApi {
+    Responses,
+    ChatCompletions,
+}
+
+impl From<LegacyWireApi> for WireApi {
+    fn from(api: LegacyWireApi) -> Self {
+        match api {
+            LegacyWireApi::Responses => Self::Responses,
+            LegacyWireApi::ChatCompletions => Self::ChatCompletions,
+        }
+    }
+}
+
+/// Binding shape written before the account model-binding field migration.
+///
+/// This is a decode-only migration boundary: the current types carry no serde aliases, and the
+/// stored isolation namespace is copied unchanged so an unchanged account keeps the same physical
+/// continuation/cache identity.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LegacyModelCallBinding {
+    provider_instance_id: String,
+    requested_model: String,
+    adapter: LegacyProtocolKind,
+    protocol: LegacyWireApi,
+    isolation: String,
+    purpose: String,
+    #[serde(default)]
+    context_window: Option<u64>,
+    #[serde(default)]
+    max_context_window: Option<u64>,
+    #[serde(default)]
+    auto_compact_limit: Option<u64>,
+}
+
+impl LegacyModelCallBinding {
+    /// 仅供同一 `thread_model` 层的 producer 载荷迁移使用。
+    pub(super) fn migrate(self) -> ModelCallBinding {
+        ModelCallBinding {
+            account_id: self.provider_instance_id,
+            model_id: self.requested_model,
+            protocol: self.adapter.into(),
+            wire_api: self.protocol.into(),
+            isolation: self.isolation,
+            purpose: self.purpose,
+            context_window: self.context_window,
+            max_context_window: self.max_context_window,
+            auto_compact_limit: self.auto_compact_limit,
+        }
+    }
+}
+
+/// Complete response receipt written before the account model-binding field migration.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LegacyModelResponseReceipt {
+    binding: LegacyModelCallBinding,
+    response: CompletionResponse,
+}
+
+impl LegacyModelResponseReceipt {
+    pub(super) fn migrate(self) -> ModelResponseReceipt {
+        ModelResponseReceipt {
+            binding: self.binding.migrate(),
+            response: self.response,
+        }
+    }
+}
+
+/// Failure receipt written before the account model-binding field migration.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FailureReceiptV2 {
+    #[serde(default)]
+    provider_failure: Option<pl_protocol::ProviderFailure>,
+    #[serde(default)]
+    message: String,
+    binding: LegacyModelCallBinding,
+    accounting: crate::completion::InferenceAccounting,
+    #[serde(default)]
+    model_observation: Option<crate::completion::InferenceModelObservation>,
+    #[serde(default)]
+    presentation_items: Vec<crate::completion::CompletionPresentationItem>,
+    #[serde(default)]
+    partial_progress: Option<ModelProgress>,
+}
+
+impl FailureReceiptV2 {
+    fn migrate(self) -> ModelFailureReceipt {
+        ModelFailureReceipt {
+            provider_failure: self.provider_failure,
+            message: self.message,
+            binding: self.binding.migrate(),
+            accounting: self.accounting,
+            model_observation: self.model_observation,
+            presentation_items: self.presentation_items,
+            partial_progress: self.partial_progress,
+        }
+    }
+}
+
+/// prompt snapshot shape written before the account diagnostic identity migration.
+///
+/// `provider` was the endpoint display name and is not an account identity. It is decoded only
+/// to preserve the other frozen facts; the stable account ID comes from the receipt's own
+/// binding.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyThreadPromptSnapshot {
+    scope: String,
+    generation: u64,
+    #[allow(dead_code)]
+    provider: String,
+    #[serde(default)]
+    provider_hash: String,
+    model: String,
+    fixed_prefix_hash: String,
+    #[serde(default)]
+    fixed_prefix_section_hashes: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    request_properties_hash: String,
+    tool_schema_hash: String,
+    context_hash: String,
+    #[serde(default)]
+    prompt_cache_policy: String,
+    prefix_changed_reason: LegacyPromptPrefixChangedReason,
+    updated_at: i64,
+}
+
+/// Old prefix-change reasons, including the retired `providerChanged` spelling.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum LegacyPromptPrefixChangedReason {
+    Initial,
+    PromptScopeChanged,
+    ProviderChanged,
+    ModelChanged,
+    BaseInstructionsChanged,
+    GlobalInstructionsChanged,
+    ModeRoleChanged,
+    SkillCatalogChanged,
+    WorkspaceInstructionsChanged,
+    RequestPropertiesChanged,
+    FixedPrefixChanged,
+    ToolSchemaChanged,
+    ContextCompacted,
+    ContextAppended,
+    ContextRecovered,
+}
+
+impl From<LegacyPromptPrefixChangedReason> for PromptPrefixChangedReason {
+    fn from(reason: LegacyPromptPrefixChangedReason) -> Self {
+        use LegacyPromptPrefixChangedReason as Legacy;
+        match reason {
+            Legacy::Initial => Self::Initial,
+            Legacy::PromptScopeChanged => Self::PromptScopeChanged,
+            Legacy::ProviderChanged => Self::AccountChanged,
+            Legacy::ModelChanged => Self::ModelChanged,
+            Legacy::BaseInstructionsChanged => Self::BaseInstructionsChanged,
+            Legacy::GlobalInstructionsChanged => Self::GlobalInstructionsChanged,
+            Legacy::ModeRoleChanged => Self::ModeRoleChanged,
+            Legacy::SkillCatalogChanged => Self::SkillCatalogChanged,
+            Legacy::WorkspaceInstructionsChanged => Self::WorkspaceInstructionsChanged,
+            Legacy::RequestPropertiesChanged => Self::RequestPropertiesChanged,
+            Legacy::FixedPrefixChanged => Self::FixedPrefixChanged,
+            Legacy::ToolSchemaChanged => Self::ToolSchemaChanged,
+            Legacy::ContextCompacted => Self::ContextCompacted,
+            Legacy::ContextAppended => Self::ContextAppended,
+            Legacy::ContextRecovered => Self::ContextRecovered,
+        }
+    }
+}
+
+impl LegacyThreadPromptSnapshot {
+    /// `account_id` is the frozen binding fact, never the old display name.
+    fn migrate(self, account_id: &str) -> pl_protocol::ThreadPromptSnapshot {
+        pl_protocol::ThreadPromptSnapshot {
+            scope: self.scope,
+            generation: self.generation,
+            account_id: account_id.to_owned(),
+            // Keep the old fingerprint value verbatim; the next current diagnostics pass
+            // rotates naturally through `AccountChanged`.
+            account_hash: self.provider_hash,
+            model_id: self.model,
+            fixed_prefix_hash: self.fixed_prefix_hash,
+            fixed_prefix_section_hashes: self.fixed_prefix_section_hashes,
+            request_properties_hash: self.request_properties_hash,
+            tool_schema_hash: self.tool_schema_hash,
+            context_hash: self.context_hash,
+            prompt_cache_policy: self.prompt_cache_policy,
+            prefix_changed_reason: self.prefix_changed_reason.into(),
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+/// Prepared-request record written before the account model-binding field migration.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyModelRequestReceipt {
+    binding: LegacyModelCallBinding,
+    tools: Vec<crate::completion::ToolSpec>,
+    tool_choice: String,
+    parallel_tool_calls: bool,
+    reasoning: Option<crate::completion::ReasoningConfig>,
+    temperature: Option<f32>,
+    max_tokens: Option<u64>,
+    #[serde(default)]
+    prompt: Option<LegacyThreadPromptSnapshot>,
+}
+
+impl LegacyModelRequestReceipt {
+    fn migrate(self) -> ModelRequestReceipt {
+        let binding = self.binding.migrate();
+        let prompt = self
+            .prompt
+            .map(|prompt| prompt.migrate(binding.account_id.as_str()));
+        ModelRequestReceipt {
+            binding,
+            tools: self.tools,
+            tool_choice: self.tool_choice,
+            parallel_tool_calls: self.parallel_tool_calls,
+            reasoning: self.reasoning,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            prompt,
         }
     }
 }
@@ -157,6 +426,11 @@ pub fn model_failure_receipt(
         FAILURE_RECEIPT_VERSION => serde_json::from_str(payload.content())
             .map(Some)
             .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source)),
+        LEGACY_FAILURE_RECEIPT_VERSION_V2 => {
+            let legacy: FailureReceiptV2 = serde_json::from_str(payload.content())
+                .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
+            Ok(Some(legacy.migrate()))
+        }
         LEGACY_FAILURE_RECEIPT_VERSION => {
             let legacy: FailureReceiptV1 = serde_json::from_str(payload.content())
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
@@ -177,7 +451,7 @@ struct FailureReceiptV1 {
     provider_failure: Option<pl_protocol::ProviderFailure>,
     #[serde(default)]
     message: String,
-    binding: ModelCallBinding,
+    binding: LegacyModelCallBinding,
     accounting: crate::completion::InferenceAccounting,
     #[serde(default)]
     model_observation: Option<crate::completion::InferenceModelObservation>,
@@ -208,7 +482,7 @@ impl FailureReceiptV1 {
         Ok(ModelFailureReceipt {
             provider_failure: self.provider_failure,
             message: self.message,
-            binding: self.binding,
+            binding: self.binding.migrate(),
             accounting: self.accounting,
             model_observation: self.model_observation,
             presentation_items: self.presentation_items,
@@ -399,7 +673,7 @@ pub struct ModelRequestReceipt {
     pub reasoning: Option<crate::completion::ReasoningConfig>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u64>,
-    /// Hashes of the normalized request; independent of the stable provider cache hint.
+    /// Hashes of the normalized request; independent of the stable account cache hint.
     #[serde(default)]
     pub prompt: Option<crate::runtime::ThreadPromptSnapshot>,
 }
@@ -411,15 +685,28 @@ pub struct ModelRequestReceipt {
 pub fn model_request_receipt(
     payload: &pl_core::context::OpaquePayload,
 ) -> Result<ModelRequestReceipt, ModelError> {
-    if payload.format() != "pl.model.prepared-request" || payload.version() != 1 {
+    if payload.format() != "pl.model.prepared-request" {
         return Err(super::failure(
             pl_core::model::ModelFailureKind::UnsupportedContent,
             std::io::Error::other("unsupported prepared model request record"),
         ));
     }
-    serde_json::from_str(payload.content()).map_err(|source| {
-        super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source)
-    })
+    match payload.version() {
+        REQUEST_RECEIPT_VERSION => serde_json::from_str(payload.content()).map_err(|source| {
+            super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source)
+        }),
+        LEGACY_REQUEST_RECEIPT_VERSION => {
+            let legacy: LegacyModelRequestReceipt = serde_json::from_str(payload.content())
+                .map_err(|source| {
+                    super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source)
+                })?;
+            Ok(legacy.migrate())
+        }
+        _ => Err(super::failure(
+            pl_core::model::ModelFailureKind::UnsupportedContent,
+            std::io::Error::other("unsupported prepared model request record"),
+        )),
+    }
 }
 
 /// Decodes model output provenance without constructing a provider, tool or physical session.
@@ -463,7 +750,10 @@ pub(super) fn request_metadata(
     .map_err(|source| {
         super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source)
     })?;
-    pl_core::context::OpaquePayload::new("pl.model.prepared-request", 1, content).map_err(
-        |source| super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source),
+    pl_core::context::OpaquePayload::new(
+        "pl.model.prepared-request",
+        REQUEST_RECEIPT_VERSION,
+        content,
     )
+    .map_err(|source| super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source))
 }

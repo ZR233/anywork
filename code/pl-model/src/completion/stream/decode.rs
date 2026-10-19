@@ -10,8 +10,9 @@ use std::collections::VecDeque;
 
 use pl_protocol::Result;
 
+use crate::protocol::WireApi;
+use crate::runtime::openai::VisibleOutputProtocol;
 use crate::runtime::openai::sse;
-use crate::runtime::openai::{OpenAiProtocol, VisibleOutputProtocol};
 
 use super::event::ModelStreamEvent;
 use super::tagged_output::{TaggedOutputDiagnostics, TaggedVisibleOutputAdapter};
@@ -21,10 +22,10 @@ pub(crate) type OpenAiRawEventStream = BoxStream<'static, Result<sse::SseStreamE
 
 pub(crate) fn decode_raw_event_stream(
     stream: OpenAiRawEventStream,
-    protocol: OpenAiProtocol,
+    api: WireApi,
     trace: Option<crate::completion::CompletionTraceContext>,
 ) -> CompletionEventStream {
-    let visible_output_protocol = protocol.visible_output_protocol();
+    let visible_output_protocol = VisibleOutputProtocol::of(api);
     let state = ProviderStreamDecodeState {
         stream,
         trace,

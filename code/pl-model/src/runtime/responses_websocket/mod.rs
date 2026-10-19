@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use crate::completion::stream::OpenAiRawEventStream;
 use crate::completion::stream::replay::{ReplayCollector, ReplayUpdate};
 use crate::completion::{AssistantReplay, CompletionTraceContext};
-use crate::provider::RESPONSES_WEBSOCKET_DIALECT;
+use crate::protocol::RESPONSES_WEBSOCKET_DIALECT;
 use crate::runtime::ModelSession;
 use crate::runtime::openai::sent_model_from_wire_body;
 use crate::runtime::openai::sse::SseStreamEvent;

@@ -329,7 +329,7 @@ class _WorkspaceModeItem extends StatelessWidget {
 }
 
 typedef ModelSelectionChanged = FutureOr<void> Function(
-  String providerId,
+  String accountId,
   String model,
 );
 
@@ -338,9 +338,9 @@ typedef EffortSelectionChanged = FutureOr<void> Function(String effort);
 /// 根会话或新建会话草稿的模型选择器。
 class ModelRoleSelector extends StatelessWidget {
   const ModelRoleSelector({
-    required this.providers,
-    required this.providerId,
-    required this.model,
+    required this.accounts,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     this.onModelSelected,
     this.enabled = true,
@@ -352,9 +352,9 @@ class ModelRoleSelector extends StatelessWidget {
     super.key,
   });
 
-  final List<ProviderSettingsView> providers;
-  final String providerId;
-  final String model;
+  final List<AccountSettingsView> accounts;
+  final String accountId;
+  final String modelId;
   final String? effort;
 
   final ModelSelectionChanged? onModelSelected;
@@ -370,8 +370,8 @@ class ModelRoleSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final options = modelOptions(providers);
-    final current = modelForRoute(providers, providerId, model);
+    final options = modelOptions(accounts);
+    final current = modelForRoute(accounts, accountId, modelId);
     final filterMessage = modelTextFilterMessage(context, current?.descriptor);
     final warning = !available || current == null || filterMessage != null;
     final selectionBlockedReason =
@@ -426,8 +426,8 @@ class ModelRoleSelector extends StatelessWidget {
         ModelRouteSelector(
           selectorKey: StudioDriverKeys.model,
           options: options,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           fieldLabel: context.l10n.statusPlannerModel,
           tooltip:
               selectionBlockedReason ??
@@ -443,10 +443,10 @@ class ModelRoleSelector extends StatelessWidget {
               ? null
               : () => explain(selectionBlockedReason),
           onSelected: (option) async {
-            await onModelSelected?.call(option.providerId, option.model);
+            await onModelSelected?.call(option.accountId, option.modelId);
           },
           optionKeyBuilder: (option) =>
-              StudioDriverKeys.modelOption(option.providerId, option.model),
+              StudioDriverKeys.modelOption(option.accountId, option.modelId),
         ),
       ],
     );
@@ -456,9 +456,9 @@ class ModelRoleSelector extends StatelessWidget {
 /// 根会话或 Mode 默认路由的思考强度选择器。
 class ReasoningEffortSelector extends StatelessWidget {
   const ReasoningEffortSelector({
-    required this.providers,
-    required this.providerId,
-    required this.model,
+    required this.accounts,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     this.onEffortSelected,
     this.enabled = true,
@@ -468,9 +468,9 @@ class ReasoningEffortSelector extends StatelessWidget {
     super.key,
   });
 
-  final List<ProviderSettingsView> providers;
-  final String providerId;
-  final String model;
+  final List<AccountSettingsView> accounts;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final EffortSelectionChanged? onEffortSelected;
   final bool enabled;
@@ -480,7 +480,7 @@ class ReasoningEffortSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final currentModel = modelForRoute(providers, providerId, model);
+    final currentModel = modelForRoute(accounts, accountId, modelId);
     final efforts = currentModel?.reasoningEfforts ?? const [];
     final selectedEffort = effort?.isNotEmpty == true
         ? effort
@@ -555,17 +555,17 @@ IconData sessionModeIcon(ThreadModeId mode) {
 }
 
 ModelSelectionOption? modelForRoute(
-  List<ProviderSettingsView> providers,
-  String providerId,
-  String model,
+  List<AccountSettingsView> accounts,
+  String accountId,
+  String modelId,
 ) {
-  final options = buildModelSelectionOptions(providers);
+  final options = buildModelSelectionOptions(accounts);
   return options
       .where(
-        (option) => option.providerId == providerId && option.model == model,
+        (option) => option.accountId == accountId && option.modelId == modelId,
       )
       .firstOrNull;
 }
 
-List<ModelSelectionOption> modelOptions(List<ProviderSettingsView> providers) =>
-    buildModelSelectionOptions(providers, type: ModelType.text);
+List<ModelSelectionOption> modelOptions(List<AccountSettingsView> accounts) =>
+    buildModelSelectionOptions(accounts, type: ModelType.text);

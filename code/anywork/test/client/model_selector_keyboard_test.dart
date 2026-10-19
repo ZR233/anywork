@@ -30,17 +30,17 @@ void main() {
                   ModelRouteSelector(
                     options: const [
                       ModelSelectionOption(
-                        providerId: 'provider',
-                        providerName: 'Provider',
-                        descriptor: ProviderModelView(
+                        accountId: 'account',
+                        accountName: 'Alpha',
+                        descriptor: AccountModelView(
                           modelId: 'model',
                           displayName: 'Model',
                           reasoningEfforts: [],
                         ),
                       ),
                     ],
-                    providerId: 'provider',
-                    model: 'model',
+                    accountId: 'account',
+                    modelId: 'model',
                     onSelected: selected.add,
                     fieldLabel: 'Route',
                     selectorKey: const ValueKey('route'),

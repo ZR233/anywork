@@ -11,6 +11,9 @@ use pl_core::{
 };
 
 const FORMAT: &str = "pl.model.compaction";
+const NATIVE_CHECKPOINT_VERSION: u32 = 3;
+const LEGACY_NATIVE_CHECKPOINT_VERSION: u32 = 2;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeCheckpoint {
@@ -18,6 +21,49 @@ struct NativeCheckpoint {
     #[serde(default)]
     compatibility_family: Option<String>,
     item: ModelContextItem,
+}
+
+/// 原生 checkpoint 迁移前的形状：绑定字段仍是 provider/requestedModel/adapter/protocol。
+///
+/// 只在 `pl.model.compaction` version 2 的显式解码边界使用；当前类型不保留旧字段别名。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyNativeCheckpoint {
+    binding: super::receipt::LegacyModelCallBinding,
+    #[serde(default)]
+    compatibility_family: Option<String>,
+    item: ModelContextItem,
+}
+
+impl LegacyNativeCheckpoint {
+    fn migrate(self) -> NativeCheckpoint {
+        NativeCheckpoint {
+            binding: self.binding.migrate(),
+            compatibility_family: self.compatibility_family,
+            item: self.item,
+        }
+    }
+}
+
+/// Decode the current checkpoint shape at its explicit producer version boundary.
+///
+/// version 3 is current; version 2 is the same frozen binding conversion used by the other
+/// producer payloads (stable ID from the binding, not any display name). The item and its
+/// encrypted content are moved verbatim, and no catalog or display name is consulted.
+fn decode_checkpoint(payload: &OpaquePayload) -> Result<NativeCheckpoint, ModelError> {
+    match payload.version() {
+        NATIVE_CHECKPOINT_VERSION => serde_json::from_str(payload.content())
+            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error)),
+        LEGACY_NATIVE_CHECKPOINT_VERSION => {
+            let legacy: LegacyNativeCheckpoint = serde_json::from_str(payload.content())
+                .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+            Ok(legacy.migrate())
+        }
+        _ => Err(failure(
+            ModelFailureKind::IncompatibleContext,
+            AdapterError::Content("unsupported native checkpoint version"),
+        )),
+    }
 }
 
 /// Host-selected reduction behavior. Native support is queried from the selected adapter.
@@ -241,15 +287,17 @@ impl ThreadModel {
                 )
             })?;
             vec![ContextContent::Opaque {
-                payload: OpaquePayload::new(FORMAT, 2, content).map_err(|error| {
-                    receipt::postprocess_failure_error(
-                        binding.clone(),
-                        accounting.clone(),
-                        model_observation.clone(),
-                        None,
-                        failure(ModelFailureKind::InvalidResponse, error),
-                    )
-                })?,
+                payload: OpaquePayload::new(FORMAT, NATIVE_CHECKPOINT_VERSION, content).map_err(
+                    |error| {
+                        receipt::postprocess_failure_error(
+                            binding.clone(),
+                            accounting.clone(),
+                            model_observation.clone(),
+                            None,
+                            failure(ModelFailureKind::InvalidResponse, error),
+                        )
+                    },
+                )?,
             }]
         } else {
             vec![ContextContent::Text {
@@ -345,11 +393,10 @@ pub(super) fn decode(
             AdapterError::Content("compaction record must contain one checkpoint"),
         ));
     };
-    if payload.version() != 2
-        || record.source
-            != (ContextSource::Runtime {
-                source_id: "model.compaction".into(),
-            })
+    if record.source
+        != (ContextSource::Runtime {
+            source_id: "model.compaction".into(),
+        })
         || !record.tool_calls.is_empty()
     {
         return Err(failure(
@@ -357,8 +404,7 @@ pub(super) fn decode(
             AdapterError::Content("invalid compaction record authority or version"),
         ));
     }
-    let checkpoint: NativeCheckpoint = serde_json::from_str(payload.content())
-        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+    let checkpoint = decode_checkpoint(payload)?;
     let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
     if !checkpoint.binding.native_context_compatible(
         &target,
@@ -423,7 +469,7 @@ pub fn migrate_legacy_compaction(
     })
     .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
     record.content = vec![ContextContent::Opaque {
-        payload: OpaquePayload::new(FORMAT, 2, bytes)
+        payload: OpaquePayload::new(FORMAT, NATIVE_CHECKPOINT_VERSION, bytes)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?,
     }];
     Ok(true)

@@ -198,12 +198,12 @@ class _RemoteMarkdownImageCardState
   }
 
   Future<void> _loadAndOpen() async {
-    final provider = ref.read(timelineRemoteImageProviderFactoryProvider)(
+    final account = ref.read(timelineRemoteImageProviderFactoryProvider)(
       widget.url,
     );
     Object? loadError;
     await precacheImage(
-      provider,
+      account,
       context,
       onError: (error, stackTrace) {
         loadError = error;
@@ -218,7 +218,7 @@ class _RemoteMarkdownImageCardState
       return;
     }
     setState(() {
-      _image = provider;
+      _image = account;
       _failed = false;
     });
     await _open();

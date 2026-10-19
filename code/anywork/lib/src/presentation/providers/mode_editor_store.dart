@@ -6,7 +6,7 @@ import 'observe_client.dart';
 
 /// Display-only mirror of the Client-owned mode editor draft.
 ///
-/// The provider owns one observer permit. Disposal cancels that observation
+/// The account owns one observer permit. Disposal cancels that observation
 /// and releases the permit; it never closes the draft or the Client resource.
 final modeEditorStateProvider = Provider.autoDispose<ModeEditorState>((ref) {
   final owner = ref.watch(anyworkClientProvider).modeEditor;

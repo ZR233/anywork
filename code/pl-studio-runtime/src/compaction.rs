@@ -41,7 +41,7 @@ pub(crate) fn preparer(
     let instruction_binding = InstructionBinding {
         route_identity: model.route_identity(),
         append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
-            == pl_model::provider::InstructionUpdateStrategy::AppendFullSnapshot,
+            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
     };
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
@@ -102,14 +102,43 @@ impl ContextPreparationHook for StudioCompaction {
         } else {
             Vec::new()
         };
-        request.model.tools = request
-            .model
-            .tools
-            .iter()
-            .filter(|tool| !excluded_tool_ids.contains(&tool.tool_id))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into();
+        if !excluded_tool_ids.is_empty() {
+            // The capacity preview must describe exactly the tool plan the real step will use.
+            // `pl_core::tool::opaque::ToolPlan` derives declarations, solo identities and the
+            // scheduling mode from one map, and applies `excluded_tool_ids` to that map before a
+            // real call. Excluding a tool here therefore has to drop its exclusive-call identity
+            // too, and keep the mode consistent with the retained set; otherwise the preview
+            // advertises a solo identity whose declaration was excluded.
+            request.model.tools = request
+                .model
+                .tools
+                .iter()
+                .filter(|tool| !excluded_tool_ids.contains(&tool.tool_id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into();
+            request.model.solo_tool_ids = request
+                .model
+                .solo_tool_ids
+                .iter()
+                .filter(|tool_id| !excluded_tool_ids.contains(tool_id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into();
+            // Same rule as the frozen plan: non-empty and every retained tool solo means strictly
+            // sequential calls; otherwise only the retained solo tools keep their constraint.
+            let every_retained_tool_is_solo = !request.model.tools.is_empty()
+                && request
+                    .model
+                    .tools
+                    .iter()
+                    .all(|tool| request.model.solo_tool_ids.contains(&tool.tool_id));
+            request.model.tool_call_mode = if every_retained_tool_is_solo {
+                pl_core::model::ToolCallMode::Sequential
+            } else {
+                pl_core::model::ToolCallMode::Parallel
+            };
+        }
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,
@@ -809,7 +838,7 @@ fn receipt_mutation(
     receipt: CompactionReceipt,
 ) -> Result<ExtensionMutation, pl_core::model::ModelError> {
     let payload = serde_json::to_string(&receipt).map_err(receipt_error)?;
-    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 1, payload)
+    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 2, payload)
         .map_err(receipt_error)?;
     Ok(ExtensionMutation::Put {
         id: LATEST_RECEIPT.into(),
@@ -826,6 +855,48 @@ fn receipt_error(
         usage: Default::default(),
         source: Some(Box::new(source)),
     }
+}
+
+/// 版本化压缩回执的唯一边界解码。
+///
+/// v1 载荷的 `binding` 是 Provider/Preset 时代的 camelCase 接入身份
+/// （`providerInstanceId`/`requestedModel`/`adapter`/`protocol`）。迁移与产品投影都必须共用这一
+/// 处转换，才能在不猜账号/模型的前提下把旧冻结事实并入当前账号、配置模型与厂商协议语义。
+/// 只改本 crate 自己写入的已知键；`accounting`、`inferenceId`、`purpose`、`isolation`、观察与
+/// 用量等冻结事实原样保留，不改写 opaque 正文。
+pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<CompactionReceipt> {
+    anyhow::ensure!(
+        (1..=2).contains(&version),
+        "unsupported auxiliary accounting receipt"
+    );
+    let mut value: serde_json::Value = serde_json::from_str(content)?;
+    if version < 2 {
+        let receipt = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("compaction receipt is not an object"))?;
+        if let Some(binding) = receipt
+            .get_mut("binding")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            // 真实 v1 binding 是 camelCase：providerInstanceId/requestedModel/adapter/protocol。
+            crate::studio::payload_alias::rename_key(binding, "providerInstanceId", "accountId")?;
+            crate::studio::payload_alias::rename_key(binding, "requestedModel", "modelId")?;
+            // 旧 `protocol` 是 wire API；旧 `adapter` 才是当前厂商协议选择。
+            crate::studio::payload_alias::rename_key(binding, "protocol", "wireApi")?;
+            if let Some(adapter) = binding.remove("adapter") {
+                let adapter = adapter.as_str().unwrap_or_default();
+                let protocol = crate::studio::payload_alias::protocol_from_legacy_adapter(adapter)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("unsupported legacy account adapter in compaction receipt")
+                    })?;
+                binding.insert(
+                    "protocol".into(),
+                    serde_json::Value::String(protocol.into()),
+                );
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(anyhow::Error::from)
 }
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.
@@ -851,7 +922,7 @@ pub(crate) fn migrate_checkpoint_sources(
     if record.payload.format() != "pl.studio.compaction" || record.payload.version() != 1 {
         return Ok(());
     }
-    let receipt: CompactionReceipt = serde_json::from_str(record.payload.content())?;
+    let receipt = decode_receipt(record.payload.version(), record.payload.content())?;
     if receipt.error.is_some() || receipt.implementation.as_deref() != Some("native") {
         return Ok(());
     }

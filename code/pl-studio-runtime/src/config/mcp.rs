@@ -75,8 +75,8 @@ const BUILTIN_MCP_SERVERS: &[BuiltinMcpServerDefinition] = &[
     },
 ];
 
-const ZHIPU_CREDENTIAL: BuiltinMcpCredentialSource = BuiltinMcpCredentialSource::Provider {
-    preset_ids: &["zhipu-coding-plan"],
+const ZHIPU_CREDENTIAL: BuiltinMcpCredentialSource = BuiltinMcpCredentialSource::Account {
+    template_ids: &["zhipu-coding-plan"],
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -193,10 +193,10 @@ pub fn effective_mcp_servers(
                 status_kind,
                 status_message: match status_kind {
                     McpServerStatusKind::Enabled => {
-                        Some("Using the configured Zhipu Coding Plan provider token".to_string())
+                        Some("Using the configured Zhipu Coding Plan account token".to_string())
                     }
                     McpServerStatusKind::MissingCredential => Some(
-                        "Configure a Zhipu Coding Plan provider token to enable this server"
+                        "Configure a Zhipu Coding Plan account token to enable this server"
                             .to_string(),
                     ),
                     McpServerStatusKind::Disabled => None,
@@ -247,21 +247,23 @@ struct BuiltinMcpServerDefinition {
 
 #[derive(Debug, Clone, Copy)]
 enum BuiltinMcpCredentialSource {
-    Provider { preset_ids: &'static [&'static str] },
+    Account {
+        template_ids: &'static [&'static str],
+    },
 }
 
 impl BuiltinMcpCredentialSource {
     fn resolve(self, models: &pl_model::config::AgentModelConfig) -> Option<String> {
-        let Self::Provider { preset_ids } = self;
+        let Self::Account { template_ids } = self;
         models
-            .providers
+            .accounts
             .values()
-            .filter(|provider| {
-                provider
-                    .preset_id()
-                    .is_some_and(|preset| preset_ids.contains(&preset.as_str()))
+            .filter(|account| {
+                account
+                    .template_id()
+                    .is_some_and(|template| template_ids.contains(&template.as_str()))
             })
-            .find_map(pl_model::config::ProviderConfig::resolved_bearer_token)
+            .find_map(pl_model::config::AccountConfig::resolved_bearer_token)
     }
 }
 

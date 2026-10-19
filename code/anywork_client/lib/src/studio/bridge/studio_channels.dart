@@ -49,7 +49,7 @@ class StudioChannels {
   BridgeTopicLeaseBundle acquireShellBundle() =>
       acquireTopics(bridgeShellTopics);
 
-  /// 设置页作用域的统一租约入口，替代按页面复制的样板 provider。
+  /// 设置页作用域的统一租约入口，替代按页面复制的样板 account。
   BridgeTopicLeaseBundle acquireSettingsScope(
     BridgeSettingsScopeKind kind,
     String? projectId,
@@ -146,7 +146,7 @@ class StudioChannels {
         _client.existingSkills(projectId)?.state,
       ),
       ThreadModeCatalogTopic() => _clock(_client.modeCatalog.state),
-      ProviderUsageTopic() => _clock(_client.providerUsage.state),
+      AccountUsageTopic() => _clock(_client.accountUsage.state),
       ModelPerformanceTopic() => _clock(_client.modelPerformance.state),
       SessionCostsTopic(:final rootThreadId) => _clock(
         _client.existingSessionCosts(rootThreadId)?.state,
@@ -198,8 +198,8 @@ class StudioChannels {
         _client.existingSkills(state.projectId)?.apply(state);
       case ThreadModeCatalogBaseline(:final state):
         _client.modeCatalog.apply(state);
-      case ProviderUsageBaseline(:final state):
-        _client.providerUsage.apply(state);
+      case AccountUsageBaseline(:final state):
+        _client.accountUsage.apply(state);
       case ModelPerformanceBaseline(:final state):
         _client.modelPerformance.apply(state);
       case SessionCostsBaseline(:final state):
@@ -250,8 +250,8 @@ class StudioChannels {
         _client.existingSkills(state.projectId)?.apply(state);
       case ThreadModeCatalogChangedPayload(:final state):
         _client.modeCatalog.apply(state);
-      case ProviderUsageStateChangedPayload(:final state):
-        _client.providerUsage.apply(state);
+      case AccountUsageStateChangedPayload(:final state):
+        _client.accountUsage.apply(state);
       case ModelPerformanceStateChangedPayload(:final state):
         _client.modelPerformance.apply(state);
       case SessionCostsChangedPayload(:final state):
@@ -291,8 +291,8 @@ class StudioChannels {
         _client.existingSkills(projectId)?.applyTransport(sync);
       case ThreadModeCatalogTopic():
         _client.modeCatalog.applyTransport(sync);
-      case ProviderUsageTopic():
-        _client.providerUsage.applyTransport(sync);
+      case AccountUsageTopic():
+        _client.accountUsage.applyTransport(sync);
       case ModelPerformanceTopic():
         _client.modelPerformance.applyTransport(sync);
       case SessionCostsTopic(:final rootThreadId):
@@ -352,7 +352,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         LspBaseline(:final state) => state.revision,
         SkillsBaseline(:final state) => state.revision,
         ThreadModeCatalogBaseline(:final state) => state.revision,
-        ProviderUsageBaseline(:final state) => state.revision,
+        AccountUsageBaseline(:final state) => state.revision,
         ModelPerformanceBaseline(:final state) => state.revision,
         SessionCostsBaseline(:final state) => state.revision,
         UpdaterBaseline(:final state) => state.revision,
@@ -372,7 +372,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       LspStateChangedPayload(:final state) => state.revision,
       SkillsStateChangedPayload(:final state) => state.revision,
       ThreadModeCatalogChangedPayload(:final state) => state.revision,
-      ProviderUsageStateChangedPayload(:final state) => state.revision,
+      AccountUsageStateChangedPayload(:final state) => state.revision,
       ModelPerformanceStateChangedPayload(:final state) => state.revision,
       SessionCostsChangedPayload(:final state) => state.revision,
       UpdaterStateChangedPayload(:final state) => state.revision,

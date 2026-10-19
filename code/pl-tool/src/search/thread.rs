@@ -12,7 +12,7 @@ use pl_core::{
         opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
     },
 };
-use pl_model::provider::deepseek::tools::{
+use pl_model::protocol::deepseek::tools::{
     FetchRequest, FetchResponse, Observed, SearchRequest as DeepSeekSearchRequest, SearchResponse,
     SearchSource, ToolsClient, ToolsError, ToolsOptions,
 };

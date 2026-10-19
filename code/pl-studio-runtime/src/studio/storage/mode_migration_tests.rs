@@ -1,4 +1,5 @@
-//! Saved Mode format migration and deletion recovery, through the actual SQLite checkpoint path.
+//! Saved representation migration (Mode, model access, compaction sources) through the actual
+//! SQLite checkpoint, history writer and history schema-upgrade paths.
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::history::{EffectCommit, HistoryStore};
@@ -12,6 +13,7 @@ use pl_core::{
         journal::ContextChange,
     },
 };
+use sea_orm::ConnectionTrait;
 
 fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
     let mut definition = crate::studio::thread::task::REGISTRATION.to_registration()?;
@@ -143,7 +145,12 @@ async fn mode_definition_migration_preserves_history_and_restores_after_source_d
     let store = HistoryStore::open(&path, "migration").await?;
     persist(&store, original.clone(), true).await?;
     let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
-    let migrated = store.migrate_mode_checkpoint(&legacy, &manager).await?;
+    let migrated = store
+        .migrate_recovery_checkpoint(&legacy, |state| {
+            crate::mode::migrate_mode_snapshot(state, &manager)?;
+            Ok(())
+        })
+        .await?;
     assert_eq!(migrated.state_revision, legacy.state_revision);
     assert_eq!(migrated.history_fence, legacy.history_fence);
     let recovered = migrated.state;
@@ -164,7 +171,10 @@ async fn mode_definition_migration_preserves_history_and_restores_after_source_d
     let before_retry = serde_json::to_vec(&durable)?;
     assert!(
         store
-            .migrate_mode_checkpoint(&legacy, &manager)
+            .migrate_recovery_checkpoint(&legacy, |state| {
+                crate::mode::migrate_mode_snapshot(state, &manager)?;
+                Ok(())
+            })
             .await
             .is_err(),
         "a stale recovery candidate must not overwrite the migrated checkpoint"
@@ -209,7 +219,10 @@ async fn unavailable_legacy_mode_definition_never_resets_or_rewrites_the_checkpo
     let before = serde_json::to_vec(&checkpoint)?;
     assert!(
         store
-            .migrate_mode_checkpoint(&checkpoint, &manager)
+            .migrate_recovery_checkpoint(&checkpoint, |state| {
+                crate::mode::migrate_mode_snapshot(state, &manager)?;
+                Ok(())
+            })
             .await
             .is_err()
     );
@@ -284,5 +297,549 @@ fn restored_mode_snapshot_keeps_graph_revision_when_a_new_catalog_assigns_a_diff
         next.registered()?.graph_hash(),
         saved.registered()?.graph_hash()
     );
+    Ok(())
+}
+
+// ── 模型接入扩展表示迁移与压缩来源恢复 ──
+
+const LEGACY_ROUTE: &str = r#"{"provider":"deepseek","model":"deepseek-flash","effort":"high"}"#;
+/// HEAD 真实 v1 冻结 Profile 载荷（camelCase，含 `provider`/`model`）。
+const LEGACY_PROFILE: &str = r#"{
+    "profileId":"reviewer","displayName":"Reviewer","description":"","whenToUse":"",
+    "systemInstructions":"","provider":"deepseek","model":"deepseek-flash","effort":"high",
+    "source":"config","revision":"1","contentHash":"","system":true,"enabled":true,
+    "workspaceMode":"unrestricted"
+}"#;
+/// HEAD 真实 v1 原生压缩回执（camelCase binding：providerInstanceId/requestedModel/adapter/protocol）。
+const LEGACY_NATIVE_RECEIPT: &str = r#"{
+    "inferenceId": "compact-call",
+    "binding": {
+        "providerInstanceId": "deepseek",
+        "requestedModel": "deepseek-flash",
+        "adapter": "deepSeek",
+        "protocol": "responses",
+        "isolation": "binding-namespace",
+        "purpose": "compaction",
+        "contextWindow": 128000,
+        "maxContextWindow": 200000,
+        "autoCompactLimit": 115200
+    },
+    "reasoningEffort": "high",
+    "contextWindow": 128000,
+    "turnId": "turn",
+    "accounting": {
+        "usage": { "inputTokens": 1, "outputTokens": 2, "cacheReadTokens": 0, "cacheWriteTokens": 0, "reasoningTokens": 0, "totalTokens": 3 },
+        "pricing": { "kind": "estimated", "cost": { "currency": "USD", "amount": 0.25 }, "cacheSavings": null },
+        "priceSnapshot": null,
+        "requestStartedAt": null
+    },
+    "modelObservation": null,
+    "implementation": "native",
+    "error": null
+}"#;
+
+fn record(revision: u64, format: &str, version: u32, content: &str) -> Result<ExtensionRecord> {
+    Ok(ExtensionRecord {
+        revision,
+        payload: OpaquePayload::new(format, version, content.to_owned())?,
+    })
+}
+
+fn saved_state(extensions: BTreeMap<String, ExtensionRecord>) -> ThreadSnapshot {
+    ThreadSnapshot {
+        commit_sequence: 1,
+        extension_sequence: 6,
+        extensions,
+        context: ContextSnapshot {
+            revision: 1,
+            records: vec![ContextRecord {
+                id: "preserved-user-history".into(),
+                turn_id: None,
+                source: ContextSource::User,
+                content: vec![ContextContent::Text {
+                    text: "必须保留的用户历史".into(),
+                }],
+                tool_calls: vec![],
+            }]
+            .into(),
+        },
+        ..Default::default()
+    }
+}
+
+async fn migrate_model_access(
+    store: &HistoryStore,
+    checkpoint: &ThreadCheckpoint,
+) -> Result<ThreadCheckpoint> {
+    store
+        .migrate_recovery_checkpoint(
+            checkpoint,
+            crate::studio::model_route::migrate_saved_representation,
+        )
+        .await
+}
+
+/// 故障注入与结构降级只通过真实 SQLite 文件完成，不使用生产句柄的私有入口。
+async fn raw_database(path: &std::path::Path) -> Result<sea_orm::DatabaseConnection> {
+    Ok(sea_orm::Database::connect(crate::studio::paths::sqlite_url(path)).await?)
+}
+
+#[tokio::test]
+async fn legacy_root_route_representation_is_committed_once_before_recovery() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "migration").await?;
+    let plan = ExtensionRecord {
+        revision: 5,
+        payload: crate::plan_tool::encode_plan_state(&Default::default())?,
+    };
+    let original = saved_state(BTreeMap::from([
+        (
+            "studio.model-route".into(),
+            record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
+        ),
+        ("studio.plan".into(), plan.clone()),
+    ]));
+    persist(&store, original.clone(), true).await?;
+    let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
+    assert_eq!(
+        legacy.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        1
+    );
+
+    let migrated = migrate_model_access(&store, &legacy).await?;
+    assert_eq!(migrated.state_revision, legacy.state_revision);
+    assert_eq!(migrated.history_fence, legacy.history_fence);
+    assert_eq!(
+        migrated.state.extension_sequence,
+        legacy.state.extension_sequence
+    );
+    assert_eq!(migrated.state.context, original.context);
+    assert_eq!(
+        serde_json::to_value(&migrated.state.usage_summary)?,
+        serde_json::to_value(&original.usage_summary)?
+    );
+    let saved = &migrated.state.extensions["studio.model-route"];
+    assert_eq!(saved.revision, 2, "表示迁移不改变扩展 revision");
+    assert_eq!(saved.payload.version(), 2);
+    let route = crate::studio::model_route::saved(&migrated.state)?
+        .context("migrated route")?
+        .route;
+    assert_eq!(route.account_id.as_str(), "deepseek");
+    assert_eq!(route.model_id, "deepseek-flash");
+    assert_eq!(
+        route.effort.as_ref().map(|value| value.as_str()),
+        Some("high")
+    );
+    assert_eq!(
+        migrated.state.extensions["studio.plan"], plan,
+        "其它产品扩展原样保留"
+    );
+
+    let durable = store
+        .checkpoint()
+        .await?
+        .context("durable route representation")?;
+    assert_eq!(
+        serde_json::to_vec(&durable)?,
+        serde_json::to_vec(&migrated)?
+    );
+    drop(store);
+
+    let reopened = HistoryStore::open(&path, "migration").await?;
+    let durable = reopened
+        .checkpoint()
+        .await?
+        .context("reopened checkpoint")?;
+    assert_eq!(
+        durable.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        2,
+        "重开后持久化为当前版本"
+    );
+    let before_retry = serde_json::to_vec(&durable)?;
+    let again = migrate_model_access(&reopened, &durable).await?;
+    assert_eq!(serde_json::to_vec(&again)?, before_retry, "第二次没有变化");
+    assert!(
+        migrate_model_access(&reopened, &legacy).await.is_err(),
+        "旧候选不得覆盖已提交的表示"
+    );
+    assert_eq!(
+        serde_json::to_vec(
+            &reopened
+                .checkpoint()
+                .await?
+                .context("unchanged checkpoint")?
+        )?,
+        before_retry
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_recovery_entry_commits_saved_representations_before_publishing() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let store = crate::studio::StudioStore::open(&database_path).await?;
+    let history = store.history_writer("migration").await?;
+    let original = saved_state(BTreeMap::from([
+        (
+            "studio.model-route".into(),
+            record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
+        ),
+        (
+            "studio.agent-profile".into(),
+            record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
+        ),
+    ]));
+    persist(&history, original.clone(), true).await?;
+    let thread = pl_protocol::Thread::placeholder("migration");
+
+    let recovered =
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+            .await?
+            .context("recovered checkpoint")?;
+    assert_eq!(recovered.state_revision, original.commit_sequence);
+    assert_eq!(
+        recovered.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        2
+    );
+    assert_eq!(
+        recovered.state.extensions["studio.agent-profile"]
+            .payload
+            .version(),
+        2
+    );
+    assert_eq!(
+        recovered.state.extensions["studio.model-route"].revision, 2,
+        "表示迁移保留扩展 revision"
+    );
+    assert_eq!(recovered.state.context, original.context);
+    let durable = history.checkpoint().await?.context("durable checkpoint")?;
+    assert_eq!(
+        serde_json::to_vec(&durable)?,
+        serde_json::to_vec(&recovered)?,
+        "恢复返回前已经持久化当前表示"
+    );
+
+    let again =
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+            .await?
+            .context("second recovery")?;
+    assert_eq!(serde_json::to_vec(&again)?, serde_json::to_vec(&recovered)?);
+    drop(history);
+    drop(store);
+
+    let reopened = crate::studio::StudioStore::open(&database_path).await?;
+    let history = reopened.history_writer("migration").await?;
+    let saved = history.checkpoint().await?.context("reopened checkpoint")?;
+    assert_eq!(
+        saved.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        2
+    );
+    let route = crate::studio::model_route::saved(&saved.state)?
+        .context("reopened route")?
+        .route;
+    assert_eq!(route.account_id.as_str(), "deepseek");
+    assert_eq!(route.model_id, "deepseek-flash");
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_child_profile_representation_is_committed_once_before_recovery() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "migration").await?;
+    let original = saved_state(BTreeMap::from([(
+        "studio.agent-profile".into(),
+        record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
+    )]));
+    persist(&store, original, true).await?;
+    let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
+    assert_eq!(
+        legacy.state.extensions["studio.agent-profile"]
+            .payload
+            .version(),
+        1
+    );
+
+    let migrated = migrate_model_access(&store, &legacy).await?;
+    let saved = &migrated.state.extensions["studio.agent-profile"];
+    assert_eq!(saved.revision, 3);
+    assert_eq!(saved.payload.version(), 2);
+    let (profile, revision) =
+        crate::studio::model_route::saved_profile(&migrated.state)?.context("migrated profile")?;
+    assert_eq!(revision, 3);
+    assert_eq!(profile.profile_id, "reviewer");
+    assert_eq!(profile.account_id, "deepseek");
+    assert_eq!(profile.model_id, "deepseek-flash");
+    assert_eq!(profile.effort.as_deref(), Some("high"));
+
+    let durable = store.checkpoint().await?.context("durable profile")?;
+    assert_eq!(
+        durable.state.extensions["studio.agent-profile"]
+            .payload
+            .version(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_representation_write_preserves_the_saved_version_and_retries() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "migration").await?;
+    let original = saved_state(BTreeMap::from([(
+        "studio.model-route".into(),
+        record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
+    )]));
+    persist(&store, original, true).await?;
+    let legacy = store.checkpoint().await?.context("legacy checkpoint")?;
+    // 真实故障注入：checkpoint 写入被 SQLite 触发器拒绝。
+    let faults = raw_database(&path).await?;
+    faults
+        .execute_unprepared(
+            "CREATE TRIGGER block_checkpoint_update BEFORE UPDATE ON session_checkpoint \
+             BEGIN SELECT RAISE(ABORT,'injected checkpoint write fault'); END",
+        )
+        .await?;
+    assert!(migrate_model_access(&store, &legacy).await.is_err());
+    let preserved = store.checkpoint().await?.context("preserved checkpoint")?;
+    assert_eq!(
+        preserved.state.extensions["studio.model-route"],
+        legacy.state.extensions["studio.model-route"],
+        "写失败保留原 version 1 载荷"
+    );
+    assert_eq!(
+        preserved.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        1
+    );
+
+    faults
+        .execute_unprepared("DROP TRIGGER block_checkpoint_update")
+        .await?;
+    drop(faults);
+    let migrated = migrate_model_access(&store, &legacy).await?;
+    assert_eq!(
+        migrated.state.extensions["studio.model-route"]
+            .payload
+            .version(),
+        2,
+        "故障解除后可重试到当前版本"
+    );
+    assert_eq!(
+        store
+            .checkpoint()
+            .await?
+            .context("retried checkpoint")?
+            .state
+            .extensions["studio.model-route"],
+        migrated.state.extensions["studio.model-route"]
+    );
+    Ok(())
+}
+
+fn legacy_native_context(inference_id: &str, sealed: &str) -> Result<ContextRecord> {
+    let item = pl_protocol::ModelContextItem::Compaction {
+        encrypted_content: sealed.into(),
+    };
+    Ok(ContextRecord {
+        id: format!("compaction:{inference_id}"),
+        turn_id: None,
+        source: ContextSource::Runtime {
+            source_id: "model.compaction".into(),
+        },
+        content: vec![ContextContent::Opaque {
+            payload: OpaquePayload::new("pl.model.compaction", 1, serde_json::to_string(&item)?)?,
+        }],
+        tool_calls: vec![],
+    })
+}
+
+fn opaque_record(id: &str, content: &str) -> Result<ContextRecord> {
+    Ok(ContextRecord {
+        id: id.into(),
+        turn_id: None,
+        source: ContextSource::User,
+        content: vec![ContextContent::Opaque {
+            payload: OpaquePayload::new("pl.test.opaque", 1, content.to_owned())?,
+        }],
+        tool_calls: vec![],
+    })
+}
+
+/// 旧版历史库升级（schema < 6）必须能从真实 v1 原生压缩回执恢复来源，而不是先硬失败。
+#[tokio::test]
+async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_upgrade()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let store = crate::studio::StudioStore::open(&database_path).await?;
+    let history_path = store.thread_storage_dir("migration").join("history.sqlite");
+    let history = store.history_writer("migration").await?;
+    let mut state = saved_state(BTreeMap::from([(
+        crate::compaction::LATEST_RECEIPT.into(),
+        record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
+    )]));
+    let mut records = state.context.records.to_vec();
+    records.push(legacy_native_context(
+        "compact-call",
+        "sealed-checkpoint-bytes",
+    )?);
+    records.push(opaque_record(
+        "unrelated-opaque",
+        "不可改写的用户/厂商正文",
+    )?);
+    state.context.records = records.into();
+    persist(&history, state.clone(), true).await?;
+    let before = history.checkpoint().await?.context("legacy checkpoint")?;
+    raw_database(&history_path)
+        .await?
+        .execute_unprepared("UPDATE history_meta SET schema_version=5")
+        .await?;
+    drop(history);
+    drop(store);
+
+    // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
+    let reopened = crate::studio::StudioStore::open(&database_path).await?;
+    let upgraded = reopened.history_writer("migration").await?;
+    let thread = pl_protocol::Thread::placeholder("migration");
+    let checkpoint =
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
+            .await?
+            .context("upgraded checkpoint")?;
+    assert_eq!(checkpoint.state_revision, before.state_revision);
+    assert_eq!(checkpoint.history_fence, before.history_fence);
+    assert_eq!(
+        checkpoint.state.context.revision,
+        before.state.context.revision
+    );
+    assert_eq!(
+        checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT],
+        before.state.extensions[crate::compaction::LATEST_RECEIPT],
+        "回执扩展本身按版本化解码，字节不变"
+    );
+    assert_eq!(upgraded.watermark().await?, 1);
+
+    let compaction = checkpoint
+        .state
+        .context
+        .records
+        .iter()
+        .find(|record| record.id == "compaction:compact-call")
+        .context("migrated compaction record")?;
+    let [ContextContent::Opaque { payload }] = compaction.content.as_slice() else {
+        anyhow::bail!("migrated compaction record is not opaque");
+    };
+    assert_eq!(payload.format(), "pl.model.compaction");
+    assert_eq!(payload.version(), 3, "原生 checkpoint 升级到当前结构");
+    let native: serde_json::Value = serde_json::from_str(payload.content())?;
+    assert_eq!(native["binding"]["accountId"], "deepseek");
+    assert_eq!(native["binding"]["modelId"], "deepseek-flash");
+    assert_eq!(native["binding"]["protocol"], "deep_seek");
+    assert_eq!(native["binding"]["wireApi"], "responses");
+    assert_eq!(native["binding"]["isolation"], "binding-namespace");
+    assert_eq!(native["binding"]["purpose"], "compaction");
+    assert_eq!(native["binding"]["autoCompactLimit"], 115_200);
+    assert_eq!(native["compatibilityFamily"], serde_json::Value::Null);
+    assert_eq!(
+        native["item"]["encryptedContent"],
+        "sealed-checkpoint-bytes"
+    );
+    assert_eq!(
+        checkpoint
+            .state
+            .context
+            .records
+            .iter()
+            .find(|record| record.id == "unrelated-opaque")
+            .context("unrelated record")?,
+        &opaque_record("unrelated-opaque", "不可改写的用户/厂商正文")?,
+        "无关 opaque 正文保持原字节"
+    );
+
+    let unchanged = serde_json::to_vec(&checkpoint)?;
+    upgraded.prepare_activation().await?;
+    assert_eq!(
+        serde_json::to_vec(&upgraded.checkpoint().await?.context("stable checkpoint")?)?,
+        unchanged,
+        "再次激活没有变化"
+    );
+    Ok(())
+}
+
+/// 不可用的旧来源必须 fail-closed：升级失败保留原数据并可重试，不改写任何载荷。
+#[tokio::test]
+async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "migration").await?;
+    let mut state = saved_state(BTreeMap::from([(
+        crate::compaction::LATEST_RECEIPT.into(),
+        record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
+    )]));
+    let mut records = state.context.records.to_vec();
+    // 旧来源正文无法恢复成可用的原生 checkpoint 项：迁移必须显式失败而不是猜测。
+    let unusable = r#"{"type":"compaction"}"#;
+    records.push(ContextRecord {
+        id: "compaction:compact-call".into(),
+        turn_id: None,
+        source: ContextSource::Runtime {
+            source_id: "model.compaction".into(),
+        },
+        content: vec![ContextContent::Opaque {
+            payload: OpaquePayload::new("pl.model.compaction", 1, unusable)?,
+        }],
+        tool_calls: vec![],
+    });
+    state.context.records = records.into();
+    persist(&store, state, true).await?;
+    raw_database(&path)
+        .await?
+        .execute_unprepared("UPDATE history_meta SET schema_version=5")
+        .await?;
+    drop(store);
+
+    let failed = HistoryStore::open(&path, "migration").await?;
+    assert!(failed.prepare_activation().await.is_err());
+    assert!(
+        failed.prepare_activation().await.is_err(),
+        "升级步骤没有被标记完成，仍可重试"
+    );
+    drop(failed);
+    // 原数据与旧版本仍可重试读取，升级没有被部分提交。
+    let retryable = HistoryStore::open(&path, "migration").await?;
+    let checkpoint = retryable
+        .checkpoint()
+        .await?
+        .context("preserved checkpoint")?;
+    assert_eq!(checkpoint.state_revision, 1);
+    let compaction = checkpoint
+        .state
+        .context
+        .records
+        .iter()
+        .find(|record| record.id == "compaction:compact-call")
+        .context("preserved compaction record")?;
+    let [ContextContent::Opaque { payload }] = compaction.content.as_slice() else {
+        anyhow::bail!("preserved compaction record is not opaque");
+    };
+    assert_eq!(payload.version(), 1, "失败不升级来源结构");
+    assert_eq!(payload.content(), unusable, "原正文逐字保留");
+
+    // 单一解码边界本身拒绝未知旧适配值与未来版本。
+    let unsafe_receipt = LEGACY_NATIVE_RECEIPT.replace("\"deepSeek\"", "\"mysteryVendor\"");
+    assert!(crate::compaction::decode_receipt(1, &unsafe_receipt).is_err());
+    assert!(crate::compaction::decode_receipt(3, LEGACY_NATIVE_RECEIPT).is_err());
     Ok(())
 }

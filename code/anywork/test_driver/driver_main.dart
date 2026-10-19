@@ -222,22 +222,38 @@ Future<String> _handleDriverData(String? message) async {
         'statisticsGap': performance?.statisticsGap,
         'readFailed': performance?.readFailed,
         'summaries': [
-          for (final summary in performance?.summaries ?? const [])
+          for (final summary
+              in performance?.summaries ??
+                  const <ModelPerformanceSummaryView>[])
             {
-              'providerInstanceId': summary.providerInstanceId,
-              'model': summary.model,
-              'effort': summary.reasoningEffort,
+              'accountId': summary.accountId,
+              'accountDisplayName': summary.accountDisplayName,
+              'modelId': summary.modelId,
               'samples': summary.sampleCount,
               'tokens': summary.completionTokens,
               'tokensPerSecond': summary.tokensPerSecond,
+              'effortBreakdowns': [
+                for (final effort in summary.effortBreakdowns)
+                  {
+                    'effort': effort.effort,
+                    'samples': effort.sampleCount,
+                    'tokens': effort.completionTokens,
+                    'tokensPerSecond': effort.tokensPerSecond,
+                  },
+              ],
             },
         ],
         'history': [
-          for (final sample in performance?.history ?? const [])
+          for (final sample
+              in performance?.history ?? const <ModelPerformanceSampleView>[])
             {
-              'providerInstanceId': sample.providerInstanceId,
-              'model': sample.model,
-              'effort': sample.reasoningEffort,
+              'accountId': sample.accountId,
+              'accountDisplayName': sample.accountDisplayName,
+              'modelId': sample.modelId,
+              'sentModel': sample.sentModel,
+              'reportedModel': sample.reportedModel,
+              'matchState': sample.modelMatchState.name,
+              'effort': sample.effort,
               'tokens': sample.completionTokens,
               'ttftMillis': sample.ttftMillis,
               'decodeMillis': sample.decodeMillis,
@@ -306,8 +322,8 @@ Future<String> _handleDriverData(String? message) async {
       return _handleSearchSettings();
     case 'search-mcp-state':
       return _handleSearchMcpState();
-    case 'provider-usage-state':
-      return _providerUsageStateJson();
+    case 'account-usage-state':
+      return _accountUsageStateJson();
     case 'shutdown':
       try {
         final report = await (_shutdownTask ??= _runShutdown());
@@ -1070,7 +1086,7 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
       'thread': _driverComposerDiagnostics(facts.threadComposer),
     },
-    'providers': _driverProviderDiagnostics(facts),
+    'accounts': _driverProviderDiagnostics(facts),
     'topics': studioDriverTopicDiagnostics(_client),
     'seams': <String, Object?>{
       // No production ClipboardImageReader override/fixture is present in this
@@ -1103,7 +1119,7 @@ Map<String, Object?>? _driverComposerDiagnostics(
         ),
     'attachmentGeneration': composer.attachmentGeneration,
     'submissionPending': composer.isSubmissionPending,
-    // Do not expose the error text: it can contain provider/path details. The
+    // Do not expose the error text: it can contain account/path details. The
     // typed failure fact is sufficient for a Driver regression assertion.
     'failed': composer.error != null,
     'attachments': [
@@ -1129,26 +1145,26 @@ Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
       'details': null,
     };
   }
-  final providers = facts.providers;
+  final accounts = facts.accounts;
   return <String, Object?>{
     'availability': 'available',
     // The list projection deliberately contains count/status metadata only.
     // Model model_ids are retained in the detail projection below.
     'list': [
-      for (final provider in providers)
+      for (final account in accounts)
         <String, Object?>{
-          'id': provider.id,
-          'status': provider.status,
-          'modelCount': provider.models.length,
-          'defaultModelConfigured': provider.defaultModel.isNotEmpty,
+          'id': account.id,
+          'status': account.status,
+          'modelCount': account.models.length,
+          'defaultModelConfigured': account.defaultModelId.isNotEmpty,
         },
     ],
     'details': [
-      for (final provider in providers)
+      for (final account in accounts)
         <String, Object?>{
-          'id': provider.id,
+          'id': account.id,
           'models': [
-            for (final model in provider.models)
+            for (final model in account.models)
               <String, Object?>{
                 'modelId': model.modelId,
                 'name': model.displayName,
@@ -1261,7 +1277,7 @@ Future<String> _finishDriverFixtureClipboardImage() async {
       'systemClipboardTouched': false,
     });
   } catch (_) {
-    // Do not expose raw provider/path errors through the Driver endpoint.
+    // Do not expose raw account/path errors through the Driver endpoint.
     return jsonEncode(<String, Object?>{
       'ok': false,
       'hook': 'driver-fixture-clipboard-image-preview',
@@ -1277,7 +1293,7 @@ Future<String> _finishDriverFixtureClipboardImage() async {
 //
 // Driver-only read-only view over the canonical settings/MCP state, so the
 // web-search acceptance can prove the two search cards and the MCP health from
-// typed fields instead of scraping widget text or the provider-only snapshot.
+// typed fields instead of scraping widget text or the account-only snapshot.
 // Nothing here mutates product state and no credential is read: the endpoint is
 // reduced to scheme/host/path.
 
@@ -1304,8 +1320,8 @@ Future<String> _handleSearchSettings() async {
       'region': web.region,
       'city': web.city,
       'timezone': web.timezone,
-      'providerId': web.providerId,
-      'model': web.model,
+      'accountId': web.accountId,
+      'modelId': web.modelId,
     },
     'deepSeekWebSearch': <String, Object?>{
       'configuredEnabled': deep.configuredEnabled,
@@ -1313,73 +1329,74 @@ Future<String> _handleSearchSettings() async {
       'configuredFetchEnabled': deep.configuredFetchEnabled,
       'effectiveFetchEnabled': deep.effectiveFetchEnabled,
       'availability': deep.availability,
-      'providerId': deep.providerId,
+      'accountId': deep.accountId,
     },
   });
 }
 
 /// Read-only typed Client projection; no request, reducer or test write path.
-String _providerUsageStateJson() {
+String _accountUsageStateJson() {
   BuildContext? settingsContext;
   final root = WidgetsBinding.instance.rootElement;
   if (root != null) {
     _visitElements(root, (element) {
-      if (element.widget.runtimeType.toString() == 'ProviderList' ||
-          element.widget.runtimeType.toString() == 'ProviderEditor') {
+      if (element.widget.runtimeType.toString() == 'AccountList' ||
+          element.widget.runtimeType.toString() == 'AccountEditor') {
         settingsContext = element;
       }
     });
   }
   final labels = settingsContext?.l10n;
-  final usage = _client.providerUsage.state.value;
-  final queries = _client.providerUsageQueries.state;
+  final usage = _client.accountUsage.state.value;
+  final queries = _client.accountUsageQueries.state;
   return jsonEncode({
-    'providers': [
-      for (final provider
-          in _client.settings.state.canonical?.providers ??
-              const <ProviderSettingsView>[])
+    'accounts': [
+      for (final account
+          in _client.settings.state.canonical?.accounts ??
+              const <AccountSettingsView>[])
         {
-          'id': provider.id,
-          'name': provider.name,
-          'preset': provider.templateKind,
-          'usageQueryRevision': provider.usageQueryRevision,
-          'hasBearerToken': provider.hasBearerToken,
+          'id': account.id,
+          'name': account.name,
+          'templateId': account.templateId,
+          'protocol': account.protocol,
+          'usageQueryRevision': account.usageQueryRevision,
+          'hasBearerToken': account.hasBearerToken,
         },
     ],
     'revision': usage?.revision,
     'usages': [
-      for (final record in usage?.usages ?? const <ProviderUsageView>[])
-        {'id': record.providerId, ..._providerUsageJson(record.state)},
+      for (final record in usage?.usages ?? const <AccountUsageView>[])
+        {'id': record.accountId, ..._accountUsageJson(record.state)},
     ],
-    'loadingProviderIds': queries.loadingProviderIds.toList(),
-    'errorsByProviderId': queries.errorsByProviderId,
+    'loadingAccountIds': queries.loadingAccountIds.toList(),
+    'errorsByAccountId': queries.errorsByAccountId,
     if (labels != null)
       'labels': {
         'displayName': labels.settingsDisplayName,
-        'delete': labels.settingsDeleteProvider,
-        'setDefault': labels.settingsSetAsDefaultProvider,
+        'delete': labels.settingsDeleteAccount,
+        'setDefault': labels.settingsSetAsDefaultAccount,
       },
   });
 }
 
-Map<String, Object?> _providerUsageJson(ProviderUsageStateView state) =>
+Map<String, Object?> _accountUsageJson(AccountUsageStateView state) =>
     switch (state) {
-      UnsupportedProviderUsageView() => {'kind': 'unsupported'},
-      MissingCredentialProviderUsageView() => {'kind': 'missingCredential'},
-      FailedProviderUsageView(:final code, :final retryable) => {
+      UnsupportedAccountUsageView() => {'kind': 'unsupported'},
+      MissingCredentialAccountUsageView() => {'kind': 'missingCredential'},
+      FailedAccountUsageView(:final code, :final retryable) => {
         'kind': 'failed',
         'code': code,
         'retryable': retryable,
       },
-      ReadyProviderUsageView(:final data) => {
+      ReadyAccountUsageView(:final data) => {
         'kind': 'ready',
         ...switch (data) {
-          DeepSeekBalanceProviderUsageView(:final balance) => {
+          DeepSeekBalanceAccountUsageView(:final balance) => {
             'balances': [
               for (final balance in balance.balances) balance.totalBalance,
             ],
           },
-          ZhipuCodingPlanProviderUsageView(:final codingPlan) => {
+          ZhipuCodingPlanAccountUsageView(:final codingPlan) => {
             'windows': [for (final limit in codingPlan.limits) limit.window],
           },
         },

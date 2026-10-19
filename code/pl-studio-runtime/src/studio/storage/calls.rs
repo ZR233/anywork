@@ -49,7 +49,7 @@ pub(crate) use summary::{PurposeUsageProjection, SessionUsageProjection};
 use event::CallLogRecord;
 use log::{CallLog, LOG_CLEANUP_INTERVAL};
 
-pub(crate) const CALLS_SCHEMA_VERSION: i64 = 6;
+pub(crate) const CALLS_SCHEMA_VERSION: i64 = 7;
 /// `calls` 目录下日志段所在子目录名。
 const CALL_LOG_DIR_NAME: &str = "logs";
 /// 一天对应的秒数；日志轮转/保留期以 UTC 自然日为准。
@@ -134,12 +134,12 @@ pub(crate) struct PurposeCostRollup {
 #[derive(Debug, Clone)]
 pub(crate) struct PerformanceSampleRow {
     pub(crate) completed_at: i64,
-    pub(crate) provider_instance_id: String,
-    pub(crate) provider_display_name: String,
-    pub(crate) configured_model: Option<String>,
+    pub(crate) account_id: String,
+    pub(crate) account_display_name: String,
+    pub(crate) model_id: Option<String>,
     pub(crate) sent_model: String,
     pub(crate) reported_model: Option<String>,
-    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) effort: Option<String>,
     pub(crate) completion_tokens: u64,
     pub(crate) ttft_millis: Option<u64>,
     pub(crate) decode_millis: Option<u64>,
@@ -147,13 +147,16 @@ pub(crate) struct PerformanceSampleRow {
     pub(crate) has_throughput_sample: bool,
 }
 
-/// 按（provider instance、实际发送模型、reasoning effort）的数据库聚合分组。
+/// 按（账号、冻结的目录配置模型、推理强度）的数据库聚合分组。
+///
+/// 顶层统计身份是 (account_id, model_id)；`effort` 是组内二级细分。发送/返回模型
+/// 只是冻结诊断，不参与归组。
 #[derive(Debug, Clone)]
 pub(crate) struct PerformanceSummaryRow {
-    pub(crate) provider_instance_id: String,
-    pub(crate) provider_display_name: String,
-    pub(crate) sent_model: String,
-    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) account_id: String,
+    pub(crate) account_display_name: String,
+    pub(crate) model_id: String,
+    pub(crate) effort: Option<String>,
     pub(crate) sample_count: u64,
     pub(crate) completion_tokens: u64,
     pub(crate) total_ttft_millis: u64,
@@ -732,12 +735,12 @@ impl CallsStore {
             let has_throughput_sample = record.throughput_sample().is_some();
             samples.push(PerformanceSampleRow {
                 completed_at: record.recorded_at,
-                provider_instance_id: record.provider_instance_id.unwrap_or_default(),
-                provider_display_name: record.provider_display_name.unwrap_or_default(),
-                configured_model: record.configured_model,
+                account_id: record.account_id.unwrap_or_default(),
+                account_display_name: record.account_display_name.unwrap_or_default(),
+                model_id: record.model_id,
                 sent_model: record.sent_model.unwrap_or_default(),
                 reported_model: record.reported_model,
-                reasoning_effort: record.reasoning_effort,
+                effort: record.effort,
                 completion_tokens: record
                     .usage
                     .and_then(|usage| usage.output_tokens)
@@ -751,29 +754,31 @@ impl CallsStore {
         Ok(samples)
     }
 
-    /// 按 provider instance/发送模型/effort 聚合性能汇总（数据库聚合投影）。
+    /// 按账号/冻结配置模型/effort 聚合性能汇总（数据库聚合投影）。
+    ///
+    /// 顶层身份是 (account_id, model_id)，effort 为组内二级细分；未知账号或未知配置模型的
+    /// 旧样本不进入任何已知账号模型汇总。只取有效成对 output/decode 正数样本，缺失不是 0。
     pub(crate) async fn performance_summary_rows(&self) -> Result<Vec<PerformanceSummaryRow>> {
         let rows = self
             .writer
             .db
             .query_all_raw(statement(
-                "SELECT provider_instance_id,
-                        COALESCE(MAX(provider_display_name), '') AS provider_display_name,
-                        sent_model,
-                        reasoning_effort,
+                "SELECT account_id,
+                        COALESCE(MAX(account_display_name), '') AS account_display_name,
+                        model_id,
+                        effort,
                         COUNT(*) AS sample_count,
                         COALESCE(SUM(output_tokens), 0) AS completion_tokens,
                         COALESCE(SUM(ttft_millis), 0) AS total_ttft_millis,
                         COALESCE(SUM(decode_millis), 0) AS total_decode_millis,
                         COALESCE(SUM(response_millis), 0) AS total_response_millis
                  FROM performance_samples
-                 WHERE provider_instance_id IS NOT NULL AND sent_model IS NOT NULL
+                 WHERE account_id IS NOT NULL AND account_id <> '' AND model_id IS NOT NULL
                    AND output_tokens > 0 AND decode_millis > 0
                    AND ttft_millis >= 0 AND response_millis >= ttft_millis
                    AND decode_millis = response_millis - ttft_millis
-                 GROUP BY provider_instance_id, sent_model, reasoning_effort
-                 ORDER BY provider_instance_id, sent_model,
-                          reasoning_effort IS NOT NULL, reasoning_effort",
+                 GROUP BY account_id, model_id, effort
+                 ORDER BY account_id, model_id, effort IS NOT NULL, effort",
                 vec![],
             ))
             .await?;
@@ -1240,10 +1245,10 @@ async fn prune_index(db: &impl ConnectionTrait, segments: &[String]) -> Result<(
 
 fn performance_summary_row(row: &QueryResult) -> Result<PerformanceSummaryRow> {
     Ok(PerformanceSummaryRow {
-        provider_instance_id: row.try_get("", "provider_instance_id")?,
-        provider_display_name: row.try_get("", "provider_display_name")?,
-        sent_model: row.try_get("", "sent_model")?,
-        reasoning_effort: row.try_get("", "reasoning_effort")?,
+        account_id: row.try_get("", "account_id")?,
+        account_display_name: row.try_get("", "account_display_name")?,
+        model_id: row.try_get("", "model_id")?,
+        effort: row.try_get("", "effort")?,
         sample_count: required_u64(row, "sample_count")?,
         completion_tokens: required_u64(row, "completion_tokens")?,
         total_ttft_millis: required_u64(row, "total_ttft_millis")?,

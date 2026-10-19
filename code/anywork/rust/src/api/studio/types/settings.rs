@@ -3,49 +3,48 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderSettingsInput {
-    /// A single provider edit.  Default provider, mode routes and role routes
+pub struct AccountSettingsInput {
+    /// A single account edit.  Default account, mode routes and role routes
     /// have their own commands and are intentionally absent from this input.
-    pub provider: ProviderInput,
+    pub account: AccountInput,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoveProviderInput {
+pub struct RemoveAccountInput {
     #[serde(default)]
-    pub replacement_provider_id: Option<String>,
+    pub replacement_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderInput {
-    pub id: String,
+pub struct AccountInput {
+    pub account_id: String,
     #[serde(default)]
-    pub original_id: Option<String>,
-    pub template_kind: String,
+    pub template_id: Option<String>,
+    pub protocol: String,
     pub name: String,
     pub base_url: String,
-    pub secret: ProviderSecretInput,
+    pub secret: AccountSecretInput,
     pub pricing_enabled: bool,
-    pub default_model: String,
-    pub custom_models: Vec<ProviderModelInput>,
-    pub model_connection_modes: Vec<ProviderModelConnectionInput>,
-    pub model_auto_compact_limits: Vec<ProviderModelAutoCompactInput>,
+    pub custom_models: Vec<AccountModelInput>,
+    pub model_connection_modes: Vec<AccountModelConnectionInput>,
+    pub model_auto_compact_limits: Vec<AccountModelAutoCompactInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderModelInput {
+pub struct AccountModelInput {
     pub model_id: String,
     pub display_name: String,
-    pub wire_protocol: String,
+    pub wire_api: String,
     pub context_window: u64,
     pub max_output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderModelConnectionInput {
+pub struct AccountModelConnectionInput {
     pub model_id: String,
     pub connection_mode: String,
 }
@@ -53,7 +52,7 @@ pub struct ProviderModelConnectionInput {
 /// 某模型上下文压缩阈值用户覆盖的输入项；`limit` 必须为正整数 tokens。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderModelAutoCompactInput {
+pub struct AccountModelAutoCompactInput {
     pub model_id: String,
     pub limit: u64,
 }
@@ -80,7 +79,7 @@ pub enum LspScopeInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "action")]
-pub enum ProviderSecretInput {
+pub enum AccountSecretInput {
     Preserve,
     Replace { value: String },
     Clear,
@@ -187,8 +186,8 @@ pub enum SettingsFieldInput {
     },
     ModeModel {
         mode_id: String,
-        provider_id: String,
-        model: String,
+        account_id: String,
+        model_id: String,
     },
     ModeReasoningEffort {
         mode_id: String,
@@ -196,8 +195,8 @@ pub enum SettingsFieldInput {
     },
     RoleModel {
         role: String,
-        provider_id: String,
-        model: String,
+        account_id: String,
+        model_id: String,
     },
     RoleReasoningEffort {
         role: String,
@@ -279,24 +278,24 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
             }
             SettingsFieldInput::ModeModel {
                 mode_id,
-                provider_id,
-                model,
+                account_id,
+                model_id,
             } => Update::ModeModel {
                 mode_id,
-                provider_id,
-                model,
+                account_id,
+                model_id,
             },
             SettingsFieldInput::ModeReasoningEffort { mode_id, effort } => {
                 Update::ModeReasoningEffort { mode_id, effort }
             }
             SettingsFieldInput::RoleModel {
                 role,
-                provider_id,
-                model,
+                account_id,
+                model_id,
             } => Update::RoleModel {
                 role,
-                provider_id,
-                model,
+                account_id,
+                model_id,
             },
             SettingsFieldInput::RoleReasoningEffort { role, effort } => {
                 Update::RoleReasoningEffort { role, effort }
@@ -318,8 +317,8 @@ pub struct BridgeWebSearchSettingsDto {
     pub region: Option<String>,
     pub city: Option<String>,
     pub timezone: Option<String>,
-    pub provider_id: Option<String>,
-    pub model: Option<String>,
+    pub account_id: Option<String>,
+    pub model_id: Option<String>,
 }
 
 /// DeepSeek 原生 Web 搜索的 canonical bridge 快照。
@@ -331,15 +330,15 @@ pub struct BridgeDeepSeekWebSearchSettingsDto {
     pub configured_fetch_enabled: bool,
     pub effective_fetch_enabled: bool,
     pub availability: String,
-    pub provider_id: Option<String>,
+    pub account_id: Option<String>,
 }
 
 /// Studio 配置与本地界面设置的 canonical typed 快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStudioSettingsDto {
-    pub default_provider_id: Option<String>,
-    pub providers: Vec<BridgeProviderSettingsDto>,
+    pub default_account_id: Option<String>,
+    pub accounts: Vec<BridgeAccountSettingsDto>,
     pub mode_model_routes: Vec<BridgeModeModelSettingsDto>,
     pub roles: Vec<BridgeRoleSettingsDto>,
     pub permission_mode: String,
@@ -351,23 +350,26 @@ pub struct BridgeStudioSettingsDto {
     pub deepseek_web_search: BridgeDeepSeekWebSearchSettingsDto,
 }
 
-/// Thread Mode 到默认 provider/model/effort 的 canonical 路由。
+/// Thread Mode 到默认 account/model/effort 的 canonical 路由。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModeModelSettingsDto {
     pub mode_id: String,
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: String,
 }
 
-/// 不含 secret 的 Provider canonical 设置视图。
+/// 不含 secret 的 Account canonical 设置视图。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeProviderSettingsDto {
+pub struct BridgeAccountSettingsDto {
     pub pricing_enabled: bool,
-    pub id: String,
-    pub template_kind: String,
+    pub account_id: String,
+    /// 可选的内置账号模板引用；完全自定义账号为 `None`。
+    pub template_id: Option<String>,
+    /// 明确的厂商协议适配选择。
+    pub protocol: String,
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
@@ -379,19 +381,20 @@ pub struct BridgeProviderSettingsDto {
     pub standalone_web_search: Option<String>,
     pub prompt_cache_dialect: String,
     pub responses_programmatic_tool_calling: bool,
-    pub default_model: String,
+    /// 目录或创建路由的默认模型投影；不是账号 runtime 的第二份模型选择。
+    pub default_model_id: String,
     pub custom_models: Vec<BridgeCustomModelSettingsDto>,
     pub model_connection_modes: Vec<BridgeModelConnectionSettingsDto>,
     pub model_auto_compact_limits: Vec<BridgeModelAutoCompactSettingsDto>,
     pub catalog_id: Option<String>,
 }
 
-/// A provider's observed model directory. This belongs to the catalog clock,
-/// not to the provider configuration snapshot.
+/// A account's observed model directory. This belongs to the catalog clock,
+/// not to the account configuration snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeModelCatalogProviderDto {
-    pub id: String,
+pub struct BridgeModelCatalogAccountDto {
+    pub account_id: String,
     pub effective_models: Vec<BridgeModelDescriptor>,
     pub model_catalog: BridgeModelCatalogStatusDto,
 }
@@ -506,7 +509,7 @@ impl From<pl_protocol::studio::StudioModelCatalogStatus> for BridgeModelCatalogS
     }
 }
 
-/// Provider 配置中由用户定义的模型，不复制内置 catalog 元数据。
+/// Account 配置中由用户定义的模型，不复制内置 catalog 元数据。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeCustomModelSettingsDto {
@@ -517,12 +520,12 @@ pub struct BridgeCustomModelSettingsDto {
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
     pub base_instructions: String,
-    pub wire_protocol: String,
+    pub wire_api: String,
     pub supported_connection_modes: Vec<String>,
     pub default_connection_mode: String,
 }
 
-/// Provider 实例对 canonical catalog 模型的连接方式覆盖。
+/// Account 实例对 canonical catalog 模型的连接方式覆盖。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelConnectionSettingsDto {
@@ -530,7 +533,7 @@ pub struct BridgeModelConnectionSettingsDto {
     pub connection_mode: String,
 }
 
-/// provider 实例中某模型上下文压缩阈值的三层 canonical 视图。
+/// account 实例中某模型上下文压缩阈值的三层 canonical 视图。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelAutoCompactSettingsDto {
@@ -541,13 +544,13 @@ pub struct BridgeModelAutoCompactSettingsDto {
     pub safe_limit: Option<u64>,
 }
 
-/// 角色到 provider/model/effort 的 canonical 路由。
+/// 角色到 account/model/effort 的 canonical 路由。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeRoleSettingsDto {
     pub key: String,
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: String,
 }
 
@@ -622,18 +625,18 @@ impl Default for BridgeGeneralSettingsDto {
     }
 }
 
-// ── Provider catalog output ──
+// ── Account catalog output ──
 
 #[derive(Debug, Clone)]
-pub struct BridgeProviderCatalogSnapshot {
+pub struct BridgeAccountCatalogSnapshot {
     pub schema_version: u32,
     pub revision: String,
-    pub presets: Vec<BridgeProviderPresetDescriptor>,
+    pub templates: Vec<BridgeAccountTemplateDescriptor>,
     pub model_catalogs: Vec<BridgeModelCatalogDescriptor>,
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeProviderPresetDescriptor {
+pub struct BridgeAccountTemplateDescriptor {
     pub pricing_enabled: bool,
     pub id: String,
     pub display_name: String,
@@ -642,20 +645,22 @@ pub struct BridgeProviderPresetDescriptor {
     pub credential_label: String,
     pub credential_env: Option<String>,
     pub model_catalog_id: String,
-    pub suggested_model: String,
+    /// 模板默认的厂商协议；与 ProtocolKind 的 wire 值一致。
+    pub protocol: String,
+    pub suggested_model_id: String,
     pub icon_key: Option<String>,
-    pub service_capabilities: BridgeProviderServiceCapabilitiesDescriptor,
+    pub service_capabilities: BridgeServiceCapabilitiesDescriptor,
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeProviderServiceCapabilitiesDescriptor {
-    pub web_search: BridgeWebSearchProviderCapabilitiesDescriptor,
+pub struct BridgeServiceCapabilitiesDescriptor {
+    pub web_search: BridgeWebSearchServiceCapabilitiesDescriptor,
     pub prompt_cache_dialect: String,
     pub responses_programmatic_tool_calling: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeWebSearchProviderCapabilitiesDescriptor {
+pub struct BridgeWebSearchServiceCapabilitiesDescriptor {
     pub hosted_responses: bool,
     pub hosted_dialect: String,
     pub standalone: Option<String>,
@@ -665,13 +670,13 @@ pub struct BridgeWebSearchProviderCapabilitiesDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelTransportDescriptor {
     pub protocol: String,
-    pub connection_modes: Vec<BridgeProviderConnectionModeDescriptor>,
+    pub connection_modes: Vec<BridgeConnectionModeDescriptor>,
     pub default_connection_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeProviderConnectionModeDescriptor {
+pub struct BridgeConnectionModeDescriptor {
     pub id: String,
     pub display_name: String,
 }
@@ -685,7 +690,7 @@ pub struct BridgeModelCatalogDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelDescriptor {
-    pub id: String,
+    pub model_id: String,
     pub type_support: Vec<BridgeModelTypeSupport>,
     pub origin: BridgeModelOrigin,
     pub display_name: String,
@@ -796,15 +801,15 @@ pub struct BridgeModelPriceTier {
     pub cache_write_per_mtok: Option<f64>,
 }
 
-impl From<pl_protocol::ProviderCatalogSnapshot> for BridgeProviderCatalogSnapshot {
-    fn from(snapshot: pl_protocol::ProviderCatalogSnapshot) -> Self {
+impl From<pl_protocol::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot {
+    fn from(snapshot: pl_protocol::AccountCatalogSnapshot) -> Self {
         Self {
             schema_version: snapshot.schema_version,
             revision: snapshot.revision,
-            presets: snapshot
-                .presets
+            templates: snapshot
+                .templates
                 .into_iter()
-                .map(|preset| BridgeProviderPresetDescriptor {
+                .map(|preset| BridgeAccountTemplateDescriptor {
                     pricing_enabled: preset.pricing_enabled,
                     id: preset.id,
                     display_name: preset.display_name,
@@ -813,10 +818,11 @@ impl From<pl_protocol::ProviderCatalogSnapshot> for BridgeProviderCatalogSnapsho
                     credential_label: preset.credential.label,
                     credential_env: preset.credential.env_var,
                     model_catalog_id: preset.model_catalog_id,
-                    suggested_model: preset.suggested_model,
+                    protocol: preset.protocol,
+                    suggested_model_id: preset.suggested_model_id,
                     icon_key: preset.icon_key,
-                    service_capabilities: BridgeProviderServiceCapabilitiesDescriptor {
-                        web_search: BridgeWebSearchProviderCapabilitiesDescriptor {
+                    service_capabilities: BridgeServiceCapabilitiesDescriptor {
+                        web_search: BridgeWebSearchServiceCapabilitiesDescriptor {
                             hosted_responses: preset
                                 .service_capabilities
                                 .web_search
@@ -850,7 +856,7 @@ impl From<pl_protocol::ProviderCatalogSnapshot> for BridgeProviderCatalogSnapsho
 impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
     fn from(model: pl_protocol::ModelDescriptor) -> Self {
         Self {
-            id: model.id,
+            model_id: model.model_id,
             type_support: model
                 .type_support
                 .into_iter()
@@ -888,7 +894,7 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                     .transport
                     .connection_modes
                     .into_iter()
-                    .map(|mode| BridgeProviderConnectionModeDescriptor {
+                    .map(|mode| BridgeConnectionModeDescriptor {
                         id: mode.id,
                         display_name: mode.display_name,
                     })

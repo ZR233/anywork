@@ -131,7 +131,7 @@ impl StudioRuntime {
         hosted.extend(crate::programmatic::hosted_tool(route));
         // Hash sorted structured inputs in memory. Credentials never enter logs, storage or model context.
         let key = crate::hash::canonical_json_hash(&serde_json::json!({
-            "provider": route.provider_id, "endpoint": route.endpoint, "model": route.model,
+            "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
             "effort": route.effort, "pricing": route.pricing_mode,
             "autoCompactLimit": route.auto_compact_limit,
             "compaction": config.runtime.openai_compaction_mode,
@@ -180,7 +180,7 @@ impl StudioRuntime {
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                 let Ok(snapshot) = runtime.config_runtime.read() else { continue; };
                                 let Ok(catalog) = runtime.config_runtime.read_catalog() else { continue; };
-                                let ids = snapshot.config.models.providers.keys().cloned().collect();
+                                let ids = snapshot.config.models.accounts.keys().cloned().collect();
                                 let _ = runtime.publish_model_catalog_state(catalog);
                                 Some(ids)
                             }
@@ -209,7 +209,7 @@ impl StudioRuntime {
                                 .extensions
                                 .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION),
                         );
-                        if !matches!(selector, Ok(Some((_, ref selector))) if affected.contains(&selector.provider))
+                        if !matches!(selector, Ok(Some((_, ref selector))) if affected.contains(&selector.account_id))
                         {
                             continue;
                         }

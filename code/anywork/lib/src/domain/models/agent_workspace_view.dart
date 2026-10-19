@@ -21,7 +21,7 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     required PendingInteraction? activeInteraction,
     required ComposerThreadState composer,
     required AgentComposerMode composerMode,
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
     @Default(<ModeModelRouteView>[]) List<ModeModelRouteView> modeModelRoutes,
     required List<RoleSettingsView> roles,
     required List<StudioAgentView> agents,

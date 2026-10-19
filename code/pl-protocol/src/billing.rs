@@ -199,7 +199,7 @@ impl InferenceTokenUsage {
     }
 }
 
-/// 一次推理从目录选择到 wire 请求和 Provider 响应的冻结模型身份。
+/// 一次推理从目录选择到 wire 请求和厂商响应的冻结模型身份。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceModelObservation {
@@ -237,14 +237,19 @@ pub struct InferenceBillingRecord {
     /// Producer-defined usage purpose; absent when historical provenance is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// 冻结的稳定账号身份；旧记录无法确定账号时为空。
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub provider_instance_id: String,
-    pub provider: String,
-    pub model: String,
+    pub account_id: String,
+    /// 仅用于展示，不参与统计归组。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_display_name: Option<String>,
+    /// 冻结的目录配置 model_id；旧记录缺少该事实时保持 `None`，不用发送模型冒充。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_observation: Option<InferenceModelObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     pub accounting: crate::InferenceAccounting,

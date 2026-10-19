@@ -46,9 +46,12 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     );
   }
 
-  void setModelIntent(ThreadModeId mode, String providerId, String model) {
-    if (_closed || providerId.isEmpty || model.isEmpty) return;
-    final next = StartSessionModelIntent(providerId: providerId, model: model);
+  void setModelIntent(ThreadModeId mode, String accountId, String modelId) {
+    if (_closed || accountId.isEmpty || modelId.isEmpty) return;
+    final next = StartSessionModelIntent(
+      accountId: accountId,
+      modelId: modelId,
+    );
     final previous = state.modelIntents[mode.id];
     if (next == previous) return;
     final snapshot = _client.settings.state.canonical;
@@ -58,14 +61,14 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     );
     final changed = previous != null
         ? previous != next
-        : canonical?.providerId != providerId || canonical?.model != model;
+        : canonical?.accountId != accountId || canonical?.modelId != modelId;
     final efforts = {...state.effortIntents};
     if (changed) {
       final effort = ModelRouteQueries.effortAfterModelSelection(
         ModelRouteQueries.model(
-          snapshot?.providers ?? const [],
-          providerId,
-          model,
+          snapshot?.accounts ?? const [],
+          accountId,
+          modelId,
         ),
         null,
       );
@@ -344,20 +347,20 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       modelIntent: state.modelIntentFor(mode),
       effortIntent: state.effortIntentFor(mode),
     );
-    if (route == null || route.providerId.isEmpty || route.model.isEmpty) {
+    if (route == null || route.accountId.isEmpty || route.modelId.isEmpty) {
       throw StateError('A complete model route is required');
     }
-    final provider = settings.canonical?.providers
-        .where((value) => value.id == route.providerId)
+    final account = settings.canonical?.accounts
+        .where((value) => value.id == route.accountId)
         .firstOrNull;
-    final model = provider?.models
-        .where((value) => value.modelId == route.model)
+    final model = account?.models
+        .where((value) => value.modelId == route.modelId)
         .firstOrNull;
     if (model == null) throw StateError('The selected model is unavailable');
     return ModeModelRouteView(
       modeId: mode,
-      providerId: route.providerId,
-      model: route.model,
+      accountId: route.accountId,
+      modelId: route.modelId,
       effort: route.effort.isEmpty
           ? model.defaultReasoningEffort
           : route.effort,

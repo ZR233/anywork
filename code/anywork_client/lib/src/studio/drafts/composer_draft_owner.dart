@@ -7,7 +7,7 @@ import '../anywork_client.dart';
 import 'attachment_drafts.dart';
 import 'submission_observation.dart';
 
-/// Logical Thread draft. Route/provider observers borrow it without owning it.
+/// Logical Thread draft. Route/account observers borrow it without owning it.
 class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
   ComposerDraftOwner(this._client, this.threadId)
     : _permit = _client.budget.acquire(
