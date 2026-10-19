@@ -197,6 +197,12 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         ),
         (
             "WebSocket recover",
+            "WS abandoned second fragment",
+            "ws-abandoned-second",
+            Some(8000),
+        ),
+        (
+            "WebSocket recover",
             "WS recovered answer",
             "ws-success",
             None,
@@ -209,6 +215,12 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         ),
         ("WebSocket next", "WS next turn answer", "ws-next", None),
     ] {
+        // The production policy retries WS once, then keeps HTTP for this session.
+        let protocol = if matches!(response_id, "ws-abandoned" | "ws-abandoned-second") {
+            Protocol::ResponsesWebSocket
+        } else {
+            Protocol::ResponsesHttp
+        };
         script.add(|index| {
             Step::prompt(
                 Protocol::ResponsesWebSocket,
@@ -229,10 +241,13 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         }
         script.add(|index| {
             Step::prompt(
-                Protocol::ResponsesWebSocket,
+                protocol,
                 prompt,
                 index,
-                Reply::WebSocket(events),
+                match protocol {
+                    Protocol::ResponsesWebSocket => Reply::WebSocket(events),
+                    _ => Reply::Sse(events),
+                },
             )
         });
     }
@@ -273,7 +288,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                 } else {
                     format!("i=1; while [ \"$i\" -le {lines} ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {}", "argument ".repeat(padding / 9))
                 };
-                if matches!(item_id, "scroll-item-b" | "scroll-item-c") {
+                if matches!(item_id, "scroll-item-a" | "scroll-item-b" | "scroll-item-c") {
                     // Call directly to verify that image reading is available without discovery.
                     return RealtimeToolCall {
                         item_id,

@@ -1049,7 +1049,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningCompleted => 'Thought';
 
   @override
-  String get timelineReasoningEmpty => 'No reasoning text was provided.';
+  String get timelineReasoningSummary => 'Summary';
+
+  @override
+  String get timelineReasoningContent => 'Content';
 
   @override
   String get timelineReasoningBudgetLimited => 'Reasoning budget reached';
@@ -1227,9 +1230,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineRolledBack => 'Rolled back from active context';
-
-  @override
-  String get timelinePendingSave => 'Waiting to save';
 
   @override
   String get interactionSubmitEmptyAnswersHint =>

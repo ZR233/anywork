@@ -1,108 +1,61 @@
 part of 'timeline_view.dart';
 
-/// 一条 Message 当前引用的图片附件 id 与图片工具调用 id。
-class _MessageImageRefs {
-  const _MessageImageRefs({required this.attachments, required this.calls});
-
-  static const empty = _MessageImageRefs(
-    attachments: <String>{},
-    calls: <String>{},
-  );
-
-  final Set<String> attachments;
-  final Set<String> calls;
-}
-
+/// 展示代次的图片缓存：引用按原始条目结算，分组合并和分裂不改变资源身份。
 class _ThreadImageLoader {
   final Map<String, Future<Uint8List>> _images = {};
-
-  /// 图片组的展开状态只来自用户明确 toggle：新增/历史条目默认折叠，内容更新不改它。
-  final Set<String> expandedCalls = {};
-
-  /// 每条已加载 Message 的引用账目：按 stock operation 做差量，不重建、不全表扫描。
-  final Map<String, _MessageImageRefs> _refs = {};
+  final Map<String, Set<String>> _refs = {};
   final Map<String, int> _attachmentRefs = {};
-  final Map<String, int> _callRefs = {};
 
-  /// 基线（stock `set`/首次挂载）：一次性重建引用账目。
   void reset(String? threadId, Iterable<Message> messages) {
     clear();
     for (final message in messages) {
-      _apply(threadId, message.id, _refsOf(message));
+      retainMessage(threadId, message);
     }
   }
 
-  /// 一条 Message 出现或内容变化：只结算差量，未变化的附件与调用保持原状。
-  void retainMessage(String? threadId, Message message) =>
-      _apply(threadId, message.id, _refsOf(message));
-
-  /// 一条 Message 消失：只释放它自己引用的附件。
-  void dropMessage(String? threadId, Message message) =>
-      _apply(threadId, message.id, null);
-
-  _MessageImageRefs _refsOf(Message message) {
-    final item = timelinePayloadOf(message)?.item;
-    if (item == null) return _MessageImageRefs.empty;
-    final attachments = <String>{
-      for (final attachment in item.attachments) attachment.id,
-    };
-    final calls = <String>{};
-    final tool = item.tool;
-    if (tool != null) {
-      final callId = tool.callId ?? tool.toolCallId;
-      for (final attachment in tool.attachments) {
-        if (attachment.modality != AttachmentModalityView.image) continue;
-        attachments.add(attachment.id);
-        calls.add(callId);
-      }
+  void retainMessage(String? threadId, Message message) {
+    for (final payload in timelinePayloadsOf(message)) {
+      retainItem(threadId, payload);
     }
-    if (attachments.isEmpty && calls.isEmpty) return _MessageImageRefs.empty;
-    return _MessageImageRefs(attachments: attachments, calls: calls);
   }
 
-  void _apply(String? threadId, String messageId, _MessageImageRefs? next) {
-    final previous = _refs[messageId];
-    if (previous == null && next == null) return;
-    if (next == null || next.attachments.isEmpty && next.calls.isEmpty) {
-      _refs.remove(messageId);
+  void dropMessage(String? threadId, Message message) {
+    for (final payload in timelinePayloadsOf(message)) {
+      dropItem(threadId, payload.id);
+    }
+  }
+
+  void retainItem(String? threadId, TimelineMessagePayload payload) => _apply(
+    threadId,
+    payload.id,
+    {
+      for (final attachment in payload.item.attachments) attachment.id,
+      for (final attachment
+          in payload.item.tool?.attachments ?? const <ThreadAttachmentView>[])
+        if (attachment.modality == AttachmentModalityView.image) attachment.id,
+    },
+  );
+
+  void dropItem(String? threadId, String id) => _apply(threadId, id, const {});
+
+  void _apply(String? threadId, String itemId, Set<String> next) {
+    final previous = _refs[itemId] ?? const <String>{};
+    if (next.isEmpty) {
+      _refs.remove(itemId);
     } else {
-      _refs[messageId] = next;
+      _refs[itemId] = next;
     }
-    final removedAttachments = <String>{...?previous?.attachments}
-      ..removeAll(next?.attachments ?? const <String>{});
-    final addedAttachments = <String>{...?next?.attachments}
-      ..removeAll(previous?.attachments ?? const <String>{});
-    final removedCalls = <String>{...?previous?.calls}
-      ..removeAll(next?.calls ?? const <String>{});
-    final addedCalls = <String>{...?next?.calls}
-      ..removeAll(previous?.calls ?? const <String>{});
-
-    final prefix = '$threadId\u0000';
-    for (final id in removedAttachments) {
-      final refs = (_attachmentRefs[id] ?? 0) - 1;
-      if (refs <= 0) {
-        // 最后一个引用消失才丢已解码字节；共享附件被别的 Message 引用时保留。
+    for (final id in previous.difference(next)) {
+      final refs = _attachmentRefs[id]! - 1;
+      if (refs == 0) {
         _attachmentRefs.remove(id);
-        _images.remove('$prefix$id');
+        _images.remove('$threadId\u0000$id');
       } else {
         _attachmentRefs[id] = refs;
       }
     }
-    for (final id in addedAttachments) {
+    for (final id in next.difference(previous)) {
       _attachmentRefs[id] = (_attachmentRefs[id] ?? 0) + 1;
-    }
-    for (final id in removedCalls) {
-      final refs = (_callRefs[id] ?? 0) - 1;
-      if (refs <= 0) {
-        _callRefs.remove(id);
-        // 调用真正消失：展开状态随之失效；新增调用绝不自动展开。
-        expandedCalls.remove(id);
-      } else {
-        _callRefs[id] = refs;
-      }
-    }
-    for (final id in addedCalls) {
-      _callRefs[id] = (_callRefs[id] ?? 0) + 1;
     }
   }
 
@@ -118,10 +71,8 @@ class _ThreadImageLoader {
 
   void clear() {
     _images.clear();
-    expandedCalls.clear();
     _refs.clear();
     _attachmentRefs.clear();
-    _callRefs.clear();
   }
 }
 
@@ -281,7 +232,7 @@ typedef _ToolImageEntryRef = ({
 /// 按 owning 调用身份 + 附件 id 构造工具组内每个图片条目的唯一身份。
 ///
 /// 不按资源去重、不丢弃调用：同一调用重复引用同一资源时追加 `#<序号>`；跨调用同一
-/// 资源仍各自保留独立条目与展开状态。字节读取仍由 Thread 附件缓存按
+/// 资源仍各自保留独立条目。字节读取仍由 Thread 附件缓存按
 /// `threadId + attachmentId` 去重。
 List<_ToolImageEntryRef> _toolImageEntries(List<_ToolItem> items) {
   final entries = <_ToolImageEntryRef>[];
@@ -303,156 +254,6 @@ List<_ToolImageEntryRef> _toolImageEntries(List<_ToolItem> items) {
     }
   }
   return entries;
-}
-
-String _toolImageCallId(_ToolImageEntryRef entry) =>
-    entry.item.tool!.callId ?? entry.item.tool!.toolCallId;
-
-/// A call owns expansion; each attachment keeps its own stable presentation ID.
-class _ThreadImageGallery extends StatelessWidget {
-  const _ThreadImageGallery({
-    required this.threadId,
-    required this.entries,
-    required this.groupId,
-  });
-  final String threadId;
-  final List<_ToolImageEntryRef> entries;
-  final String groupId;
-
-  @override
-  Widget build(BuildContext context) {
-    final calls = <String, List<_ToolImageEntryRef>>{};
-    for (final entry in entries) {
-      calls.putIfAbsent(_toolImageCallId(entry), () => []).add(entry);
-    }
-    return Column(
-      key: StudioDriverKeys.toolImageGallery(groupId),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final call in calls.entries)
-          _ThreadToolImageCall(
-            key: ValueKey('tool-image-call:${call.key}'),
-            threadId: threadId,
-            callId: call.key,
-            entries: call.value,
-          ),
-      ],
-    );
-  }
-}
-
-class _ThreadToolImageCall extends StatefulWidget {
-  const _ThreadToolImageCall({
-    required this.threadId,
-    required this.callId,
-    required this.entries,
-    super.key,
-  });
-  final String threadId;
-  final String callId;
-  final List<_ToolImageEntryRef> entries;
-  @override
-  State<_ThreadToolImageCall> createState() => _ThreadToolImageCallState();
-}
-
-class _ThreadToolImageCallState extends State<_ThreadToolImageCall> {
-  @override
-  Widget build(BuildContext context) {
-    final loader = _ThreadImageCacheScope.of(context);
-    final expanded = loader.expandedCalls.contains(widget.callId);
-    final first = widget.entries.first;
-    final item = first.item;
-    final count = widget.entries.length;
-    final label = item.name == 'view_image'
-        ? item.status == 'succeeded'
-              ? context.l10n.timelineImagesViewed(count)
-              : _toolTitle(context, item)
-        : context.l10n.timelineImagesProduced(count);
-    void toggle() {
-      setState(() {
-        if (!loader.expandedCalls.remove(widget.callId)) {
-          loader.expandedCalls.add(widget.callId);
-        }
-      });
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Tooltip(
-            message:
-                _toolTarget(item) ??
-                _attachmentDescription(context, first.attachment),
-            child: Semantics(
-              button: true,
-              expanded: expanded,
-              child: InkWell(
-                key: StudioDriverKeys.viewImageToggle(first.entryId),
-                borderRadius: BorderRadius.circular(StudioRadii.xs),
-                onTap: toggle,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.image_outlined,
-                        size: 15,
-                        color: context.colors.onSurfaceVariant.withValues(
-                          alpha: 0.78,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.text.bodySmall?.copyWith(
-                            color: expanded
-                                ? context.colors.onSurface
-                                : context.colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Icon(
-                        expanded
-                            ? Icons.keyboard_arrow_down_rounded
-                            : Icons.chevron_right_rounded,
-                        size: 15,
-                        color: context.colors.onSurfaceVariant.withValues(
-                          alpha: 0.72,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          if (expanded)
-            Padding(
-              padding: const EdgeInsets.only(top: 6, bottom: 4),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final entry in widget.entries)
-                    _ThreadToolImageThumbnail(
-                      key: ValueKey('tool-image:${entry.entryId}'),
-                      threadId: widget.threadId,
-                      entry: entry,
-                    ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
 }
 
 class _ThreadToolImageThumbnail extends ConsumerStatefulWidget {

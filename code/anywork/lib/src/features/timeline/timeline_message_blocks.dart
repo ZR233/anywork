@@ -15,27 +15,21 @@ class _EmptyTimeline extends StatelessWidget {
   }
 }
 
-/// 一条 canonical item 身份的 Message。
-///
-/// 身份固定来自 item，不来自索引、页首或活动组首成员；视觉活动以相邻的紧凑独立行存在，
-/// 不把多个身份合成一条 Message（design/26 §26.4、§26.8）。正文只从该 Message 的 typed
-/// 载荷读取，**不**在这里解析工具参数或问答私有回执。
+/// 一个原始成员的内容；可以独立呈现，也可以被展示组惰性构建。
 class _TimelineMessageBlock extends StatelessWidget {
   const _TimelineMessageBlock({
-    required this.message,
+    required this.payload,
     required this.lease,
     required this.threadId,
-    super.key,
   });
 
-  final Message message;
+  final TimelineMessagePayload payload;
   final TimelineDisplayLease lease;
   final String threadId;
 
   @override
   Widget build(BuildContext context) {
-    final payload = timelinePayloadOf(message);
-    if (payload == null) return const SizedBox.shrink();
+    final payload = this.payload;
     final item = payload.item;
     if (_rendersNoContent(item)) return const SizedBox.shrink();
     final isUser = item.kind == ThreadItemKind.userMessage;
@@ -85,41 +79,9 @@ class _TimelineMessageBlock extends StatelessWidget {
                             ?.copyWith(color: context.colors.onSurfaceVariant),
                       ),
                     ),
-                  Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Opacity(
-                        opacity: rolledBack ? 0.52 : 1,
-                        child: _messageContent(context, payload),
-                      ),
-                      // 等待保存状态以内联角标附着在行角落：状态切换只改变图标可见性，
-                      // 不额外撑高行底部。
-                      Positioned(
-                        right: isPrompt ? 6 : null,
-                        left: isPrompt ? null : 0,
-                        bottom: 2,
-                        child: SizedBox.square(
-                          dimension: 16,
-                          child: Center(
-                            child: Visibility(
-                              visible: !payload.saved,
-                              maintainSize: true,
-                              maintainAnimation: true,
-                              maintainState: true,
-                              child: Tooltip(
-                                message: context.l10n.timelinePendingSave,
-                                child: Icon(
-                                  Icons.cloud_upload_outlined,
-                                  size: 13,
-                                  color: context.colors.onSurfaceVariant
-                                      .withValues(alpha: 0.72),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                  Opacity(
+                    opacity: rolledBack ? 0.52 : 1,
+                    child: _messageContent(context, payload),
                   ),
                   if (rolledBack)
                     Padding(
@@ -225,22 +187,12 @@ class _TimelineMessageBlock extends StatelessWidget {
       return _UserInputReceipt(itemId: item.id, history: history);
     }
     final toolItem = _ToolItem(_entryViewOf(item));
-    final images = _toolImageEntries([toolItem]);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (images.isEmpty)
-          _isWebSearch(toolItem)
-              ? _WebSearchToolCard(item: toolItem)
-              : _ToolDetails(item: toolItem)
-        else
-          _ToolDetails(item: toolItem),
-        if (images.isNotEmpty)
-          _ThreadImageGallery(
-            threadId: threadId,
-            entries: images,
-            groupId: item.id,
-          ),
+        _isWebSearch(toolItem)
+            ? _WebSearchToolCard(item: toolItem)
+            : _ToolDetails(item: toolItem),
         ?_detailNotice(context, payload),
       ],
     );
@@ -376,8 +328,8 @@ class _Avatar extends StatelessWidget {
   }
 }
 
-/// 推理：相邻的紧凑独立行，展开只放大本条已交付正文。
-class _ReasoningBlock extends StatelessWidget {
+/// 概要和内容各自按已有字段展示；缺失字段不生成占位区域。
+class _ReasoningBlock extends StatefulWidget {
   const _ReasoningBlock({
     required this.itemId,
     required this.entry,
@@ -389,58 +341,114 @@ class _ReasoningBlock extends StatelessWidget {
   final Widget? details;
 
   @override
+  State<_ReasoningBlock> createState() => _ReasoningBlockState();
+}
+
+class _ReasoningBlockState extends State<_ReasoningBlock> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
-    final chunks = entry.reasoningContent.isNotEmpty
-        ? entry.reasoningContent
-        : entry.reasoningSummary;
-    final text = chunks.where((chunk) => chunk.trim().isNotEmpty).join('\n\n');
+    final entry = widget.entry;
+    final summary = entry.reasoningSummary
+        .where((chunk) => chunk.trim().isNotEmpty)
+        .join('\n\n');
+    final content = entry.reasoningContent
+        .where((chunk) => chunk.trim().isNotEmpty)
+        .join('\n\n');
     final active = !isTerminalTimelineStatus(entry.status);
     final label = active
         ? plainReasoningSummary(entry.reasoningSummary.firstOrNull ?? '') ??
               context.l10n.timelineReasoningActive
         : context.l10n.timelineReasoningCompleted;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final expandable =
+        summary.isNotEmpty || content.isNotEmpty || widget.details != null;
+    final title = _TimelineActivitySummary(
+      key: StudioDriverKeys.timelineActivitySummary(widget.itemId),
+      icon: Icons.psychology_alt_outlined,
+      label: label,
+      active: active,
+      expanded: _expanded,
+      expandable: expandable,
+    );
+    if (!expandable) return title;
+    return ExpansionTile(
+      initiallyExpanded: _expanded,
+      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      maintainState: false,
+      showTrailingIcon: false,
+      minTileHeight: 28,
+      dense: true,
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(left: 7, bottom: 6),
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: title,
       children: [
-        ExpansionTile(
-          key: StudioDriverKeys.timelineActivitySummary(itemId),
-          maintainState: false,
-          showTrailingIcon: false,
-          minTileHeight: 28,
-          dense: true,
-          tilePadding: EdgeInsets.zero,
-          childrenPadding: const EdgeInsets.only(left: 7, bottom: 6),
-          shape: const Border(),
-          collapsedShape: const Border(),
-          title: _TimelineActivitySummary(
-            icon: Icons.psychology_alt_outlined,
-            label: label,
-          ),
-          children: [
-            DecoratedBox(
-              key: const ValueKey('timeline-activity-details'),
-              decoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(color: context.colors.outlineVariant),
-                ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
-                child: text.isEmpty
-                    ? Text(context.l10n.timelineReasoningEmpty)
-                    : _AgentMarkdown(
-                        id: entry.id,
-                        text: text,
-                        surface: _MarkdownSurface.reasoning,
-                      ),
+        if (summary.isNotEmpty || content.isNotEmpty)
+          DecoratedBox(
+            key: const ValueKey('timeline-activity-details'),
+            decoration: BoxDecoration(
+              border: Border(
+                left: BorderSide(color: context.colors.outlineVariant),
               ),
             ),
-          ],
-        ),
-        ?details,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (summary.isNotEmpty)
+                    _section(
+                      context,
+                      key: 'timeline-thinking-summary-${widget.itemId}',
+                      title: context.l10n.timelineReasoningSummary,
+                      text: summary,
+                    ),
+                  if (content.isNotEmpty)
+                    _section(
+                      context,
+                      key: 'timeline-thinking-content-${widget.itemId}',
+                      title: context.l10n.timelineReasoningContent,
+                      text: content,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ?widget.details,
       ],
     );
   }
+
+  Widget _section(
+    BuildContext context, {
+    required String key,
+    required String title,
+    required String text,
+  }) => Padding(
+    key: ValueKey(key),
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SelectionContainer.disabled(
+          child: Text(
+            title,
+            style: context.text.labelSmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        _AgentMarkdown(
+          id: key,
+          text: text,
+          surface: _MarkdownSurface.reasoning,
+        ),
+      ],
+    ),
+  );
 }
 
 /// raw 历史记录：展开只显示已交付的截断正文，完整字段走详情查看器。
@@ -718,45 +726,68 @@ class _TimelineActivitySummary extends StatelessWidget {
   const _TimelineActivitySummary({
     required this.icon,
     required this.label,
+    this.isIssue = false,
+    this.expanded = false,
+    this.active = false,
+    this.expandable = true,
     super.key,
   });
 
   final IconData icon;
   final String label;
+  final bool isIssue;
+  final bool expanded;
+  final bool active;
+  final bool expandable;
 
   @override
   Widget build(BuildContext context) {
     final color = context.colors.onSurfaceVariant;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 28),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 15, color: color.withValues(alpha: 0.78)),
-            const SizedBox(width: 8),
-            Flexible(
-              // 摘要持续追加：普通 Text，避免每次增量重新淡入。
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                softWrap: false,
-                style: context.text.bodySmall?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w400,
-                  height: 1.25,
+    return SelectionContainer.disabled(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 28),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isIssue
+                    ? Icons.error_outline
+                    : active
+                    ? Icons.pending_outlined
+                    : icon,
+                size: 15,
+                color: isIssue
+                    ? context.colors.error
+                    : color.withValues(alpha: .78),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                // 摘要持续追加：普通 Text，避免每次增量重新淡入。
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
+                  style: context.text.bodySmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w400,
+                    height: 1.25,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 15,
-              color: color.withValues(alpha: 0.72),
-            ),
-          ],
+              if (expandable) const SizedBox(width: 4),
+              if (expandable)
+                Icon(
+                  expanded
+                      ? Icons.keyboard_arrow_down_rounded
+                      : Icons.chevron_right_rounded,
+                  size: 15,
+                  color: color.withValues(alpha: 0.72),
+                ),
+            ],
+          ),
         ),
       ),
     );

@@ -169,6 +169,23 @@ class FrbTimelineConnection implements StudioTimelineConnection {
   StudioTimelineItem _item(frb_chat_types.BridgeTimelineItem value) {
     final lifecycle = _lifecycle(value.lifecycle);
     return StudioTimelineItem(
+      source: switch (value.source) {
+        frb_chat_types.BridgeTimelineItemSource_Content() =>
+          const StudioTimelineContentSource(),
+        frb_chat_types.BridgeTimelineItemSource_ModelRecovery(
+          :final attemptId,
+          :final notice,
+        ) =>
+          StudioTimelineRecoverySource(
+            attemptId: attemptId,
+            notice: switch (notice) {
+              frb_chat_types.BridgeTimelineRecoveryNotice.retry =>
+                StudioTimelineRecoveryNotice.retry,
+              frb_chat_types.BridgeTimelineRecoveryNotice.result =>
+                StudioTimelineRecoveryNotice.result,
+            },
+          ),
+      },
       // 预览条目同样携带执行终态/保存水位/省略量：终态身份必须拒绝迟到流式正文，
       // 保存水位仍与终态独立（design/26 §26.7）。
       item: _threadItemFromFrb(value.item, exactNumbers: true).copyWith(

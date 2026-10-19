@@ -31,21 +31,25 @@ const _maxImageRecycleSteps = 12;
 
 /// 剧本里的 8 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
 ///
-/// 每个 canonical 工具调用都是独立消息：按 callId 精确判定 name/status，既不放过
+/// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
 const _expectedToolCalls = <({String callId, String name, String status})>[
   (callId: 'scroll-call-short', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-medium', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-long', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),
-  (callId: 'scroll-call-a', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-a', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-b', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-c', name: 'view_image', status: 'succeeded'),
   (callId: 'scroll-call-failed', name: 'list_files', status: 'failed'),
 ];
 
-/// 剧本里两处独立的图片读取；它们是 b/c 两个工具身份，不是“前两个工具”。
-const _imageCallIds = <String>['scroll-call-b', 'scroll-call-c'];
+/// 连续三次图片读取共用一条展示摘要，仍按 a/b/c 的原始调用身份验收。
+const _imageCallIds = <String>[
+  'scroll-call-a',
+  'scroll-call-b',
+  'scroll-call-c',
+];
 
 String _fixtureEntryName(int index) =>
     'entry-${index.toString().padLeft(3, '0')}.txt';
@@ -180,6 +184,12 @@ Future<List<String>> _visibleTimelineRowIds(FlutterDriver driver) async {
 ///
 /// 与 `place` 的“已加载”判据同源：条目身份、附件身份或工具附件身份包含在 key 里。
 int? _loadedTargetOrdinal(TimelineObservation timeline, String key) {
+  for (final group in timeline.presentationItems) {
+    if (key == 'timeline-row-${group.id}' ||
+        key == 'timeline-activity-summary-${group.id}') {
+      return group.ordinal;
+    }
+  }
   for (final item in timeline.items) {
     if (key.contains(item.id) ||
         item.attachments.any((attachment) => key.contains(attachment.id)) ||
@@ -193,12 +203,8 @@ int? _loadedTargetOrdinal(TimelineObservation timeline, String key) {
   return null;
 }
 
-int? _ordinalOfItemId(TimelineObservation timeline, String id) {
-  for (final item in timeline.items) {
-    if (item.id == id) return item.ordinal;
-  }
-  return null;
-}
+int? _ordinalOfItemId(TimelineObservation timeline, String id) =>
+    timeline.ordinalOfIdentity(id);
 
 /// 目标相对当前可见行的外层滚动方向。
 ///
@@ -480,6 +486,27 @@ Future<void> main(List<String> args) async {
     );
   }
 
+  Future<TimelinePresentationObservation> presentationFor(String id) async =>
+      TimelineObservation.parse(await snapshot()).presentationFor(id);
+
+  SerializableFinder headerOf(SerializableFinder summary) => find.ancestor(
+    of: summary,
+    matching: find.byType('ListTile'),
+    firstMatchOnly: true,
+  );
+
+  Future<void> revealItem(String id) async {
+    final group = await presentationFor(id);
+    await place(find.byValueKey('timeline-row-${group.id}'), 100);
+    if (group.kind != 'single' && !group.expanded) {
+      await driver.sendCommand(
+        RawTap(
+          headerOf(find.byValueKey('timeline-activity-summary-${group.id}')),
+        ),
+      );
+    }
+  }
+
   try {
     await driver.sendCommand(SetFrameSync(false));
     final firstAnswer = await waitAnswer('Tool scroll short');
@@ -609,7 +636,7 @@ Future<void> main(List<String> args) async {
         '${reasoningItems.length}',
       );
     }
-    // 两个图片读取固定是 fixture 的 b/c 两个独立工具身份，不按时间线顺序取“前两个”。
+    // 连续图片调用仍各有原始身份，不按展示行数量推断调用数量。
     final imageItems = <TimelineItemObservation>[
       for (final callId in _imageCallIds) toolsByCallId[callId]!,
     ];
@@ -641,14 +668,28 @@ Future<void> main(List<String> args) async {
     }
     final imageItem = imageItems.first;
     final imageEntryFirst = imageEntries.first;
-    // 另一个独立图片读取：b 展开时它的缩略图不得一起出现。
+    // 连续读取统一展开，同时保留每次调用的图片身份。
     final imageEntryOther = imageEntries.last;
-    final summary = find.byValueKey('timeline-row-${imageItem.id}');
+    final imageGroup = await presentationFor(imageItem.id);
+    if (imageGroup.kind != 'images' ||
+        !imageItems.every((item) => imageGroup.memberIds.contains(item.id))) {
+      throw StateError(
+        'Consecutive image calls did not form one GUI group: ${imageGroup.memberIds}',
+      );
+    }
+    final summary = find.byValueKey('timeline-row-${imageGroup.id}');
     await place(summary, 120);
-    final toggle = find.byValueKey('view-image-toggle-$imageEntryFirst');
+    await File('${output.path}/consecutive-images-collapsed.png')
+        .writeAsBytes(await driver.screenshot());
+    await place(summary, 120);
+    final toggle = find.byValueKey(
+      'timeline-activity-summary-${imageGroup.id}',
+    );
     final thumbnail = find.byValueKey('view-image-thumbnail-$imageEntryFirst');
-    await driver.sendCommand(RawTap(toggle));
+    await driver.sendCommand(RawTap(headerOf(toggle)));
     await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
+    await File('${output.path}/consecutive-images-expanded.png')
+        .writeAsBytes(await driver.screenshot());
     await driver.sendCommand(RawTap(thumbnail));
     await driver.waitFor(find.byValueKey('view-image-dialog-$imageEntryFirst'));
     await File('${output.path}/agent-read-image-dialog.png')
@@ -658,8 +699,8 @@ Future<void> main(List<String> args) async {
           find.byValueKey('view-image-thumbnail-$imageEntryOther'),
           'observe',
         ))['samples'].last['mounted'] !=
-        false) {
-      throw StateError('Distinct image calls share expansion state');
+        true) {
+      throw StateError('Consecutive image calls did not expand together');
     }
     // 同一 Thread、同一展示代次的真实用户滚动回收：正常外层滚轮把 b 行连同缩略图
     // 滚出 render/widget 树（History 冻结，不建立新代次），再用既有 place 滚回同一
@@ -794,7 +835,7 @@ Future<void> main(List<String> args) async {
         returnedTimeline.generation == beforeTimeline.generation;
     if (!rowMountedReturned ||
         !thumbMountedReturned ||
-        otherThumbMounted ||
+        !otherThumbMounted ||
         !returnedSameThread ||
         !returnedSameGeneration ||
         !returnedTimeline.isHistory ||
@@ -815,8 +856,8 @@ Future<void> main(List<String> args) async {
     }
     await File('${output.path}/agent-read-image-recycled.png')
         .writeAsBytes(await driver.screenshot());
-    // 真实 collapse：同一 toggle 再点一次，缩略图必须消失；另一图片仍保持折叠。
-    await driver.sendCommand(RawTap(toggle));
+    // 同一组的真实 collapse 必须同时隐藏所有连续读取的缩略图。
+    await driver.sendCommand(RawTap(headerOf(toggle)));
     await driver.waitForAbsent(thumbnail, timeout: const Duration(seconds: 10));
     final collapsed = !mountedOf(await probe(thumbnail, 'observe'));
     final otherStillCollapsed = !mountedOf(
@@ -991,6 +1032,7 @@ Future<void> main(List<String> args) async {
           );
         }
       }
+      await revealItem(toolItem.id);
       final tile = find.byValueKey('timeline-tool-details:${toolItem.id}');
       await place(tile, 125);
       final expanded = await probe(tile, 'tap');
@@ -1178,9 +1220,14 @@ Future<void> main(List<String> args) async {
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await place(find.byValueKey('timeline-row-${imageItem.id}'), 120);
+    final reopenedGroup = await presentationFor(imageItem.id);
+    await place(find.byValueKey('timeline-row-${reopenedGroup.id}'), 120);
     await driver.sendCommand(
-      RawTap(find.byValueKey('view-image-toggle-$imageId')),
+      RawTap(
+        headerOf(
+          find.byValueKey('timeline-activity-summary-${reopenedGroup.id}'),
+        ),
+      ),
     );
     await driver.waitFor(
       find.byValueKey('view-image-thumbnail-$imageId'),

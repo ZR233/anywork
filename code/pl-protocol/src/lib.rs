@@ -96,9 +96,9 @@ pub use provider_catalog::{
 pub use timeline_content::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
     TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange,
-    TimelineFieldUpdate, TimelineItem, TimelineLifecycle, TimelinePage, TimelinePageCursor,
-    TimelinePageQuery, TimelinePriority, TimelineResyncReason, TimelineTailBaseline,
-    TimelineTailUpdate,
+    TimelineFieldUpdate, TimelineItem, TimelineItemSource, TimelineLifecycle, TimelinePage,
+    TimelinePageCursor, TimelinePageQuery, TimelinePriority, TimelineRecoveryNotice,
+    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
 };
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。

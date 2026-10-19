@@ -1829,6 +1829,268 @@ String toString() {
 
 
 /// @nodoc
+mixin _$BridgeTimelineItemSource {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTimelineItemSourceCopyWith<$Res>  {
+$BridgeTimelineItemSourceCopyWith(BridgeTimelineItemSource _, $Res Function(BridgeTimelineItemSource) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineItemSource].
+extension BridgeTimelineItemSourcePatterns on BridgeTimelineItemSource {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineItemSource_Content value)?  content,TResult Function( BridgeTimelineItemSource_ModelRecovery value)?  modelRecovery,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content(_that);case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineItemSource_Content value)  content,required TResult Function( BridgeTimelineItemSource_ModelRecovery value)  modelRecovery,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content():
+return content(_that);case BridgeTimelineItemSource_ModelRecovery():
+return modelRecovery(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineItemSource_Content value)?  content,TResult? Function( BridgeTimelineItemSource_ModelRecovery value)?  modelRecovery,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content(_that);case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  content,TResult Function( String attemptId,  BridgeTimelineRecoveryNotice notice)?  modelRecovery,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content();case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that.attemptId,_that.notice);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  content,required TResult Function( String attemptId,  BridgeTimelineRecoveryNotice notice)  modelRecovery,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content():
+return content();case BridgeTimelineItemSource_ModelRecovery():
+return modelRecovery(_that.attemptId,_that.notice);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  content,TResult? Function( String attemptId,  BridgeTimelineRecoveryNotice notice)?  modelRecovery,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content();case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that.attemptId,_that.notice);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineItemSource_Content extends BridgeTimelineItemSource {
+  const BridgeTimelineItemSource_Content(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource_Content);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource.content()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeTimelineItemSource_ModelRecovery extends BridgeTimelineItemSource {
+  const BridgeTimelineItemSource_ModelRecovery({required this.attemptId, required this.notice}): super._();
+
+
+ final  String attemptId;
+ final  BridgeTimelineRecoveryNotice notice;
+
+/// Create a copy of BridgeTimelineItemSource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineItemSource_ModelRecoveryCopyWith<BridgeTimelineItemSource_ModelRecovery> get copyWith => _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl<BridgeTimelineItemSource_ModelRecovery>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource_ModelRecovery&&(identical(other.attemptId, attemptId) || other.attemptId == attemptId)&&(identical(other.notice, notice) || other.notice == notice));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,attemptId,notice);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource.modelRecovery(attemptId: $attemptId, notice: $notice)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineItemSource_ModelRecoveryCopyWith<$Res> implements $BridgeTimelineItemSourceCopyWith<$Res> {
+  factory $BridgeTimelineItemSource_ModelRecoveryCopyWith(BridgeTimelineItemSource_ModelRecovery value, $Res Function(BridgeTimelineItemSource_ModelRecovery) _then) = _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl;
+@useResult
+$Res call({
+ String attemptId, BridgeTimelineRecoveryNotice notice
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl<$Res>
+    implements $BridgeTimelineItemSource_ModelRecoveryCopyWith<$Res> {
+  _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineItemSource_ModelRecovery _self;
+  final $Res Function(BridgeTimelineItemSource_ModelRecovery) _then;
+
+/// Create a copy of BridgeTimelineItemSource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? attemptId = null,Object? notice = null,}) {
+  return _then(BridgeTimelineItemSource_ModelRecovery(
+attemptId: null == attemptId ? _self.attemptId : attemptId // ignore: cast_nullable_to_non_nullable
+as String,notice: null == notice ? _self.notice : notice // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineRecoveryNotice,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeTimelineUpdate {
 
  String get subscriptionId;

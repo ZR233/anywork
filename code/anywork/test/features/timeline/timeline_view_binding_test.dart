@@ -9,9 +9,7 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_messages.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
@@ -109,13 +107,14 @@ void main() {
     required int ordinal,
     String attachmentId = 'att-shared',
     String result = 'ok',
+    int revision = 1,
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
       threadId: 'thread',
       turnId: 'turn',
       ordinal: ordinal,
-      revision: 1,
+      revision: revision,
       createdAt: timestamp,
       updatedAt: timestamp,
       saved: true,
@@ -1301,6 +1300,81 @@ void main() {
     await _pumpFrames(tester, frames: 2);
   });
 
+  testWidgets('思考展开保留概要和内容，缺失字段不生成空区块', (tester) async {
+    for (final (summary, content) in [
+      (['Summary evidence'], ['Full reasoning evidence']),
+      (['Summary evidence'], <String>[]),
+      (<String>[], ['Full reasoning evidence']),
+      (<String>['  '], <String>[]),
+    ]) {
+      final lease = leaseFor(
+        items: [
+          StudioTimelineItem(
+            item: ThreadItemView(
+              id: 'thinking',
+              threadId: 'thread',
+              turnId: 'turn',
+              ordinal: 1,
+              revision: 1,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              saved: true,
+              state: ThreadThinkingItemStateView(
+                summary: summary,
+                content: content,
+                lifecycle: CompletedThreadContentView(timestamp),
+              ),
+            ),
+            saved: true,
+            lifecycle: StudioTimelineLifecycle.terminal,
+            omittedBytes: 0,
+            details: const [],
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        host(
+          TimelineView(
+            threadId: 'thread',
+            view: viewState(),
+            lease: lease,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final group = lease.presentationFor('thinking')!;
+      await tester.tap(
+        find.byKey(StudioDriverKeys.timelineActivitySummary(group.id)),
+      );
+      await tester.pumpAndSettle();
+      final hasSummary = summary.any((chunk) => chunk.trim().isNotEmpty);
+      final hasContent = content.any((chunk) => chunk.trim().isNotEmpty);
+      if (hasSummary || hasContent) {
+        await tester.tap(
+          find.byKey(StudioDriverKeys.timelineActivitySummary('thinking')),
+        );
+        await tester.pumpAndSettle();
+      }
+      expect(
+        find.byKey(const ValueKey('timeline-thinking-summary-thinking')),
+        hasSummary ? findsOneWidget : findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('timeline-thinking-content-thinking')),
+        hasContent ? findsOneWidget : findsNothing,
+      );
+      expect(find.text('No reasoning text was provided.'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await lease.retire();
+    }
+  });
+
   // ---- S1 图片增量：默认折叠、用户展开语义与引用释放 --------------------------------
 
   testWidgets('图片组默认折叠只按需读取，同 ID 更新保持用户展开/折叠，引用释放可判别', (tester) async {
@@ -1318,6 +1392,31 @@ void main() {
     );
     final entryA = StudioDriverKeys.toolImageEntryId('call-a', 'att-shared');
     final entryB = StudioDriverKeys.toolImageEntryId('call-b', 'att-shared');
+    Finder toggleFor(String id) => find
+        .ancestor(
+          of: find.byKey(
+            StudioDriverKeys.timelineActivitySummary(
+              lease.presentationFor(id)!.id,
+            ),
+          ),
+          matching: find.byType(ListTile),
+        )
+        .first;
+    var version = 0;
+    void patch(List<StudioTimelineChange> changes) {
+      expect(
+        lease.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'test',
+            from: version,
+            to: ++version,
+            priority: StudioTimelinePriority.immediate,
+            changes: changes,
+          ),
+        ),
+        isTrue,
+      );
+    }
 
     await tester.pumpWidget(
       host(
@@ -1337,10 +1436,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 默认折叠：没有缩略图，也没有任何字节读取（生产不再自动展开）。
-    expect(
-      find.byKey(StudioDriverKeys.viewImageToggle(entryA)),
-      findsOneWidget,
-    );
+    expect(toggleFor('call-a'), findsOneWidget);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsNothing,
@@ -1351,26 +1447,31 @@ void main() {
     );
     expect(transport.reads, isEmpty, reason: '折叠状态不得读取原图');
 
-    // 用户明确展开 call-a：才读一次该附件。
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    // 连续调用共用展开意图，两个缩略图复用同一附件读取。
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.viewImageThumbnail(entryB)),
       findsOneWidget,
     );
     expect(transport.reads, ['thread:att-shared']);
 
     // 同 canonicalID 的普通内容更新：保持用户已展开，且共享缓存不重读。
-    Message messageOf(String id) =>
-        lease.controller.messages.firstWhere((message) => message.id == id);
-    await tester.runAsync(
-      () => lease.controller.updateMessage(
-        messageOf('call-a'),
-        timelineMessageFor(
-          imageToolItem('call-a', ordinal: 1, result: 'ok (streamed)'),
+    patch([
+      StudioTimelineAdd(
+        imageToolItem(
+          'call-a',
+          ordinal: 1,
+          result: 'ok (streamed)',
+          revision: 2,
         ),
       ),
-    );
+    ]);
     await _pumpFrames(tester);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
@@ -1380,20 +1481,18 @@ void main() {
     expect(transport.reads, hasLength(1), reason: '同附件不得重读');
 
     // 用户主动折叠后再更新：不得自动展开。
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsNothing,
     );
-    await tester.runAsync(
-      () => lease.controller.updateMessage(
-        messageOf('call-a'),
-        timelineMessageFor(
-          imageToolItem('call-a', ordinal: 1, result: 'ok (final)'),
-        ),
+    patch([
+      StudioTimelineAdd(
+        imageToolItem('call-a', ordinal: 1, result: 'ok (final)', revision: 3),
       ),
-    );
+    ]);
     await _pumpFrames(tester);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
@@ -1403,12 +1502,11 @@ void main() {
     expect(transport.reads, hasLength(1));
 
     // 共享引用：移除 call-a 后 call-b 仍持有该附件 → 缓存保留，展开不重读。
-    await tester.runAsync(
-      () => lease.controller.removeMessage(messageOf('call-a')),
-    );
+    patch([const StudioTimelineRemove('call-a')]);
     await _pumpFrames(tester);
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryB)));
+    await tester.tap(toggleFor('call-b'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryB)),
       findsOneWidget,
@@ -1416,18 +1514,13 @@ void main() {
     expect(transport.reads, hasLength(1), reason: '共享附件在仍有引用时不丢缓存');
 
     // 最后一个引用消失 → 缓存释放：重新插入并展开会重新读取。
-    await tester.runAsync(
-      () => lease.controller.removeMessage(messageOf('call-b')),
-    );
+    patch([const StudioTimelineRemove('call-b')]);
     await _pumpFrames(tester);
-    await tester.runAsync(
-      () => lease.controller.insertMessage(
-        timelineMessageFor(imageToolItem('call-a', ordinal: 3)),
-      ),
-    );
+    patch([StudioTimelineAdd(imageToolItem('call-a', ordinal: 3))]);
     await _pumpFrames(tester);
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(transport.reads, hasLength(2), reason: '最后引用释放后重新展开必须重新读取');
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -1469,13 +1562,29 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
+        find
+            .ancestor(
+              of: find.byKey(
+                StudioDriverKeys.timelineActivitySummary(
+                  lease.presentationFor('tool-1')!.id,
+                ),
+              ),
+              matching: find.byType(ListTile),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
         find.byKey(const ValueKey<String>('timeline-tool-details:tool-1')),
       );
       await tester.pumpAndSettle();
-      final candidates = find.byWidgetPredicate(
-        (widget) =>
-            widget is SingleChildScrollView &&
-            widget.scrollDirection == Axis.vertical,
+      final candidates = find.descendant(
+        of: find.byKey(const ValueKey<String>('timeline-tool-details:tool-1')),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is SingleChildScrollView &&
+              widget.scrollDirection == Axis.vertical,
+        ),
       );
       expect(candidates, findsWidgets);
       // 选出工具参数那个真正可滚动的内部区域（有独立 extent）。

@@ -24,6 +24,7 @@ final class TimelineObservation {
     required this.hasNewOutput,
     required this.preparingLive,
     required this.items,
+    required this.presentationItems,
   });
 
   /// 当前快照里的展示事实；`timeline` 为 null（没有展示）时返回 null。
@@ -58,7 +59,21 @@ final class TimelineObservation {
       }
       itemIds.add(id);
     }
+    final rawPresentation = map['presentationItems'];
+    if (rawPresentation is! List) {
+      throw StateError('timeline.presentationItems is missing');
+    }
+    final presentation = <TimelinePresentationObservation>[];
+    for (final value in rawPresentation) {
+      if (value is! Map) {
+        throw StateError('timeline presentation item is not an object');
+      }
+      presentation.add(
+        TimelinePresentationObservation.parse(value.cast<String, dynamic>()),
+      );
+    }
     return TimelineObservation._(
+      presentationItems: List.unmodifiable(presentation),
       threadId: _string(map, 'threadId', 'timeline'),
       generation: _int(map, 'generation', 'timeline'),
       ready: _bool(map, 'ready', 'timeline'),
@@ -103,6 +118,22 @@ final class TimelineObservation {
   final bool hasNewOutput;
   final bool preparingLive;
   final List<TimelineItemObservation> items;
+  final List<TimelinePresentationObservation> presentationItems;
+
+  TimelinePresentationObservation presentationFor(String sourceId) =>
+      presentationItems.singleWhere(
+        (item) => item.memberIds.contains(sourceId),
+      );
+
+  int? ordinalOfIdentity(String id) {
+    for (final item in items) {
+      if (item.id == id) return item.ordinal;
+    }
+    for (final item in presentationItems) {
+      if (item.id == id) return item.ordinal;
+    }
+    return null;
+  }
 
   bool get isLive => mode == 'live';
 
@@ -134,6 +165,34 @@ final class TimelineObservation {
         );
       }
     }
+    final sourcePositions = {
+      for (var index = 0; index < itemIds.length; index++)
+        itemIds[index]: index,
+    };
+    final assigned = <String>{};
+    final presentationIds = <String>{};
+    for (final group in presentationItems) {
+      if (!presentationIds.add(group.id) || group.memberIds.isEmpty) {
+        throw StateError(
+          'Duplicate or empty timeline presentation: ${group.id}',
+        );
+      }
+      var previous = -1;
+      for (final id in group.memberIds) {
+        final position = sourcePositions[id];
+        if (position == null || position <= previous || !assigned.add(id)) {
+          throw StateError(
+            'Presentation lost, reordered or duplicated original item: $id',
+          );
+        }
+        previous = position;
+      }
+    }
+    if (assigned.length != itemCount) {
+      throw StateError(
+        'Presentation does not cover every original timeline item',
+      );
+    }
   }
 
   /// canonical 顺序（ordinal 升序）；用于证明分页前插没有错序。
@@ -161,6 +220,35 @@ final class TimelineObservation {
     'hasNewOutput': hasNewOutput,
     'preparingLive': preparingLive,
   };
+}
+
+/// 当前 lease 的只读 GUI 组，不承载正文副本。
+final class TimelinePresentationObservation {
+  TimelinePresentationObservation({
+    required this.id,
+    required this.kind,
+    required this.ordinal,
+    required this.memberIds,
+    required this.expanded,
+  });
+  factory TimelinePresentationObservation.parse(Map<String, dynamic> map) {
+    final ids = map['memberIds'];
+    if (ids is! List || ids.any((value) => value is! String)) {
+      throw StateError('Invalid presentation member identities: $map');
+    }
+    return TimelinePresentationObservation(
+      id: _string(map, 'id', 'presentation'),
+      kind: _string(map, 'kind', 'presentation'),
+      ordinal: _int(map, 'ordinal', 'presentation'),
+      memberIds: List<String>.unmodifiable(ids.cast<String>()),
+      expanded: _bool(map, 'expanded', 'presentation'),
+    );
+  }
+  final String id;
+  final String kind;
+  final int ordinal;
+  final List<String> memberIds;
+  final bool expanded;
 }
 
 /// 一条 canonical item 的轻量 typed 预览（有界，不是全文）。

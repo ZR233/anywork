@@ -28,6 +28,7 @@ part 'timeline_detail_viewer.dart';
 part 'timeline_image_blocks.dart';
 part 'timeline_markdown_blocks.dart';
 part 'timeline_message_blocks.dart';
+part 'timeline_group_blocks.dart';
 part 'timeline_plan_blocks.dart';
 part 'timeline_preview_host.dart';
 part 'timeline_remote_image_blocks.dart';
@@ -169,6 +170,7 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
     // 附件/图片缓存按 stock controller 的真实 operation 做小增量：中间条目变化也会释放，
     // 但不会每帧/resize 做全表扫描（design/26 §26.5 的内存边界）。
     _operations = widget.lease.controller.operationsStream.listen(_onOperation);
+    widget.lease.addItemListener(_onItemChange);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _syncShortContent();
@@ -179,11 +181,20 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
 
   @override
   void dispose() {
+    widget.lease.removeItemListener(_onItemChange);
     unawaited(_operations?.cancel());
     _operations = null;
     _imageLoader.clear();
     unawaited(widget.lease.unbind());
     super.dispose();
+  }
+
+  void _onItemChange(String id, TimelineMessagePayload? payload) {
+    if (payload == null) {
+      _imageLoader.dropItem(widget.threadId, id);
+    } else {
+      _imageLoader.retainItem(widget.threadId, payload);
+    }
   }
 
   /// 一条 stock operation 的增量：只更新受影响的 Message，不保留正文副本。
@@ -552,7 +563,7 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
               index, {
               required bool isSentByMe,
               MessageGroupStatus? groupStatus,
-            }) => _TimelineMessageBlock(
+            }) => _TimelinePresentationBlock(
               key: ValueKey<String>('timeline-message-${message.id}'),
               message: message,
               lease: lease,

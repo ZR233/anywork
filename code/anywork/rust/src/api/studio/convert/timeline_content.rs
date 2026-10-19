@@ -7,8 +7,8 @@
 use pl_protocol::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
     TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange, TimelineFieldUpdate, TimelineItem,
-    TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority, TimelineResyncReason,
-    TimelineTailBaseline, TimelineTailUpdate,
+    TimelineItemSource, TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority,
+    TimelineRecoveryNotice, TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
 };
 
 use crate::api::studio::convert::thread_stream::bridge_chat_thread_item;
@@ -16,8 +16,9 @@ use crate::api::studio::types::{
     BridgeContentField, BridgeError, BridgeThreadUserInputFieldPart, BridgeTimelineBaseline,
     BridgeTimelineChange, BridgeTimelineDetailChunk, BridgeTimelineDetailQuery,
     BridgeTimelineDetailRef, BridgeTimelineFieldChange, BridgeTimelineFieldUpdate,
-    BridgeTimelineItem, BridgeTimelineLifecycle, BridgeTimelinePage, BridgeTimelinePriority,
-    BridgeTimelineResyncReason, BridgeTimelineUpdate,
+    BridgeTimelineItem, BridgeTimelineItemSource, BridgeTimelineLifecycle, BridgeTimelinePage,
+    BridgeTimelinePriority, BridgeTimelineRecoveryNotice, BridgeTimelineResyncReason,
+    BridgeTimelineUpdate,
 };
 
 pub(crate) fn page(value: TimelinePage) -> Result<BridgeTimelinePage, BridgeError> {
@@ -103,6 +104,18 @@ pub(crate) fn detail_chunk(
 fn item(value: TimelineItem) -> Result<BridgeTimelineItem, BridgeError> {
     Ok(BridgeTimelineItem {
         item: bridge_chat_thread_item(value.preview)?,
+        source: match value.source {
+            TimelineItemSource::Content => BridgeTimelineItemSource::Content,
+            TimelineItemSource::ModelRecovery { attempt_id, notice } => {
+                BridgeTimelineItemSource::ModelRecovery {
+                    attempt_id,
+                    notice: match notice {
+                        TimelineRecoveryNotice::Retry => BridgeTimelineRecoveryNotice::Retry,
+                        TimelineRecoveryNotice::Result => BridgeTimelineRecoveryNotice::Result,
+                    },
+                }
+            }
+        },
         saved: value.saved,
         lifecycle: lifecycle_dto(value.lifecycle),
         omitted_bytes: value.omitted_bytes,

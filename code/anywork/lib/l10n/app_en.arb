@@ -488,7 +488,8 @@
   "timelineReasoningFallback": "Thinking",
   "timelineReasoningActive": "Thinking",
   "timelineReasoningCompleted": "Thought",
-  "timelineReasoningEmpty": "No reasoning text was provided.",
+  "timelineReasoningSummary": "Summary",
+  "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
   "timelineToolFallback": "Tool",
   "timelineToolGroupTitle": "Tool activity",
@@ -667,7 +668,6 @@
   "interactionLastQuestion": "Last question",
   "interactionContinueAfterAnswer": "Continue after answering",
   "timelineRolledBack": "Rolled back from active context",
-  "timelinePendingSave": "Waiting to save",
   "interactionSubmitEmptyAnswersHint": "Unanswered questions are submitted as empty arrays.",
   "interactionAnsweredPendingHint": "{answeredCount} answered · {pendingCount} pending",
   "@interactionAnsweredPendingHint": {

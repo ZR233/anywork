@@ -24,7 +24,9 @@ final class TimelineDisplayFacts {
     required this.hasNewOutput,
     required this.preparingLive,
     List<TimelineItemFacts> items = const [],
-  }) : items = List.unmodifiable(items);
+    List<TimelinePresentationFacts> presentationItems = const [],
+  }) : items = List.unmodifiable(items),
+       presentationItems = List.unmodifiable(presentationItems);
 
   final String threadId;
   final int generation;
@@ -39,6 +41,27 @@ final class TimelineDisplayFacts {
   final bool hasNewOutput;
   final bool preparingLive;
   final List<TimelineItemFacts> items;
+  final List<TimelinePresentationFacts> presentationItems;
+}
+
+/// GUI groups have their own identity; members still denote individual canonical records.
+final class TimelinePresentationFacts {
+  TimelinePresentationFacts({
+    required this.id,
+    required this.kind,
+    required this.ordinal,
+    required List<String> memberIds,
+    required this.expanded,
+    required this.activeCount,
+    required this.issueCount,
+  }) : memberIds = List.unmodifiable(memberIds);
+  final String id;
+  final String kind;
+  final int ordinal;
+  final List<String> memberIds;
+  final bool expanded;
+  final int activeCount;
+  final int issueCount;
 }
 
 /// 一条 canonical item 的轻量 typed 预览诊断。
@@ -743,6 +766,19 @@ abstract final class StudioDriverState {
       'appliedVersion': timeline.appliedVersion,
       'itemCount': timeline.items.length,
       'itemIds': [for (final item in timeline.items) item.id],
+      'presentationItemCount': timeline.presentationItems.length,
+      'presentationItems': [
+        for (final item in timeline.presentationItems)
+          {
+            'id': item.id,
+            'kind': item.kind,
+            'ordinal': item.ordinal,
+            'memberIds': item.memberIds,
+            'expanded': item.expanded,
+            'activeCount': item.activeCount,
+            'issueCount': item.issueCount,
+          },
+      ],
       'olderCursor': timeline.olderCursor,
       'hasOlder': timeline.hasOlder,
       'loadingOlder': timeline.loadingOlder,

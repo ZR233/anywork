@@ -1626,6 +1626,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTimelineItem dco_decode_bridge_timeline_item(dynamic raw);
 
   @protected
+  BridgeTimelineItemSource dco_decode_bridge_timeline_item_source(dynamic raw);
+
+  @protected
   BridgeTimelineLifecycle dco_decode_bridge_timeline_lifecycle(dynamic raw);
 
   @protected
@@ -1633,6 +1636,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTimelinePriority dco_decode_bridge_timeline_priority(dynamic raw);
+
+  @protected
+  BridgeTimelineRecoveryNotice dco_decode_bridge_timeline_recovery_notice(
+    dynamic raw,
+  );
 
   @protected
   BridgeTimelineResyncReason dco_decode_bridge_timeline_resync_reason(
@@ -4276,6 +4284,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineItemSource sse_decode_bridge_timeline_item_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTimelineLifecycle sse_decode_bridge_timeline_lifecycle(
     SseDeserializer deserializer,
   );
@@ -4287,6 +4300,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTimelinePriority sse_decode_bridge_timeline_priority(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineRecoveryNotice sse_decode_bridge_timeline_recovery_notice(
     SseDeserializer deserializer,
   );
 
@@ -7455,6 +7473,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_timeline_item_source(
+    BridgeTimelineItemSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_timeline_lifecycle(
     BridgeTimelineLifecycle self,
     SseSerializer serializer,
@@ -7469,6 +7493,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_timeline_priority(
     BridgeTimelinePriority self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_recovery_notice(
+    BridgeTimelineRecoveryNotice self,
     SseSerializer serializer,
   );
 
