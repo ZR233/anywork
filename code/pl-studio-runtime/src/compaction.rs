@@ -110,6 +110,17 @@ impl ContextPreparationHook for StudioCompaction {
             .cloned()
             .collect::<Vec<_>>()
             .into();
+        // Capacity estimation encodes this preview before core excludes the same tools from the
+        // final plan, so the solo identities must leave the frozen declaration set together with
+        // the declarations they refer to; a dangling identity is an invalid request, not a hint.
+        request.model.solo_tool_ids = request
+            .model
+            .solo_tool_ids
+            .iter()
+            .filter(|tool_id| !excluded_tool_ids.contains(tool_id))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,

@@ -245,6 +245,13 @@ OpenAI Responses 的 `reasoning.summary` 仍按 Codex wire 语义发送（Auto �
 parameter wire。模型返回的 `reasoning_content` 进入 canonical reasoning event；历史回放时仍通过
 assistant message 的 `reasoning_content` 字段写回 Chat Completions。
 
+Responses 的可见思考概要需要显式请求，与 `reasoning.effort` 和服务端报告的 reasoning token
+计数是不同事实。路由选择非 `none` 的思考强度时同时请求 `summary: auto`，HTTP 与 WebSocket
+保持同一语义；显式 `none` 不因此自动启用思考。概要和原始思考正文分别进入自己的 canonical
+part 域，按 provider item 与逻辑下标保留；概要-only 响应的空 `content` 不得清除已有概要，
+流式观察、完成回执与历史展示保持一致。服务端未提供原始思考正文时保持缺失，不能从 token
+计数、加密内容或最终回答推导正文，也不将概要冒充完整内部推理。
+
 model 从核心冻结请求转换的完成请求始终带完整 canonical input，且不携带 model、stream、store、
 previous response、trace 或 transport session。runtime 固定使用流式请求；Responses 固定
 `store: false`。prompt cache 和 trace 属于单次 invocation context，continuation 只由模型会话
