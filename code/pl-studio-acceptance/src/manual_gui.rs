@@ -113,6 +113,7 @@ struct StressSessionsReport {
     original_loaded_items: usize,
     original_mode: String,
     original_has_older: bool,
+    rapid_switch_ok: bool,
     session_count: usize,
     directory_count: usize,
     sessions: Vec<StressSessionReport>,
@@ -1279,7 +1280,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 }
             }
             let mut driver = OwnedProcess::start(&mut command, false)?;
-            let deadline = Instant::now() + Duration::from_secs(600);
+            // Full tool, image recycling and compact-tail journeys include many native
+            // frames. Software-rendered Linux hosts need a bounded budget for the
+            // entire journey in addition to each command's own deadline.
+            let deadline = Instant::now() + Duration::from_secs(1800);
             let status = loop {
                 if let Some(status) = driver.child.try_wait()? {
                     driver.stopped = true;
@@ -1471,6 +1475,16 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if stress_sessions_report.exists() {
         fs::copy(&stress_sessions_report, output.join("stress-sessions.json"))?;
     }
+    for name in [
+        "session-switch-other.png",
+        "session-switch-third.png",
+        "session-switch-return.png",
+    ] {
+        let screenshot = working.path().join(name);
+        if screenshot.exists() {
+            fs::copy(screenshot, output.join(name))?;
+        }
+    }
     let stress_screenshot = stress_stage.with_extension("png");
     if stress_screenshot.exists() {
         fs::copy(stress_screenshot, output.join("stress-start.png"))?;
@@ -1649,10 +1663,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             sessions.original_reopened
+                && sessions.rapid_switch_ok
                 && !sessions.original_thread_id.is_empty()
                 && sessions.original_mode == "live"
-                // 最新小页契约：至少提示与回答，且不超过 tail 基线 32 条。
-                && (2..=32).contains(&sessions.original_loaded_items)
+                && sessions.original_loaded_items >= 2
                 && sessions.session_count == pl_provider_fixture::GUI_STRESS_SESSION_COUNT
                 && sessions.sessions.len() == sessions.session_count
                 && sessions.directory_count > sessions.session_count,
@@ -1662,7 +1676,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         for (index, session) in sessions.sessions.iter().enumerate() {
             ensure!(
                 session.ordinal == index + 1
-                    && (2..=32).contains(&session.loaded_items)
+                    && session.loaded_items >= 2
                     && session.saved_items >= 1
                     && session.typed_detail_refs >= 1
                     && ids.insert(session.thread_id.clone()),
@@ -1982,7 +1996,12 @@ fn run_timeline_history_scenario(
             let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
             let stage = working.join(format!("timeline-history-{phase}-stage"));
             let driver_log = working.join(format!("timeline-history-{phase}-driver.log"));
-            let mut gui = start_timeline_history_gui(workspace, home, &gui_log)?;
+            let mut gui = start_timeline_history_gui(
+                workspace,
+                home,
+                &gui_log,
+                &output.join(format!("timeline-history-{phase}-native-exit.json")),
+            )?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
             let mut driver = start_timeline_history_driver(
                 app_dir,
@@ -2014,6 +2033,7 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join(format!("timeline-history-{phase}.json")))
                     .with_context(|| format!("timeline-history {phase} wrote no report"))?,
             )?;
+            require_timeline_native_exit(output, phase, report["pid"].as_u64())?;
             ensure!(
                 report.get("pass") == Some(&serde_json::Value::Bool(true)),
                 "timeline-history {phase} did not pass: {}",
@@ -2031,12 +2051,11 @@ fn run_timeline_history_scenario(
                 .with_context(|| format!("timeline-history {phase} report has no latest page"))?;
             ensure!(
                 report.get("latestPageOk") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("atMostTailBaseline")
-                        == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("atLiveEdge") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("hasOlder") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} latest page did not match the small-latest contract: \
+                "timeline-history {phase} latest display did not fill its viewport: \
                  {latest_page:?}"
             );
             let cold_start = report
@@ -2050,10 +2069,10 @@ fn run_timeline_history_scenario(
                     && cold_start
                         .get("loadedItems")
                         .and_then(serde_json::Value::as_u64)
-                        .is_some_and(|items| (1..=32).contains(&items))
-                    && cold_start.get("atMostTailBaseline") == Some(&serde_json::Value::Bool(true))
+                        .is_some_and(|items| items > 0)
+                    && cold_start.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
                     && cold_start.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} cold start did not begin from the latest small page: \
+                "timeline-history {phase} cold start did not fill the latest viewport: \
                  {cold_start:?}"
             );
             let paging = report
@@ -2098,6 +2117,13 @@ fn run_timeline_history_scenario(
                 })
             );
             if phase == "live" {
+                ensure!(
+                    report
+                        .get("streamingHistory")
+                        .and_then(|value| value.get("pass"))
+                        == Some(&serde_json::Value::Bool(true)),
+                    "timeline-history did not prove streaming freeze and native page retry"
+                );
                 // 首轮真实 snapshot 是冷启动目标身份的**唯一**来源；baseline 与报告必须
                 // 指向同一身份，否则后续冷启动可能打开别的东西却仍然“通过”。
                 let identity = report
@@ -2214,7 +2240,12 @@ fn run_timeline_history_scenario(
             let gui_log = working.join("timeline-history-displacement-gui.log");
             let driver_log = working.join("timeline-history-displacement-driver.log");
             let stage = working.join("timeline-history-displacement-stage");
-            let mut gui = start_timeline_history_gui(workspace, home, &gui_log)?;
+            let mut gui = start_timeline_history_gui(
+                workspace,
+                home,
+                &gui_log,
+                &output.join("timeline-history-displacement-native-exit.json"),
+            )?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
             let target = persisted_identity.as_ref().context(
                 "native displacement requires the live timeline-history persisted identity",
@@ -2234,16 +2265,27 @@ fn run_timeline_history_scenario(
                 .stderr(Stdio::from(File::create(stage.with_extension("err"))?));
             let mut driver = OwnedProcess::start(&mut command, false)?;
             let deadline = Instant::now() + Duration::from_secs(3_600);
-            loop {
+            let driver_exit = loop {
                 if let Some(status) = driver.child.try_wait()? {
                     driver.stopped = true;
                     ensure!(
                         status.success(),
                         "native displacement collector failed: {status}"
                     );
-                    break;
+                    break status;
                 }
-                ensure!(!gui.exited()?, "GUI exited during displacement collection");
+                if gui.exited()? {
+                    // After the completed cleanup ACK the Driver requests the
+                    // native exit. OS exit can precede the Driver socket closing;
+                    // both real exit statuses are still required below.
+                    let final_report: serde_json::Value =
+                        serde_json::from_slice(&fs::read(output.join("observations.json"))?)?;
+                    ensure!(
+                        final_report.get("shutdown")
+                            == Some(&serde_json::Value::String("completed".into())),
+                        "GUI exited before displacement cleanup completed"
+                    );
+                }
                 ensure!(
                     !fixture.exited()?,
                     "provider fixture exited during displacement collection"
@@ -2257,7 +2299,7 @@ fn run_timeline_history_scenario(
                     "displacement collection timed out"
                 );
                 thread::sleep(Duration::from_millis(100));
-            }
+            };
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
             ensure!(
                 gui_exit.success(),
@@ -2267,6 +2309,7 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join("observations.json"))
                     .context("displacement collector wrote no observations")?,
             )?;
+            require_timeline_native_exit(output, "displacement", observations["pid"].as_u64())?;
             ensure!(
                 observations.get("checksPassed") == Some(&serde_json::Value::Bool(true)),
                 "displacement matrix recorded failures: {}",
@@ -2366,7 +2409,7 @@ fn run_timeline_history_scenario(
                 output.join("observations.json"),
                 output.join("timeline-displacement.json"),
             )?;
-            phases.push(("displacement", None, Some(gui_exit)));
+            phases.push(("displacement", Some(driver_exit), Some(gui_exit)));
         }
         Ok(())
     })();
@@ -2465,17 +2508,49 @@ fn start_timeline_history_gui(
     workspace: &Path,
     home: &Path,
     log_path: &Path,
+    native_exit: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
         // Profile（不是 debug）与其它长历史场景一致；仍不是 AOT/release 性能证据。
-        .args(["xtask", "run-gui", "--driver", "--profile"])
+        .args([
+            "xtask",
+            "run-gui",
+            "--driver",
+            "--profile",
+            "--native-launch",
+            "--native-exit-report",
+        ])
+        .arg(native_exit)
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     OwnedProcess::start(&mut command, false)
+}
+
+fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) -> Result<()> {
+    let path = output.join(format!("timeline-history-{phase}-native-exit.json"));
+    let report: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path)
+            .with_context(|| format!("missing native exit report {}", path.display()))?,
+    )?;
+    ensure!(
+        report["schema"] == "anywork-native-exit/1"
+            && pid.is_some_and(|pid| pid > 0 && report["pid"].as_u64() == Some(pid))
+            && report["exitCode"].as_i64() == Some(0)
+            && report["signal"].is_null()
+            && report["cancelled"].as_bool() == Some(false)
+            && report["descendantsAtRootExit"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+            && report["reclaimedDescendants"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        "timeline-history {phase} native host did not exit cleanly: {report}"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

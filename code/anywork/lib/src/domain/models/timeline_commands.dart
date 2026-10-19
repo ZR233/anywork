@@ -24,16 +24,6 @@ sealed class TimelineCommand {
   const TimelineCommand();
 }
 
-/// 向前加载一页更早消息；自动触底与“加载更早”入口共用同一个在途 future。
-final class TimelineLoadOlder extends TimelineCommand {
-  const TimelineLoadOlder();
-}
-
-/// 显式重试上一次失败的分页。
-final class TimelineRetryOlder extends TimelineCommand {
-  const TimelineRetryOlder();
-}
-
 /// 真实用户滚动离开底端：冻结当前已展示内容与结构。
 final class TimelineEnterHistory extends TimelineCommand {
   const TimelineEnterHistory();

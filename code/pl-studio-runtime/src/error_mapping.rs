@@ -207,7 +207,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
         .with_details(serde_json::json!({ "reason": reason })),
         Chat::ReadInvalidated => StudioError::new(
             StudioErrorCode::Busy,
-            "The timeline changed while the page was being read; retry the read",
+            "The timeline range is not fully readable yet; retry the read",
             true,
         ),
         Chat::Conflict(identity) => StudioError::new(

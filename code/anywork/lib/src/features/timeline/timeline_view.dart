@@ -71,7 +71,7 @@ class TimelineView extends StatelessWidget {
   /// 当前展示代次借出的 controller 与滚动控制器。
   final TimelineDisplayLease lease;
 
-  /// 自动触底与显式「加载更早」共用的同一个在途动作。
+  /// 视口补齐与自动触底共用的同一个在途动作。
   final Future<void> Function() onLoadOlder;
   final Future<void> Function() onRetryOlder;
   final Future<void> Function() onReturnLive;
@@ -152,14 +152,15 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
   /// 也不改变滚动位置（design/26 §26.3）。
   bool _pointerScrollIntent = false;
 
-  /// 键盘/滚条触发的**一次性**用户意图。
+  /// 键盘/滚条触发的当前滚动活动的用户意图。
   ///
   /// Flutter 的 `ScrollAction`（PageUp/PageDown/方向键等）与 `RawScrollbar` 的轨道点击都
   /// 直接 `position.moveTo(...)`，既不带 `dragDetails` 也不发 `UserScrollNotification`；
   /// 只靠这两个信号会把真实阅读意图误判成程序滚动。这里由官方扩展点登记意图，滚动本身
   /// 仍由 Flutter 完成（应用不写 pixels）。
   bool _actionScrollIntent = false;
-  bool _shortContent = false;
+  bool _viewportCheckScheduled = false;
+  bool _viewportPagePending = false;
 
   StreamSubscription<ChatOperation>? _operations;
 
@@ -173,10 +174,17 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
     widget.lease.addItemListener(_onItemChange);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _syncShortContent();
+      _checkViewportFill();
       // 基线可能在监听建立前就已交付：首帧按当前集合建一次引用账目。
       _imageLoader.reset(widget.threadId, widget.lease.controller.messages);
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineGeneration oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 页可以只补充折叠组成员而不改变高度，仍须按推进后的游标检查需求。
+    _scheduleViewportFill();
   }
 
   @override
@@ -215,16 +223,55 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
         final message = operation.message ?? operation.oldMessage;
         if (message != null) _imageLoader.dropMessage(threadId, message);
     }
+    _scheduleViewportFill();
   }
 
-  void _syncShortContent() {
-    final position = widget.lease.scrollController.hasClients
-        ? widget.lease.scrollController.position
-        : null;
-    final short = position == null || position.maxScrollExtent <= 0;
-    if (short == _shortContent) return;
-    setState(() => _shortContent = short);
+  /// 仅由真实尺寸、消息或分页状态变化驱动；一帧合并一次，不轮询或调整 pixels。
+  void _scheduleViewportFill() {
+    if (!mounted || _viewportCheckScheduled) return;
+    _viewportCheckScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _viewportCheckScheduled = false;
+      if (mounted) _checkViewportFill();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
+
+  void _checkViewportFill() {
+    final lease = widget.lease;
+    if (!_canLoadOlder ||
+        _viewportPagePending ||
+        !lease.scrollController.hasClients) {
+      return;
+    }
+    final position = lease.scrollController.position;
+    if (!position.hasContentDimensions ||
+        position.viewportDimension <= 0 ||
+        position.maxScrollExtent - position.minScrollExtent > 0.5) {
+      return;
+    }
+    _viewportPagePending = true;
+    unawaited(_fillViewportPage());
+  }
+
+  Future<void> _fillViewportPage() async {
+    try {
+      await widget.onLoadOlder();
+    } finally {
+      // Completion may be coalesced with opening/ready into one rendered frame.
+      // Do not remember a cursor as consumed when the request was cancelled.
+      // The next real layout/state event rechecks demand; this does not poll.
+      _viewportPagePending = false;
+    }
+  }
+
+  bool get _canLoadOlder =>
+      !widget.lease.isRetired &&
+      widget.view.hasOlder &&
+      !widget.view.isLoadingOlder &&
+      widget.view.olderError == null &&
+      !widget.view.isPreparingLive &&
+      widget.view.connection == TimelineConnectionPhase.ready;
 
   // ---- 被动观察：真实用户意图才进入 History ------------------------------
 
@@ -243,13 +290,13 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
   }
 
   bool _handleScrollUpdate(ScrollUpdateNotification notification) {
-    if (notification.depth != 0) return false;
+    if (notification.depth != 0 || widget.lease.isRetired) return false;
     final userIntent =
         notification.dragDetails != null ||
         _pointerScrollIntent ||
         _actionScrollIntent;
-    // 一次性键盘/轨道意图：消费一次即可，避免动画期间的后续帧被误当成持续手势。
-    _actionScrollIntent = false;
+    // ScrollAction/轨道点击的原生动画可能在后续帧才进入预取范围。
+    // 意图保留到本次 ScrollEnd；无位移动作与独立几何变化仍会撤回意图。
     if (!userIntent) {
       // 惰性几何、改窗或内容扩展引起的像素修正没有读者意图，不是阅读意图。
       return false;
@@ -258,6 +305,17 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
         widget.lease.scrollController.hasClients &&
         widget.lease.scrollController.position.pixels > 0.5) {
       widget.onEnterHistory();
+    }
+    // ScrollAction/轨道点击没有库所依赖的 UserScrollNotification。只被动读取真实
+    // 用户向更早端的位移，在剩余一屏时复用同一分页动作；不截获输入或写 pixels。
+    final controller = widget.lease.scrollController;
+    if (_canLoadOlder &&
+        (notification.scrollDelta ?? 0) > 0 &&
+        controller.hasClients) {
+      final position = controller.position;
+      if (position.extentAfter <= position.viewportDimension) {
+        unawaited(widget.onLoadOlder());
+      }
     }
     return false;
   }
@@ -281,18 +339,13 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
             !controller.position.isScrollingNotifier.value)) {
       _actionScrollIntent = false;
     }
-    _syncShortContent();
+    _scheduleViewportFill();
     return false;
   }
 
   @override
   Widget build(BuildContext context) {
-    final messages = widget.lease.controller.messages;
     final plan = widget.planConfirmation;
-    final showTail = plan != null;
-    if (messages.isEmpty && !showTail && !widget.view.hasOlder) {
-      return const _EmptyTimeline();
-    }
     return _ThreadImageCacheScope(
       loader: _imageLoader,
       child: Stack(
@@ -389,9 +442,12 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
                     ? null
                     // 失败由 owner 的状态流呈现（connection failed/error 可见），
                     // 这里不留下未处理异常。
-                    : () => unawaited(
-                        widget.onReturnLive().catchError((Object _) {}),
-                      ),
+                    : () {
+                        if (widget.lease.isRetired) return;
+                        unawaited(
+                          widget.onReturnLive().catchError((Object _) {}),
+                        );
+                      },
               ),
             ),
         ],
@@ -446,7 +502,11 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
                 const SizedBox(width: 6),
                 TextButton(
                   key: StudioDriverKeys.timelineRetryConnection,
-                  onPressed: () => unawaited(widget.onRetryConnection()),
+                  onPressed: () {
+                    if (!widget.lease.isRetired) {
+                      unawaited(widget.onRetryConnection());
+                    }
+                  },
                   child: Text(context.l10n.sidebarRetry),
                 ),
               ],
@@ -457,13 +517,9 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
     );
   }
 
-  /// 短内容（不足一屏）或分页失败时给出显式入口；滚动中的 loading 由库自己的触底驱动。
-  bool get _showOlderAffordance {
-    if (widget.view.olderError != null) return true;
-    if (widget.view.isLoadingOlder) return false;
-    if (!widget.view.hasOlder) return false;
-    return _shortContent;
-  }
+  /// 加载反馈作为 overlay，不参与视口足屏判断；失败保留内容并可重试。
+  bool get _showOlderAffordance =>
+      widget.view.olderError != null || widget.view.isLoadingOlder;
 
   Widget _buildOlderAffordance(BuildContext context) {
     final error = widget.view.olderError;
@@ -472,25 +528,28 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
         message: error.toString(),
         child: TextButton.icon(
           key: StudioDriverKeys.timelineRetryOlder,
-          onPressed: () => unawaited(widget.onRetryOlder()),
+          onPressed:
+              widget.view.connection == TimelineConnectionPhase.ready &&
+                  !widget.view.isPreparingLive
+              ? () {
+                  if (!widget.lease.isRetired) {
+                    unawaited(widget.onRetryOlder());
+                  }
+                }
+              : null,
           icon: const Icon(Icons.refresh),
           label: Text(context.l10n.timelineItemBodyRetry),
         ),
       );
     }
-    // 短内容不足一屏时的显式「加载更早」入口：与触底分页共用同一个在途动作。
-    final label = context.l10n.timelineLoadEarlier;
-    return Tooltip(
-      message: label,
-      child: Material(
-        color: context.colors.surfaceContainer,
-        shape: const StadiumBorder(),
-        clipBehavior: Clip.antiAlias,
-        child: TextButton.icon(
-          key: StudioDriverKeys.timelineLoadOlder,
-          onPressed: () => unawaited(widget.onLoadOlder()),
-          icon: const Icon(Icons.history, size: 18),
-          label: Text(label),
+    return Semantics(
+      label: context.l10n.workspaceLoading,
+      child: const Padding(
+        padding: EdgeInsets.all(8),
+        child: SizedBox.square(
+          key: StudioDriverKeys.timelineLoadingOlder,
+          dimension: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
     );
@@ -523,6 +582,8 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
               // 发送后由库的自然 offset 0 跟随，不启用额外强制滚动分支。
               shouldScrollToEndWhenSendingMessage: false,
               onEndReached: widget.onLoadOlder,
+              // 真实边界用库回调；按一屏距离的预取由上面的被动用户通知驱动。
+              paginationThreshold: 0,
               // 反向列表的视觉底端：计划摘要位于最新消息之后、输入区之前。
               bottomSliver: plan == null
                   ? null
@@ -572,9 +633,11 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
         composerBuilder: (context) => const SizedBox.shrink(),
         scrollToBottomBuilder: (context, animation, onPressed) =>
             const SizedBox.shrink(),
-        // 分页 loading/失败由本视图自己的显式入口表达，不用库的默认 spinner。
+        // 分页反馈由同一 owner 的状态表达，overlay 不改变滚动内容高度。
         loadMoreBuilder: (context) => const SizedBox.shrink(),
-        emptyChatListBuilder: (context) => const SizedBox.shrink(),
+        emptyChatListBuilder: (context) => !widget.view.hasOlder && plan == null
+            ? const _EmptyTimeline()
+            : const SizedBox.shrink(),
       ),
     );
   }

@@ -242,8 +242,9 @@ Future<void> main(List<String> args) async {
             streamCompleted &&
             timeline.itemCount > 0 &&
             kinds.contains('agentMessage') &&
-            kinds.contains('reasoning') &&
-            kinds.contains('toolCall')) {
+            // gui_stress_script emits messages and reasoning; tool execution is
+            // covered by tool-scroll. Requiring a nonexistent tool never settles.
+            kinds.contains('reasoning')) {
           await finished.writeAsString(
             '${DateTime.now().millisecondsSinceEpoch}\n',
           );

@@ -40,7 +40,6 @@ class TimelineSessionConnector extends ConsumerWidget {
         error: matched?.connectionError,
         onRetry: () {
           ref.read(anyworkClientProvider).retrySession(threadId);
-          ref.invalidate(timelineDisplayStateProvider);
         },
       );
     }
@@ -48,8 +47,10 @@ class TimelineSessionConnector extends ConsumerWidget {
       threadId: threadId,
       view: matched,
       lease: lease,
-      onLoadOlder: () => owner.loadOlder(threadId),
-      onRetryOlder: () => owner.retryOlder(threadId),
+      onLoadOlder: () =>
+          owner.loadOlder(threadId, generation: lease.generation),
+      onRetryOlder: () =>
+          owner.retryOlder(threadId, generation: lease.generation),
       onReturnLive: () => owner.returnToLive(threadId),
       onEnterHistory: () =>
           unawaited(owner.dispatch(threadId, const TimelineEnterHistory())),

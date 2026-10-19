@@ -36,14 +36,7 @@ Future<void> main(List<String> args) async {
     final deadline = DateTime.now().add(const Duration(seconds: 20));
     while (DateTime.now().isBefore(deadline)) {
       final state = await snapshot();
-      final scroll = TimelineScrollObservation.optional(state);
-      final timeline = TimelineObservation.optional(state);
-      if (timeline != null &&
-          !timeline.preparingLive &&
-          scroll != null &&
-          scroll.laidOut &&
-          !scroll.isScrolling &&
-          scroll.generation == timeline.generation) {
+      if (timelineViewportSettled(state)) {
         return state;
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));

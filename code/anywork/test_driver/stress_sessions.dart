@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'driver_read_commands.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
+import 'page_switch.dart';
 
 Future<Map<String, dynamic>> waitForSnapshot(
   FlutterDriverSession driver,
@@ -88,6 +89,7 @@ bool settled(Map<String, dynamic> snapshot, String threadId) {
       persistence['pendingCommits'] == 0 &&
       timeline != null &&
       timeline.ready &&
+      timelineViewportSettled(snapshot) &&
       timeline.itemCount >= 2;
 }
 
@@ -269,8 +271,134 @@ Future<void> main(List<String> args) async {
       'reopen original',
     );
     final revisitedTimeline = loadedWindow(revisited);
+    final otherId = sessions.first['threadId']! as String;
+    final otherItems = (sessions.first['itemIds']! as List).cast<String>();
+    final originalTail = revisitedTimeline.itemIds
+        .skip(
+          revisitedTimeline.itemCount > 32
+              ? revisitedTimeline.itemCount - 32
+              : 0,
+        )
+        .toList();
+    var generation = revisitedTimeline.generation;
+    final switches = <Map<String, Object?>>[];
+    for (var round = 0; round < 3; round++) {
+      final target = sessions[round.isEven ? 0 : 1];
+      final targetId = target['threadId']! as String;
+      final targetItems = (target['itemIds']! as List).cast<String>();
+      final otherRow = find.byValueKey('thread-row-$targetId');
+      await driver.scrollUntilVisible(
+        find.byValueKey('sidebar-project-tree'),
+        otherRow,
+        dyScroll: -200,
+        timeout: const Duration(seconds: 30),
+      );
+      Map<String, dynamic>? overlap;
+      if (round == 0) {
+        overlap = await driver.sendCommand(
+          PageSwitch(
+            otherRow,
+            threadId: originalId,
+            generation: generation,
+            destinationThreadId: targetId,
+            timeout: const Duration(seconds: 60),
+          ),
+        );
+      } else {
+        await driver.tap(otherRow);
+      }
+      final other = await waitForSnapshot(
+        driver,
+        (state) => settled(state, targetId),
+        'rapid B $round',
+      );
+      final otherContent = loadedWindow(other);
+      if (otherContent.itemIds.join('\u0000') != targetItems.join('\u0000')) {
+        throw StateError('Session B contains stale or missing identities');
+      }
+      if (round == 0) {
+        await File('${report.parent.path}/session-switch-other.png')
+            .writeAsBytes(await driver.screenshot());
+      } else if (round == 1) {
+        await File('${report.parent.path}/session-switch-third.png')
+            .writeAsBytes(await driver.screenshot());
+      }
+      final originalRow = find.byValueKey('thread-row-$originalId');
+      await driver.scrollUntilVisible(
+        find.byValueKey('sidebar-project-tree'),
+        originalRow,
+        dyScroll: 200,
+        timeout: const Duration(seconds: 30),
+      );
+      await driver.tap(originalRow);
+      final returned = await waitForSnapshot(
+        driver,
+        (state) => settled(state, originalId),
+        'rapid A $round',
+      );
+      final content = loadedWindow(returned);
+      final pass =
+          content.generation > generation &&
+          content.isLive &&
+          content.olderError == null &&
+          originalTail.every(content.itemIds.contains) &&
+          !sessions.any(
+            (session) =>
+                (session['itemIds']! as List).any(content.itemIds.contains),
+          );
+      switches.add({
+        'round': round,
+        'generationBefore': generation,
+        'generationAfter': content.generation,
+        'threadId': content.threadId,
+        'destinationThreadId': targetId,
+        'overlap': overlap,
+        'pass': pass,
+      });
+      if (!pass) {
+        throw StateError(
+          'Rapid session switch leaked or lost content: ${switches.last}',
+        );
+      }
+      generation = content.generation;
+      if (round == 0) {
+        await File('${report.parent.path}/session-switch-return.png')
+            .writeAsBytes(await driver.screenshot());
+      }
+    }
+    final otherRow = find.byValueKey('thread-row-$otherId');
+    await driver.scrollUntilVisible(
+      find.byValueKey('sidebar-project-tree'),
+      otherRow,
+      dyScroll: -200,
+      timeout: const Duration(seconds: 30),
+    );
+    final openingOverlap = await driver.sendCommand(
+      PageSwitch(
+        otherRow,
+        threadId: originalId,
+        generation: generation,
+        destinationThreadId: otherId,
+        bounceBack: true,
+        timeout: const Duration(seconds: 60),
+      ),
+    );
+    final bounced = loadedWindow(
+      await waitForSnapshot(
+        driver,
+        (state) => settled(state, originalId),
+        'return while opening',
+      ),
+    );
+    if (bounced.generation <= generation ||
+        !bounced.isLive ||
+        bounced.olderError != null ||
+        !originalTail.every(bounced.itemIds.contains) ||
+        otherItems.any(bounced.itemIds.contains)) {
+      throw StateError('Opening overlap leaked or lost the original display');
+    }
     await report.writeAsString(
-      '${jsonEncode({'originalThreadId': originalId, 'originalReopened': true, 'originalLoadedItems': revisitedTimeline.itemCount, 'originalMode': revisitedTimeline.mode, 'originalHasOlder': revisitedTimeline.hasOlder, 'sessionCount': sessions.length, 'directoryCount': (revisited['sidebarDirectory'] as Map)['count'], 'sessions': sessions})}\n',
+      '${jsonEncode({'originalThreadId': originalId, 'originalReopened': true, 'originalLoadedItems': revisitedTimeline.itemCount, 'originalMode': revisitedTimeline.mode, 'originalHasOlder': revisitedTimeline.hasOlder, 'rapidSwitchOk': switches.every((entry) => entry['pass'] == true) && openingOverlap['pass'] == true, 'rapidSwitch': switches, 'openingOverlap': openingOverlap, 'sessionCount': sessions.length, 'directoryCount': (revisited['sidebarDirectory'] as Map)['count'], 'sessions': sessions})}\n',
     );
     await stage.writeAsString('complete');
   } finally {
