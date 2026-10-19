@@ -15,8 +15,39 @@ import 'thread_stream.dart';
 import 'updater.dart';
 part 'response.freezed.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ProviderUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AccountUsagesResponse`, `SkillsResponse`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+class AccountUsageDto {
+  final String accountId;
+  final BigInt revision;
+  final PlatformInt64 updatedAt;
+  final BridgeAccountUsageState state;
+
+  const AccountUsageDto({
+    required this.accountId,
+    required this.revision,
+    required this.updatedAt,
+    required this.state,
+  });
+
+  @override
+  int get hashCode =>
+      accountId.hashCode ^
+      revision.hashCode ^
+      updatedAt.hashCode ^
+      state.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountUsageDto &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          revision == other.revision &&
+          updatedAt == other.updatedAt &&
+          state == other.state;
+}
 
 class ArchiveThreadResult {
   final String archivedRootId;
@@ -41,6 +72,91 @@ class ArchiveThreadResult {
           archivedRootId == other.archivedRootId &&
           removedThreadIds == other.removedThreadIds &&
           nextRoot == other.nextRoot;
+}
+
+@freezed
+sealed class BridgeAccountUsageData with _$BridgeAccountUsageData {
+  const BridgeAccountUsageData._();
+
+  const factory BridgeAccountUsageData.deepSeekBalance(
+    DeepSeekBalanceDto field0,
+  ) = BridgeAccountUsageData_DeepSeekBalance;
+  const factory BridgeAccountUsageData.zhipuCodingPlan(
+    ZhipuCodingPlanUsageDto field0,
+  ) = BridgeAccountUsageData_ZhipuCodingPlan;
+}
+
+@freezed
+sealed class BridgeAccountUsageState with _$BridgeAccountUsageState {
+  const BridgeAccountUsageState._();
+
+  const factory BridgeAccountUsageState.unsupported() =
+      BridgeAccountUsageState_Unsupported;
+  const factory BridgeAccountUsageState.missingCredential({
+    required String message,
+  }) = BridgeAccountUsageState_MissingCredential;
+  const factory BridgeAccountUsageState.ready({
+    required BridgeAccountUsageData data,
+  }) = BridgeAccountUsageState_Ready;
+  const factory BridgeAccountUsageState.failed({
+    required BridgeStateError error,
+  }) = BridgeAccountUsageState_Failed;
+}
+
+class BridgeAccountUsageStateData {
+  final String configFingerprint;
+  final List<AccountUsageDto> usages;
+
+  const BridgeAccountUsageStateData({
+    required this.configFingerprint,
+    required this.usages,
+  });
+
+  @override
+  int get hashCode => configFingerprint.hashCode ^ usages.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAccountUsageStateData &&
+          runtimeType == other.runtimeType &&
+          configFingerprint == other.configFingerprint &&
+          usages == other.usages;
+}
+
+@freezed
+sealed class BridgeAccountUsageStateSnapshot
+    with _$BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot._();
+
+  const factory BridgeAccountUsageStateSnapshot.uninitialized(
+    BridgeUninitializedResource field0,
+  ) = BridgeAccountUsageStateSnapshot_Uninitialized;
+  const factory BridgeAccountUsageStateSnapshot.loading(
+    BridgeLoadingResource field0,
+  ) = BridgeAccountUsageStateSnapshot_Loading;
+  const factory BridgeAccountUsageStateSnapshot.ready({
+    required BridgeReadyResource resource,
+    required BridgeAccountUsageStateData value,
+  }) = BridgeAccountUsageStateSnapshot_Ready;
+  const factory BridgeAccountUsageStateSnapshot.refreshing({
+    required BridgeRefreshingResource resource,
+    required BridgeAccountUsageStateData value,
+  }) = BridgeAccountUsageStateSnapshot_Refreshing;
+  const factory BridgeAccountUsageStateSnapshot.stale({
+    required BridgeStaleResource resource,
+    required BridgeAccountUsageStateData value,
+  }) = BridgeAccountUsageStateSnapshot_Stale;
+  const factory BridgeAccountUsageStateSnapshot.degraded({
+    required BridgeDegradedResource resource,
+    required BridgeAccountUsageStateData value,
+  }) = BridgeAccountUsageStateSnapshot_Degraded;
+  const factory BridgeAccountUsageStateSnapshot.failed(
+    BridgeFailedResource field0,
+  ) = BridgeAccountUsageStateSnapshot_Failed;
+  const factory BridgeAccountUsageStateSnapshot.stopped(
+    BridgeStoppedResource field0,
+  ) = BridgeAccountUsageStateSnapshot_Stopped;
 }
 
 class BridgeAgentDirectoryData {
@@ -352,17 +468,17 @@ sealed class BridgeMcpStateSnapshot with _$BridgeMcpStateSnapshot {
 class BridgeModelCatalogSnapshotDto {
   final BigInt revision;
   final PlatformInt64 updatedAt;
-  final List<BridgeModelCatalogProviderDto> providers;
+  final List<BridgeModelCatalogAccountDto> accounts;
 
   const BridgeModelCatalogSnapshotDto({
     required this.revision,
     required this.updatedAt,
-    required this.providers,
+    required this.accounts,
   });
 
   @override
   int get hashCode =>
-      revision.hashCode ^ updatedAt.hashCode ^ providers.hashCode;
+      revision.hashCode ^ updatedAt.hashCode ^ accounts.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -371,23 +487,23 @@ class BridgeModelCatalogSnapshotDto {
           runtimeType == other.runtimeType &&
           revision == other.revision &&
           updatedAt == other.updatedAt &&
-          providers == other.providers;
+          accounts == other.accounts;
 }
 
 class BridgeModelCatalogStateData {
-  final List<BridgeModelCatalogProviderDto> providers;
+  final List<BridgeModelCatalogAccountDto> accounts;
 
-  const BridgeModelCatalogStateData({required this.providers});
+  const BridgeModelCatalogStateData({required this.accounts});
 
   @override
-  int get hashCode => providers.hashCode;
+  int get hashCode => accounts.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeModelCatalogStateData &&
           runtimeType == other.runtimeType &&
-          providers == other.providers;
+          accounts == other.accounts;
 }
 
 @freezed
@@ -427,16 +543,69 @@ sealed class BridgeModelCatalogStateSnapshot
 
 enum BridgeModelMatchState { matched, mismatched, unreported, legacyUnknown }
 
+/// 顶层汇总组内的推理强度细分；指标口径与顶层一致。
+class BridgeModelPerformanceEffortSummary {
+  final String? effort;
+  final BigInt sampleCount;
+  final BigInt completionTokens;
+  final BigInt totalTtftMillis;
+  final BigInt totalDecodeMillis;
+  final BigInt totalResponseMillis;
+  final double tokensPerSecond;
+  final double averageTtftMillis;
+  final double averageResponseMillis;
+
+  const BridgeModelPerformanceEffortSummary({
+    this.effort,
+    required this.sampleCount,
+    required this.completionTokens,
+    required this.totalTtftMillis,
+    required this.totalDecodeMillis,
+    required this.totalResponseMillis,
+    required this.tokensPerSecond,
+    required this.averageTtftMillis,
+    required this.averageResponseMillis,
+  });
+
+  @override
+  int get hashCode =>
+      effort.hashCode ^
+      sampleCount.hashCode ^
+      completionTokens.hashCode ^
+      totalTtftMillis.hashCode ^
+      totalDecodeMillis.hashCode ^
+      totalResponseMillis.hashCode ^
+      tokensPerSecond.hashCode ^
+      averageTtftMillis.hashCode ^
+      averageResponseMillis.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelPerformanceEffortSummary &&
+          runtimeType == other.runtimeType &&
+          effort == other.effort &&
+          sampleCount == other.sampleCount &&
+          completionTokens == other.completionTokens &&
+          totalTtftMillis == other.totalTtftMillis &&
+          totalDecodeMillis == other.totalDecodeMillis &&
+          totalResponseMillis == other.totalResponseMillis &&
+          tokensPerSecond == other.tokensPerSecond &&
+          averageTtftMillis == other.averageTtftMillis &&
+          averageResponseMillis == other.averageResponseMillis;
+}
+
 class BridgeModelPerformanceSample {
   final PlatformInt64 completedAt;
-  final String providerInstanceId;
-  final String providerDisplayName;
-  final String model;
-  final String? configuredModel;
+  final String accountId;
+  final String accountDisplayName;
+
+  /// 冻结的目录配置模型；旧记录无法证明时保持 `None`。
+  final String? modelId;
   final String? sentModel;
   final String? reportedModel;
   final BridgeModelMatchState modelMatchState;
-  final String? reasoningEffort;
+  final String? effort;
   final BigInt completionTokens;
   final BigInt? ttftMillis;
   final BigInt? decodeMillis;
@@ -445,14 +614,13 @@ class BridgeModelPerformanceSample {
 
   const BridgeModelPerformanceSample({
     required this.completedAt,
-    required this.providerInstanceId,
-    required this.providerDisplayName,
-    required this.model,
-    this.configuredModel,
+    required this.accountId,
+    required this.accountDisplayName,
+    this.modelId,
     this.sentModel,
     this.reportedModel,
     required this.modelMatchState,
-    this.reasoningEffort,
+    this.effort,
     required this.completionTokens,
     this.ttftMillis,
     this.decodeMillis,
@@ -463,14 +631,13 @@ class BridgeModelPerformanceSample {
   @override
   int get hashCode =>
       completedAt.hashCode ^
-      providerInstanceId.hashCode ^
-      providerDisplayName.hashCode ^
-      model.hashCode ^
-      configuredModel.hashCode ^
+      accountId.hashCode ^
+      accountDisplayName.hashCode ^
+      modelId.hashCode ^
       sentModel.hashCode ^
       reportedModel.hashCode ^
       modelMatchState.hashCode ^
-      reasoningEffort.hashCode ^
+      effort.hashCode ^
       completionTokens.hashCode ^
       ttftMillis.hashCode ^
       decodeMillis.hashCode ^
@@ -483,14 +650,13 @@ class BridgeModelPerformanceSample {
       other is BridgeModelPerformanceSample &&
           runtimeType == other.runtimeType &&
           completedAt == other.completedAt &&
-          providerInstanceId == other.providerInstanceId &&
-          providerDisplayName == other.providerDisplayName &&
-          model == other.model &&
-          configuredModel == other.configuredModel &&
+          accountId == other.accountId &&
+          accountDisplayName == other.accountDisplayName &&
+          modelId == other.modelId &&
           sentModel == other.sentModel &&
           reportedModel == other.reportedModel &&
           modelMatchState == other.modelMatchState &&
-          reasoningEffort == other.reasoningEffort &&
+          effort == other.effort &&
           completionTokens == other.completionTokens &&
           ttftMillis == other.ttftMillis &&
           decodeMillis == other.decodeMillis &&
@@ -543,10 +709,9 @@ class BridgeModelPerformanceSnapshot {
 }
 
 class BridgeModelPerformanceSummary {
-  final String providerInstanceId;
-  final String providerDisplayName;
-  final String model;
-  final String? reasoningEffort;
+  final String accountId;
+  final String accountDisplayName;
+  final String modelId;
   final BigInt sampleCount;
   final BigInt completionTokens;
   final BigInt totalTtftMillis;
@@ -556,11 +721,13 @@ class BridgeModelPerformanceSummary {
   final double averageTtftMillis;
   final double averageResponseMillis;
 
+  /// 该 (accountId, modelId) 组内的推理强度二级细分。
+  final List<BridgeModelPerformanceEffortSummary> effortBreakdowns;
+
   const BridgeModelPerformanceSummary({
-    required this.providerInstanceId,
-    required this.providerDisplayName,
-    required this.model,
-    this.reasoningEffort,
+    required this.accountId,
+    required this.accountDisplayName,
+    required this.modelId,
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
@@ -569,14 +736,14 @@ class BridgeModelPerformanceSummary {
     required this.tokensPerSecond,
     required this.averageTtftMillis,
     required this.averageResponseMillis,
+    required this.effortBreakdowns,
   });
 
   @override
   int get hashCode =>
-      providerInstanceId.hashCode ^
-      providerDisplayName.hashCode ^
-      model.hashCode ^
-      reasoningEffort.hashCode ^
+      accountId.hashCode ^
+      accountDisplayName.hashCode ^
+      modelId.hashCode ^
       sampleCount.hashCode ^
       completionTokens.hashCode ^
       totalTtftMillis.hashCode ^
@@ -584,17 +751,17 @@ class BridgeModelPerformanceSummary {
       totalResponseMillis.hashCode ^
       tokensPerSecond.hashCode ^
       averageTtftMillis.hashCode ^
-      averageResponseMillis.hashCode;
+      averageResponseMillis.hashCode ^
+      effortBreakdowns.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeModelPerformanceSummary &&
           runtimeType == other.runtimeType &&
-          providerInstanceId == other.providerInstanceId &&
-          providerDisplayName == other.providerDisplayName &&
-          model == other.model &&
-          reasoningEffort == other.reasoningEffort &&
+          accountId == other.accountId &&
+          accountDisplayName == other.accountDisplayName &&
+          modelId == other.modelId &&
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
@@ -602,7 +769,8 @@ class BridgeModelPerformanceSummary {
           totalResponseMillis == other.totalResponseMillis &&
           tokensPerSecond == other.tokensPerSecond &&
           averageTtftMillis == other.averageTtftMillis &&
-          averageResponseMillis == other.averageResponseMillis;
+          averageResponseMillis == other.averageResponseMillis &&
+          effortBreakdowns == other.effortBreakdowns;
 }
 
 /// 进程级持久化队列压力与逐 Thread 水位。
@@ -783,91 +951,6 @@ sealed class BridgeProjectDirectoryState with _$BridgeProjectDirectoryState {
   const factory BridgeProjectDirectoryState.stopped(
     BridgeStoppedResource field0,
   ) = BridgeProjectDirectoryState_Stopped;
-}
-
-@freezed
-sealed class BridgeProviderUsageData with _$BridgeProviderUsageData {
-  const BridgeProviderUsageData._();
-
-  const factory BridgeProviderUsageData.deepSeekBalance(
-    DeepSeekBalanceDto field0,
-  ) = BridgeProviderUsageData_DeepSeekBalance;
-  const factory BridgeProviderUsageData.zhipuCodingPlan(
-    ZhipuCodingPlanUsageDto field0,
-  ) = BridgeProviderUsageData_ZhipuCodingPlan;
-}
-
-@freezed
-sealed class BridgeProviderUsageState with _$BridgeProviderUsageState {
-  const BridgeProviderUsageState._();
-
-  const factory BridgeProviderUsageState.unsupported() =
-      BridgeProviderUsageState_Unsupported;
-  const factory BridgeProviderUsageState.missingCredential({
-    required String message,
-  }) = BridgeProviderUsageState_MissingCredential;
-  const factory BridgeProviderUsageState.ready({
-    required BridgeProviderUsageData data,
-  }) = BridgeProviderUsageState_Ready;
-  const factory BridgeProviderUsageState.failed({
-    required BridgeStateError error,
-  }) = BridgeProviderUsageState_Failed;
-}
-
-class BridgeProviderUsageStateData {
-  final String configFingerprint;
-  final List<ProviderUsageDto> usages;
-
-  const BridgeProviderUsageStateData({
-    required this.configFingerprint,
-    required this.usages,
-  });
-
-  @override
-  int get hashCode => configFingerprint.hashCode ^ usages.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeProviderUsageStateData &&
-          runtimeType == other.runtimeType &&
-          configFingerprint == other.configFingerprint &&
-          usages == other.usages;
-}
-
-@freezed
-sealed class BridgeProviderUsageStateSnapshot
-    with _$BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot._();
-
-  const factory BridgeProviderUsageStateSnapshot.uninitialized(
-    BridgeUninitializedResource field0,
-  ) = BridgeProviderUsageStateSnapshot_Uninitialized;
-  const factory BridgeProviderUsageStateSnapshot.loading(
-    BridgeLoadingResource field0,
-  ) = BridgeProviderUsageStateSnapshot_Loading;
-  const factory BridgeProviderUsageStateSnapshot.ready({
-    required BridgeReadyResource resource,
-    required BridgeProviderUsageStateData value,
-  }) = BridgeProviderUsageStateSnapshot_Ready;
-  const factory BridgeProviderUsageStateSnapshot.refreshing({
-    required BridgeRefreshingResource resource,
-    required BridgeProviderUsageStateData value,
-  }) = BridgeProviderUsageStateSnapshot_Refreshing;
-  const factory BridgeProviderUsageStateSnapshot.stale({
-    required BridgeStaleResource resource,
-    required BridgeProviderUsageStateData value,
-  }) = BridgeProviderUsageStateSnapshot_Stale;
-  const factory BridgeProviderUsageStateSnapshot.degraded({
-    required BridgeDegradedResource resource,
-    required BridgeProviderUsageStateData value,
-  }) = BridgeProviderUsageStateSnapshot_Degraded;
-  const factory BridgeProviderUsageStateSnapshot.failed(
-    BridgeFailedResource field0,
-  ) = BridgeProviderUsageStateSnapshot_Failed;
-  const factory BridgeProviderUsageStateSnapshot.stopped(
-    BridgeStoppedResource field0,
-  ) = BridgeProviderUsageStateSnapshot_Stopped;
 }
 
 class BridgePurposeCostSnapshot {
@@ -1254,7 +1337,7 @@ class BridgeStudioStateSnapshot {
   final BridgeLspStateSnapshot lsp;
   final List<BridgeSkillsStateSnapshot> skillsByProject;
   final BridgeThreadModeCatalogSnapshot threadModeCatalog;
-  final BridgeProviderUsageStateSnapshot providerUsage;
+  final BridgeAccountUsageStateSnapshot accountUsage;
   final BridgeModelPerformanceSnapshot modelPerformance;
   final List<BridgeSessionCostsState> sessionCosts;
   final BridgeUpdaterStateSnapshot updater;
@@ -1275,7 +1358,7 @@ class BridgeStudioStateSnapshot {
     required this.lsp,
     required this.skillsByProject,
     required this.threadModeCatalog,
-    required this.providerUsage,
+    required this.accountUsage,
     required this.modelPerformance,
     required this.sessionCosts,
     required this.updater,
@@ -1298,7 +1381,7 @@ class BridgeStudioStateSnapshot {
       lsp.hashCode ^
       skillsByProject.hashCode ^
       threadModeCatalog.hashCode ^
-      providerUsage.hashCode ^
+      accountUsage.hashCode ^
       modelPerformance.hashCode ^
       sessionCosts.hashCode ^
       updater.hashCode ^
@@ -1323,7 +1406,7 @@ class BridgeStudioStateSnapshot {
           lsp == other.lsp &&
           skillsByProject == other.skillsByProject &&
           threadModeCatalog == other.threadModeCatalog &&
-          providerUsage == other.providerUsage &&
+          accountUsage == other.accountUsage &&
           modelPerformance == other.modelPerformance &&
           sessionCosts == other.sessionCosts &&
           updater == other.updater &&
@@ -1611,37 +1694,6 @@ class ProjectDto {
           path == other.path &&
           sshAlias == other.sshAlias &&
           updatedAt == other.updatedAt;
-}
-
-class ProviderUsageDto {
-  final String providerId;
-  final BigInt revision;
-  final PlatformInt64 updatedAt;
-  final BridgeProviderUsageState state;
-
-  const ProviderUsageDto({
-    required this.providerId,
-    required this.revision,
-    required this.updatedAt,
-    required this.state,
-  });
-
-  @override
-  int get hashCode =>
-      providerId.hashCode ^
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      state.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProviderUsageDto &&
-          runtimeType == other.runtimeType &&
-          providerId == other.providerId &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          state == other.state;
 }
 
 class SkillInvocationPolicyDto {

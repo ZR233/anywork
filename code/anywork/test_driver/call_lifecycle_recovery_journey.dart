@@ -68,7 +68,7 @@ class CallLifecycleRecoveryJourney extends WebSocketRecoveryJourney {
     );
     if (!jsonEncode(failed).contains('compaction unavailable') ||
         !jsonEncode(failed).contains('retryable')) {
-      throw StateError('compaction lost its structured provider failure');
+      throw StateError('compaction lost its structured account failure');
     }
     await capture('compaction-exhausted');
     await submit('Lifecycle wait');

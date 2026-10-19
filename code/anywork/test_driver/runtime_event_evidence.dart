@@ -79,7 +79,7 @@ final class RuntimePublishFact {
   /// 该次 `liveUsage.observationSequence`；缺失不为 0。
   final int? observationSequence;
 
-  /// provider 确认的轻量计量，缺失保持 null，不以 0 猜测。
+  /// account 确认的轻量计量，缺失保持 null，不以 0 猜测。
   final int? completionTokens;
   final int? decodeMillis;
   final int? latestContextTokens;

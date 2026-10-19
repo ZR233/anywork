@@ -42,22 +42,22 @@ async fn main() -> Result<()> {
     let installed = ConfigStore::default_app()?;
     // Copy bytes, never save a hydrated config: the credential store belongs to the user.
     std::fs::copy(installed.paths().config_file(), home.join("config.toml"))?;
-    if let Ok(provider_id) = std::env::var("ANYWORK_OBSERVATION_PROVIDER") {
+    if let Ok(account_id) = std::env::var("ANYWORK_OBSERVATION_ACCOUNT") {
         let model_id = std::env::var("ANYWORK_OBSERVATION_MODEL")
-            .context("selected observation provider requires ANYWORK_OBSERVATION_MODEL")?;
+            .context("selected observation account requires ANYWORK_OBSERVATION_MODEL")?;
         let mut config: toml::Value =
             toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
-        let providers = config
+        let accounts = config
             .get_mut("models")
-            .and_then(|v| v.get_mut("providers"))
+            .and_then(|v| v.get_mut("accounts"))
             .and_then(toml::Value::as_table_mut)
-            .context("provider table is missing")?;
-        let selected = providers
-            .get(&provider_id)
-            .context("observation provider is not configured")?
+            .context("account table is missing")?;
+        let selected = accounts
+            .get(&account_id)
+            .context("observation account is not configured")?
             .clone();
-        let provider: pl_model::config::ProviderConfig = selected.clone().try_into()?;
-        let model = provider
+        let account: pl_model::config::AccountConfig = selected.clone().try_into()?;
+        let model = account
             .effective_models(None)?
             .into_iter()
             .find(|m| m.model_id == model_id)
@@ -67,8 +67,8 @@ async fn main() -> Result<()> {
             .iter()
             .find(|p| p.name == "effort")
             .and_then(|p| p.candidates.first());
-        providers.clear();
-        providers.insert(provider_id.clone(), selected);
+        accounts.clear();
+        accounts.insert(account_id.clone(), selected);
         let routes = config
             .get_mut("models")
             .and_then(|v| v.get_mut("routes"))
@@ -76,8 +76,8 @@ async fn main() -> Result<()> {
             .context("route table is missing")?;
         for (_, route) in routes.iter_mut() {
             let route = route.as_table_mut().context("invalid route")?;
-            route.insert("provider".into(), provider_id.clone().into());
-            route.insert("model".into(), model_id.clone().into());
+            route.insert("account_id".into(), account_id.clone().into());
+            route.insert("model_id".into(), model_id.clone().into());
             if let Some(effort) = effort {
                 route.insert("effort".into(), effort.clone().into());
             } else {
@@ -90,8 +90,8 @@ async fn main() -> Result<()> {
             .context("mode route table is missing")?;
         for (_, route) in modes.iter_mut() {
             let route = route.as_table_mut().context("invalid mode route")?;
-            route.insert("provider".into(), provider_id.clone().into());
-            route.insert("model".into(), model_id.clone().into());
+            route.insert("account_id".into(), account_id.clone().into());
+            route.insert("model_id".into(), model_id.clone().into());
             if let Some(effort) = effort {
                 route.insert("effort".into(), effort.clone().into());
             } else {
@@ -186,9 +186,10 @@ async fn collect(
                 },
                 mode: "mode.simple".into(),
                 route: pl_protocol::studio::NewThreadModelRoute {
-                    provider_id: route.provider_id,
-                    model: route.model,
-                    effort: route.effort,
+                    account_id: route.account_id,
+                    model_id: route.model_id,
+                    // 设置快照把 effort 投影为非空字符串；空值表示不指定。
+                    effort: Some(route.effort).filter(|value| !value.trim().is_empty()),
                 },
                 workspace_mode,
             },

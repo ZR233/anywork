@@ -4,7 +4,7 @@ import '../../../../xtask/dart/client_boundary_check.dart';
 
 const _client = 'code/anywork_client/lib/src/fixture.dart';
 const _feature = 'code/anywork/lib/src/features/chat/chat_view.dart';
-const _provider = 'code/anywork/lib/src/presentation/providers/fixture.dart';
+const _account = 'code/anywork/lib/src/presentation/providers/fixture.dart';
 
 void main() {
   // These are parsed Dart programs, not examples of a rule's own regexp or
@@ -25,7 +25,7 @@ void main() {
       rule: 'OWN-01',
     ),
     (
-      name: 'Client cannot accept a provider Ref',
+      name: 'Client cannot accept a account Ref',
       path: _client,
       source: 'void observe(Ref ref) {}',
       rule: 'OWN-01',
@@ -50,7 +50,7 @@ void main() {
     ),
     (
       name: 'App cannot reach private Client code',
-      path: _provider,
+      path: _account,
       source: "import 'package:anywork_client/src/chat/channel.dart';",
       rule: 'OWN-01',
     ),
@@ -62,20 +62,20 @@ void main() {
     ),
     (
       name: 'Static Thread cache is not an app owner',
-      path: _provider,
+      path: _account,
       source:
           'class Cache { static final threadSessions = <String, Object>{}; }',
       rule: 'LIFE-01',
     ),
     (
       name: 'AnyworkClient cannot be a module singleton',
-      path: _provider,
+      path: _account,
       source: 'final client = new AnyworkClient(transport: transport);',
       rule: 'LIFE-01',
     ),
     (
       name: 'Provider disposal cannot close a session',
-      path: _provider,
+      path: _account,
       source:
           'void bind(dynamic ref, dynamic session) { '
           'ref.onDispose(() { session.close(); }); }',
@@ -83,7 +83,7 @@ void main() {
     ),
     (
       name: 'Provider cancellation cannot register a close tearoff',
-      path: _provider,
+      path: _account,
       source:
           'void bind(dynamic ref, dynamic session) { '
           'ref.onCancel(session.close); }',
@@ -92,14 +92,14 @@ void main() {
     for (final owner in ['session', 'composer', 'skills', 'sessionCosts'])
       (
         name: 'Provider cannot admit a $owner owner',
-        path: _provider,
+        path: _account,
         source:
             'Object observe(dynamic client, String id) => client.$owner(id);',
         rule: 'LIFE-03',
       ),
     (
       name: 'Provider cannot admit through a cascade',
-      path: _provider,
+      path: _account,
       source: 'void observe(dynamic client) { client..session("thread"); }',
       rule: 'LIFE-03',
     ),
@@ -129,7 +129,7 @@ void main() {
     ),
     (
       name: 'Dropped failure needs an explanation',
-      path: _provider,
+      path: _account,
       source: 'void update() { try { work(); } catch (error) {} }',
       rule: 'ERR-01',
     ),
@@ -168,7 +168,7 @@ class Owner {
       );
       expect(
         checkClientSource(
-          path: _provider,
+          path: _account,
           source: '''
 void observe(dynamic ref, dynamic source) {
   final observation = source.watchLatest((next) {});
@@ -198,7 +198,7 @@ Object rowKey(String itemId) => new ValueKey(itemId);
     () {
       expect(
         checkClientSource(
-          path: _provider,
+          path: _account,
           source: '''
 // ref.onDispose(() { session.close(); });
 const example = "import 'package:anywork_client/src/private.dart';";

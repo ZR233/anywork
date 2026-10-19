@@ -1,16 +1,16 @@
 //! Discovery contract through public API and real localhost HTTP. No live credentials or catalog mirror.
 use pl_model::{
     config::{
-        AgentModelConfig, AgentRoleId, ModelCatalogId, ModelRouteAvailability, ModelRouteConfig,
-        ProviderConfig, ProviderId, ReasoningEffort, model_descriptor,
+        AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelCatalogId,
+        ModelRouteAvailability, ModelRouteConfig, ReasoningEffort, model_descriptor,
     },
     model::{
         BundledModelDefinition, ModelDefinitionError, ModelInfo, ModelModality, ModelParameter,
         ModelPricing, ModelTransportProfile, ModelType, ModelTypeExclusion, ParameterWire,
         WireAssignment, bundled_model_definition,
     },
-    provider::{
-        ProviderAdapterKind, ProviderConnectionMode, ProviderEndpoint,
+    protocol::{
+        ConnectionMode, ProtocolEndpoint, ProtocolKind,
         discovery::{
             ModelCatalogQuery, ModelCatalogQueryCache, ModelCatalogQueryError,
             ModelCatalogQueryResult,
@@ -74,14 +74,18 @@ fn http(status: u16, headers: &str, body: &str) -> String {
         body.len()
     )
 }
-fn provider(url: &str, adapter: ProviderAdapterKind) -> ProviderConfig {
+fn provider(url: &str, adapter: ProtocolKind) -> AccountConfig {
     let (endpoint, id) = match adapter {
-        ProviderAdapterKind::OpenAi => (ProviderEndpoint::openai(Some(url.into())), "openai"),
-        ProviderAdapterKind::DeepSeek => (ProviderEndpoint::deepseek(Some(url.into())), "deepseek"),
-        ProviderAdapterKind::Xai => (ProviderEndpoint::xai(Some(url.into())), "xai"),
+        ProtocolKind::OpenAi => (ProtocolEndpoint::openai(Some(url.into())), "openai"),
+        ProtocolKind::DeepSeek => (ProtocolEndpoint::deepseek(Some(url.into())), "deepseek"),
+        ProtocolKind::Xai => (ProtocolEndpoint::xai(Some(url.into())), "xai"),
+        ProtocolKind::MiMo => (
+            ProtocolEndpoint::compatible("MiMo API", url).with_protocol(ProtocolKind::MiMo),
+            "mimo",
+        ),
         _ => unreachable!(),
     };
-    ProviderConfig::from_bundled_catalog(endpoint, ModelCatalogId::new(id).unwrap(), Vec::new())
+    AccountConfig::from_bundled_catalog(endpoint, ModelCatalogId::new(id).unwrap(), Vec::new())
 }
 fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
     match result {
@@ -89,28 +93,28 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
         _ => panic!("expected updated catalog"),
     }
 }
-fn cached_model(model_id: &str, adapter: ProviderAdapterKind) -> ModelInfo {
+fn cached_model(model_id: &str, adapter: ProtocolKind) -> ModelInfo {
     let mut model = ModelInfo::compatible(model_id);
     model.context_window = None;
     model.max_output_tokens = None;
     model
         .binding
-        .set_transport(if adapter == ProviderAdapterKind::OpenAi {
+        .set_transport(if adapter == ProtocolKind::OpenAi {
             ModelTransportProfile::responses_websocket()
         } else {
             ModelTransportProfile::responses_http()
         });
     model
 }
-async fn discover(body: Value, adapter: ProviderAdapterKind) -> Vec<ModelInfo> {
+async fn discover(body: Value, adapter: ProtocolKind) -> Vec<ModelInfo> {
     let server = Server::json(body).await;
-    let query = ModelCatalogQuery::for_provider(&provider(&server.url, adapter)).unwrap();
+    let query = ModelCatalogQuery::for_account(&provider(&server.url, adapter)).unwrap();
     let result = updated(query.execute(None).await.unwrap());
     server.finish().await;
     result
 }
 
-fn accept_observation(provider: &mut ProviderConfig, mut models: Vec<ModelInfo>, order: u64) {
+fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelInfo>, order: u64) {
     for model in &mut models {
         if let Some(observation) = &mut model.observation {
             observation.commit(order);
@@ -120,8 +124,8 @@ fn accept_observation(provider: &mut ProviderConfig, mut models: Vec<ModelInfo>,
 }
 
 #[tokio::test]
-async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execution() {
-    let mut a = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+async fn text_lists_use_each_account_own_definition_and_do_not_gate_route_execution() {
+    let mut a = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     accept_observation(&mut a, discover(json!({"data":[
         {"id":"shared","input_modalities":["text"],"output_modalities":["text"]},
         {"id":"unknown-budget","input_modalities":["text"],"output_modalities":["text"]},
@@ -130,25 +134,25 @@ async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execut
         {"id":"image-output","context_window":1024,"input_modalities":["text"],"output_modalities":["image"]},
         {"id":"image-input","context_window":1024,"input_modalities":["image"],"output_modalities":["text"]},
         {"id":"empty-output","context_window":1024,"output_modalities":[]}
-    ]}), ProviderAdapterKind::OpenAi).await, 10);
-    let mut b = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    ]}), ProtocolKind::OpenAi).await, 10);
+    let mut b = provider("http://127.0.0.1:1", ProtocolKind::Xai);
     accept_observation(
         &mut b,
         discover(
-            json!({"data":[{"id":"shared","context_window":8192}]}),
-            ProviderAdapterKind::Xai,
+            json!({"data":[{"id":"shared","context_length":8192}]}),
+            ProtocolKind::Xai,
         )
         .await,
         20,
     );
-    let a_id = ProviderId::new("a").unwrap();
-    let b_id = ProviderId::new("b").unwrap();
+    let a_id = AccountId::new("a").unwrap();
+    let b_id = AccountId::new("b").unwrap();
     let mut config = AgentModelConfig {
-        providers: [(a_id.clone(), a), (b_id.clone(), b)].into(),
+        accounts: [(a_id.clone(), a), (b_id.clone(), b)].into(),
         routes: Default::default(),
     };
     config.reconcile_model_catalog().unwrap();
-    let a = &config.providers[&a_id];
+    let a = &config.accounts[&a_id];
     let all = a.effective_catalog(None).unwrap();
     assert_eq!(all.len(), 7);
     assert_eq!(
@@ -157,10 +161,10 @@ async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execut
             .iter()
             .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>(),
-        ["max-only", "shared", "without-tools-or-prices"]
+        ["max-only", "without-tools-or-prices"]
     );
     assert_eq!(
-        config.providers[&b_id]
+        config.accounts[&b_id]
             .effective_models(Some(ModelType::Text))
             .unwrap()
             .len(),
@@ -170,8 +174,23 @@ async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execut
         .iter()
         .find(|entry| entry.model.model_id == "shared")
         .unwrap();
-    assert_eq!(shared.model.context_window, Some(8192));
-    assert_eq!(model_descriptor(shared).type_support[0].exclusions, []);
+    // Another account's declaration for the same model_id is not this account's fact.
+    assert_eq!(shared.model.context_window, None);
+    assert_eq!(
+        model_descriptor(shared).type_support[0].exclusions,
+        [ModelTypeExclusion::ContextWindowUnknown]
+    );
+    assert_eq!(
+        config.accounts[&b_id]
+            .effective_catalog(None)
+            .unwrap()
+            .iter()
+            .find(|entry| entry.model.model_id == "shared")
+            .unwrap()
+            .model
+            .context_window,
+        Some(8192)
+    );
     for (id, reason) in [
         ("unknown-budget", ModelTypeExclusion::ContextWindowUnknown),
         ("image-output", ModelTypeExclusion::TextOutputUnsupported),
@@ -184,10 +203,18 @@ async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execut
             [reason]
         );
     }
-    accept_observation(config.providers.get_mut(&b_id).unwrap(), discover(json!({"data":[{"id":"shared","context_window":null,"max_context_window":null,"input_modalities":[]}]}), ProviderAdapterKind::Xai).await, 30);
+    accept_observation(
+        config.accounts.get_mut(&b_id).unwrap(),
+        discover(
+            json!({"data":[{"id":"shared","context_length":null,"input_modalities":[]}]}),
+            ProtocolKind::Xai,
+        )
+        .await,
+        30,
+    );
     config.reconcile_model_catalog().unwrap();
     for id in [a_id, b_id] {
-        let provider = &config.providers[&id];
+        let provider = &config.accounts[&id];
         assert!(
             provider
                 .effective_models(Some(ModelType::Text))
@@ -205,8 +232,8 @@ async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execut
         assert_eq!(
             config
                 .route_availability(&ModelRouteConfig {
-                    provider: id,
-                    model: "shared".into(),
+                    account_id: id,
+                    model_id: "shared".into(),
                     effort: None
                 })
                 .unwrap(),
@@ -225,26 +252,26 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
         http(200, "", &json!({"data":[{"id":"shared-effort","reasoningEffort":null}]}).to_string()),
         http(200, "", &json!({"data":[{"id":"shared-effort","supportsReasoningEffort":false}]}).to_string()),
     ]).await;
-    let mut a = provider(&server.url, ProviderAdapterKind::Xai);
-    let query = ModelCatalogQuery::for_provider(&a).unwrap();
+    let mut a = provider(&server.url, ProtocolKind::OpenAi);
+    let query = ModelCatalogQuery::for_account(&a).unwrap();
     let mut models = updated(query.execute(None).await.unwrap());
     assert_eq!(models[0].supported_efforts(), ["low", "high"]);
     assert_eq!(models[0].default_effort().as_deref(), Some("high"));
     accept_observation(&mut a, models.clone(), 10);
     models = a.effective_models(None).unwrap();
-    let mut b = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    let mut b = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     accept_observation(
         &mut b,
         discover(
             json!({"data":[{"id":"shared-effort","reasoningEffort":"low"}]}),
-            ProviderAdapterKind::OpenAi,
+            ProtocolKind::OpenAi,
         )
         .await,
         20,
     );
-    let a_id = ProviderId::new("a").unwrap();
+    let a_id = AccountId::new("a").unwrap();
     let mut config = AgentModelConfig {
-        providers: [(a_id.clone(), a), (ProviderId::new("b").unwrap(), b)].into(),
+        accounts: [(a_id.clone(), a), (AccountId::new("b").unwrap(), b)].into(),
         routes: Default::default(),
     };
     for order in [30, 40, 50, 60] {
@@ -254,67 +281,82 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
             models,
         };
         let next = updated(query.execute(Some(&cache)).await.unwrap());
-        accept_observation(config.providers.get_mut(&a_id).unwrap(), next, order);
-        models = config.providers[&a_id].effective_models(None).unwrap();
+        accept_observation(config.accounts.get_mut(&a_id).unwrap(), next, order);
+        models = config.accounts[&a_id].effective_models(None).unwrap();
         assert_eq!(
             models[0].observation.as_ref().unwrap().parameter_defaults["effort"].order,
             if order < 50 { 10 } else { 50 }
         );
         config.reconcile_model_catalog().unwrap();
-        for provider in config.providers.values() {
-            let model = provider.effective_models(None).unwrap().remove(0);
-            if order < 60 {
-                assert_eq!(model.default_effort().as_deref(), Some("low"));
-                assert_eq!(
-                    model.effort_parameter().unwrap().default.as_deref(),
-                    (order < 50).then_some("low")
-                );
-                if order >= 40 {
-                    assert_eq!(model.supported_efforts(), ["low"]);
-                }
-            } else {
-                assert!(model.supported_efforts().is_empty());
+        let observed = config.accounts[&a_id]
+            .effective_models(None)
+            .unwrap()
+            .remove(0);
+        match order {
+            30 => {
+                assert_eq!(observed.supported_efforts(), ["low", "high"]);
+                // The captured default survives a candidate-only update; it is not replaced by
+                // another account's later default declaration.
+                assert_eq!(observed.default_effort().as_deref(), Some("high"));
+            }
+            40 | 50 => {
+                assert_eq!(observed.supported_efforts(), ["low"]);
+                // Without an explicit default the candidate order decides; the withdrawn
+                // "high" value is not restored.
+                assert_eq!(observed.default_effort().as_deref(), Some("low"));
+            }
+            _ => {
+                assert!(observed.supported_efforts().is_empty());
                 assert!(
-                    model.capabilities.reasoning,
+                    observed.capabilities.reasoning,
                     "fixed reasoning survives effort withdrawal"
                 );
             }
         }
+        // The sibling account declares its own default without candidates; it never inherits
+        // this account's candidates, defaults or withdrawal history.
+        let sibling = config.accounts[&AccountId::new("b").unwrap()]
+            .effective_models(None)
+            .unwrap()
+            .remove(0);
+        assert!(sibling.supported_efforts().is_empty());
+        assert_eq!(sibling.default_effort(), None);
+        assert!(!sibling.capabilities.reasoning);
     }
     server.finish().await;
 }
 
 #[tokio::test]
-async fn global_catalog_shares_explicit_fields_and_keeps_route_membership_prices_and_wire() {
+async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_account_leaks() {
     let a = discover(json!({"data":[
         {"id":"shared", "context_window":4096, "max_output_tokens":128, "input_modalities":["text"],
          "supports_function_calling":true, "effort":{"supported_levels":["medium"]}},
         {"id":"shared", "display_name":"Final A", "supports_streaming":false}
-    ]}), ProviderAdapterKind::OpenAi).await;
+    ]}), ProtocolKind::OpenAi).await;
     assert_eq!(a.len(), 1);
     assert_eq!(a[0].context_window, Some(4096));
     let b = discover(
-        json!({"data":[{"id":"shared", "context_window":8192,
-            "max_output_tokens":null, "input_modalities":[], "supports_function_calling":false,
+        json!({"data":[{"id":"shared", "context_length":8192,
+            "input_modalities":[], "supports_function_calling":false,
             "effort":{"supported_levels":[]}, "prompt_text_token_price":20000,
             "completion_text_token_price":100000, "cached_prompt_text_token_price":5000
         }]}),
-        ProviderAdapterKind::Xai,
+        ProtocolKind::Xai,
     )
     .await;
-    let mut local = cached_model("shared", ProviderAdapterKind::OpenAi);
+    let mut local = cached_model("shared", ProtocolKind::OpenAi);
     local.pricing = ModelPricing::published(
         "USD",
         vec![pl_model::model::TokenPriceTier::flat(1.0, 4.0, None, None)],
         "local-a",
     );
     local.max_output_tokens = Some(256);
-    let mut first = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::openai(None),
+    let mut first = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::openai(None),
         ModelCatalogId::new("openai").unwrap(),
         vec![local.clone()],
     );
-    let mut second = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    let mut second = provider("http://127.0.0.1:1", ProtocolKind::Xai);
     accept_observation(&mut first, a, 1);
     accept_observation(&mut second, b, 2);
     let mut explicit = ModelInfo::compatible("shared");
@@ -329,76 +371,90 @@ async fn global_catalog_shares_explicit_fields_and_keeps_route_membership_prices
         ("a-second", second),
         (
             "third",
-            ProviderConfig::from_explicit_models(
-                ProviderEndpoint::compatible("third", "http://127.0.0.1:1"),
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible("third", "http://127.0.0.1:1"),
                 vec![explicit.clone()],
             ),
         ),
         (
             "unrelated",
-            ProviderConfig::from_explicit_models(
-                ProviderEndpoint::compatible("unrelated", "http://127.0.0.1:1"),
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible("unrelated", "http://127.0.0.1:1"),
                 vec![ModelInfo::compatible("other")],
             ),
         ),
     ] {
         config
-            .providers
-            .insert(ProviderId::new(id).unwrap(), provider);
+            .accounts
+            .insert(AccountId::new(id).unwrap(), provider);
     }
     config.reconcile_model_catalog().unwrap();
-    for id in ["z-first", "a-second", "third"] {
-        let route = config
+    let route = |id: &str, effort: Option<&str>| {
+        config
             .resolve_route(
                 AgentRoleId::new("test").unwrap(),
                 &ModelRouteConfig {
-                    provider: ProviderId::new(id).unwrap(),
-                    model: "shared".into(),
-                    effort: None,
+                    account_id: AccountId::new(id).unwrap(),
+                    model_id: "shared".into(),
+                    effort: effort.map(ReasoningEffort::new),
                 },
             )
-            .unwrap();
-        assert_eq!(route.model.display_name, "Final A");
-        assert_eq!(route.model.context_window, Some(8192));
-        assert_eq!(route.model.max_output_tokens, None);
-        assert!(route.model.capabilities.input.is_empty());
-        assert!(!route.model.capabilities.supports_function_calling());
-        assert!(!route.model.capabilities.streaming);
-        assert!(route.model.parameters.is_empty());
-        if id == "z-first" {
-            assert_eq!(route.model.pricing, local.pricing);
-            assert_eq!(route.model.binding.transport, local.binding.transport);
-        }
-        if id == "third" {
-            assert_eq!(route.model.pricing, explicit.pricing);
-            assert_eq!(route.model.binding.transport, explicit.binding.transport);
-        }
-        if id == "a-second" {
-            assert_eq!(
-                route.model.binding.transport,
-                ModelTransportProfile::responses_http()
-            );
-            let ModelPricing::Rates {
-                currency, tiers, ..
-            } = route.model.pricing
-            else {
-                panic!("online price missing")
-            };
-            assert_eq!(currency, "USD");
-            assert_eq!(tiers[0].input_per_mtok, 2.0);
-            assert_eq!(tiers[0].output_per_mtok, 10.0);
-            assert_eq!(tiers[0].cache_read_per_mtok, Some(0.5));
-        }
-    }
+            .unwrap()
+    };
+    // The observing account keeps its own manual wire/price and its own online metadata.
+    let first_route = route("z-first", Some("medium"));
+    assert_eq!(first_route.model.display_name, "Final A");
+    assert_eq!(first_route.model.context_window, Some(4096));
+    assert_eq!(first_route.model.max_output_tokens, Some(128));
+    assert_eq!(first_route.model.supported_efforts(), ["medium"]);
+    assert_eq!(first_route.model.pricing, local.pricing);
+    assert_eq!(first_route.model.binding.transport, local.binding.transport);
+    // A sibling account never receives the first account's display name, limits or manual price.
+    let second_route = route("a-second", None);
+    assert_eq!(second_route.model.display_name, "shared");
+    assert_eq!(second_route.model.context_window, Some(8192));
+    assert_eq!(second_route.model.max_output_tokens, None);
+    // xAI `/models` 不声明模态：未知模型保持 text-only，也不借用别家声明。
     assert_eq!(
-        config.providers[&ProviderId::new("unrelated").unwrap()]
+        second_route.model.capabilities.input,
+        [pl_model::model::ModelInputCapability::text()]
+    );
+    assert!(!second_route.model.capabilities.supports_function_calling());
+    // The other account's explicit `streaming = false` is not inherited here.
+    assert!(second_route.model.capabilities.streaming);
+    assert!(second_route.model.supported_efforts().is_empty());
+    assert_eq!(
+        second_route.model.binding.transport,
+        ModelTransportProfile::responses_http()
+    );
+    let ModelPricing::Rates {
+        currency, tiers, ..
+    } = second_route.model.pricing
+    else {
+        panic!("online price missing")
+    };
+    assert_eq!(currency, "USD");
+    assert_eq!(tiers[0].input_per_mtok, 2.0);
+    assert_eq!(tiers[0].output_per_mtok, 10.0);
+    assert_eq!(tiers[0].cache_read_per_mtok, Some(0.5));
+    // A fully explicit account resolves only its own declaration.
+    let third_route = route("third", None);
+    assert_eq!(third_route.model.display_name, "shared");
+    assert!(third_route.model.supported_efforts().is_empty());
+    assert_eq!(third_route.model.pricing, explicit.pricing);
+    assert_eq!(
+        third_route.model.binding.transport,
+        explicit.binding.transport
+    );
+    assert_eq!(
+        config.accounts[&AccountId::new("unrelated").unwrap()]
             .effective_models(None)
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        config.providers[&ProviderId::new("unrelated").unwrap()]
+        config.accounts[&AccountId::new("unrelated").unwrap()]
             .effective_models(None)
             .unwrap()[0]
             .model_id,
@@ -407,28 +463,25 @@ async fn global_catalog_shares_explicit_fields_and_keeps_route_membership_prices
     let first_snapshot = config.clone();
     config.reconcile_model_catalog().unwrap();
     assert_eq!(config, first_snapshot);
-    let withdrawn = ModelRouteConfig {
-        provider: ProviderId::new("third").unwrap(),
-        model: "shared".into(),
+    // An effort that only another account declares is invalid for this account's model.
+    let foreign_effort = ModelRouteConfig {
+        account_id: AccountId::new("third").unwrap(),
+        model_id: "shared".into(),
         effort: Some(ReasoningEffort::new("medium")),
     };
     config
         .routes
-        .insert(AgentRoleId::new("test").unwrap(), withdrawn.clone());
-    config.validate_declarations().unwrap();
-    assert!(matches!(
-        config.route_availability(&withdrawn).unwrap(),
-        ModelRouteAvailability::EffortUnavailable { .. }
-    ));
+        .insert(AgentRoleId::new("test").unwrap(), foreign_effort.clone());
+    assert!(config.validate_declarations().is_err());
     assert!(
         config
-            .resolve_route(AgentRoleId::new("test").unwrap(), &withdrawn)
+            .resolve_route(AgentRoleId::new("test").unwrap(), &foreign_effort)
             .is_err()
     );
 }
 
 #[tokio::test]
-async fn missing_fields_and_304_keep_original_order_while_later_success_wins_globally() {
+async fn missing_fields_and_304_keep_original_order_within_one_account_only() {
     let server = Server::responses(vec![
         http(
             200,
@@ -444,8 +497,8 @@ async fn missing_fields_and_304_keep_original_order_while_later_success_wins_glo
         http(304, "", ""),
     ])
     .await;
-    let mut first = provider(&server.url, ProviderAdapterKind::OpenAi);
-    let query = ModelCatalogQuery::for_provider(&first).unwrap();
+    let mut first = provider(&server.url, ProtocolKind::OpenAi);
+    let query = ModelCatalogQuery::for_account(&first).unwrap();
     let mut models = updated(query.execute(None).await.unwrap());
     for model in &mut models {
         model.observation.as_mut().unwrap().commit(1);
@@ -455,13 +508,13 @@ async fn missing_fields_and_304_keep_original_order_while_later_success_wins_glo
         etag: Some("\"v1\"".into()),
         models,
     };
-    let mut second = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    let mut second = provider("http://127.0.0.1:1", ProtocolKind::Xai);
     accept_observation(
         &mut second,
         discover(
-            json!({"data":[{"id":"shared","context_window":8192,
-                "effort":{"supported_levels":["high"]}}]}),
-            ProviderAdapterKind::Xai,
+            json!({"data":[{"id":"shared","context_length":8192,
+                "capabilities":{"reasoning_effort":["high"]}}]}),
+            ProtocolKind::Xai,
         )
         .await,
         2,
@@ -487,35 +540,48 @@ async fn missing_fields_and_304_keep_original_order_while_later_success_wins_glo
     first.set_model_catalog_overlay(newest).unwrap();
     let mut config = AgentModelConfig::default();
     config
-        .providers
-        .insert(ProviderId::new("z-first").unwrap(), first);
+        .accounts
+        .insert(AccountId::new("z-first").unwrap(), first);
     config
-        .providers
-        .insert(ProviderId::new("a-second").unwrap(), second);
-    config.providers.insert(
-        ProviderId::new("chat-route").unwrap(),
-        ProviderConfig::from_explicit_models(
-            ProviderEndpoint::compatible("chat-route", "http://127.0.0.1:1"),
+        .accounts
+        .insert(AccountId::new("a-second").unwrap(), second);
+    config.accounts.insert(
+        AccountId::new("chat-route").unwrap(),
+        AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible("chat-route", "http://127.0.0.1:1"),
             vec![ModelInfo::compatible("shared")],
         ),
     );
     config.reconcile_model_catalog().unwrap();
-    for (id, provider) in &config.providers {
-        let model = provider.effective_models(None).unwrap().remove(0);
-        assert_eq!(model.context_window, Some(8192));
-        assert_eq!(model.max_context_window, Some(8192));
-        assert_eq!(model.description.as_deref(), Some("new description"));
-        assert_eq!(model.supported_efforts(), ["high"]);
-        let wire = model.effort_parameter().unwrap().wire_for("high").unwrap();
-        assert_eq!(
-            wire.set[0].path,
-            if id.as_str() == "chat-route" {
-                "reasoning_effort"
-            } else {
-                "reasoning.effort"
-            }
-        );
-    }
+    let model = |id: &str| {
+        config.accounts[&AccountId::new(id).unwrap()]
+            .effective_models(None)
+            .unwrap()
+            .remove(0)
+    };
+    let observed = model("z-first");
+    assert_eq!(observed.context_window, Some(4096));
+    assert_eq!(observed.max_context_window, Some(4096));
+    assert_eq!(observed.description.as_deref(), Some("new description"));
+    assert!(observed.supported_efforts().is_empty());
+    let sibling = model("a-second");
+    assert_eq!(sibling.context_window, Some(8192));
+    assert_eq!(sibling.description, None);
+    assert_eq!(sibling.supported_efforts(), ["high"]);
+    assert_eq!(
+        sibling
+            .effort_parameter()
+            .unwrap()
+            .wire_for("high")
+            .unwrap()
+            .set[0]
+            .path,
+        "reasoning.effort"
+    );
+    let chat = model("chat-route");
+    assert_eq!(chat.context_window, Some(32_000));
+    assert_eq!(chat.description, None);
+    assert!(chat.supported_efforts().is_empty());
     assert!(
         server.finish().await[2]
             .to_ascii_lowercase()
@@ -524,7 +590,7 @@ async fn missing_fields_and_304_keep_original_order_while_later_success_wins_glo
 }
 
 #[tokio::test]
-async fn later_success_wins_when_provider_requests_complete_out_of_start_order() {
+async fn later_success_wins_inside_the_observing_account_only() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -551,20 +617,20 @@ async fn later_success_wins_when_provider_requests_complete_out_of_start_order()
             .await
             .unwrap();
     });
-    let mut slow = provider(&url, ProviderAdapterKind::OpenAi);
-    let query = ModelCatalogQuery::for_provider(&slow).unwrap();
+    let mut slow = provider(&url, ProtocolKind::OpenAi);
+    let query = ModelCatalogQuery::for_account(&slow).unwrap();
     let mut first_started = Box::pin(query.execute(None));
     tokio::select! {
         result = &mut first_started => panic!("response completed before release: {result:?}"),
         ready = started_rx => ready.unwrap(),
     }
-    let mut fast = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    let mut fast = provider("http://127.0.0.1:1", ProtocolKind::Xai);
     accept_observation(
         &mut fast,
         discover(
             json!({"data":[{"id":"shared","display_name":"Fast source",
-                "context_window":8192,"max_output_tokens":512}]}),
-            ProviderAdapterKind::Xai,
+                "context_length":8192}]}),
+            ProtocolKind::Xai,
         )
         .await,
         1,
@@ -574,18 +640,28 @@ async fn later_success_wins_when_provider_requests_complete_out_of_start_order()
     server.await.unwrap();
     let mut config = AgentModelConfig::default();
     config
-        .providers
-        .insert(ProviderId::new("a-slow").unwrap(), slow);
+        .accounts
+        .insert(AccountId::new("a-slow").unwrap(), slow);
     config
-        .providers
-        .insert(ProviderId::new("z-fast").unwrap(), fast);
+        .accounts
+        .insert(AccountId::new("z-fast").unwrap(), fast);
     config.reconcile_model_catalog().unwrap();
-    for provider in config.providers.values() {
-        let model = provider.effective_models(None).unwrap().remove(0);
-        assert_eq!(model.context_window, Some(4096));
-        assert_eq!(model.display_name, "Fast source");
-        assert_eq!(model.max_output_tokens, Some(512));
-    }
+    let model = |id: &str| {
+        config.accounts[&AccountId::new(id).unwrap()]
+            .effective_models(None)
+            .unwrap()
+            .remove(0)
+    };
+    // Each account only observes its own successful request; completion order is not global.
+    let slow_model = model("a-slow");
+    assert_eq!(slow_model.context_window, Some(4096));
+    assert_eq!(slow_model.display_name, "shared");
+    assert_eq!(slow_model.max_output_tokens, None);
+    let fast_model = model("z-fast");
+    assert_eq!(fast_model.context_window, Some(8192));
+    assert_eq!(fast_model.display_name, "Fast source");
+    // xAI `/models` declares no output limit; an unknown model keeps it unknown.
+    assert_eq!(fast_model.max_output_tokens, None);
 }
 
 #[tokio::test]
@@ -597,8 +673,7 @@ async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates(
     ] {
         let server = Server::json(json!({"data":[record]})).await;
         let query =
-            ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::Xai))
-                .unwrap();
+            ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::Xai)).unwrap();
         assert_eq!(
             query.execute(None).await.unwrap_err(),
             ModelCatalogQueryError::Protocol
@@ -607,12 +682,12 @@ async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates(
     }
     let models = discover(
         json!({"data":[{"id":"shared","pricing":{"per_image":1,"currency":"USD"}}]}),
-        ProviderAdapterKind::Xai,
+        ProtocolKind::Xai,
     )
     .await;
     assert_eq!(models[0].pricing, ModelPricing::Unknown);
-    let zero_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000,"long_context_threshold":0}]}), ProviderAdapterKind::Xai).await;
-    let omitted_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000}]}), ProviderAdapterKind::Xai).await;
+    let zero_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000,"long_context_threshold":0}]}), ProtocolKind::Xai).await;
+    let omitted_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000}]}), ProtocolKind::Xai).await;
     assert_eq!(zero_threshold[0].pricing, omitted_threshold[0].pricing);
 }
 
@@ -621,14 +696,14 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     let server = Server::json(json!({"data":[{"id":"unregistered-Future-ID"}]})).await;
     let mut config = provider(
         &format!("{}/tenant/proxy/?region=synthetic-secret", server.url),
-        ProviderAdapterKind::OpenAi,
+        ProtocolKind::OpenAi,
     );
     config.bearer_token = Some("synthetic-token".into());
     config.http_headers = Some(HashMap::from([(
         "x-account".into(),
         "synthetic-account".into(),
     )]));
-    let query = ModelCatalogQuery::for_provider(&config).unwrap();
+    let query = ModelCatalogQuery::for_account(&config).unwrap();
     let identity = query.identity().to_owned();
     assert_eq!(identity.len(), 64);
     assert!(!format!("{query:?}").contains("synthetic"));
@@ -680,9 +755,7 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
             _ => changed.base_url = format!("{}/different/prefix", server_url_for_identity()),
         }
         assert_ne!(
-            ModelCatalogQuery::for_provider(&changed)
-                .unwrap()
-                .identity(),
+            ModelCatalogQuery::for_account(&changed).unwrap().identity(),
             identity
         );
     }
@@ -691,24 +764,24 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
         "synthetic-account".into(),
     )]));
     assert_eq!(
-        ModelCatalogQuery::for_provider(&config).unwrap().identity(),
+        ModelCatalogQuery::for_account(&config).unwrap().identity(),
         identity
     );
-    let explicit = ProviderConfig::from_explicit_models(
-        ProviderEndpoint::openai(None),
+    let explicit = AccountConfig::from_explicit_models(
+        ProtocolEndpoint::openai(None),
         vec![ModelInfo::compatible("manual")],
     );
     assert!(matches!(
-        ModelCatalogQuery::for_provider(&explicit),
+        ModelCatalogQuery::for_account(&explicit),
         Err(ModelCatalogQueryError::Unsupported)
     ));
-    let unsupported = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::zhipu(None),
+    let unsupported = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::zhipu(None),
         ModelCatalogId::new("zhipu").unwrap(),
         Vec::new(),
     );
     assert!(matches!(
-        ModelCatalogQuery::for_provider(&unsupported),
+        ModelCatalogQuery::for_account(&unsupported),
         Err(ModelCatalogQueryError::Unsupported)
     ));
     config.http_headers = Some(HashMap::from([
@@ -716,10 +789,125 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
         ("X-Account".into(), "two".into()),
     ]));
     assert!(matches!(
-        ModelCatalogQuery::for_provider(&config),
+        ModelCatalogQuery::for_account(&config),
         Err(ModelCatalogQueryError::Configuration)
     ));
 }
+fn independent_query_identity(
+    magic: &[u8],
+    protocol: Option<&str>,
+    catalog: &str,
+    discovery_transport: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        hash.update((bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    };
+    part(magic);
+    part(catalog.as_bytes());
+    if let Some(protocol) = protocol {
+        part(protocol.as_bytes());
+    }
+    part(discovery_transport.as_bytes());
+    part(url.as_bytes());
+    let mut sorted = headers.to_vec();
+    sorted.sort_by(|left, right| left.0.cmp(right.0));
+    for (name, value) in sorted {
+        part(name.as_bytes());
+        part(value.as_bytes());
+    }
+    hex::encode(hash.finalize())
+}
+
+/// Query 身份绑定厂商协议；旧 v1 定位方法只供显式缓存迁移使用。
+#[tokio::test]
+async fn query_identity_binds_vendor_protocol_and_locates_legacy_v1_only_for_migration() {
+    let server = Server::json(json!({"data":[{"id":"x","context_window":4096}]})).await;
+    let mut config = provider(&server.url, ProtocolKind::DeepSeek);
+    config.bearer_token = Some("synthetic-token".into());
+    config.http_headers = Some(HashMap::from([(
+        "x-account".into(),
+        "synthetic-account".into(),
+    )]));
+    let url = format!("{}/models", server.url);
+    let headers = [
+        ("authorization", "Bearer synthetic-token"),
+        ("x-account", "synthetic-account"),
+    ];
+    let expected_v1 = independent_query_identity(
+        b"model-catalog-query-v1",
+        None,
+        "deepseek",
+        "responses-http",
+        &url,
+        &headers,
+    );
+    let expected_v2 = independent_query_identity(
+        b"model-catalog-query-v2",
+        Some("deep_seek"),
+        "deepseek",
+        "responses-http",
+        &url,
+        &headers,
+    );
+    let query = ModelCatalogQuery::for_account(&config).unwrap();
+    assert_eq!(query.identity(), expected_v2);
+    assert_eq!(query.legacy_v1_identity_for_migration(), expected_v1);
+    assert_ne!(query.identity(), expected_v1);
+
+    // 显示名不是身份；账号外层 ID 也不进入 query 内 hash。
+    let mut renamed = config.clone();
+    renamed.name = "Renamed display".into();
+    assert_eq!(
+        ModelCatalogQuery::for_account(&renamed).unwrap().identity(),
+        expected_v2
+    );
+
+    // 只切换厂商协议是合法配置；当前身份必须变化，旧 v1 locator 保持同一文件定位。
+    let mut switched = config.clone();
+    switched.protocol = ProtocolKind::OpenAiCompatible;
+    switched
+        .validate_declarations(&AccountId::new("switched").unwrap())
+        .unwrap();
+    let switched_query = ModelCatalogQuery::for_account(&switched).unwrap();
+    let expected_switched = independent_query_identity(
+        b"model-catalog-query-v2",
+        Some("open_ai_compatible"),
+        "deepseek",
+        "responses-http",
+        &url,
+        &headers,
+    );
+    assert_eq!(switched_query.identity(), expected_switched);
+    assert_ne!(switched_query.identity(), query.identity());
+    assert_eq!(
+        switched_query.legacy_v1_identity_for_migration(),
+        expected_v1
+    );
+
+    // 旧 protocol 的当前缓存不能被新 protocol 复用，也不应发出请求。
+    let models = updated(query.execute(None).await.unwrap());
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: None,
+        models,
+    };
+    assert_eq!(
+        switched_query.execute(Some(&cache)).await.unwrap_err(),
+        ModelCatalogQueryError::CacheIdentity
+    );
+    let requests = server.finish().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "a mismatched current identity must not reach the network"
+    );
+}
+
 fn server_url_for_identity() -> &'static str {
     "http://127.0.0.1:1"
 }
@@ -735,21 +923,24 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
     };
     use pl_protocol::{PricingOutcome, UnpricedReason};
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
-    for (adapter, body, effort_path) in [
+    for (adapter, body, effort_path, declares_image) in [
         (
-            ProviderAdapterKind::DeepSeek,
-            json!({"data":[{"id":"future-model","name":"Future","context_window":64000,"max_output_tokens":8000,"effort":{"supported_levels":["gentle","new-ultra"],"default_level":"new-ultra"},"pricing":{"input":0},"supports_function_calling":true}]}),
+            ProtocolKind::DeepSeek,
+            json!({"data":[{"id":"future-model","name":"Future","context_window":64000,"max_output_tokens":8000,"input_modalities":["text","image"],"output_modalities":["text"],"effort":{"supported_levels":["gentle","new-ultra"],"default_level":"new-ultra"},"pricing":{"input":0},"supports_function_calling":true}]}),
             "reasoning_effort",
+            true,
         ),
         (
-            ProviderAdapterKind::OpenAi,
+            ProtocolKind::OpenAi,
             json!({"models":[{"slug":"future-model","display_name":"Future","description":"independent metadata","context_window":64000,"max_context_window":128000,"auto_compact_token_limit":12000,"supported_reasoning_levels":[{"effort":"gentle","description":"less"},{"effort":"new-ultra","description":"more"}],"default_reasoning_level":"new-ultra","base_instructions":"DO NOT IMPORT","shell_type":"powershell","supports_temperature":false}]}),
             "reasoning",
+            true,
         ),
         (
-            ProviderAdapterKind::Xai,
-            json!({"data":[{"id":"future-model","context_window":64000,"supported_reasoning_levels":[{"effort":"gentle"},{"effort":"new-ultra"}],"default_reasoning_level":"new-ultra"}]}),
+            ProtocolKind::Xai,
+            json!({"data":[{"id":"future-model","context_length":64000,"input_modalities":["text","image"],"output_modalities":["text"],"capabilities":{"reasoning_effort":["gentle","new-ultra"],"default_reasoning_effort":"new-ultra"}}]}),
             "reasoning",
+            false,
         ),
     ] {
         let models = discover(body, adapter).await;
@@ -757,17 +948,19 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert_eq!(model.supported_efforts(), ["gentle", "new-ultra"]);
         assert_eq!(model.default_effort().as_deref(), Some("new-ultra"));
         assert_eq!(model.context_window, Some(64000));
-        assert!(
+        assert_eq!(
             model
                 .capabilities
-                .supports_input_modality(ModelModality::Image)
+                .supports_input_modality(ModelModality::Image),
+            declares_image,
+            "only a vendor that declared image input (or the OpenAI Codex default) exposes it"
         );
         assert!(model.base_instructions.is_empty());
         let mut config = provider("http://127.0.0.1:1", adapter);
         config.set_model_catalog_overlay(models).unwrap();
         let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
         assert_eq!(descriptor.context_window, Some(64000));
-        let preset = (adapter == ProviderAdapterKind::OpenAi).then_some(12_000);
+        let preset = (adapter == ProtocolKind::OpenAi).then_some(12_000);
         assert_eq!(descriptor.auto_compact_token_limit, preset);
         assert_eq!(
             model.resolved_auto_compact_limit(),
@@ -798,38 +991,28 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         .await
         .unwrap();
         let endpoint = match adapter {
-            ProviderAdapterKind::OpenAi => ProviderEndpoint::openai(Some(fixture.base_url())),
-            ProviderAdapterKind::Xai => ProviderEndpoint::xai(Some(fixture.base_url())),
-            _ => ProviderEndpoint::deepseek(Some(fixture.base_url())),
+            ProtocolKind::OpenAi => ProtocolEndpoint::openai(Some(fixture.base_url())),
+            ProtocolKind::Xai => ProtocolEndpoint::xai(Some(fixture.base_url())),
+            _ => ProtocolEndpoint::deepseek(Some(fixture.base_url())),
         };
-        model.binding.transport.default_connection_mode =
-            pl_model::provider::ProviderConnectionMode::Http;
-        let runtime = ModelRuntime::new(endpoint, model).unwrap();
+        model.binding.transport.default_connection_mode = pl_model::protocol::ConnectionMode::Http;
+        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(1, 1)
             .write_to(&mut png, image::ImageFormat::Png)
             .unwrap();
-        let request = CompletionRequest::builder()
-            .messages(vec![Message {
-                role: MessageRole::User,
-                content: MessageContent::new(vec![
-                    ContentPart::Text {
-                        text: "hello".into(),
-                    },
-                    ContentPart::Attachment {
-                        attachment_id: "pixel".into(),
-                        modality: AttachmentModality::Image,
-                        media_type: "image/png".into(),
-                        filename: None,
-                    },
-                ]),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_result: None,
-                metadata: Default::default(),
-                presentation: Default::default(),
-            }])
-            .attachments(vec![AttachmentInput {
+        let mut parts = vec![ContentPart::Text {
+            text: "hello".into(),
+        }];
+        let mut attachments = Vec::new();
+        if declares_image {
+            parts.push(ContentPart::Attachment {
+                attachment_id: "pixel".into(),
+                modality: AttachmentModality::Image,
+                media_type: "image/png".into(),
+                filename: None,
+            });
+            attachments.push(AttachmentInput {
                 attachment_id: "pixel".into(),
                 modality: AttachmentModality::Image,
                 media_type: "image/png".into(),
@@ -837,7 +1020,19 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
                 source: AttachmentSource::Bytes {
                     bytes: std::sync::Arc::from(png.into_inner()),
                 },
+            });
+        }
+        let request = CompletionRequest::builder()
+            .messages(vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::new(parts),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_result: None,
+                metadata: Default::default(),
+                presentation: Default::default(),
             }])
+            .attachments(attachments)
             .reasoning(Some(ReasoningConfig {
                 effort: Some("new-ultra".into()),
                 summary: None,
@@ -872,15 +1067,176 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         }
         assert!(records[0].body.get("temperature").is_none());
         for record in &records {
-            assert_eq!(record.body["input"][0]["content"][1]["type"], "input_image");
-            assert!(
-                record.body["input"][0]["content"][1]["image_url"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("data:image/png;base64,")
-            );
+            let content = record.body["input"][0]["content"].as_array().unwrap();
+            if declares_image {
+                assert_eq!(content[1]["type"], "input_image");
+                assert!(
+                    content[1]["image_url"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("data:image/png;base64,")
+                );
+            } else {
+                assert_eq!(content.len(), 1);
+                assert_eq!(content[0]["type"], "input_text");
+            }
         }
     }
+}
+
+/// 各厂商只解释自己的 envelope、字段与价格单位；未知模态不虚构图片。
+#[tokio::test]
+async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices() {
+    let error = |server: Server, kind: ProtocolKind| async move {
+        let query = ModelCatalogQuery::for_account(&provider(&server.url, kind)).unwrap();
+        assert_eq!(
+            query.execute(None).await.unwrap_err(),
+            ModelCatalogQueryError::Protocol
+        );
+        server.finish().await;
+    };
+    // OpenAI/Codex `models`/`slug` 不是 DeepSeek 或 OpenAI-compatible 的合法名单。
+    for body in [
+        json!({"models":[{"slug":"x"}]}),
+        json!({"data":[{"slug":"x"}]}),
+        json!({"models":[],"data":[]}),
+    ] {
+        let server = Server::json(body).await;
+        error(server, ProtocolKind::DeepSeek).await;
+    }
+    for body in [
+        json!({"models":[{"slug":"x"}]}),
+        json!({"data":[{"slug":"x"}]}),
+    ] {
+        let server = Server::json(body).await;
+        error(server, ProtocolKind::MiMo).await;
+    }
+    for body in [
+        json!({"models":[{"slug":"x"}]}),
+        json!({"data":[{"slug":"x"}]}),
+    ] {
+        let server = Server::json(body).await;
+        error(server, ProtocolKind::Xai).await;
+    }
+
+    // DeepSeek 忽略 xAI 专属字段：context_length 与官方 token 价格不生效。
+    let deepseek = discover(
+        json!({"data":[{"id":"x","context_length":4096,
+            "prompt_text_token_price":20000,"completion_text_token_price":100000}]}),
+        ProtocolKind::DeepSeek,
+    )
+    .await
+    .remove(0);
+    assert_eq!(deepseek.context_window, None);
+    assert_eq!(deepseek.pricing, ModelPricing::Unknown);
+
+    // xAI 用 context_length 与官方 native 价格单位（USD cents/100M）；context_window 不生效。
+    let xai = discover(
+        json!({"data":[{"id":"x","context_length":4096,"context_window":9999,
+            "input_modalities":["text","image"],"output_modalities":["text"],
+            "prompt_text_token_price":20000,"completion_text_token_price":100000,
+            "cached_prompt_text_token_price":5000}]}),
+        ProtocolKind::Xai,
+    )
+    .await
+    .remove(0);
+    assert_eq!(xai.context_window, Some(4096));
+    assert!(
+        !xai.capabilities
+            .supports_input_modality(ModelModality::Image),
+        "xAI /models declares no modalities; extension fields are ignored"
+    );
+    let ModelPricing::Rates {
+        currency, tiers, ..
+    } = xai.pricing
+    else {
+        panic!("xAI native token price must be a token rate")
+    };
+    assert_eq!(currency, "USD");
+    assert_eq!(tiers[0].input_per_mtok, 2.0);
+    assert_eq!(tiers[0].output_per_mtok, 10.0);
+    assert_eq!(tiers[0].cache_read_per_mtok, Some(0.5));
+
+    // OpenAI 不套用 xAI 字段，也不因此产生价格或窗口声明。
+    let openai = discover(
+        json!({"models":[{"slug":"x","context_length":4096,
+            "prompt_text_token_price":20000,"completion_text_token_price":100000}]}),
+        ProtocolKind::OpenAi,
+    )
+    .await
+    .remove(0);
+    assert_eq!(openai.context_window, None);
+    assert_eq!(openai.pricing, ModelPricing::Unknown);
+
+    // xAI 只接受自己的 reasoning_effort 声明，Codex/DeepSeek 的候选字段不生效。
+    let xai_ignored = discover(
+        json!({"data":[{"id":"x","supported_reasoning_levels":[{"effort":"low"}],
+            "reasoningEfforts":[{"value":"low"}],"reasoning_effort":["low"]}]}),
+        ProtocolKind::Xai,
+    )
+    .await
+    .remove(0);
+    assert!(xai_ignored.supported_efforts().is_empty());
+    let xai_effort = discover(
+        json!({"data":[{"id":"x","capabilities":{
+            "reasoning_effort":["low","high"],"default_reasoning_effort":"high"}}]}),
+        ProtocolKind::Xai,
+    )
+    .await
+    .remove(0);
+    assert_eq!(xai_effort.supported_efforts(), ["low", "high"]);
+    assert_eq!(xai_effort.default_effort().as_deref(), Some("high"));
+    assert_eq!(
+        xai_effort
+            .effort_parameter()
+            .unwrap()
+            .wire_for("high")
+            .unwrap()
+            .set[0]
+            .path,
+        "reasoning.effort"
+    );
+
+    // 缺模态声明的未知模型保持 text-only：只有 OpenAI/Codex 缺省 text+image。
+    let openai_unknown = discover(json!({"models":[{"slug":"unknown"}]}), ProtocolKind::OpenAi)
+        .await
+        .remove(0);
+    assert!(
+        openai_unknown
+            .capabilities
+            .supports_input_modality(ModelModality::Image)
+    );
+    for kind in [
+        ProtocolKind::DeepSeek,
+        ProtocolKind::Xai,
+        ProtocolKind::MiMo,
+    ] {
+        let unknown = discover(json!({"data":[{"id":"unknown"}]}), kind)
+            .await
+            .remove(0);
+        assert!(
+            !unknown
+                .capabilities
+                .supports_input_modality(ModelModality::Image),
+            "{kind:?} must not fabricate image input"
+        );
+        assert!(
+            unknown.binding.request.media.is_empty(),
+            "{kind:?} must not fabricate a media profile"
+        );
+        assert_eq!(unknown.resolved_context_window(), None);
+    }
+
+    // OpenAI-compatible 共同契约可用，但 xAI 的 context_length 不生效。
+    let mimo = discover(
+        json!({"data":[{"id":"mimo-x","context_window":8192,"context_length":4096,
+            "supports_function_calling":true}]}),
+        ProtocolKind::MiMo,
+    )
+    .await
+    .remove(0);
+    assert_eq!(mimo.context_window, Some(8192));
+    assert!(mimo.capabilities.tools.function_calling);
 }
 
 #[tokio::test]
@@ -901,8 +1257,7 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
         http(200,"", &json!({"data":[{"id":"cached-only","capabilities":{"input":[{"modality":"text","sources":[]}]}}]}).to_string()),
     ]).await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
     let first = updated(query.execute(None).await.unwrap());
     assert_eq!(first[0].supported_efforts(), known.supported_efforts());
     assert_eq!(first[0].context_window, known.context_window);
@@ -951,7 +1306,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         runtime::{ModelInvocationContext, ModelRuntime},
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
-    let adapter = ProviderAdapterKind::OpenAi;
+    let adapter = ProtocolKind::OpenAi;
     let model_id = "gpt-6.1-sol";
     let mut old = discover(
         json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Sol","description":"Provider description without capability declarations."}]}),
@@ -970,7 +1325,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         http(200, "", &json!({"data":[{"id":model_id,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
     ]).await;
     let mut config = provider(&server.url, adapter);
-    let query = ModelCatalogQuery::for_provider(&config).unwrap();
+    let query = ModelCatalogQuery::for_account(&config).unwrap();
     let cache = ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: None,
@@ -981,12 +1336,12 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         .set_model_catalog_overlay(cache.models.clone())
         .unwrap();
     let mut canonical = AgentModelConfig {
-        providers: [(ProviderId::new("instance").unwrap(), config.clone())].into(),
+        accounts: [(AccountId::new("instance").unwrap(), config.clone())].into(),
         routes: Default::default(),
     };
     canonical.reconcile_model_catalog().unwrap();
     let startup = canonical
-        .providers
+        .accounts
         .values()
         .next()
         .unwrap()
@@ -1016,9 +1371,9 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     assert_eq!(model.description, description);
     assert_eq!(model.context_window, Some(1_050_000));
     assert_eq!(
-        model_descriptor(&pl_model::config::ProviderModelEntry {
+        model_descriptor(&pl_model::config::AccountModelEntry {
             model: model.clone(),
-            origin: pl_model::config::ProviderModelOrigin::Online,
+            origin: pl_model::config::AccountModelOrigin::Online,
         })
         .auto_compact_token_limit,
         Some(475_000)
@@ -1030,9 +1385,9 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         ["low", "medium", "high", "xhigh", "max"]
     );
     assert!(
-        model_descriptor(&pl_model::config::ProviderModelEntry {
+        model_descriptor(&pl_model::config::AccountModelEntry {
             model: model.clone(),
-            origin: pl_model::config::ProviderModelOrigin::Online,
+            origin: pl_model::config::AccountModelOrigin::Online,
         })
         .pricing
         .is_some()
@@ -1059,8 +1414,12 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     model
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    let runtime =
-        ModelRuntime::new(ProviderEndpoint::openai(Some(fixture.base_url())), model).unwrap();
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::openai(Some(fixture.base_url())),
+        model,
+    )
+    .unwrap();
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(1, 1)
         .write_to(&mut png, image::ImageFormat::Png)
@@ -1121,9 +1480,9 @@ async fn observed_window_lifts_undeclared_inherited_budget_limit() {
         "data":[{"id":"deepseek-flash","context_window":1_048_576}]
     }))
     .await;
-    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
+    let mut config = provider(&server.url, ProtocolKind::DeepSeek);
     let models = updated(
-        ModelCatalogQuery::for_provider(&config)
+        ModelCatalogQuery::for_account(&config)
             .unwrap()
             .execute(None)
             .await
@@ -1137,7 +1496,7 @@ async fn observed_window_lifts_undeclared_inherited_budget_limit() {
     assert_eq!(models[0].max_output_tokens, Some(384_000));
     config.set_model_catalog_overlay(models).unwrap();
     let entry = &config.effective_catalog(None).unwrap()[0];
-    assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+    assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
     assert_eq!(entry.model.max_context_window, Some(1_048_576));
     server.finish().await;
 }
@@ -1184,8 +1543,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     ])
     .await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
     let cache = |models: &[ModelInfo]| ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: None,
@@ -1203,11 +1561,11 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     assert_eq!(raised[0].pricing, ModelPricing::Unknown);
     assert_eq!(raised[0].supported_efforts(), builtin.supported_efforts());
     assert!(raised[0].capabilities.reasoning);
-    let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    let mut config = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     config.set_model_catalog_overlay(raised.clone()).unwrap();
     let effective = config.effective_catalog(None).unwrap();
     let entry = &effective[0];
-    assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+    assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
     // 价格仍只按本地精确 ID 关联。
     assert_eq!(entry.model.pricing, builtin.pricing);
     assert_ne!(entry.model.pricing, ModelPricing::Unknown);
@@ -1279,8 +1637,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     ] {
         let conflict = Server::json(body).await;
         let query =
-            ModelCatalogQuery::for_provider(&provider(&conflict.url, ProviderAdapterKind::OpenAi))
-                .unwrap();
+            ModelCatalogQuery::for_account(&provider(&conflict.url, ProtocolKind::OpenAi)).unwrap();
         let error = query.execute(None).await.unwrap_err();
         assert_eq!(error, ModelCatalogQueryError::Protocol);
         conflict.finish().await;
@@ -1357,9 +1714,9 @@ const DEEPSEEK_MODELS_CAPTURE: &str = r#"{
 #[tokio::test]
 async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() {
     let server = Server::responses(vec![http(200, "", DEEPSEEK_MODELS_CAPTURE)]).await;
-    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
+    let mut config = provider(&server.url, ProtocolKind::DeepSeek);
     let models = updated(
-        ModelCatalogQuery::for_provider(&config)
+        ModelCatalogQuery::for_account(&config)
             .unwrap()
             .execute(None)
             .await
@@ -1406,7 +1763,7 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
             .iter()
             .find(|entry| entry.model.model_id == model_id)
             .unwrap();
-        assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
+        assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
         // 价格只按该 provider 绑定目录的大小写敏感精确 ID 关联。
         let local = definition
             .models
@@ -1462,8 +1819,8 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
         ),
     ])
     .await;
-    let mut config = provider(&server.url, ProviderAdapterKind::DeepSeek);
-    let query = ModelCatalogQuery::for_provider(&config).unwrap();
+    let mut config = provider(&server.url, ProtocolKind::DeepSeek);
+    let query = ModelCatalogQuery::for_account(&config).unwrap();
     let models = updated(query.execute(None).await.unwrap());
     assert_eq!(
         models
@@ -1504,7 +1861,7 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
         .unwrap();
     assert_eq!(
         flash_entry.origin,
-        pl_model::config::ProviderModelOrigin::Online
+        pl_model::config::AccountModelOrigin::Online
     );
     assert_eq!(flash_entry.model.pricing, builtin.pricing);
     assert_ne!(flash_entry.model.pricing, ModelPricing::Unknown);
@@ -1558,8 +1915,9 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::deepseek(Some(fixture.base_url())),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::deepseek(Some(fixture.base_url())),
         flash.clone(),
     )
     .unwrap();
@@ -1592,12 +1950,11 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
     }))
     .await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::DeepSeek))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::DeepSeek)).unwrap();
     let cache = ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: None,
-        models: vec![cached_model("last-good", ProviderAdapterKind::DeepSeek)],
+        models: vec![cached_model("last-good", ProtocolKind::DeepSeek)],
     };
     let error = query.execute(Some(&cache)).await.unwrap_err();
     assert_eq!(error, ModelCatalogQueryError::Protocol);
@@ -1613,12 +1970,12 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
     let foreign = bundled_model_definition("deepseek").unwrap().models[0]
         .model_id
         .clone();
-    let api = discover(json!({"data":[{"id":model_id},{"id":model_id.to_uppercase()},{"id":format!("{model_id}-variant")},{"id":foreign},{"id":"manual"}]}), ProviderAdapterKind::OpenAi).await;
-    let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    let api = discover(json!({"data":[{"id":model_id},{"id":model_id.to_uppercase()},{"id":format!("{model_id}-variant")},{"id":foreign},{"id":"manual"}]}), ProtocolKind::OpenAi).await;
+    let mut config = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     let mut manual = ModelInfo::compatible("manual");
     manual.display_name = "Authoritative manual model".into();
     manual.pricing = known.pricing.clone();
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
@@ -1646,11 +2003,11 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
         &manual
     );
     let persisted = serde_json::to_value(&config).unwrap();
-    let reread: ProviderConfig = serde_json::from_value(persisted).unwrap();
+    let reread: AccountConfig = serde_json::from_value(persisted).unwrap();
     assert!(!reread.has_model_catalog_overlay());
     config.set_model_catalog_overlay(Vec::new()).unwrap();
     assert_eq!(config.effective_models(None).unwrap(), vec![manual]);
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
@@ -1665,9 +2022,9 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
             .count(),
         1
     );
-    let empty = discover(json!({"data":[]}), ProviderAdapterKind::DeepSeek).await;
+    let empty = discover(json!({"data":[]}), ProtocolKind::DeepSeek).await;
     assert!(empty.is_empty());
-    let mut fresh = provider("http://127.0.0.1:1", ProviderAdapterKind::DeepSeek);
+    let mut fresh = provider("http://127.0.0.1:1", ProtocolKind::DeepSeek);
     fresh.set_model_catalog_overlay(empty).unwrap();
     assert!(fresh.effective_models(None).unwrap().is_empty());
 }
@@ -1675,17 +2032,14 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
 #[tokio::test]
 async fn availability_preserves_removed_choice_without_weakening_strict_edits_or_structure_validation()
  {
-    let mut selected_provider = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    let mut selected_provider = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     let mut selected = selected_provider.effective_models(None).unwrap()[0].clone();
     selected.model_id = "remote-only-choice".into();
     selected_provider
         .set_model_catalog_overlay(vec![selected.clone()])
         .unwrap();
     selected_provider
-        .set_model_connection_mode(
-            &selected.model_id,
-            pl_model::provider::ProviderConnectionMode::Http,
-        )
+        .set_model_connection_mode(&selected.model_id, pl_model::protocol::ConnectionMode::Http)
         .unwrap();
     selected_provider
         .set_model_auto_compact_override(&selected.model_id, Some(1234))
@@ -1693,23 +2047,23 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     selected_provider
         .set_model_catalog_overlay(Vec::new())
         .unwrap();
-    let id = ProviderId::new("instance-a").unwrap();
+    let id = AccountId::new("instance-a").unwrap();
     let role = AgentRoleId::new("explorer").unwrap();
     let route = ModelRouteConfig {
-        provider: id.clone(),
-        model: selected.model_id.clone(),
+        account_id: id.clone(),
+        model_id: selected.model_id.clone(),
         effort: selected.default_effort().map(ReasoningEffort::new),
     };
     let mut config = AgentModelConfig {
-        providers: [(id.clone(), selected_provider)].into(),
+        accounts: [(id.clone(), selected_provider)].into(),
         routes: [(role.clone(), route.clone())].into(),
     };
     config.validate_declarations().unwrap();
     assert_eq!(
         config.route_availability(&route).unwrap(),
         ModelRouteAvailability::ModelUnavailable {
-            provider: id.clone(),
-            model: selected.model_id.clone()
+            account_id: id.clone(),
+            model_id: selected.model_id.clone()
         }
     );
     assert!(config.validate().is_err());
@@ -1725,8 +2079,8 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     assert!(from_disk.validate().is_err());
 
     // A remote model can remain present while withdrawing a saved connection candidate.
-    let mut narrowed = cached_model("connection-choice", ProviderAdapterKind::OpenAi);
-    narrowed.binding.transport.supported_connection_modes = vec![ProviderConnectionMode::WebSocket];
+    let mut narrowed = cached_model("connection-choice", ProtocolKind::OpenAi);
+    narrowed.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
     let server = Server::json(json!({"models":[{
         "slug": narrowed.model_id,
         "binding": narrowed.binding,
@@ -1734,18 +2088,18 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         "context_window": 64000
     }]}))
     .await;
-    let mut connection_provider = provider(&server.url, ProviderAdapterKind::OpenAi);
+    let mut connection_provider = provider(&server.url, ProtocolKind::OpenAi);
     connection_provider
         .set_model_catalog_overlay(vec![cached_model(
             "connection-choice",
-            ProviderAdapterKind::OpenAi,
+            ProtocolKind::OpenAi,
         )])
         .unwrap();
     connection_provider
-        .set_model_connection_mode("connection-choice", ProviderConnectionMode::Http)
+        .set_model_connection_mode("connection-choice", ConnectionMode::Http)
         .unwrap();
     let desired_before_observation = serde_json::to_value(&connection_provider).unwrap();
-    let query = ModelCatalogQuery::for_provider(&connection_provider).unwrap();
+    let query = ModelCatalogQuery::for_account(&connection_provider).unwrap();
     let observed = updated(query.execute(None).await.unwrap());
     assert_eq!(observed[0].binding.transport, narrowed.binding.transport);
     connection_provider
@@ -1759,15 +2113,15 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     assert_eq!(display.transport.connection_modes[0].id, "web_socket");
     assert_eq!(
         connection_provider.connection_overrides()["connection-choice"],
-        ProviderConnectionMode::Http
+        ConnectionMode::Http
     );
     let connection_route = ModelRouteConfig {
-        provider: id.clone(),
-        model: "connection-choice".into(),
+        account_id: id.clone(),
+        model_id: "connection-choice".into(),
         effort: None,
     };
     let mut connection_config = AgentModelConfig {
-        providers: [(id.clone(), connection_provider)].into(),
+        accounts: [(id.clone(), connection_provider)].into(),
         routes: [(role.clone(), connection_route.clone())].into(),
     };
     connection_config.validate_declarations().unwrap();
@@ -1776,9 +2130,9 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .route_availability(&connection_route)
             .unwrap(),
         ModelRouteAvailability::ConnectionUnavailable {
-            provider: id.clone(),
-            model: "connection-choice".into(),
-            connection_mode: ProviderConnectionMode::Http,
+            account_id: id.clone(),
+            model_id: "connection-choice".into(),
+            connection_mode: ConnectionMode::Http,
         }
     );
     assert!(connection_config.validate().is_err());
@@ -1789,14 +2143,14 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .is_err()
     );
     assert_eq!(
-        serde_json::to_value(&connection_config.providers[&id]).unwrap(),
+        serde_json::to_value(&connection_config.accounts[&id]).unwrap(),
         desired_before_observation
     );
     assert_eq!(connection_config.routes[&role], connection_route);
     let mut manual_config = connection_config.clone();
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
-    } = &mut manual_config.providers.get_mut(&id).unwrap().catalog
+    } = &mut manual_config.accounts.get_mut(&id).unwrap().catalog
     {
         let mut manual = narrowed.clone();
         manual.binding.transport = ModelTransportProfile::responses_http();
@@ -1816,35 +2170,33 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .binding
             .transport
             .default_connection_mode,
-        ProviderConnectionMode::Http
+        ConnectionMode::Http
     );
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
-    } = &mut manual_config.providers.get_mut(&id).unwrap().catalog
+    } = &mut manual_config.accounts.get_mut(&id).unwrap().catalog
     {
         additional_models[0] = narrowed.clone();
     }
     assert!(manual_config.validate_declarations().is_err());
     assert!(manual_config.route_availability(&connection_route).is_err());
     assert!(manual_config.resolve(&role).is_err());
-    let mut explicit = ProviderConfig::from_explicit_models(
-        ProviderEndpoint::openai(None),
-        vec![narrowed.clone()],
-    );
-    if let pl_model::config::ProviderModelCatalogConfig::Explicit {
+    let mut explicit =
+        AccountConfig::from_explicit_models(ProtocolEndpoint::openai(None), vec![narrowed.clone()]);
+    if let pl_model::config::AccountModelCatalogConfig::Explicit {
         connection_overrides,
         ..
     } = &mut explicit.catalog
     {
-        connection_overrides.insert(narrowed.model_id.clone(), ProviderConnectionMode::Http);
+        connection_overrides.insert(narrowed.model_id.clone(), ConnectionMode::Http);
     }
     assert!(explicit.effective_models(None).is_err());
     assert!(explicit.validate_declarations(&id).is_err());
     let mut non_discovery = connection_config.clone();
-    let provider = non_discovery.providers.get_mut(&id).unwrap();
+    let provider = non_discovery.accounts.get_mut(&id).unwrap();
     let connection_overrides = provider.connection_overrides().clone();
     let auto_compact_overrides = provider.auto_compact_overrides().clone();
-    provider.catalog = pl_model::config::ProviderModelCatalogConfig::Bundled {
+    provider.catalog = pl_model::config::AccountModelCatalogConfig::Bundled {
         catalog: ModelCatalogId::new("zhipu").unwrap(),
         additional_models: Vec::new(),
         connection_overrides,
@@ -1852,32 +2204,32 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     };
     assert!(non_discovery.validate_declarations().is_err());
     let mut bad_profile = manual_config.clone();
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models,
         connection_overrides,
         ..
-    } = &mut bad_profile.providers.get_mut(&id).unwrap().catalog
+    } = &mut bad_profile.accounts.get_mut(&id).unwrap().catalog
     {
         // Even an otherwise valid override cannot repair a contradictory declared default.
         additional_models[0]
             .binding
             .transport
-            .default_connection_mode = ProviderConnectionMode::Http;
-        connection_overrides.insert(narrowed.model_id.clone(), ProviderConnectionMode::WebSocket);
+            .default_connection_mode = ConnectionMode::Http;
+        connection_overrides.insert(narrowed.model_id.clone(), ConnectionMode::WebSocket);
     }
     assert!(bad_profile.validate_declarations().is_err());
-    let instance = connection_config.providers.get_mut(&id).unwrap();
+    let instance = connection_config.accounts.get_mut(&id).unwrap();
     assert!(
         instance
-            .set_model_connection_mode("connection-choice", ProviderConnectionMode::Http)
+            .set_model_connection_mode("connection-choice", ConnectionMode::Http)
             .is_err()
     );
     assert_eq!(
         instance.connection_overrides()["connection-choice"],
-        ProviderConnectionMode::Http
+        ConnectionMode::Http
     );
     instance
-        .set_model_connection_mode("connection-choice", ProviderConnectionMode::WebSocket)
+        .set_model_connection_mode("connection-choice", ConnectionMode::WebSocket)
         .unwrap();
     assert_eq!(
         connection_config
@@ -1894,7 +2246,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .binding
             .transport
             .default_connection_mode,
-        ProviderConnectionMode::WebSocket
+        ConnectionMode::WebSocket
     );
     // Only discovery was sent: rejected resolution cannot construct a fallback inference request.
     let requests = server.finish().await;
@@ -1905,7 +2257,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     current.parameters.clear();
     current.binding.request.body.clear();
     config
-        .providers
+        .accounts
         .get_mut(&id)
         .unwrap()
         .set_model_catalog_overlay(vec![current])
@@ -1916,15 +2268,15 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     ));
     let mut manual = ModelInfo::compatible("manual-choice");
     manual.parameters.clear();
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
-    } = &mut config.providers.get_mut(&id).unwrap().catalog
+    } = &mut config.accounts.get_mut(&id).unwrap().catalog
     {
         additional_models.push(manual);
     }
     let manual_route = ModelRouteConfig {
-        provider: id.clone(),
-        model: "manual-choice".into(),
+        account_id: id.clone(),
+        model_id: "manual-choice".into(),
         effort: Some(ReasoningEffort::new("undeclared")),
     };
     assert!(matches!(
@@ -1936,7 +2288,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         config.validate_declarations(),
         Err(pl_protocol::PureError::ConfigError(_))
     ));
-    config.providers.get_mut(&id).unwrap().name.clear();
+    config.accounts.get_mut(&id).unwrap().name.clear();
     assert!(config.route_availability(&route).is_err());
 }
 
@@ -1974,10 +2326,9 @@ async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_
         ("responses", json!(["http", "web_socket"]), "http"),
         ("unknown", json!(["web_socket"]), "web_socket"),
     ] {
-        let mut binding = serde_json::to_value(
-            cached_model("invalid-profile", ProviderAdapterKind::OpenAi).binding,
-        )
-        .unwrap();
+        let mut binding =
+            serde_json::to_value(cached_model("invalid-profile", ProtocolKind::OpenAi).binding)
+                .unwrap();
         binding["transport"]["protocol"] = json!(protocol);
         binding["transport"]["supported_connection_modes"] = modes;
         binding["transport"]["default_connection_mode"] = json!(default);
@@ -1986,12 +2337,11 @@ async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_
     for body in invalid_bodies {
         let server = Server::json(body).await;
         let query =
-            ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-                .unwrap();
+            ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
         let cache = ModelCatalogQueryCache {
             identity: query.identity().into(),
             etag: None,
-            models: vec![cached_model("last-good", ProviderAdapterKind::OpenAi)],
+            models: vec![cached_model("last-good", ProtocolKind::OpenAi)],
         };
         let error = query.execute(Some(&cache)).await.unwrap_err();
         assert_eq!(error, ModelCatalogQueryError::Protocol);
@@ -2010,8 +2360,7 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
     ])
     .await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
     let ModelCatalogQueryResult::Updated {
         identity,
         etag,
@@ -2035,7 +2384,7 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
         ModelCatalogQueryError::UnexpectedNotModified
     );
     let mut corrupt = cache.clone();
-    let mut priced = cached_model("cached-price", ProviderAdapterKind::OpenAi);
+    let mut priced = cached_model("cached-price", ProtocolKind::OpenAi);
     priced.pricing = ModelPricing::published(
         "USD",
         vec![pl_model::model::TokenPriceTier::flat(-1.0, 2.0, None, None)],
@@ -2063,36 +2412,33 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
 
 #[tokio::test]
 async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
-    let mut model = cached_model("profile-order", ProviderAdapterKind::OpenAi);
+    let mut model = cached_model("profile-order", ProtocolKind::OpenAi);
     model.binding.transport.supported_connection_modes.reverse();
     let models = discover(
         json!({"data":[{"id":model.model_id,"binding":model.binding,"input_modalities":["text"]}]}),
-        ProviderAdapterKind::OpenAi,
+        ProtocolKind::OpenAi,
     )
     .await;
     assert_eq!(
         models[0].binding.transport,
         ModelTransportProfile::responses_websocket()
     );
-    let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    let mut config = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     config
         .set_model_catalog_overlay(vec![model.clone()])
         .unwrap();
     config
-        .set_model_connection_mode(
-            "profile-order",
-            pl_model::provider::ProviderConnectionMode::Http,
-        )
+        .set_model_connection_mode("profile-order", pl_model::protocol::ConnectionMode::Http)
         .unwrap();
     assert_eq!(
         config.effective_models(None).unwrap()[0]
             .binding
             .transport
             .default_connection_mode,
-        pl_model::provider::ProviderConnectionMode::Http
+        pl_model::protocol::ConnectionMode::Http
     );
 
-    model.binding.transport.supported_connection_modes = vec![ProviderConnectionMode::WebSocket];
+    model.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
     let server = Server::responses(vec![
         http(
             200,
@@ -2104,8 +2450,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     ])
     .await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
     let cache = ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: Some("\"narrowed\"".into()),
@@ -2124,11 +2469,8 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     assert_eq!(descriptor.transport.connection_modes[0].id, "web_socket");
     for modes in [
         Vec::new(),
-        vec![
-            ProviderConnectionMode::WebSocket,
-            ProviderConnectionMode::WebSocket,
-        ],
-        vec![ProviderConnectionMode::Http],
+        vec![ConnectionMode::WebSocket, ConnectionMode::WebSocket],
+        vec![ConnectionMode::Http],
     ] {
         let mut invalid = inherited.clone();
         invalid[0].binding.transport.supported_connection_modes = modes;
@@ -2151,10 +2493,10 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
             .contains("if-none-match: \"narrowed\"\r\n")
     );
 
-    let deepseek = cached_model("deepseek-profile", ProviderAdapterKind::DeepSeek);
+    let deepseek = cached_model("deepseek-profile", ProtocolKind::DeepSeek);
     let observed = discover(
-        json!({"models":[{"slug":deepseek.model_id,"binding":deepseek.binding,"input_modalities":["text"]}]}),
-        ProviderAdapterKind::DeepSeek,
+        json!({"data":[{"id":deepseek.model_id,"binding":deepseek.binding,"input_modalities":["text"]}]}),
+        ProtocolKind::DeepSeek,
     )
     .await;
     assert_eq!(
@@ -2164,8 +2506,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     let server =
         Server::json(json!({"models":[{"slug":model.model_id,"binding":model.binding}]})).await;
     let query =
-        ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::DeepSeek))
-            .unwrap();
+        ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::DeepSeek)).unwrap();
     assert_eq!(
         query.execute(None).await.unwrap_err(),
         ModelCatalogQueryError::Protocol
@@ -2207,8 +2548,7 @@ async fn failed_http_redirect_and_body_caps_are_typed_and_never_expose_arbitrary
     ] {
         let server = Server::responses(vec![response]).await;
         let query =
-            ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::OpenAi))
-                .unwrap();
+            ModelCatalogQuery::for_account(&provider(&server.url, ProtocolKind::OpenAi)).unwrap();
         let error = query.execute(None).await.unwrap_err();
         assert_eq!(error, expected);
         assert!(!format!("{error:?}: {error}").contains("secret"));
@@ -2245,12 +2585,12 @@ async fn whole_body_timeout_and_future_drop_release_borrow_without_changing_last
             let mut b = [0];
             socket.read(&mut b).await.unwrap_or(0)
         });
-        let query = ModelCatalogQuery::for_provider(&provider(&url, ProviderAdapterKind::DeepSeek))
-            .unwrap();
+        let query =
+            ModelCatalogQuery::for_account(&provider(&url, ProtocolKind::DeepSeek)).unwrap();
         let cache = ModelCatalogQueryCache {
             identity: query.identity().into(),
             etag: None,
-            models: vec![cached_model("last-good", ProviderAdapterKind::DeepSeek)],
+            models: vec![cached_model("last-good", ProtocolKind::DeepSeek)],
         };
         let mut future = Box::pin(query.execute(Some(&cache)));
         tokio::select! { result = &mut future => panic!("completed before body: {result:?}"), result = ready_rx => result.unwrap() }

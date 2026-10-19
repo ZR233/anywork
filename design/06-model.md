@@ -1,7 +1,7 @@
 # 06 - 模型层
 
-本文是 provider 适配、模型目录、transport、流归一化、可调参数与计量的唯一权威源；配置侧的
-provider/model 结构见 [20](./20-config.md)。
+本文是厂商协议适配、账号模型目录、transport、流归一化、可调参数与计量的唯一权威源；账号、
+模板与配置迁移见 [20](./20-config.md)。账号是具有稳定身份的接入实例，不是厂商或 wire API。
 
 ## 6.1 职责与边界
 
@@ -9,22 +9,23 @@ provider/model 结构见 [20](./20-config.md)。
 未声明交错推理能力时不发送额外推理字段。结构化 `reasoning_details` 不得从纯文本伪造，
 缺少原始结构时在请求准备阶段明确拒绝；内部保存的响应材料不因此丢失。
 每个模型会话独立维护请求诊断，保存实际规范请求的指令、工具和上下文散列及变化原因。
-诊断世代变化不轮换供应商提示缓存键；旧回执没有诊断时保持未知。
+诊断世代变化不轮换厂商提示缓存键；旧回执没有诊断时保持未知。
 
-pl-model 是模型目录、provider endpoint 与模型协议适配层：把核心层的统一请求转为具体 API 请求，
-并把流式结果归一化为 provider 无关的模型事件与完成响应。Studio 显式构造 model 适配器并交给核心
-模型会话契约；core 不代理 provider 或模型配置。pl-model 不维护产品 agent/session 历史，不解析
+pl-model 是模型目录、account endpoint 与模型协议适配层：把核心层的统一请求转为具体 API 请求，
+并把流式结果归一化为厂商无关的模型事件与完成响应。Studio 显式构造 model 适配器并交给核心
+模型会话契约；core 不代理 account 或模型配置。pl-model 不维护产品 agent/session 历史，不解析
 CLI，也不决定产品阶段；它只维护与一个 Thread 同生命周期的模型会话：物理连接、脱敏 fingerprint
 与 Responses continuation 状态。pl-model 可以消费已经解析好的自定义模型列表，但不读取配置文件。
 
-职责按四个稳定域组织：模型元数据/能力/参数/transport/价格与内置目录；provider 配置、preset 与
-解析后的 endpoint；provider 无关的请求/响应/工具/用量/压缩与 canonical 模型事件；绑定一个已
-解析模型的单模型运行时与唯一 OpenAI-compatible codec。
+职责按稳定领域组织：模型定义与内置目录；账号、账号模板及路由配置；厂商协议和解析后的 endpoint；
+厂商无关的 canonical completion；绑定一个已解析账号模型的单模型运行时。模型定义描述元数据、
+能力与参数声明，模型绑定描述 wire API、连接策略、请求和媒体编码、参数 wire 及计价，已解析路由
+将这些材料与账号身份组合。序列化可组合这些值对象，但不得把裸模型名当作账号或厂商身份。
 
 OpenAI Responses WebSocket、Responses HTTP/SSE、OpenAI Chat、DeepSeek 与智谱/GLM 兼容接口在
 进入唯一 accumulator 前必须统一为 canonical 事件：response started/id、文本、思考、reasoning
 summary、工具参数、工具 ready/done、usage 与完成/失败。核心层、Studio timeline 和外部集成方不
-解析 provider 原始 JSON。同一协议族的 usage alias、cache details、reasoning details 与工具
+解析 厂商原始 JSON。同一协议族的 usage alias、cache details、reasoning details 与工具
 identity 只能由共享的 typed normalizer 解释一次；SSE、WebSocket 与非流式 fixture parser 只负责
 提取各自 envelope，不能各自维护字段优先级或 fallback——同一 usage/tool fixture 经过不同
 transport 入口必须得到完全相同的 canonical 用量与工具身份。底层 event stream、decoder 和
@@ -36,21 +37,21 @@ accumulator 只服务单模型运行时与只读诊断投影，不是宿主 API�
 completion 内部 stream 状态机负责稳定工具调用 identity。工具调用一经解码即具有必填身份
 （item id 与 call id）：Responses 使用事件携带的 item id 与 call id，两者都缺失是协议错误；
 Chat Completions 以 chunk index 构造 stream id / item id，并确定性赋 call id = item id。不存在
-可选 call id 或 id 与 call_id 互为 fallback 的规范化路径。Responses 可能先发送只有 provider
+可选 call id 或 id 与 call_id 互为 fallback 的规范化路径。Responses 可能先发送只有上游
 item id 的 `output_item.added`，后续 delta 或 done 才补独立 call id；同一个工具调用一旦通过
 任一非空身份进入 accumulator，后续 late metadata 必须升级原 accumulator 并合并到同一个 open
-tool，不得拆成第二个 tool call 或第二个 trace part。trace 的 tool part id 以最早稳定的 provider
+tool，不得拆成第二个 tool call 或第二个 trace part。trace 的 tool part id 以最早稳定的上游
 item / runtime tool id 为锚，call id 只作为 metadata 写入 tool snapshot，用于协议回放和
-provider tool result 匹配。
+上游 tool result 匹配。
 
 ## 6.2 依赖与公开 API
 
 pl-model 实现并依赖 core 的模型会话/模型请求契约，core 不依赖 model。产品 DTO 和 adapter 内部
-消息可依赖 pl-protocol；pl-trace 只读消费 core 观察接口，不作为模型执行门面。provider 适配可以
+消息可依赖 pl-protocol；pl-trace 只读消费 core 观察接口，不作为模型执行门面。厂商协议适配可以
 使用 reqwest、eventsource-stream、tokio-tungstenite 与 serde 等依赖，它们只用于内部 transport、typed
 protocol request 和 typed stream event 解析，不向 pl-core 暴露。
 
-公开 API 按四个稳定域组织（completion / model / provider / runtime），消费方通过域模块前缀访问
+公开 API 按稳定域组织（completion / config / model / protocol / runtime），消费方通过域模块前缀访问
 类型；crate 根不重导出本 crate 自有类型（错误基础类型与 Result 在根重导出），同一公开接口只有
 域级一条 canonical 路径。各域精确重导出其公共签名中出现的 pl-protocol 类型：公共类型字段与公共
 方法签名直接使用的依赖类型必须能从本 crate 导入，消费方只依赖 pl-model 即可命名完整签名；禁止
@@ -68,25 +69,30 @@ protocol request 和 typed stream event 解析，不向 pl-core 暴露。
 - 推理交错字段：interleaved.field，当前支持 reasoning、reasoning_content、reasoning_details。
 
 Studio 读取这些能力做装配校验和 UI 展示：图片输入必须要求模型声明 image 输入，工具调用必须匹配
-工具能力，推理请求必须匹配 reasoning 能力。provider 私有差异不扩散到 pl-core。
+工具能力，推理请求必须匹配 reasoning 能力。厂商私有差异不扩散到 pl-core。
 
-提示词缓存不是由模型 model_id 隐式推断的基础能力：provider 服务能力声明 endpoint 的缓存方言，模型
+提示词缓存不是由模型 model_id 隐式推断的基础能力：account 服务能力声明 endpoint 的缓存方言，模型
 目录声明该模型是否报告缓存写入 token，核心层把两者与 wire protocol 合成为穷尽的有效缓存策略。
 未声明能力的自定义 Responses/Chat endpoint 默认不发送任何缓存专属字段。
 
 模型协议配置由模型绑定持有：transport 声明连接方式，请求选项区分 Responses 与 Chat。Responses
 只携带最大输出字段和 programmatic tool calling 配置；Chat 只携带最大输出字段、parallel tools、
 include usage 与 tool stream 配置。厂商原生选项在具体客户端公开，通用调用和原生调用共同经过同一
-执行器；参数映射与开放原生扩展仅在适配边界解释，core 不拼接供应商字段。MiMo 使用
+执行器；参数映射与开放原生扩展仅在适配边界解释，core 不拼接厂商字段。MiMo 使用
 `max_completion_tokens`；智谱按明确模型能力启用 `tool_stream`、保留 thinking；兼容客户端只发送
 所选协议的通用字段。
 
-## 6.4 Provider 与运行时
+## 6.4 厂商协议、账号与运行时
 
-协议栈按调用编排、OpenAI 协议编解码、网络传输和供应商 backend 分工。ModelRuntime 持有唯一执行器，
-原生供应商客户端是借用同一执行器的类型化能力视图，不再各自拥有执行器。Responses HTTP 与 WS
-共用请求和事件解释；Chat 保留独立 wire codec。HTTP JSON、SSE 和 multipart 由共享 reqwest
-transport 执行，重试预算只由调用编排拥有。供应商 backend 组合附件准备、请求选项和错误分类。
+协议栈按调用编排、厂商协议适配、OpenAI base 编解码和网络传输分工。OpenAI、DeepSeek、Zhipu、xAI、
+MiMo 与自定义兼容协议是同级的封闭变体；每个适配通过组合复用 OpenAiBase 的 Chat/Responses 能力，
+保留自己的请求选项、目录声明和解释、原生能力及错误边界。实际请求准备、事件解释与目录解析必须
+经过已选协议适配，不能只把同一个执行器包装成不同名字的客户端。
+
+ModelRuntime 持有唯一执行器和已解析绑定；原生客户端只借用这个执行器。同步的窄协议能力使用
+enum_dispatch 静态分派，异步生命周期仍由唯一执行器拥有，不通过宏隐藏 Future 的 Send 契约。
+Responses HTTP 与 WS 共用请求和事件解释；Chat 保留独立 wire codec。HTTP JSON、SSE 和 multipart
+继续由共享 reqwest transport 执行，重试预算、取消、连接、continuation 和最终计量只有一个 owner。
 
 SSE transport 按完整行向事件解析器交付数据，增量扫描只处理新收到的字节，避免超大
 `data` 行在每个网络分块到达时反复扫描已有前缀。LF、CRLF 与 CR 行尾语义一致，UTF-8
@@ -100,23 +106,36 @@ SSE transport 按完整行向事件解析器交付数据，增量扫描只处理
 本次迁移以本地 Codex 的 endpoint/transport/session 分层为参照，不依赖其产品专属上传协议。
 握手 426 允许在统一预算内切换 HTTP，普通 400 保留为请求错误，不以扩大重试掩盖协议错误。
 
-模型执行采用窄接口与具体供应商客户端组合：统一入口只负责推理；OpenAI、DeepSeek、智谱、MiMo、
+模型执行采用窄接口与具体厂商客户端组合：统一入口只负责推理；OpenAI、DeepSeek、智谱、MiMo、
 xAI 与 OpenAI-compatible 拥有各自的类型化客户端，动态路由返回借用共享执行器的封闭客户端视图。
-单模型运行时与辅助请求客户端显式开放类型化供应商访问入口，不使用 `Any`、向下转型或包含所有
+单模型运行时与辅助请求客户端显式开放类型化厂商访问入口，不使用 `Any`、向下转型或包含所有
 可选操作的大 trait。
+
+模型绑定必须显式携带稳定账号 ID；直接构造运行时的调用方也不能用 endpoint 名称或地址代替。
+AccountModelKey 的两个字段只来自冻结的账号路由，模型发送别名和厂商报告名属于另一个诊断维度。
+提示词诊断同样记录稳定账号 ID，其账号指纹包含该 ID 与影响请求的 endpoint 属性；显示名不进入
+账号身份。即使两个账号的 endpoint 属性相同，也不能共用账号诊断身份。
+
+模型生产者载荷由 pl-model 在明确版本边界解码：`pl.model.assistant` 2→3、
+`pl.model.failure` 1/2→3、`pl.model.prepared-request` 1→2、带冻结绑定的原生
+`pl.model.compaction` 2→3。旧原生压缩载荷保留加密正文、兼容 family 与冻结隔离事实，仅转换
+由模型库拥有的绑定字段，不重新请求压缩或从当前目录补写来源。旧 prepared request 中非空的
+提示词诊断快照也属于该转换；账号 ID 只能取同一回执冻结的模型绑定，不能使用旧快照中的
+显示名。原诊断水位、散列和时间保留，下一次调用再按当前指纹规则判断轮换；不改写不透明
+厂商输出，也不要求批量激活历史会话。
 
 通用与原生调用共享 transport、重试、取消、stream 生命周期与计量路径。余额、配额和远程压缩是
 独立能力，只由实际支持的对象提供；Responses 协议本身不意味着支持远程压缩。通用模型目录与协议
 绑定配置分离，Responses、Chat 及厂商选项只保存本身适用的字段；已知私有协议由 typed DTO 表达，
-开放扩展与 opaque context 保真留在供应商边界。
+开放扩展与 opaque context 保真留在厂商协议边界。
 
-core 冻结工具计划（ToolPlan）并拥有工具权限、执行、并发与结果提交；供应商边界落实原生
+core 冻结工具计划（ToolPlan）并拥有工具权限、执行、并发与结果提交；厂商协议边界落实原生
 function/custom 工具、programmatic caller、hosted search、thinking 与工具流优化。原生优化不得
 丢失其他已注册工具；reasoning、caller、opaque context 与工具结果配对在多轮、重试和恢复中保持
 完整。具体模型和 endpoint 的显式能力决定优化，不按 model_id 或 URL 猜测。
 
-每个 provider 实例保存 preset 身份、endpoint override、凭证、headers、tool wire policy、服务
-能力和 catalog binding；具体模型由角色 route 选择，不保存第二份 provider 默认模型。唯一有效目录
+每个 account 实例保存 template 身份、endpoint override、凭证、headers、tool wire policy、服务
+能力和 catalog binding；具体模型由角色 route 选择，不保存第二份 account 默认模型。唯一有效目录
 由一个解析入口产出：每条成员携带来源（`bundled` 默认定义、`online` 在线名单、`manual` 用户手动
 模型），成员资格与来源不分散到投影或界面自行推导；不从全局列表兜底，也不从默认定义补回在线名单
 缺失的模型。目录可按 model_id 保存当前连接方式 override。reasoning/thinking/effort 的 wire 规则由
@@ -124,36 +143,36 @@ function/custom 工具、programmatic caller、hosted search、thinking 与工�
 
 OpenAI-compatible 自定义模型必须显式提供完整 transport profile：Chat 模型只能声明
 ChatCompletions + HTTP；Responses 模型可以声明 Responses + HTTP，或同时支持 HTTP/WS 并指定默认
-模式。具体 base URL、headers、tool wire policy 与 endpoint 能力由 provider 提供。Zhipu Coding
-Plan 是 catalog preset，默认指向官方 Coding Plan 的 OpenAI Response 协议 endpoint
+模式。具体 base URL、headers、tool wire policy 与 endpoint 能力由 account 提供。Zhipu Coding
+Plan 是账号模板，默认指向官方 Coding Plan 的 OpenAI Responses 协议 endpoint
 （`https://open.bigmodel.cn/api/v1`）并引用独立的智谱 Responses 目录（GLM-5.3 与
-GLM-5.3-Flash），不新增 runtime 变体；通用 Zhipu preset 保持通用 API 的 Chat Completions
-endpoint 与目录。MiMo API 与 Token Plan 同为两个 preset，共同引用一个 MiMo catalog。xAI
-是一个 catalog preset，默认指向 `https://api.x.ai/v1` 并引用独立的 xAI Responses 目录；
+GLM-5.3-Flash），与普通 Zhipu 模板共同使用 Zhipu 协议适配；通用 Zhipu 模板保持通用 API 的 Chat Completions
+endpoint 与目录。MiMo API 与 Token Plan 同为两个 template，共同引用一个 MiMo catalog。xAI
+是一个 catalog template，默认指向 `https://api.x.ai/v1` 并引用独立的 xAI Responses 目录；
 canonical endpoint 声明 Responses `prompt_cache_key`，自定义 `base_url` 后该继承关闭。
 xAI 不声明 hosted search、Files、远程压缩或 WebSocket。
 
 ## 6.5 协议与 Transport
 
 pl-model 支持 Responses API 与 Chat Completions API 两种协议 API；差异保持在 pl-model 内部，
-核心层只看到绑定模型的 runtime、精简后的完成请求/响应和 provider 无关的模型事件。所有当前
-preset 复用同一 OpenAI-compatible codec 的两种 wire API。协议与连接模式正交：Responses 支持
-WebSocket 或 HTTP，Chat Completions 只支持 HTTP。协议由模型 transport profile 声明，不由
-provider 实例统一决定；同一 provider 实例下的不同模型可以使用不同协议。
+核心层只看到绑定模型的 runtime、精简后的完成请求/响应和 厂商无关的模型事件。所有当前
+账号模板通过对应厂商适配组合复用 OpenAI base 的两种 wire API。厂商适配、wire API 与连接模式
+是不同维度：Responses 支持 WebSocket 或 HTTP，Chat Completions 只支持 HTTP。wire API 由模型
+绑定声明，账号选择厂商适配；同一账号的不同模型可以使用不同 wire API，但不因此改变账号身份。
 
 transport profile 是模型信息的必填字段，包含 protocol、supported_connection_modes 与
-default_connection_mode；provider 的模型目录可按模型 model_id 保存 connection_overrides，解析后的
+default_connection_mode；account 的模型目录可按模型 model_id 保存 connection_overrides，解析后的
 模型把 override 投影为本次请求的最终连接方式。Chat + WS、空支持列表、默认模式不在支持列表，
 以及用户新保存的 override 指向未知或不支持模式的模型，都在保存时拒绝，校验失败返回类型化的模型
 profile 错误（携带 model_id 与涉事模态/wire 上下文）；媒体契约校验使用同一错误类型。在线目录变化使
 既有选择不可用时，保留选择并报告外部绑定不可用，不将其判为用户数据损坏或自动改选。
-显式手工目录及声明本身仍严格校验。Web 与 Flutter 只渲染模型目录返回的 transport 和当前 override，不按 preset ID 推断。
+显式手工目录及声明本身仍严格校验。Web 与 Flutter 只渲染模型目录返回的 transport 和当前 override，不按 template ID 推断。
 
 OpenAI 的可复用绑定使用 Responses，支持 WS/HTTP 且默认 WS——选择 HTTP 时仍调用
 `/responses` 并消费 SSE，绝不切换到 Chat Completions；DeepSeek 的可复用绑定使用
 Responses/HTTP；通用 GLM 目录和全部 MiMo 使用 Chat Completions/HTTP，Coding Plan 的 GLM
 Responses 目录使用 Responses/HTTP。xAI 的可复用绑定使用 Responses/HTTP。runtime 按当前模型选择对应
-endpoint path，同一 provider 实例可以路由不同协议的模型。
+endpoint path，同一 account 实例可以路由不同协议的模型。
 
 Responses WebSocket 使用 `/responses` 握手和 `response.create` 帧，并固定 `store: false`。连接
 及 continuation 属于 Thread 的模型会话，按模型、协议和连接方式隔离；断线、取消、未完整消费或
@@ -176,7 +195,7 @@ SSE 单行与单事件累计缓冲各不超过 64 MiB；错误响应正文最多
 
 每次逻辑模型请求在首次发送之外最多重试 5 次；建连、流中断、无效 continuation 和切换连接方式
 共用这一预算，内部不嵌套重试，底层 HTTP 客户端与第三方库的默认重试关闭。瞬态失败使用有界指数
-退避和稳定抖动，优先采用供应商等待提示；等待和建连均可取消。WS 完整重试一次仍失败后，同一模型
+退避和稳定抖动，优先采用厂商等待提示；等待和建连均可取消。WS 完整重试一次仍失败后，同一模型
 会话切换 HTTP，后续请求保持 HTTP；切换也计入剩余重试预算，不重置次数。认证、配置、协议等永久
 错误立即返回。
 
@@ -186,7 +205,7 @@ continuation 只在确实使用该 continuation 且协议明确报告其失效�
 不代表已经产生不可重放结果。不使用错误消息中宽泛的 “response” 或 “invalid” 判断可恢复性。
 
 HTTP 流式请求先校验响应媒体类型。非 `text/event-stream` 的响应不能作为空 SSE 流消费；
-即使 HTTP 状态为 2xx，也须从有界响应体提取供应商结构化错误，保留业务错误码与消息。
+即使 HTTP 状态为 2xx，也须从有界响应体提取厂商结构化错误，保留业务错误码与消息。
 认证失败等永久错误立即返回，不转成断流重试；未识别的非流式响应明确报告协议不匹配。
 
 HTTP 响应原始字节流的读取或传输解码失败归为瞬态传输故障，不能因底层库称其为
@@ -201,7 +220,7 @@ HTTP 响应原始字节流的读取或传输解码失败归为瞬态传输故障
 
 普通文本、推理及尚未交付执行的本地工具参数流中断时，允许重试当前模型请求。失败尝试的可见片段
 保留为独立项目并结束其流状态，新尝试采用独立项目身份；只把成功尝试交给核心层执行工具和追加
-模型上下文，已执行的前序工具结果保留在冻结输入中，不重跑整轮。含供应商托管工具且已经产生流
+模型上下文，已执行的前序工具结果保留在冻结输入中，不重跑整轮。含厂商托管工具且已经产生流
 事件的请求，以及已经报告使用量的未正常结束响应不自动重放，以免重复远端副作用或丢失计费事实。
 耗尽预算返回原始类型化失败，保留已提交内容。
 
@@ -225,20 +244,20 @@ trace sink；慢消费者即使跳过中间快照也不能丢失失败边界或�
 
 ### 请求组装
 
-effort 等可调参数的 wire 写入由通用透传机制驱动，协议层不为每供应商硬编码 reasoning/thinking
+effort 等可调参数的 wire 写入由通用透传机制驱动，协议层不为每厂商硬编码 reasoning/thinking
 映射。请求组装先把强类型核心字段（model、messages、stream、tools 等）序列化为 JSON 对象，再
 依次注入 base body（模型请求 profile 的固定体，如 DeepSeek 固定的 `thinking.type = enabled`）
 与 parameter wire（用户选中的候选值按模型 parameters 声明写入或移除字段，见 6.8）。覆盖优先级
 为 parameter wire > base body > 协议默认字段。
 
 每次 inference 在最终请求体完成全部覆盖后冻结模型身份观察：`configuredModel` 是目录中选中的
-model_id，`sentModel` 是最终 wire body 实际发送的 `model`，`reportedModel` 是 Provider 明确报告的
+model_id，`sentModel` 是最终 wire body 实际发送的 `model`，`reportedModel` 是 Account 明确报告的
 模型。请求体缺失 `model`、值不是字符串或只有空白时，在发送前以协议错误拒绝。该观察由统一
 invocation runtime 产生并随成功、失败和宿主只读响应传播；普通 Turn、压缩、自动标题和自动审批
 不得各自重新推断。Chat、Responses HTTP 和 Responses WebSocket 将模型声明归一化为 canonical
 `ResponseModelObserved` 事件：首个有效非终态声明建立观察，终态声明可以覆盖，终态后的声明忽略。
 返回值 trim 后须非空、无控制字符且至多 256 字节；无效或缺失时保持未知，不回退为配置或发送
-模型。比较采用大小写敏感的精确字符串比较，不按 provider 或 catalog alias 归一化。
+模型。比较采用大小写敏感的精确字符串比较，不按 account 或 catalog alias 归一化。
 
 OpenAI Responses 的 `reasoning.summary` 仍按 Codex wire 语义发送（Auto 和兼容层的 Enabled 都
 发送 `auto`，Disabled 不发送 summary 字段），由 reasoning 配置的 summary 选项独立驱动，不进入
@@ -261,7 +280,7 @@ pl-trace 类型。模型会话在相同连接和 fingerprint 下由上次完整�
 
 Thread model adapter 将 core 请求的 `thread_id`、`turn_id`、`attempt_id` 绑定到本次调用的
 wire 诊断身份（`sessionId`、`turnId`、`inferenceId`）。这些身份只进入本地诊断元数据，不进入
-provider body，也不要求安装第二套 trace event sink。辅助标题调用没有 Thread 执行身份，
+account body，也不要求安装第二套 trace event sink。辅助标题调用没有 Thread 执行身份，
 保持未绑定；验收可据此关联主、子代理的真实请求。
 
 完成请求中的 system 角色表示本轮临时前置指令或开发者上下文：Responses endpoint 序列化为
@@ -271,28 +290,32 @@ Chat Completions 仍序列化为 `system`。
 完成请求的工具列表使用 pl-protocol 的 ToolSpec——provider-neutral 的唯一 wire 事实。每个
 model step 携带当前工具计划的完整可见工具列表；adapter 只把冻结规格转为 Responses/Chat typed
 body，不自行发现、过滤或注入 agent 工具。core 保存不透明工具声明与稳定工具 ID，每步冻结声明和
-执行租约；model 将声明编码为 provider wire 并恢复 assistant 调用名称/原参数，具体工具实现与
+执行租约；model 将声明编码为 account wire 并恢复 assistant 调用名称/原参数，具体工具实现与
 参数解析属于 pl-tool。hosted 工具仅在 model 内配置，不向 core 注册占位 executor；MCP 名称映射
 属于工具适配，不由 core 反解析。deferred reveal 由 Thread 保存稳定声明身份：重连不改写模型可见
 前缀，删除或声明变更使旧状态失效；完整原调用参数和当时使用的名称进入模型历史，下一次编码不按
 当前工具目录重写过去。
 
+容量预览与正式调用都必须携带同一可见工具计划的声明及调度约束。宿主按 Mode 排除工具时，
+预览中的独占调用身份只能引用保留的可见声明，并保留剩余工具的独占语义；不得向模型边界传入
+隐藏工具的孤立身份，也不得通过忽略未知身份放宽模型边界的完整性校验。
+
 ## 6.6 多模态消息
 
 消息内容只有一个有序 multipart 形态：parts 列表。持久协议仅允许文本部分与附件部分
 （attachment_id + modality）；附件 modality 为 image、video 或 file，PDF 属于 file。持久消息
-不得保存本地路径、外部 URL、Base64、provider file id 或请求期 data URL，也不保留
+不得保存本地路径、外部 URL、Base64、account file id 或请求期 data URL，也不保留
 text/multipart 双形态。
 
 模型输入能力同时声明 modality、允许的输入来源与格式/数量、单项字节、批次总字节和图片宽高
-限制；模型请求 profile 为每种 modality 声明有序的发送表示（封闭枚举：远程 URL、provider file、
-data URL）、provider wire 映射和混合规则。能力声明必须至少有一条当前输入可用的首发路线和一条
+限制；模型请求 profile 为每种 modality 声明有序的发送表示（封闭枚举：远程 URL、account file、
+data URL）、account wire 映射和混合规则。能力声明必须至少有一条当前输入可用的首发路线和一条
 基于持久快照的重放路线；未知模型或缺少完整 profile 的 modality 按不支持处理，不按模型名、
-provider 名或 wire 宽松程度推断。
+account 名或 wire 宽松程度推断。
 
 pl-model 在准备阶段通过资源访问端口把稳定附件引用 materialize 为自身私有的已准备内容部分：
-只携带已校验 bytes、当前首发允许使用的瞬时 URL 或 provider file id；pl-model 不读取 Studio
-存储，也不解析本地路径。同一 modality 批次选择同一种表示；provider 文件上传失败只能在推理请求
+只携带已校验 bytes、当前首发允许使用的瞬时 URL 或 account file id；pl-model 不读取 Studio
+存储，也不解析本地路径。同一 modality 批次选择同一种表示；account 文件上传失败只能在推理请求
 发出前整批切换到下一条 profile 路线，流建立后不得自动重发。
 
 模型路由变更及新输入受理前，必须按目标模型检查当前上下文与待消费输入的保留媒体：
@@ -305,7 +328,7 @@ pl-model 在准备阶段通过资源访问端口把稳定附件引用 materializ
 由当前工作区的文件 backend 解析，SSH 路径采用工作区相对 POSIX 形式。MCP typed image result 只有
 在调用它的精确模型同样声明 image 输入、完整快照 replay profile，且当前 Thread 安装 attachment
 runtime 时才进入相同通道；否则图片块只产生有界诊断文本，不持久化为仅供 UI 使用的附件。工具
-成功结果仍先以普通 typed tool result 闭合 provider tool call；同一批次的全部结果闭合后，core
+成功结果仍先以普通 typed tool result 闭合 account tool call；同一批次的全部结果闭合后，core
 再追加一个按 call 顺序排列的工具媒体上下文条目，每项只保存 call id、安全展示标签与
 thread-owned 附件元数据。它不是用户消息，也不进入用户 Timeline；Responses 与 Chat adapter 都
 把该上下文投影为一个内部 user multipart，并按"标签文本、图片"顺序发送——Chat 的并行 tool
@@ -330,8 +353,8 @@ codec 还定义 `video_url` 与 `file_url`，但模型只有在精确请求契�
 验证后才声明对应能力。GLM-5.3-Flash 当前只声明 text/image：远程图片首发优选 URL，本地图片
 以及历史、重试和恢复统一使用 Data URL。未声明相应 modality 的模型必须在任何附件 IO 或凭据
 读取前拒绝。DeepSeek V4.1 Flash 当前声明 text/image，并通过 Responses `input_image` 发送：
-表示顺序由模型 profile 显式声明，首发依次选择 Provider File、远程 URL、Data URL，重放依次
-选择 Provider File、Data URL；支持 Files 的 endpoint 将本地快照上传并引用 file_id，远程来源
+表示顺序由模型 profile 显式声明，首发依次选择 Account File、远程 URL、Data URL，重放依次
+选择 Account File、Data URL；支持 Files 的 endpoint 将本地快照上传并引用 file_id，远程来源
 在未上传时优选 URL，不支持 Files 时回退 Data URL。支持的快照格式固定为 JPEG、PNG、GIF、WebP。上传能力为独立 endpoint 声明，
 不因模型支持图片而推断；自定义地址需显式选择上传方言。官方对少于 15 张与至少 15 张图片使用不同边长上限：canonical profile 选择全
 批次均可成立的 4096 像素保守上限，并以 32 MiB snapshot 批次总字节上限保证 Data URL 重放不会
@@ -342,38 +365,44 @@ codec 还定义 `video_url` 与 `file_url`，但模型只有在精确请求契�
 产品宿主使用自己的配置读取完整的模型配置，经校验与解析得到已解析模型路由后，才交给 pl-model
 构造模型绑定或辅助请求客户端；pl-core 与 pl-model 都不读取 `~/.anywork/config.toml`。
 
-Bundled catalog 只读，配置通过 `additional_models` 补充成员或覆盖同 ID 的本地定义；完全自定义 provider
+Bundled catalog 只读，配置通过 `additional_models` 补充成员或覆盖同 ID 的本地定义；完全自定义 account
 使用显式模型列表。附加与显式模型都必须声明 transport；模型目录的 connection_overrides 只保存
 当前模式选择，不修改模型声明的支持矩阵。
 
 ### 在线目录与默认定义
 
 模型标识统一为 model_id（camelCase 协议为 modelId），按原始字符串精确匹配。
-模型固有定义按 ID 全局合并；可调用成员按 (provider_id, model_id) 区分，供应商名单不会因
-全局定义补全而扩张。名称、预算、模态、能力与参数候选共享；凭据、传输、参数 wire 和价格归路由。
+可调用模型使用 AccountModelKey 的 (account_id, model_id) 复合身份。内置只读定义可以被模板复用，
+但在线观察、显式覆盖、名称、预算、模态、能力、参数候选及默认值均在对应账号内解析；另一账号的
+同名模型不能覆盖这些声明。凭据、传输、参数 wire 与价格同样不得跨账号借用。完整目录与统计
+使用同一个复合身份，不以账号名称、endpoint、模板、发送或返回模型代替它。
 
 目录解析是 pl-model 的唯一合成入口，Studio 以 desired 配置和成功观察构造 canonical 快照。
-在线逐字段明确声明优先于显式本地配置和内置定义；多个在线来源采用最近成功获取该字段的值。
+同一账号的在线逐字段明确声明优先于显式本地配置和内置定义；字段顺序只在该账号查询身份内比较。
 缺失字段不清除已有声明，也不刷新该字段顺序；明确 false、空集合与可空字段的 null 是实际声明。
 同一响应重复 ID 按报文顺序逐字段合并；缺省骨架不是在线能力事实。HTTP 304 只更新检查状态。
 源内名单替换上一份成功名单，不累计已撤回成员；本地同 ID 合并，源内及跨源结果均保持确定顺序。
-本地补全采用显式配置优先于内置定义；同优先级按稳定供应商 ID 排序。上下文与上限分别保存原始
+本地补全采用本账号显式配置优先于绑定的内置定义，不从其他账号补全。上下文与上限分别保存原始
 声明与顺序，只有较新的单侧声明可使继承配对值收敛；同一报文自相矛盾的预算仍拒收。
 
-发现复用 endpoint 的 /models，保留路径前缀、查询参数与鉴权；不按 URL 猜测供应商，不发推理探针。
+发现复用 endpoint 的 /models，保留路径前缀、查询参数与鉴权；不按 URL 猜测厂商适配，不发推理探针。
 单次请求整体上限 10 秒、响应体上限 4 MiB，无自动重试和重定向；取消释放请求，失败保留上次成功。
-适配层接受现役外部 data/id 与 models/slug 格式，内部只使用 model_id。
+列表 envelope 和字段由所选厂商协议解释，内部只使用 model_id。OpenAI 适配接受其 Models API
+的 data/id 及现役 Codex 富声明 models/slug；DeepSeek 解释自己的 data/id、effort 和明确能力；
+xAI 解释其 data/id、context_length、原生能力和官方计价单位，不把 Codex 列表规则套到其他厂商。
+智谱通用 API 与 Coding Plan 未声明经核实的公开模型列表接口时使用各自内置目录，不虚构探测。
+目录是否可发现与发现使用的连接配置是显式声明，不能仅因 OpenAI wire 兼容而自动开启。
 不按模型家族、模态或工具能力排除在线成员，所有 Mode 使用同一完整目录。有效目录查询可选模型类型，
 未指定时返回全部；文本类型要求最终合并结果同时支持文本输入和输出，且解析上下文容量为正数
 （当前窗口优先，否则最大窗口）。筛选不考虑价格、工具或 Mode，不在发现和合并前裁剪成员。
 类型匹配由模型层计算并随目录发布，宿主只查询已发布的类型，不复制判定规则。请求准备仍执行工具、媒体、
 参数、历史和协议校验。未知模型参数保持未知，名称和价格不能证明请求兼容。
 
-在线观察保留字段来源与成功顺序，缓存不能把继承默认值重新解释为在线声明。全局参数变化须在
-同一目录 revision 中更新所有受影响路由，执行与展示消费相同结果。缓存迁移和身份隔离见
+在线观察保留字段来源与成功顺序，缓存不能把继承默认值重新解释为在线声明。账号参数变化须在
+同一目录 revision 中更新该账号的受影响路由，不能改写其他账号；执行与展示消费相同结果。缓存迁移和身份隔离见
 [17](./17-studio-storage.md)，双 revision 和配置迁移见 [20](./20-config.md)。
 
-价格仅在相同供应商路由内合成：单位、币种明确且现有计价引擎能够表达的在线价格优先，缺失或
+价格仅在相同厂商路由内合成：单位、币种明确且现有计价引擎能够表达的在线价格优先，缺失或
 不支持的格式使用本地价格，均未知时保留未计价。非法的已识别价格使观察失败。xAI token 价格按
 其官方单位换算；图像等其他计费单位不冒充 token 单价。历史请求沿用冻结的价格快照。
 设置页分别展示参数未知、价格未知和同步失败，不再把缺价标记成“未校验模型”。
@@ -385,7 +414,7 @@ assembler；配置中的 `[instructions].base_override` 可以完整替换它。
 固定 token 数兜底。容量以 `context_window` 为准，缺失才回退 `max_context_window`，不得
 用更大的最大容量覆盖当前窗口。该规则同样适用于附加、自定义和在线发现模型，不按模型名
 推断阈值；当前内置 GPT-6.1 Sol 的 475,000 tokens 是产品目录预设，不表示官方 CLI 的承诺。
-用户覆盖独立于模型默认元信息，以 provider 实例与模型 model_id 为身份，优先于默认值；实际生效值
+用户覆盖独立于模型默认元信息，以 account 实例与模型 model_id 为身份，优先于默认值；实际生效值
 取所选阈值与上下文容量 90% 的较小值。显式默认和覆盖值必须为正整数，安全上限不能通过覆盖
 绕过；容量未知或推导安全上限非正时不自动压缩。默认值在没有声明也没有已知容量时保持未知。
 目录 descriptor 携带可空的模型预设，设置投影区分可空默认值、用户覆盖值、生效值与安全上限，
@@ -401,7 +430,7 @@ pl-model 不维护压缩状态。
 辅助调用不具有主 Thread 的压缩政策时阈值保持未知。旧记录缺少这些可选事实时在解码边界保留
 未知，不能读取当前模型目录或当前配置补写历史，也不能把输出 token 上限或累计用量当成容量。
 
-完成请求的输入使用 provider 无关的有序上下文条目，包括普通消息与专用压缩条目
+完成请求的输入使用 厂商无关的有序上下文条目，包括普通消息与专用压缩条目
 （Compaction，携带 encryptedContent）；压缩条目可以映射为 Responses 原生输入，Chat
 Completions 必须明确拒绝。运行时以"远程压缩能力对象"暴露实际支持的能力：接收有序上下文并
 返回保真上下文与最终 accounting；能力由 endpoint 显式声明，不能从 Responses 协议推断，网络
@@ -410,14 +439,14 @@ Completions 必须明确拒绝。运行时以"远程压缩能力对象"暴露实
 ## 6.8 模型可调参数（effort 机制）
 
 effort（推理强度）不是固定的全局枚举，而是"模型声明的可调参数"。该机制是通用的：effort 是
-首个应用，类型设计可容纳未来 thinking、verbosity 等参数。各供应商自由定义候选值域，并由模型
-自身声明选中值如何写入 API 请求体；协议层据此通用透传，不包含任何供应商特定代码。
+首个应用，类型设计可容纳未来 thinking、verbosity 等参数。各厂商自由定义候选值域，并由模型
+自身声明选中值如何写入 API 请求体；协议层据此通用透传，不包含任何厂商特定代码。
 
 模型目录独占参数的候选值、显示名、默认候选与 wire 规则；角色路由只保存当前选择，不得复制或
 重新定义候选。模型声明非空 effort 候选时，产品角色必须保存其中一个候选；模型没有声明 effort
 参数时，角色选择必须为空，完成请求不携带 effort，最终请求体也不得制造默认字符串或字段。当前
 选择从角色路由进入统一 reasoning 配置，Responses 与 Chat Completions 均只由 parameter wire
-写入供应商请求体。
+写入厂商请求体。
 
 每个模型参数声明包含：参数名（effort 的 name 为 `effort`）、可选显示名（缺失回退参数名）、
 候选值域（保留声明顺序）、可选默认候选与 wire 规则表（每个候选值 → 写入规则）。默认候选独立于
@@ -430,9 +459,9 @@ set 列表（嵌套 dot 路径 + 透传字符串值，如 `reasoning.effort`、`
 反序列化。目录为 effort 提供便捷查询（参数声明、候选列表、默认候选），复用于配置校验、默认
 角色补齐和 GUI 渲染。
 
-各供应商的 effort 声明形态（本文为唯一权威源）：
+各厂商的 effort 声明形态（本文为唯一权威源）：
 
-| 供应商 | candidates | set（选中值 → 字段） | remove |
+| 厂商协议 | candidates | set（选中值 → 字段） | remove |
 | --- | --- | --- | --- |
 | OpenAI | 当前有效声明的候选（默认值域来自其 model.json，在线值域来自 API） | `reasoning.effort` = 值 | — |
 | DeepSeek | 当前有效声明的候选（默认值域来自其 model.json，在线值域来自 API） | `reasoning_effort` = 值（有 effort 时 `thinking.type = enabled` 作为 base body） | — |
@@ -447,21 +476,21 @@ GLM-5.2 的"一个选择联动多个字段"和"none 时移除字段"由 wire 的
 effort 选择只改变 `reasoning_effort` 值，Coding Plan 的 OpenAI Response 协议端点按官方映射只
 接受 `reasoning.effort`，不携带 thinking 字段。
 
-内置模型的候选按思考强度从弱到强声明，在线候选保持供应商顺序，不因默认值重新排列。内部摘要类请求
-（例如 Thread 自动命名）沿用 Explorer 路由的模型，并选择该数组首项，不复制 provider/model 或
+内置模型的候选按思考强度从弱到强声明，在线候选保持厂商声明顺序，不因默认值重新排列。内部摘要类请求
+（例如 Thread 自动命名）沿用 Explorer 路由的模型，并选择该数组首项，不复制 account_id/model_id 或
 重新定义强度枚举。
 
 ## 6.9 模型家族预设
 
-同供应商的模型共享大量元数据（capabilities、truncation policy、effort 参数声明、base body）。
+同厂商的模型共享大量元数据（capabilities、truncation policy、effort 参数声明、base body）。
 保留 Rust 声明的目录用模型家族（ModelFamily）预设封装共享部分，具体模型仅以差异字段实例化；
-在线供应商的默认数据复用完整模型声明格式，见 6.7。家族不承担请求生命周期或费用计算；模型计价（ModelPricing）独立表达
+在线厂商的默认数据复用完整模型声明格式，见 6.7。家族不承担请求生命周期或费用计算；模型计价（ModelPricing）独立表达
 未知价格或包含长度分档、时段倍率及来源的费率定义，具体结构以公开 Rust 类型为准。
 
 MiMo、智谱文本、各 GLM 线、智谱 vision 与 Coding Plan 的 GLM Responses 线继续使用家族预设；
 差异集中在 effort、request profile 与 typed input capabilities。OpenAI/DeepSeek 默认定义以
 统一模型声明数据发布，在线适配复用绑定/媒体规则，不保留逐模型 Rust 家族名单。推荐模型及
-默认能力以供应商定义文件为准，已有角色路由不因目录更新而自动改写。通用 Chat API 的 GLM-5.3 与 GLM-5.2 复用同一条"启用思考"
+默认能力以内置模型定义文件为准，已有角色路由不因目录更新而自动改写。通用 Chat API 的 GLM-5.3 与 GLM-5.2 复用同一条"启用思考"
 wire 组合，差异只在
 候选值域：GLM-5.3 为 `high` / `low` / `max`，且不提供禁用思考候选；GLM-5.3-Flash 复用
 GLM-5.3 的始终思考 wire 与候选值域，并声明 image 的 local/data-url 与 remote-url/snapshot
@@ -494,6 +523,11 @@ Chat 的完成态展示项由同一标签解码器从完整回放派生，保留
 replay 是当前响应的可缺省附加字段，数据库与 assistant 帧版本不变。新响应必须生成完整
 replay；此前未记录的旧输出不迁移或补造，完整回放的保证适用于本次修改后创建的会话。
 
+账号契约升级时，模型拥有的 assistant/失败 receipt 通过明确的 producer 版本解码边界转换
+旧绑定字段；它不同于不透明厂商 output。只转换已知的账号、厂商适配与 wire API 元数据，完整
+response、replay、工具绑定和未知厂商材料保持不变。相同账号及连接材料的隔离身份和原生来源
+证明不得因类型或字段改名而改变；没有原始来源证据仍保持未知并拒绝不安全重放，不从当前路由补造。
+
 ## 6.10 Prompt 缓存
 
 固定 instructions 与 prelude 包含模型基础指令、平台与全局配置、模式与角色、稳定 Skill 目录和
@@ -505,32 +539,32 @@ Workspace/项目文档。每轮 Skill 调用与推荐写入该轮 canonical tran
 同一 Turn 更新也只追加新快照，不覆盖此前模型已观察的内容。压缩移除最新快照后重新补入当前值；
 请求从已记录的历史读取，冷恢复不重新渲染旧快照。Evidence Ledger 和 session note 的完整正文
 继续不进入模型上下文；typed working state 与模型可见投影各自保留。working context 的变化只
-更新 context hash，不因追加记录提升固定前缀 generation；provider、model、固定指令或工具
+更新 context hash，不因追加记录提升固定前缀 generation；account、model、固定指令或工具
 schema 的变化仍单独记录（完整依赖倒置与 prepared-call 契约见 [16](./16-core-contracts.md)）。
 
 上下文压缩采用 Codex 风格的版本化 replacement：采样前估算完整物化请求，达到上述实际生效阈值时
-replace transcript，再把当前 working context 注入新窗口一次；provider 报告 token 达到阈值时，
+replace transcript，再把当前 working context 注入新窗口一次；account 报告 token 达到阈值时，
 下一次采样前执行同样 replacement。压缩不得丢失 tool call/output 配对或当前用户任务。估算与
 请求准备共享同一协议入口校验：历史含原生 Responses 物料（如加密 checkpoint）而当前模型使用
 Chat Completions 时，估算与准备都以 IncompatibleContext 拒绝并保留原始原因，不得改判为内容
 不支持。
 
 每个指令层分别计算内容 hash；基础、模式角色、Skill、可见工具组说明、Workspace、wire 工具
-前缀、provider、model 或 compaction 变化都给出类型化的前缀变化原因并提升 generation。工具与
+前缀、account、model 或 compaction 变化都给出类型化的前缀变化原因并提升 generation。工具与
 缓存的关系只由工具计划的 wire fingerprint 表达：它是实际发送的完整工具规格列表的 canonical
 哈希——工具按模型可见名称排序，JSON Schema 递归使用确定性字段顺序；registry revision、group
 identity、注册顺序和 executor generation 不参与 wire。计划只在单次 model step/retry 内冻结，
 不能为了复用缓存跨 Thread、worktree 或 agent 工具集共享。
 
 DeepSeek 使用隐式共同前缀，不发送 `prompt_cache_key`、breakpoint 或 OpenAI options。工具层
-不生成、轮换或参与 provider cache key；宿主显式提供的 session-stable key 仍可由支持的模型
+不生成、轮换或参与 account cache key；宿主显式提供的 session-stable key 仍可由支持的模型
 调用透传，但不得由 tool revision 或 wire fingerprint 派生。cache key 只是路由提示，不能代替
 请求前缀相等。
 
 缓存请求控制、服务端用量和价格是三个独立契约：只有服务端报告的缓存读取、写入和 reasoning
 才能作为计量事实；缺失不是零，不截断异常计数，不按缓存请求策略推导写入费用。OpenAI 的普通
 输入、缓存读和缓存写按官方语义互斥计费，DeepSeek 按输入命中/未命中计费；具体单价来自模型
-目录，不在 core 中保留供应商规则常量。
+目录，不在 core 中保留厂商规则常量。
 
 缓存诊断只记录 generation、固定前缀/wire 工具前缀/working context 的 hash、工具 wire
 fingerprint、token 数和变化原因；不得记录 prompt、工具参数或结果、header、凭据和配置正文。
@@ -539,7 +573,7 @@ transport 记录 continuation attempted/used/invalid、full replay retry 和 HTT
 原因；compaction 记录替换前后估算 token。这些计数附着于对应 inference 或 Turn，不能以无法
 关联的独立日志代替，也不得记录 program 正文。
 
-## 6.11 Web 搜索 Provider 边界
+## 6.11 Web 搜索 Account 边界
 
 Web 搜索是多后端能力，不维护单选。三条路径彼此独立、可同时装配：OpenAI standalone
 `/alpha/search`、DeepSeek 官方 Search & Fetch 工具接口（`POST {root}/v1/tools/search` 与
@@ -548,20 +582,20 @@ Web 搜索是多后端能力，不维护单选。三条路径彼此独立、可�
 function calling 的模型都同时暴露各自可用的 standalone 搜索工具：OpenAI 的 `web_search`（保留
 SearchCommands 入参）与 DeepSeek 的 `deepseek_web_search`（`{queries}`，1–4 个查询合并结果）和
 `deepseek_web_fetch`（`{url}`）。只有 DeepSeek 两个工具的描述写明按请求次数计费与兜底条件；
-其他搜索不分优先级、不按 provider 排序、不自动跨供应商回退。
+其他搜索不分优先级、不按 account 排序、不自动跨账号回退。
 
 standalone 搜索服务的选择与会话模型、role route 独立：设置页由独立 service planner 仅按
-provider capability 与凭据解析每后端的有效状态与 provider/model。OpenAI standalone 服务优先
-使用该 provider catalog 的 `gpt-6-sol`，否则用该 provider 首个有效模型；provider 之间按 ID
+account capability 与凭据解析每后端的有效状态与 account_id/model_id。OpenAI standalone 服务优先
+使用该 account catalog 的 `gpt-6-sol`，否则用该 account 首个有效模型；account 之间按 ID
 稳定排序。DeepSeek standalone 服务直接命中原生工具接口，不解析也不借用会话模型或第三方模型
-别名；线程内优先声明该能力的 DeepSeek provider，否则同样按 ID 排序。provider 服务可用性只看
+别名；线程内优先声明该能力的 DeepSeek account，否则同样按 ID 排序。account 服务可用性只看
 capability 与 key，不因当前会话角色或模型不可用而降低；当前模型是否支持 function calling 只在
 该 thread 真正消费搜索工具时决定本轮是否注册它，因此同一份已解析服务可以由多个模型共享。
 
-DeepSeek Search & Fetch 是 `pl-model` 的公开域 `pl_model::provider::deepseek::tools`，含
+DeepSeek Search & Fetch 是 `pl-model` 的公开域 `pl_model::protocol::deepseek::tools`，含
 `ToolsClient`、`ToolsOptions`、`SearchRequest`、`SearchSource`、`SearchResponse`、
 `FetchRequest`、`FetchResponse`、`Observed` 与 `ToolsError`，并精确重导出取消类型
-`CancellationToken`。`ToolsClient::new(&ProviderEndpoint, ToolsOptions)` 冻结端点、参数与凭据，
+`CancellationToken`。`ToolsClient::new(&ProtocolEndpoint, ToolsOptions)` 冻结端点、参数与凭据，
 `Debug` 不输出凭据；`ToolsOptions` 只有结果上限 `count`（默认 10，与官方默认一致）与整体超时
 （默认 60 秒），请求体固定 `need_content = false`，不暴露 `ori_question`、`localization` 或正文
 开关。两个端点都由 `provider.base_url` 自身地址组装：去掉尾部 `/`、去掉一个尾部 `/v1`
@@ -569,7 +603,7 @@ DeepSeek Search & Fetch 是 `pl-model` 的公开域 `pl_model::provider::deepsee
 `/v1/tools/search` 与 `/v1/tools/fetch`；已指向 `/anthropic` 或 `/anthropic/v1` 的地址得到明确
 配置错误（该兼容端点不承载官方工具接口），不作静默改写。只接受无 userinfo / query / fragment 的
 http(s) 地址，不替换 host，也不回退到官方域名（默认官方根 `https://api.deepseek.com`）。鉴权只
-发送所选 provider 的 key 作为 `Authorization: Bearer`，附 `content-type` 与 `accept:
+发送所选 account 的 key 作为 `Authorization: Bearer`，附 `content-type` 与 `accept:
 application/json`；自定义 header 透传但跳过 `authorization`、`content-type`、`accept` 与
 `host`。不跟随重定向、不自动重试；超时覆盖整个请求（headers 与 body），取消同样覆盖两段读取。
 发出前校验 query 去空白后非空且不超过 128 个 Unicode 字符、`count` 在 1..=50、fetch url 非空且
@@ -581,25 +615,25 @@ application/json`；自定义 header 透传但跳过 `authorization`、`content-
 `title` / `snippet` 不是字符串、`date` 既非 null 也非字符串时明确失败（`MalformedResults`）；
 空数组是成功但零来源。`summary`、`content`、`site_name`、`site_icon`、`rerank_score` 与
 `authority` 不参与归一化，只保留在原始响应中；`date` 映射为 `published_at`，空串视为缺失，结果
-按 `url` 首现去重并保留供应商顺序。fetch 的 `content` 必须是字符串（否则 `MissingContent`），
+按 `url` 首现去重并保留账号顺序。fetch 的 `content` 必须是字符串（否则 `MissingContent`），
 `title` 空串视为缺失，`FetchResponse.status` 记录成功响应的真实 HTTP 状态码（成功路径在读取正文
 之前取得，供工具层如实渲染）。完整收到的响应正文一律通过 `ToolsError::observed_response()` 留存：合法
 JSON 保留解析值与完整原始正文；正文已完整收到但不是合法 JSON（非 2xx 文本、畸形 JSON、非 UTF-8
 字节）时，`raw_response` 改为 `{"encoding":"base64","data":...}`，逐字节无损保留原始正文且与
 JSON 结果可区分；超时或取消等尚未取到完整正文的路径返回 `None`。完整正文只进入既有的不透明
 历史载荷，错误信息与 `Display` 输出保持有界，错误消息优先取 `error.message` 且不超过 512 字符。
-API 输出 DTO 使用 camelCase，供应商 wire 保持协议原字段。
+API 输出 DTO 使用 camelCase，账号 wire 保持协议原字段。
 
-Provider 服务能力同时包含 `hosted_responses`、`hosted_dialect` 与独立 `standalone` dialect；
+Account 服务能力同时包含 `hosted_responses`、`hosted_dialect` 与独立 `standalone` dialect；
 `StandaloneWebSearchDialect` 现有 `OpenAiSearchApi` 与 `DeepSeekToolsApi`（serde 与 `as_str`
-均为 `deep_seek_tools_api`）。canonical DeepSeek preset 声明 `DeepSeekToolsApi`；preset 实例覆盖
-非 canonical `base_url` 时仅由 PresetDefaults 撤销该 DeepSeek standalone 能力（与其它
+均为 `deep_seek_tools_api`）。canonical DeepSeek template 声明 `DeepSeekToolsApi`；template 实例覆盖
+非 canonical `base_url` 时仅由 TemplateDefaults 撤销该 DeepSeek standalone 能力（与其它
 hosted/Responses 能力一并撤销），非 canonical 的 DeepSeek endpoint 必须显式声明该方言。旧值
 `deep_seek_anthropic_messages` 不再可解析，只由配置迁移边界改写（见 [20](./20-config.md) §20.1）。
 此撤销不改变既有 OpenAI `OpenAiSearchApi` 的继承语义：覆盖非 canonical `base_url` 的 OpenAI
 endpoint 仍保留 `/alpha/search` standalone；显式 capability 仍可由用户重新声明。同一非 canonical
 覆盖同时撤销继承的 prompt cache dialect。
-provider catalog schema 暴露 dialect，产品层不得从 provider id 或 URL 猜测。
+account catalog schema 暴露 dialect，产品层不得从 account id 或 URL 猜测。
 
 两个工具由 `pl-tool` 按 harness 的模型可见形态装配，并共享同一个 `ToolsClient`。
 `deepseek_web_search` 接受 `queries`（1–4 项，去空白后非空，精确重复折叠后保持首现顺序）：
@@ -629,21 +663,21 @@ decoder、timeline 和历史回放：searching/completed 生命周期、search/o
 Responses context 持久化。下一轮出站请求按原始 JSON 顺序把这些原生上下文项投影回 `input`：
 投影只去掉仅属 output 生命周期的 `status`，保留 item 身份、`encrypted_content`、opaque
 results 与未知厂商字段；typed `message`、`function_call`、`custom_tool_call` 等仍按现役
-Responses 协议组装，不从 provider id 或 URL 猜测兼容性。帧已持久化产生该原生回放的 provider
-隔离身份（由 provider id 与 endpoint 连接材料派生的 binding namespace），出站投影据此判断可回放
-能力：线程持有的响应帧同时记录绑定和产生时的原生上下文兼容族。来源供应商、账户隔离、
+Responses 协议组装，不从 account id 或 URL 猜测兼容性。帧已持久化产生该原生回放的 account
+隔离身份（由 account id 与 endpoint 连接材料派生的 binding namespace），出站投影据此判断可回放
+能力：线程持有的响应帧同时记录绑定和产生时的原生上下文兼容族。来源账号、账户隔离、
 适配器、协议及模型一致时逐字回放；跨模型须双方明确声明同一非空兼容族。无法证明适用性时，
 目标不能假定能够解释其 `encrypted_content`，因此只从出站
 `input` 移除这类 reasoning，assistant 文本、工具身份、工具输出与其余原生事实不受影响，也不重放
 工具副作用；旧线程响应帧的绑定仍须校验，未记录兼容族不能授权跨模型重放。
 底层 `CompletionRequest.append_response` 不带线程来源，仍由直接调用方承担适用性责任。
-不得以模型名、item id 或加密文本形状猜供应商。
-provider adapter 不自行注入未进入本轮冻结工具计划的 hosted tool。
+不得以模型名、item id 或加密文本形状猜账号。
+account adapter 不自行注入未进入本轮冻结工具计划的 hosted tool。
 
 验证边界：DeepSeek 工具接口的 wire、鉴权、解析与失败路径由 `pl-model` 公开 API 集成测试在
-真实 loopback HTTP 上证明；确定性模拟只证明实现与约定样本一致，不证明供应商线上接口的最新
-兼容性，真实供应商保持显式人工观察。`queries` 扇出、合并与截断位于 `pl-tool`，按测试边界不
-新增该 crate 的自动化用例，由模拟供应商人工验收与静态审查覆盖。
+真实 loopback HTTP 上证明；确定性模拟只证明实现与约定样本一致，不证明账号线上接口的最新
+兼容性，真实账号保持显式人工观察。`queries` 扇出、合并与截断位于 `pl-tool`，按测试边界不
+新增该 crate 的自动化用例，由模拟账号人工验收与静态审查覆盖。
 
 ## 6.12 计量与价格
 
@@ -651,7 +685,7 @@ provider adapter 不自行注入未进入本轮冻结工具计划的 hosted tool
 价格快照。成功、失败、截断和取消均保留已收到的服务端报告，未报告保持未知；Chat 必须消费末尾
 独立 usage 包后才终结，Responses、Chat、WS 和压缩采用一致语义；重复终态不重复记账。
 
-模型速度只使用供应商上报的输出词元，不以输入、总词元、delta 数量或字符／字节估算代替。
+模型速度只使用账号上报的输出词元，不以输入、总词元、delta 数量或字符／字节估算代替。
 单次成功请求的 decode 窗口从首个非空文本、推理或工具输入增量开始，到归一化终止事件
 到达时结束；TTFT 独立，终态之后的收集、展示及保存开销不计入窗口。透明重试的每次请求
 独立使用单调时钟，成功样本不混入失败请求、退避或工具执行的时间。
@@ -662,11 +696,11 @@ provider adapter 不自行注入未进入本轮冻结工具计划的 hosted tool
 
 模型计价（ModelPricing）声明币种、输入/输出长度分档与可选的每周时段倍率。调用开始冻结价表
 与计价开关，按产生最终结果的请求发送时间选择时段，按最终用量选择长度档位；跨时段不拆分
-token。这是本地模型 token 费用估算，不是供应商账单，不包含独立工具费、订阅费或汇率换算。
+token。这是本地模型 token 费用估算，不是账号账单，不包含独立工具费、订阅费或汇率换算。
 关闭计价、价格/用量不足、已估算与零费用分别表示；历史只读取冻结账单，不按现价重算。Core、
-Studio、Flutter 仅归属、累计和展示，不再次解释供应商 usage 或价格。具体单价、时段定义与
+Studio、Flutter 仅归属、累计和展示，不再次解释账号 usage 或价格。具体单价、时段定义与
 退役模型以代码中的模型目录为唯一事实源，设计文档不保存价格快照。
-价格回填与成员资格是两个正交事实：在线价格只覆盖声明它的供应商路由；缺失或不支持的格式仅按
+价格回填与成员资格是两个正交事实：在线价格只覆盖声明它的账号路由；缺失或不支持的格式仅按
 同一路由的精确模型 ID 回填显式配置或内置价格，仍无价格时保持未知。模型从在线名单消失、来源切换或手动模型被删除
 都不改写已保存的冻结账单，也不触发历史费用重算。
 
@@ -679,9 +713,10 @@ Studio、Flutter 仅归属、累计和展示，不再次解释供应商 usage �
 推理，将完整冻结账单保存在所属 root Thread 的内部账单中，并与费用累计一次性提交；内部调用
 不覆盖主会话上下文用量，重载只读取原账单和原累计。
 
-冻结账单同时保存可选模型身份观察。新记录的性能分组模型只使用 `sentModel`；
-`reportedModel` 只用于诊断，不改变路由、价格、上下文容量、重试、continuation 或汇总。
-旧账单只有单一 `model` 时保持身份未知，不依据当前配置猜测其发送或返回值。
+冻结账单保存账号身份、配置的 model_id 与可选模型身份观察。性能顶层按 (account_id, model_id)
+归组，effort 保留二级细分；sentModel 和 reportedModel 只作冻结诊断，不改变路由、价格、容量、
+重试、continuation 或顶层身份。显示名和 endpoint 变化不拆分统计。旧账单仅在已有冻结事实足以
+确定账号及配置模型时归组，缺失者保留历史身份未知，不读取当前设置猜测；原账单和累计费用保留。
 
 ### 上下文准备与指令修订
 
@@ -699,11 +734,11 @@ Studio、Flutter 仅归属、累计和展示，不再次解释供应商 usage �
 配置与 Profile 基础覆盖继续有效。更新与上下文规范化在同一准备候选中提交，旧模型指令不能
 被当成目标模型的当前指令。项目文档等已捕获材料不因模型切换重新扫描。
 
-提示键仅由会话稳定身份、供应商隔离身份和目标路由派生。实际工具、指令及前缀变化另作诊断，不轮换提示键。旧用量须同时匹配请求输入版本与绑定才能辅助判断容量。原生检查点必须唯一、非空并绑定来源，跨路由仅按明确适用能力重放；无法证明来源时保留材料并拒绝执行。
+提示键仅由会话稳定身份、账号隔离身份和目标路由派生。实际工具、指令及前缀变化另作诊断，不轮换提示键。旧用量须同时匹配请求输入版本与绑定才能辅助判断容量。原生检查点必须唯一、非空并绑定来源，跨路由仅按明确适用能力重放；无法证明来源时保留材料并拒绝执行。
 
 主调用、压缩、标题及权限审查在发起前确定所属会话、轮次和调用身份；请求、用量与计费回执
 共享该身份。标题等辅助调用拥有独立输入，不能将缺失身份的多个取证文件合并为一个会话。
 
 原生材料无法按文本估算时，仅使用核心已核对的历史输入前缀用量，并计入该次模型输出和
 此后新增的可估算文本。新增资源或不透明材料无法估算时保持未知，不能只用旧输入量假装
-本步预览已测量。所有文本容量估计仍是启发式估计，不代替供应商的精确分词和容量错误。
+本步预览已测量。所有文本容量估计仍是启发式估计，不代替账号的精确分词和容量错误。

@@ -90,7 +90,7 @@ Future<StudioShutdownReport> runStudioShutdown(
   // `Stopped` 只由协调器在可靠 Clean 之后发布。
   publish(const StoppingSubscriptionsProgress());
   // Seal the application owner at entry. It joins the same deadline before the
-  // Rust finalizer decides Clean; provider disposal has no role in cleanup.
+  // Rust finalizer decides Clean; account disposal has no role in cleanup.
   final clientClosing = closeClient?.call(
     DateTime.now().add(
       Duration(milliseconds: _remainingBudget(remainingMs, watch)),

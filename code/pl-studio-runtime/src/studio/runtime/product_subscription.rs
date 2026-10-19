@@ -143,9 +143,9 @@ impl StudioRuntime {
             StudioProductTopic::ThreadModeCatalog => StudioProductBaselineState::ThreadModeCatalog(
                 Box::new(self.read_thread_mode_catalog()),
             ),
-            StudioProductTopic::ProviderUsage => StudioProductBaselineState::ProviderUsage(
-                Box::new(self.read_provider_usage_state().await),
-            ),
+            StudioProductTopic::AccountUsage => StudioProductBaselineState::AccountUsage(Box::new(
+                self.read_account_usage_state().await,
+            )),
             StudioProductTopic::ModelPerformance => StudioProductBaselineState::ModelPerformance(
                 Box::new(self.model_performance.snapshot().await),
             ),

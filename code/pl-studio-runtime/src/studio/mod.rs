@@ -5,6 +5,7 @@ mod ids;
 mod merged_page;
 pub(crate) mod model_route;
 mod paths;
+pub(crate) mod payload_alias;
 mod persistence;
 mod product_event_bus;
 mod records;

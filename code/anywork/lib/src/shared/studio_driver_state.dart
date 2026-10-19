@@ -212,7 +212,7 @@ final class StudioDriverFacts {
     this.modelCatalogRevision = 0,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
-    List<ProviderSettingsView> providers = const [],
+    List<AccountSettingsView> accounts = const [],
     List<CommandStatus> commands = const [],
     this.settingsReady = false,
     this.persistence = const PersistenceStateSnapshot.ready(),
@@ -223,7 +223,7 @@ final class StudioDriverFacts {
        rootThreads = List.unmodifiable(rootThreads),
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
        roles = List.unmodifiable(roles),
-       providers = List.unmodifiable(providers),
+       accounts = List.unmodifiable(accounts),
        commands = List.unmodifiable(commands),
        recoveryIssues = List.unmodifiable(recoveryIssues);
 
@@ -249,7 +249,7 @@ final class StudioDriverFacts {
   final int modelCatalogRevision;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<CommandStatus> commands;
   final bool settingsReady;
   final PersistenceStateSnapshot persistence;
@@ -449,22 +449,23 @@ abstract final class StudioDriverState {
         'revision': facts.settingsRevision,
         'sidebarWidth': facts.sidebarWidth,
         'modelCatalogRevision': facts.modelCatalogRevision,
-        'providers': [
-          for (final provider in facts.providers)
+        'accounts': [
+          for (final account in facts.accounts)
             {
-              'id': provider.id,
-              'preset': provider.templateKind,
-              'defaultModel': provider.defaultModel,
-              'pricingEnabled': provider.pricingEnabled,
-              'hasBearerToken': provider.hasBearerToken,
-              'status': provider.status,
-              'models': [for (final model in provider.models) model.modelId],
+              'id': account.id,
+              'templateId': account.templateId,
+              'protocol': account.protocol,
+              'defaultModelId': account.defaultModelId,
+              'pricingEnabled': account.pricingEnabled,
+              'hasBearerToken': account.hasBearerToken,
+              'status': account.status,
+              'models': [for (final model in account.models) model.modelId],
               'textModels': [
-                for (final model in provider.modelsFor(type: ModelType.text))
+                for (final model in account.modelsFor(type: ModelType.text))
                   model.modelId,
               ],
               'modelDetails': [
-                for (final model in provider.models)
+                for (final model in account.models)
                   {
                     'modelId': model.modelId,
                     'contextWindow': model.contextWindow,
@@ -485,27 +486,27 @@ abstract final class StudioDriverState {
                   },
               ],
               'modelCatalog': {
-                'supported': provider.modelCatalog.supported,
-                'source': provider.modelCatalog.source.name,
-                'probing': provider.modelCatalog.probing,
-                'error': provider.modelCatalog.error?.kind.name,
-                'cacheWarning': provider.modelCatalog.cacheWarning?.name,
-                'lastSuccessAt': provider.modelCatalog.lastSuccessAt,
+                'supported': account.modelCatalog.supported,
+                'source': account.modelCatalog.source.name,
+                'probing': account.modelCatalog.probing,
+                'error': account.modelCatalog.error?.kind.name,
+                'cacheWarning': account.modelCatalog.cacheWarning?.name,
+                'lastSuccessAt': account.modelCatalog.lastSuccessAt,
               },
               // 压缩阈值四层视图：modelId → {default, override, effective, safe}。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
-                for (final model in provider.models)
+                for (final model in account.models)
                   {
                     'modelId': model.modelId,
-                    'default': provider.autoCompactLimitFor(model).defaultLimit,
-                    'override': provider
+                    'default': account.autoCompactLimitFor(model).defaultLimit,
+                    'override': account
                         .autoCompactLimitFor(model)
                         .overrideLimit,
-                    'effective': provider
+                    'effective': account
                         .autoCompactLimitFor(model)
                         .effectiveLimit,
-                    'safe': provider.autoCompactLimitFor(model).safeLimit,
+                    'safe': account.autoCompactLimitFor(model).safeLimit,
                   },
               ],
             },
@@ -514,8 +515,8 @@ abstract final class StudioDriverState {
           for (final role in facts.roles)
             {
               'key': role.key,
-              'providerId': role.providerId,
-              'model': role.model,
+              'accountId': role.accountId,
+              'modelId': role.modelId,
               'effort': role.effort,
             },
         ],
@@ -523,8 +524,8 @@ abstract final class StudioDriverState {
           for (final route in facts.modeModelRoutes)
             {
               'modeId': route.modeId.id,
-              'providerId': route.providerId,
-              'model': route.model,
+              'accountId': route.accountId,
+              'modelId': route.modelId,
               'effort': route.effort,
             },
         ],
@@ -536,8 +537,8 @@ abstract final class StudioDriverState {
               'operationId': null,
               'phase': command.phase.name,
               'startedAt': null,
-              'providerId': command.target.providerId,
-              'model': command.target.model,
+              'accountId': command.target.accountId,
+              'modelId': command.target.modelId,
               'effort': command.target.effort,
               'error': command.error?.message,
             },
@@ -575,12 +576,12 @@ abstract final class StudioDriverState {
               'threadMode': workspace.thread.mode.name,
               'threadStatus': workspace.thread.status.name,
               'isBusy': workspace.isBusy,
-              'model': workspace.runtime.model,
+              'model': workspace.runtime.modelId,
               'modelRoute': workspace.runtime.modelRoute == null
                   ? null
                   : {
-                      'providerId': workspace.runtime.modelRoute!.providerId,
-                      'model': workspace.runtime.modelRoute!.model,
+                      'accountId': workspace.runtime.modelRoute!.accountId,
+                      'modelId': workspace.runtime.modelRoute!.modelId,
                       'effort': workspace.runtime.modelRoute!.effort,
                       'revision': workspace.runtime.modelRoute!.revision,
                       'available': workspace.runtime.modelRoute!.available,
@@ -594,7 +595,7 @@ abstract final class StudioDriverState {
                 'hasIncompleteUsage': workspace.runtime.hasIncompleteUsage,
               },
               'modelCapabilities': _modelCapabilities(workspace),
-              'modelProvider': _modelProvider(workspace),
+              'modelAccount': _modelAccount(workspace),
               'composer': {
                 'mode': workspace.composerMode.name,
                 'draft': workspace.composer.draft,
@@ -744,33 +745,43 @@ abstract final class StudioDriverState {
     };
   }
 
-  static List<String> _modelCapabilities(AgentWorkspaceView workspace) {
-    for (final provider in workspace.providers) {
-      for (final model in provider.models) {
-        if (model.modelId == workspace.runtime.model) {
-          return [
-            for (final capability in model.inputCapabilities)
-              capability.modality.name,
-          ];
+  /// 展示用模型身份一律来自已解析的 Thread 路由 `(accountId, modelId)`。
+  ///
+  /// 同名模型可同时存在于多个账号，裸 model id 不足以定位账号：路由缺失、账号未知或
+  /// 该账号目录不含此模型时返回 `null` 保持 unknown，不按 model id 猜另一个账号。
+  static ({AccountSettingsView account, AccountModelView model})?
+  _routedAccountModel(AgentWorkspaceView workspace) {
+    final route = workspace.runtime.modelRoute;
+    if (route == null) return null;
+    for (final account in workspace.accounts) {
+      if (account.id != route.accountId) continue;
+      for (final model in account.models) {
+        if (model.modelId == route.modelId) {
+          return (account: account, model: model);
         }
       }
-    }
-    return const [];
-  }
-
-  static Map<String, Object?>? _modelProvider(AgentWorkspaceView workspace) {
-    for (final provider in workspace.providers) {
-      if (provider.models.any(
-        (model) => model.modelId == workspace.runtime.model,
-      )) {
-        return {
-          'id': provider.id,
-          'hasBearerToken': provider.hasBearerToken,
-          'credentialEnv': provider.credentialEnv,
-        };
-      }
+      return null;
     }
     return null;
+  }
+
+  static List<String> _modelCapabilities(AgentWorkspaceView workspace) {
+    final routed = _routedAccountModel(workspace);
+    if (routed == null) return const [];
+    return [
+      for (final capability in routed.model.inputCapabilities)
+        capability.modality.name,
+    ];
+  }
+
+  static Map<String, Object?>? _modelAccount(AgentWorkspaceView workspace) {
+    final routed = _routedAccountModel(workspace);
+    if (routed == null) return null;
+    return {
+      'id': routed.account.id,
+      'hasBearerToken': routed.account.hasBearerToken,
+      'credentialEnv': routed.account.credentialEnv,
+    };
   }
 
   /// 展示代次诊断：身份、数量与模式全部来自当前展示真相。

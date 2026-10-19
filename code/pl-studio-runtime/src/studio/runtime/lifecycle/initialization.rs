@@ -222,7 +222,7 @@ impl StudioRuntime {
             .map_err(|error| internal("begin_initialize", error))?;
         observer(StudioStartupStage::ReadingProjects);
         let (usage, performance, directory, leases, ssh, skills) = tokio::join!(
-            timed_step("prepare_provider_usage", self.provider_usage.load_cache()),
+            timed_step("prepare_account_usage", self.account_usage.load_cache()),
             timed_step(
                 "prepare_model_performance",
                 self.model_performance.load_cache()
@@ -243,7 +243,7 @@ impl StudioRuntime {
         );
         let mut failures = Vec::new();
         for (step, result) in [
-            ("provider_usage", usage),
+            ("account_usage", usage),
             ("model_performance", performance),
             ("directories", directory),
             ("system_skills", skills),

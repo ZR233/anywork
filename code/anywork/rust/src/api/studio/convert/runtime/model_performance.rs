@@ -19,10 +19,9 @@ pub(crate) fn bridge_model_performance(
             .summaries
             .into_iter()
             .map(|summary| BridgeModelPerformanceSummary {
-                provider_instance_id: summary.provider_instance_id,
-                provider_display_name: summary.provider_display_name,
-                model: summary.model,
-                reasoning_effort: summary.reasoning_effort,
+                account_id: summary.account_id,
+                account_display_name: summary.account_display_name,
+                model_id: summary.model_id,
                 sample_count: summary.sample_count,
                 completion_tokens: summary.completion_tokens,
                 total_ttft_millis: summary.total_ttft_millis,
@@ -31,6 +30,23 @@ pub(crate) fn bridge_model_performance(
                 tokens_per_second: summary.tokens_per_second,
                 average_ttft_millis: summary.average_ttft_millis,
                 average_response_millis: summary.average_response_millis,
+                effort_breakdowns: summary
+                    .effort_breakdowns
+                    .into_iter()
+                    .map(|effort| {
+                        crate::api::studio::types::response::BridgeModelPerformanceEffortSummary {
+                            effort: effort.effort,
+                            sample_count: effort.sample_count,
+                            completion_tokens: effort.completion_tokens,
+                            total_ttft_millis: effort.total_ttft_millis,
+                            total_decode_millis: effort.total_decode_millis,
+                            total_response_millis: effort.total_response_millis,
+                            tokens_per_second: effort.tokens_per_second,
+                            average_ttft_millis: effort.average_ttft_millis,
+                            average_response_millis: effort.average_response_millis,
+                        }
+                    })
+                    .collect(),
             })
             .collect(),
         history: value
@@ -38,10 +54,9 @@ pub(crate) fn bridge_model_performance(
             .into_iter()
             .map(|sample| BridgeModelPerformanceSample {
                 completed_at: sample.completed_at,
-                provider_instance_id: sample.provider_instance_id,
-                provider_display_name: sample.provider_display_name,
-                model: sample.model,
-                configured_model: sample.configured_model,
+                account_id: sample.account_id,
+                account_display_name: sample.account_display_name,
+                model_id: sample.model_id,
                 sent_model: sample.sent_model,
                 reported_model: sample.reported_model,
                 model_match_state: match sample.model_match_state {
@@ -52,7 +67,7 @@ pub(crate) fn bridge_model_performance(
                         BridgeModelMatchState::LegacyUnknown
                     }
                 },
-                reasoning_effort: sample.reasoning_effort,
+                effort: sample.effort,
                 completion_tokens: sample.completion_tokens,
                 ttft_millis: sample.ttft_millis,
                 decode_millis: sample.decode_millis,

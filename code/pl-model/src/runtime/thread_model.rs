@@ -206,7 +206,8 @@ impl CoreModelSession for ThreadModelSession {
             &self.prompt,
             super::PromptCacheInput {
                 scope: &self.purpose,
-                provider: runtime.endpoint(),
+                account_id: runtime.account_id(),
+                account: runtime.endpoint(),
                 model: &runtime.model().model_id,
                 instructions: encoded.instructions.as_deref().unwrap_or_default(),
                 prelude_messages: &[],
@@ -241,7 +242,7 @@ impl CoreModelSession for ThreadModelSession {
         self.last_compaction_id = compaction_id;
         let usage_binding = pl_core::model::ModelUsageBinding {
             route_identity: Some(binding.route_identity()),
-            model: binding.requested_model.clone(),
+            model: binding.model_id.clone(),
             context_window: binding.context_window,
             max_context_window: binding.max_context_window,
             auto_compact_limit: binding.auto_compact_limit,

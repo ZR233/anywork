@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    PersistenceStateSnapshot, ProviderUsageStateSnapshot, StudioAgentDirectoryState,
+    AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
     StudioPersistenceQueueStateSnapshot, StudioProductEventKind, StudioProjectDirectoryState,
@@ -34,7 +34,7 @@ pub enum StudioProductTopic {
     Lsp,
     Skills { project_id: String },
     ThreadModeCatalog,
-    ProviderUsage,
+    AccountUsage,
     ModelPerformance,
     SessionCosts { root_thread_id: String },
     Updater,
@@ -80,7 +80,7 @@ impl StudioProductTopic {
                 project_id: state.project_id.clone(),
             },
             StudioProductEventKind::ThreadModeCatalogChanged(_) => Self::ThreadModeCatalog,
-            StudioProductEventKind::ProviderUsageStateChanged(_) => Self::ProviderUsage,
+            StudioProductEventKind::AccountUsageStateChanged(_) => Self::AccountUsage,
             StudioProductEventKind::ModelPerformanceStateChanged(_) => Self::ModelPerformance,
             StudioProductEventKind::SessionCostsChanged(state) => Self::SessionCosts {
                 root_thread_id: state.root_thread_id.clone(),
@@ -123,7 +123,7 @@ pub enum StudioProductBaselineState {
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
     ThreadModeCatalog(Box<pl_protocol::ThreadModeCatalogSnapshot>),
-    ProviderUsage(Box<ProviderUsageStateSnapshot>),
+    AccountUsage(Box<AccountUsageStateSnapshot>),
     ModelPerformance(Box<StudioModelPerformanceSnapshot>),
     SessionCosts(Box<StudioSessionCostsState>),
     Updater(Box<StudioUpdateStateSnapshot>),
@@ -146,7 +146,7 @@ impl StudioProductBaselineState {
             Self::Lsp(state) => revision_of(&state.state),
             Self::Skills(state) => revision_of(&state.state),
             Self::ThreadModeCatalog(state) => state.revision,
-            Self::ProviderUsage(state) => revision_of(&state.state),
+            Self::AccountUsage(state) => revision_of(&state.state),
             Self::ModelPerformance(state) => state.revision,
             Self::SessionCosts(state) => state.revision,
             Self::Updater(state) => state.revision(),

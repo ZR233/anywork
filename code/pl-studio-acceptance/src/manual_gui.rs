@@ -1,7 +1,7 @@
+mod account_usage;
 mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
-mod provider_usage;
 mod shutdown;
 mod web_search;
 mod websocket_recovery;
@@ -9,12 +9,12 @@ mod websocket_recovery;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_dev_support::{paths, process};
-use pl_model::config::{ProviderConfig, ProviderId};
+use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{
     MediaRepresentation, MediaWireFormat, ModelInfo, ModelInputCapability, ModelInputSource,
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
-use pl_model::provider::ProviderEndpoint;
+use pl_model::protocol::ProtocolEndpoint;
 use pl_studio_runtime::config::{McpServerTransport, StudioConfig, StudioMcpServerEntry};
 use sea_orm::sqlx::{
     Connection as _,
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(
     name = "cargo xtask manual-gui",
     bin_name = "cargo xtask manual-gui",
-    about = "Start an isolated native GUI with a local provider fixture for manual review"
+    about = "Start an isolated native GUI with a local account fixture for manual review"
 )]
 pub(crate) struct ManualGuiOptions {
     /// Run the regular, stress, single-item long-body stress (`stress-body`,
@@ -80,13 +80,13 @@ pub(crate) struct ManualGuiOptions {
         value_parser = ["unstructured", "wrong-search-key", "wrong-mcp-key", "missing-search-key"]
     )]
     pub(crate) web_search_fault: Option<String>,
-    /// Reusable web-search probe provider ids, forwarded to the Driver probe.
+    /// Reusable web-search probe account ids, forwarded to the Driver probe.
     #[arg(long, value_name = "ID,ID,ID")]
-    pub(crate) web_search_providers: Option<String>,
+    pub(crate) web_search_accounts: Option<String>,
     /// Reusable web-search probe model model_ids, forwarded to the Driver probe.
     #[arg(long, value_name = "MODEL,MODEL,MODEL")]
     pub(crate) web_search_models: Option<String>,
-    /// Label the reusable web-search probe as a fixture or real provider run.
+    /// Label the reusable web-search probe as a fixture or real account run.
     #[arg(long, value_parser = ["fixture", "real"])]
     pub(crate) web_search_probe: Option<String>,
     /// Run the native visible-displacement matrix after the `timeline-history`
@@ -434,7 +434,7 @@ struct WebSearchScenario<'a> {
     output: &'a Path,
     fixture_log: &'a Path,
     requests_file: &'a Path,
-    providers: Option<&'a str>,
+    accounts: Option<&'a str>,
     models: Option<&'a str>,
     probe_mode: &'a str,
     interrupt: &'a mpsc::Receiver<()>,
@@ -682,11 +682,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "--web-search-fault requires --scenario web-search"
     );
     ensure!(
-        (options.web_search_providers.is_none()
+        (options.web_search_accounts.is_none()
             && options.web_search_models.is_none()
             && options.web_search_probe.is_none())
             || options.scenario == "web-search",
-        "--web-search-providers/--web-search-models/--web-search-probe require --scenario web-search"
+        "--web-search-accounts/--web-search-models/--web-search-probe require --scenario web-search"
     );
     ensure!(
         (options.model_catalog_inventory.is_none() && options.model_catalog_control.is_none())
@@ -969,8 +969,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
 
     if options.scenario == "provider-usage" {
-        return provider_usage::run(
-            &provider_usage::Scenario {
+        return account_usage::run(
+            &account_usage::Scenario {
                 workspace: &workspace,
                 app_dir: &app_dir,
                 home: &home,
@@ -1000,7 +1000,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
-                providers: options.web_search_providers.as_deref(),
+                accounts: options.web_search_accounts.as_deref(),
                 models: options.web_search_models.as_deref(),
                 probe_mode: options.web_search_probe.as_deref().unwrap_or("fixture"),
                 interrupt: &interrupt_rx,
@@ -1417,7 +1417,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                                 "GUI stress probe exited before completion"
                             );
                             ensure!(!gui.exited()?, "GUI exited before stress completion");
-                            ensure!(!fixture.exited()?, "provider fixture exited during stress");
+                            ensure!(!fixture.exited()?, "account fixture exited during stress");
                             ensure!(
                                 interrupt_rx.try_recv().is_err(),
                                 "GUI stress wait cancelled"
@@ -1453,7 +1453,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             ensure!(!gui.exited()?, "GUI exited before manual review completed");
             ensure!(
                 !fixture.exited()?,
-                "provider fixture exited during manual review"
+                "account fixture exited during manual review"
             );
             thread::sleep(Duration::from_millis(200));
         }
@@ -1619,7 +1619,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             counts.iter().any(|count| *count >= 3),
-            "provider did not receive the sent image and both tool-read images"
+            "account did not receive the sent image and both tool-read images"
         );
     }
     if options.scenario == "stress" {
@@ -1822,7 +1822,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         let completion_lag = gui_finished.saturating_sub(finished);
         ensure!(
             completion_lag <= 15_000,
-            "GUI stress result lagged provider completion by {completion_lag}ms"
+            "GUI stress result lagged account completion by {completion_lag}ms"
         );
         let samples: Vec<serde_json::Value> = serde_json::from_slice(
             &fs::read(&probe_report).context("GUI stress probe did not write a report")?,
@@ -2288,7 +2288,7 @@ fn run_timeline_history_scenario(
                 }
                 ensure!(
                     !fixture.exited()?,
-                    "provider fixture exited during displacement collection"
+                    "account fixture exited during displacement collection"
                 );
                 ensure!(
                     interrupt.try_recv().is_err(),
@@ -2478,11 +2478,11 @@ fn run_timeline_history_scenario(
     journey?;
     ensure!(
         rejected == 0,
-        "timeline-history fixture rejected {rejected} provider request(s)"
+        "timeline-history fixture rejected {rejected} account request(s)"
     );
     ensure!(
         accepted >= 1,
-        "timeline-history fixture accepted no provider request"
+        "timeline-history fixture accepted no account request"
     );
     if let Some(status) = live_status {
         ensure!(
@@ -2594,7 +2594,7 @@ fn wait_for_timeline_history_driver(
         }
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during timeline-history {phase}"
+            "account fixture exited during timeline-history {phase}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -2702,7 +2702,7 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
 /// for the `web-search` scenario, so the other callers pass `None`.
 fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str>) -> Result<()> {
     if ready.scenario == "provider-usage" {
-        return provider_usage::write_config(home, ready);
+        return account_usage::write_config(home, ready);
     }
     if ready.scenario == "web-search" {
         let fault = match web_search_fault {
@@ -2881,10 +2881,10 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
         .args(args)
         .arg("--message-format=json")
         .output()
-        .context("failed to query Cargo for the provider fixture executable")?;
+        .context("failed to query Cargo for the account fixture executable")?;
     ensure!(
         discovery.status.success(),
-        "failed to locate the provider fixture executable: {}",
+        "failed to locate the account fixture executable: {}",
         String::from_utf8_lossy(&discovery.stderr)
     );
     for line in String::from_utf8_lossy(&discovery.stdout).lines() {
@@ -2908,11 +2908,11 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
             return Ok(executable);
         }
     }
-    bail!("Cargo reported no provider fixture bin executable")
+    bail!("Cargo reported no account fixture bin executable")
 }
 
 /// Builds the isolated acceptance config without persisting it, so every writer
-/// shares one model/provider/route fact source.
+/// shares one model/account/route fact source.
 fn fixture_config(
     home: &Path,
     ready: &FixtureReady,
@@ -2946,12 +2946,12 @@ fn fixture_config(
             replay: vec![MediaRepresentation::DataUrl],
         });
     }
-    let provider_id = ProviderId::new(format!("gui-fixture-{}", std::process::id()))?;
-    let mut endpoint = ProviderEndpoint::compatible("Local GUI fixture", &ready.base_url);
+    let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
+    let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
     endpoint.service_capabilities.remote_compaction = ready.scenario == "call-lifecycle-recovery";
     let mut models = vec![model];
     if ready.scenario == "gui" {
-        // Distinct metadata in the same isolated provider exercises the real
+        // Distinct metadata in the same isolated account exercises the real
         // settings projection without creating system credential accounts.
         let mut preset = models[0].clone();
         preset.model_id = "fixture-preset".into();
@@ -2967,20 +2967,17 @@ fn fixture_config(
         unknown.auto_compact_token_limit = None;
         models.extend([preset, unknown]);
     }
-    let provider = ProviderConfig::from_explicit_models(endpoint, models);
-    config.models.providers.clear();
-    config
-        .models
-        .providers
-        .insert(provider_id.clone(), provider);
+    let account = AccountConfig::from_explicit_models(endpoint, models);
+    config.models.accounts.clear();
+    config.models.accounts.insert(provider_id.clone(), account);
     for route in config
         .models
         .routes
         .values_mut()
         .chain(config.mode_model_routes.values_mut())
     {
-        route.provider = provider_id.clone();
-        route.model = "fixture-model".into();
+        route.account_id = provider_id.clone();
+        route.model_id = "fixture-model".into();
         route.effort = None;
     }
     config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
@@ -3101,7 +3098,7 @@ fn wait_for_vm(
         ensure!(!gui.exited()?, "GUI exited before publishing VM service");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited while GUI started"
+            "account fixture exited while GUI started"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -3730,7 +3727,7 @@ fn wait_for_statistics_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -3971,8 +3968,8 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
 /// comparable while the evidence is recorded separately. The `stress-body-large`
 /// scenario keeps the same event count but pads each increment above the 256KiB
 /// native window and slows the paced rate only there, so the generation-time
-/// growth above the threshold can be sampled. The synthetic provider's byte
-/// count is reported as provider output bytes only; it is never presented as the
+/// growth above the threshold can be sampled. The synthetic account's byte
+/// count is reported as account output bytes only; it is never presented as the
 /// volume transferred across the bridge.
 fn run_stress_body_scenario(
     context: &StressBodyScenario<'_>,
@@ -4081,9 +4078,9 @@ fn run_stress_body_scenario(
             "rejectedRequests": rejected,
             "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
             "providerEmittedEvents": host_report.as_ref().map(|report| report.emitted_events),
-            // Synthetic provider text bytes; explicitly not an FRB transfer measurement.
+            // Synthetic account text bytes; explicitly not an FRB transfer measurement.
             "providerOutputBytes": host_report.as_ref().map(|report| report.emitted_bytes),
-            "providerOutputBytesNote": "synthetic provider output text bytes, not FRB transfer volume",
+            "providerOutputBytesNote": "synthetic account output text bytes, not FRB transfer volume",
         }))?,
     )?;
     let errors = if gui_log_path.is_file() {
@@ -4240,7 +4237,7 @@ fn run_stress_body_scenario(
     );
     ensure!(
         report.emitted_bytes > 0,
-        "stress-body stream reported no provider output bytes"
+        "stress-body stream reported no account output bytes"
     );
     // The large scenario is deliberately paced slower (2,500 token/s) so the
     // window above the 256KiB threshold stays long enough to sample at least two
@@ -4905,7 +4902,7 @@ fn run_history_fault_scenario(
 /// script. The first lifecycle submits a real `plan_submit` through the GUI and
 /// shuts the GUI down normally while the confirmation is pending; the restart
 /// proves the reopened session restores the exact Plan body, interaction and
-/// turn identity with no provider request before the answer (the coordinator
+/// turn identity with no account request before the answer (the coordinator
 /// holds the Driver on a quiet marker until the fixture counters prove it),
 /// approves, and stages the Revise branch before a second normal shutdown; the
 /// recheck restores that second pending Plan, answers Revise (which must produce
@@ -4997,13 +4994,13 @@ fn run_plan_recovery_scenario(
         ensure!(
             after_first.total == at_first_card.total
                 && after_first.consumed_steps == at_first_card.consumed_steps,
-            "the first normal GUI shutdown issued provider requests: \
+            "the first normal GUI shutdown issued account requests: \
              {at_first_card:?} -> {after_first:?}"
         );
         fs::write(
             output.join("plan-recovery-requests-first.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "note": "baseline settled at the pending card; the normal shutdown itself added no provider request",
+                "note": "baseline settled at the pending card; the normal shutdown itself added no account request",
                 "atCard": at_first_card,
                 "afterShutdown": after_first,
             }))?,
@@ -5054,7 +5051,7 @@ fn run_plan_recovery_scenario(
                 output.join("plan-recovery-requests-restart.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
                     "quietBeforeAnswer": quiet_evidence,
-                    "note": "baseline settled at the second pending card; the second normal shutdown added no provider request",
+                    "note": "baseline settled at the second pending card; the second normal shutdown added no account request",
                     "atReviseCard": at_card,
                 }))?,
             )?;
@@ -5069,7 +5066,7 @@ fn run_plan_recovery_scenario(
         ensure!(
             after_restart.total == at_revise_card.total
                 && after_restart.consumed_steps == at_revise_card.consumed_steps,
-            "the second normal GUI shutdown issued provider requests: \
+            "the second normal GUI shutdown issued account requests: \
              {at_revise_card:?} -> {after_restart:?}"
         );
         if let Some(value) = serde_json::from_slice::<serde_json::Value>(&fs::read(
@@ -5266,7 +5263,7 @@ fn plan_recovery_settled_baseline(
     Ok(second)
 }
 
-/// Proves a reopened-card window recorded no provider traffic, then releases
+/// Proves a reopened-card window recorded no account traffic, then releases
 /// the Driver's quiet marker.
 ///
 /// The baseline comes from the previous lifecycle's settled counters, so any
@@ -5285,14 +5282,14 @@ fn plan_recovery_quiet_window(
     );
     ensure!(
         reopened.total == baseline.total && reopened.consumed_steps == baseline.consumed_steps,
-        "provider traffic appeared between the restart display and the answer: \
+        "account traffic appeared between the restart display and the answer: \
          {baseline:?} -> {reopened:?}"
     );
     thread::sleep(Duration::from_millis(2_500));
     let after_window = plan_recovery_read_status(status_file)?;
     ensure!(
         after_window == reopened,
-        "provider traffic appeared during the quiet window: {reopened:?} -> {after_window:?}"
+        "account traffic appeared during the quiet window: {reopened:?} -> {after_window:?}"
     );
     evidence.insert("baseline".into(), serde_json::to_value(baseline)?);
     evidence.insert("reopened".into(), serde_json::to_value(reopened)?);
@@ -5369,7 +5366,7 @@ fn wait_for_plan_recovery_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5410,7 +5407,7 @@ fn wait_for_plan_recovery_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the plan-recovery {phase} journey"
+            "account fixture exited during the plan-recovery {phase} journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5724,7 +5721,7 @@ fn wait_for_realtime_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the realtime journey"
+            "account fixture exited during the realtime journey"
         );
         ensure!(interrupt.try_recv().is_err(), "realtime journey cancelled");
         ensure!(
@@ -5793,7 +5790,7 @@ fn wait_for_history_lock_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5828,7 +5825,7 @@ fn wait_for_history_lock_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the history-lock journey"
+            "account fixture exited during the history-lock journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5900,7 +5897,7 @@ fn wait_for_history_fault_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5935,7 +5932,7 @@ fn wait_for_history_fault_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the history-fault journey"
+            "account fixture exited during the history-fault journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -6188,7 +6185,7 @@ fn sanitize_requests(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Persists the synthetic provider log as reviewable evidence.
+/// Persists the synthetic account log as reviewable evidence.
 ///
 /// The fixture prints one `fixture_*` line per strict-match fact; those lines
 /// carry scenario-owned prompts and a match category but never the caller's

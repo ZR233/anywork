@@ -122,7 +122,7 @@ class _StudioLifecycleCoordinatorState
     final graph = ref.read(appGraphProvider);
     _coordinator = StudioExitCoordinator(
       _api,
-      // dispose 之后 overlay 与 provider container 均已销毁：不再向已销毁的
+      // dispose 之后 overlay 与 account container 均已销毁：不再向已销毁的
       // progress notifier 写状态。
       (progress) {
         if (mounted) _shutdownProgress.update(progress);
@@ -156,7 +156,7 @@ class _StudioLifecycleCoordinatorState
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // 卸载兜底：此时 overlay 与 provider container 均已销毁，只执行关机；协调器
+    // 卸载兜底：此时 overlay 与 account container 均已销毁，只执行关机；协调器
     // 通过共享 future 复用同一次收束，且不会再向已销毁的 progress notifier 写状态。
     unawaited(StudioExitCoordinator.requestExit().catchError(_logExitError));
     super.dispose();

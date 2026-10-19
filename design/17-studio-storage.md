@@ -7,7 +7,7 @@ Thread checkpoint 与 writer 合同见 [15](./15-session-storage.md)，安全边
 本次是大版本的会话存储断代：旧版本的会话目录、目录摘要、产品库、调用统计与迁移状态
 保留在旧路径，**不导入、不激活、不自动归档或清空**。新运行时在独立的 `v2/` 数据根
 创建新的会话与目录。`config.toml` 与用户 Agent Profile 等非会话配置沿用原位置，
-provider 配置升级继续由配置模块负责并保护凭据引用；旧会话转换不属于本版本的启动
+account 配置升级继续由配置模块负责并保护凭据引用；旧会话转换不属于本版本的启动
 路径或验收目标。
 
 ## 17.1 数据布局
@@ -16,13 +16,13 @@ Studio home（`~/.anywork/`）的布局为：
 
 ```text
 ~/.anywork/
-├── config.toml                     # provider/model/Skill 配置
+├── config.toml                     # account/model/Skill 配置
 ├── agents/<agent-id>.toml          # 用户 Agent Profile
 ├── v2/
 │   ├── settings.toml               # 本版本 UI 与产品设置
 │   ├── workspaces.toml             # 本版本 Project/Workspace 定义
 │   ├── catalog.toml                # 本版本新会话目录摘要
-│   ├── model-catalogs/<provider-key>/<query-key>/model.json # 各实例最后成功模型声明
+│   ├── model-catalogs/<account-key>/<query-key>/model.json # 各账号最后成功模型声明
 │   ├── sessions/<storage-key>/     # 每个新 Thread 一个目录（storage-key = id 的 sha256）
 │   │   ├── history.sqlite          # 历史、最新上下文与 checkpoint 同事务
 │   │   └── blobs/                  # 可靠附件正文，旧 checkpoint 子目录迁移后回收
@@ -45,7 +45,8 @@ Studio home（`~/.anywork/`）的布局为：
 canonical 会话、调用与迁移目录位于 `~/.anywork/v2/`；产品库位于
 `~/.anywork/studio/v2/`，进程级锁与 Skill 仍位于 `studio/`。
 `<storage-key>` 是 Thread id 的 SHA-256 十六进制摘要，不是原始 id。
-`<provider-key>` 与 `<query-key>` 是实例和查询身份的安全摘要，不作为可逆凭据表示。
+`<account-key>` 与 `<query-key>` 是账号和查询身份的安全摘要，不作为可逆凭据表示；账号 ID
+原值不变时保留已有账号目录摘要，不因术语迁移另起缓存命名空间。
 旧共享库 `studio/sessions.sqlite`、旧逐产品 `studio/calls.sqlite`、旧全局
 `studio/attachments/` 及旧迁移 staging 目录原样留在旧数据根，本版本不读取或切换它们。
 
@@ -130,14 +131,14 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 
 ## 17.3 配置和目录文件
 
-`config.toml` 保存 provider、模型 route、指令、Skill/MCP 等配置；`settings.toml` 保存 UI 和
+`config.toml` 保存 account、模型 route、指令、Skill/MCP 等配置；`settings.toml` 保存 UI 和
 产品设置；`workspaces.toml` 保存 workspace/project；`catalog.toml` 保存会话目录。所有文件使用
 版本化 schema、CAS revision 与统一原子写入，不在正常路径双读旧格式。
 
 更新下载进度不属于产品设置，不写入 `settings.toml`；下载恢复和安装资格遵循 [23](./23-release-update.md)。
 
-用户 Agent Profile 继续一个稳定 ID 一个 TOML 文件。系统 Profile 不写用户文件。Provider secret
-保存在 OS 凭据库；配置迁移改变 provider ID 时必须先写入并验证目标凭据，再切换引用。
+用户 Agent Profile 继续一个稳定 ID 一个 TOML 文件。系统 Profile 不写用户文件。Account secret
+保存在 OS 凭据库；配置迁移改变 account ID 时必须先写入并验证目标凭据，再切换引用。
 
 目录变更与会话 checkpoint 不共享伪造的跨文件事务。创建/归档等跨资源命令使用显式可恢复
 步骤和迁移/操作记录：目标文件全部验证并持久化后才发布新 catalog revision；失败保留可重试
@@ -145,13 +146,22 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 
 ### 模型目录成功缓存
 
-在线模型目录是可重建的 provider 观察，不是用户 desired config 或会话数据。每个实例、查询身份
+在线模型目录是可重建的 account 观察，不是用户 desired config 或会话数据。每个实例、查询身份
 独立保存版本化 `model.json`：身份、成功/检查时间（Unix 秒）、可选 ETag 与统一模型声明；
-不保存明文认证信息，API 模型价格保存为 Unknown，计价来源由 [06](./06-model.md) 定义。
+不保存明文认证信息；价格保存该厂商适配明确声明并归一化的 token 价格，未声明或不支持的
+格式保持 Unknown。计价来源与同账号路由的价格回填由 [06](./06-model.md) 定义，不改写历史账单。
 成功文件的读取与写入共用 8 MiB 上限；规范化后的声明超过上限时保留上一份成功观察，
 不写入下次启动无法读取的文件。
-查询身份覆盖实例、完整 base URL 路径、adapter 及影响查询的 header/凭据身份；旧身份文件不
+查询身份覆盖账号、完整 base URL 路径、厂商协议适配及影响查询的 header/凭据身份；旧身份文件不
 用于新地址或其他实例，也不因删除、改名或切地址顺带删除。
+
+查询指纹 v2 显式包含厂商协议适配，避免相同地址和目录在切换协议后复用不同解析语义。
+成功缓存格式升级至 3；旧格式 1/2 及 v1 查询指纹只在明确的缓存升级边界读取，保留原文件、
+成员、元数据和最后成功时间，并为同账号的旧查询身份记录唯一迁移目标，不能在后续协议切换时
+反复导入同一旧快照。无法证明旧快照的厂商解析来源时，只作为历史成功快照保留，不冒充当前
+协议的新观察；该快照可作有标记的缓存失败回退，但不能作为新协议解码的前次声明参与字段
+继承，完整响应重新验证前不得发送旧 ETag。升级失败只报告该账号的缓存故障并保留
+可重试状态，不清空缓存或通过全局重置绕过。
 
 仅在查询/解码/声明与身份校验成功后使用单文件原子替换，再发布对应内存观察。写失败保留上一份
 已发布目录和成功文件，报告失败而非持久成功；取消和迟到结果不得提交。ETag/304 只有相同身份
@@ -164,7 +174,7 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 避免临时文件路径长度使已成功解析的目录无法保存。
 
 启动配置引用校验前读取同身份成功缓存。缺失、损坏、不兼容或读取失败只产生该实例诊断并回退
-供应商默认定义，保留文件现场，不触发全局备份重置。后续探测失败不改写或清空成功缓存；
+账号默认定义，保留文件现场，不触发全局备份重置。后续探测失败不改写或清空成功缓存；
 动态模型选择暂不可解析时的 unavailable 语义见 [20](./20-config.md)。既有配置/凭据服务本身的
 环境错误仍沿用原启动边界，不冒充缓存缺失。
 
@@ -252,7 +262,7 @@ ordinal；重试同一身份保持原值，未落盘的分配在进程重启后�
 
 保存确认只释放该事务实际提交的 Item 身份与 revision。模型尝试仍在运行时，其保存确认
 不得清理随后发布的当前观察或已收束的失败代次预览；这些事实由模型所有者的最终回执
-负责持久化。只有尝试终态已提交，才可释放该尝试残留的推测性 provider 预览，且不得
+负责持久化。只有尝试终态已提交，才可释放该尝试残留的推测性 account 预览，且不得
 删除本事务已提交的身份或改变它们的历史窗口位置。
 
 已写入但尚未关联 Turn 的消息条目，随后可以用同一身份与 ordinal 绑定到它的 Turn。若它
@@ -351,7 +361,7 @@ v2 checkpoint 在按需激活时迁移：验证版本、外置正文完整性及
 ## 17.6 worktree 与资源恢复
 
 v2 Turn 失败记录新增可选模型失败事实。缺少该字段的既有记录在持久化解码边界恢复为无
-结构化事实，保留原诊断文本与身份；新记录原样保存模型事实，不从旧错误文本猜测供应商分类。
+结构化事实，保留原诊断文本与身份；新记录原样保存模型事实，不从旧错误文本猜测账号分类。
 
 worktree lease 是物理资源唯一 ownership。会话的 `workspace_mode` 与 `workspace_path` 是目录
 展示事实，不因 lease 缺失自动改为 local。激活时 lease 或物理身份缺失/不匹配明确失败并发布
@@ -366,10 +376,30 @@ lease 不是清理候选。显式 cleanup 在服务端重新验证前置条件�
 
 ## 17.7 大版本隔离与配置迁移
 
+账号迁移只保全转换非会话配置与本版本 v2 的模型接入身份，不是新一次会话断代。
+配置、Profile 和系统凭据的可恢复转换见 [20](./20-config.md)。账号 ID 原值保留，显示名不
+参与绑定隔离身份；迁移不得因命名从 provider 改为 account 而把同一绑定当成另一账号。
+
+已有 v2 的产品模型路由与 Agent Profile 扩展在持久化解码边界按版本转换 provider/model 字段，
+保留原 ID、effort、扩展 revision、checkpoint fence 与历史；在唯一 writer 的事务内发布当前
+结构，迁移失败不激活模型、不前移版本。按需打开、恢复和继续父子会话使用相同边界，不批量激活。
+typed 账单和调用记录只转换已知账号字段，不改写厂商不透明正文或以当前配置猜测历史身份。
+
+恢复 owner 前的 checkpoint 维护同时覆盖根会话模型路由与子会话冻结 Profile：仅在内存中
+解码旧字段不算完成升级；事务内比较已读检查点，再持久化当前扩展载荷，水位、扩展 revision
+和业务状态不因表示升级而变化。原生压缩来源恢复消费相同的版本化回执解码边界，不能在旧
+压缩回执中直接反序列化当前账号绑定；解码或提交失败均保留原检查点并阻止不安全激活。
+
+调用库列、索引与投影在版本事务内转换为 account_id/account_display_name/model_id 语义，
+调用主键和全部费用事实保留。性能顶层用冻结的配置模型与账号聚合，effort 为二级；缺少配置模型
+证据的旧样本保留未知而非使用发送模型冒充。会话及 purpose/币种累计费用不重算、不清空。
+成功目录缓存保留同账号同查询身份的回退，字段或归一化升级只在明确版本边界转换；旧文件和
+最后成功声明保留，不能通过清空缓存或拒绝所有历史缓存来完成账号改名。
+
 本版本不运行旧会话 journal、旧产品库或旧调用库的转换、导出与归档，也不提供
 `migrate-legacy-storage` 命令。`~/.anywork/studio/sessions.sqlite`、旧产品数据库、调用库、
 附件与旧迁移报告均保留在原路径；新会话只读写 `v2/` 和 `studio/v2/` 下的独立数据。
-旧数据不可作为新会话缺失条目的补全来源。只有全局 provider 等非会话配置按配置契约升级；
+旧数据不可作为新会话缺失条目的补全来源。只有全局 account 等非会话配置按配置契约升级；
 配置和 OS 凭据关联优先安全迁移；无法恢复的数据错误按 17.2 完整备份后重建，凭据始终保留
 （见 [20](./20-config.md)）。
 
@@ -379,7 +409,7 @@ lease 不是清理候选。显式 cleanup 在服务端重新验证前置条件�
 链接的 SQLite 版本；不能只依据 ORM crate 版本宣称具备某个 WAL 修复。本次迁移和发布验收至少覆盖：
 
 - 旧会话、调用库和产品库在原路径保持字节不变，既不导入也不自动归档；
-- 供应商配置、凭据关联等非会话配置安全迁移，无法恢复时完整备份后初始化，原始字节和凭据保留；
+- 账号配置、凭据关联等非会话配置安全迁移，无法恢复时完整备份后初始化，原始字节和凭据保留；
 - 新建 v2 会话的数据在 WAL 中已提交、重复启动和写入中断恢复；
 - checkpoint 不越过 history/blob fence；
 - writer busy/失败/确认不明时不丢批次；
@@ -392,7 +422,7 @@ lease 不是清理候选。显式 cleanup 在服务端重新验证前置条件�
 Mode Prompt 正文、用户 credential 或未授权请求正文。失败 artifact 可包含 migration 状态、schema、
 数据库 quick check、写入水位、队列压力、GUI/Driver 日志和文件 diff；敏感原始备份受权限保护。
 
-Timeline 的工具 item 在开始时分配稳定身份；provider identity 后到只更新同一 item。历史缺口、
+Timeline 的工具 item 在开始时分配稳定身份；account identity 后到只更新同一 item。历史缺口、
 重复 ordinal、同 revision 内容冲突、checkpoint fence 越界或 blob hash 不匹配必须失败关闭，不能
 用当前工作区内容或当前工具渲染器补回。
 

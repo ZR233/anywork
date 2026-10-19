@@ -34,12 +34,11 @@ pub fn model_attempt_billing(
         .as_ref()
         .map(model_request_receipt)
         .transpose()?;
-    let (binding, accounting, model, model_observation, timing, orchestration) = match output {
+    let (binding, accounting, model_observation, timing, orchestration) = match output {
         Ok(output) => match model_response_receipt(output)? {
             Some(receipt) => (
                 Some(receipt.binding),
                 receipt.response.accounting,
-                receipt.response.model,
                 receipt.response.model_observation,
                 receipt.response.timing,
                 receipt.response.orchestration,
@@ -47,7 +46,6 @@ pub fn model_attempt_billing(
             None => (
                 request.as_ref().map(|request| request.binding.clone()),
                 unknown(&output.usage),
-                String::new(),
                 None,
                 None,
                 Default::default(),
@@ -57,7 +55,6 @@ pub fn model_attempt_billing(
             Some(receipt) => (
                 Some(receipt.binding),
                 receipt.accounting,
-                String::new(),
                 receipt.model_observation,
                 None,
                 Default::default(),
@@ -65,33 +62,29 @@ pub fn model_attempt_billing(
             None => (
                 request.as_ref().map(|request| request.binding.clone()),
                 unknown(&error.usage),
-                String::new(),
                 None,
                 None,
                 Default::default(),
             ),
         },
     };
-    let model = if let Some(observation) = &model_observation {
-        observation.sent_model.clone()
-    } else if model.is_empty() {
-        binding
-            .as_ref()
-            .map_or_else(String::new, |binding| binding.requested_model.clone())
-    } else {
-        model
-    };
-    let provider = binding
+    // The configured `model_id` is a frozen routing fact. The sent alias and the vendor's
+    // reported name stay diagnostics inside `model_observation`; they never substitute it.
+    let account_id = binding
         .as_ref()
-        .map_or_else(String::new, |binding| binding.provider_instance_id.clone());
+        .map_or_else(String::new, |binding| binding.account_id.clone());
+    let model_id = binding
+        .as_ref()
+        .map(|binding| binding.model_id.clone())
+        .filter(|model_id| !model_id.is_empty());
     Ok(Some(InferenceBillingRecord {
         inference_id: attempt.attempt_id.clone(),
         purpose: binding.as_ref().map(|binding| binding.purpose.clone()),
-        provider_instance_id: provider.clone(),
-        provider,
-        model,
+        account_id,
+        account_display_name: None,
+        model_id,
         model_observation,
-        reasoning_effort: request
+        effort: request
             .as_ref()
             .and_then(|request| request.reasoning.as_ref())
             .and_then(|reasoning| reasoning.effort.clone()),

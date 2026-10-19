@@ -14,7 +14,7 @@ import '../../domain/models/studio_models.dart';
 part 'status_view.g.dart';
 
 const statusEmptyRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,
@@ -43,7 +43,7 @@ List<LspServerStateView> statusLspServers(Ref ref) {
 StatusBarView? statusBarView(Ref ref, String threadId) {
   final thread = _directoryThread(ref, threadId);
   if (thread == null) return null;
-  final catalog = ref.watch(settingsProvidersViewProvider);
+  final catalog = ref.watch(settingsAccountsViewProvider);
   final chrome =
       _observeSession(
         ref,
@@ -61,7 +61,7 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
       );
   return StatusBarView(
     thread: thread,
-    providers: catalog.providers,
+    accounts: catalog.accounts,
     roles: catalog.canonical?.roles ?? const [],
     isBusy: chrome.isBusy,
     modelRoute: chrome.modelRoute,

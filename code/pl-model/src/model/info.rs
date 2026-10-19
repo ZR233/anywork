@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::model::capabilities::{ModelCapabilities, ModelModality};
 use crate::model::parameter::ModelParameter;
 use crate::model::profile_error::ModelProfileError;
-use crate::provider::{ProviderConnectionMode, ProviderWireProtocol};
+use crate::protocol::{ConnectionMode, WireApi};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,20 +55,16 @@ impl ModelBinding {
     pub fn set_transport(&mut self, transport: ModelTransportProfile) {
         let matches = matches!(
             (&self.request.protocol, transport.protocol),
-            (
-                ModelProtocolOptions::Responses(_),
-                ProviderWireProtocol::Responses
-            ) | (
-                ModelProtocolOptions::ChatCompletions(_),
-                ProviderWireProtocol::ChatCompletions
-            )
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
         );
         if !matches {
             self.request.protocol = match transport.protocol {
-                ProviderWireProtocol::Responses => {
-                    ModelProtocolOptions::Responses(Default::default())
-                }
-                ProviderWireProtocol::ChatCompletions => {
+                WireApi::Responses => ModelProtocolOptions::Responses(Default::default()),
+                WireApi::ChatCompletions => {
                     ModelProtocolOptions::ChatCompletions(Default::default())
                 }
             };
@@ -80,36 +76,33 @@ impl ModelBinding {
 /// 模型拥有的 API wire 与连接策略。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelTransportProfile {
-    pub protocol: ProviderWireProtocol,
-    pub supported_connection_modes: Vec<ProviderConnectionMode>,
-    pub default_connection_mode: ProviderConnectionMode,
+    pub protocol: WireApi,
+    pub supported_connection_modes: Vec<ConnectionMode>,
+    pub default_connection_mode: ConnectionMode,
 }
 
 impl ModelTransportProfile {
     pub fn responses_websocket() -> Self {
         Self {
-            protocol: ProviderWireProtocol::Responses,
-            supported_connection_modes: vec![
-                ProviderConnectionMode::WebSocket,
-                ProviderConnectionMode::Http,
-            ],
-            default_connection_mode: ProviderConnectionMode::WebSocket,
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::WebSocket, ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::WebSocket,
         }
     }
 
     pub fn responses_http() -> Self {
         Self {
-            protocol: ProviderWireProtocol::Responses,
-            supported_connection_modes: vec![ProviderConnectionMode::Http],
-            default_connection_mode: ProviderConnectionMode::Http,
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
         }
     }
 
     pub fn chat_completions_http() -> Self {
         Self {
-            protocol: ProviderWireProtocol::ChatCompletions,
-            supported_connection_modes: vec![ProviderConnectionMode::Http],
-            default_connection_mode: ProviderConnectionMode::Http,
+            protocol: WireApi::ChatCompletions,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
         }
     }
 }
@@ -219,12 +212,10 @@ impl MediaWireFormat {
         }
     }
 
-    fn protocol(self) -> ProviderWireProtocol {
+    fn protocol(self) -> WireApi {
         match self {
-            Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => {
-                ProviderWireProtocol::ChatCompletions
-            }
-            Self::ResponsesInputImage => ProviderWireProtocol::Responses,
+            Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => WireApi::ChatCompletions,
+            Self::ResponsesInputImage => WireApi::Responses,
         }
     }
 }
@@ -481,13 +472,11 @@ impl ModelInfo {
                 &self.binding.request.protocol,
                 self.binding.transport.protocol
             ),
-            (
-                ModelProtocolOptions::Responses(_),
-                ProviderWireProtocol::Responses
-            ) | (
-                ModelProtocolOptions::ChatCompletions(_),
-                ProviderWireProtocol::ChatCompletions
-            )
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
         ) {
             return Err(ModelProfileError::ProtocolOptionsMismatch {
                 model: self.model_id.clone(),

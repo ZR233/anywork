@@ -45,8 +45,8 @@ Future<BridgeSettingsCommandReply> saveUserAgentProfile({
   required String description,
   required String whenToUse,
   required String systemInstructions,
-  required String providerId,
-  required String model,
+  required String accountId,
+  required String modelId,
   String? effort,
   required BridgeAgentWorkspaceMode workspaceMode,
 }) => RustLib.instance.api
@@ -59,8 +59,8 @@ Future<BridgeSettingsCommandReply> saveUserAgentProfile({
       description: description,
       whenToUse: whenToUse,
       systemInstructions: systemInstructions,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
       workspaceMode: workspaceMode,
     );

@@ -117,11 +117,11 @@ final class ThreadModeCatalogTopic extends ProductTopic {
   int get hashCode => 0x0109;
 }
 
-final class ProviderUsageTopic extends ProductTopic {
-  const ProviderUsageTopic();
+final class AccountUsageTopic extends ProductTopic {
+  const AccountUsageTopic();
 
   @override
-  bool operator ==(Object other) => other is ProviderUsageTopic;
+  bool operator ==(Object other) => other is AccountUsageTopic;
 
   @override
   int get hashCode => 0x0110;
@@ -257,10 +257,10 @@ final class ThreadModeCatalogBaseline extends ProductTopicBaselineState {
   final ThreadModeCatalogView state;
 }
 
-final class ProviderUsageBaseline extends ProductTopicBaselineState {
-  const ProviderUsageBaseline(this.state);
+final class AccountUsageBaseline extends ProductTopicBaselineState {
+  const AccountUsageBaseline(this.state);
 
-  final ProviderUsageStateSnapshot state;
+  final AccountUsageStateSnapshot state;
 }
 
 final class ModelPerformanceBaseline extends ProductTopicBaselineState {
@@ -415,7 +415,7 @@ sealed class ProductTopicEventPayload {
       projectId: state.projectId,
     ),
     ThreadModeCatalogChangedPayload() => const ThreadModeCatalogTopic(),
-    ProviderUsageStateChangedPayload() => const ProviderUsageTopic(),
+    AccountUsageStateChangedPayload() => const AccountUsageTopic(),
     ModelPerformanceStateChangedPayload() => const ModelPerformanceTopic(),
     SessionCostsChangedPayload(:final state) => SessionCostsTopic(
       rootThreadId: state.rootThreadId,
@@ -495,10 +495,10 @@ final class ThreadModeCatalogChangedPayload extends ProductTopicEventPayload {
   final ThreadModeCatalogView state;
 }
 
-final class ProviderUsageStateChangedPayload extends ProductTopicEventPayload {
-  const ProviderUsageStateChangedPayload(this.state);
+final class AccountUsageStateChangedPayload extends ProductTopicEventPayload {
+  const AccountUsageStateChangedPayload(this.state);
 
-  final ProviderUsageStateSnapshot state;
+  final AccountUsageStateSnapshot state;
 }
 
 final class ModelPerformanceStateChangedPayload

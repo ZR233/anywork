@@ -1,9 +1,9 @@
 //! Optional discovery instances for directed native GUI observation.
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{
-    ProviderCatalogRegistry, ProviderId, ProviderModelCatalogConfig, builtin_provider_catalog,
+    AccountCatalogRegistry, AccountId, AccountModelCatalogConfig, builtin_account_catalog,
 };
-use pl_model::provider::ProviderConnectionMode;
+use pl_model::protocol::ConnectionMode;
 use pl_provider_fixture::{
     MIMO_MEDIA_MODEL_IDS, MODEL_CATALOG_CONTROL_FILE_NAME, ModelCatalogControl,
 };
@@ -84,44 +84,41 @@ pub(super) fn configure(
     );
     let file = home.join("config.toml");
     let mut config: StudioConfig = toml::from_str(&fs::read_to_string(&file)?)?;
-    let catalog = builtin_provider_catalog()?;
+    let catalog = builtin_account_catalog()?;
     ensure_catalog_discovery_declarations(&catalog)?;
     let route_model_id = bootstrap_route_model_id(control)?;
     for (id, preset, suffix) in INSTANCES {
         let preset = catalog
-            .presets
+            .templates
             .iter()
             .find(|candidate| candidate.id.as_str() == preset)
             .ok_or_else(|| anyhow::anyhow!("model catalog fixture preset is missing"))?;
-        let mut provider = preset.provider.clone();
-        provider.name = id.to_owned();
-        provider.base_url = format!("{}/{suffix}", base_url.trim_end_matches('/'));
-        provider.bearer_token_env = None;
-        provider.bearer_token = None;
+        let mut account = preset.account.clone();
+        account.name = id.to_owned();
+        account.base_url = format!("{}/{suffix}", base_url.trim_end_matches('/'));
+        account.bearer_token_env = None;
+        account.bearer_token = None;
         if id == "catalog-openai"
-            && let ProviderModelCatalogConfig::Bundled {
+            && let AccountModelCatalogConfig::Bundled {
                 connection_overrides,
                 auto_compact_overrides,
                 ..
-            } = &mut provider.catalog
+            } = &mut account.catalog
         {
-            connection_overrides.insert(route_model_id.clone(), ProviderConnectionMode::Http);
+            connection_overrides.insert(route_model_id.clone(), ConnectionMode::Http);
             auto_compact_overrides.insert(route_model_id.clone(), 12_000);
         }
-        config
-            .models
-            .providers
-            .insert(ProviderId::new(id)?, provider);
+        config.models.accounts.insert(AccountId::new(id)?, account);
     }
-    let openai = ProviderId::new("catalog-openai")?;
+    let openai = AccountId::new("catalog-openai")?;
     for route in config
         .models
         .routes
         .values_mut()
         .chain(config.mode_model_routes.values_mut())
     {
-        route.provider = openai.clone();
-        route.model = route_model_id.clone();
+        route.account_id = openai.clone();
+        route.model_id = route_model_id.clone();
         route.effort = None;
     }
     // Discovery instances keep withdrawn-model_id routes and overrides before the
@@ -131,15 +128,15 @@ pub(super) fn configure(
     Ok(())
 }
 
-fn ensure_catalog_discovery_declarations(catalog: &ProviderCatalogRegistry) -> Result<()> {
+fn ensure_catalog_discovery_declarations(catalog: &AccountCatalogRegistry) -> Result<()> {
     for preset in catalog
-        .presets
+        .templates
         .iter()
         .filter(|preset| ["openai", "deepseek", "mimo-api"].contains(&preset.id.as_str()))
     {
         ensure!(
-            preset.provider.discovery_profile()?.is_some(),
-            "fixture provider must support discovery"
+            preset.account.discovery_profile()?.is_some(),
+            "fixture account must support discovery"
         );
     }
     Ok(())
@@ -216,7 +213,7 @@ pub(super) fn write_runbook(
 
 命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second|real`；自定义文件用 `--model-catalog-control PATH`。每次运行都是全新隔离 home，改库存请重跑一次命令，不要热重启。
 
-JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`）:
+JSON 字段（每个 account：`openai` / `openai-second` / `deepseek` / `mimo`）:
 
 ```json
 {{
@@ -258,7 +255,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-all
 1. 全新隔离 home（无既有 `{cache}` 成功观察）。
 2. fixture 四实例均 `reject: true`（HTTP 401）。
 3. 启动 GUI 后打开发现实例设置页。
-4. 应观察：provider `status.source=default`（尚未同步），模型级 `origin=bundled`；bundled 默认模型重新出现。失败时 `error` 为类型化 Http/Protocol/Timeout，不是自由文本。
+4. 应观察：account `status.source=default`（尚未同步），模型级 `origin=bundled`；bundled 默认模型重新出现。失败时 `error` 为类型化 Http/Protocol/Timeout，不是自由文本。
 5. 证据：设置页截图、runtime 日志、本目录 `fixture.log`、`<evidence>/model-catalog-requests.json`（fixture 停止后复制）。
 
 也可用自定义控制文件把该实例设为 `protocolError: true` 后同样重跑一次，验证协议失败回退。
@@ -288,7 +285,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory a
 1. 控制文件 MiMo 段包含 `mimo-v2.5-pro`、`mimo-v2.5`、`mimo-v2.6-pro` 以及 4 个媒体 model_id。
 2. 启动后打开 `catalog-mimo`。
 3. 应观察：供应商设置保留 TTS/ASR 四个 model_id 与其他在线 model_id；会话和 Agent 菜单只列出最终合并后支持文本输入、文本输出且解析上下文为正数的模型，模式切换不得改变该选择项集合。已保存的不合格选择保留并展示筛选原因。
-4. 证据：MiMo 列表截图、`<evidence>/model-catalog-requests.json`（path/status/provider/hits/rejected；`provider` 为实例名 `openai`/`openai-second`/`deepseek`/`mimo`）、`{cache}` 下 `model.json`、studio 日志。不要使用严格脚本的 `requests.json`。
+4. 证据：MiMo 列表截图、`<evidence>/model-catalog-requests.json`（path/status/account/hits/rejected；`account` 为实例名 `openai`/`openai-second`/`deepseek`/`mimo`）、`{cache}` 下 `model.json`、studio 日志。不要使用严格脚本的 `requests.json`。
 
 ## 7. 失败隔离
 
@@ -533,8 +530,8 @@ pub(super) fn assert_route_preserved(home: &Path) -> Result<()> {
     let config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
     let openai = config
         .models
-        .providers
-        .get(&ProviderId::new("catalog-openai")?)
+        .accounts
+        .get(&AccountId::new("catalog-openai")?)
         .context("catalog-openai missing after restart")?;
     ensure!(
         config
@@ -542,18 +539,18 @@ pub(super) fn assert_route_preserved(home: &Path) -> Result<()> {
             .routes
             .values()
             .chain(config.mode_model_routes.values())
-            .all(|route| route.provider.as_str() == "catalog-openai"
-                && route.model == WITHDRAWN_MODEL_ID),
+            .all(|route| route.account_id.as_str() == "catalog-openai"
+                && route.model_id == WITHDRAWN_MODEL_ID),
         "routes were rewritten across catalog restart"
     );
     match &openai.catalog {
-        ProviderModelCatalogConfig::Bundled {
+        AccountModelCatalogConfig::Bundled {
             connection_overrides,
             auto_compact_overrides,
             ..
         } => {
             ensure!(
-                connection_overrides.get(WITHDRAWN_MODEL_ID) == Some(&ProviderConnectionMode::Http),
+                connection_overrides.get(WITHDRAWN_MODEL_ID) == Some(&ConnectionMode::Http),
                 "connection override for {WITHDRAWN_MODEL_ID} was removed"
             );
             ensure!(

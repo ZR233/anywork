@@ -213,7 +213,7 @@ ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
       activeTurn: turn,
       latestTurn: turn,
       runtime: const ThreadRuntimeView(
-        model: 'alpha',
+        modelId: 'alpha',
         contextTokens: 0,
         contextWindow: 100,
         totalTokens: 0,
@@ -222,8 +222,8 @@ ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
         activeMcpServers: [],
         activeLspServers: [],
         modelRoute: ThreadModelRouteView(
-          providerId: 'provider',
-          model: 'alpha',
+          accountId: 'account',
+          modelId: 'alpha',
           effort: 'medium',
           revision: 1,
           available: true,
@@ -252,22 +252,22 @@ AnyworkClient _client(
     SettingsStateSnapshot(
       revision: 1,
       modelCatalogRevision: 1,
-      providers: const [
-        ProviderSettingsView(
-          id: 'provider',
+      accounts: const [
+        AccountSettingsView(
+          id: 'account',
           name: 'Provider',
           baseUrl: 'http://local.invalid',
-          defaultModel: 'alpha',
+          defaultModelId: 'alpha',
           status: 'configured',
           usageLabel: '',
           models: [
-            ProviderModelView(
+            AccountModelView(
               modelId: 'alpha',
               displayName: 'Alpha',
               reasoningEfforts: ['medium'],
               defaultReasoningEffort: 'medium',
             ),
-            ProviderModelView(
+            AccountModelView(
               modelId: 'beta',
               displayName: 'Beta',
               reasoningEfforts: ['high'],
@@ -279,8 +279,8 @@ AnyworkClient _client(
       modeModelRoutes: const [
         ModeModelRouteView(
           modeId: ThreadModeId.simple,
-          providerId: 'provider',
-          model: 'alpha',
+          accountId: 'account',
+          modelId: 'alpha',
           effort: 'medium',
         ),
       ],
@@ -394,7 +394,7 @@ void main() {
     final submission = owner.submit(_project.id);
     final request = await transport.startEntered.future;
     owner.updateDraft(_project.id, 'second request');
-    owner.setModelIntent(ThreadModeId.simple, 'provider', 'beta');
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
     owner.setEffortIntent(ThreadModeId.simple, 'high');
     await client.attachments.admitNewThread(
       projectId: _project.id,
@@ -417,12 +417,12 @@ void main() {
     expect(request.input.text, 'first request');
     expect(request.input.attachmentDraftIds, ['attachment-1-0']);
     expect(
-      (request.route.providerId, request.route.model, request.route.effort),
-      ('provider', 'alpha', 'medium'),
+      (request.route.accountId, request.route.modelId, request.route.effort),
+      ('account', 'alpha', 'medium'),
     );
     expect(transport.settingsWrites, 0);
     expect(owner.state.forProject(_project.id).text, 'second request');
-    expect(owner.state.modelIntentFor(ThreadModeId.simple)?.model, 'beta');
+    expect(owner.state.modelIntentFor(ThreadModeId.simple)?.modelId, 'beta');
     expect(owner.state.effortIntentFor(ThreadModeId.simple), 'high');
     expect(
       client.attachments.state
@@ -607,8 +607,8 @@ void main() {
       changed.copyWith(
         runtime: changed.runtime.copyWith(
           modelRoute: const ThreadModelRouteView(
-            providerId: 'provider',
-            model: 'beta',
+            accountId: 'account',
+            modelId: 'beta',
             effort: 'high',
             revision: 2,
             available: true,

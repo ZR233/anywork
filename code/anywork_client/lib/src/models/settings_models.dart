@@ -3,28 +3,28 @@ import 'studio_enums.dart';
 class RoleSettingsView {
   const RoleSettingsView({
     required this.key,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
   });
 
   final String key;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String effort;
 }
 
 class ModeModelRouteView {
   const ModeModelRouteView({
     required this.modeId,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
   });
 
   final ThreadModeId modeId;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String effort;
 }
 
@@ -208,8 +208,8 @@ class WebSearchSettingsView {
     this.region,
     this.city,
     this.timezone,
-    this.providerId,
-    this.model,
+    this.accountId,
+    this.modelId,
   });
 
   final String configuredMode;
@@ -221,8 +221,8 @@ class WebSearchSettingsView {
   final String? region;
   final String? city;
   final String? timezone;
-  final String? providerId;
-  final String? model;
+  final String? accountId;
+  final String? modelId;
 
   bool get isAvailable => availability == 'available';
 
@@ -245,8 +245,8 @@ class WebSearchSettingsView {
       region: region,
       city: city,
       timezone: timezone,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
     );
   }
 }
@@ -257,8 +257,8 @@ class DeepSeekWebSearchSettingsView {
     this.effectiveEnabled = false,
     this.configuredFetchEnabled = true,
     this.effectiveFetchEnabled = false,
-    this.availability = 'providerUnsupported',
-    this.providerId,
+    this.availability = 'accountUnsupported',
+    this.accountId,
   });
 
   final bool configuredEnabled;
@@ -266,7 +266,7 @@ class DeepSeekWebSearchSettingsView {
   final bool configuredFetchEnabled;
   final bool effectiveFetchEnabled;
   final String availability;
-  final String? providerId;
+  final String? accountId;
 
   bool get isAvailable => availability == 'available';
 
@@ -283,7 +283,7 @@ class DeepSeekWebSearchSettingsView {
       effectiveFetchEnabled:
           configuredFetchEnabled && nextAvailability == 'available',
       availability: nextAvailability,
-      providerId: providerId,
+      accountId: accountId,
     );
   }
 
@@ -294,7 +294,7 @@ class DeepSeekWebSearchSettingsView {
       configuredFetchEnabled: enabled,
       effectiveFetchEnabled: enabled && availability == 'available',
       availability: availability,
-      providerId: providerId,
+      accountId: accountId,
     );
   }
 }

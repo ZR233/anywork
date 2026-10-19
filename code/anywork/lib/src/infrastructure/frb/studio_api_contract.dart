@@ -181,42 +181,41 @@ class _BeginExitOutcome {
   final StackTrace? stackTrace;
 }
 
-frb.ProviderInput _providerInputFromCommand(ProviderCommand provider) {
-  return frb.ProviderInput(
-    id: provider.id,
-    originalId: provider.originalId,
-    templateKind: provider.templateKind,
-    name: provider.name,
-    baseUrl: provider.baseUrl,
-    secret: switch (provider.secret.action) {
-      ProviderSecretAction.preserve => const frb.ProviderSecretInput.preserve(),
-      ProviderSecretAction.replace => frb.ProviderSecretInput.replace(
-        value: provider.secret.value!,
+frb.AccountInput _accountInputFromCommand(AccountCommand account) {
+  return frb.AccountInput(
+    accountId: account.id,
+    templateId: account.templateId,
+    protocol: account.protocol,
+    name: account.name,
+    baseUrl: account.baseUrl,
+    secret: switch (account.secret.action) {
+      AccountSecretAction.preserve => const frb.AccountSecretInput.preserve(),
+      AccountSecretAction.replace => frb.AccountSecretInput.replace(
+        value: account.secret.value!,
       ),
-      ProviderSecretAction.clear => const frb.ProviderSecretInput.clear(),
+      AccountSecretAction.clear => const frb.AccountSecretInput.clear(),
     },
-    pricingEnabled: provider.pricingEnabled,
-    defaultModel: provider.defaultModel,
+    pricingEnabled: account.pricingEnabled,
     customModels: [
-      for (final model in provider.customModels)
-        frb.ProviderModelInput(
+      for (final model in account.customModels)
+        frb.AccountModelInput(
           modelId: model.modelId,
           displayName: model.displayName,
-          wireProtocol: model.wireProtocol,
+          wireApi: model.wireApi,
           contextWindow: BigInt.from(model.contextWindow),
           maxOutputTokens: BigInt.from(model.maxOutputTokens),
         ),
     ],
     modelConnectionModes: [
-      for (final model in provider.modelConnectionModes)
-        frb.ProviderModelConnectionInput(
+      for (final model in account.modelConnectionModes)
+        frb.AccountModelConnectionInput(
           modelId: model.modelId,
           connectionMode: model.connectionMode,
         ),
     ],
     modelAutoCompactLimits: [
-      for (final limit in provider.modelAutoCompactLimits)
-        frb.ProviderModelAutoCompactInput(
+      for (final limit in account.modelAutoCompactLimits)
+        frb.AccountModelAutoCompactInput(
           modelId: limit.modelId,
           limit: BigInt.from(limit.limit),
         ),
@@ -262,8 +261,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   static bool _safeToDisposeAfterShutdown = false;
   // 单向终止闩：一经置位，本进程余下生命周期内不再启动或发布运行时。
   static bool _closing = false;
-  ProviderCatalogView? _providerCatalogCache;
-  Future<ProviderCatalogView>? _providerCatalogFuture;
+  AccountCatalogView? _accountCatalogCache;
+  Future<AccountCatalogView>? _accountCatalogFuture;
 
   static Future<void> ensureReady() => _ensureReady();
 
@@ -893,29 +892,29 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<ProviderCatalogView> loadProviderCatalog() async {
-    final cached = _providerCatalogCache;
+  Future<AccountCatalogView> loadAccountCatalog() async {
+    final cached = _accountCatalogCache;
     if (cached != null) return cached;
-    final inFlight = _providerCatalogFuture;
+    final inFlight = _accountCatalogFuture;
     if (inFlight != null) return inFlight;
-    final future = _loadProviderCatalog();
-    _providerCatalogFuture = future;
+    final future = _loadAccountCatalog();
+    _accountCatalogFuture = future;
     try {
       return await future;
     } finally {
-      if (identical(_providerCatalogFuture, future)) {
-        _providerCatalogFuture = null;
+      if (identical(_accountCatalogFuture, future)) {
+        _accountCatalogFuture = null;
       }
     }
   }
 
-  Future<ProviderCatalogView> _loadProviderCatalog() async {
+  Future<AccountCatalogView> _loadAccountCatalog() async {
     await _ensureReady();
-    final catalog = providerCatalogFromFrb(
-      await _bridgeCall(frb.loadProviderCatalog),
+    final catalog = accountCatalogFromFrb(
+      await _bridgeCall(frb.loadAccountCatalog),
     );
     if (catalog.isUsable) {
-      _providerCatalogCache = catalog;
+      _accountCatalogCache = catalog;
     }
     return catalog;
   }
@@ -971,8 +970,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
           description: draft.description,
           whenToUse: draft.whenToUse,
           systemInstructions: draft.systemInstructions,
-          providerId: draft.providerId,
-          model: draft.model,
+          accountId: draft.accountId,
+          modelId: draft.modelId,
           effort: draft.effort,
           workspaceMode: switch (draft.workspaceMode) {
             AgentWorkspaceMode.unrestricted =>
@@ -1237,8 +1236,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
         projectId: projectId,
         input: _bridgePromptInput(input),
         mode: mode.id,
-        providerId: route.providerId,
-        model: route.model,
+        accountId: route.accountId,
+        modelId: route.modelId,
         effort: route.effort.isEmpty ? null : route.effort,
         workspaceMode: workspaceMode,
       ),
@@ -1358,8 +1357,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     await _ensureReady();
@@ -1367,8 +1366,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       () => frb.setThreadModelRoute(
         operationId: operationId.value,
         threadId: threadId,
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: effort,
         expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
         expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
@@ -2018,19 +2017,19 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.saveProvider(
+        () => frb.saveAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          input: frb.ProviderSettingsInput(
-            provider: _providerInputFromCommand(command),
+          input: frb.AccountSettingsInput(
+            account: _accountInputFromCommand(command),
           ),
         ),
       ),
@@ -2038,35 +2037,35 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.setDefaultProvider(
+        () => frb.setDefaultAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
+          accountId: accountId,
         ),
       ),
     );
   }
 
   @override
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
+    String accountId,
     String modelId,
   ) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.removeProviderModel(
+        () => frb.removeAccountModel(
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
+          accountId: accountId,
           modelId: modelId,
         ),
       ),
@@ -2074,21 +2073,21 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.removeProvider(
+        () => frb.removeAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
-          input: frb.RemoveProviderInput(
-            replacementProviderId: replacementProviderId,
+          accountId: accountId,
+          input: frb.RemoveAccountInput(
+            replacementAccountId: replacementAccountId,
           ),
         ),
       ),
@@ -2120,12 +2119,10 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(
-    String providerId,
-  ) async {
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
     await _ensureReady();
-    return _providerUsageStateFromFrb(
-      await _bridgeCall(() => frb.checkProviderUsage(providerId: providerId)),
+    return _accountUsageStateFromFrb(
+      await _bridgeCall(() => frb.checkAccountUsage(accountId: accountId)),
     );
   }
 

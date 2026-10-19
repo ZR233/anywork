@@ -1,103 +1,75 @@
 ---
 name: add-provider
-description: Use when adding an LLM provider or preset to the 糊来帮 single route, catalog, and ModelRuntime architecture.
+description: Use when adding or changing an account template, vendor protocol adapter, or model catalog in 糊来帮's Account and ModelRuntime architecture.
 metadata:
   category: guides
   platforms: ["windows", "linux", "macos"]
 ---
 
-# Add an LLM Provider or Preset
+# 扩展账号模板与模型协议
 
-糊来帮当前只有一条模型执行路径：`ResolvedModelRoute -> ModelRuntime`。新增兼容供应商时通过
-endpoint、catalog、model profile 和 preset 数据表达差异，不新增 provider class、runtime trait、
-factory dispatch 或兼容 wrapper。
+先读取根 AGENTS.md、design/06-model.md 和 design/20-config.md。账号是稳定 ID 的接入实例，
+账号模板是创建默认值，厂商协议适配、Wire API（Chat Completions / Responses）与连接方式
+（HTTP / WebSocket）是不同维度。不要把模板、显示名、endpoint 或裸 model_id 当成账号身份。
 
-## 前置确认
+## 选型与分层
 
-以下信息先从用户需求、现有配置、工作区依赖和供应商官方文档核实，并按项目组件选型规则完成
-组件与 codec 选型调研，不把自研实现作为默认方案。已授权的新增工作连续完成到相应验证与
-交付；若调研后必须走自研路线，仍须先取得用户明确选择。
+优先复用工作区已有 reqwest、SSE、WebSocket、typed codec 和目录能力；按根项目约定核实官方
+文档、组件 API、目标平台及错误/取消契约。不能复用时先调研并取得用户对自研范围的明确选择，
+不默认新增框架、wrapper、fallback 或 SDK。
 
-1. 确定 wire API：Responses 或 Chat Completions。
-2. 确定模型 transport：Responses 可声明 HTTP/WS；Chat 只允许 HTTP。
-3. 确定 endpoint：base URL、headers、凭据、tool wire policy 与服务能力。
-4. 确定模型目录：slug、能力、价格、上下文、request profile、参数 wire 和基础指令。
-5. 确定是否只是新增 preset。共享同一 endpoint 形态和 catalog 的产品套餐通常只需新 preset。
-6. 只有现有 OpenAI-compatible codec、官方 SDK 或已调研的成熟第三方方案都无法表达 wire 时，
-   才提出第二种 typed codec；先在计划或总结中记录候选、来源、排除理由、自研范围、维护与兼容
-   成本，并询问用户。用户明确选择后，再同步 `design/06-model.md` 与
-   `design/20-config.md` 并实施。
+模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。OpenAI、DeepSeek、Zhipu、xAI、
+MiMo 和自定义兼容适配是同级封闭变体，通过组合复用 OpenAiBase 的 Chat/Responses 能力。
+实际请求准备、事件解释和目录解析经过所选适配；仅给同一 runner 套不同名字不构成协议扩展。
+同步窄能力可用 enum_dispatch，异步重试、取消、连接、continuation、流和计量继续由唯一执行器
+拥有；不使用 async_trait，不为宏引入 boxed future 或隐藏 Send，也不新增厂商执行器。
 
-在用户明确选择自研前，不新增 provider-specific codec、wrapper、fallback 或兼容分支。适配层
-只有在承载本项目领域语义或必要边界转换时才保留，并应复用底层组件的生命周期、错误和取消
-契约，不在上层重复实现其已有能力。
+原生 thinking、tool_stream、Files、搜索、缓存、余额、配额与远程压缩保留类型化能力边界。
+Responses 兼容不自动意味着支持这些能力；自定义地址的服务能力撤销规则遵循权威设计。
 
-## 修改清单
+## 扩展清单
 
-### 1. `code/pl-model/src/model/catalog/` — canonical 模型目录
+1. **账号模板**：在唯一模板目录声明默认 endpoint、厂商协议、凭据提示、模型目录和推荐选择。
+   现有模板可重复创建账号，账号名默认取模板展示名，账号 ID 只分配一次；不增加第二套 GUI 默认值。
+2. **模型定义与绑定**：定义元数据、能力和参数声明；绑定 wire API、连接矩阵、请求/媒体编码、
+   参数 wire 与价格。未知值保持未知，不从模型名、URL 或厂商名称猜测能力。
+3. **目录解析**：按各家官方接口解释 envelope、字段、单位与明确/缺失/null/空集合。
+   OpenAI/Codex 富声明不自动适用于 DeepSeek 或 xAI；无公开列表接口的模板保留明确静态目录。
+   保留路径前缀、鉴权、超时/大小限制、合法空名单和最后成功回退，不额外插入 /v1 或推理探针。
+4. **账号隔离**：所有可调用成员使用 `(account_id, model_id)`；在线观察、本地覆盖、参数和价格
+   只在同账号内合成。可复用内置只读定义，但不再按裸 model_id 跨账号传播观察。
+   查询指纹必须覆盖决定解码语义的厂商协议，不仅是 URL、目录或 wire API。指纹升级须显式
+   保留旧缓存和最后成功快照，迁移快照不发送旧 ETag，不得因切换协议重新认领同一旧快照。
+5. **运行时与原生协议**：复用现有 canonical 请求、工具身份、usage、opaque replay、accumulator、
+   重试预算、脱敏和资源释放。新增真实 wire 差异时先更新设计，不建立平行解析/执行路径。
+6. **产品消费**：Studio、HTTP、FRB、Client、reducer 和 GUI 消费同一 typed canonical 快照。
+   目录 revision 与 desired 设置 revision 独立，启动各账号独立同步一次，在途请求保持冻结。
+   文本资格过滤不改写路由，撤下选择保留 unavailable；不在 Flutter 重新合并目录或计算价格。
+7. **持久化演进**：按根约定实施配置/Profile/凭据及已有 v2 数据的版本迁移，正常运行不留旧 API
+   alias。账号 ID 保值，显示名不改引用；原始厂商 JSON 与其他领域的 provider 术语不做全局替换。
+   同步内置 studio-config 指南，迁移失败保留现场，不能用重置代替。
 
-- OpenAI/DeepSeek 的默认名单、推荐模型和已记录价格只来自各自嵌入的 `assets/models/<catalog>/model.json`，复用 `ModelInfo`；不在 Rust slug 数组、preset 或初始角色路由复制名单。其他静态目录优先复用 `ModelFamily`。
-- 在线发现始终查询配置 `base_url` 的路径前缀 `/models`，不插入额外 `/v1` 或固定 Codex 后端。typed 适配支持 `data/id` 与 `models/slug`；缺失输入模态参照 Codex 默认文本与图片，明确模态与空列表优先。其他 ID-only 缺失参数保持未知，仅同精确 ID 可补已有声明，显式空候选不补回。
-- 成功名单替换 API 名单，不把未列出的默认模型补回；手工附加模型保留优先权，explicit 目录不自动转为在线目录。API 价格一律忽略，价格按 provider 绑定目录内大小写敏感精确 ID 关联，缺价用 `Unknown` 保留用量而非零费用。
-- 用 `ModelTransportProfile` 声明 protocol、支持的连接模式与默认连接模式。
-- 用 `ModelRequestProfile`、`ModelParameter` 和 `ParameterWire` 表达 body/header/effort 差异。
-- 先按 `test-quality` 检查已有能力、transport、价格及 request profile 的完整行为证明。仅增加遵循既有规则的模型条目不新增名称、数量或默认值清单镜像；解析、选择、计价或 wire 规则改变时，优先用合成样例增强真实行为测试。需要真实 provider 兼容证据时使用显式 opt-in 验收，不以清单回读替代。
+## 验证与交付
 
-### 2. `code/pl-model/src/provider/mod.rs` — endpoint 数据
+先增强已有 pl-model 公开 API 行为测试，验证真实 loopback 请求、各家解析、账号隔离和失败传播；
+不要镜像生产模型清单或为每个模板堆默认值测试。Studio 只在项目允许的迁移/历史故障范围加测试。
+各执行者只做本范围格式、静态和定向测试；主代理统一执行根 AGENTS.md 的最终门禁及生成检查。
 
-- 只有出现新的 canonical endpoint 默认值或服务能力时才增加构造函数。
-- `ProviderEndpoint` 不保存默认模型、完整模型目录、protocol 或 connection mode。
-- 不按 provider ID、preset ID、slug 或 URL 在 runtime 中推断能力。
+迁移夹具先与基线实际写盘格式核对：SQL 旧列名、JSON casing、版本号、嵌套非空诊断及缺失值
+都不能随新术语机械改名。用实际启动、日志解码、存储打开或生产者回执读取入口证明升级，不能
+仅调用绕过版本门禁的 helper。新增类型改名后，检查旧版本载荷的嵌套字段是否误用了当前类型；
+例如含非空提示词诊断的旧 prepared request 不能只用 `prompt: null` 证明迁移。凭据迁移必须
+严格持久写入并回读，进程内 lease 不能作为持久成功证据。
 
-### 3. `code/pl-model/src/config/catalog.rs` — preset/catalog 注册
+共享绑定的序列化变更须盘点每个生产者格式，不只检查请求/响应回执：已带冻结绑定的原生压缩
+checkpoint 也要明确升级版本。模型格式由模型生产者在版本边界转换，产品扩展表示则由唯一
+history writer 在恢复 owner 前事务提交；helper 能读旧值不等于检查点已经耐久升级。用真实
+旧检查点的重开、写失败回滚与跨账号来源拒绝证明这两种边界，保留不透明密文和冻结隔离事实。
 
-- 注册 `ProviderPreset` 和其绑定的 `ModelCatalogId`。
-- 多个套餐可共享同一个模型 catalog，不增加执行分支。
-- 确认 custom endpoint override 后 hosted-tool 能力按设计关闭或由显式配置提供。
+真实接入还须覆盖宿主的完整工具装配及容量预览。按 Mode 隐藏工具时，同步维护可见声明、
+独占工具身份和调用模式，不能只以空工具表的模型测试证明集成可用。若失败发生在 attempt 准入前，
+调用日志为空不代表无模型错误；先定位准备阶段的原始错误来源，勿以放宽完整性校验代替修复。
 
-### 4. `pl-model` 路由与 Studio 装配
-
-- 使用 `ProviderConfig::effective_models()` 作为唯一目录解析入口。
-- 使用 `AgentModelConfig::resolve()` 生成 `ResolvedModelRoute`。
-- Web Search 从 `plan_web_searches()` 的统一编排入口扩展数据输入或能力矩阵；OpenAI 与
-  DeepSeek 的具体规划分别保留在对应函数中，Studio 消费 model 的统一 resolver，工具层不导入模型配置。
-
-### 5. `pl-studio-runtime` 与 Flutter
-
-- Studio first-run 使用默认定义，配置编辑器和模型选择器只消费实例完整 canonical 有效模型 snapshot，不由 Flutter 重新合并默认目录覆盖在线名单。
-- 每次启动各支持实例独立探测一次，首屏先用同身份成功缓存或默认 JSON；失败不清空成功缓存，不按 TTL/普通程序升级拒绝回退。成功缓存独立位于 Studio home 的 v2/model-catalogs 下，不写入 config.toml 或 additional_models。
-- desired Settings revision 与目录 revision 分开；自动结果按实例 identity/generation 合并到当前状态，别家成功不能让本家 stale。所有解析仍经 effective_models；启动在 route/Profile 校验前装配缓存。外部模型暂不可用保留用户选择并报告 unavailable，不触发全局数据恢复。
-- 探测任务登记生命周期 owner，shutdown/启动取消等待网络与提交终态；目录通知仅更新受影响 provider 的安全绑定，不重算在途请求或历史价格。
-- `default_model` 仅是 Studio 新建/编辑 provider 时生成角色 route 的投影，不进入 runtime provider。
-- Flutter 只渲染 bridge 返回的 transport、能力、价格和参数候选，不按 preset ID 推断。
-
-### 6. 新 wire API（仅确有需要时）
-
-- 在 `code/pl-model/src/runtime/` 增加私有 typed codec，并先归一化为同一 raw event/error。
-- 继续复用 canonical request/history/tool 转换、stream lifecycle、tool identity、accumulator、
-  error classification、retry budget 和凭证脱敏。
-- 协议差异通过穷尽的 `ProviderWireProtocol` / `ProviderConnectionMode` 分派；不要建立厂商 runtime。
-
-## 禁止事项
-
-- 不新增 `ModelProvider`、`SharedModelProvider`、`ProviderRuntime` 或厂商 provider class。
-- 不新增 `create_provider*` 工厂或 provider-specific decoder。
-- 不把 model、stream、store、continuation、trace 或 transport session 放回 `CompletionRequest`。
-- 不把 raw content、finish reason、trace events 或 sequence 放回 `CompletionResponse`。
-- 不为旧配置或旧 API 增加 alias、shim 或双轨实现。
-
-## 验证
-
-模型与配置路径变更先运行受影响 crate 的检查与测试；以下为入口，按实际影响选择，提交前
-完整门禁以根 `AGENTS.md` 为准：
-
-```powershell
-cargo check -p pl-model --tests
-cargo check -p pl-studio-runtime --tests
-cargo test -p pl-model
-cargo test -p pl-studio-runtime
-```
-
-涉及 Studio 或 bridge 时执行 `cargo xtask verify-gui`，GUI 行为变更按根 `AGENTS.md` 补充
-integration 验收。需要真实服务时再显式启用 `live-tests`；Studio 可见变更还要使用隔离数据目录运行
-`cargo xtask run-gui --driver`，核对配置、模型选择、usage/billing/cache 与运行时错误。
+GUI 或协议可见行为按 flutter-studio-build 使用真实 bridge 和 Flutter Driver 验收；模拟只能证明
+约定样本，真实厂商保持显式、有界的线上观察。报告实际平台、账号/Wire API 覆盖、未验证能力、
+脱敏证据及进程回收；不将 demo 或静态分析当作真实调用通过。

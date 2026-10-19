@@ -16,7 +16,7 @@ import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_key_values.dart';
 import 'studio_driver_state.dart';
 
-/// The Driver borrows this application's Client. Binding creates no provider,
+/// The Driver borrows this application's Client. Binding creates no account,
 /// observation, draft, Session, ChatView, or native subscription.
 ///
 /// [timeline] 只被读取当前展示；绑定它不建立内容订阅、业务 demand 或展示 lease。
@@ -30,7 +30,7 @@ void bindStudioDriver(
 }
 
 /// Read immutable current mirrors synchronously. No business projection is
-/// retained by Driver, and owner existence never depends on a provider family.
+/// retained by Driver, and owner existence never depends on a account family.
 StudioDriverFacts queryStudioDriverFacts(
   AnyworkClient client, {
   required TimelineSessionOwner timeline,
@@ -40,9 +40,9 @@ StudioDriverFacts queryStudioDriverFacts(
   final threads = directory.window.threads;
   final settings = client.settings.state;
   final canonical = settings.canonical;
-  final providers = providersWithCatalogMetadata(
-    canonical?.providers ?? const <ProviderSettingsView>[],
-    settings.providerCatalog,
+  final accounts = accountsWithCatalogMetadata(
+    canonical?.accounts ?? const <AccountSettingsView>[],
+    settings.accountCatalog,
   );
   final projects = client.project.state;
   final project = projectById(
@@ -85,7 +85,7 @@ StudioDriverFacts queryStudioDriverFacts(
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      providers: providers,
+      accounts: accounts,
       modeModelRoutes: canonical?.modeModelRoutes ?? const [],
       roles: canonical?.roles ?? const [],
       agents: agentsForThreads(threadsForRoot(threads, root), agents),
@@ -117,7 +117,7 @@ StudioDriverFacts queryStudioDriverFacts(
     modelCatalogRevision: settings.modelCatalogRevision,
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
-    providers: providers,
+    accounts: accounts,
     commands: settings.commands.values.toList(growable: false),
     settingsReady: canonical?.state.value != null,
     persistence:
@@ -367,7 +367,7 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(client.mcp.state.sync);
   counts.add(client.lsp.state.sync);
   counts.add(client.modeCatalog.state.sync);
-  counts.add(client.providerUsage.state.sync);
+  counts.add(client.accountUsage.state.sync);
   counts.add(client.modelPerformance.state.sync);
   counts.add(client.updater.state.sync);
   counts.add(client.persistence.state.stateSync);
@@ -406,7 +406,7 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'mcp': client.mcp.state.revision,
     'lsp': client.lsp.state.revision,
     'threadModeCatalog': client.modeCatalog.state.revision,
-    'providerUsage': client.providerUsage.state.revision,
+    'accountUsage': client.accountUsage.state.revision,
     'modelPerformance': client.modelPerformance.state.revision,
     'persistence': client.persistence.state.stateRevision,
     'persistenceQueue': client.persistence.state.queue?.revision,
@@ -443,7 +443,7 @@ AgentWorkspaceSyncState _sessionSyncState(ThreadSessionState session) =>
     };
 
 const _emptyRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,

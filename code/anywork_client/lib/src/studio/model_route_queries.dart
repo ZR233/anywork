@@ -5,16 +5,16 @@ import 'stores/domain_sync.dart';
 /// must never be mistaken for an observed Thread model-route resource.
 final class ModelRouteDisplay {
   const ModelRouteDisplay({
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     required this.pending,
     required this.available,
     this.unavailableReason,
   });
 
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final bool pending;
   final bool available;
@@ -23,8 +23,8 @@ final class ModelRouteDisplay {
   @override
   bool operator ==(Object other) =>
       other is ModelRouteDisplay &&
-      providerId == other.providerId &&
-      model == other.model &&
+      accountId == other.accountId &&
+      modelId == other.modelId &&
       effort == other.effort &&
       pending == other.pending &&
       available == other.available &&
@@ -32,8 +32,8 @@ final class ModelRouteDisplay {
 
   @override
   int get hashCode => Object.hash(
-    providerId,
-    model,
+    accountId,
+    modelId,
     effort,
     pending,
     available,
@@ -59,17 +59,17 @@ final class StartRouteQuery {
 
 final class RoleRouteQuery {
   const RoleRouteQuery({
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     required this.descriptor,
     required this.hasConfiguredRoute,
   });
 
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
-  final ProviderModelView? descriptor;
+  final AccountModelView? descriptor;
   final bool hasConfiguredRoute;
 
   bool get unavailable => hasConfiguredRoute && descriptor == null;
@@ -91,15 +91,15 @@ abstract final class ModelRouteQueries {
       routes.where((route) => route.modeId == mode).firstOrNull ??
       routes.where((route) => route.modeId == ThreadModeId.simple).firstOrNull;
 
-  static ProviderModelView? model(
-    List<ProviderSettingsView> providers,
-    String providerId,
+  static AccountModelView? model(
+    List<AccountSettingsView> accounts,
+    String accountId,
     String modelId,
   ) {
-    final provider = providers
-        .where((candidate) => candidate.id == providerId)
+    final account = accounts
+        .where((candidate) => candidate.id == accountId)
         .firstOrNull;
-    final models = provider?.models;
+    final models = account?.models;
     return models
         ?.where((candidate) => candidate.modelId == modelId)
         .firstOrNull;
@@ -108,7 +108,7 @@ abstract final class ModelRouteQueries {
   /// A model selection keeps a supported effort, then uses the declared model
   /// default when it is still a candidate, then the first supported effort.
   static String? effortAfterModelSelection(
-    ProviderModelView? model,
+    AccountModelView? model,
     String? candidate,
   ) {
     if (model?.reasoningEfforts.contains(candidate) == true) return candidate;
@@ -123,7 +123,7 @@ abstract final class ModelRouteQueries {
 
   /// New Agent-profile drafts previously admitted only a supported default.
   static String? agentProfileEffort(
-    ProviderModelView? model,
+    AccountModelView? model,
     String? candidate,
   ) {
     if (model?.reasoningEfforts.contains(candidate) == true) return candidate;
@@ -147,19 +147,19 @@ abstract final class ModelRouteQueries {
     final effort = commands['new-thread-route:effort:${mode.id}'];
     var lane = canonical;
     if (model?.isPending == true &&
-        model!.target.providerId != null &&
-        model.target.model != null) {
+        model!.target.accountId != null &&
+        model.target.modelId != null) {
       lane = ModeModelRouteView(
         modeId: mode,
-        providerId: model.target.providerId!,
-        model: model.target.model!,
+        accountId: model.target.accountId!,
+        modelId: model.target.modelId!,
         effort: model.target.effort ?? canonical?.effort ?? '',
       );
     } else if (effort?.isPending == true && canonical != null) {
       lane = ModeModelRouteView(
         modeId: mode,
-        providerId: canonical.providerId,
-        model: canonical.model,
+        accountId: canonical.accountId,
+        modelId: canonical.modelId,
         effort: effort!.target.effort ?? canonical.effort,
       );
     }
@@ -184,43 +184,43 @@ abstract final class ModelRouteQueries {
   static ModelRouteDisplay? threadRoute({
     required ThreadModelRouteView? canonical,
     required CommandStatus? command,
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
   }) {
     final target = command?.isPending == true ? command?.target : null;
-    final pending = target?.providerId != null && target?.model != null;
-    final providerId = pending ? target!.providerId : canonical?.providerId;
-    final modelId = pending ? target!.model : canonical?.model;
-    if (providerId == null || modelId == null) return null;
+    final pending = target?.accountId != null && target?.modelId != null;
+    final accountId = pending ? target!.accountId : canonical?.accountId;
+    final modelId = pending ? target!.modelId : canonical?.modelId;
+    if (accountId == null || modelId == null) return null;
     return ModelRouteDisplay(
-      providerId: providerId,
-      model: modelId,
+      accountId: accountId,
+      modelId: modelId,
       effort: pending ? target!.effort ?? canonical?.effort : canonical?.effort,
       pending: pending,
       available: pending
-          ? model(providers, providerId, modelId) != null
+          ? model(accounts, accountId, modelId) != null
           : canonical!.available,
       unavailableReason: pending ? null : canonical?.unavailableReason,
     );
   }
 
   static RoleRouteQuery roleRoute({
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
     required List<RoleSettingsView> roles,
     required String role,
   }) {
     final configured = roles.where((value) => value.key == role).firstOrNull;
     final hasRoute =
         configured != null &&
-        (configured.providerId.isNotEmpty || configured.model.isNotEmpty);
+        (configured.accountId.isNotEmpty || configured.modelId.isNotEmpty);
     if (hasRoute) {
       final descriptor = model(
-        providers,
-        configured.providerId,
-        configured.model,
+        accounts,
+        configured.accountId,
+        configured.modelId,
       );
       return RoleRouteQuery(
-        providerId: configured.providerId,
-        model: configured.model,
+        accountId: configured.accountId,
+        modelId: configured.modelId,
         effort: configured.effort.isEmpty
             ? effortAfterModelSelection(descriptor, null)
             : configured.effort,
@@ -228,23 +228,23 @@ abstract final class ModelRouteQueries {
         hasConfiguredRoute: true,
       );
     }
-    for (final provider in providers) {
-      final descriptor = provider
+    for (final account in accounts) {
+      final descriptor = account
           .modelsFor(type: ModelType.text)
           .where((candidate) => candidate.modelId.isNotEmpty)
           .firstOrNull;
       if (descriptor == null) continue;
       return RoleRouteQuery(
-        providerId: provider.id,
-        model: descriptor.modelId,
+        accountId: account.id,
+        modelId: descriptor.modelId,
         effort: effortAfterModelSelection(descriptor, null),
         descriptor: descriptor,
         hasConfiguredRoute: false,
       );
     }
     return const RoleRouteQuery(
-      providerId: '',
-      model: '',
+      accountId: '',
+      modelId: '',
       effort: null,
       descriptor: null,
       hasConfiguredRoute: false,
@@ -252,9 +252,9 @@ abstract final class ModelRouteQueries {
   }
 
   static RoleRouteQuery newAgentProfileRoute(
-    List<ProviderSettingsView> providers,
+    List<AccountSettingsView> accounts,
   ) {
-    return roleRoute(providers: providers, roles: const [], role: '');
+    return roleRoute(accounts: accounts, roles: const [], role: '');
   }
 
   static StudioThread? threadIdentity({
@@ -303,23 +303,12 @@ abstract final class ModelRouteQueries {
     );
   }
 
-  static String defaultModelAfterRemoval({
-    required String current,
-    required String removed,
-    required List<ProviderModelView> remaining,
-  }) => current == removed ? remaining.firstOrNull?.modelId ?? '' : current;
-
-  static String defaultModelForCustomProvider(ProviderSettingsView provider) =>
-      provider.customModels.firstOrNull?.modelId ?? '';
-
-  static String defaultModelAfterAddition(String current, String added) =>
-      current.isEmpty ? added : current;
-
-  static String? providerAfterRemoval({
-    required List<ProviderSettingsView> providers,
+  /// 删除账号时若被删者仍是默认账号，按稳定顺序选择首个剩余账号。
+  static String? accountAfterRemoval({
+    required List<AccountSettingsView> accounts,
     required String? currentDefault,
     required String removed,
   }) => currentDefault == removed
-      ? providers.where((provider) => provider.id != removed).firstOrNull?.id
+      ? accounts.where((account) => account.id != removed).firstOrNull?.id
       : currentDefault;
 }

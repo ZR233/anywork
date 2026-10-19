@@ -4,7 +4,7 @@ use pl_protocol::ObservedResource;
 use pl_studio_runtime::*;
 
 use crate::api::studio::convert::settings::{
-    bridge_model_catalog_provider, bridge_settings, provider_usage_dto,
+    account_usage_dto, bridge_model_catalog_account, bridge_settings,
 };
 use crate::api::studio::convert::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
@@ -162,10 +162,10 @@ pub(crate) fn bridge_model_catalog_state(
     concrete_observed!(
         state,
         |catalog| BridgeModelCatalogStateData {
-            providers: catalog
-                .providers
+            accounts: catalog
+                .accounts
                 .into_iter()
-                .map(bridge_model_catalog_provider)
+                .map(bridge_model_catalog_account)
                 .collect(),
         },
         BridgeModelCatalogStateSnapshot
@@ -293,15 +293,15 @@ fn skill_summary(skill: pl_studio_runtime::SkillMetadata) -> SkillSummaryDto {
     }
 }
 
-pub(crate) fn bridge_provider_usage_state(
-    state: ObservedResource<ProviderUsageStateData>,
-) -> BridgeProviderUsageStateSnapshot {
+pub(crate) fn bridge_account_usage_state(
+    state: ObservedResource<AccountUsageStateData>,
+) -> BridgeAccountUsageStateSnapshot {
     concrete_observed!(
         state,
-        |data| BridgeProviderUsageStateData {
+        |data| BridgeAccountUsageStateData {
             config_fingerprint: data.config_fingerprint,
-            usages: data.usages.into_iter().map(provider_usage_dto).collect(),
+            usages: data.usages.into_iter().map(account_usage_dto).collect(),
         },
-        BridgeProviderUsageStateSnapshot
+        BridgeAccountUsageStateSnapshot
     )
 }

@@ -7,7 +7,7 @@ import '../../studio_ports.dart';
 import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
-import 'commands/provider_usage_queries.dart';
+import 'commands/account_usage_queries.dart';
 import 'commands/settings_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
@@ -25,7 +25,7 @@ import 'stores/mcp_store.dart';
 import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
 import 'stores/model_performance_store.dart';
-import 'stores/provider_usage_store.dart';
+import 'stores/account_usage_store.dart';
 import 'stores/recovery_store.dart';
 import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
@@ -51,7 +51,7 @@ class AnyworkClient {
     modeEditor = ModeEditorOwner(this);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
-    providerUsageQueries = ProviderUsageQueries(this);
+    accountUsageQueries = AccountUsageQueries(this);
     settingsCommands = SettingsCommands(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
@@ -107,7 +107,7 @@ class AnyworkClient {
   late final StudioChannels channels;
   late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;
-  late final ProviderUsageQueries providerUsageQueries;
+  late final AccountUsageQueries accountUsageQueries;
   late final SettingsCommands settingsCommands;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
@@ -122,7 +122,7 @@ class AnyworkClient {
   final lsp = LspStore();
   final modeCatalog = ModeCatalogStore();
   final modelPerformance = ModelPerformanceStore();
-  final providerUsage = ProviderUsageStore();
+  final accountUsage = AccountUsageStore();
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
@@ -400,16 +400,16 @@ class AnyworkClient {
     final snapshot = await transport.readBootstrap();
     if (_closed) return;
     applyBootstrap(snapshot);
-    final catalog = await transport.loadProviderCatalog();
+    final catalog = await transport.loadAccountCatalog();
     if (_closed) return;
-    settings.applyProviderCatalog(catalog);
+    settings.applyAccountCatalog(catalog);
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
       const McpTopic(),
       const LspTopic(),
       const ModelPerformanceTopic(),
-      const ProviderUsageTopic(),
+      const AccountUsageTopic(),
       const PersistenceQueueTopic(),
     ]);
   }
@@ -426,7 +426,7 @@ class AnyworkClient {
     mcp.apply(snapshot.mcpState);
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
-    providerUsage.apply(snapshot.providerUsageState);
+    accountUsage.apply(snapshot.accountUsageState);
     modelPerformance.apply(snapshot.modelPerformance);
     updater.apply(snapshot.updaterState);
     persistence.applyState(snapshot.persistenceState);
@@ -618,8 +618,8 @@ class AnyworkClient {
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
       _joinOwner(
-        'provider-usage-queries',
-        providerUsageQueries.close(),
+        'account-usage-queries',
+        accountUsageQueries.close(),
         deadline,
       ),
       _joinOwner('thread-commands', threadCommands.close(), deadline),

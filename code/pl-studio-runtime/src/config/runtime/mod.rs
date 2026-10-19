@@ -10,7 +10,7 @@ use crate::{PureError, Result};
 use super::model_catalog::{self, Observation};
 use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
 use crate::mode::ThreadModeManager;
-use pl_model::config::ProviderId;
+use pl_model::config::AccountId;
 use pl_protocol::ThreadModeDocument;
 use pl_protocol::{ThreadModeId, studio::StudioModelCatalogStatus};
 use std::collections::BTreeMap;
@@ -36,14 +36,14 @@ struct RuntimeState {
     desired: StudioConfig,
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
-    observations: BTreeMap<ProviderId, Observation>,
+    observations: BTreeMap<AccountId, Observation>,
     closing: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct CatalogChange {
     pub snapshot: ModelCatalogRuntimeSnapshot,
-    pub affected: Vec<ProviderId>,
+    pub affected: Vec<AccountId>,
 }
 
 /// 已校验 Studio 配置及其单调 revision。
@@ -57,7 +57,7 @@ pub struct ConfigRuntimeSnapshot {
     pub updated_at: i64,
     pub config: StudioConfig,
     canonical_config: StudioConfig,
-    usage_query_revisions: BTreeMap<ProviderId, u64>,
+    usage_query_revisions: BTreeMap<AccountId, u64>,
 }
 
 impl ConfigRuntimeSnapshot {
@@ -65,8 +65,8 @@ impl ConfigRuntimeSnapshot {
         &self.canonical_config
     }
 
-    pub(crate) fn usage_query_revision(&self, provider: &ProviderId) -> Option<u64> {
-        self.usage_query_revisions.get(provider).copied()
+    pub(crate) fn usage_query_revision(&self, account: &AccountId) -> Option<u64> {
+        self.usage_query_revisions.get(account).copied()
     }
 }
 
@@ -78,7 +78,7 @@ impl ConfigRuntimeSnapshot {
 pub struct ModelCatalogRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
-    pub catalogs: BTreeMap<ProviderId, StudioModelCatalogStatus>,
+    pub catalogs: BTreeMap<AccountId, StudioModelCatalogStatus>,
 }
 
 /// Parameters resolved from one configuration revision for a newly created product Agent.
@@ -156,7 +156,7 @@ impl ConfigRuntime {
                     config: config.clone(),
                     usage_query_revisions: config
                         .models
-                        .providers
+                        .accounts
                         .keys()
                         .cloned()
                         .map(|id| (id, 1))
@@ -188,12 +188,12 @@ impl ConfigRuntime {
     /// The callback must not await, perform IO, or re-enter this config owner.
     pub(crate) fn if_usage_query_current(
         &self,
-        provider: &ProviderId,
+        account: &AccountId,
         revision: u64,
         commit: impl FnOnce(),
     ) -> ConfigRuntimeResult<bool> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-        if state.closing || state.snapshot.usage_query_revision(provider) != Some(revision) {
+        if state.closing || state.snapshot.usage_query_revision(account) != Some(revision) {
             return Ok(false);
         }
         commit();
@@ -241,7 +241,7 @@ impl ConfigRuntime {
     /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
     ///
     /// # Errors
-    /// Returns unknown/disabled Profile, configuration or provider route errors.
+    /// Returns unknown/disabled Profile, configuration or account route errors.
     pub fn resolve_agent_profile(
         &self,
         profile_id: &str,
@@ -347,8 +347,8 @@ impl ConfigRuntime {
             (state.desired.clone(), state.observations.clone())
         };
         let mut next_config = edit(&desired, &current.config)?;
-        for provider in next_config.models.providers.values_mut() {
-            provider.clear_model_catalog_overlay();
+        for account in next_config.models.accounts.values_mut() {
+            account.clear_model_catalog_overlay();
         }
         let next_observations =
             model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
@@ -367,7 +367,7 @@ impl ConfigRuntime {
             usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
-            || effective.models.providers != current.config.models.providers;
+            || effective.models.accounts != current.config.models.accounts;
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: current_catalog
                 .revision
@@ -439,18 +439,18 @@ impl ConfigRuntime {
 fn next_usage_query_revisions(
     previous: &ConfigRuntimeSnapshot,
     config: &StudioConfig,
-) -> BTreeMap<ProviderId, u64> {
+) -> BTreeMap<AccountId, u64> {
     config
         .models
-        .providers
+        .accounts
         .iter()
-        .map(|(id, provider)| {
-            let unchanged = previous.config.models.providers.get(id).is_some_and(|old| {
-                old.adapter == provider.adapter
-                    && old.preset_id() == provider.preset_id()
-                    && old.base_url == provider.base_url
-                    && old.http_headers == provider.http_headers
-                    && old.resolved_bearer_token() == provider.resolved_bearer_token()
+        .map(|(id, account)| {
+            let unchanged = previous.config.models.accounts.get(id).is_some_and(|old| {
+                old.protocol == account.protocol
+                    && old.template_id() == account.template_id()
+                    && old.base_url == account.base_url
+                    && old.http_headers == account.http_headers
+                    && old.resolved_bearer_token() == account.resolved_bearer_token()
             });
             let revision = if unchanged {
                 previous
@@ -467,8 +467,8 @@ fn next_usage_query_revisions(
 }
 
 fn statuses(
-    observations: &BTreeMap<ProviderId, Observation>,
-) -> BTreeMap<ProviderId, StudioModelCatalogStatus> {
+    observations: &BTreeMap<AccountId, Observation>,
+) -> BTreeMap<AccountId, StudioModelCatalogStatus> {
     observations
         .iter()
         .map(|(id, observation)| (id.clone(), observation.status.clone()))
@@ -480,7 +480,7 @@ fn statuses(
 /// 只应用目录 overlay 与产品固定策略；`canonical_config`/desired 仍是持久化事实源。
 fn effective_runtime_config(
     desired: &StudioConfig,
-    observations: &BTreeMap<ProviderId, Observation>,
+    observations: &BTreeMap<AccountId, Observation>,
 ) -> Result<StudioConfig> {
     let mut config = model_catalog::effective(desired, observations)?;
     config.runtime.enforce_fixed_permission_mode();
@@ -488,8 +488,8 @@ fn effective_runtime_config(
 }
 
 fn invalidate_observations(
-    old: &BTreeMap<ProviderId, Observation>,
-    next: &BTreeMap<ProviderId, Observation>,
+    old: &BTreeMap<AccountId, Observation>,
+    next: &BTreeMap<AccountId, Observation>,
 ) {
     for (id, observation) in old {
         if next
@@ -513,12 +513,12 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
                 .resolve_route(super::StudioRole::Planner.id(), route)?;
         }
     }
-    for (id, provider) in &next.models.providers {
-        let models = provider.effective_models(None)?;
-        for (model_id, mode) in provider.connection_overrides() {
+    for (id, account) in &next.models.accounts {
+        let models = account.effective_models(None)?;
+        for (model_id, mode) in account.connection_overrides() {
             if old
                 .models
-                .providers
+                .accounts
                 .get(id)
                 .and_then(|old| old.connection_overrides().get(model_id))
                 == Some(mode)

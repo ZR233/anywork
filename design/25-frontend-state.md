@@ -78,7 +78,7 @@ typed code 与 correlation，不能困在 Widget 的局部等待标志里。显�
 
 AppGraph 通过逻辑 demand 管理资源。进入 Settings、切换设置标签和 Widget 暂停不改变当前
 内容订阅 demand，不清理新会话或 Thread 草稿。明确切换 Thread 才 retire 旧内容资源；关闭项目、
-归档与应用退出显式结束相应需求。provider keepAlive 不能承担 native 资源所有权，也不能让
+归档与应用退出显式结束相应需求。account keepAlive 不能承担 native 资源所有权，也不能让
 每个曾访问会话永久保留正文。轻量 owner 缓存、观察者和镜像均受预算约束。
 
 ## 25.5 Timeline 连接与关闭
@@ -98,7 +98,7 @@ typed Cancelled 收束，不向直接消费者交付旧内容。重连成功清�
 
 retire 先封闭发布与查询准入，再取消并 requestClose，等待泵、在途查询、sink 与句柄真实
 ACK。失败保留 unresolved owner 和预算；取消等待不等于资源关闭。返回过晚的 open 仍由原
-attempt 收束。关闭内容连接不关闭 Rust Session、Turn 或 writer；provider 只取消自己的观察。
+attempt 收束。关闭内容连接不关闭 Rust Session、Turn 或 writer；account 只取消自己的观察。
 Settings、标签页或 Widget 暂停不改变逻辑 demand，Thread 切换、项目关闭与退出才 retire。
 
 观察重连采用有界退避和显式 retry；许可不足只在真实释放通知后恢复准入，不轮询或增加
@@ -115,7 +115,7 @@ mode 等身份变更由 Rust 提交目录增量并推进所属水位。
 同 Thread 的 runtime、turn、activity、storage 共用一条带水位的状态订阅，typed Runtime
 事件独立更新其镜像；速度不另建 transport、reducer 或业务缓存。Riverpod 呈现层按明确
 `threadId` 派生不可变、值相等的细粒度 projection，并由对应 Consumer 实际观察：速度、上下文
-和状态栏稳定字段互不因无关值变化而重建。`select` 或值相等的派生 provider 只筛选通知，
+和状态栏稳定字段互不因无关值变化而重建。`select` 或值相等的派生 account 只筛选通知，
 不拥有第二份业务事实。参数化呈现观察自动释放时只取消自身 observer 与许可，不能关闭
 Session/ChatView 或清除草稿；完整样本的速度选择见 [18](./18-studio-state.md) §18.8。
 
@@ -132,7 +132,7 @@ InMemoryChatController 消息集合；活动、图片与重连的 GUI 分组只�
 详情及显示预算以 [26](./26-timeline-content.md) 为准。无服务端几何窗口镜像、跨层阅读锚点
 或另一份完整历史 rows/body cache；页查询不改变尾部订阅基线。
 
-Connector 读取查询并调用稳定目标 action，向纯 View 传唯一 props，不从 provider fallback
+Connector 读取查询并调用稳定目标 action，向纯 View 传唯一 props，不从 account fallback
 重读同一业务值。features 不得穿透 Client 公共边界直连 FRB、transport 或 SQL。详情、图片和
 菜单等平台交互归适配层或 UI controller。显式回实时或发送创建新列表代次；旧代次只在其
 子树释放与资源收束后销毁。Thread 切换释放旧展示集合，Settings 往返不关闭展示 owner。
@@ -161,9 +161,9 @@ MutationBoard 分开保存每次真实结果与每个目标的 latest intent。�
 观察 predicate 原子检查当前镜像并注册，使帧先到和回执先到均不漏确认。观察水位只在相同
 owner epoch 和资源域合并。
 
-供应商详情模型列表的阈值编辑只拥有原始输入、短暂防抖与最新意图身份；canonical 默认、覆盖、
+账号详情模型列表的阈值编辑只拥有原始输入、短暂防抖与最新意图身份；canonical 默认、覆盖、
 生效与安全上限仍由 Settings/catalog reducer 拥有。有效输入、拖动结束和恢复默认触发同一
-provider 原子保存，Client 在串行写 lane 内从最新 canonical provider 应用目标模型变更，
+account 原子保存，Client 在串行写 lane 内从最新 canonical account 应用目标模型变更，
 CAS 重试也重新构造，不携带未改动字段的陈旧副本。其余模型的持久覆盖必须完整保留，包括
 因在线目录暂时撤下而不可见的覆盖。旧响应可推进自身操作记录及 canonical 水位，不能覆盖
 较新原始输入、清除较新 pending/error 或让不同模型的修改互相丢失。
@@ -175,18 +175,18 @@ CAS 重试也重新构造，不携带未改动字段的陈旧副本。其余模�
 canonical 合并必须使用各自最新水位投影默认、安全上限与生效值。仅目录推进时也重算这些
 派生读数，不沿用旧配置快照中的模型预算；较旧目录不能借配置响应回滚新读数。只读投影
 保留原始覆盖 Option，即使目录默认暂时恰好等于覆盖也不删除选择；等默认归一化只发生在
-显式写意图及 desired provider payload。模型撤下时仅保留其存量覆盖，派生预算均未知；
+显式写意图及 desired account payload。模型撤下时仅保留其存量覆盖，派生预算均未知；
 同 model_id 重现时从新元数据重算并恢复该覆盖，不触发补偿回读或自动配置写入。
 
-### 25.7.1 供应商用量需求
+### 25.7.1 账号用量需求
 
-供应商标签的 feature 状态负责自动加载策略，Client 查询 owner 负责按实例启动、去重、
-pending/error 和在途任务，额度事实仍只经 ProviderUsageStore 的唯一 reducer 接收 canonical
+账号标签的 feature 状态负责自动加载策略，Client 查询 owner 负责按实例启动、去重、
+pending/error 和在途任务，额度事实仍只经 AccountUsageStore 的唯一 reducer 接收 canonical
 响应或事件。Riverpod 展示适配只观察 Client，不直接调用 transport，不以另一份 AsyncValue
 缓存取代同一 canonical。焦点、筛选、选择、FormKey 和编辑草稿继续由局部 UI owner 管理。
 
 标签首次可见为每个当前查询身份发起一次检查；每个实例完成即发布，不等待其它实例。
-同 provider ID、同 `usageQueryRevision` 的重叠自动/手动检查合并，不同身份的旧结果不能清理
+同 account ID、同 `usageQueryRevision` 的重叠自动/手动检查合并，不同身份的旧结果不能清理
 新 pending 或覆盖新结果。查询身份由 Rust 所有，定义见 [18.2](./18-studio-state.md#182-公共-snapshot)。
 标签可见期间，新增或查询身份变化只补查对应实例；隐藏时停止产生新的自动请求，重新可见
 只补查未加载或失效身份。失败也计入本轮已尝试，不由重建、默认值变化或自动重试形成请求
@@ -213,7 +213,7 @@ TextEditingController 保存 composing/selection，draftId 变化时替换；同
 引用的相同附件 ID 仍有效。只有最后一个 owner 释放后才请求 native 删除；删除失败保留 owner、
 诊断与预算。未知受理结果保留冻结引用，不因页面退出、放弃当前草稿或全局 orphan sweep 删除。
 本地 clipboard 暂存和晚到 admission 也由同一 ledger 收束。关闭过程等待在途创建和清理，
-不以销毁 provider 代替异步资源回收；可靠附件与旧数据保留规则见 [17](./17-studio-storage.md)。
+不以销毁观察适配代替异步资源回收；可靠附件与旧数据保留规则见 [17](./17-studio-storage.md)。
 
 ## 25.9 应用退出
 
@@ -231,7 +231,7 @@ CloseReport 在 Rust finalizer 前并入 externalIssues，只有所有真实 ACK
 真实 Flutter 路由、FRB DTO fake、真实 native 和各平台 GUI 不相互替代。Driver 只保留诊断与
 可见投影，不维护另一套业务生命周期或可写 canonical。
 
-已被新 owner 替代的 provider 资源租约、第二份正文 baseline、成功后聚合回读、全局附件清扫、
+已被新 owner 替代的观察适配资源租约、第二份正文 baseline、成功后聚合回读、全局附件清扫、
 宿主 Timeline fallback 和直接 FRB feature 入口应随调用方迁移删除，不保留永久回退分支。
 
 ## 25.11 模型目录一致性
@@ -241,9 +241,13 @@ CloseReport 在 Rust finalizer 前并入 externalIssues，只有所有真实 ACK
 GUI 不重复计算能力和预算条件。既有选择不满足筛选时保留路由并显示原因，不自动换模型；
 未配置的草稿仅从合格集合初始化。候选资格与请求可用性分别表达，筛选不新增请求执行门槛。
 
-所有会话与模式消费同一 canonical 模型目录，选择项按供应商 ID 与 modelId 复合键去重，
-候选使用上述统一文本类型，不附加工具或 Mode 能力门槛。配置与目录继续使用独立 revision；共享参数更新一次发布所有受影响路由，
+所有会话与模式消费同一 canonical 模型目录，选择项按账号 ID 与 modelId 复合键去重，
+候选使用上述统一文本类型，不附加工具或 Mode 能力门槛。配置与目录继续使用独立 revision；账号参数更新一次发布该账号的受影响路由，
 旧响应不能回滚新目录。模型固有参数与路由价格均只读展示，缺价不代表模型未通过校验。
+
+Client 使用同一 AccountModelKey 表达模型选择、统计顶层筛选和模型需求；显示名不是 key。
+统计先按账号和配置模型接收 canonical 汇总，effort 是组内细分，发送及返回模型是冻结诊断。
+未知历史身份不得由当前目录补写。账号模板只负责创建默认值，不参与已有账号或统计身份。
 
 ## 25.11 工作模式编辑草稿
 

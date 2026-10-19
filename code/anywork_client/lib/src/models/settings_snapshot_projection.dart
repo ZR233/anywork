@@ -1,4 +1,4 @@
-import 'provider_models.dart';
+import 'account_models.dart';
 import 'studio_state_snapshots.dart';
 
 /// 配置与模型目录进入同一条 merge path 的范围。
@@ -69,20 +69,20 @@ SettingsProjectionState mergeSettingsProjection(
   );
 }
 
-Map<String, ProviderModelAutoCompactView> _projectAutoCompactLimits(
-  ProviderSettingsView configProvider,
-  ProviderSettingsView catalogProvider,
+Map<String, AccountModelAutoCompactView> _projectAutoCompactLimits(
+  AccountSettingsView configProvider,
+  AccountSettingsView catalogProvider,
 ) {
-  final projected = <String, ProviderModelAutoCompactView>{
+  final projected = <String, AccountModelAutoCompactView>{
     for (final model in catalogProvider.models)
-      model.modelId: ProviderModelAutoCompactView.forModel(model)
+      model.modelId: AccountModelAutoCompactView.forModel(model)
           .withStoredOverride(
             configProvider.autoCompactLimits[model.modelId]?.overrideLimit,
           ),
   };
   for (final entry in configProvider.autoCompactLimits.entries) {
     if (projected.containsKey(entry.key)) continue;
-    projected[entry.key] = ProviderModelAutoCompactView(
+    projected[entry.key] = AccountModelAutoCompactView(
       modelId: entry.key,
       defaultLimit: null,
       overrideLimit: entry.value.overrideLimit,
@@ -99,25 +99,25 @@ SettingsStateSnapshot projectSettingsSnapshot({
   required int modelCatalogRevision,
 }) {
   final catalogByProvider = {
-    for (final provider in catalogData.providers) provider.id: provider,
+    for (final account in catalogData.accounts) account.id: account,
   };
-  final providers = [
-    for (final provider in configData.providers)
-      if (catalogByProvider[provider.id] case final catalogProvider?)
-        provider.copyWith(
+  final accounts = [
+    for (final account in configData.accounts)
+      if (catalogByProvider[account.id] case final catalogProvider?)
+        account.copyWith(
           models: catalogProvider.models,
           modelCatalog: catalogProvider.modelCatalog,
           autoCompactLimits: _projectAutoCompactLimits(
-            provider,
+            account,
             catalogProvider,
           ),
         )
       else
-        provider,
+        account,
   ];
   return SettingsStateSnapshot(
-    providers: providers,
-    defaultProviderId: configData.defaultProviderId,
+    accounts: accounts,
+    defaultAccountId: configData.defaultAccountId,
     modeModelRoutes: configData.modeModelRoutes,
     roles: configData.roles,
     mcpServers: configData.mcpServers,

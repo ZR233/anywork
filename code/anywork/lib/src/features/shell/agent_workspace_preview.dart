@@ -88,7 +88,7 @@ StudioState _agentWorkspacePreviewState({
   );
   final selected = selectChild ? child : root;
   final runtime = ThreadRuntimeView(
-    model: selectChild ? 'reviewer/model' : 'planner/model',
+    modelId: selectChild ? 'reviewer/model' : 'planner/model',
     contextTokens: selectChild ? 4800 : 12800,
     contextWindow: 128000,
     totalTokens: selectChild ? 7200 : 19200,
@@ -118,18 +118,20 @@ StudioState _agentWorkspacePreviewState({
         updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
         lastCheckedAt: null,
         value: const SettingsStateData(
-          providers: [
-            ProviderSettingsView(
-              id: 'preview-provider',
-              name: 'Preview Provider',
+          accounts: [
+            AccountSettingsView(
+              id: 'preview-account',
+              templateId: 'openai',
+              protocol: 'open_ai',
+              name: 'Preview Account',
               baseUrl: '',
-              defaultModel: 'planner/model',
+              defaultModelId: 'planner/model',
               models: [
-                ProviderModelView(
+                AccountModelView(
                   modelId: 'planner/model',
                   displayName: 'Main agent model',
                   reasoningEfforts: ['high'],
-                  wireProtocol: 'responses',
+                  wireApi: 'responses',
                   supportedConnectionModes: ['web_socket', 'http'],
                   defaultConnectionMode: 'web_socket',
                   connectionMode: 'web_socket',
@@ -142,14 +144,14 @@ StudioState _agentWorkspacePreviewState({
           roles: [
             RoleSettingsView(
               key: 'planner',
-              providerId: 'preview-provider',
-              model: 'planner/model',
+              accountId: 'preview-account',
+              modelId: 'planner/model',
               effort: 'high',
             ),
             RoleSettingsView(
               key: 'executor',
-              providerId: 'preview-provider',
-              model: 'planner/model',
+              accountId: 'preview-account',
+              modelId: 'planner/model',
               effort: 'high',
             ),
           ],
@@ -173,7 +175,7 @@ StudioState _agentWorkspacePreviewState({
       ),
     ),
     skillsByProject: const {},
-    providerUsageState: ProviderUsageStateSnapshot.fromState(
+    accountUsageState: AccountUsageStateSnapshot.fromState(
       state: UninitializedObservedResource(
         updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
       ),

@@ -65,6 +65,11 @@ runtime 重编译或 bridge 重链接；用 Cargo Fresh 状态与 bridge 摘要�
 绑定不同步常表现为 Dart 方法缺失、联合类型匹配不完整或 Rust/Dart 类型字段不一致。先同步生成
 文件，再分别核验：
 
+Rust 模块移动后，同时核对生成文件集合而非只看已有文件内容：旧模块的 Dart 文件可能仍在目录
+中引用已删除的绑定。`lib/src/rust/` 只保存 FRB 生成物，手写 typed 导出入口属于
+`infrastructure/frb/`；孤儿产物由统一生成入口清理，不手改生成文件或新增旧 API 转发。分析中的
+加载错误消除后，仍须运行 adapter 行为测试；生成成功不证明布局、主题夹具或分组断言通过。
+
 ```powershell
 cargo build -p pl-studio-bridge
 cargo xtask verify-gui

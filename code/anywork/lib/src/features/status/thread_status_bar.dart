@@ -39,7 +39,7 @@ class ThreadStatusConnector extends ConsumerWidget {
     return ThreadStatusBar(
       threadId: threadId,
       thread: status.thread,
-      providers: status.providers,
+      accounts: status.accounts,
       lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
       modelRoute: status.modelRoute,
       workflowRun: status.workflowRun,
@@ -60,7 +60,7 @@ class ThreadStatusBar extends StatelessWidget {
     super.key,
     required this.threadId,
     required this.thread,
-    required this.providers,
+    required this.accounts,
     required this.lspServers,
     this.modelRoute,
     this.workflowRun,
@@ -76,7 +76,7 @@ class ThreadStatusBar extends StatelessWidget {
 
   final String threadId;
   final StudioThread thread;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<LspServerStateView> lspServers;
   final ThreadModelRouteView? modelRoute;
   final WorkflowRunView? workflowRun;
@@ -117,7 +117,7 @@ class ThreadStatusBar extends StatelessWidget {
                 final route = modelRoute;
                 final routeModel = route == null
                     ? null
-                    : modelForRoute(providers, route.providerId, route.model);
+                    : modelForRoute(accounts, route.accountId, route.modelId);
                 final hasOverflow =
                     (thread.isRoot &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
@@ -160,12 +160,12 @@ class ThreadStatusBar extends StatelessWidget {
                     if (showModel && thread.isAgent)
                       _StatusReadout(
                         icon: Icons.smart_toy_outlined,
-                        label: route?.model.isNotEmpty == true
-                            ? route!.model
+                        label: route?.modelId.isNotEmpty == true
+                            ? route!.modelId
                             : context.l10n.settingsNotAvailable,
                         tooltip:
                             route?.unavailableReason ??
-                            route?.model ??
+                            route?.modelId ??
                             context.l10n.settingsNotAvailable,
                         maxWidth: 140,
                       ),

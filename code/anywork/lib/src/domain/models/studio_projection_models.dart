@@ -117,7 +117,7 @@ abstract class StatusBarView with _$StatusBarView {
 
   const factory StatusBarView({
     required StudioThread thread,
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
     required List<RoleSettingsView> roles,
     required bool isBusy,
     ThreadModelRouteView? modelRoute,
@@ -131,7 +131,7 @@ abstract class StatusBarView with _$StatusBarView {
     final runtime = workspace.runtime;
     return StatusBarView(
       thread: workspace.thread,
-      providers: workspace.providers,
+      accounts: workspace.accounts,
       roles: workspace.roles,
       isBusy: workspace.isBusy,
       modelRoute: runtime.modelRoute,

@@ -51,8 +51,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
 
   Future<void> setThreadModelRoute({
     String? threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) {
     _ensureOpen();
@@ -63,7 +63,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     );
     _client.settings.beginCommand(
       'thread-route:$targetThreadId',
-      CommandTarget(providerId: providerId, model: model, effort: effort),
+      CommandTarget(accountId: accountId, modelId: modelId, effort: effort),
     );
     _watchObservation(
       operation,
@@ -74,8 +74,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         () => _applyThreadModelRoute(
           operation: operation,
           threadId: targetThreadId,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         ),
       ),
@@ -390,14 +390,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   Future<void> _applyThreadModelRoute({
     required OperationHandle operation,
     required String threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final key = 'thread-route:$threadId';
     final target = CommandTarget(
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
     );
     final settings = _client.settings;
@@ -412,8 +412,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         () => _requestThreadModelRoute(
           operationId: operation.id,
           threadId: threadId,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         ),
         refresh: () => _refreshRouteOwners(threadId),
@@ -441,13 +441,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   Future<ThreadModelRouteCommandReply> _requestThreadModelRoute({
     required OperationId operationId,
     required String threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final session = _client.session(threadId).state;
     final route = session.runtime?.modelRoute;
-    final target = _findModel(providerId, model);
+    final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
       throw StateError('Selected thread model route is unavailable.');
     }
@@ -456,8 +456,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
       expectedSettingsRevision: _client.settings.state.settingsRevision,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
     );
   }
@@ -475,12 +475,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return !_client.isClosed;
   }
 
-  ProviderModelView? _findModel(String providerId, String model) {
-    final providers = _client.settings.state.canonical?.providers ?? const [];
-    for (final provider in providers) {
-      if (provider.id != providerId) continue;
-      for (final candidate in provider.models) {
-        if (candidate.modelId == model) return candidate;
+  AccountModelView? _findModel(String accountId, String modelId) {
+    final accounts = _client.settings.state.canonical?.accounts ?? const [];
+    for (final account in accounts) {
+      if (account.id != accountId) continue;
+      for (final candidate in account.models) {
+        if (candidate.modelId == modelId) return candidate;
       }
     }
     return null;

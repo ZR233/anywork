@@ -14,7 +14,10 @@ use pl_core::{
 use std::collections::{BTreeMap, BTreeSet};
 
 const FRAME_FORMAT: &str = "pl.model.assistant";
-const FRAME_VERSION: u32 = 2;
+/// Current frozen assistant-frame version.
+pub const FRAME_VERSION: u32 = 3;
+/// Frame version written before the account model-binding field migration.
+const LEGACY_FRAME_VERSION_V2: u32 = 2;
 
 #[derive(Clone, Copy)]
 enum ArgumentKind {
@@ -76,6 +79,39 @@ struct AssistantFrame {
     compatibility_family: Option<String>,
 }
 
+/// Assistant frame written before the account model-binding field migration.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAssistantFrameV2 {
+    receipt: super::receipt::LegacyModelResponseReceipt,
+    bindings: Vec<ModelToolCall>,
+    #[serde(default)]
+    compatibility_family: Option<String>,
+}
+
+/// Decode a producer-owned frame only at this explicit version boundary.
+///
+/// Current types carry no serde aliases. The legacy shape keeps the stored isolation namespace,
+/// tool bindings, frozen response and opaque vendor output unchanged while converting the
+/// binding field names.
+fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
+    let unsupported = || invalid("unsupported or repeated model response receipt");
+    match payload.version() {
+        FRAME_VERSION => serde_json::from_str(payload.content())
+            .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source)),
+        LEGACY_FRAME_VERSION_V2 => {
+            let legacy: LegacyAssistantFrameV2 = serde_json::from_str(payload.content())
+                .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
+            Ok(AssistantFrame {
+                receipt: legacy.receipt.migrate(),
+                bindings: legacy.bindings,
+                compatibility_family: legacy.compatibility_family,
+            })
+        }
+        _ => Err(unsupported()),
+    }
+}
+
 pub(super) fn receipt(
     output: &ModelStepOutput,
 ) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
@@ -88,11 +124,10 @@ pub(super) fn receipt(
     let Some(payload) = frames.next() else {
         return Ok(None);
     };
-    if frames.next().is_some() || payload.version() != FRAME_VERSION {
+    if frames.next().is_some() {
         return Err(invalid("unsupported or repeated model response receipt"));
     }
-    let frame: AssistantFrame = serde_json::from_str(payload.content())
-        .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
+    let frame = decode_frame(payload)?;
     let text = output
         .content
         .iter()
@@ -207,7 +242,7 @@ pub(super) fn request(
     let append = runtime
         .endpoint()
         .instruction_update_strategy(runtime.model())
-        == crate::provider::InstructionUpdateStrategy::AppendFullSnapshot;
+        == crate::protocol::InstructionUpdateStrategy::AppendFullSnapshot;
     let latest_snapshot = request
         .context
         .records
@@ -294,11 +329,8 @@ pub(super) fn request(
                 })
                 .collect::<Vec<_>>();
             if let [payload] = frames.as_slice() {
-                if payload.version() != FRAME_VERSION {
-                    return Err(invalid("unknown assistant frame version"));
-                }
-                let mut frame: AssistantFrame = serde_json::from_str(payload.content())
-                    .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+                let mut frame = decode_frame(payload)
+                    .map_err(|_| invalid("unknown assistant frame version"))?;
                 let text = record
                     .content
                     .iter()

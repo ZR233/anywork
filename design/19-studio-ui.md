@@ -24,11 +24,17 @@ Client 管理资源、只读镜像、草稿和命令；Riverpod 只适配观察�
 回调交给 View。依赖与状态契约遵循 [25](./25-frontend-state.md)，Client 不依赖 Flutter、
 Riverpod、FRB 或 `Ref`，feature 不导入 FRB、adapter、transport 或 Client 私有实现。
 UI 不读取 SQLite、Agent TOML 或 Skill 文件。Flutter Web 只用于 demo integration 验收，不能
-伪造原生 provider、文件系统或进程能力。
+伪造原生 account、文件系统或进程能力。
+
+`lib/src/rust/` 是 FRB 独占的生成目录，不存放手写 barrel、转发函数或业务默认值。adapter
+需要汇集 typed 导出时，在 `infrastructure/frb/` 维护手写导出入口；它直接引用当前生成模块，
+不为退役的账号 API 保留转发。统一生成入口重建 FRB 的完整输出集合并移除已删除 Rust 模块的
+孤儿产物，canonical 检查同时比较内容和文件集合；不能靠手工删除生成文件或保留旧 barrel
+让分析通过。生成失败必须透传错误，不能留下“检查通过”的假结论。
 
 附件拖放直接消费平台插件的 typed file item，只接收文件，不将目录、文本或 URL 解释为本地
 附件。异步 drop 回调拥有本次传输资源的借用期；所有读取及 Rust 附件草稿准入必须在回调返回前
-完成，后续提交只消费已经入库的草稿，不持有平台临时路径或 provider 句柄。
+完成，后续提交只消费已经入库的草稿，不持有平台临时路径或 account 句柄。
 文件和项目目录选择由桌面原生宿主持有，分别调用 Windows 文件对话框与 GTK 原生文件选择器。
 Flutter 通过平台通道提交扩展名筛选并接收本地路径；取消返回空选择，原生失败以平台错误传播。
 宿主不读取文件内容，附件校验与复制仍由 Rust 的草稿准入负责。
@@ -128,7 +134,7 @@ Markdown 阅读排版以 [VS Code Markdown Preview](https://github.com/microsoft
 会话累计输入/输出与调用次数、缓存统计及按币种分组的费用和节省。有效窗口与模型最大窗口
 不同时区分展示；未知值保留 `—`，没有模型最大能力事实时不以有效窗口冒充。窗口和阈值均
 消费请求绑定的 canonical 投影，来源契约见 [18](./18-studio-state.md#188-产品投影与观察)，
-不在前端按 provider 硬编码、计算默认值或查询当前设置补写历史。累计 token 与当前上下文
+不在前端按 account 硬编码、计算默认值或查询当前设置补写历史。累计 token 与当前上下文
 用量是不同统计，不混作容量或压缩进度。
 
 ## 19.2 动态模式与 workflow 状态
@@ -147,7 +153,7 @@ canonical 的组合显示规则见 [25](./25-frontend-state.md)。提交在首�
 selector 只读取 Thread runtime 中的
 `modelRoute`，修改时同时更新该 Thread 与其当前 Mode 默认值，不改变其他 Thread。child Thread
 继续只读展示创建时冻结的 Profile route。路由 unavailable 时保留原 selector 并显示错误，
-不得在 Flutter 侧选择另一个 provider 或 model。模型旁的警告表示当前路由不可用，独立于
+不得在 Flutter 侧选择另一个 account 或 model。模型旁的警告表示当前路由不可用，独立于
 模型切换是否受限；点击警告应展示运行时提供的不可用原因，没有具体原因时展示通用说明。
 root Thread 非空闲或存在活动 workflow 时不打开模型或思考强度选择菜单，也不提交切换命令；
 点击选择器显示当前状态对应的可关闭原因提示，运行中的会话停止当前执行或等待完成、活动工作流
@@ -208,7 +214,7 @@ composer dock 只响应 `UserInput` 与 `ToolApproval`。任务计划由 `plan_s
 
 Agents 页是唯一 Agent 配置中心。顶部独立展示“主智能体 / Main agent”的用途和模型、
 思考强度配置，不提供启用开关；下方分别展示系统子代理与用户子代理。系统项名称、用途、指令和固定
-workspace mode 只读，无删除入口；系统子代理可配置 enabled、provider/model 与模型声明驱动的 effort。
+workspace mode 只读，无删除入口；系统子代理可配置 enabled、account_id/model_id 与模型声明驱动的 effort。
 用户项按单 TOML 文件原子创建、保存或删除，并可选择四种 workspace mode（`review` 模式表示
 工作区在 spawn 时跟随被审代理，需配合 `reviewTargetAgentId` 使用）。无效文件以独立
 诊断展示，不阻断页面其余项。preserved worktree 显示 revision、branch、base/head、
@@ -216,7 +222,7 @@ dirty/changed-files preview 与显式 cleanup。运行中 Agent 目录与 Profil
 所有 mutation 使用 settings revision CAS 并以 canonical snapshot 原子刷新（见
 [12](./12-collaboration.md)）。
 
-Agents 页的 provider/model 选择弹层属于当前设置页；打开、选择及 canonical snapshot 刷新只更新
+Agents 页的 account_id/model_id 选择弹层属于当前设置页；打开、选择及 canonical snapshot 刷新只更新
 当前智能体配置，不改变设置 tab、设置路由或返回聊天页。选择完成后仍展示服务端返回的 canonical
 值，不以本地草稿或弹层关闭动作推导导航状态。
 
@@ -224,7 +230,7 @@ Agents 页的 provider/model 选择弹层属于当前设置页；打开、选择
 `TabBarView` 或返回聊天路由的页面级转场；只有选择项提交才更新当前智能体配置投影。
 
 Agents 导航、配置页、preserved worktree recovery 和用户 Profile 详情中的固定界面文案必须
-跟随 Studio locale，并由统一 l10n catalog 提供。Profile ID、provider/model、effort、
+跟随 Studio locale，并由统一 l10n catalog 提供。Profile ID、account_id/model_id、effort、
 workspace mode 的持久化值，以及分支、路径、commit、worktree 状态和诊断数据保持 canonical
 原值；本地化只影响展示标签、说明、操作和校验反馈，不得改写配置或运行时数据。
 
@@ -240,10 +246,10 @@ General 页把 OpenAI Web Search 与 DeepSeek 联网搜索显示为两张独立�
 mode、context size、域名和位置等配置，并明确文案只表示 OpenAI 搜索；DeepSeek 卡片只有
 「联网搜索」与「网页抓取」两个开关，不展示结果条数、正文开关、搜索模型或官方未承诺的
 cached/indexed、域名、位置、上下文选项，也不保存本地输入草稿。卡片显示所选 DeepSeek 模型
-服务商，并说明先由其它可用搜索优先处理、仅当其它搜索未配置、不可用或调用失败时才由
+账号，并说明先由其它可用搜索优先处理、仅当其它搜索未配置、不可用或调用失败时才由
 DeepSeek 兜底，搜索与抓取都按请求次数计费。两张卡片都消费 bridge 返回的 configured、
-effective、availability 与 provider（DeepSeek 无模型位）；官方 DeepSeek Responses route 显示
-provider unsupported，并可使用 OpenAI standalone 搜索。每个开关各自提交一个 typed command：
+effective、availability 与 account（DeepSeek 无模型位）；官方 DeepSeek Responses route 显示
+account unsupported，并可使用 OpenAI standalone 搜索。每个开关各自提交一个 typed command：
 保存必须携带 Settings CAS revision，并以返回的完整 canonical snapshot 原子更新 UI，不做本地
 乐观推演；不得在 UI 侧推演 backend 仲裁、凭据或模型能力（仲裁合同见
 [20](./20-config.md)）。
@@ -374,7 +380,7 @@ recovery preview 与 Agents 预览中呈现。
 表单选择字段随 `DropdownMenu` 保持受控值跟随、禁用状态与空值语义（可空值用显式
 “默认”条目表达），字段校验仍由所属表单承担；状态详情保留悬停与打开期间的
 canonical 数据刷新。各入口继续使用稳定的交互标识，模型分组、智能体状态
-排序与父子层级不由承载组件改变。模型选择菜单的 provider 标题与模型条目必须使用真实
+排序与父子层级不由承载组件改变。模型选择菜单的 account 标题与模型条目必须使用真实
 内容高度布局：能力标签换行时条目随内容增高，标题与相邻条目之间保留可辨识的垂直留白，
 不得依赖固定条目高度造成重叠。窄窗口或文字缩放时模型名与能力标签可省略或换行，但
 不得挤出弹层边界、遮挡其他条目或丢失选择语义。
@@ -420,16 +426,16 @@ SSH 服务器行常驻"重新连接"入口，无需先测试连接；说明重�
 
 ## 19.8 设置页组织与 Dart 展示边界
 
-供应商品牌标识只以 catalog 下发的 `iconKey` 字符串为跨层契约：Rust preset catalog
-声明品牌身份，Flutter 侧 `provider_brand.dart` 的资产注册表负责呈现（SVG 路径与品牌
-着色），不向协议扩展颜色等展示字段。`ProviderBrandMark` 在供应商列表、供应商详情头、
+账号品牌标识只以 catalog 下发的 `iconKey` 字符串为跨层契约：Rust template catalog
+声明品牌身份，Flutter 侧 品牌资产注册表负责呈现（SVG 路径与品牌
+着色），不向协议扩展颜色等展示字段。`AccountBrandMark` 在账号列表、账号详情头、
 编辑器模板下拉与模型选择器分组头统一渲染：已知品牌为白底圆角框内着色 glyph，未知或
-缺失 `iconKey` 回退名称首字母，因此 `openai-compatible` 等自定义供应商不携带任何品牌
-标。SVG 资产（`assets/provider-logos/`）取自 cc-switch（MIT），商标归各供应商所有，
+缺失 `iconKey` 回退名称首字母，因此 `openai-compatible` 等自定义账号不携带任何品牌
+标。SVG 资产（`assets/provider-logos/`）取自 cc-switch（MIT），商标归各厂商所有，
 仅作识别用途。
 
-供应商详情卡的模型列表是上下文压缩阈值的唯一编辑入口，内置与自定义模型共用精确正整数
-tokens 输入、Material 滑块和恢复默认操作；不需要进入供应商编辑页，也没有阈值保存按钮。
+账号详情卡的模型列表是上下文压缩阈值的唯一编辑入口，内置与自定义模型共用精确正整数
+tokens 输入、Material 滑块和恢复默认操作；不需要进入账号编辑页，也没有阈值保存按钮。
 该列表按目录来源分组：在线名单（来源 `online`）、尚未同步的内置默认定义（`bundled`）与
 用户手动模型（`manual`）分别成节，模型行显示来源徽标；手动模型行额外提供删除操作，
 经二次确认后调用删除命令，成功以 canonical snapshot 替换列表并收回该模型的覆盖值。
@@ -441,7 +447,7 @@ canonical 投影；默认可能来自模型预设或上下文 90%，未知以 `�
 保存中采用行内轻量反馈，失败保留可修正输入并允许显式重试，不宣称已应用；成功后的四层
 读数以服务端 canonical snapshot 替换，不用刷新或页面往返。旧完成不能覆盖较新输入，
 不同模型的编辑互不清除。交互语义见 [25](./25-frontend-state.md)。
-供应商编辑页只保留 endpoint、凭据、模型声明与连接方式等原子草稿字段，不复制阈值编辑器；
+账号编辑页只保留 endpoint、凭据、模型声明与连接方式等原子草稿字段，不复制阈值编辑器；
 新模型保存后即可在详情模型列表设置阈值。
 
 GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整数，千级使用小写 `k`，
@@ -464,14 +470,14 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 导航/公共配置；当前标签页通过 Connector 表达统计、Profiles、服务、技能或用量的可见需求。
 这些可见需求可在隐藏时释放，保留隐藏标签的 UI 状态不要求持续处理无关数据。
 
-页面观察与业务资源寿命分开：provider 的 dispose、暂停和重建只取消它自己的观察订阅，不关闭
+页面观察与业务资源寿命分开：Riverpod 观察者的 dispose、暂停和重建只取消自己的观察订阅，不关闭
 当前 Session 内容连接，不清草稿或扫描附件。打开 Settings、切换设置标签和返回均保留当前
 Thread 的 Client owner、内容连接与草稿身份；切换 Thread、关闭项目、显式放弃草稿和应用退出
 才由相应 action 改变资源需求。关闭内容连接只取消自身子资源，不关闭 Rust Session、Turn、
 writer 或可靠历史。快速切换的旧回调不能清除新展示集合或草稿。
 
 每个 topic 只有一个 Client 分发点与对应领域 reducer；`lagged`、失败或关闭只影响对应资源，
-重同步期间保留最后有效内容。MCP、LSP、Skills、Provider usage、模型性能、持久化队列与
+重同步期间保留最后有效内容。MCP、LSP、Skills、Account usage、模型性能、持久化队列与
 Profiles 保持独立职责，不合并为隐藏的“services”订阅。Client 可为相同 topic 的逻辑需求复用
 transport 订阅，在最后一个需求释放时关闭该资源；Riverpod 观察者数量本身不决定会话寿命。
 显示观察同步注册并取得当前值，暂停期间每个观察者只保留最新显示快照；可靠有序事件不采用
@@ -483,42 +489,45 @@ transport 订阅，在最后一个需求释放时关闭该资源；Riverpod 观�
 事件，不周期查询接口。启动/正常刷新均无 GUI 接口轮询；分页、搜索、显式检查/重试与
 事件缺口恢复属于按需查询，UI 动画和输入防抖不属于轮询。
 
-Provider 设置采用"列表 + 详情卡 + 编辑页"结构：列表页提供"添加供应商"入口和 provider 卡片
-（provider key、preset、状态、当前路由模型、模型数量、额度状态等摘要），点击进入详情卡；
+Account 设置采用"列表 + 详情卡 + 编辑页"结构：列表页提供"添加账号"入口和 account 卡片
+（account key、template、状态、当前路由模型、模型数量、额度状态等摘要），点击进入详情卡；
 base URL 只在详情或编辑页展示。详情卡的模型列表可直接编辑压缩阈值，其余编辑从显式编辑
 入口进入。编辑页使用本地草稿，提供保存和取消；保存成功后即时写入
-配置并返回列表，取消不修改当前配置。删除和默认 provider 选择即时写入。创建草稿与切换
-preset 共用同一草稿工厂，以 catalog preset 一次性替换完整的不可变 provider 草稿，preset
+配置并返回列表，取消不修改当前配置。删除和默认 account 选择即时写入。创建草稿与切换
+template 共用同一草稿工厂，以 catalog template 一次性替换完整的不可变 account 草稿，template
 身份变化时重建整组表单状态，表单验证身份也随草稿重建，不能把旧表单移接到新预设下。
+设置标签、标题和入口统一称“账号 / Accounts”；创建表单明确称“账号模板 / Account template”。
+新建及切换模板的默认账号名取模板展示名，用户可以改名；相同模板可创建多个独立账号。
+账号 ID 创建后稳定，不提供改 ID 或由显示名重新分配 ID 的编辑入口，显示名变化不拆分路由与统计。
 通用文本字段跟随草稿的程序化变更同步显示值；用户输入回传不重置光标或输入法组合区。
 名称、基础 URL、凭据和模型参数遵循同一规则，不残留上一个预设或被删除模型的输入。
 编辑保存、列表/详情的额度查询各有独立 pending/error；保存只等待配置提交，不等待 MCP
 准备或额度响应。返回列表后可立即再次新增、编辑或取消，旧操作不得锁住或清理新草稿。
-凭据存在只表示「已配置」，不显示为连接「就绪」；用量观察失败时，仅对应服务商的状态
-标记失败，并在列表与详情显示该服务商的具体错误。查询失败不能覆盖其他服务商的结果，
+凭据存在只表示「已配置」，不显示为连接「就绪」；用量观察失败时，仅对应账号的状态
+标记失败，并在列表与详情显示该账号的具体错误。查询失败不能覆盖其他账号的结果，
 也不能把用量接口成功等同于模型推理能力验证通过。
-不在事件处理器中逐字段拼接供应商默认值。展示 provider
+不在事件处理器中逐字段拼接账号默认值。展示 account
 effective models（默认/成功缓存/在线声明与手工模型由服务端统一解析，并携带每个模型的来源），
-详情卡与编辑页都按该来源分组，不用 model_id 差集或 preset 自行推导分组；允许追加用户自定义模型，
+详情卡与编辑页都按该来源分组，不用 model_id 差集或 template 自行推导分组；允许追加用户自定义模型，
 与在线 model_id 冲突时显式提示而不是静默遮蔽，Flutter 不自行实现合并规则。模型列表展示上下文窗口、最大输出
 token、自动压缩阈值、temperature、effort 候选值、capabilities、输入模态和截断策略等
-关键参数。provider 编辑页不提供 provider 级协议或连接方式控件：每个模型行展示协议、
+关键参数。account 编辑页不提供 account 级协议或连接方式控件：每个模型行展示协议、
 支持模式和当前模式，只有支持多个模式的模型提供 HTTP/WS 选择并保存为该模型的
 connection override；自定义模型编辑器必须显式选择协议、支持模式与默认模式，Chat + WS
-在保存前拒绝。协议/模式/默认值必须来自 model descriptor，不得按 preset ID 分支。更新
-API key 时空输入表示保留现有 secret；provider key 重命名必须携带 originalId，以便服务端
-保留 secret、headers、catalog metadata 和模型能力。设置页不展示 raw TOML 编辑器。
+在保存前拒绝。协议/模式/默认值必须来自 model descriptor，不得按 template ID 分支。更新
+API key 时空输入表示保留现有 secret；账号编辑使用既有稳定 ID，以便服务端保留
+secret、headers、catalog metadata 和模型能力。设置页不展示 raw TOML 编辑器。
 
-支持在线探测的 provider 详情只读展示目录状态：当前来源（默认/成功缓存/在线）、成功/检查时间
+支持在线探测的 account 详情只读展示目录状态：当前来源（默认/成功缓存/在线）、成功/检查时间
 与类型化错误，并提示“重启应用可重新同步”；不提供刷新按钮、不显示加载中轮转，也没有刷新
 pending 状态。程序启动各实例独立并行探测一次，失败时模型列表继续展示 last-known 或首次
 默认定义，不把一家失败扩散到其他家，也不把额度检查等同模型发现。打开/读取设置不额外探测，
 不新增定时轮询。具体网络、缓存与不可用语义见 [06](./06-model.md)、[20](./20-config.md)。
 
-模型选择器和编辑页只消费 canonical 有效模型 descriptor；供应商设置保留完整目录，会话与
+模型选择器和编辑页只消费 canonical 有效模型 descriptor；账号设置保留完整目录，会话与
 Agent 菜单统一查询后端发布的文本类型，类型语义及合并归 [06](./06-model.md)。既有选择不符合
 文本筛选时保留原路由并展示原因；未配置草稿从合格项初始化，没有合格项时显示空态。
-动态模型与可编辑 custom model 分开。默认 catalog 缓存只用于默认/preset 展示，不能重新合并后覆盖在线名单，不能
+动态模型与可编辑 custom model 分开。默认 catalog 缓存只用于默认/template 展示，不能重新合并后覆盖在线名单，不能
 丢失完整模态、预算、参数或价格。未知预算保持未知，未知价格不显示金额。后台目录具有独立水位，
 reducer 同时检查 desired/目录水位，迟到事件不能覆盖新设置或新目录。被服务撤下的选中项明确
 显示不可用，保持用户选择，不自动跳到推荐模型。
@@ -527,48 +536,51 @@ Agents 标签页只展示四个系统子代理 Profile 与用户 Profile，不�
 Profile 卡片将模型与"思考强度"作为两个独立选择控件展示。会话（含新会话草稿）、
 角色配置及 Profile 编辑复用同一套会话模型选择器的紧凑触发器与弹出菜单，
 不保留设置专用的表单式模型菜单。设置调用方负责字段说明与表单校验提示，
-不改变选择器的外观及选择行为。模型选项按 provider 实例 ID 分组，组标题展示
-服务商名称；模型行仅展示模型名称与 catalog 声明的输入能力，不重复服务商名称，
+不改变选择器的外观及选择行为。模型选项按 account 实例 ID 分组，组标题展示
+账号名称；模型行仅展示模型名称与 catalog 声明的输入能力，不重复账号名称，
 不展示协议或 HTTP/WS 连接信息。文本、视觉等能力使用带图标与本地化文字的紧凑小卡片，
-不得从模型名称推断能力。分组与选择身份不依赖显示名称，同名服务商仍为独立分组。
+不得从模型名称推断能力。分组与选择身份不依赖显示名称，同名账号仍为独立分组。
 模型选项与能力标签的 Driver 标识使用无歧义的路由元组编码，不能以未转义的分隔符
-拼接 provider ID 与模型 model_id；角色选项的标识同时包含角色身份。
+拼接 account ID 与模型 model_id；角色选项的标识同时包含角色身份。
 共享组件仅负责展示和选择事件；调用方保留会话运行限制、不可用路由提示、canonical
 保存及各自的 effort 规则。空列表、未解析路由、长名称与窄窗口不得导致自动改选或内容溢出，
-选中态与键盘操作保持可访问。服务商配置页仍保留协议和连接方式编辑信息。
+选中态与键盘操作保持可访问。账号配置页仍保留协议和连接方式编辑信息。
 思考强度候选值来自当前模型声明。模型改变时，有候选的模型切换为其声明的默认 effort，没有显式默认时使用首个候选；
 起始页的模型 intent 由 Client 草稿 owner 立即按同一规则归一化，默认值只有属于当前候选集合时才可采用，
-默认值缺失或失配时回退候选首项；无候选模型保存空选择并禁用强度控件。仅改变思考强度时保持当前 provider 和 model 不变。
+默认值缺失或失配时回退候选首项；无候选模型保存空选择并禁用强度控件。仅改变思考强度时保持当前 account 和 model 不变。
 该草稿归一化只适用于用户主动切换到新模型，不改变在线目录变化后既有 canonical 路由保留并显示不可用的语义。
 模型、思考强度与启用状态变更都携带 settings revision 即时保存，但 Flutter 不进行持久
 optimistic 更新，也不保存第二份 selection；成功后以 bridge 返回的完整 typed canonical
 settings snapshot 原子更新 store，失败时保持原 canonical 状态。
 
-token 速度统计按 provider 实例 ID、实际发送 model、请求期思考强度组成的三元组分条展示；
-汇总表、紧凑卡片、历史记录与历史筛选使用同一完整组合，并展示 provider、model 和思考
-强度，显示名称不参与身份判定。同 provider/model 的不同强度不得混算或在筛选中串组。
-强度值沿用模型声明的原始标识；空值统一显示"未指定/未记录"，与显式 `none` 独立。筛选
-标识必须无歧义地区分三项及空值，旧数据不可根据当前设置补写强度。历史模型列标题为“模型”，
+token 速度统计的顶层身份与模型选择一致，为 (account_id, 配置的 model_id)，按账号分组展示。
+同一账号模型只有一个顶层汇总；其下按请求期 effort 展示细分读数，细分不另起顶层身份。
+汇总表、紧凑卡片、历史记录与模型筛选使用同一个复合键，不使用账号显示名、地址、发送别名或
+上游报告名。跨账号同名模型必须分离；同组不同强度可在组内独立查看，顶层汇总覆盖本组有效样本。
+强度值沿用原始标识，空值显示“未指定/未记录”，与显式 `none` 独立。模型筛选与可选强度筛选
+分层表达，并无歧义地区分空值；筛选区在常规和窄窗口下按可用宽度换行，不通过挤出或隐藏
+任一筛选控件满足布局。旧数据不可根据当前设置补写账号、配置模型或强度；无法证明
+完整账号模型身份的记录保留“历史身份未知”，不归入看似同名的新账号模型。历史模型列标题为“模型”，
 以请求（配置）模型为第一行，正文色略加粗；缺失时回退已记录的发送模型或历史模型，
 不根据当前设置推断历史。配置与发送模型均存在且不同时，以灰色小字、缩进箭头 `↳`
 展示实际发送模型；发送与响应模型均存在且不同时，以橙色显示“↳ 上游响应模型: xxx”，
 有映射时再缩进一级，末尾跟小圆角“模型不匹配”徽标，使用浅橙背景、橙色文字及细边框。
 长名称及徽标允许合理换行，不挤占邻列；亮暗主题均保证辨识度。正常匹配不增加状态行，
 未返回和旧数据分别保留中性“未报告”与“未采集”，不只靠颜色表达。
-历史行不常驻显示供应商，悬停模型区域的 tooltip 与 Semantics 包含供应商名称和实例 ID
-（相同时不重复），以及请求、发送、响应值及状态。性能汇总和筛选仍保留必要的供应商信息。
+历史行不常驻显示账号，悬停模型区域的 tooltip 与 Semantics 包含账号名称和实例 ID
+（相同时不重复），以及请求、发送、响应值及状态。性能汇总和筛选仍保留必要的账号信息。
 模型下拉筛选旁的“仅看不一致”复选框按 AND 组合，只包含 `mismatched`；无结果显示专用空态。
 宽布局不增加列，紧凑布局复用同一模型层级语义及性能指标。
-供应商用量与模型
+账号用量与模型
 性能统计是不同信息，不能互相替代：列表保留用量摘要与刷新，详情保留全部分组读数和
 原有状态；没有实时查询结果时显示 canonical 不可用/错误状态，不将配置完整伪装成在线。
-供应商标签首次可见时由其状态自动启动各实例额度检查，先显示 last-known 与逐卡 loading，
+账号标签首次可见时由其状态自动启动各实例额度检查，先显示 last-known 与逐卡 loading，
 每个结果完成即更新，不以整批查询遮住列表或等待最慢实例。保留单卡及全部刷新；失败、缺
 凭据和不支持均只影响对应实例，查询不进入保存状态。普通 rebuild、筛选、编辑返回与保留
 状态的标签往返不重复查询；可见时新增或查询输入改变只补查受影响实例，隐藏时留待重新
 可见再查。页面状态真正重建可重新加载；无定时轮询或失败自动重试。完整需求、去重和任务
-所有权见 [25.7.1](./25-frontend-state.md#2571-供应商用量需求)。
-DeepSeek provider usage 遵循官方 [`/user/balance`](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)
+所有权见 [25.7.1](./25-frontend-state.md#2571-账号用量需求)。
+DeepSeek account usage 遵循官方 [`/user/balance`](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)
 语义：`total_balance` 是包含赠金与充值余额的总可用余额，`granted_balance` 是未过期赠金余额，
 `topped_up_balance` 是充值余额；三项只展示 canonical 返回值，不在前端相加、换算或推导。
 `balance_infos` 返回的每个币种都保持独立分组（不把 CNY/USD 合并），列表摘要与详情读数使用同一
@@ -596,7 +608,7 @@ Material 菜单项自身的槽位与内边距，行内空间由 Flex 与行内�
 选择条目后再订阅对应 Thread，底部状态栏不维护第二套 agent 活动面板。
 
 桌面窗口必须支持自由缩放：anywork 只声明首选窗口尺寸，不把 UI 绑定到固定宽高；设置页
-内容跟随窗口尺寸自适应。Provider 标签页在常规桌面宽度使用单栏 provider 卡片列表，卡片
+内容跟随窗口尺寸自适应。Account 标签页在常规桌面宽度使用单栏 account 卡片列表，卡片
 内部承载摘要、操作和展开编辑内容；窄窗口下保持单栏滚动并压缩卡片元信息，避免表格和
 编辑区域被裁剪。聊天状态栏在窄窗口下保留左侧高频控制，并把右侧只读状态按断点收入
 更多菜单。
@@ -750,7 +762,7 @@ Driver 诊断只读库和 Flutter 当前滚动活动、列表代次、Live/Histo
 人工验收 `cargo xtask manual-gui --scenario tool-scroll` 同时覆盖发送图片、工具读取图片、
 放大预览与惰性行回收；显式传入 `--ssh-target user@host` 时，在该服务器独立临时目录内
 通过真实 SSH 项目重复验收。模型使用本地 fixture，记录请求中的图片数量，不外推为真实
-供应商识图结论；远程目录和测试连接名称随证据保留，便于复查。
+账号识图结论；远程目录和测试连接名称随证据保留，便于复查。
 
 ## 19.11 运行中发送消息
 
@@ -763,7 +775,7 @@ Driver 诊断只读库和 Flutter 当前滚动活动、列表代次、Live/Histo
 旧 ACK 只能清理仍由该提交拥有的冻结值，不能清掉新文本、route 或附件。不等待新 Turn 出现才
 允许编辑。失败保留草稿与附件；未知结果单独显示，不自动重放非幂等命令。受理、观察、生效与
 durable 不互相替代，附件只在明确 durable/ownership transfer、显式删除或放弃时清理。
-Client 的草稿身份不随 Settings、标签页或 provider 重建变化；TextEditingController 只持有选区、
+Client 的草稿身份不随 Settings、标签页或 account 重建变化；TextEditingController 只持有选区、
 composing 等编辑状态，同一草稿输入不反复覆盖其 text。
 输入框回车提交：Enter 提交满足前置条件的当前草稿，语义与主按钮一致（运行中即“发送并继续”）；
 Shift+Enter 插入换行，多行草稿不受影响。
@@ -786,11 +798,11 @@ Timeline 和状态提示消费 canonical 输入与执行状态，区分已受理
 Composer 与设置 → 安全 页不提供权限模式选择：执行策略固定 `full-access`
 （见 [04](./04-security.md)），GUI 不读取或展示权限模式，`permission` 不是设置 mutation。
 
-Provider、默认 provider、单个 Mode route 的 model、单个 Mode route 的 reasoning effort、
+Account、默认 account、单个 Mode route 的 model、单个 Mode route 的 reasoning effort、
 单个 Agent role 的 model、单个 Agent role 的 reasoning effort、general、搜索和其他设置
 使用独立 typed intent；可编辑的复合页在提交时按字段变化拆成最小 command，不把
 同页其它控件的旧值重新写回。它们共享一个 settings operation lane 以满足 CAS 顺序，但
-payload 不携带其他设置的完整旧副本；provider 编辑只有在重命名或删除确实需要迁移引用时才
+payload 不携带其他设置的完整旧副本；account 编辑只有在重命名或删除确实需要迁移引用时才
 携带明确的 route migration。确认的资源由 Rust typed response 或 owner frame 进入对应 Client
 reducer；不在成功后聚合回读 `StudioState`。route 命令保留双 CAS，响应只确认实际涉及的
 settings/default 资源，Thread route 仍由自己的 owner frame 观察。
@@ -834,7 +846,7 @@ canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子�
 最新 state 并校验 project/thread、submission revision、attachment generation；失败保留已准入
 附件并展示 typed composer failure，不建立第二份 durable 图片事实。
 
-供应商列表只呈现供应商级摘要、状态、额度、操作和模型数量/当前路由摘要，不渲染具体
+账号列表只呈现账号级摘要、状态、额度、操作和模型数量/当前路由摘要，不渲染具体
 model_id、模型胶囊或 `+N` 清单；模型详情保留在详情、编辑和模型选择器。所有用户可见实时值都应
 能沿 owner→event/snapshot→reducer→watermark→projection→visible lease 链路追踪，不能靠切页
 或重进掩盖 stale 状态。

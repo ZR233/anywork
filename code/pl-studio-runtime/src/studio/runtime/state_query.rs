@@ -71,7 +71,7 @@ impl StudioRuntime {
             lsp,
             skills_by_project,
             thread_mode_catalog: self.read_thread_mode_catalog(),
-            provider_usage: self.read_provider_usage_state().await,
+            account_usage: self.read_account_usage_state().await,
             model_performance,
             session_costs,
             updater: self.read_update_state().await,

@@ -115,12 +115,13 @@ class SessionCostView {
   }
 }
 
-class ModelPerformanceSummaryView {
-  const ModelPerformanceSummaryView({
-    required this.providerInstanceId,
-    required this.providerDisplayName,
-    required this.model,
-    this.reasoningEffort,
+/// 组内 effort 细分读数。
+///
+/// `effort` 为请求期思考强度原值；`null` 表示未指定/未记录，与显式 `none` 独立。
+/// 细分不另立账号模型身份，只是所属顶层汇总的一部分。
+class ModelPerformanceEffortSummaryView {
+  const ModelPerformanceEffortSummaryView({
+    required this.effort,
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
@@ -131,10 +132,7 @@ class ModelPerformanceSummaryView {
     required this.averageResponseMillis,
   });
 
-  final String providerInstanceId;
-  final String providerDisplayName;
-  final String model;
-  final String? reasoningEffort;
+  final String? effort;
   final int sampleCount;
   final int completionTokens;
   final int totalTtftMillis;
@@ -147,11 +145,8 @@ class ModelPerformanceSummaryView {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ModelPerformanceSummaryView &&
-          providerInstanceId == other.providerInstanceId &&
-          providerDisplayName == other.providerDisplayName &&
-          model == other.model &&
-          reasoningEffort == other.reasoningEffort &&
+      other is ModelPerformanceEffortSummaryView &&
+          effort == other.effort &&
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
@@ -163,10 +158,7 @@ class ModelPerformanceSummaryView {
 
   @override
   int get hashCode => Object.hash(
-    providerInstanceId,
-    providerDisplayName,
-    model,
-    reasoningEffort,
+    effort,
     sampleCount,
     completionTokens,
     totalTtftMillis,
@@ -177,23 +169,96 @@ class ModelPerformanceSummaryView {
     averageResponseMillis,
   );
 
-  String get filterKey =>
-      jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort]);
+  /// 组内 effort 筛选身份；`null` 与显式 `none` 不同。
+  String get effortKey => jsonEncode(<Object?>[effort]);
+}
+
+/// 顶层性能汇总的唯一身份是 (accountId, 配置 modelId)。
+///
+/// 显示名、地址、发送别名与上游报告名都不参与身份；跨账号同名模型分离，
+/// 同一账号模型的 effort 细分归在 [effortBreakdowns]。
+class ModelPerformanceSummaryView {
+  const ModelPerformanceSummaryView({
+    required this.accountId,
+    required this.accountDisplayName,
+    required this.modelId,
+    required this.sampleCount,
+    required this.completionTokens,
+    required this.totalTtftMillis,
+    required this.totalDecodeMillis,
+    required this.totalResponseMillis,
+    required this.tokensPerSecond,
+    required this.averageTtftMillis,
+    required this.averageResponseMillis,
+    this.effortBreakdowns = const [],
+  });
+
+  final String accountId;
+  final String accountDisplayName;
+  final String modelId;
+  final int sampleCount;
+  final int completionTokens;
+  final int totalTtftMillis;
+  final int totalDecodeMillis;
+  final int totalResponseMillis;
+  final double tokensPerSecond;
+  final double averageTtftMillis;
+  final double averageResponseMillis;
+  final List<ModelPerformanceEffortSummaryView> effortBreakdowns;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ModelPerformanceSummaryView &&
+          accountId == other.accountId &&
+          accountDisplayName == other.accountDisplayName &&
+          modelId == other.modelId &&
+          sampleCount == other.sampleCount &&
+          completionTokens == other.completionTokens &&
+          totalTtftMillis == other.totalTtftMillis &&
+          totalDecodeMillis == other.totalDecodeMillis &&
+          totalResponseMillis == other.totalResponseMillis &&
+          tokensPerSecond == other.tokensPerSecond &&
+          averageTtftMillis == other.averageTtftMillis &&
+          averageResponseMillis == other.averageResponseMillis &&
+          listEquals(effortBreakdowns, other.effortBreakdowns);
+
+  @override
+  int get hashCode => Object.hash(
+    accountId,
+    accountDisplayName,
+    modelId,
+    sampleCount,
+    completionTokens,
+    totalTtftMillis,
+    totalDecodeMillis,
+    totalResponseMillis,
+    tokensPerSecond,
+    averageTtftMillis,
+    averageResponseMillis,
+    Object.hashAll(effortBreakdowns),
+  );
+
+  /// 顶层筛选身份；元组编码避免分隔符歧义，effort 不进入 key。
+  String get filterKey => jsonEncode(<Object?>[accountId, modelId]);
 }
 
 enum ModelMatchState { matched, mismatched, unreported, legacyUnknown }
 
+/// 一条冻结的历史性能样本。
+///
+/// `modelId` 是请求（配置）模型身份，旧记录无法证明时为 `null`，不根据当前目录
+/// 或发送模型补写；configured/sent/reported 保留冻结诊断，effort `null` 与 `none` 独立。
 class ModelPerformanceSampleView {
   const ModelPerformanceSampleView({
     required this.completedAt,
-    required this.providerInstanceId,
-    required this.providerDisplayName,
-    required this.model,
-    this.configuredModel,
+    required this.accountId,
+    required this.accountDisplayName,
+    this.modelId,
     this.sentModel,
     this.reportedModel,
     this.modelMatchState = ModelMatchState.legacyUnknown,
-    this.reasoningEffort,
+    this.effort,
     required this.completionTokens,
     required this.ttftMillis,
     required this.decodeMillis,
@@ -202,14 +267,13 @@ class ModelPerformanceSampleView {
   });
 
   final DateTime completedAt;
-  final String providerInstanceId;
-  final String providerDisplayName;
-  final String model;
-  final String? configuredModel;
+  final String accountId;
+  final String accountDisplayName;
+  final String? modelId;
   final String? sentModel;
   final String? reportedModel;
   final ModelMatchState modelMatchState;
-  final String? reasoningEffort;
+  final String? effort;
   final int completionTokens;
   final int? ttftMillis;
   final int? decodeMillis;
@@ -221,14 +285,13 @@ class ModelPerformanceSampleView {
       identical(this, other) ||
       other is ModelPerformanceSampleView &&
           completedAt == other.completedAt &&
-          providerInstanceId == other.providerInstanceId &&
-          providerDisplayName == other.providerDisplayName &&
-          model == other.model &&
-          configuredModel == other.configuredModel &&
+          accountId == other.accountId &&
+          accountDisplayName == other.accountDisplayName &&
+          modelId == other.modelId &&
           sentModel == other.sentModel &&
           reportedModel == other.reportedModel &&
           modelMatchState == other.modelMatchState &&
-          reasoningEffort == other.reasoningEffort &&
+          effort == other.effort &&
           completionTokens == other.completionTokens &&
           ttftMillis == other.ttftMillis &&
           decodeMillis == other.decodeMillis &&
@@ -238,14 +301,13 @@ class ModelPerformanceSampleView {
   @override
   int get hashCode => Object.hash(
     completedAt,
-    providerInstanceId,
-    providerDisplayName,
-    model,
-    configuredModel,
+    accountId,
+    accountDisplayName,
+    modelId,
     sentModel,
     reportedModel,
     modelMatchState,
-    reasoningEffort,
+    effort,
     completionTokens,
     ttftMillis,
     decodeMillis,
@@ -253,10 +315,14 @@ class ModelPerformanceSampleView {
     tokensPerSecond,
   );
 
-  String get filterKey =>
-      jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort]);
+  /// 与顶层汇总同一复合身份；未证明配置模型的记录保留自己的未知身份。
+  String get filterKey => jsonEncode(<Object?>[accountId, modelId]);
 
-  String get displayModel => sentModel ?? model;
+  /// 历史模型列第一行：冻结的配置模型，缺失时回退已记录的发送模型。
+  String get displayModel => modelId ?? sentModel ?? '';
+
+  /// 组内 effort 筛选身份；`null` 与显式 `none` 不同。
+  String get effortKey => jsonEncode(<Object?>[effort]);
 }
 
 /// 全局模型性能快照：按模型汇总与最近历史窗口，不含按 root 会话费用。
@@ -399,7 +465,7 @@ const _threadRuntimeUnset = Object();
 
 class ThreadRuntimeView {
   const ThreadRuntimeView({
-    required this.model,
+    required this.modelId,
     required this.contextTokens,
     required this.contextWindow,
     required this.totalTokens,
@@ -431,7 +497,7 @@ class ThreadRuntimeView {
     this.modelRoute,
   });
 
-  final String model;
+  final String modelId;
   final int contextTokens;
   final int contextWindow;
 
@@ -478,7 +544,7 @@ class ThreadRuntimeView {
   bool operator ==(Object other) {
     return identical(this, other) ||
         other is ThreadRuntimeView &&
-            model == other.model &&
+            modelId == other.modelId &&
             contextTokens == other.contextTokens &&
             contextWindow == other.contextWindow &&
             maxContextWindow == other.maxContextWindow &&
@@ -512,7 +578,7 @@ class ThreadRuntimeView {
 
   @override
   int get hashCode => Object.hashAll([
-    model,
+    modelId,
     contextTokens,
     contextWindow,
     maxContextWindow,
@@ -545,7 +611,7 @@ class ThreadRuntimeView {
   ]);
 
   ThreadRuntimeView copyWith({
-    String? model,
+    String? modelId,
     int? contextTokens,
     int? contextWindow,
     Object? maxContextWindow = _threadRuntimeUnset,
@@ -577,7 +643,7 @@ class ThreadRuntimeView {
     ThreadModelRouteView? modelRoute,
   }) {
     return ThreadRuntimeView(
-      model: model ?? this.model,
+      modelId: modelId ?? this.modelId,
       contextTokens: contextTokens ?? this.contextTokens,
       contextWindow: contextWindow ?? this.contextWindow,
       maxContextWindow: identical(maxContextWindow, _threadRuntimeUnset)
@@ -622,16 +688,16 @@ class ThreadRuntimeView {
 
 class ThreadModelRouteView {
   const ThreadModelRouteView({
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     required this.revision,
     required this.available,
     this.unavailableReason,
   });
 
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final int revision;
   final bool available;
@@ -640,8 +706,8 @@ class ThreadModelRouteView {
   @override
   bool operator ==(Object other) =>
       other is ThreadModelRouteView &&
-      providerId == other.providerId &&
-      model == other.model &&
+      accountId == other.accountId &&
+      modelId == other.modelId &&
       effort == other.effort &&
       revision == other.revision &&
       available == other.available &&
@@ -649,8 +715,8 @@ class ThreadModelRouteView {
 
   @override
   int get hashCode => Object.hash(
-    providerId,
-    model,
+    accountId,
+    modelId,
     effort,
     revision,
     available,

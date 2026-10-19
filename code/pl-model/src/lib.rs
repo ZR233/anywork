@@ -1,11 +1,11 @@
-//! 模型目录、provider endpoint、canonical completion 与单模型运行时。
+//! 模型目录、账号协议 endpoint、canonical completion 与单模型运行时。
 //!
 //! 公开 API 按稳定域模块组织（见 design/06-model.md 6.2 节）：
 //!
 //! - [`completion`]：canonical 请求/响应、工具调用、用量与流语义。
-//! - [`config`]：产品无关的 provider 配置与路由值对象。
+//! - [`config`]：产品无关的 account 配置、目录身份与路由值对象。
 //! - [`model`]：模型元数据、能力、可调参数与内置目录。
-//! - [`provider`]：endpoint、wire 协议与服务能力声明。
+//! - [`protocol`]：厂商协议、endpoint、wire API 与服务能力声明。
 //! - [`runtime`]：单模型运行时入口与会话状态。
 //!
 //! 消费方通过 `pl_model::<domain>::` 前缀访问类型；crate 根不重导出本 crate 的
@@ -16,7 +16,7 @@
 pub mod completion;
 pub mod config;
 pub mod model;
-pub mod provider;
+pub mod protocol;
 pub mod runtime;
 
 pub use pl_protocol::{PureError, Result};

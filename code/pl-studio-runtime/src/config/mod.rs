@@ -13,6 +13,7 @@ pub mod mcp;
 pub use execution::RuntimeConfig;
 pub(crate) mod model_catalog;
 mod runtime;
+mod schema_migration;
 mod store;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +25,7 @@ use pl_tool::mcp::config::McpServerConfig;
 
 use pl_tool::skill::SkillsConfig;
 
-use pl_model::config::{AgentModelConfig, ProviderConfig};
+use pl_model::config::{AccountConfig, AgentModelConfig};
 use serde::{Deserialize, Serialize};
 
 pub use agent_profile::{
@@ -44,7 +45,7 @@ pub use pl_tool::mcp::config::McpServerTransport;
 pub use pl_tool::mcp::config::validate_mcp_identifier;
 pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
-pub use pl_model::config::{AgentRoleId, ModelRouteConfig, ProviderId, ReasoningEffort};
+pub use pl_model::config::{AccountId, AgentRoleId, ModelRouteConfig, ReasoningEffort};
 pub(crate) use runtime::ModeDefinitionCommandOutcome;
 pub use runtime::{
     ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
@@ -52,11 +53,11 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 22;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 23;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
-const DEFAULT_PROVIDER_ID: &str = "deepseek";
+const DEFAULT_ACCOUNT_ID: &str = "deepseek";
 const STUDIO_USER_SKILLS_DIR: &str = "~/.anywork/skills";
 const STUDIO_CHILD_ROLES: [&str; 4] = ["explorer", "executor", "worktree_executor", "reviewer"];
 
@@ -238,13 +239,13 @@ pub struct StudioConfig {
 
 impl StudioConfig {
     pub fn default_config() -> Result<Self> {
-        let definition = pl_model::model::bundled_model_definition(DEFAULT_PROVIDER_ID)?;
-        let provider_id =
-            ProviderId::new(DEFAULT_PROVIDER_ID).expect("Studio 内置 provider id 必须有效");
-        let provider = ProviderConfig::deepseek_preset();
+        let definition = pl_model::model::bundled_model_definition(DEFAULT_ACCOUNT_ID)?;
+        let account_id =
+            AccountId::new(DEFAULT_ACCOUNT_ID).expect("Studio 内置 account id 必须有效");
+        let account = AccountConfig::deepseek_template();
         let route = ModelRouteConfig {
-            provider: provider_id.clone(),
-            model: definition.suggested_model,
+            account_id: account_id.clone(),
+            model_id: definition.suggested_model,
             effort: definition.suggested_effort.map(ReasoningEffort::new),
         };
         let routes = STUDIO_CHILD_ROLES
@@ -264,7 +265,7 @@ impl StudioConfig {
         Ok(Self {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
             models: AgentModelConfig {
-                providers: BTreeMap::from([(provider_id, provider)]),
+                accounts: BTreeMap::from([(account_id, account)]),
                 routes,
             },
             mode_model_routes: BTreeMap::from([

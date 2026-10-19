@@ -1,18 +1,18 @@
 use crate::api::studio::bridge_runtime::{active_bridge, installed_bridge};
 use crate::api::studio::convert::commands::settings_command_reply;
 use crate::api::studio::convert::settings::{
-    bridge_deepseek_web_search_settings, bridge_settings_snapshot, bridge_web_search_settings,
-    provider_settings_request,
+    account_settings_request, bridge_deepseek_web_search_settings, bridge_settings_snapshot,
+    bridge_web_search_settings,
 };
 use crate::api::studio::types::{
-    BridgeDeepSeekWebSearchSettingsDto, BridgeError, BridgeProviderCatalogSnapshot,
-    BridgeSettingsCommandReply, BridgeSettingsStateResponse, BridgeWebSearchSettingsDto,
-    ProviderSettingsInput, RemoveProviderInput, SettingsFieldInput,
+    AccountSettingsInput, BridgeAccountCatalogSnapshot, BridgeDeepSeekWebSearchSettingsDto,
+    BridgeError, BridgeSettingsCommandReply, BridgeSettingsStateResponse,
+    BridgeWebSearchSettingsDto, RemoveAccountInput, SettingsFieldInput,
 };
 // ── Settings ──
 
-pub fn load_provider_catalog() -> Result<BridgeProviderCatalogSnapshot, BridgeError> {
-    Ok(installed_bridge()?.studio.load_provider_catalog()?.into())
+pub fn load_account_catalog() -> Result<BridgeAccountCatalogSnapshot, BridgeError> {
+    Ok(installed_bridge()?.studio.load_account_catalog()?.into())
 }
 
 pub async fn read_web_search_settings() -> Result<BridgeWebSearchSettingsDto, BridgeError> {
@@ -60,21 +60,19 @@ pub async fn read_settings_state() -> Result<BridgeSettingsStateResponse, Bridge
     Ok(bridge_settings_snapshot(bridge.studio.read_settings()?))
 }
 
-pub async fn remove_provider_model(
+pub async fn remove_account_model(
     expected_settings_revision: u64,
-    provider_id: String,
+    account_id: String,
     model_id: String,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(settings_command_reply(
-        bridge
-            .studio
-            .remove_provider_model(pl_protocol::studio::RemoveProviderModelRequest {
-                expected_revision: expected_settings_revision,
-                provider_id,
-                model_id,
-            })?,
-    ))
+    Ok(settings_command_reply(bridge.studio.remove_account_model(
+        pl_protocol::studio::RemoveAccountModelRequest {
+            expected_revision: expected_settings_revision,
+            account_id,
+            model_id,
+        },
+    )?))
 }
 
 pub async fn reload_settings_from_disk(
@@ -106,16 +104,16 @@ pub async fn save_runtime_permission_mode(
     ))
 }
 
-pub async fn save_provider(
+pub async fn save_account(
     operation_id: String,
     expected_settings_revision: u64,
-    input: ProviderSettingsInput,
+    input: AccountSettingsInput,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
         bridge
             .studio
-            .save_provider(provider_settings_request(
+            .save_account(account_settings_request(
                 operation_id,
                 expected_settings_revision,
                 input,
@@ -124,36 +122,36 @@ pub async fn save_provider(
     ))
 }
 
-pub async fn set_default_provider(
+pub async fn set_default_account(
     operation_id: String,
     expected_settings_revision: u64,
-    provider_id: String,
+    account_id: String,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(settings_command_reply(bridge.studio.set_default_provider(
-        pl_protocol::studio::SetDefaultProviderRequest {
+    Ok(settings_command_reply(bridge.studio.set_default_account(
+        pl_protocol::studio::SetDefaultAccountRequest {
             operation_id,
             expected_revision: expected_settings_revision,
-            provider_id,
+            account_id,
         },
     )?))
 }
 
-pub async fn remove_provider(
+pub async fn remove_account(
     operation_id: String,
     expected_settings_revision: u64,
-    provider_id: String,
-    input: RemoveProviderInput,
+    account_id: String,
+    input: RemoveAccountInput,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
         bridge
             .studio
-            .remove_provider(pl_protocol::studio::RemoveProviderRequest {
+            .remove_account(pl_protocol::studio::RemoveAccountRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
-                provider_id,
-                replacement_provider_id: input.replacement_provider_id,
+                account_id,
+                replacement_account_id: input.replacement_account_id,
             })
             .await?,
     ))

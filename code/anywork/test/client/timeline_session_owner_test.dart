@@ -49,7 +49,7 @@ void main() {
     revision: 1,
     interactions: const [],
     runtime: const ThreadRuntimeView(
-      model: 'alpha',
+      modelId: 'alpha',
       contextTokens: 0,
       contextWindow: 100,
       totalTokens: 0,
@@ -58,8 +58,8 @@ void main() {
       activeMcpServers: [],
       activeLspServers: [],
       modelRoute: ThreadModelRouteView(
-        providerId: 'provider',
-        model: 'alpha',
+        accountId: 'account',
+        modelId: 'alpha',
         effort: 'medium',
         revision: 1,
         available: true,

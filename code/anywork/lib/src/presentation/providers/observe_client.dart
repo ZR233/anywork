@@ -40,7 +40,7 @@ T observeClient<T>(Ref ref, LatestValue<T> source, void Function(T) onUpdate) {
 }
 
 /// Missing owners can appear only after a Client action changes logical demand.
-/// Watching those signals never admits a resource from a provider build.
+/// Watching those signals never admits a resource from a account build.
 UnresolvedResource? observeClientDemand(
   Ref ref, {
   required bool Function(String owner) ownsFailure,

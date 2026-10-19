@@ -72,8 +72,8 @@ final settingsTopicSyncProvider = Provider.autoDispose
         SkillsTopic(:final projectId) => ref.watch(
           skillsStoreProvider(projectId).select((state) => state.sync),
         ),
-        ProviderUsageTopic() => ref.watch(
-          providerUsageStoreProvider.select((state) => state.sync),
+        AccountUsageTopic() => ref.watch(
+          accountUsageStoreProvider.select((state) => state.sync),
         ),
         ModelPerformanceTopic() => ref.watch(
           modelPerformanceStoreProvider.select((state) => state.sync),

@@ -30,7 +30,7 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(40);
 /// held for a short iteration, so this is normally instant; the bound keeps a contended registry
 /// from stalling the shutdown cancel broadcast to other independent owners.
 const CANCEL_SIGNAL_LOCK_LIMIT: Duration = Duration::from_millis(100);
-// Responses providers count hidden reasoning against this budget. The visible
+// Responses accounts count hidden reasoning against this budget. The visible
 // title is truncated independently after generation, so its UI length must not
 // be used as the model's total reasoning/output budget.
 const TITLE_MAX_OUTPUT_TOKENS: u64 = 4_096;
@@ -287,12 +287,6 @@ fn truncate_generated_title(raw: &str) -> Result<String> {
         .to_string())
 }
 
-fn billing_model(route_model: &str, response_model: Option<&str>) -> String {
-    response_model
-        .filter(|model| !model.is_empty())
-        .map_or_else(|| route_model.to_owned(), str::to_owned)
-}
-
 async fn generate_title(
     runtime: &StudioRuntime,
     thread_id: &str,
@@ -374,23 +368,15 @@ async fn generate_title(
         Ok(response) => response.model_observation().cloned(),
         Err(failure) => failure.model_observation().cloned(),
     };
-    let model = model_observation.as_ref().map_or_else(
-        || {
-            billing_model(
-                &route.model.model_id,
-                result.as_ref().ok().map(|response| response.model()),
-            )
-        },
-        |observation| observation.sent_model.clone(),
-    );
     let billing = pl_protocol::InferenceBillingRecord {
         purpose: Some("title".into()),
         inference_id,
-        provider_instance_id: route.provider_id.as_str().to_owned(),
-        provider: route.endpoint.name.clone(),
-        model,
+        account_id: route.account_id.as_str().to_owned(),
+        account_display_name: Some(route.endpoint.name.clone()),
+        // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
+        model_id: Some(route.model.model_id.clone()),
         model_observation,
-        reasoning_effort,
+        effort: reasoning_effort,
         context_window: route.model.resolved_context_window(),
         accounting,
         prompt_generation: None,
@@ -412,7 +398,7 @@ async fn generate_title(
             expected_revision: previous,
             payload: pl_core::context::OpaquePayload::new(
                 "pl.studio.auxiliary-billing",
-                1,
+                2,
                 serde_json::to_string(
                     &crate::studio::thread_projection::AuxiliaryBillingReceipt {
                         billing,

@@ -1,4 +1,4 @@
-//! Provider-owned attachment preparation. Durable history never contains upload handles.
+//! Endpoint-owned attachment preparation. Durable history never contains upload handles.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::StreamExt;
 use pl_protocol::{PureError, Result};
@@ -15,7 +15,7 @@ use crate::completion::{
     ResolvedAttachment,
 };
 use crate::model::{ModelInfo, ModelModality};
-use crate::provider::{FileUploadCapability, ProviderEndpoint};
+use crate::protocol::{FileUploadCapability, ProtocolEndpoint};
 
 pub(super) enum UploadState {
     Pending,
@@ -24,7 +24,7 @@ pub(super) enum UploadState {
 }
 
 pub(super) struct AttachmentBackend<'a> {
-    pub endpoint: &'a ProviderEndpoint,
+    pub endpoint: &'a ProtocolEndpoint,
     pub model: &'a ModelInfo,
     pub client: &'a reqwest::Client,
     pub session: &'a ModelSession,
@@ -156,8 +156,7 @@ impl AttachmentBackend<'_> {
             if let Some(url) = remote_url {
                 sources.push(AttachmentRepresentation::RemoteUrl { url });
             } else if self.endpoint.service_capabilities.files != FileUploadCapability::None
-                && self.model.binding.transport.protocol
-                    == crate::provider::ProviderWireProtocol::Responses
+                && self.model.binding.transport.protocol == crate::protocol::WireApi::Responses
                 && let Some(id) = self.upload(attachment, &bytes).await?
             {
                 sources.push(AttachmentRepresentation::ProviderFile { file_id: id });
@@ -256,7 +255,7 @@ impl AttachmentBackend<'_> {
             .endpoint
             .service_capabilities
             .files
-            .upload(crate::provider::files::FileUploadRequest {
+            .upload(crate::protocol::files::FileUploadRequest {
                 client: self.client,
                 endpoint: self.endpoint,
                 model_headers: &self.model.binding.request.headers,

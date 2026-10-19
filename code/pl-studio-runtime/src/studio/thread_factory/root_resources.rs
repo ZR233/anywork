@@ -38,7 +38,10 @@ impl StudioThreadFactory {
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
-                .migrate_mode_checkpoint(checkpoint, &self.services.thread_modes)
+                .migrate_recovery_checkpoint(checkpoint, |state| {
+                    crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
+                    Ok(())
+                })
                 .await
                 .map_err(|error| resource_error("migrate saved Mode", error))?;
         }

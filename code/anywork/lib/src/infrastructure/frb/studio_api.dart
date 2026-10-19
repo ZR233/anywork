@@ -11,7 +11,7 @@ import 'package:anywork_client/studio_ports.dart';
 export 'package:anywork_client/studio_ports.dart';
 
 import '../../platform/error_log.dart';
-import '../../rust/api/studio.dart' as frb;
+import 'studio_bridge_api.dart' as frb;
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
@@ -37,7 +37,7 @@ part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';
-part 'studio_provider_catalog_converters.dart';
+part 'studio_account_catalog_converters.dart';
 part 'studio_demo_api.dart';
 part 'studio_demo_settings.dart';
 
@@ -94,7 +94,7 @@ DateTime _dateFromUnix(Object seconds) {
 
 ThreadRuntimeView _emptyRuntimeView() {
   return const ThreadRuntimeView(
-    model: '',
+    modelId: '',
     contextTokens: 0,
     contextWindow: 0,
     totalTokens: 0,

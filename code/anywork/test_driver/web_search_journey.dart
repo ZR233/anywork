@@ -17,12 +17,12 @@
 // Usage (named form; the native acceptance coordinator uses this):
 //   dart run test_driver/web_search_journey.dart \
 //     --phase=first --vm=<VM_URL> --project=<DIR> --output=<DIR> [--coord=<DIR>] \
-//     [--probe-mode=fixture|real] [--provider-ids=a,b,c] [--models=x,y,z]
+//     [--probe-mode=fixture|real] [--account-ids=a,b,c] [--models=x,y,z]
 //
-// Positional fallback (single `first` phase, fixture providers):
+// Positional fallback (single `first` phase, fixture accounts):
 //   dart run test_driver/web_search_journey.dart VM_URL PROJECT_DIR OUTPUT_DIR
 //
-// `--probe-mode=real` reuses the same probe against a real-provider GUI the
+// `--probe-mode=real` reuses the same probe against a real-account GUI the
 // coordinator launched (`cargo xtask run-gui --driver`): prompts are natural and
 // the probe waits for whatever this Turn's new answer is instead of the
 // fixture-only markers, and it never claims the fixture endpoints passed.
@@ -65,7 +65,7 @@ const _searchToolNames = <String>{
 bool _isSearchToolName(String name) =>
     _searchToolNames.contains(name) || name.startsWith('mcp__');
 
-const _defaultProviders = <String>[
+const _defaultAccounts = <String>[
   'gui-fixture-1-openai',
   'gui-fixture-2-deepseek',
   'gui-fixture-3-zhipu',
@@ -94,7 +94,7 @@ Future<void> main(List<String> args) async {
     stderr.writeln(
       'usage: web_search_journey.dart --vm URL --project DIR --output DIR '
       '[--coord DIR] [--phase first|restart] [--probe-mode fixture|real] '
-      '[--provider-ids a,b,c] [--models x,y,z]',
+      '[--account-ids a,b,c] [--models x,y,z]',
     );
     exitCode = 64;
     return;
@@ -152,7 +152,7 @@ class _Config {
     required this.output,
     required this.coord,
     required this.mode,
-    required this.providers,
+    required this.accounts,
     required this.models,
     required this.allowTurnFailure,
   });
@@ -163,7 +163,7 @@ class _Config {
   final String output;
   final String coord;
   final _ProbeMode mode;
-  final List<String> providers;
+  final List<String> accounts;
   final List<String> models;
 
   /// Fault runs may legitimately end a tool Turn as failed/cancelled; the probe
@@ -215,10 +215,10 @@ class _Config {
     final mode = (flags['probe-mode'] ?? 'fixture') == 'real'
         ? _ProbeMode.real
         : _ProbeMode.fixture;
-    final providers = _splitList(flags['provider-ids'], _defaultProviders);
+    final accounts = _splitList(flags['account-ids'], _defaultAccounts);
     final models = _splitList(flags['models'], _defaultModels);
-    if (providers.length != 3 || models.length != 3) {
-      throw ArgumentError('exactly three --provider-ids and three --models');
+    if (accounts.length != 3 || models.length != 3) {
+      throw ArgumentError('exactly three --account-ids and three --models');
     }
     return _Config(
       phase: phase,
@@ -227,7 +227,7 @@ class _Config {
       output: output,
       coord: flags['coord'] ?? output,
       mode: mode,
-      providers: providers,
+      accounts: accounts,
       models: models,
       allowTurnFailure: flags['allow-turn-failure'] == 'true',
     );
@@ -370,7 +370,7 @@ class _Probe {
     String? error,
   }) async {
     await File('${config.output}/${config.phase}-summary.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'phase': config.phase, 'probeMode': config.mode.name, 'providers': config.providers, 'models': config.models, 'status': status, 'shutdown': shutdown, 'humanVerdict': 'pending', 'settings': _finalSettings, 'settingsFingerprint': _finalFingerprint, 'mcp': _finalMcp, 'child': _child, 'controls': _controls, 'turns': _turns, 'captures': _captures, 'error': error})}\n',
+      '${const JsonEncoder.withIndent('  ').convert({'phase': config.phase, 'probeMode': config.mode.name, 'accounts': config.accounts, 'models': config.models, 'status': status, 'shutdown': shutdown, 'humanVerdict': 'pending', 'settings': _finalSettings, 'settingsFingerprint': _finalFingerprint, 'mcp': _finalMcp, 'child': _child, 'controls': _controls, 'turns': _turns, 'captures': _captures, 'error': error})}\n',
     );
   }
 
@@ -401,7 +401,7 @@ class _Probe {
       await _selectModel(index);
       final settings = await searchSettings();
       _controls['session-$label'] = {
-        'providerId': config.providers[index],
+        'accountId': config.accounts[index],
         'model': config.models[index],
         'webSearch': settings['webSearch'],
         'deepSeekWebSearch': settings['deepSeekWebSearch'],
@@ -649,10 +649,10 @@ class _Probe {
   }
 
   Future<void> _selectModel(int index) async {
-    final providerId = config.providers[index];
+    final accountId = config.accounts[index];
     final model = config.models[index];
     await _tap('model-selector');
-    final optionKey = 'model-${jsonEncode(<String>[providerId, model])}';
+    final optionKey = 'model-${jsonEncode(<String>[accountId, model])}';
     final option = _key(optionKey);
     // The model catalog can be long, so the option may be built but laid out
     // outside the menu viewport: existence is not clickability. Scroll the
@@ -672,7 +672,7 @@ class _Probe {
     );
     await driver.rawTap(option);
     await _waitUntil(
-      (state) => _modelSelectionApplied(state, providerId, model),
+      (state) => _modelSelectionApplied(state, accountId, model),
       'session-model-$index',
       timeout: const Duration(seconds: 60),
     );
@@ -688,14 +688,14 @@ class _Probe {
   /// persisted yet.
   bool _modelSelectionApplied(
     Map<String, dynamic> state,
-    String providerId,
+    String accountId,
     String model,
   ) {
     final workspace = workspaceOf(state);
     if (workspace == null) {
       // Start page: the exact mode the next session will use is
       // `navigation.newThreadMode` (full id such as `mode.simple`), so only that
-      // mode's route may satisfy the requested provider/model. Matching any
+      // mode's route may satisfy the requested account/model. Matching any
       // route would accept an unrelated mode's stale route.
       final navigation = state['navigation'];
       final modeId = navigation is Map ? navigation['newThreadMode'] : null;
@@ -709,15 +709,15 @@ class _Probe {
           routes.whereType<Map>().any(
             (route) =>
                 route['modeId'] == modeId &&
-                route['providerId'] == providerId &&
-                route['model'] == model,
+                route['accountId'] == accountId &&
+                route['modelId'] == model,
           );
     }
     final route = workspace['modelRoute'];
     return isDurableSettled(state) &&
         route is Map &&
-        route['providerId'] == providerId &&
-        route['model'] == model;
+        route['accountId'] == accountId &&
+        route['modelId'] == model;
   }
 
   /// Whether the persistence queue reports no pending commits.
@@ -896,7 +896,7 @@ class _Probe {
   ///
   /// Only fixture mode automates the child: the fixture model endpoint scripts
   /// the real `spawn_agent`/`wait` and the child's search/discover/MCP calls, so
-  /// a real provider GUI has no deterministic child turn and the probe records
+  /// a real account GUI has no deterministic child turn and the probe records
   /// that honestly instead of inventing one.
   Future<void> _childSearchProbe() async {
     // Fault runs deliberately break a search/MCP path, so the child would never

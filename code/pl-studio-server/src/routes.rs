@@ -11,12 +11,12 @@ use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, CreateThreadRequest,
     ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
-    RemoveProviderModelRequest, RemoveProviderRequest, RenameThreadRequest,
-    ResolveInteractionRequest, SearchSkillsRequest, SetDefaultProviderRequest,
-    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    RemoveAccountModelRequest, RemoveAccountRequest, RenameThreadRequest,
+    ResolveInteractionRequest, SearchSkillsRequest, SetDefaultAccountRequest, SetThreadModeRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
     StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
+    UpdateAccountRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
@@ -167,7 +167,7 @@ pub(crate) fn parse_product_topic(
             project_id: query.project_id.clone().unwrap_or_default(),
         },
         "threadModeCatalog" => StudioProductTopic::ThreadModeCatalog,
-        "providerUsage" => StudioProductTopic::ProviderUsage,
+        "accountUsage" => StudioProductTopic::AccountUsage,
         "modelPerformance" => StudioProductTopic::ModelPerformance,
         "sessionCosts" => StudioProductTopic::SessionCosts {
             root_thread_id: query.root_thread_id.clone().unwrap_or_default(),
@@ -244,17 +244,17 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_attachment_draft))
         .routes(routes!(read_thread_attachment))
         .routes(routes!(resolve_interaction))
-        .routes(routes!(provider_catalog))
+        .routes(routes!(account_catalog))
         .routes(routes!(read_settings))
         .routes(routes!(reload_settings))
-        .routes(routes!(remove_provider_model))
+        .routes(routes!(remove_account_model))
         .routes(routes!(save_permission_settings))
-        .routes(routes!(save_provider))
-        .routes(routes!(set_default_provider))
-        .routes(routes!(remove_provider))
+        .routes(routes!(save_account))
+        .routes(routes!(set_default_account))
+        .routes(routes!(remove_account))
         .routes(routes!(apply_settings_field))
-        .routes(routes!(read_provider_usage))
-        .routes(routes!(check_provider_usage))
+        .routes(routes!(read_account_usage))
+        .routes(routes!(check_account_usage))
         .routes(routes!(read_recovery, retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
@@ -900,11 +900,11 @@ async fn resolve_interaction(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/settings/provider-catalog", operation_id = "settings.loadProviderCatalog", responses(StudioApiErrors, (status = 200)))]
-async fn provider_catalog(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+#[utoipa::path(get, path = "/api/v1/settings/account-catalog", operation_id = "settings.loadAccountCatalog", responses(StudioApiErrors, (status = 200)))]
+async fn account_catalog(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let snapshot = state
         .runtime
-        .load_provider_catalog()
+        .load_account_catalog()
         .map_err(ApiError::from)?;
     Ok(Json(snapshot))
 }
@@ -930,15 +930,15 @@ async fn reload_settings(
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/settings/provider-models", operation_id = "settings.removeProviderModel", request_body = RemoveProviderModelRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
-async fn remove_provider_model(
+#[utoipa::path(delete, path = "/api/v1/settings/account-models", operation_id = "settings.removeAccountModel", request_body = RemoveAccountModelRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn remove_account_model(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<RemoveProviderModelRequest>,
+    ApiJson(request): ApiJson<RemoveAccountModelRequest>,
 ) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .remove_provider_model(request)
+            .remove_account_model(request)
             .map_err(ApiError::from)?,
     ))
 }
@@ -956,42 +956,42 @@ async fn save_permission_settings(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/provider", operation_id = "settings.saveProvider", request_body = UpdateProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
-async fn save_provider(
+#[utoipa::path(put, path = "/api/v1/settings/account", operation_id = "settings.saveAccount", request_body = UpdateAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn save_account(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<UpdateProviderRequest>,
+    ApiJson(request): ApiJson<UpdateAccountRequest>,
 ) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .save_provider(request)
+            .save_account(request)
             .await
             .map_err(ApiError::from)?,
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/default-provider", operation_id = "settings.setDefaultProvider", request_body = SetDefaultProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
-async fn set_default_provider(
+#[utoipa::path(put, path = "/api/v1/settings/default-account", operation_id = "settings.setDefaultAccount", request_body = SetDefaultAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn set_default_account(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<SetDefaultProviderRequest>,
+    ApiJson(request): ApiJson<SetDefaultAccountRequest>,
 ) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .set_default_provider(request)
+            .set_default_account(request)
             .map_err(ApiError::from)?,
     ))
 }
 
-#[utoipa::path(delete, path = "/api/v1/settings/providers", operation_id = "settings.removeProvider", request_body = RemoveProviderRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
-async fn remove_provider(
+#[utoipa::path(delete, path = "/api/v1/settings/accounts", operation_id = "settings.removeAccount", request_body = RemoveAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn remove_account(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<RemoveProviderRequest>,
+    ApiJson(request): ApiJson<RemoveAccountRequest>,
 ) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .remove_provider(request)
+            .remove_account(request)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -1026,20 +1026,20 @@ async fn set_thread_model_route(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/runtime/provider-usage", operation_id = "providerUsage.read", responses(StudioApiErrors, (status = 200)))]
-async fn read_provider_usage(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(state.runtime.read_provider_usage_state().await))
+#[utoipa::path(get, path = "/api/v1/runtime/account-usage", operation_id = "accountUsage.read", responses(StudioApiErrors, (status = 200)))]
+async fn read_account_usage(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(state.runtime.read_account_usage_state().await))
 }
 
-#[utoipa::path(post, path = "/api/v1/runtime/provider-usage/{provider_id}/check", operation_id = "providerUsage.check", params(("provider_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
-async fn check_provider_usage(
+#[utoipa::path(post, path = "/api/v1/runtime/account-usage/{account_id}/check", operation_id = "accountUsage.check", params(("account_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+async fn check_account_usage(
     State(state): State<AppState>,
-    Path(provider_id): Path<String>,
+    Path(account_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .check_provider_usage(&provider_id)
+            .check_account_usage(&account_id)
             .await
             .map_err(ApiError::from)?,
     ))

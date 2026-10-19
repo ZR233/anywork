@@ -155,7 +155,7 @@ class _StartPageComposerBodyState
     final pending = projection.routePending(mode);
     final model = route == null
         ? null
-        : modelForRoute(projection.providers, route.providerId, route.model);
+        : modelForRoute(projection.accounts, route.accountId, route.modelId);
     final composer = projectId == widget.projectId
         ? projection.composer
         : const ComposerThreadState.idle();
@@ -204,20 +204,20 @@ class _StartPageComposerBodyState
                     onSelected: _setWorkspaceMode,
                   ),
                   ..._modelRouteSelectorChildren(
-                    providers: projection.providers,
-                    providerId: route?.providerId,
-                    model: route?.model,
+                    accounts: projection.accounts,
+                    accountId: route?.accountId,
+                    modelId: route?.modelId,
                     effort: route?.effort,
                     // Unknown capabilities keep selectors disabled until the
                     // Client catalog arrives; no model is admitted by fallback.
                     pending: pending,
                     enabled: selectorsEnabled,
                     unavailableReason: unavailableReason,
-                    onModelSelected: (providerId, model) {
+                    onModelSelected: (accountId, modelId) {
                       ref
                           .read(anyworkClientProvider)
                           .startDraft
-                          .setModelIntent(mode, providerId, model);
+                          .setModelIntent(mode, accountId, modelId);
                     },
                     onEffortSelected: (effort) {
                       ref
@@ -421,7 +421,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     final route = view.displayRoute;
     final model = route == null
         ? null
-        : modelForRoute(view.providers, route.providerId, route.model);
+        : modelForRoute(view.accounts, route.accountId, route.modelId);
     final blockedReason = switch (thread.status) {
       ThreadStatusView.idle =>
         view.hasActiveWorkflow
@@ -518,9 +518,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       ),
                     ),
                     ..._modelRouteSelectorChildren(
-                      providers: view.providers,
-                      providerId: route?.providerId,
-                      model: route?.model,
+                      accounts: view.accounts,
+                      accountId: route?.accountId,
+                      modelId: route?.modelId,
                       effort: route?.effort,
                       enabled: view.settingsLoaded,
                       pending: view.routePending,
@@ -530,21 +530,21 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       blockedReason: blockedReason,
                       onExplain: (message) =>
                           setState(() => _modelNotice = message),
-                      onModelSelected: (providerId, model) {
+                      onModelSelected: (accountId, modelId) {
                         unawaited(
                           ref
                               .read(anyworkClientProvider)
                               .threadCommands
                               .setThreadModelRoute(
                                 threadId: thread.id,
-                                providerId: providerId,
-                                model: model,
+                                accountId: accountId,
+                                modelId: modelId,
                                 effort:
                                     ModelRouteQueries.effortAfterModelSelection(
                                       ModelRouteQueries.model(
-                                        view.providers,
-                                        providerId,
-                                        model,
+                                        view.accounts,
+                                        accountId,
+                                        modelId,
                                       ),
                                       route?.effort,
                                     ),
@@ -559,8 +559,8 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                               .threadCommands
                               .setThreadModelRoute(
                                 threadId: thread.id,
-                                providerId: route.providerId,
-                                model: route.model,
+                                accountId: route.accountId,
+                                modelId: route.modelId,
                                 effort: effort,
                               ),
                         );
@@ -1172,12 +1172,12 @@ class _StopButton extends ConsumerWidget {
 
 /// route 为空时仍保留模型选择器，并显示不可用原因，避免静默隐藏。
 List<Widget> _modelRouteSelectorChildren({
-  required List<ProviderSettingsView> providers,
+  required List<AccountSettingsView> accounts,
   required bool pending,
   bool enabled = true,
   required String unavailableReason,
-  String? providerId,
-  String? model,
+  String? accountId,
+  String? modelId,
   String? effort,
   bool available = true,
   String? routeUnavailableReason,
@@ -1187,17 +1187,17 @@ List<Widget> _modelRouteSelectorChildren({
   EffortSelectionChanged? onEffortSelected,
 }) {
   final hasRoute =
-      providerId != null &&
-      model != null &&
-      providerId.isNotEmpty &&
-      model.isNotEmpty;
+      accountId != null &&
+      modelId != null &&
+      accountId.isNotEmpty &&
+      modelId.isNotEmpty;
   if (!hasRoute) {
     return [
       _RouteUnavailableNotice(reason: unavailableReason),
       ModelRoleSelector(
-        providers: providers,
-        providerId: providerId ?? '',
-        model: model ?? '',
+        accounts: accounts,
+        accountId: accountId ?? '',
+        modelId: modelId ?? '',
         effort: effort,
         enabled: enabled,
         pending: pending,
@@ -1212,9 +1212,9 @@ List<Widget> _modelRouteSelectorChildren({
   }
   return [
     ModelRoleSelector(
-      providers: providers,
-      providerId: providerId,
-      model: model,
+      accounts: accounts,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
       enabled: enabled,
       pending: pending,
@@ -1225,9 +1225,9 @@ List<Widget> _modelRouteSelectorChildren({
       onModelSelected: onModelSelected,
     ),
     ReasoningEffortSelector(
-      providers: providers,
-      providerId: providerId,
-      model: model,
+      accounts: accounts,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
       enabled: enabled,
       pending: pending,

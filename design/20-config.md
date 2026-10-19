@@ -1,6 +1,6 @@
 # 20 - Studio 持久化配置
 
-本文是配置文件 schema、provider/model 结构、提示词分层、MCP/Skills/LSP 配置与凭据策略的
+本文是配置文件 schema、account/model 结构、提示词分层、MCP/Skills/LSP 配置与凭据策略的
 唯一权威源；权限语义见 [04](./04-security.md)，模型层机制见 [06](./06-model.md)，设置页
 UI 见 [19](./19-studio-ui.md)，Agent Profile 体系见 [12](./12-collaboration.md)。
 
@@ -16,18 +16,18 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
 
 配置运行时在 Studio 启动时读取配置；此后普通对话和设置查询只读内存 canonical snapshot；
 配置文件不存在时设置页展示内存中的默认配置；外部文件变化只有显式重载命令才能应用。
-支持在线模型探测的 provider 只在程序启动的初始化阶段各探测一次，各实例任务并行提交、互不等待，
+支持在线模型探测的 account 只在程序启动的初始化阶段各探测一次，各实例任务并行提交、互不等待，
 任一失败只写该实例状态；设置查询不触发额外联网，运行期也没有第二次自动同步。首屏先使用成功
 缓存或默认模型定义，不等待所有网络结果；模型观察不写回 config.toml。完整语义见 20.5。
 普通设置项在用户修改后即时写入配置；独立新增/编辑页面保留本地草稿，必须点击页面内保存
-按钮才写入，取消则丢弃草稿。模型压缩阈值从供应商详情卡的模型列表即时修改，不属于供应商
+按钮才写入，取消则丢弃草稿。模型压缩阈值从账号详情卡的模型列表即时修改，不属于账号
 编辑页草稿；交互与失败反馈见 [19](./19-studio-ui.md)。
 
-配置版本演进必须满足以下迁移契约；当前实现缺口集中见
-[17.7](./17-studio-storage.md#177-迁移实现状态与剩余边界)，不能据此假定已实现自动迁移。
+配置版本演进必须满足以下迁移契约；存储隔离边界见
+[17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)。本文定义目标契约，实际完成情况以迁移验证为准。
 
 - 启动时在产品发布前识别配置版本，使用明确的版本转换路径将 anywork 历史配置与用户
-  Agent Profile 转为当前结构，支持跨版本升级；保留用户选择、provider 身份与凭据关联。
+  Agent Profile 转为当前结构，支持跨版本升级；保留用户选择、account 身份与凭据关联。
 - 转换前备份原始文件且不覆盖已有备份，转换后执行完整校验，通过原子替换或可恢复步骤
   提交。涉及多个配置
   文件、数据库关联或凭据时由 Studio 协调，不能发布新旧结构混合的 canonical snapshot。
@@ -37,7 +37,8 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
   协调器按 [17.2](./17-studio-storage.md#172-启动与按需激活) 完整备份后重建初始状态。
   配置模块自身不静默覆盖默认值。凭据或 IO 环境失败保留现场并报告，不触发重置。
   配置缺失判定只依据路径条目；权限、元数据及符号链接异常不能冒充缺失。
-  18→19→20→21 优先保全迁移。解析诊断只含路径、类别和行/列位置，不回显原文或凭据。
+  已知版本转换优先保全；支持路径上的迁移、提交或凭据失败须停止启动并保留现场，不能转为
+  全局损坏恢复或默认初始化。解析诊断只含路径、类别和行/列位置，不回显原文或凭据。
 - 中断后可安全重试或恢复一致状态；运行期显式重载只接受当前有效结构，失败保留已有
   canonical snapshot，不在查询或重载中隐式迁移。迁移结果与失败通过脱敏诊断报告。
 
@@ -45,16 +46,16 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
 损坏配置、备份或提交失败及重启恢复，证明用户选择与凭据可用性得到保留。
 
 启动支持明确的 18→19 迁移：仅从 `disabled_system_agents` 移除 `planner` 并提升版本，
-保留五条模型路由、其他设置和 provider 凭据关联。19→20 迁移把旧 `planner` route 复制为
+保留五条模型路由、其他设置和 account 凭据关联。19→20 迁移把旧 `planner` route 复制为
 `mode.simple` 与 `mode.task` 的默认 route，从 `models.routes` 删除 `planner`，并保留四个系统
-子代理 route、provider、其他设置和凭据关联。两步都先校验和备份，再原子替换；迁移失败
+子代理 route、account、其他设置和凭据关联。两步都先校验和备份，再原子替换；迁移失败
 保留原文件并向协调器返回明确错误。没有转换路径的版本保留原字节进入统一备份恢复，
 环境失败则停止启动。正常运行不接受禁用主智能体或以该标识保存用户 Profile。
 
-20→21 迁移在未类型化的 TOML 表上先把 provider 显式能力里的方言标识
+20→21 迁移在旧 TOML 表上先把 provider 显式能力里的方言标识
 `models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"`
 改写为 `deep_seek_tools_api`（旧方言标识已不可解析，只在迁移边界转换）。唯一权威路径是
-`capabilities`：`ProviderConfig` 没有 `service_capabilities` 键，手写的同形表是未知键，typed
+`capabilities`：`AccountConfig` 没有 `service_capabilities` 键，手写的同形表是未知键，typed
 parse 忽略、canonical 落盘丢弃，迁移只把其中的旧标识字符串一并改写以免留下已失效标识，
 不改变解析结果。改写只针对该路径上的字符串值：其它位置的同名文本不动，`web_search` 缺失或
 形态不符时不猜测补齐，交给 typed parse 报错。随后按当前结构 typed parse、
@@ -63,6 +64,20 @@ parse 忽略、canonical 落盘丢弃，迁移只把其中的旧标识字符串�
 `enabled` 的配置升级后仍会得到一个新启用的抓取工具。18/19 存量配置中的同一 token 在同一步
 改写，迁移失败保留原字节且不落盘。迁移的诊断定位基于改写后的 canonical 文本，而不是用户
 原始文件的行列，因此只用于定位失败原因，不承诺与原文件行号一致。
+
+21→22 将旧模型声明中的 `slug` 转为 `model_id`；旧新键同时存在但不一致时拒绝，不以覆盖丢弃选择。
+22→23 将模型接入领域的 Provider/Preset 转为 Account/AccountTemplate：`models.providers` 转为
+`models.accounts`，账号 `preset` 转为 `template`、`adapter` 转为 `protocol`，角色、Mode 与用户
+Agent Profile 的 `provider`/`model` 转为 `account_id`/`model_id`。账号 ID 和模板 ID 原值保留，
+endpoint、headers、价格开关、模型声明、连接与压缩覆盖、环境变量引用和其它用户设置保留。
+18 至 21 先执行其既有转换，再执行账号转换；正常读写只消费当前结构，拒绝已退役的模型接入键，
+不保留 serde alias 或运行期双轨解析。
+
+主配置与用户 Profile 的转换在同一个可恢复操作内准备：备份原字节、验证候选和引用、完成凭据
+复制与回读后，记录提交意图并逐资源原子替换。中断后必须先接续同一操作，不发布新旧混合状态。
+操作记录只保存身份、版本、步骤及校验信息，不保存密钥；受保护的原件和已验证候选保留到操作
+确认完成。任一步失败均保留原件或可恢复步骤，不通过重置绕过。凭据命名空间转换见 20.11；
+已有 v2 产品扩展和调用记录转换由 [17](./17-studio-storage.md) 定义，不要求扫描激活全部会话。
 
 所有 Settings command 必须携带 `expectedSettingsRevision`，成功返回新的
 `SettingsConfigSnapshot`；目录发生变化时另返回 `ModelCatalogSnapshot`，并分别发布
@@ -73,32 +88,38 @@ parse 忽略、canonical 落盘丢弃，迁移只把其中的旧标识字符串�
 
 ### 20.1.1 设置 mutation 的资源边界
 
+模型接入的当前 typed wire 使用 accounts、accountId、modelId 和 templateId；模板目录使用
+templates，与实例目录分离。配置中的 template 是可选模板引用，protocol 是明确的厂商适配。
+账号编辑使用 id 定位同一资源，不提供 originalId 重命名路径。模型选择、Mode/角色和会话路由
+使用 accountId/modelId；defaultModelId、suggestedModelId 仅为目录或创建路由的投影，不是
+账号 runtime 的第二份模型选择。HTTP 与 FRB 同步切换，旧模型接入 endpoint 不保留转发别名。
+
 写入接口按业务资源划分，而不是把整个 `StudioSettings` 快照作为 patch。标量设置、列表设置、
 每个 MCP 字段、每个 Mode 的模型/思考强度以及每个 Agent role 的模型/思考强度，分别使用一个
 typed mutation；请求只携带目标标识和新值，其他字段由配置 owner 从最新 canonical state 解析。
 因此连续选择模型、思考强度或快速返回设置页不会把旧 selector 快照写回，也不会因为目录刷新
 重放其它设置。
 
-Provider 编辑和已有 Thread 的 model route 是有意保留的资源级原子接口。Provider 的 endpoint、
+Account 编辑和已有 Thread 的 model route 是有意保留的资源级原子接口。Account 的 endpoint、
 凭据、模型声明和连接覆盖需要联合校验，Thread route 的模型、思考强度和 runtime route 也必须
 同时满足能力与活动状态约束；把它们拆成多个可独立落盘的请求会允许半个无效资源被观察到。
-它们仍各自拥有独立的 mutation key、CAS、pending、重试和失败状态，并且不会携带其它 provider、
+它们仍各自拥有独立的 mutation key、CAS、pending、重试和失败状态，并且不会携带其它 account、
 Mode 或 role 的旧快照。读响应可以为了减少往返同时返回 config/catalog 两个快照，但消费端必须
 按各自 revision 合并，读聚合不改变写入粒度。
 
-模型压缩阈值的内联自动保存仍属于上述 provider 原子资源，不另设字段级协议。提交时从最新
-canonical provider 构造目标模型的覆盖变更，保留其余模型、连接覆盖、目录声明与凭据关联；
-凭据使用 Preserve，不把目录默认值写成用户覆盖。相同 provider 的写入串行，CAS 冲突后重试
-必须在最新 canonical 状态上重新应用目标意图，不重放旧 provider 快照；其他设置不被改写。
+模型压缩阈值的内联自动保存仍属于上述 account 原子资源，不另设字段级协议。提交时从最新
+canonical account 构造目标模型的覆盖变更，保留其余模型、连接覆盖、目录声明与凭据关联；
+凭据使用 Preserve，不把目录默认值写成用户覆盖。相同 account 的写入串行，CAS 冲突后重试
+必须在最新 canonical 状态上重新应用目标意图，不重放旧 account 快照；其他设置不被改写。
 
-所有 provider preset 使用相同的配置提交边界：凭据与 desired config 提交、canonical 状态发布
+所有 account template 使用相同的配置提交边界：凭据与 desired config 提交、canonical 状态发布
 后即可返回，不等待 MCP 连接、模型发现或额度网络请求。后续服务可用性由相应领域 owner 独立
 发布，不把服务探测失败改报为已提交配置的保存失败；删除、设默认和显式重载同样不串联服务
-联网等待。供应商页自动额度查询的需求与失效规则见 [25](./25-frontend-state.md#2571-供应商用量需求)。
+联网等待。账号页自动额度查询的需求与失效规则见 [25](./25-frontend-state.md#2571-账号用量需求)。
 
 ## 20.2 配置职责
 
-每个 provider 的模型目录独立保存按模型 model_id 索引的压缩阈值覆盖值，bundled、附加与 explicit
+每个 account 的模型目录独立保存按模型 model_id 索引的压缩阈值覆盖值，bundled、附加与 explicit
 模型使用同一解析规则。覆盖值为正整数 tokens，缺省表示使用解析后的模型默认值（目录预设或
 上下文 90% 推导）；恢复默认仅删除对应模型覆盖项，显式选择与非空默认值相等时也归一化为
 缺省。每项覆盖以可选语义读取，缺键为 `None`，无覆盖的集合不序列化；该布局保持不变，
@@ -106,20 +127,20 @@ canonical provider 构造目标模型的覆盖变更，保留其余模型、连�
 用户新保存的无效值和不存在的模型引用在发布配置前拒绝，失败不改变 canonical snapshot。在线
 目录变化使既有引用不可用时保留选择并报告 unavailable，见 20.5。新增可选覆盖
 集合缺省为空，已有配置和凭据保持原样；既有模型默认阈值字段继续保持默认元信息语义。
-Settings 命令携带 revision 并返回完整 canonical snapshot，保留未修改的模型和 provider 数据。
+Settings 命令携带 revision 并返回完整 canonical snapshot，保留未修改的模型和 account 数据。
 模型刷新将覆盖值纳入冻结配置身份，新建、恢复和后续安全刷新使用最新解析值，不改写已发请求。
 
-pl-model 拥有产品无关的模型配置值对象：角色路由配置（provider/model/effort 校验与解析）、
-provider 配置与模型路由配置，负责把路由解析为运行时 endpoint 和唯一选中的不可变模型信息。
+pl-model 拥有产品无关的模型配置值对象：角色路由配置（account_id/model_id/effort 校验与解析）、
+account 配置与模型路由配置，负责把路由解析为运行时 endpoint 和唯一选中的不可变模型信息。
 pl-studio-runtime 拥有：Studio 配置 schema 与启动期版本迁移、配置文件路径、
 TOML 解析、原子保存和默认值、instructions/skills/MCP/runtime/disabled_system_agents 与
 UI 配置、Agent Profile 文件的逐文件解析与原子保存，以及 Thread 首轮固定 instruction
-snapshot 的生成。pl-model 只消费已经解析好的 provider 和模型信息，不负责文件 IO 或路径
+snapshot 的生成。pl-model 只消费已经解析好的 account 和模型信息，不负责文件 IO 或路径
 定位。
 配置 owner 在同一发布边界区分磁盘 desired config 与非持久模型目录 overlay；解析视图合成两者，
 所有 route、Profile、标题与 Settings 展示消费同一有效目录。保存只序列化 desired，不能把发现模型
 塞进 additional_models 后随其他设置写回，也不能将其投影为可编辑 custom model。
-Provider 编辑提交只发送既有或用户显式修改的连接覆盖，不把在线模型的当前默认连接方式
+Account 编辑提交只发送既有或用户显式修改的连接覆盖，不把在线模型的当前默认连接方式
 转成持久覆盖。更换地址或凭据会失效旧目录观察；未改动的连接覆盖与路由仍按既有 desired
 选择保留，不能因此次保存制造对旧在线名单的新引用。
 
@@ -129,9 +150,9 @@ Provider 编辑提交只发送既有或用户显式修改的连接覆盖，不�
 
 ## 20.3 根路由与系统 Profile
 
-配置不使用 `active_provider`。root Agent 的 desired route 属于各自 Thread；主配置以
+配置不使用 `active_account`。root Agent 的 desired route 属于各自 Thread；主配置以
 `mode_model_routes` 保存各 Mode 的新建/切换默认 selector。`mode.simple` 与 `mode.task`
-必须存在并独立保存 provider/model/effort；合法自定义 Mode ID 可以持久化，尚无条目时继承
+必须存在并独立保存 account_id/model_id/effort；合法自定义 Mode ID 可以持久化，尚无条目时继承
 `mode.simple`，首次显式选择后形成自己的条目。Mode 默认值不反向修改其他现有 Thread。
 
 `models.routes` 只保存系统及用户子代理 Profile 的路由；四条内置系统 route 为：
@@ -154,19 +175,19 @@ Provider 编辑提交只发送既有或用户显式修改的连接覆盖，不�
 会话状态栏选择模型，不在 Agents 页配置；系统 child route 在子代理区域配置。用户 Profile
 的文件名 stem 是 Agent ID。
 `list_agent_profiles` 只返回启用且路由可解析的 Profile；`spawn_agent` 创建 child 时冻结
-系统指令、provider、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
+系统指令、account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
 catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 
-每个角色必须配置 `provider`、`model` 和可选 `effort`。`effort` 使用字符串，校验对象是
+每个角色必须配置 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
 对应模型 parameters 中 `name = "effort"` 参数的候选值：模型声明非空候选时，角色必须选择
 一个合法候选；模型没有声明该参数时，角色必须省略 `effort`。候选、默认值和 wire 规则只
-来自模型目录（见 [06](./06-model.md)），角色配置不保存第二份候选或默认值。provider 不
+来自模型目录（见 [06](./06-model.md)），角色配置不保存第二份候选或默认值。account 不
 保存 `default_model`，模型选择只由路由决定；历史结构按 20.1 转换，缺失必需路由或无效
 引用明确报错，不能静默重置用户选择。
-保存 provider 字段时，未改动的 Mode 与 child route 原样提交，包括暂不可用的模型和 effort。
-只有显式选择默认 provider 或删除路由所属 provider 才重新选择相应模型与默认 effort；实例
-更名只迁移 provider 引用。编辑命令的空 effort 表示省略该选择，不从当前目录补入默认候选。
-完整 child route 提交不构造备用路由；只有缺失角色需要补齐时才解析明确的默认 provider。
+保存 account 字段时，未改动的 Mode 与 child route 原样提交，包括暂不可用的模型和 effort。
+只有显式选择默认 account 或删除路由所属 account 才重新选择相应模型与默认 effort；实例
+显示名变更不改变 ID、凭据和引用；账号 ID 不提供编辑重命名入口。编辑命令的空 effort 表示省略该选择，不从当前目录补入默认候选。
+完整 child route 提交不构造备用路由；只有缺失角色需要补齐时才解析明确的默认 account。
 未承担新路由的在线实例允许其展示默认模型为空，不能让其合法空目录阻塞其他实例保存。
 
 ## 20.4 TOML 示例
@@ -174,7 +195,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 22
+schema_version = 23
 
 disabled_system_agents = []
 
@@ -204,57 +225,61 @@ project_dir = ".agents/skills"
 user_dir = "~/.anywork/skills"
 
 [mode_model_routes."mode.simple"]
-provider = "deepseek"
-model = "deepseek-flash"
+account_id = "deepseek"
+model_id = "deepseek-flash"
 effort = "high"
 
 [mode_model_routes."mode.task"]
-provider = "deepseek"
-model = "deepseek-flash"
+account_id = "deepseek"
+model_id = "deepseek-flash"
 effort = "high"
 
 [models.routes.explorer]
-provider = "deepseek"
-model = "deepseek-flash"
+account_id = "deepseek"
+model_id = "deepseek-flash"
 effort = "high"
 
-[models.providers.deepseek]
+[models.accounts.deepseek]
 name = "DeepSeek"
 base_url = "https://api.deepseek.com"
 # API token 由系统凭据库保存，TOML 中不出现明文 secret。
 tool_wire_policy = "function_fallback"
-preset = "deepseek"
+template = "deepseek"
+protocol = "deep_seek"
 
-[models.providers.deepseek.catalog]
+[models.accounts.deepseek.catalog]
 source = "bundled"
 catalog = "deepseek"
 ```
 
-## 20.5 Provider 与模型目录
+## 20.5 Account 与模型目录
 
-`models.providers` 可保存多个 provider，相同 preset 可重复使用；唯一性只约束 map key。
-每个 provider 实例持久化：可选 `preset` 身份（完全自定义 provider 不保存 preset）、实例
+`models.accounts` 可保存多个 account，相同 template 可重复使用；唯一性只约束 map key。
+每个 account 实例持久化：明确的 `protocol` 厂商适配选择、可选 `template` 身份（完全自定义账号可不保存 template）、实例
 字段（`name`、`base_url`、`bearer_token_env`、`http_headers`、`tool_wire_policy` 与
 `apply_patch_tool_type`）、catalog（`Bundled { catalog, additional_models,
 connection_overrides }` 或 `Explicit { models, connection_overrides }`）与 capabilities
-（`PresetDefaults` 或显式服务能力：preset 实例默认继承 canonical preset 的服务能力，
+（`TemplateDefaults` 或显式服务能力：template 实例默认继承 canonical template 的服务能力，
 custom 实例默认显式无能力）。
 
-Provider 不保存协议或连接方式。路由解析从当前 route 选择的模型信息和模型目录 override
-得到协议与最终连接方式，再与 provider endpoint、凭证、wire policy 和服务能力组合成
+模板默认服务能力在当前配置中的判别值为 `capabilities.source = "template_defaults"`；旧
+`preset_defaults` 只在 22→23 的版本转换中解码，不作为当前类型的别名保留。
+
+Account 保存厂商协议适配，但不统一规定全部模型的 wire API 或连接方式。路由解析从当前 route
+选择的模型绑定和目录 override 得到 wire API 与最终连接方式，再与账号所选厂商适配、endpoint、凭证、wire policy 和服务能力组合成
 runtime 路由；模型 transport 是必填字段，合法矩阵为 Responses+WS/HTTP、Chat+HTTP。
 
-服务能力不是模型能力的别名：provider 服务能力表示 endpoint 可以执行 Responses hosted
+服务能力不是模型能力的别名：account 服务能力表示 endpoint 可以执行 Responses hosted
 tools、hosted 或 standalone Web Search（hosted search 还携带 OpenAIResponses 或
 DeepSeekResponses 方言），模型能力仍表示当前模型能否使用 native search 或 function
 tools；核心编排必须同时检查 endpoint 服务能力、模型能力与模型 request profile。官方
 OpenAI endpoint 默认开启 Responses hosted tools；覆盖自定义 `base_url` 后默认关闭，只有
 显式配置才能重新开启。产品 UI 从 catalog 的无密钥 descriptor 渲染预设和模型选项，不识别
 具体厂商 id。OpenAI、MiMo API、MiMo Token Plan、DeepSeek、xAI、Zhipu 与 Zhipu Coding Plan 都
-只是 catalog preset；显式 adapter 身份装配具体供应商客户端，两个 MiMo preset 共享同一
-catalog，而 Zhipu（通用 Chat API）与 Zhipu Coding Plan（官方 OpenAI Response 协议端点）
+是账号模板，不是协议变体；明确的 protocol 选择装配厂商适配，两个 MiMo 模板共享同一
+catalog，而 Zhipu（通用 Chat API）与 Zhipu Coding Plan（官方 OpenAI Responses 协议端点）
 各引用与端点形态匹配的目录。xAI 引用独立的 Responses/HTTP 目录，canonical endpoint 继承
-`prompt_cache_key`；覆盖非 canonical `base_url` 时由 PresetDefaults 撤销该缓存方言。xAI
+`prompt_cache_key`；覆盖非 canonical `base_url` 时由 TemplateDefaults 撤销该缓存方言。xAI
 不声明 hosted search。当前不保留 Anthropic 占位：只有实现第二种协议族的
 typed codec、能力模型与测试后，才可写入配置或 catalog。
 
@@ -264,7 +289,7 @@ default_temperature、max_output_tokens、pricing、parameters、binding（trans
 适用 request 配置）、capabilities、truncation_policy 与 base_instructions。capabilities
 是结构化能力矩阵（见 [06](./06-model.md)）：每个 input capability 显式声明 modality、
 允许来源和限制；两者不完整或无法把持久快照重新编码时该 modality 校验失败；未知模型
-默认 text-only；非视觉模型即使 provider wire API 接受图片字段，也会在任何附件 IO 和
+默认 text-only；非视觉模型即使 account wire API 接受图片字段，也会在任何附件 IO 和
 凭据读取前被拒绝；PDF 使用 file modality。
 Settings 的自定义模型快照必须携带同源的 typed input capabilities（modality、来源和限制），
 经 FRB 投影到 Flutter，与内置 catalog 共用转换逻辑。附件入口不能因自定义模型元数据
@@ -277,9 +302,9 @@ ModelPricing 明确区分未知价格与包含费率的定义：货币不做汇�
 来源、核对日期及完整档位保存在后端目录，设置页直接展示后端提供的行；文档不保存价格
 快照。
 
-Bundled 默认定义只读；显式配置的同 ID 模型定义优先于内置定义，所有模型固有参数经全局目录统一解析。
-在线名单与手工配置共同决定供应商成员，不把共享参数扩散为其他供应商的可用路由。
-同 ID 在线明确字段优先于本地补全；价格、凭据、传输与参数 wire 仍由各路由拥有。
+Bundled 默认定义只读；本账号显式配置的同 ID 模型定义优先于绑定的内置定义。
+在线名单与手工配置共同决定该账号成员，定义和观察仅在 (account_id, model_id) 范围合成，
+不从其它账号同名模型补全能力、参数、价格或绑定。同 ID 在线明确字段优先于本账号本地补全。
 手动模型及其连接、压缩覆盖沿用既有增删边界，不改写历史账单。
 
 ### 在线模型观察与配置校验
@@ -291,7 +316,7 @@ Bundled 默认定义只读；显式配置的同 ID 模型定义优先于内置�
 revision，也不触发数据重置。运行期不存在第二次自动同步，也没有手动刷新命令；HTTP 与原生桥接
 只提供同一 canonical snapshot 的只读观察。
 
-目录状态由同一 canonical snapshot 发布：每个 provider 的完整有效模型（含来源）与状态
+目录状态由同一 canonical snapshot 发布：每个 account 的完整有效模型（含来源）与状态
 （是否支持发现、来源 `default`/`cached`/`online`、检查时间、最后成功时间、类型化错误与缓存
 警告）。界面只读展示该状态并提示“重启应用可重新同步”，不提供刷新按钮或本地补回。GUI 不从
 预设补回在线名单中缺失的模型，合法空名单保持为空；旧选择以不可用状态保留。
@@ -299,21 +324,21 @@ revision，也不触发数据重置。运行期不存在第二次自动同步，
 配置解析先恢复该实例同身份成功声明或默认定义，再验证模型声明、结构与用户 Profile。支持在线
 目录的既有 route/effort/connection override 因缓存缺失或服务撤下模型/候选而不可用时，保持用户
 选择并返回外部绑定 unavailable，不自动猜模型、删覆盖值或触发全局数据重置。显式手工目录、
-缺失 provider、坏 schema 与声明本身继续严格校验；用户新保存/切换的选择须在当前有效目录中合法。
-schema 18 至 21 接续数据保全迁移到 22；模型观察缓存独立升级并保留未知来源旧快照。
+缺失 account、坏 schema 与声明本身继续严格校验；用户新保存/切换的选择须在当前有效目录中合法。
+已知旧 schema 接续数据保全迁移到当前账号结构；模型观察缓存独立升级并保留未知来源旧快照。
 解析规则升级保留旧成功快照，但在新规则成功获取正文前不发送旧 ETag；失败继续使用旧快照，
-不能用清空缓存完成升级。模型类型只是最终目录查询条件，不写入供应商配置或改写已有路由。
+不能用清空缓存完成升级。模型类型只是最终目录查询条件，不写入账号配置或改写已有路由。
 
 各实例探测按自身 generation/查询身份裁决结果，并合并到当前 desired 状态，不以开始时的旧全局
 Settings revision 提交。别家成功不得使本家 stale；用户更换地址、headers、凭据或目录来源、删除
 实例后，旧结果丢弃。等待网络不持全局配置锁。
-全局字段变化在一次目录 revision 通知所有受影响 provider 的绑定消费者：在途请求保持冻结，
-后续安全边界 deferred 重绑或明确 unavailable；不因目录观察重装无关 provider 的工具或重算历史费用。
+账号字段变化在一次目录 revision 通知本账号受影响的绑定消费者：在途请求保持冻结，
+后续安全边界 deferred 重绑或明确 unavailable；不因目录观察重装无关 account 的工具或重算历史费用。
 
 有效目录的每条成员携带来源：`online`（本次或同身份最后成功的在线名单）、`bundled`（尚无成功
 观察时的内置默认定义）、`manual`（用户手动添加）。来源由后端解析并随 descriptor 发布，界面
-据此分组与标注，不按配置差集或 preset 自行推导。删除手动模型使用独立命令
-（`removeProviderModel`，携带 expected revision 与 provider/model_id）：只接受手动条目，删除后同步
+据此分组与标注，不按配置差集或 template 自行推导。删除手动模型使用独立命令
+（`removeAccountModel`，携带 expected revision 与 account_id/model_id）：只接受手动条目，删除后同步
 清除该 model_id 的连接覆盖与压缩阈值覆盖；若它是该实例的默认模型，保留字段并沿用“选择以不可用
 保留”的语义。目录观察、模型来源与手动模型增删都不改变 desired route 的其他字段。
 
@@ -365,13 +390,13 @@ no-op；手动重连走独立的单 server/All reset；reset 候选失败时保�
 shutdown 是不可恢复终止态。配置观察覆盖启动、保存、删除、凭据清空/轮换与显式重载；
 在途准备期间的新变化可合并，但必须最终收敛到最新配置，不能因已有任务而漏掉变化。
 协调任务由 runtime 持有并参与停止与 join，失败只进入 MCP 领域的可观察状态。它不属于
-供应商保存事务，也不要求任何模型 Thread 存在或使用特定 provider。
+账号保存事务，也不要求任何模型 Thread 存在或使用特定 account。
 
 内置 Zhipu Coding Plan MCP server 固定为：`zhipu_search`、`zhipu_reader`、`zhipu_zread`
 （Streamable HTTP，官方对应 endpoint）与 `zhipu_vision`（stdio，经 npm 启动，Windows 运行
 时从标准 npm 安装布局解析 node + CLI，配置和状态中不写平台后缀）。这些内置 server
-只复用 `preset = zhipu-coding-plan` 的有效 bearer token 作为 Coding Plan key；
-存在多个实例时按 provider ID 稳定排序选择首个有有效凭据的实例，不从普通 Zhipu preset、
+只复用 `template = zhipu-coding-plan` 的有效 bearer token 作为 Coding Plan key；
+存在多个实例时按 account ID 稳定排序选择首个有有效凭据的实例，不从普通 Zhipu template、
 域名或 Thread route 推断凭据来源。解析优先级遵循 20.11。缺少可用 token 时内置 server
 显示缺少凭据，不连接、不发现，也不向模型注册可调用工具；检测到 token 时，未显式配置
 状态的内置 server 默认启用并进入通用后台探测，已被用户禁用的保持禁用。系统 MCP 与用户
@@ -406,17 +431,18 @@ schema 版本、配置段或字段及其默认值、凭据解析优先级、加�
 
 ## 20.10 配置草稿与校验
 
-anywork 设置页先加载 canonical provider catalog，再构造产品草稿：默认选中 Studio 产品
-默认 preset，也可选择 catalog 返回的任意 preset 或 Custom provider；至少配置一个
-provider；可继续添加多个 provider 实例，允许同类 provider 重复，每个 provider key 唯一。
-preset、endpoint、凭证提示、协议、允许连接模式、suggested model 和 bundled catalog 全部
-来自 catalog 快照，Flutter 不保存生产目录副本。Studio 草稿选择一个默认 provider；五个
-模型角色初始化为创建时选择的 suggested/default model 和该模型声明的默认 effort，该选择
-只投影为五条 route，不写入 provider runtime。
+anywork 设置页先加载 canonical account catalog，再构造产品草稿：默认选中 Studio 产品
+默认 template，也可选择 catalog 返回的任意 template 或 Custom account；至少配置一个
+account；可继续添加多个 account 实例，允许同类 account 重复，每个 account key 唯一。
+template、endpoint、凭证提示、协议、允许连接模式、suggested model 和 bundled catalog 全部
+来自 catalog 快照，Flutter 不保存生产目录副本。创建界面明确选择账号模板，草稿名默认取模板
+展示名，切换模板以新模板完整重建草稿，用户可编辑名称。同模板账号可重复创建，每个账号只分配
+一次稳定 ID；显示名、模板或 endpoint 均不充当身份。默认账号选择仅按既有作用域更新 Mode/角色
+route，不给账号 runtime 写入第二份默认模型。
 
-静态 provider catalog 由启动事实加载器写入 `SettingsStore`，不属于 `readStudioState`
-聚合快照。空 revision 或无 preset 的目录只表示未初始化，不能覆盖已有目录；设置页、状态
-栏和其他产品投影必须通过同一个 catalog selector 取得 Logo 与 preset 元数据。
+静态 account catalog 由启动事实加载器写入 `SettingsStore`，不属于 `readStudioState`
+聚合快照。空 revision 或无 template 的目录只表示未初始化，不能覆盖已有目录；设置页、状态
+栏和其他产品投影必须通过同一个 catalog selector 取得 Logo 与 template 元数据。
 
 内置目录装配失败必须沿目录查询、模板选择和草稿构造接口返回原始错误，不得静默使用空目录
 或触发 panic；此类错误属于程序定义故障，不进入用户配置损坏的重置流程。
@@ -424,28 +450,32 @@ preset、endpoint、凭证提示、协议、允许连接模式、suggested model
 设置项写入前必须完成本地校验并由 Studio 统一执行完整校验，失败时只在 UI 展示错误，不
 写入磁盘：
 
-- provider key 非空且唯一；preset 引用必须存在；Custom provider 必须显式选择 wire
+- account key 非空且唯一；template 引用必须存在；Custom account 必须显式选择 wire
   protocol。
 - Responses + WebSocket/Http 合法，ChatCompletions + Http 合法，ChatCompletions +
   WebSocket 在发起网络请求前拒绝。
 - API key 非空（本地无鉴权服务允许省略）。
-- 每个角色 route 的 model 必须存在于对应 provider 的有效模型集合；同一 provider 下模型
+- 每个角色 route 的 model 必须存在于对应 account 的有效模型集合；同一 account 下模型
   model_id 不重复。
 - 角色引用的默认模型必须声明 effort 参数且至少一个候选值，用于生成角色 effort。
 
 ## 20.11 凭据策略
 
-Provider 的 API token 保存到操作系统凭据库，service 固定为 `anywork`，account 为
-`provider:{provider_id}`；`config.toml` 不保存 token、凭据引用或可逆密文。Provider 仍可
+Account 的 API token 保存到操作系统凭据库，service 固定为 `anywork`，account 为
+`account:{account_id}`；`config.toml` 不保存 token、凭据引用或可逆密文。Account 仍可
 保存 `bearer_token_env` 环境变量名。配置加载后，Studio 在 Rust 内存中注入系统凭据；运行
 时按"系统凭据优先，其次读取非空环境变量值，空白值和缺失环境变量都视为无凭据"解析。
 
 设置页的 Preserve/Replace/Clear 语义保持不变：Preserve 不改系统凭据，Replace 在配置提交
 前写入并回读，Clear 删除凭据。凭据操作和 TOML 原子替换作为一个 fail-closed 提交流程；
-凭据阶段失败时不得覆盖配置文件。版本迁移需要改变 provider 标识时，须按明确映射保留
+凭据阶段失败时不得覆盖配置文件。版本迁移需要改变 account 标识时，须按明确映射保留
 凭据关联：目标凭据写入并回读验证后才提交配置引用，旧关联在整个迁移成功前保持可恢复，
-不能仅按默认 provider id 加载凭据。历史内联凭据仅能在迁移边界转入系统凭据库，不进入
+不能仅按默认 account id 加载凭据。账号迁移从 `provider:<id>` 复制到 `account:<id>`，目标存在
+不同密钥时明确拒绝，不覆盖；相同值可幂等接续。旧项保留为迁移前凭据，不在正常运行回退读取，
+本次升级不自动删除。没有系统项时保留环境变量引用，不伪造空密钥。历史内联凭据仅能在迁移边界转入系统凭据库，不进入
 当前配置、日志或 UI；包含敏感内容的原始备份必须受保护。安全边界见 [04](./04-security.md)。
+迁移的系统凭据复制要求持久服务成功写入并回读；不可访问不能被解释为“原项不存在”，也不能
+用进程内 lease 的回读通过耐久校验。普通进程临时 secret 的生命周期不因此扩大为持久承诺。
 
 MCP stdio server 的 `env` 按配置原样传给子进程，可能包含明文凭据。Streamable HTTP 的
 `bearer_token_env_var` 只保存环境变量名，运行时从 Pure 进程环境读取对应 token 并构造
@@ -461,35 +491,35 @@ Studio 保留两段互不混用的顶层配置。`[web_search]` 只配置 OpenAI
 cached/indexed、域名、位置或 context size 等 OpenAI 专属字段。
 
 搜索不是单选：`StudioWebSearchSettings` 暴露 configured/effective/availability、
-provider_id/model 与原配置开关 `mode`；`StudioDeepSeekWebSearchSettings` 暴露
-configured/effective/availability、provider_id 与 `enabled` / `fetch_enabled` 两组配置位，
+account_id/model 与原配置开关 `mode`；`StudioDeepSeekWebSearchSettings` 暴露
+configured/effective/availability、account_id 与 `enabled` / `fetch_enabled` 两组配置位，
 不含模型字段。两者都没有 `selected` 字段，也不存在互斥的 exclusive 路线；
-`effective_* = configured_* && availability == available`。canonical DeepSeek preset 声明
-`DeepSeekToolsApi` 独立能力；preset 实例覆盖非 canonical base_url 时由 PresetDefaults 仅撤销
+`effective_* = configured_* && availability == available`。canonical DeepSeek template 声明
+`DeepSeekToolsApi` 独立能力；template 实例覆盖非 canonical base_url 时由 TemplateDefaults 仅撤销
 该 DeepSeek 方言（连同其它 hosted/Responses 能力），非 canonical DeepSeek endpoint 必须显式
 声明该方言。此撤销同时关闭继承的 prompt cache dialect，不改变既有 OpenAI `OpenAiSearchApi`
 继承语义：覆盖非 canonical base_url 的 OpenAI endpoint 仍保留 `/alpha/search` standalone。
 显式 capability 仍可重新声明。
 
-设置页运行独立的 service planner，不依赖会话、route 或当前模型：每条后端只按 provider
-capability 与凭据解析 configured/effective/availability、provider_id 与 model。OpenAI
-standalone 服务优先使用该 provider catalog 的 `gpt-6-sol`，否则用该 provider 首个有效模型；
-provider 之间按 ID 稳定排序。DeepSeek standalone 服务不解析模型：它直接命中原生工具接口，
-线程内优先声明该能力的 DeepSeek provider，否则同样按 ID 排序。服务模型与会话模型独立，不再按
+设置页运行独立的 service planner，不依赖会话、route 或当前模型：每条后端只按 account
+capability 与凭据解析 configured/effective/availability、account_id 与 model。OpenAI
+standalone 服务优先使用该 account catalog 的 `gpt-6-sol`，否则用该 account 首个有效模型；
+account 之间按 ID 稳定排序。DeepSeek standalone 服务不解析模型：它直接命中原生工具接口，
+线程内优先声明该能力的 DeepSeek account，否则同样按 ID 排序。服务模型与会话模型独立，不再按
 explorer / planner / executor / worktree_executor / reviewer role route 选模型。
 
 实际 thread 消费时才用当前模型是否支持 function calling 决定本轮是否注册对应 standalone
 搜索工具，它不改变设置里已解析的服务可用性。OpenAI standalone、DeepSeek 原生 standalone 与
 可用的 hosted 搜索互不抢占，也不隐藏 MCP、LSP、文件和命令工具；只有 DeepSeek 搜索工具的
-两个工具描述写明按请求次数计费与兜底条件，其他搜索不分优先级、不按 provider 排序、不自动跨
-供应商回退，也不因某一路可用而停用另一路。
+两个工具描述写明按请求次数计费与兜底条件，其他搜索不分优先级、不按 account 排序、不自动跨
+账号回退，也不因某一路可用而停用另一路。
 
-配置值与生效值必须分离：缺少有凭据的 provider 时保留 configured mode，但 effective mode
+配置值与生效值必须分离：缺少有凭据的 account 时保留 configured mode，但 effective mode
 为 `disabled`——此状态下不得注册对应 standalone 或 hosted 搜索工具，也不得为它创建客户端。
-DeepSeek 两个开关同构：provider 不可用时保留 configured 值而 effective 位为 `false`，两个开关
+DeepSeek 两个开关同构：account 不可用时保留 configured 值而 effective 位为 `false`，两个开关
 各自独立解析，不合并成单一状态。
-服务 planner 的每后端可用性只看 provider capability 与凭据（`disabled` / `missingCredential` /
-`providerUnsupported`），不因当前会话角色或模型不可用而降级；当前模型能力只在真实 thread
+服务 planner 的每后端可用性只看 account capability 与凭据（`disabled` / `missingCredential` /
+`accountUnsupported`），不因当前会话角色或模型不可用而降级；当前模型能力只在真实 thread
 消费时生效。`cached` 映射为禁止外部实时访问；`indexed` 映射为显式 indexed 访问；`live` 允许
 实时外网；`disabled` 完全关闭该路径。两张卡片的保存命令都携带 Settings CAS revision，成功后
 以完整 canonical snapshot 回写（多后端仲裁见 [06](./06-model.md)）。
@@ -518,29 +548,29 @@ fingerprint。
 
 ## 20.14 独立设置命令
 
-配置 mutation 按最小业务资源拆分：provider 实例、默认 provider、provider 删除、单个 Mode
+配置 mutation 按最小业务资源拆分：account 实例、默认 account、account 删除、单个 Mode
 route 的 model、单个 Mode route 的 reasoning effort、单个 Agent role 的 model、单个 Agent
 role 的 reasoning effort、permission、instructions 字段、skills 字段、单个 MCP server、
 general 字段、web search 字段和 DeepSeek 的搜索/抓取两个开关各自有 typed command。每个开关
 命令只改自己的布尔值，另一开关与其它字段由配置 owner 从最新 canonical state 解析。所有 command
 携带当前 `expectedSettingsRevision`，由同一 runtime command lock 做 CAS；成功返回新的 canonical
 Settings snapshot 并发布设置事件。Bridge 与 loopback HTTP 均使用 `PUT /api/v1/settings/field`
-承载 `SettingsFieldUpdate`，FRB 只暴露同一 typed handler。一个 command 不得把页面当前完整 provider、roles、mode
+承载 `SettingsFieldUpdate`，FRB 只暴露同一 typed handler。一个 command 不得把页面当前完整 account、roles、mode
 routes 或其它字段的旧副本作为无条件替换值；需要迁移引用时必须在删除命令中显式给出替换目标。
 这里的“同一 handler”只表示传输入口稳定；请求体的 `kind` 是单字段/单资源类型，服务端
-不得根据一个字段请求顺带修改其它设置。Provider 与 existing Thread route 仍是资源级原子
-接口，因为 endpoint/凭据/模型声明或 runtime route 需要联合校验；它们不会把其它 provider、
+不得根据一个字段请求顺带修改其它设置。Account 与 existing Thread route 仍是资源级原子
+接口，因为 endpoint/凭据/模型声明或 runtime route 需要联合校验；它们不会把其它 account、
 Mode、role 的旧快照带入提交。
 
-启动期目录观察属于另一个水位与 command lane，只推进 `modelCatalogRevision`、provider catalog
+启动期目录观察属于另一个水位与 command lane，只推进 `modelCatalogRevision`、account catalog
 状态和有效模型描述。它不会修改 desired route，也不会阻塞配置 command。route 指向被撤下的
 模型时保留 desired 值并返回 unavailable；用户显式选择的新 route 仍需按当前有效目录校验。
 删除手动模型的命令走配置 lane（canonical-CAS 与联合校验），与目录观察互不代替。
 
-## 20.15 模型标识与全局目录
+## 20.15 模型标识与账号目录
 
-配置 schema 22 将模型对象中的 `slug` 迁移为 `model_id`，保留标识值、供应商与凭据关联、连接和压缩覆盖。
-旧字段只在版本化迁移边界解码；冲突或校验失败保留原文件。全局目录以 [模型契约](./06-model.md)
+配置 schema 22 将模型对象中的 `slug` 迁移为 `model_id`，保留标识值、账号与凭据关联、连接和压缩覆盖。
+旧字段只在版本化迁移边界解码；冲突或校验失败保留原文件。账号隔离目录以 [模型契约](./06-model.md)
 为准，Mode 不再限制模型；请求准备校验保留。
 已知版本迁移失败以独立的 Migration 错误沿启动链路传播，不能进入持久化数据损坏的自动重置流程；
 界面报告迁移失败与原文件保留，修正配置后可重新启动。
