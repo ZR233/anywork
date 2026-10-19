@@ -53,6 +53,64 @@ A few sections are omitted when left at defaults (`runtime`, `instructions`, `ls
 
 Web search is not a single selection. Both services are resolved independently of the session, route, or current model: OpenAI standalone search uses the provider's `gpt-6-sol` when its catalog has it (otherwise the provider's first valid model), DeepSeek search calls the official `POST {root}/v1/tools/search` and `POST {root}/v1/tools/fetch` endpoints without resolving any model, and providers are ordered by stable ID. Provider availability depends only on capability plus a usable key; whether the current model supports function calling only decides whether that thread registers the additive tools. At runtime the OpenAI `web_search`, DeepSeek `deepseek_web_search` (`queries`, 1–4 merged queries) and `deepseek_web_fetch` (`url`), and any generic MCP tools (including Zhipu, discovered and registered through generic MCP when a valid key is available) coexist as additive tools; there is no `selected` backend and no exclusive route that hides the other tools. Only the two DeepSeek tool descriptions mention per-request billing and the fallback condition, and searches are neither ordered nor automatically fallen back across providers. `enabled` and `fetch_enabled` gate the tools independently, and each switch only affects its own tool. A DeepSeek provider instance that overrides the preset's canonical base URL stops inheriting the DeepSeek standalone capability unless it explicitly declares the `deep_seek_tools_api` dialect; the pre-21 token `deep_seek_anthropic_messages` is rewritten by the configuration migration and is rejected if written by hand. This revocation is DeepSeek-only and does not change the existing OpenAI `/alpha/search` standalone inheritance for non-canonical OpenAI endpoints.
 
+## Work modes
+
+Custom work modes are separate JSON files, not sections in `config.toml`:
+
+```text
+~/.anywork/modes/<mode-id>.json    Windows: %USERPROFILE%\.anywork\modes\<mode-id>.json
+```
+
+The file name must match the document `id`. For example, `mode.review-flow` is stored as `mode.review-flow.json`. A document has six execution fields at the top level plus optional `editor.nodes`:
+
+```json
+{
+  "id": "mode.review-flow",
+  "displayName": "Review flow",
+  "description": "Review one bounded change.",
+  "order": 10,
+  "prompt": "Follow the active review stage.",
+  "workflow": {
+    "title": "Review",
+    "goal": "Finish the review.",
+    "initialStateId": "inspect",
+    "states": [
+      {
+        "id": "inspect",
+        "title": "Inspect",
+        "instructions": "Inspect the change.",
+        "completionCriteria": ["Findings are recorded."],
+        "kind": "atomic"
+      },
+      {
+        "id": "done",
+        "title": "Done",
+        "instructions": "",
+        "completionCriteria": [],
+        "kind": "final"
+      }
+    ],
+    "transitions": [
+      {
+        "sourceStateId": "inspect",
+        "targetStateId": "done",
+        "guard": "The review is complete."
+      }
+    ]
+  },
+  "editor": {
+    "nodes": [
+      { "stateId": "inspect", "x": 80, "y": 80 },
+      { "stateId": "done", "x": 320, "y": 80 }
+    ]
+  }
+}
+```
+
+The runtime compiles the workflow before publishing it. State and transition IDs must be unique and bounded; the initial state and every transition endpoint must exist; atomic stages need completion criteria; final stages cannot have outgoing transitions; and every stage must be reachable and able to reach a final stage. `editor.nodes` only stores finite canvas coordinates for existing state IDs. It is validated separately and never changes the workflow graph hash.
+
+`mode.simple` and `mode.task` are built in and read-only. Saving or deleting a built-in ID is rejected; copy it to a new custom ID instead. A custom Mode inherits the `mode.simple` model route until a `[mode_model_routes."<mode-id>"]` entry is saved. Queries read the published catalog; external JSON edits require explicit reload. Reload validates every file before replacing the catalog. A malformed file, mismatched file name, unknown field, invalid layout, or compiler error rejects the whole reload and leaves the previous catalog intact. Keep the original file and report the exact validation issue rather than deleting it or bypassing validation.
+
 ## Model compaction thresholds
 
 Each provider catalog may store `auto_compact_overrides` keyed by exact model model_id. A missing key means no user override: use the model's explicit `auto_compact_token_limit` preset, otherwise floor 90% of its resolved context capacity (`context_window`, falling back to `max_context_window`). Unknown capacity disables automatic compaction; never substitute zero or a guessed window. User overrides must be positive and the effective value cannot exceed the 90% safety limit. Restore default by removing only the corresponding override key; do not copy computed defaults into the configuration.
@@ -140,3 +198,4 @@ effort = "high"
 4. Reference tokens via `bearer_token_env`; never paste raw tokens.
 5. Add providers from Settings or a preset (`deepseek`, `openai`, `zhipu`, ...) rather than hand-writing catalog metadata.
 6. After external edits, use explicit reload and confirm the canonical settings reflect the change. If validation fails, preserve the original settings and report the error; do not restart as a repair step.
+7. For work-mode JSON, use the runtime's schema/validate command before saving. Built-in IDs are never valid save targets.

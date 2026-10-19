@@ -7,7 +7,7 @@ use pl_protocol::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId}
 use thiserror::Error;
 
 use super::{
-    CompiledWorkflowDefinition, ThreadModeRegistration, WorkflowCompilerError,
+    CompiledWorkflowDefinition, ThreadModeDefinition, WorkflowCompilerError,
     compile_workflow_definition,
 };
 
@@ -97,6 +97,38 @@ impl RegisteredThreadMode {
     /// 返回当前 Mode Prompt；Prompt 不参与图 hash。
     pub fn prompt(&self) -> &str {
         &self.prompt
+    }
+
+    /// Returns the canonical execution definition without editor metadata.
+    pub fn definition(&self) -> ThreadModeDefinition {
+        ThreadModeDefinition {
+            id: self.descriptor.id.clone(),
+            display_name: self.descriptor.display_name.clone(),
+            description: self.descriptor.description.clone(),
+            order: self.descriptor.order,
+            prompt: self.prompt.to_string(),
+            workflow: self
+                .workflow
+                .as_ref()
+                .map(|graph| graph.definition().clone()),
+        }
+    }
+
+    /// Compiles a saved definition without republishing it to the global catalog.
+    pub fn from_definition(
+        definition: ThreadModeDefinition,
+        graph_revision: u64,
+    ) -> Result<Arc<Self>, ThreadModeManagerError> {
+        let source = ThreadModeSource::external(ThreadModeSourceId::new("saved-mode")?);
+        let mut batch = prepare_batch(&source, [definition])?;
+        let (_, prepared) = batch.pop_first().expect("one prepared definition");
+        Ok(Arc::new(Self {
+            descriptor: prepared.descriptor,
+            source,
+            prompt: prepared.prompt,
+            graph_revision,
+            workflow: prepared.workflow,
+        }))
     }
 
     /// 返回 Manager 为当前图分配的单调 revision；无图时为零。
@@ -211,7 +243,7 @@ impl ThreadModeManager {
     pub fn replace_source(
         &self,
         source: ThreadModeSource,
-        registrations: impl IntoIterator<Item = ThreadModeRegistration>,
+        registrations: impl IntoIterator<Item = ThreadModeDefinition>,
     ) -> Result<Arc<ThreadModeRegistrySnapshot>, ThreadModeManagerError> {
         let prepared = prepare_batch(&source, registrations)?;
         let mut state = self
@@ -284,7 +316,7 @@ impl ThreadModeManager {
 
 fn prepare_batch(
     source: &ThreadModeSource,
-    registrations: impl IntoIterator<Item = ThreadModeRegistration>,
+    registrations: impl IntoIterator<Item = ThreadModeDefinition>,
 ) -> Result<BTreeMap<ThreadModeId, PreparedThreadMode>, ThreadModeManagerError> {
     let mut prepared = BTreeMap::new();
     for registration in registrations {
@@ -306,6 +338,7 @@ fn prepare_batch(
                 description: registration.description.trim().to_string(),
                 order: registration.order,
                 has_workflow: workflow.is_some(),
+                read_only: source.kind == ThreadModeSourceKind::Builtin,
             },
             prompt: Arc::from(registration.prompt.trim()),
             workflow,
@@ -321,7 +354,7 @@ fn prepare_batch(
 }
 
 fn validate_registration(
-    registration: &ThreadModeRegistration,
+    registration: &ThreadModeDefinition,
 ) -> Result<(), ThreadModeManagerError> {
     let error = |message: String| ThreadModeManagerError::InvalidRegistration {
         mode_id: registration.id.to_string(),

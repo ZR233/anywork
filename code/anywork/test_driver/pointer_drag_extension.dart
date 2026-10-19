@@ -43,7 +43,19 @@ class PointerDragCommandExtension extends CommandExtension {
     if (!hit.path.any(
       (entry) => isRenderObjectAncestorOfTarget(object, entry.target),
     )) {
-      throw StateError('Drag target is covered at its center');
+      final targets = hit.path
+          .take(6)
+          .map((entry) {
+            final target = entry.target;
+            return target is RenderObject
+                ? '${target.runtimeType}: ${target.debugCreator}'
+                : target.runtimeType.toString();
+          })
+          .join('\n');
+      throw StateError(
+        'Drag target is covered at its center: ${drag.finder}, '
+        'point=$start, size=${object.size}\n$targets',
+      );
     }
     final samples = <Object?>[];
     void sample(String phase) {
@@ -56,7 +68,13 @@ class PointerDragCommandExtension extends CommandExtension {
     }
 
     sample('beforeDown');
-    final gesture = await prober.startGesture(start, view: root.flutterView);
+    final gesture = await prober.startGesture(
+      start,
+      view: root.flutterView,
+      kind: drag.pointerKind == PointerDragKind.mouse
+          ? PointerDeviceKind.mouse
+          : PointerDeviceKind.touch,
+    );
     try {
       // Cross touch slop before waiting for a costly streamed-body layout.
       // The following frame still exercises layout between DragStart and the

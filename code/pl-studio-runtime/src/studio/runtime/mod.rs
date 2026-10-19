@@ -15,6 +15,7 @@ mod history;
 mod lifecycle;
 mod lsp_state;
 mod mcp_health;
+mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;

@@ -165,12 +165,16 @@ class SessionModeSelector extends ConsumerWidget {
     required this.mode,
     required this.onSelected,
     this.enabled = true,
+    this.snapshotDisplayName,
+    this.usesSnapshot = false,
     super.key,
   });
 
   final ThreadModeId mode;
   final ValueChanged<ThreadModeId> onSelected;
   final bool enabled;
+  final String? snapshotDisplayName;
+  final bool usesSnapshot;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -184,9 +188,15 @@ class SessionModeSelector extends ConsumerWidget {
         .where((descriptor) => descriptor.id == mode.id)
         .firstOrNull
         ?.displayName;
+    final deleted =
+        discovered.isNotEmpty && !discovered.any((item) => item.id == mode.id);
     return _QuietSelectorMenu<ThreadModeId>(
       key: StudioDriverKeys.sessionMode,
-      tooltip: enabled
+      tooltip: deleted
+          ? (usesSnapshot
+                ? context.l10n.modeDeletedUsingSnapshot
+                : context.l10n.modeDeletedChooseAnother)
+          : enabled
           ? context.l10n.statusSessionMode
           : context.l10n.statusSessionModeLocked,
       enabled: enabled,
@@ -195,6 +205,9 @@ class SessionModeSelector extends ConsumerWidget {
         for (final option in options)
           _QuietMenuItem<ThreadModeId>(
             value: option,
+            enabled:
+                discovered.any((item) => item.id == option.id) ||
+                discovered.isEmpty,
             selected: option == mode,
             itemKey: StudioDriverKeys.sessionModeOption(option.name),
             child: Row(
@@ -214,7 +227,11 @@ class SessionModeSelector extends ConsumerWidget {
       ],
       child: StudioMenuLabel(
         key: StudioDriverKeys.sessionModeLabel,
-        label: selectedLabel ?? context.compileModeLabel(mode),
+        label:
+            selectedLabel ??
+            (deleted
+                ? '${snapshotDisplayName ?? context.compileModeLabel(mode)} · ${usesSnapshot ? context.l10n.modeSnapshotBadge : context.l10n.modeDeletedBadge}'
+                : context.compileModeLabel(mode)),
         enabled: enabled,
         maxWidth: 96,
       ),

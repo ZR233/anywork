@@ -45,6 +45,7 @@ pub use pl_tool::mcp::config::validate_mcp_identifier;
 pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
 pub use pl_model::config::{AgentRoleId, ModelRouteConfig, ProviderId, ReasoningEffort};
+pub(crate) use runtime::ModeDefinitionCommandOutcome;
 pub use runtime::{
     ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
     ResolvedAgentProfile,

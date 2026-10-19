@@ -83,7 +83,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 19] = [
+pub const GUI_SCENARIOS: [&str; 20] = [
     "gui",
     "storage-compaction",
     "stress",
@@ -94,6 +94,7 @@ pub const GUI_SCENARIOS: [&str; 19] = [
     "history-lock",
     "history-fault",
     "plan-recovery",
+    "mode-editor",
     "context-replay-recovery",
     "tool-scroll",
     "websocket-recovery",
@@ -103,6 +104,18 @@ pub const GUI_SCENARIOS: [&str; 19] = [
     "shutdown",
     "provider-usage",
     "timeline-history",
+];
+
+/// Root prompts consumed by the native Mode editor acceptance, in order.
+///
+/// The first four are submitted by the first GUI lifecycle. The fifth is sent
+/// after reopening the Thread whose Mode definition was deleted while running.
+pub const GUI_MODE_EDITOR_PROMPTS: [&str; 5] = [
+    "Workflow editor first turn",
+    "Workflow editor graph update",
+    "Workflow editor prompt update",
+    "Workflow editor delete while running",
+    "Workflow editor restored snapshot",
 ];
 
 /// Native compaction exhausts its budget, then a fresh input succeeds and waits
@@ -2677,6 +2690,73 @@ pub fn gui_plan_recovery_script() -> Vec<Step> {
     });
     script.optional_title(&revise_title);
     script.optional_plan_summary();
+    script.finish()
+}
+
+/// Strict script for the native Mode-editor and saved-snapshot acceptance.
+///
+/// Every root prompt first calls the production `workflow_graph` reader. The
+/// matching tool-output request then completes the turn with deterministic text.
+/// Steps 0 and 3 delay their first SSE frame by 30 seconds so the Driver can save
+/// and then delete the definition while the real Turn is genuinely in flight.
+pub fn gui_mode_editor_script() -> Vec<Step> {
+    const ANSWERS: [&str; 5] = [
+        "Mode editor first turn completed",
+        "Mode editor graph update completed",
+        "Mode editor prompt update completed",
+        "Mode editor delete while running completed",
+        "Mode editor restored snapshot completed",
+    ];
+    let mut script = RealtimeScript::new();
+    // One persistent session owns one asynchronous title job. It may acquire
+    // its provider slot before or after any root request, including tool output.
+    let title = session_title_prompt(GUI_MODE_EDITOR_PROMPTS[0]);
+    for (index, prompt) in GUI_MODE_EDITOR_PROMPTS.iter().enumerate() {
+        script.optional_title(&title);
+        let call_id = format!("mode-editor-graph-{index}");
+        let item_id = format!("mode-editor-graph-item-{index}");
+        let events = responses_tool_calls(
+            &format!("mode-editor-graph-response-{index}"),
+            "fixture-model",
+            &[RealtimeToolCall {
+                item_id: &item_id,
+                call_id: &call_id,
+                name: "workflow_graph",
+                arguments: "{}".to_string(),
+            }],
+        );
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                *prompt,
+                step,
+                if matches!(index, 0 | 3) {
+                    Reply::PacedEvents {
+                        initial_delay_ms: 30_000,
+                        step_millis: 0,
+                        events: events.clone(),
+                    }
+                } else {
+                    Reply::Sse(events.clone())
+                },
+            )
+        });
+        script.optional_title(&title);
+        script.add(|step| {
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                &call_id,
+                "",
+                step,
+                Reply::Sse(responses_text(
+                    ANSWERS[index],
+                    &format!("mode-editor-answer-{index}"),
+                    "fixture-model",
+                )),
+            )
+        });
+    }
+    script.optional_title(&title);
     script.finish()
 }
 

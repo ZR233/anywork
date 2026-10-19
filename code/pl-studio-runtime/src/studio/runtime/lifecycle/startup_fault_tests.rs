@@ -390,3 +390,40 @@ async fn cancelled_parallel_preparation_closes_storage_before_releasing_lock() -
     runtime.shutdown_runtime().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sessions() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let paths = seed(&home).await?;
+    let mode_path = home.join("modes/mode.broken.json");
+    std::fs::create_dir_all(mode_path.parent().unwrap())?;
+    std::fs::write(&mode_path, b"{ broken mode document")?;
+    let original = std::fs::read(&mode_path)?;
+    std::fs::write(
+        home.join("config.toml"),
+        toml::to_string_pretty(&crate::config::StudioConfig::default_config()?)?,
+    )?;
+    let config = std::fs::read(home.join("config.toml"))?;
+    let result = StudioRuntime::initialize(options(&home)).await;
+    let error = match result {
+        Ok(runtime) => {
+            runtime.shutdown_runtime().await?;
+            anyhow::bail!("invalid Mode file unexpectedly initialized");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+    assert_eq!(std::fs::read(&mode_path)?, original);
+    assert_eq!(std::fs::read(home.join("config.toml"))?, config);
+    assert_eq!(
+        std::fs::read(paths.thread_blobs_dir("cold").join("attachment"))?,
+        b"attachment bytes"
+    );
+    assert_eq!(
+        std::fs::read(home.join("sessions/old/checkpoint"))?,
+        b"old session"
+    );
+    Ok(())
+}

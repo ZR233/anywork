@@ -2788,4 +2788,600 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modelTextFilterEmpty => '没有符合文本条件的模型，请在模型服务商设置中查看参数';
+
+  @override
+  String get modeEditorTitle => '工作模式';
+
+  @override
+  String get modeEditorNewMode => '新建模式';
+
+  @override
+  String get modeEditorImportJson => '导入 JSON';
+
+  @override
+  String get modeEditorSearchHint => '查找名称或标识';
+
+  @override
+  String get modeEditorBuiltInGroup => '系统内置';
+
+  @override
+  String get modeEditorMyModesGroup => '我的模式';
+
+  @override
+  String get modeEditorNoMatches => '没有匹配的工作模式。';
+
+  @override
+  String get modeEditorCatalogReadOnlyHint => '系统模式只读。复制后可自定义阶段与路径。';
+
+  @override
+  String get modeEditorReadOnly => '只读';
+
+  @override
+  String get modeEditorUnsaved => '未保存';
+
+  @override
+  String get modeEditorUndo => '撤销';
+
+  @override
+  String get modeEditorRedo => '重做';
+
+  @override
+  String get modeEditorReload => '重新加载';
+
+  @override
+  String get modeEditorDuplicate => '复制';
+
+  @override
+  String get modeEditorDeleteMode => '删除模式';
+
+  @override
+  String get modeEditorSave => '保存';
+
+  @override
+  String get modeEditorTabFlow => '流程图';
+
+  @override
+  String get modeEditorTabJson => 'JSON 配置';
+
+  @override
+  String get modeEditorTabSettings => '模式设置';
+
+  @override
+  String get modeEditorTabPreview => '运行预演';
+
+  @override
+  String get modeEditorDraftUnsaved => '草稿未保存';
+
+  @override
+  String get modeEditorSelectOrCreate => '选择或新建一个工作模式。';
+
+  @override
+  String modeEditorOpenNotice(String id) {
+    return '已打开 $id';
+  }
+
+  @override
+  String modeEditorSaveValidationIssues(int count) {
+    return '保存前校验发现 $count 个问题。';
+  }
+
+  @override
+  String modeEditorPreSaveValidationFailed(String error) {
+    return '保存前校验失败：$error';
+  }
+
+  @override
+  String get modeEditorSaved => '模式已保存，将从下一轮开始生效。';
+
+  @override
+  String get modeEditorSaveFailed => '保存失败。';
+
+  @override
+  String get modeEditorReloaded => '已重新读取模式定义。';
+
+  @override
+  String get modeEditorReloadFailed => '重新加载失败。';
+
+  @override
+  String get modeEditorDeleteFailed => '删除失败。';
+
+  @override
+  String get modeEditorDeleted => '模式已删除，会话历史保留。';
+
+  @override
+  String get modeEditorCopySuffix => '副本';
+
+  @override
+  String get modeEditorCopyCreated => '已创建副本草稿，保存后出现在模式目录。';
+
+  @override
+  String get modeEditorDraftCreated => '已创建草稿。编辑并通过校验后保存。';
+
+  @override
+  String modeEditorImportReadFailed(String error) {
+    return '无法读取模式 JSON：$error';
+  }
+
+  @override
+  String get modeEditorImportObjectRequired => '模式 JSON 必须是对象。';
+
+  @override
+  String get modeEditorInvalidModeId => '模式标识必须形如 mode.example。';
+
+  @override
+  String get modeEditorBuiltInCannotOverwrite => '系统模式不可覆盖。';
+
+  @override
+  String get modeEditorImportedDraft => '配置已读取为草稿，保存后发布到模式目录。';
+
+  @override
+  String get modeEditorJsonCopied => '模式 JSON 已复制。';
+
+  @override
+  String modeEditorSchemaReadFailed(String error) {
+    return '无法读取 Schema：$error';
+  }
+
+  @override
+  String get modeEditorValidationPassed => '校验通过。';
+
+  @override
+  String modeEditorIssuesFound(int count) {
+    return '发现 $count 个问题。';
+  }
+
+  @override
+  String modeEditorValidationFailed(String error) {
+    return '校验失败：$error';
+  }
+
+  @override
+  String get modeEditorJsonApplied => 'JSON 已应用到当前草稿。';
+
+  @override
+  String get modeEditorJsonApplyFailed => 'JSON 无法应用。';
+
+  @override
+  String get modeEditorJsonApplyFix => 'JSON 无法应用，请先修正语法或字段。';
+
+  @override
+  String get modeEditorPreviewReasonDefault => '手动确认阶段完成和转换条件';
+
+  @override
+  String modeEditorPreviewFailed(String error) {
+    return '预演失败：$error';
+  }
+
+  @override
+  String modeEditorMaxStates(int count) {
+    return '最多支持 $count 个状态。';
+  }
+
+  @override
+  String get modeEditorNewFinalState => '新的结束状态';
+
+  @override
+  String get modeEditorNewStage => '新的工作阶段';
+
+  @override
+  String get modeEditorFinalStateAdded => '结束状态已添加。请添加进入路径。';
+
+  @override
+  String get modeEditorStageAdded => '阶段已添加。请添加进入和后续转换。';
+
+  @override
+  String get modeEditorContinueGuardPlaceholder => '满足条件时继续。';
+
+  @override
+  String get modeEditorTransitionAdded => '转换已添加，请补充允许转换的条件。';
+
+  @override
+  String get modeEditorNeedTwoStates => '至少需要两个状态才能添加转换。';
+
+  @override
+  String get modeEditorLayoutReset => '已重新排布。布局不改变工作流定义。';
+
+  @override
+  String get modeEditorWorkflowEnabled => '工作流已启用。';
+
+  @override
+  String get modeEditorWorkflow => '工作流';
+
+  @override
+  String get modeEditorWorkflowGoalText => '按阶段完成当前任务并保留可核对的路径。';
+
+  @override
+  String get modeEditorStart => '开始';
+
+  @override
+  String get modeEditorStageInstructionsPlaceholder => '说明本阶段需要完成的工作。';
+
+  @override
+  String get modeEditorStageCriterionPlaceholder => '本阶段目标已满足。';
+
+  @override
+  String get modeEditorDone => '完成';
+
+  @override
+  String get modeEditorTransitionGuardPlaceholder => '工作结果已经满足目标。';
+
+  @override
+  String get modeEditorPromptDescription => '描述这个工作模式的职责、工作顺序和边界。';
+
+  @override
+  String get modeEditorPortIn => '进入';
+
+  @override
+  String get modeEditorPortOut => '继续';
+
+  @override
+  String get modeEditorGuardRequiredShort => '条件待填写';
+
+  @override
+  String get modeEditorDuplicateTransition => '同一起点与目标之间已经存在转换。';
+
+  @override
+  String get modeEditorInitialBadge => '初始';
+
+  @override
+  String get modeEditorStageAction => '阶段';
+
+  @override
+  String get modeEditorFinalLabel => '终态';
+
+  @override
+  String get modeEditorTransitionAction => '转换';
+
+  @override
+  String get modeEditorValidate => '校验';
+
+  @override
+  String get modeEditorAutoLayout => '自动排布';
+
+  @override
+  String get modeEditorZoomOut => '缩小';
+
+  @override
+  String get modeEditorZoomIn => '放大';
+
+  @override
+  String get modeEditorFitView => '适应视图';
+
+  @override
+  String get modeEditorFlowInspector => '流程属性';
+
+  @override
+  String get modeEditorNoWorkflow => '此模式没有工作流';
+
+  @override
+  String get modeEditorNoWorkflowReadOnlyHint => '复制为自定义模式后可以添加阶段和转换。';
+
+  @override
+  String get modeEditorNoWorkflowEnableHint => '启用工作流后会添加初始阶段和结束状态，可继续增删。';
+
+  @override
+  String get modeEditorEnableWorkflow => '启用工作流';
+
+  @override
+  String get modeEditorUnsavedTitle => '草稿尚未保存';
+
+  @override
+  String get modeEditorUnsavedBody => '保存当前修改后继续，或放弃这次草稿修改。';
+
+  @override
+  String get modeEditorCancel => '取消';
+
+  @override
+  String get modeEditorDiscard => '放弃修改';
+
+  @override
+  String get modeEditorSaveAndContinue => '保存并继续';
+
+  @override
+  String get modeEditorNewWorkMode => '新建工作模式';
+
+  @override
+  String get modeEditorModeName => '模式名称';
+
+  @override
+  String get modeEditorModeNameHint => '例如：研究报告';
+
+  @override
+  String get modeEditorModeNameRequired => '请输入模式名称。';
+
+  @override
+  String get modeEditorModeId => '模式标识';
+
+  @override
+  String get modeEditorModeIdFormat => '标识必须形如 mode.example，仅含小写字母、数字、- 和 _。';
+
+  @override
+  String get modeEditorModeIdExists => '模式标识已存在。';
+
+  @override
+  String get modeEditorStartingPoint => '选择起点';
+
+  @override
+  String get modeEditorMinimalWorkflow => '最简工作流';
+
+  @override
+  String get modeEditorNoWorkflowTemplate => '无工作流';
+
+  @override
+  String get modeEditorCreateMode => '创建模式';
+
+  @override
+  String get modeEditorImportDialogTitle => '导入模式配置';
+
+  @override
+  String get modeEditorImportDialogBody =>
+      '粘贴模式 JSON。内置模式不可覆盖；同 ID 的自定义配置会作为待保存草稿打开。';
+
+  @override
+  String get modeEditorLoadAsDraft => '读取为草稿';
+
+  @override
+  String get modeEditorSchemaDialogTitle => '模式 JSON Schema';
+
+  @override
+  String get modeEditorClose => '关闭';
+
+  @override
+  String get modeEditorDeleteDialogTitle => '删除这个工作模式？';
+
+  @override
+  String modeEditorDeleteDialogBody(String displayName) {
+    return '移除「$displayName」的模式定义；不删除会话历史。';
+  }
+
+  @override
+  String get modeEditorConfirmDelete => '确认删除';
+
+  @override
+  String get modeEditorRemoveStateTitle => '删除这个状态？';
+
+  @override
+  String modeEditorRemoveStateBody(String title, int transitionCount) {
+    return '删除「$title」及相关的 $transitionCount 条转换。可通过撤销恢复。';
+  }
+
+  @override
+  String get modeEditorDeleteState => '删除状态';
+
+  @override
+  String get modeEditorRemoveWorkflowTitle => '移除工作流？';
+
+  @override
+  String get modeEditorRemoveWorkflowBody =>
+      '模式仍可聊天，但不再提供阶段图和 workflow 工具。保存前可以撤销。';
+
+  @override
+  String get modeEditorRemoveWorkflow => '移除工作流';
+
+  @override
+  String get modeEditorStateIdInvalid => '标识仅含小写字母、数字、- 和 _。';
+
+  @override
+  String get modeEditorStateIdExists => '状态标识已存在。';
+
+  @override
+  String get modeEditorRenameStateTitle => '修改状态标识';
+
+  @override
+  String get modeEditorStateId => '状态标识';
+
+  @override
+  String get modeEditorApply => '应用';
+
+  @override
+  String get modeEditorAddTransition => '添加转换';
+
+  @override
+  String get modeEditorSourceState => '起点状态';
+
+  @override
+  String get modeEditorChooseSource => '请选择起点。';
+
+  @override
+  String get modeEditorTargetState => '目标状态';
+
+  @override
+  String get modeEditorChooseTarget => '请选择目标。';
+
+  @override
+  String get modeEditorTransitionGuard => '何时允许转换';
+
+  @override
+  String get modeEditorTransitionGuardHint => '例如：用户确认范围后';
+
+  @override
+  String get modeEditorGuardRequiredField => '请填写转换条件。';
+
+  @override
+  String get modeEditorCollapse => '收起';
+
+  @override
+  String get modeEditorNoWorkflowPeriod => '当前模式没有工作流。';
+
+  @override
+  String get modeEditorInspectorSelectHint => '选择画布中的阶段或转换以编辑完整字段。';
+
+  @override
+  String get modeEditorRenameId => '修改标识';
+
+  @override
+  String get modeEditorStageTitle => '阶段名称';
+
+  @override
+  String get modeEditorStageKind => '阶段类型';
+
+  @override
+  String get modeEditorAtomicStage => '工作阶段';
+
+  @override
+  String get modeEditorFinalState => '结束状态';
+
+  @override
+  String get modeEditorInitialStateSwitch => '作为初始状态';
+
+  @override
+  String get modeEditorInitialStateLockedHint => '工作流总保留一个初始状态；请在其他阶段启用。';
+
+  @override
+  String get modeEditorInitialStateHint => '进入此模式后从该阶段开始。';
+
+  @override
+  String get modeEditorStageInstructions => '阶段说明';
+
+  @override
+  String get modeEditorCompletionCriteria => '完成标准（每行一条）';
+
+  @override
+  String get modeEditorAtomicCriteriaRequired =>
+      '工作阶段至少需要一条完成标准，保存前由 Rust 编译器校验。';
+
+  @override
+  String get modeEditorOutgoingTransitions => '后续转换';
+
+  @override
+  String get modeEditorAdd => '添加';
+
+  @override
+  String get modeEditorNoOutgoing => '没有后续转换。';
+
+  @override
+  String get modeEditorDeleteTransition => '删除转换';
+
+  @override
+  String get modeEditorStateTransition => '状态转换';
+
+  @override
+  String get modeEditorTransitionRuleHint => '同一起点与目标之间只允许一条转换；允许多个后继、自环和循环。';
+
+  @override
+  String modeEditorValidationIssuesCount(int count) {
+    return '$count 个问题';
+  }
+
+  @override
+  String get modeEditorNotValidated => '尚未校验';
+
+  @override
+  String get modeEditorApplyJson => '应用 JSON';
+
+  @override
+  String get modeEditorCopyJson => '复制 JSON';
+
+  @override
+  String get modeEditorSchemaLabel => 'Schema';
+
+  @override
+  String get modeEditorReadOnlyCopyHint => '只读模式可复制或校验';
+
+  @override
+  String get modeEditorJsonHint => '模式 JSON 保留六个顶层字段和 editor 布局。';
+
+  @override
+  String get modeEditorModeSettingsTitle => '模式设置';
+
+  @override
+  String get modeEditorModeSettingsSubtitle => '执行定义与编辑布局分开保存；布局不改变工作流身份。';
+
+  @override
+  String get modeEditorDisplayName => '模式名称';
+
+  @override
+  String get modeEditorDescription => '模式描述';
+
+  @override
+  String get modeEditorOrder => '排序';
+
+  @override
+  String get modeEditorRawPrompt => '原始 Prompt';
+
+  @override
+  String get modeEditorRawPromptHelper => '这是模式注入的完整提示词，不经过 GUI 改写。';
+
+  @override
+  String get modeEditorWorkflowTitle => '工作流名称';
+
+  @override
+  String get modeEditorWorkflowGoal => '工作流目标';
+
+  @override
+  String get modeEditorInitialStateLabel => '初始状态';
+
+  @override
+  String modeEditorWorkflowSummary(int states, int transitions) {
+    return '$states 个状态 · $transitions 条转换';
+  }
+
+  @override
+  String get modeEditorNoWorkflowToolHint => '没有工作流时不会生成阶段图，也不会提供 workflow 工具。';
+
+  @override
+  String get modeEditorPreviewUnavailable => '该模式没有工作流，无法运行预演。';
+
+  @override
+  String get modeEditorRunPreview => '运行预演';
+
+  @override
+  String get modeEditorPreviewSubtitle => '有界重放使用生产 Rust 状态机；预演不修改配置中的初始状态。';
+
+  @override
+  String get modeEditorStartPreview => '开始预演';
+
+  @override
+  String get modeEditorRestart => '重新开始';
+
+  @override
+  String get modeEditorTransitionReason => '转换原因';
+
+  @override
+  String get modeEditorTransitionReasonHint => '手动确认阶段完成和转换条件';
+
+  @override
+  String get modeEditorTransitionReasonHelper => '推进到后继状态时作为本次转换的原因。';
+
+  @override
+  String modeEditorAllowedNextStates(int count) {
+    return '允许的下一状态 · $count';
+  }
+
+  @override
+  String get modeEditorTerminalReached => '已到达终态。重新开始预演不会改写保存的初始状态。';
+
+  @override
+  String get modeEditorPreviewIntroText =>
+      '从当前 JSON 文档开始预演。每次推进只接受当前状态的一条合法转换，路径与转换历史会保留在本次预演中。';
+
+  @override
+  String get modeEditorPreviewAccepted => '预演已接受。';
+
+  @override
+  String get modeEditorPreviewRejected => '预演被拒绝。';
+
+  @override
+  String get modeEditorCurrentStage => '当前阶段';
+
+  @override
+  String get modeEditorPath => '路径';
+
+  @override
+  String get modeEditorAdvance => '推进';
+
+  @override
+  String get modeEditorPreviewHistory => '本次预演历史';
+
+  @override
+  String get modeDeletedUsingSnapshot => '已删除模式使用快照';
+
+  @override
+  String get modeDeletedChooseAnother => '该模式已删除，请重新选择';
+
+  @override
+  String get modeSnapshotBadge => '快照';
+
+  @override
+  String get modeDeletedBadge => '已删除';
 }

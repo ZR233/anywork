@@ -55,7 +55,7 @@ pub struct ProductEventBus {
     /// 目录 delta 尚未耐久化的 Thread；不含纯冷数据。
     thread_index: Arc<std::sync::Mutex<HashMap<String, Thread>>>,
     /// 已发布的 Mode catalog revision；按真变才发，避免重复装载空转发布。
-    mode_catalog_revision: Arc<AtomicU64>,
+    mode_catalog_revision: Arc<std::sync::Mutex<u64>>,
 }
 
 #[derive(Default)]
@@ -98,7 +98,7 @@ impl ProductEventBus {
             )),
             agents: Arc::new(Mutex::new(BTreeMap::new())),
             thread_index: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            mode_catalog_revision: Arc::new(AtomicU64::new(0)),
+            mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
         }
     }
 

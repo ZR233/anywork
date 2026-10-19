@@ -18,6 +18,7 @@ import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/subscription/thread.dart' as frb_thread_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
+import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/command.dart' as frb_command;
 import '../../rust/api/studio/handlers/attachment.dart' as frb_attachment;
@@ -27,6 +28,7 @@ import '../../rust/api/studio/types/ssh.dart' as frb_ssh_types;
 import '../../rust/api/studio/types/shutdown.dart' as frb_shutdown;
 import '../../rust/api/studio/types/thread_stream/item.dart' as frb_item;
 import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
+import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/frb_generated.dart';
 
 part 'studio_thread_stream.dart';

@@ -1,5 +1,34 @@
 part of 'studio_api.dart';
 
+const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
+  title: '任务流程',
+  goal: '完成任务并交付可验证结果',
+  initialStateId: 'implement',
+  states: [
+    WorkflowState(
+      id: 'implement',
+      title: '实现',
+      instructions: '完成用户请求并验证结果。',
+      completionCriteria: ['实现完成', '验证通过'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'done',
+      title: '完成',
+      instructions: '汇总结果并结束任务。',
+      completionCriteria: ['结果已交付'],
+      kind: WorkflowStateKind.finalState,
+    ),
+  ],
+  transitions: [
+    WorkflowTransition(
+      sourceStateId: 'implement',
+      targetStateId: 'done',
+      guard: '实现完成且验证通过',
+    ),
+  ],
+);
+
 class DemoStudioTransport extends StudioTransport
     implements PersistenceQueueReader {
   @override
@@ -42,6 +71,29 @@ class DemoStudioTransport extends StudioTransport
   final Map<String, ThreadWorkspace> _workspaces = {};
   final Map<String, int> _promptGenerations = {};
   final Map<String, ThreadModeId> _threadModes = {};
+  int _threadModeCatalogRevision = 1;
+  final Set<String> _readOnlyModeIds = {'mode.simple', 'mode.task'};
+  final Map<String, ModeDocument> _modeDocuments = {
+    'mode.simple': const ModeDocument(
+      definition: ModeDefinition(
+        id: 'mode.simple',
+        displayName: '简洁',
+        description: '直接对话',
+        order: 0,
+        prompt: '直接回答用户请求。',
+      ),
+    ),
+    'mode.task': const ModeDocument(
+      definition: ModeDefinition(
+        id: 'mode.task',
+        displayName: '任务',
+        description: '通过工作流完成任务',
+        order: 1,
+        prompt: '按工作流推进任务并确认阶段完成。',
+        workflow: _demoTaskWorkflow,
+      ),
+    ),
+  };
   final Map<String, AttachmentDraftView> _attachmentDrafts = {};
   final Set<String> _archivedProjectIds = {};
   final Map<String, String> _projectNames = {};
@@ -245,25 +297,29 @@ class DemoStudioTransport extends StudioTransport
 
   DateTime get _fixtureTime => _fixtureNow ??= DateTime.now();
 
-  ThreadModeCatalogView _demoThreadModeCatalog() => const ThreadModeCatalogView(
-    revision: 1,
-    modes: [
-      ThreadModeDescriptorView(
-        id: 'mode.simple',
-        displayName: '简洁',
-        description: '直接对话',
-        order: 0,
-        hasWorkflow: false,
-      ),
-      ThreadModeDescriptorView(
-        id: 'mode.task',
-        displayName: '任务',
-        description: '通过工作流完成任务',
-        order: 1,
-        hasWorkflow: true,
-      ),
-    ],
-  );
+  ThreadModeCatalogView _demoThreadModeCatalog() {
+    final documents = _modeDocuments.values.toList()
+      ..sort((left, right) {
+        final byOrder = left.definition.order.compareTo(right.definition.order);
+        return byOrder != 0
+            ? byOrder
+            : left.definition.id.compareTo(right.definition.id);
+      });
+    return ThreadModeCatalogView(
+      revision: _threadModeCatalogRevision,
+      modes: [
+        for (final document in documents)
+          ThreadModeDescriptorView(
+            id: document.definition.id,
+            displayName: document.definition.displayName,
+            description: document.definition.description,
+            order: document.definition.order,
+            hasWorkflow: document.definition.workflow != null,
+            readOnly: _readOnlyModeIds.contains(document.definition.id),
+          ),
+      ],
+    );
+  }
 
   ProjectDirectoryState _demoProjectDirectory() {
     final fixture = _ensureWorkspaceFixture();
@@ -2127,6 +2183,333 @@ class DemoStudioTransport extends StudioTransport
         effect: EffectPoint.immediate,
       ),
     );
+  }
+
+  @override
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId) async {
+    final document = _modeDocuments[modeId];
+    if (document == null) {
+      throw _demoModeFailure(
+        StudioFailureCode.notFound,
+        'Unknown demo mode $modeId',
+        retryable: false,
+      );
+    }
+    return ModeDefinitionSnapshot(
+      revision: _threadModeCatalogRevision,
+      document: document,
+      readOnly: _readOnlyModeIds.contains(modeId),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    final modeId = document.definition.id;
+    if (_readOnlyModeIds.contains(modeId)) {
+      throw _demoModeFailure(
+        StudioFailureCode.permissionDenied,
+        'Built-in mode $modeId is read-only',
+        retryable: false,
+      );
+    }
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    _modeDocuments[modeId] = document;
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(
+      operationId,
+      definition: ModeDefinitionSnapshot(
+        revision: _threadModeCatalogRevision,
+        document: document,
+        readOnly: false,
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    if (_readOnlyModeIds.contains(modeId)) {
+      throw _demoModeFailure(
+        StudioFailureCode.permissionDenied,
+        'Built-in mode $modeId is read-only',
+        retryable: false,
+      );
+    }
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    if (_modeDocuments.remove(modeId) == null) {
+      throw _demoModeFailure(
+        StudioFailureCode.notFound,
+        'Unknown demo mode $modeId',
+        retryable: false,
+      );
+    }
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(operationId);
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(operationId);
+  }
+
+  @override
+  Future<ModeValidationResult> validateThreadModeDefinition(String json) async {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(json);
+    } on FormatException catch (error) {
+      return ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: error.message,
+          ),
+        ],
+      );
+    }
+    if (decoded is! Map<Object?, Object?>) {
+      return const ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: 'The Mode document must be a JSON object',
+          ),
+        ],
+      );
+    }
+    final ModeDocument document;
+    try {
+      document = ModeDocument.fromJson(Map<String, dynamic>.from(decoded));
+    } catch (error) {
+      return ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: error.toString(),
+          ),
+        ],
+      );
+    }
+    final issues = <ModeValidationIssue>[];
+    final workflow = document.definition.workflow;
+    if (workflow != null) {
+      final ids = <String>{};
+      for (final state in workflow.states) {
+        if (!ids.add(state.id)) {
+          issues.add(
+            ModeValidationIssue(
+              code: 'workflow.duplicateState',
+              path: 'workflow.states.${state.id}',
+              message: 'Workflow state ${state.id} is duplicated',
+            ),
+          );
+        }
+      }
+      if (!ids.contains(workflow.initialStateId)) {
+        issues.add(
+          ModeValidationIssue(
+            code: 'workflow.unknownInitialState',
+            path: 'workflow.initialStateId',
+            message: 'Initial state ${workflow.initialStateId} does not exist',
+          ),
+        );
+      }
+      for (final transition in workflow.transitions) {
+        if (!ids.contains(transition.sourceStateId) ||
+            !ids.contains(transition.targetStateId)) {
+          issues.add(
+            ModeValidationIssue(
+              code: 'workflow.unknownTransitionState',
+              path: 'workflow.transitions',
+              message:
+                  'Transition ${transition.sourceStateId} -> '
+                  '${transition.targetStateId} references an unknown state',
+            ),
+          );
+        }
+      }
+    }
+    return ModeValidationResult(
+      document: issues.isEmpty ? document : null,
+      issues: issues,
+    );
+  }
+
+  @override
+  Future<String> threadModeDefinitionSchema() async => jsonEncode({
+    r'$schema': 'https://json-schema.org/draft/2020-12/schema',
+    'title': 'Anywork Thread Mode',
+    'type': 'object',
+    'required': ['id', 'displayName', 'description', 'order', 'prompt'],
+    'properties': {
+      'id': {'type': 'string', 'pattern': r'^mode\.[a-z0-9_-]+$'},
+      'displayName': {'type': 'string'},
+      'description': {'type': 'string'},
+      'order': {'type': 'integer', 'minimum': 0},
+      'prompt': {'type': 'string'},
+      'workflow': {
+        'type': ['object', 'null'],
+      },
+      'editor': {'type': 'object'},
+    },
+  });
+
+  @override
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  ) async => _demoWorkflowPreview(request);
+
+  void _emitModeCatalogUpdate() {
+    _threadModeCatalogRevision += 1;
+    _publishProductPayload(
+      ThreadModeCatalogChangedPayload(_demoThreadModeCatalog()),
+    );
+  }
+
+  ModeDefinitionCommandReply _demoModeCommandReply(
+    OperationId operationId, {
+    ModeDefinitionSnapshot? definition,
+  }) => ModeDefinitionCommandReply(
+    catalog: _demoThreadModeCatalog(),
+    definition: definition,
+    receipt: _demoReceipt(
+      operationId,
+      changed: true,
+      targets: [_demoStamp('thread-mode-catalog', _threadModeCatalogRevision)],
+      effect: EffectPoint.nextTurn,
+    ),
+  );
+
+  StudioFailure _demoModeFailure(
+    StudioFailureCode code,
+    String message, {
+    required bool retryable,
+  }) => StudioFailure(
+    code: code,
+    message: message,
+    retryable: retryable,
+    correlationId: 'demo-mode-${newStudioCorrelationId()}',
+  );
+
+  WorkflowPreviewSnapshot _demoWorkflowPreview(WorkflowPreviewRequest request) {
+    final workflow = request.document.definition.workflow;
+    if (workflow == null) {
+      return WorkflowPreviewSnapshot(
+        accepted: false,
+        message: 'This Mode has no workflow',
+        path: request.path,
+        terminal: false,
+      );
+    }
+    final states = {for (final state in workflow.states) state.id: state};
+    if (!states.containsKey(workflow.initialStateId)) {
+      return WorkflowPreviewSnapshot(
+        accepted: false,
+        message: 'Initial state ${workflow.initialStateId} does not exist',
+        path: request.path,
+        terminal: false,
+      );
+    }
+    final path = request.path.isEmpty
+        ? <String>[workflow.initialStateId]
+        : List<String>.of(request.path);
+    for (final stateId in path) {
+      if (!states.containsKey(stateId)) {
+        return WorkflowPreviewSnapshot(
+          accepted: false,
+          message: 'Unknown state $stateId',
+          path: path,
+          terminal: false,
+        );
+      }
+    }
+    final target = request.targetStateId;
+    if (target != null && target != path.last) {
+      final planned = _demoTransitionPath(
+        workflow,
+        from: path.last,
+        to: target,
+      );
+      if (planned == null) {
+        return WorkflowPreviewSnapshot(
+          accepted: false,
+          message: 'No transition path reaches $target',
+          currentState: states[path.last],
+          path: path,
+          terminal: states[path.last]!.kind == WorkflowStateKind.finalState,
+        );
+      }
+      path.addAll(planned);
+    }
+    final current = states[path.last]!;
+    return WorkflowPreviewSnapshot(
+      accepted: true,
+      message: 'Workflow preview reached ${current.title}',
+      currentState: current,
+      transitions: [
+        for (final transition in workflow.transitions)
+          if (transition.sourceStateId == current.id) transition,
+      ],
+      path: path,
+      terminal: current.kind == WorkflowStateKind.finalState,
+    );
+  }
+
+  List<String>? _demoTransitionPath(
+    WorkflowDefinition workflow, {
+    required String from,
+    required String to,
+  }) {
+    final queue = <List<String>>[
+      [from],
+    ];
+    final visited = <String>{from};
+    while (queue.isNotEmpty) {
+      final path = queue.removeAt(0);
+      final current = path.last;
+      for (final transition in workflow.transitions) {
+        if (transition.sourceStateId != current) continue;
+        final next = transition.targetStateId;
+        if (!visited.add(next)) continue;
+        final candidate = [...path, next];
+        if (next == to) return candidate.skip(1).toList();
+        queue.add(candidate);
+      }
+    }
+    return null;
   }
 
   @override

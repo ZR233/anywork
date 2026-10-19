@@ -155,7 +155,7 @@ impl StudioRuntime {
             .get(crate::studio::model_route::MODEL_ROUTE_EXTENSION)
             .context("Thread has no saved model route")?;
         let mode_payload =
-            OpaquePayload::new("pl.studio.mode", 1, serde_json::to_string(&mode_id)?)?;
+            crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
         let route_payload = crate::studio::model_route::encode(&route_selector)?;
         let mut mutations = vec![
             ExtensionMutation::Put {

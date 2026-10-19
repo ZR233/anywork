@@ -64,6 +64,11 @@ impl ConfigPaths {
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")
     }
+
+    /// 用户工作模式的独立 JSON 目录；每个文件保存一份完整编辑文档。
+    pub fn modes_dir(&self) -> PathBuf {
+        self.config_dir.join("modes")
+    }
 }
 
 impl ConfigStore {

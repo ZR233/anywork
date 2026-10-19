@@ -11,6 +11,7 @@ export 'src/models/conversation_activity_models.dart';
 export 'src/models/failure_models.dart';
 export 'src/models/interaction_models.dart';
 export 'src/models/model_catalog.dart';
+export 'src/models/mode_editor_models.dart';
 export 'src/models/persistence_models.dart';
 export 'src/models/product_topic_models.dart';
 export 'src/models/provider_models.dart';

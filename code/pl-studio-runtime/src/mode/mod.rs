@@ -2,6 +2,7 @@
 
 mod compiler;
 mod context;
+mod editor;
 mod manager;
 mod registration;
 mod runtime;
@@ -13,27 +14,26 @@ pub use compiler::{
     compile_workflow_definition,
 };
 pub use context::workflow_model_context_section;
+pub(crate) use editor::MAX_MODE_DOCUMENT_BYTES;
+pub use editor::{mode_document_schema, validate_mode_document, validate_mode_json};
 pub use manager::{
     RegisteredThreadMode, ThreadModeManager, ThreadModeManagerError, ThreadModeRegistrySnapshot,
     ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,
 };
+pub use pl_protocol::ThreadModeDefinition;
 pub use registration::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
-    StaticWorkflowTransition, ThreadModeRegistration,
+    StaticWorkflowTransition,
 };
 pub use runtime::{new_run, reconcile_workflow_for_turn};
 
 /// 工作流上下文段的稳定标识符。
 pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
 
-/// Decode the one canonical Mode extension shared by preparation and projection.
-pub(crate) fn decode_saved_mode(
-    payload: &pl_core::context::OpaquePayload,
-) -> Result<pl_protocol::ThreadModeId, pl_protocol::PureError> {
-    if payload.format() != "pl.studio.mode" || payload.version() != 1 {
-        return Err(pl_protocol::PureError::ConfigError(
-            "unsupported saved Mode".into(),
-        ));
-    }
-    Ok(serde_json::from_str(payload.content())?)
-}
+mod snapshot;
+pub(crate) use snapshot::{
+    SavedThreadMode, decode_mode_snapshot, decode_saved_mode, encode_mode_snapshot,
+    migrate_mode_snapshot, saved_registered_mode,
+};
+mod preview;
+pub use preview::preview_workflow;

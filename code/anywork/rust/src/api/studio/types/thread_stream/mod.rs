@@ -300,6 +300,9 @@ pub struct BridgeWorkflowRun {
     pub current_state_id: String,
     pub started_at: i64,
     pub updated_at: i64,
+    pub current_state_title: String,
+    pub mode_display_name: String,
+    pub mode_deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

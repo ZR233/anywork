@@ -222,14 +222,13 @@ impl Owner {
     async fn run_step(
         &mut self,
         input: StepInput,
-        plan: crate::tool::opaque::ToolPlan,
+        mut plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
     ) -> Result<ModelStepOutput, ThreadError> {
         // The first boundary is admission, not a provider call: the driver may wait for storage
         // admission before it even knows whether the context hook runs.
         self.enter_model_execution(ModelExecutionPhase::Admitting);
         self.ensure_model_admission(&input.cancellation).await?;
-        let tools = plan.declarations();
         if input.turn_id.is_empty()
             || input.attempt_id.is_empty()
             || self.state.context.records.iter().any(|record| {
@@ -288,7 +287,7 @@ impl Owner {
             self.apply_pending_runtime_facts()?;
             for refresh in 0..=1 {
                 let prepared = self
-                    .prepare_context(&input, &plan, &frozen_input, false)
+                    .prepare_context(&input, &mut plan, &frozen_input, false)
                     .await;
                 if refresh == 0
                     && matches!(
@@ -340,6 +339,7 @@ impl Owner {
             output_budget.clone(),
         );
         self.model_progress = Some((input.attempt_id.clone(), observations));
+        let tools = plan.declarations();
         let mut request = ModelRequest {
             tool_call_mode: plan.call_mode(),
             solo_tool_ids: plan.solo_tool_ids(),
@@ -381,7 +381,7 @@ impl Owner {
                     recovered_capacity = true;
                     let before = self.state.context.revision;
                     self.enter_model_execution(ModelExecutionPhase::PreparingContext);
-                    self.prepare_context(&input, &plan, &frozen_input, true)
+                    self.prepare_context(&input, &mut plan, &frozen_input, true)
                         .await?;
                     if self.state.context.revision == before {
                         return Err(ThreadError::Model(Arc::new(error)));

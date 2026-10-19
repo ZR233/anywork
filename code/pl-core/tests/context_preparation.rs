@@ -125,6 +125,7 @@ impl ContextPreparationHook for CapacityRecovery {
                 .all(|record| record.source != ContextSource::User)
         );
         ContextPreparation::Prepared {
+            excluded_tool_ids: Vec::new(),
             expected_extension_sequence: request.extension_sequence,
             rejected_mutations: vec![],
             replacement: Some(pl_core::thread::ReplaceContext {
@@ -313,6 +314,7 @@ struct RestoreFactAuthority;
 impl ContextPreparationHook for RestoreFactAuthority {
     async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
         ContextPreparation::Prepared {
+            excluded_tool_ids: Vec::new(),
             expected_extension_sequence: request.extension_sequence,
             rejected_mutations: vec![],
             replacement: None,
@@ -420,6 +422,7 @@ impl ContextPreparationHook for CancelCandidate {
             *expected_revision = Some(99);
         }
         ContextPreparation::Prepared {
+            excluded_tool_ids: Vec::new(),
             expected_extension_sequence: request.extension_sequence,
             rejected_mutations: vec![cost],
             replacement: None,
@@ -464,6 +467,7 @@ impl ContextPreparationHook for ConflictOnce {
     async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
         let first = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
         ContextPreparation::Prepared {
+            excluded_tool_ids: Vec::new(),
             expected_extension_sequence: request.extension_sequence + u64::from(first),
             rejected_mutations: vec![],
             replacement: None,
@@ -567,4 +571,98 @@ async fn messages_arriving_during_preparation_remain_for_the_next_request() {
         );
     }
     thread.close().await.unwrap();
+}
+
+#[derive(Debug)]
+struct HideTool;
+impl ContextPreparationHook for HideTool {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        ContextPreparation::Prepared {
+            expected_extension_sequence: request.extension_sequence,
+            rejected_mutations: vec![],
+            replacement: None,
+            facts: request.current_facts.to_vec(),
+            mutations: vec![],
+            excluded_tool_ids: vec!["hidden".into()],
+        }
+    }
+}
+struct VisibilityModel {
+    seen: Arc<Mutex<Vec<Vec<String>>>>,
+    emit_hidden: bool,
+}
+impl pl_core::model::ModelSession for VisibilityModel {
+    async fn prepare(
+        &mut self,
+        request: pl_core::model::ModelRequest,
+    ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        self.seen.lock().unwrap().push(
+            request
+                .tools
+                .iter()
+                .map(|tool| tool.tool_id.clone())
+                .collect(),
+        );
+        let calls = if self.emit_hidden {
+            vec![pl_core::model::ModelToolCall {
+                call_id: "hallucinated".into(),
+                tool_id: "hidden".into(),
+                arguments: pl_core::context::OpaquePayload::text("must be rejected"),
+            }]
+        } else {
+            vec![]
+        };
+        Ok(pl_core::model::PreparedModelCall::new(async move {
+            Ok(support::response(&request, calls))
+        }))
+    }
+    async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn prepared_tool_visibility_controls_both_model_declarations_and_call_admission() {
+    for emit_hidden in [false, true] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let thread = ThreadHandle::start(
+            format!("visibility-{emit_hidden}"),
+            DynModelSession::new(VisibilityModel {
+                seen: seen.clone(),
+                emit_hidden,
+            }),
+        )
+        .unwrap();
+        thread
+            .register_tools(vec![
+                tool_support::tool("hidden", &calls),
+                tool_support::tool("visible", &calls),
+            ])
+            .await
+            .unwrap();
+        thread
+            .set_context_preparation(Some(ContextPreparer::new(HideTool)))
+            .await
+            .unwrap();
+        let result = thread.run_turn(turn("restricted")).await;
+        if !emit_hidden {
+            result.unwrap();
+        }
+        assert!(
+            !seen.lock().unwrap().is_empty(),
+            "the provider must receive the restricted request"
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|tools| tools == &["visible"])
+        );
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "excluded tools must never execute"
+        );
+        thread.close().await.unwrap();
+    }
 }

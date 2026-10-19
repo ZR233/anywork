@@ -687,6 +687,9 @@ class WorkflowRunView {
     required this.terminal,
     required this.startedAt,
     required this.updatedAt,
+    this.currentStateTitle = '',
+    this.modeDisplayName = '',
+    this.modeDeleted = false,
   });
 
   final String lineageId;
@@ -698,16 +701,29 @@ class WorkflowRunView {
   final bool terminal;
   final DateTime startedAt;
   final DateTime updatedAt;
+  final String currentStateTitle;
+  final String modeDisplayName;
+  final bool modeDeleted;
 
   @override
   bool operator ==(Object other) =>
       other is WorkflowRunView &&
       runId == other.runId &&
       currentStateId == other.currentStateId &&
-      updatedAt == other.updatedAt;
+      updatedAt == other.updatedAt &&
+      currentStateTitle == other.currentStateTitle &&
+      modeDisplayName == other.modeDisplayName &&
+      modeDeleted == other.modeDeleted;
 
   @override
-  int get hashCode => Object.hash(runId, currentStateId, updatedAt);
+  int get hashCode => Object.hash(
+    runId,
+    currentStateId,
+    updatedAt,
+    currentStateTitle,
+    modeDisplayName,
+    modeDeleted,
+  );
 }
 
 enum PlanRuntimePhase {

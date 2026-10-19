@@ -5261,6 +5261,1134 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No matching text models. Check model parameters in provider settings.'**
   String get modelTextFilterEmpty;
+
+  /// No description provided for @modeEditorTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Work modes'**
+  String get modeEditorTitle;
+
+  /// No description provided for @modeEditorNewMode.
+  ///
+  /// In en, this message translates to:
+  /// **'New mode'**
+  String get modeEditorNewMode;
+
+  /// No description provided for @modeEditorImportJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Import JSON'**
+  String get modeEditorImportJson;
+
+  /// No description provided for @modeEditorSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Find name or id'**
+  String get modeEditorSearchHint;
+
+  /// No description provided for @modeEditorBuiltInGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in'**
+  String get modeEditorBuiltInGroup;
+
+  /// No description provided for @modeEditorMyModesGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'My modes'**
+  String get modeEditorMyModesGroup;
+
+  /// No description provided for @modeEditorNoMatches.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching work modes.'**
+  String get modeEditorNoMatches;
+
+  /// No description provided for @modeEditorCatalogReadOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in modes are read-only. Duplicate one to customize stages.'**
+  String get modeEditorCatalogReadOnlyHint;
+
+  /// No description provided for @modeEditorReadOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Read-only'**
+  String get modeEditorReadOnly;
+
+  /// No description provided for @modeEditorUnsaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved'**
+  String get modeEditorUnsaved;
+
+  /// No description provided for @modeEditorUndo.
+  ///
+  /// In en, this message translates to:
+  /// **'Undo'**
+  String get modeEditorUndo;
+
+  /// No description provided for @modeEditorRedo.
+  ///
+  /// In en, this message translates to:
+  /// **'Redo'**
+  String get modeEditorRedo;
+
+  /// No description provided for @modeEditorReload.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload'**
+  String get modeEditorReload;
+
+  /// No description provided for @modeEditorDuplicate.
+  ///
+  /// In en, this message translates to:
+  /// **'Duplicate'**
+  String get modeEditorDuplicate;
+
+  /// No description provided for @modeEditorDeleteMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete mode'**
+  String get modeEditorDeleteMode;
+
+  /// No description provided for @modeEditorSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get modeEditorSave;
+
+  /// No description provided for @modeEditorTabFlow.
+  ///
+  /// In en, this message translates to:
+  /// **'Flow'**
+  String get modeEditorTabFlow;
+
+  /// No description provided for @modeEditorTabJson.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON'**
+  String get modeEditorTabJson;
+
+  /// No description provided for @modeEditorTabSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings'**
+  String get modeEditorTabSettings;
+
+  /// No description provided for @modeEditorTabPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview'**
+  String get modeEditorTabPreview;
+
+  /// No description provided for @modeEditorDraftUnsaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft unsaved'**
+  String get modeEditorDraftUnsaved;
+
+  /// No description provided for @modeEditorSelectOrCreate.
+  ///
+  /// In en, this message translates to:
+  /// **'Select or create a work mode.'**
+  String get modeEditorSelectOrCreate;
+
+  /// No description provided for @modeEditorOpenNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened {id}'**
+  String modeEditorOpenNotice(String id);
+
+  /// No description provided for @modeEditorSaveValidationIssues.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation found {count} issues before save.'**
+  String modeEditorSaveValidationIssues(int count);
+
+  /// No description provided for @modeEditorPreSaveValidationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Pre-save validation failed: {error}'**
+  String modeEditorPreSaveValidationFailed(String error);
+
+  /// No description provided for @modeEditorSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode saved. Changes apply from the next turn.'**
+  String get modeEditorSaved;
+
+  /// No description provided for @modeEditorSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Save failed.'**
+  String get modeEditorSaveFailed;
+
+  /// No description provided for @modeEditorReloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode definition reloaded.'**
+  String get modeEditorReloaded;
+
+  /// No description provided for @modeEditorReloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload failed.'**
+  String get modeEditorReloadFailed;
+
+  /// No description provided for @modeEditorDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete failed.'**
+  String get modeEditorDeleteFailed;
+
+  /// No description provided for @modeEditorDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode deleted; thread history is kept.'**
+  String get modeEditorDeleted;
+
+  /// No description provided for @modeEditorCopySuffix.
+  ///
+  /// In en, this message translates to:
+  /// **'copy'**
+  String get modeEditorCopySuffix;
+
+  /// No description provided for @modeEditorCopyCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy created as a draft; save to publish it.'**
+  String get modeEditorCopyCreated;
+
+  /// No description provided for @modeEditorDraftCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft created. Save after validation.'**
+  String get modeEditorDraftCreated;
+
+  /// No description provided for @modeEditorImportReadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read mode JSON: {error}'**
+  String modeEditorImportReadFailed(String error);
+
+  /// No description provided for @modeEditorImportObjectRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON must be an object.'**
+  String get modeEditorImportObjectRequired;
+
+  /// No description provided for @modeEditorInvalidModeId.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode id must look like mode.example.'**
+  String get modeEditorInvalidModeId;
+
+  /// No description provided for @modeEditorBuiltInCannotOverwrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in modes cannot be overwritten.'**
+  String get modeEditorBuiltInCannotOverwrite;
+
+  /// No description provided for @modeEditorImportedDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration loaded as a draft; save to publish it.'**
+  String get modeEditorImportedDraft;
+
+  /// No description provided for @modeEditorJsonCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON copied.'**
+  String get modeEditorJsonCopied;
+
+  /// No description provided for @modeEditorSchemaReadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read schema: {error}'**
+  String modeEditorSchemaReadFailed(String error);
+
+  /// No description provided for @modeEditorValidationPassed.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation passed.'**
+  String get modeEditorValidationPassed;
+
+  /// No description provided for @modeEditorIssuesFound.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} issues found.'**
+  String modeEditorIssuesFound(int count);
+
+  /// No description provided for @modeEditorValidationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation failed: {error}'**
+  String modeEditorValidationFailed(String error);
+
+  /// No description provided for @modeEditorJsonApplied.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON applied to the draft.'**
+  String get modeEditorJsonApplied;
+
+  /// No description provided for @modeEditorJsonApplyFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON could not be applied.'**
+  String get modeEditorJsonApplyFailed;
+
+  /// No description provided for @modeEditorJsonApplyFix.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON could not be applied; fix the syntax or fields.'**
+  String get modeEditorJsonApplyFix;
+
+  /// No description provided for @modeEditorPreviewReasonDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Manually confirm stage completion and guard'**
+  String get modeEditorPreviewReasonDefault;
+
+  /// No description provided for @modeEditorPreviewFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview failed: {error}'**
+  String modeEditorPreviewFailed(String error);
+
+  /// No description provided for @modeEditorMaxStates.
+  ///
+  /// In en, this message translates to:
+  /// **'At most {count} states are supported.'**
+  String modeEditorMaxStates(int count);
+
+  /// No description provided for @modeEditorNewFinalState.
+  ///
+  /// In en, this message translates to:
+  /// **'New final state'**
+  String get modeEditorNewFinalState;
+
+  /// No description provided for @modeEditorNewStage.
+  ///
+  /// In en, this message translates to:
+  /// **'New work stage'**
+  String get modeEditorNewStage;
+
+  /// No description provided for @modeEditorFinalStateAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Final state added. Add an incoming path.'**
+  String get modeEditorFinalStateAdded;
+
+  /// No description provided for @modeEditorStageAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage added. Add incoming and outgoing transitions.'**
+  String get modeEditorStageAdded;
+
+  /// No description provided for @modeEditorContinueGuardPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue when the guard is satisfied.'**
+  String get modeEditorContinueGuardPlaceholder;
+
+  /// No description provided for @modeEditorTransitionAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition added. Complete its guard.'**
+  String get modeEditorTransitionAdded;
+
+  /// No description provided for @modeEditorNeedTwoStates.
+  ///
+  /// In en, this message translates to:
+  /// **'Add at least two states before creating a transition.'**
+  String get modeEditorNeedTwoStates;
+
+  /// No description provided for @modeEditorLayoutReset.
+  ///
+  /// In en, this message translates to:
+  /// **'Layout reset. The workflow definition is unchanged.'**
+  String get modeEditorLayoutReset;
+
+  /// No description provided for @modeEditorWorkflowEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow enabled.'**
+  String get modeEditorWorkflowEnabled;
+
+  /// No description provided for @modeEditorWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow'**
+  String get modeEditorWorkflow;
+
+  /// No description provided for @modeEditorWorkflowGoalText.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete the task in stages with a reviewable path.'**
+  String get modeEditorWorkflowGoalText;
+
+  /// No description provided for @modeEditorStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Start'**
+  String get modeEditorStart;
+
+  /// No description provided for @modeEditorStageInstructionsPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe the work for this stage.'**
+  String get modeEditorStageInstructionsPlaceholder;
+
+  /// No description provided for @modeEditorStageCriterionPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'This stage goal is satisfied.'**
+  String get modeEditorStageCriterionPlaceholder;
+
+  /// No description provided for @modeEditorDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Done'**
+  String get modeEditorDone;
+
+  /// No description provided for @modeEditorTransitionGuardPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'The result satisfies the goal.'**
+  String get modeEditorTransitionGuardPlaceholder;
+
+  /// No description provided for @modeEditorPromptDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe this mode responsibilities, sequence, and boundaries.'**
+  String get modeEditorPromptDescription;
+
+  /// No description provided for @modeEditorPortIn.
+  ///
+  /// In en, this message translates to:
+  /// **'In'**
+  String get modeEditorPortIn;
+
+  /// No description provided for @modeEditorPortOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Out'**
+  String get modeEditorPortOut;
+
+  /// No description provided for @modeEditorGuardRequiredShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Guard required'**
+  String get modeEditorGuardRequiredShort;
+
+  /// No description provided for @modeEditorDuplicateTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'A transition between those states already exists.'**
+  String get modeEditorDuplicateTransition;
+
+  /// No description provided for @modeEditorInitialBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Start'**
+  String get modeEditorInitialBadge;
+
+  /// No description provided for @modeEditorStageAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage'**
+  String get modeEditorStageAction;
+
+  /// No description provided for @modeEditorFinalLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Final'**
+  String get modeEditorFinalLabel;
+
+  /// No description provided for @modeEditorTransitionAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition'**
+  String get modeEditorTransitionAction;
+
+  /// No description provided for @modeEditorValidate.
+  ///
+  /// In en, this message translates to:
+  /// **'Validate'**
+  String get modeEditorValidate;
+
+  /// No description provided for @modeEditorAutoLayout.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto layout'**
+  String get modeEditorAutoLayout;
+
+  /// No description provided for @modeEditorZoomOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom out'**
+  String get modeEditorZoomOut;
+
+  /// No description provided for @modeEditorZoomIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom in'**
+  String get modeEditorZoomIn;
+
+  /// No description provided for @modeEditorFitView.
+  ///
+  /// In en, this message translates to:
+  /// **'Fit view'**
+  String get modeEditorFitView;
+
+  /// No description provided for @modeEditorFlowInspector.
+  ///
+  /// In en, this message translates to:
+  /// **'Flow inspector'**
+  String get modeEditorFlowInspector;
+
+  /// No description provided for @modeEditorNoWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow'**
+  String get modeEditorNoWorkflow;
+
+  /// No description provided for @modeEditorNoWorkflowReadOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Duplicate this mode to add stages and transitions.'**
+  String get modeEditorNoWorkflowReadOnlyHint;
+
+  /// No description provided for @modeEditorNoWorkflowEnableHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabling a workflow adds a starting stage and a final state.'**
+  String get modeEditorNoWorkflowEnableHint;
+
+  /// No description provided for @modeEditorEnableWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable workflow'**
+  String get modeEditorEnableWorkflow;
+
+  /// No description provided for @modeEditorUnsavedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved draft'**
+  String get modeEditorUnsavedTitle;
+
+  /// No description provided for @modeEditorUnsavedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Save the current changes before continuing, or discard this draft.'**
+  String get modeEditorUnsavedBody;
+
+  /// No description provided for @modeEditorCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get modeEditorCancel;
+
+  /// No description provided for @modeEditorDiscard.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get modeEditorDiscard;
+
+  /// No description provided for @modeEditorSaveAndContinue.
+  ///
+  /// In en, this message translates to:
+  /// **'Save and continue'**
+  String get modeEditorSaveAndContinue;
+
+  /// No description provided for @modeEditorNewWorkMode.
+  ///
+  /// In en, this message translates to:
+  /// **'New work mode'**
+  String get modeEditorNewWorkMode;
+
+  /// No description provided for @modeEditorModeName.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode name'**
+  String get modeEditorModeName;
+
+  /// No description provided for @modeEditorModeNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For example: Research'**
+  String get modeEditorModeNameHint;
+
+  /// No description provided for @modeEditorModeNameRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a mode name.'**
+  String get modeEditorModeNameRequired;
+
+  /// No description provided for @modeEditorModeId.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode id'**
+  String get modeEditorModeId;
+
+  /// No description provided for @modeEditorModeIdFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Use the form mode.example with lowercase letters, digits, - and _.'**
+  String get modeEditorModeIdFormat;
+
+  /// No description provided for @modeEditorModeIdExists.
+  ///
+  /// In en, this message translates to:
+  /// **'That mode id already exists.'**
+  String get modeEditorModeIdExists;
+
+  /// No description provided for @modeEditorStartingPoint.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting point'**
+  String get modeEditorStartingPoint;
+
+  /// No description provided for @modeEditorMinimalWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimal workflow'**
+  String get modeEditorMinimalWorkflow;
+
+  /// No description provided for @modeEditorNoWorkflowTemplate.
+  ///
+  /// In en, this message translates to:
+  /// **'No workflow'**
+  String get modeEditorNoWorkflowTemplate;
+
+  /// No description provided for @modeEditorCreateMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Create mode'**
+  String get modeEditorCreateMode;
+
+  /// No description provided for @modeEditorImportDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Import mode JSON'**
+  String get modeEditorImportDialogTitle;
+
+  /// No description provided for @modeEditorImportDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Paste mode JSON. Built-in modes stay read-only; an existing custom id opens as an unsaved draft.'**
+  String get modeEditorImportDialogBody;
+
+  /// No description provided for @modeEditorLoadAsDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Load as draft'**
+  String get modeEditorLoadAsDraft;
+
+  /// No description provided for @modeEditorSchemaDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON schema'**
+  String get modeEditorSchemaDialogTitle;
+
+  /// No description provided for @modeEditorClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get modeEditorClose;
+
+  /// No description provided for @modeEditorDeleteDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this work mode?'**
+  String get modeEditorDeleteDialogTitle;
+
+  /// No description provided for @modeEditorDeleteDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove the \"{displayName}\" definition. Thread history is kept.'**
+  String modeEditorDeleteDialogBody(String displayName);
+
+  /// No description provided for @modeEditorConfirmDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get modeEditorConfirmDelete;
+
+  /// No description provided for @modeEditorRemoveStateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this state?'**
+  String get modeEditorRemoveStateTitle;
+
+  /// No description provided for @modeEditorRemoveStateBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete \"{title}\" and its {transitionCount} related transitions. Undo can restore it.'**
+  String modeEditorRemoveStateBody(String title, int transitionCount);
+
+  /// No description provided for @modeEditorDeleteState.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete state'**
+  String get modeEditorDeleteState;
+
+  /// No description provided for @modeEditorRemoveWorkflowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove workflow?'**
+  String get modeEditorRemoveWorkflowTitle;
+
+  /// No description provided for @modeEditorRemoveWorkflowBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The mode can still chat, but stage graph and workflow tools are removed. Undo is available before saving.'**
+  String get modeEditorRemoveWorkflowBody;
+
+  /// No description provided for @modeEditorRemoveWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove workflow'**
+  String get modeEditorRemoveWorkflow;
+
+  /// No description provided for @modeEditorStateIdInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Use lowercase letters, digits, - and _ only.'**
+  String get modeEditorStateIdInvalid;
+
+  /// No description provided for @modeEditorStateIdExists.
+  ///
+  /// In en, this message translates to:
+  /// **'That state id exists.'**
+  String get modeEditorStateIdExists;
+
+  /// No description provided for @modeEditorRenameStateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename state id'**
+  String get modeEditorRenameStateTitle;
+
+  /// No description provided for @modeEditorStateId.
+  ///
+  /// In en, this message translates to:
+  /// **'State id'**
+  String get modeEditorStateId;
+
+  /// No description provided for @modeEditorApply.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply'**
+  String get modeEditorApply;
+
+  /// No description provided for @modeEditorAddTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Add transition'**
+  String get modeEditorAddTransition;
+
+  /// No description provided for @modeEditorSourceState.
+  ///
+  /// In en, this message translates to:
+  /// **'Source state'**
+  String get modeEditorSourceState;
+
+  /// No description provided for @modeEditorChooseSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a source.'**
+  String get modeEditorChooseSource;
+
+  /// No description provided for @modeEditorTargetState.
+  ///
+  /// In en, this message translates to:
+  /// **'Target state'**
+  String get modeEditorTargetState;
+
+  /// No description provided for @modeEditorChooseTarget.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a target.'**
+  String get modeEditorChooseTarget;
+
+  /// No description provided for @modeEditorTransitionGuard.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition guard'**
+  String get modeEditorTransitionGuard;
+
+  /// No description provided for @modeEditorTransitionGuardHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For example: after the user confirms scope'**
+  String get modeEditorTransitionGuardHint;
+
+  /// No description provided for @modeEditorGuardRequiredField.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a guard.'**
+  String get modeEditorGuardRequiredField;
+
+  /// No description provided for @modeEditorCollapse.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse'**
+  String get modeEditorCollapse;
+
+  /// No description provided for @modeEditorNoWorkflowPeriod.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow.'**
+  String get modeEditorNoWorkflowPeriod;
+
+  /// No description provided for @modeEditorInspectorSelectHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Select a stage or transition on the canvas to edit its fields.'**
+  String get modeEditorInspectorSelectHint;
+
+  /// No description provided for @modeEditorRenameId.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename id'**
+  String get modeEditorRenameId;
+
+  /// No description provided for @modeEditorStageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage title'**
+  String get modeEditorStageTitle;
+
+  /// No description provided for @modeEditorStageKind.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage kind'**
+  String get modeEditorStageKind;
+
+  /// No description provided for @modeEditorAtomicStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Atomic stage'**
+  String get modeEditorAtomicStage;
+
+  /// No description provided for @modeEditorFinalState.
+  ///
+  /// In en, this message translates to:
+  /// **'Final state'**
+  String get modeEditorFinalState;
+
+  /// No description provided for @modeEditorInitialStateSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Initial state'**
+  String get modeEditorInitialStateSwitch;
+
+  /// No description provided for @modeEditorInitialStateLockedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'The workflow always keeps one initial state; enable another stage instead.'**
+  String get modeEditorInitialStateLockedHint;
+
+  /// No description provided for @modeEditorInitialStateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'A run starts from this stage.'**
+  String get modeEditorInitialStateHint;
+
+  /// No description provided for @modeEditorStageInstructions.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage instructions'**
+  String get modeEditorStageInstructions;
+
+  /// No description provided for @modeEditorCompletionCriteria.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria (one per line)'**
+  String get modeEditorCompletionCriteria;
+
+  /// No description provided for @modeEditorAtomicCriteriaRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'An atomic stage needs at least one completion criterion; Rust validates on save.'**
+  String get modeEditorAtomicCriteriaRequired;
+
+  /// No description provided for @modeEditorOutgoingTransitions.
+  ///
+  /// In en, this message translates to:
+  /// **'Outgoing transitions'**
+  String get modeEditorOutgoingTransitions;
+
+  /// No description provided for @modeEditorAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add'**
+  String get modeEditorAdd;
+
+  /// No description provided for @modeEditorNoOutgoing.
+  ///
+  /// In en, this message translates to:
+  /// **'No outgoing transitions.'**
+  String get modeEditorNoOutgoing;
+
+  /// No description provided for @modeEditorDeleteTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete transition'**
+  String get modeEditorDeleteTransition;
+
+  /// No description provided for @modeEditorStateTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'State transition'**
+  String get modeEditorStateTransition;
+
+  /// No description provided for @modeEditorTransitionRuleHint.
+  ///
+  /// In en, this message translates to:
+  /// **'One transition per source/target pair; multiple successors, self loops and cycles are allowed.'**
+  String get modeEditorTransitionRuleHint;
+
+  /// No description provided for @modeEditorValidationIssuesCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} issues'**
+  String modeEditorValidationIssuesCount(int count);
+
+  /// No description provided for @modeEditorNotValidated.
+  ///
+  /// In en, this message translates to:
+  /// **'Not validated'**
+  String get modeEditorNotValidated;
+
+  /// No description provided for @modeEditorApplyJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply JSON'**
+  String get modeEditorApplyJson;
+
+  /// No description provided for @modeEditorCopyJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy JSON'**
+  String get modeEditorCopyJson;
+
+  /// No description provided for @modeEditorSchemaLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Schema'**
+  String get modeEditorSchemaLabel;
+
+  /// No description provided for @modeEditorReadOnlyCopyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Read-only: copy or validate'**
+  String get modeEditorReadOnlyCopyHint;
+
+  /// No description provided for @modeEditorJsonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON keeps the six top-level fields plus editor layout.'**
+  String get modeEditorJsonHint;
+
+  /// No description provided for @modeEditorModeSettingsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode settings'**
+  String get modeEditorModeSettingsTitle;
+
+  /// No description provided for @modeEditorModeSettingsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution definition and editor layout are stored separately; layout never changes workflow identity.'**
+  String get modeEditorModeSettingsSubtitle;
+
+  /// No description provided for @modeEditorDisplayName.
+  ///
+  /// In en, this message translates to:
+  /// **'Display name'**
+  String get modeEditorDisplayName;
+
+  /// No description provided for @modeEditorDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get modeEditorDescription;
+
+  /// No description provided for @modeEditorOrder.
+  ///
+  /// In en, this message translates to:
+  /// **'Order'**
+  String get modeEditorOrder;
+
+  /// No description provided for @modeEditorRawPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw prompt'**
+  String get modeEditorRawPrompt;
+
+  /// No description provided for @modeEditorRawPromptHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'This is the full mode prompt injected without GUI rewriting.'**
+  String get modeEditorRawPromptHelper;
+
+  /// No description provided for @modeEditorWorkflowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow title'**
+  String get modeEditorWorkflowTitle;
+
+  /// No description provided for @modeEditorWorkflowGoal.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow goal'**
+  String get modeEditorWorkflowGoal;
+
+  /// No description provided for @modeEditorInitialStateLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Initial state'**
+  String get modeEditorInitialStateLabel;
+
+  /// No description provided for @modeEditorWorkflowSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{states} states · {transitions} transitions'**
+  String modeEditorWorkflowSummary(int states, int transitions);
+
+  /// No description provided for @modeEditorNoWorkflowToolHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Without a workflow there is no stage graph or workflow tools.'**
+  String get modeEditorNoWorkflowToolHint;
+
+  /// No description provided for @modeEditorPreviewUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow to preview.'**
+  String get modeEditorPreviewUnavailable;
+
+  /// No description provided for @modeEditorRunPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Run preview'**
+  String get modeEditorRunPreview;
+
+  /// No description provided for @modeEditorPreviewSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Bounded replay uses the production Rust state machine; it never rewrites the configured initial state.'**
+  String get modeEditorPreviewSubtitle;
+
+  /// No description provided for @modeEditorStartPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Start preview'**
+  String get modeEditorStartPreview;
+
+  /// No description provided for @modeEditorRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Restart'**
+  String get modeEditorRestart;
+
+  /// No description provided for @modeEditorTransitionReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition reason'**
+  String get modeEditorTransitionReason;
+
+  /// No description provided for @modeEditorTransitionReasonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Manually confirm stage completion and guard'**
+  String get modeEditorTransitionReasonHint;
+
+  /// No description provided for @modeEditorTransitionReasonHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent as the reason when advancing to a successor.'**
+  String get modeEditorTransitionReasonHelper;
+
+  /// No description provided for @modeEditorAllowedNextStates.
+  ///
+  /// In en, this message translates to:
+  /// **'Allowed next states · {count}'**
+  String modeEditorAllowedNextStates(int count);
+
+  /// No description provided for @modeEditorTerminalReached.
+  ///
+  /// In en, this message translates to:
+  /// **'Reached a final state. Restarting never rewrites the saved initial state.'**
+  String get modeEditorTerminalReached;
+
+  /// No description provided for @modeEditorPreviewIntroText.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview starts from the current JSON document. Each step follows one valid transition from the current state and keeps the path in this preview.'**
+  String get modeEditorPreviewIntroText;
+
+  /// No description provided for @modeEditorPreviewAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview accepted.'**
+  String get modeEditorPreviewAccepted;
+
+  /// No description provided for @modeEditorPreviewRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview rejected.'**
+  String get modeEditorPreviewRejected;
+
+  /// No description provided for @modeEditorCurrentStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Current stage'**
+  String get modeEditorCurrentStage;
+
+  /// No description provided for @modeEditorPath.
+  ///
+  /// In en, this message translates to:
+  /// **'Path'**
+  String get modeEditorPath;
+
+  /// No description provided for @modeEditorAdvance.
+  ///
+  /// In en, this message translates to:
+  /// **'Advance'**
+  String get modeEditorAdvance;
+
+  /// No description provided for @modeEditorPreviewHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview history'**
+  String get modeEditorPreviewHistory;
+
+  /// No description provided for @modeDeletedUsingSnapshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted mode · using saved snapshot'**
+  String get modeDeletedUsingSnapshot;
+
+  /// No description provided for @modeDeletedChooseAnother.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode was deleted. Choose another mode.'**
+  String get modeDeletedChooseAnother;
+
+  /// No description provided for @modeSnapshotBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Snapshot'**
+  String get modeSnapshotBadge;
+
+  /// No description provided for @modeDeletedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted'**
+  String get modeDeletedBadge;
 }
 
 class _AppLocalizationsDelegate

@@ -1,0 +1,305 @@
+{
+  "sourceBaseCommit": "7c6b4d42973a9aa421fe571785c18daa9e3a935a",
+  "platform": "Linux x86_64 / GTK / Xvfb 1600x1200x24",
+  "flutterVersion": "3.47.7",
+  "rustVersion": "1.99.1",
+  "locale": "zh_CN.UTF-8",
+  "provider": "isolated local scripted fixture; real native Rust bridge and SQLite",
+  "result": {
+    "acceptedRequests": 11,
+    "dartErrors": 0,
+    "error": null,
+    "fixtureCompleted": true,
+    "guiErrors": 0,
+    "humanVerdict": "pending",
+    "phases": [
+      {
+        "phase": "first",
+        "status": "complete",
+        "threadId": "thread-65e304f2a737a-3"
+      },
+      {
+        "phase": "restart",
+        "status": "complete",
+        "threadId": "thread-65e304f2a737a-3"
+      },
+      {
+        "phase": "recheck",
+        "status": "complete",
+        "threadId": "thread-65e304f2a737a-3"
+      }
+    ],
+    "rejectedRequests": 0,
+    "requiredAcceptedRequests": 10,
+    "scenario": "mode-editor",
+    "status": "complete"
+  },
+  "phaseChecks": [
+    {
+      "phase": "first",
+      "status": "complete",
+      "shutdown": "completed",
+      "threadId": "thread-65e304f2a737a-3",
+      "error": null,
+      "checks": {
+        "initial native window geometry": true,
+        "builtin layout is read only": true,
+        "valid JSON accepted": true,
+        "node drag undo": true,
+        "node drag redo": true,
+        "cycle self loop and multiple successors": true,
+        "stage title edited": true,
+        "canonical save acknowledged": true,
+        "invalid graph retains authored JSON": true,
+        "cancel navigation retains draft": true,
+        "unsaved discard restored canonical": true,
+        "preview creates no Thread": true,
+        "native resize applied": true,
+        "native wheel scrolls narrow properties": true,
+        "native resize restored": true,
+        "failed reload keeps published catalog": true,
+        "deleted Mode removed from catalog": true
+      },
+      "humanVerdict": "pending"
+    },
+    {
+      "phase": "restart",
+      "status": "complete",
+      "shutdown": "completed",
+      "threadId": "thread-65e304f2a737a-3",
+      "error": null,
+      "checks": {
+        "initial native window geometry": true,
+        "snapshot absent from global catalog": true,
+        "snapshot display name restored": true,
+        "archived Thread restores deleted Mode snapshot": true
+      },
+      "humanVerdict": "pending"
+    },
+    {
+      "phase": "recheck",
+      "status": "complete",
+      "shutdown": "completed",
+      "threadId": "thread-65e304f2a737a-3",
+      "error": null,
+      "checks": {
+        "initial native window geometry": true,
+        "snapshot absent from global catalog": true,
+        "snapshot display name restored": true
+      },
+      "humanVerdict": "pending"
+    }
+  ],
+  "fixture": {
+    "acceptedRequests": 11,
+    "completed": true,
+    "error": null,
+    "rejectedRequests": 0,
+    "requiredAcceptedRequests": 10,
+    "scenario": "mode-editor"
+  },
+  "guiHealth": {
+    "dartErrors": 0,
+    "humanVerdict": "pending",
+    "unhandledGuiErrors": 0
+  },
+  "lifecycles": [
+    {
+      "driverExit": "exit status: 0",
+      "driverLauncherPid": 1438219,
+      "guiLauncherPid": 1437270,
+      "ownersReapedAt": 1792411538,
+      "phase": "first",
+      "scenario": "mode-editor",
+      "shutdown": "completed"
+    },
+    {
+      "driverExit": "exit status: 0",
+      "driverLauncherPid": 1441814,
+      "guiLauncherPid": 1440761,
+      "ownersReapedAt": 1792411620,
+      "phase": "restart",
+      "scenario": "mode-editor",
+      "shutdown": "completed"
+    },
+    {
+      "driverExit": "exit status: 0",
+      "driverLauncherPid": 1443863,
+      "guiLauncherPid": 1442937,
+      "ownersReapedAt": 1792411696,
+      "phase": "recheck",
+      "scenario": "mode-editor",
+      "shutdown": "completed"
+    }
+  ],
+  "restartQuiet": {
+    "after": {
+      "accepted": 9,
+      "consumed_steps": 16,
+      "expected_steps": 21,
+      "rejected": 0,
+      "remaining_optional": false,
+      "total": 9
+    },
+    "before": {
+      "accepted": 9,
+      "consumed_steps": 16,
+      "expected_steps": 21,
+      "rejected": 0,
+      "remaining_optional": false,
+      "total": 9
+    },
+    "quietWindowMillis": 2000
+  },
+  "recheckQuiet": {
+    "after": {
+      "accepted": 11,
+      "consumed_steps": 20,
+      "expected_steps": 21,
+      "rejected": 0,
+      "remaining_optional": true,
+      "total": 11
+    },
+    "before": {
+      "accepted": 11,
+      "consumed_steps": 20,
+      "expected_steps": 21,
+      "rejected": 0,
+      "remaining_optional": true,
+      "total": 11
+    },
+    "quietWindowMillis": 2000
+  },
+  "snapshots": {
+    "first-updated-during-turn": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "32af35b09ba4fc4119d19a6db2d22b067cbb2a72e59468ea6d0a63c7e454b3b0",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-624888654:4:3",
+      "historyRecords": 8,
+      "run": {
+        "runId": "run-59973b1a99982157d6c70c16",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:5f5c7a064f15f1baad0e68b7d2a4f627d07092fbe34e2069fa805ebdc96bae54",
+        "graphRevision": 2,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    },
+    "graph-updated": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "bbffb0b911318f7d3681bbbbdf2e484a50f55adfac3ef1f3e5d7165f6a159e62",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-624888654:6:14",
+      "historyRecords": 13,
+      "run": {
+        "runId": "run-17ee12749f6172f13ed3fba5",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:57bba1f2f6efbf8c0cf2e95d85bea8a4715857c3e7a065984b22ff0d5c418c37",
+        "graphRevision": 3,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    },
+    "prompt-updated": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "772a50df97c3e4011cedffc9c856ac2e3150eadc041294865680a2e9fc69e8ab",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-624888654:8:24",
+      "historyRecords": 17,
+      "run": {
+        "runId": "run-17ee12749f6172f13ed3fba5",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:57bba1f2f6efbf8c0cf2e95d85bea8a4715857c3e7a065984b22ff0d5c418c37",
+        "graphRevision": 3,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    },
+    "deleted-running": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "772a50df97c3e4011cedffc9c856ac2e3150eadc041294865680a2e9fc69e8ab",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-624888654:9:34",
+      "historyRecords": 18,
+      "run": {
+        "runId": "run-17ee12749f6172f13ed3fba5",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:57bba1f2f6efbf8c0cf2e95d85bea8a4715857c3e7a065984b22ff0d5c418c37",
+        "graphRevision": 3,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    },
+    "restart-opened": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "772a50df97c3e4011cedffc9c856ac2e3150eadc041294865680a2e9fc69e8ab",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-624888654:9:34",
+      "historyRecords": 21,
+      "run": {
+        "runId": "run-17ee12749f6172f13ed3fba5",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:57bba1f2f6efbf8c0cf2e95d85bea8a4715857c3e7a065984b22ff0d5c418c37",
+        "graphRevision": 3,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    },
+    "recheck-opened": {
+      "modeVersion": 2,
+      "modeId": "mode.editor-evidence",
+      "displayName": "研发验证流程",
+      "promptSha256": "772a50df97c3e4011cedffc9c856ac2e3150eadc041294865680a2e9fc69e8ab",
+      "modePromptMatchesInstructions": true,
+      "compiledHashMatchesRun": true,
+      "frozenTurnId": "input:app-407754444:1:47",
+      "historyRecords": 25,
+      "run": {
+        "runId": "run-17ee12749f6172f13ed3fba5",
+        "lineageId": "lineage-59973b1a99982157d6c70c16",
+        "graphHash": "sha256:57bba1f2f6efbf8c0cf2e95d85bea8a4715857c3e7a065984b22ff0d5c418c37",
+        "graphRevision": 3,
+        "modeId": "mode.editor-evidence",
+        "currentStateId": "planning",
+        "lifecycle": "active"
+      }
+    }
+  },
+  "screenshotSha256": {
+    "builtin-read-only.png": "06d1f8ce3e37b1940ef9388a0ba241a1bb498781132d5c2e1bffef821921f000",
+    "custom-graph-editor.png": "7d6f8ed38640fd8ea6b8e94f033b5a03121f875ecc0e754ee0735aa4ee601910",
+    "json-validation.png": "9ba6a644cf201a0f7ffdba21660014e27559f51bc3eb9ec3ba1d9be4e5f3f216",
+    "workflow-preview.png": "8aa42aeb96e93ddf9620a7698b966fc6a081cddd01b7e0f933a431d6bf466140",
+    "narrow-inspector.png": "dacc15bf4af4415bc8124b60604406a065be5ff29be37525aee9b5d048935cba",
+    "deleted-mode-snapshot.png": "3e550aab599ad07318c62f42c06c3c655e4a533a54806fce7c21fd7b52987070",
+    "restart-restored-snapshot.png": "0e704fae4681ba6e51de7e8c44a2cd95f38fc354c2592fcce1c07b4af59273d3",
+    "recheck-restored-snapshot.png": "0e704fae4681ba6e51de7e8c44a2cd95f38fc354c2592fcce1c07b4af59273d3"
+  },
+  "agentScreenshotReview": "completed; unmodified original native captures",
+  "humanVerdict": "pending",
+  "notCovered": [
+    "Windows/macOS native interaction",
+    "real provider compatibility"
+  ]
+}

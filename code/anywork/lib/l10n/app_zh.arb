@@ -1101,9 +1101,310 @@
   "settingsModelParametersUnknown": "模型参数未知",
   "settingsModelPriceUnknown": "价格未知",
   "modelTextFilterExcluded": "{model}：不符合文本筛选条件（{reasons}）",
-  "@modelTextFilterExcluded": {"placeholders": {"model": {"type": "String"}, "reasons": {"type": "String"}}},
+  "@modelTextFilterExcluded": {
+    "placeholders": {
+      "model": {
+        "type": "String"
+      },
+      "reasons": {
+        "type": "String"
+      }
+    }
+  },
   "modelTextInputUnsupported": "不支持文本输入",
   "modelTextOutputUnsupported": "不支持文本输出",
   "modelContextWindowUnknown": "上下文大小未知",
-  "modelTextFilterEmpty": "没有符合文本条件的模型，请在模型服务商设置中查看参数"
+  "modelTextFilterEmpty": "没有符合文本条件的模型，请在模型服务商设置中查看参数",
+  "modeEditorTitle": "工作模式",
+  "modeEditorNewMode": "新建模式",
+  "modeEditorImportJson": "导入 JSON",
+  "modeEditorSearchHint": "查找名称或标识",
+  "modeEditorBuiltInGroup": "系统内置",
+  "modeEditorMyModesGroup": "我的模式",
+  "modeEditorNoMatches": "没有匹配的工作模式。",
+  "modeEditorCatalogReadOnlyHint": "系统模式只读。复制后可自定义阶段与路径。",
+  "modeEditorReadOnly": "只读",
+  "modeEditorUnsaved": "未保存",
+  "modeEditorUndo": "撤销",
+  "modeEditorRedo": "重做",
+  "modeEditorReload": "重新加载",
+  "modeEditorDuplicate": "复制",
+  "modeEditorDeleteMode": "删除模式",
+  "modeEditorSave": "保存",
+  "modeEditorTabFlow": "流程图",
+  "modeEditorTabJson": "JSON 配置",
+  "modeEditorTabSettings": "模式设置",
+  "modeEditorTabPreview": "运行预演",
+  "modeEditorDraftUnsaved": "草稿未保存",
+  "modeEditorSelectOrCreate": "选择或新建一个工作模式。",
+  "modeEditorOpenNotice": "已打开 {id}",
+  "@modeEditorOpenNotice": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaveValidationIssues": "保存前校验发现 {count} 个问题。",
+  "@modeEditorSaveValidationIssues": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorPreSaveValidationFailed": "保存前校验失败：{error}",
+  "@modeEditorPreSaveValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaved": "模式已保存，将从下一轮开始生效。",
+  "modeEditorSaveFailed": "保存失败。",
+  "modeEditorReloaded": "已重新读取模式定义。",
+  "modeEditorReloadFailed": "重新加载失败。",
+  "modeEditorDeleteFailed": "删除失败。",
+  "modeEditorDeleted": "模式已删除，会话历史保留。",
+  "modeEditorCopySuffix": "副本",
+  "modeEditorCopyCreated": "已创建副本草稿，保存后出现在模式目录。",
+  "modeEditorDraftCreated": "已创建草稿。编辑并通过校验后保存。",
+  "modeEditorImportReadFailed": "无法读取模式 JSON：{error}",
+  "@modeEditorImportReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorImportObjectRequired": "模式 JSON 必须是对象。",
+  "modeEditorInvalidModeId": "模式标识必须形如 mode.example。",
+  "modeEditorBuiltInCannotOverwrite": "系统模式不可覆盖。",
+  "modeEditorImportedDraft": "配置已读取为草稿，保存后发布到模式目录。",
+  "modeEditorJsonCopied": "模式 JSON 已复制。",
+  "modeEditorSchemaReadFailed": "无法读取 Schema：{error}",
+  "@modeEditorSchemaReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorValidationPassed": "校验通过。",
+  "modeEditorIssuesFound": "发现 {count} 个问题。",
+  "@modeEditorIssuesFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorValidationFailed": "校验失败：{error}",
+  "@modeEditorValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorJsonApplied": "JSON 已应用到当前草稿。",
+  "modeEditorJsonApplyFailed": "JSON 无法应用。",
+  "modeEditorJsonApplyFix": "JSON 无法应用，请先修正语法或字段。",
+  "modeEditorPreviewReasonDefault": "手动确认阶段完成和转换条件",
+  "modeEditorPreviewFailed": "预演失败：{error}",
+  "@modeEditorPreviewFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorMaxStates": "最多支持 {count} 个状态。",
+  "@modeEditorMaxStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNewFinalState": "新的结束状态",
+  "modeEditorNewStage": "新的工作阶段",
+  "modeEditorFinalStateAdded": "结束状态已添加。请添加进入路径。",
+  "modeEditorStageAdded": "阶段已添加。请添加进入和后续转换。",
+  "modeEditorContinueGuardPlaceholder": "满足条件时继续。",
+  "modeEditorTransitionAdded": "转换已添加，请补充允许转换的条件。",
+  "modeEditorNeedTwoStates": "至少需要两个状态才能添加转换。",
+  "modeEditorLayoutReset": "已重新排布。布局不改变工作流定义。",
+  "modeEditorWorkflowEnabled": "工作流已启用。",
+  "modeEditorWorkflow": "工作流",
+  "modeEditorWorkflowGoalText": "按阶段完成当前任务并保留可核对的路径。",
+  "modeEditorStart": "开始",
+  "modeEditorStageInstructionsPlaceholder": "说明本阶段需要完成的工作。",
+  "modeEditorStageCriterionPlaceholder": "本阶段目标已满足。",
+  "modeEditorDone": "完成",
+  "modeEditorTransitionGuardPlaceholder": "工作结果已经满足目标。",
+  "modeEditorPromptDescription": "描述这个工作模式的职责、工作顺序和边界。",
+  "modeEditorPortIn": "进入",
+  "modeEditorPortOut": "继续",
+  "modeEditorGuardRequiredShort": "条件待填写",
+  "modeEditorDuplicateTransition": "同一起点与目标之间已经存在转换。",
+  "modeEditorInitialBadge": "初始",
+  "modeEditorStageAction": "阶段",
+  "modeEditorFinalLabel": "终态",
+  "modeEditorTransitionAction": "转换",
+  "modeEditorValidate": "校验",
+  "modeEditorAutoLayout": "自动排布",
+  "modeEditorZoomOut": "缩小",
+  "modeEditorZoomIn": "放大",
+  "modeEditorFitView": "适应视图",
+  "modeEditorFlowInspector": "流程属性",
+  "modeEditorNoWorkflow": "此模式没有工作流",
+  "modeEditorNoWorkflowReadOnlyHint": "复制为自定义模式后可以添加阶段和转换。",
+  "modeEditorNoWorkflowEnableHint": "启用工作流后会添加初始阶段和结束状态，可继续增删。",
+  "modeEditorEnableWorkflow": "启用工作流",
+  "modeEditorUnsavedTitle": "草稿尚未保存",
+  "modeEditorUnsavedBody": "保存当前修改后继续，或放弃这次草稿修改。",
+  "modeEditorCancel": "取消",
+  "modeEditorDiscard": "放弃修改",
+  "modeEditorSaveAndContinue": "保存并继续",
+  "modeEditorNewWorkMode": "新建工作模式",
+  "modeEditorModeName": "模式名称",
+  "modeEditorModeNameHint": "例如：研究报告",
+  "modeEditorModeNameRequired": "请输入模式名称。",
+  "modeEditorModeId": "模式标识",
+  "modeEditorModeIdFormat": "标识必须形如 mode.example，仅含小写字母、数字、- 和 _。",
+  "modeEditorModeIdExists": "模式标识已存在。",
+  "modeEditorStartingPoint": "选择起点",
+  "modeEditorMinimalWorkflow": "最简工作流",
+  "modeEditorNoWorkflowTemplate": "无工作流",
+  "modeEditorCreateMode": "创建模式",
+  "modeEditorImportDialogTitle": "导入模式配置",
+  "modeEditorImportDialogBody": "粘贴模式 JSON。内置模式不可覆盖；同 ID 的自定义配置会作为待保存草稿打开。",
+  "modeEditorLoadAsDraft": "读取为草稿",
+  "modeEditorSchemaDialogTitle": "模式 JSON Schema",
+  "modeEditorClose": "关闭",
+  "modeEditorDeleteDialogTitle": "删除这个工作模式？",
+  "modeEditorDeleteDialogBody": "移除「{displayName}」的模式定义；不删除会话历史。",
+  "@modeEditorDeleteDialogBody": {
+    "placeholders": {
+      "displayName": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorConfirmDelete": "确认删除",
+  "modeEditorRemoveStateTitle": "删除这个状态？",
+  "modeEditorRemoveStateBody": "删除「{title}」及相关的 {transitionCount} 条转换。可通过撤销恢复。",
+  "@modeEditorRemoveStateBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "transitionCount": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorDeleteState": "删除状态",
+  "modeEditorRemoveWorkflowTitle": "移除工作流？",
+  "modeEditorRemoveWorkflowBody": "模式仍可聊天，但不再提供阶段图和 workflow 工具。保存前可以撤销。",
+  "modeEditorRemoveWorkflow": "移除工作流",
+  "modeEditorStateIdInvalid": "标识仅含小写字母、数字、- 和 _。",
+  "modeEditorStateIdExists": "状态标识已存在。",
+  "modeEditorRenameStateTitle": "修改状态标识",
+  "modeEditorStateId": "状态标识",
+  "modeEditorApply": "应用",
+  "modeEditorAddTransition": "添加转换",
+  "modeEditorSourceState": "起点状态",
+  "modeEditorChooseSource": "请选择起点。",
+  "modeEditorTargetState": "目标状态",
+  "modeEditorChooseTarget": "请选择目标。",
+  "modeEditorTransitionGuard": "何时允许转换",
+  "modeEditorTransitionGuardHint": "例如：用户确认范围后",
+  "modeEditorGuardRequiredField": "请填写转换条件。",
+  "modeEditorCollapse": "收起",
+  "modeEditorNoWorkflowPeriod": "当前模式没有工作流。",
+  "modeEditorInspectorSelectHint": "选择画布中的阶段或转换以编辑完整字段。",
+  "modeEditorRenameId": "修改标识",
+  "modeEditorStageTitle": "阶段名称",
+  "modeEditorStageKind": "阶段类型",
+  "modeEditorAtomicStage": "工作阶段",
+  "modeEditorFinalState": "结束状态",
+  "modeEditorInitialStateSwitch": "作为初始状态",
+  "modeEditorInitialStateLockedHint": "工作流总保留一个初始状态；请在其他阶段启用。",
+  "modeEditorInitialStateHint": "进入此模式后从该阶段开始。",
+  "modeEditorStageInstructions": "阶段说明",
+  "modeEditorCompletionCriteria": "完成标准（每行一条）",
+  "modeEditorAtomicCriteriaRequired": "工作阶段至少需要一条完成标准，保存前由 Rust 编译器校验。",
+  "modeEditorOutgoingTransitions": "后续转换",
+  "modeEditorAdd": "添加",
+  "modeEditorNoOutgoing": "没有后续转换。",
+  "modeEditorDeleteTransition": "删除转换",
+  "modeEditorStateTransition": "状态转换",
+  "modeEditorTransitionRuleHint": "同一起点与目标之间只允许一条转换；允许多个后继、自环和循环。",
+  "modeEditorValidationIssuesCount": "{count} 个问题",
+  "@modeEditorValidationIssuesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNotValidated": "尚未校验",
+  "modeEditorApplyJson": "应用 JSON",
+  "modeEditorCopyJson": "复制 JSON",
+  "modeEditorSchemaLabel": "Schema",
+  "modeEditorReadOnlyCopyHint": "只读模式可复制或校验",
+  "modeEditorJsonHint": "模式 JSON 保留六个顶层字段和 editor 布局。",
+  "modeEditorModeSettingsTitle": "模式设置",
+  "modeEditorModeSettingsSubtitle": "执行定义与编辑布局分开保存；布局不改变工作流身份。",
+  "modeEditorDisplayName": "模式名称",
+  "modeEditorDescription": "模式描述",
+  "modeEditorOrder": "排序",
+  "modeEditorRawPrompt": "原始 Prompt",
+  "modeEditorRawPromptHelper": "这是模式注入的完整提示词，不经过 GUI 改写。",
+  "modeEditorWorkflowTitle": "工作流名称",
+  "modeEditorWorkflowGoal": "工作流目标",
+  "modeEditorInitialStateLabel": "初始状态",
+  "modeEditorWorkflowSummary": "{states} 个状态 · {transitions} 条转换",
+  "@modeEditorWorkflowSummary": {
+    "placeholders": {
+      "states": {
+        "type": "int"
+      },
+      "transitions": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNoWorkflowToolHint": "没有工作流时不会生成阶段图，也不会提供 workflow 工具。",
+  "modeEditorPreviewUnavailable": "该模式没有工作流，无法运行预演。",
+  "modeEditorRunPreview": "运行预演",
+  "modeEditorPreviewSubtitle": "有界重放使用生产 Rust 状态机；预演不修改配置中的初始状态。",
+  "modeEditorStartPreview": "开始预演",
+  "modeEditorRestart": "重新开始",
+  "modeEditorTransitionReason": "转换原因",
+  "modeEditorTransitionReasonHint": "手动确认阶段完成和转换条件",
+  "modeEditorTransitionReasonHelper": "推进到后继状态时作为本次转换的原因。",
+  "modeEditorAllowedNextStates": "允许的下一状态 · {count}",
+  "@modeEditorAllowedNextStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorTerminalReached": "已到达终态。重新开始预演不会改写保存的初始状态。",
+  "modeEditorPreviewIntroText": "从当前 JSON 文档开始预演。每次推进只接受当前状态的一条合法转换，路径与转换历史会保留在本次预演中。",
+  "modeEditorPreviewAccepted": "预演已接受。",
+  "modeEditorPreviewRejected": "预演被拒绝。",
+  "modeEditorCurrentStage": "当前阶段",
+  "modeEditorPath": "路径",
+  "modeEditorAdvance": "推进",
+  "modeEditorPreviewHistory": "本次预演历史",
+  "modeDeletedUsingSnapshot": "已删除模式使用快照",
+  "modeDeletedChooseAnother": "该模式已删除，请重新选择",
+  "modeSnapshotBadge": "快照",
+  "modeDeletedBadge": "已删除"
 }

@@ -909,8 +909,182 @@ ThreadModeCatalogView _threadModeCatalogFromFrb(
         description: mode.description,
         order: mode.order.toInt(),
         hasWorkflow: mode.hasWorkflow,
+        readOnly: mode.readOnly,
       ),
   ],
+);
+
+ModeDefinitionSnapshot _modeDefinitionSnapshotFromFrb(
+  frb_mode_types.BridgeThreadModeDefinitionSnapshot value,
+) => ModeDefinitionSnapshot(
+  revision: value.revision.toInt(),
+  document: _modeDocumentFromFrb(value.document),
+  readOnly: value.readOnly,
+);
+
+ModeDocument _modeDocumentFromFrb(
+  frb_mode_types.BridgeThreadModeDocument value,
+) => ModeDocument(
+  definition: _modeDefinitionFromFrb(value.definition),
+  editor: _modeEditorLayoutFromFrb(value.editor),
+);
+
+ModeDefinition _modeDefinitionFromFrb(
+  frb_mode_types.BridgeThreadModeDefinition value,
+) => ModeDefinition(
+  id: value.id,
+  displayName: value.displayName,
+  description: value.description,
+  order: value.order,
+  prompt: value.prompt,
+  workflow: value.workflow == null
+      ? null
+      : _workflowDefinitionFromFrb(value.workflow!),
+);
+
+ModeEditorLayout _modeEditorLayoutFromFrb(
+  frb_mode_types.BridgeThreadModeEditorLayout value,
+) => ModeEditorLayout(
+  nodes: [
+    for (final node in value.nodes)
+      WorkflowNodePosition(stateId: node.stateId, x: node.x, y: node.y),
+  ],
+);
+
+WorkflowDefinition _workflowDefinitionFromFrb(
+  frb_mode_types.BridgeWorkflowDefinition value,
+) => WorkflowDefinition(
+  title: value.title,
+  goal: value.goal,
+  initialStateId: value.initialStateId,
+  states: [for (final state in value.states) _workflowStateFromFrb(state)],
+  transitions: [
+    for (final transition in value.transitions)
+      _workflowTransitionFromFrb(transition),
+  ],
+);
+
+WorkflowState _workflowStateFromFrb(frb_mode_types.BridgeWorkflowState value) =>
+    WorkflowState(
+      id: value.id,
+      title: value.title,
+      instructions: value.instructions,
+      completionCriteria: value.completionCriteria,
+      kind: value.kind == frb_mode_types.BridgeWorkflowStateKind.finalState
+          ? WorkflowStateKind.finalState
+          : WorkflowStateKind.atomic,
+    );
+
+WorkflowTransition _workflowTransitionFromFrb(
+  frb_mode_types.BridgeWorkflowTransition value,
+) => WorkflowTransition(
+  sourceStateId: value.sourceStateId,
+  targetStateId: value.targetStateId,
+  guard: value.guard,
+);
+
+ModeDefinitionCommandReply _modeDefinitionCommandReplyFromFrb(
+  frb_mode_types.BridgeThreadModeDefinitionCommandReply value,
+) => ModeDefinitionCommandReply(
+  catalog: _threadModeCatalogFromFrb(value.catalog),
+  definition: value.definition == null
+      ? null
+      : _modeDefinitionSnapshotFromFrb(value.definition!),
+  receipt: _commandReceiptFromFrb(value.receipt),
+);
+
+ModeValidationResult _modeValidationResultFromFrb(
+  frb_mode_types.BridgeThreadModeValidationResult value,
+) => ModeValidationResult(
+  document: value.document == null
+      ? null
+      : _modeDocumentFromFrb(value.document!),
+  issues: [
+    for (final issue in value.issues)
+      ModeValidationIssue(
+        code: issue.code,
+        path: issue.path,
+        message: issue.message,
+      ),
+  ],
+);
+
+WorkflowPreviewSnapshot _workflowPreviewSnapshotFromFrb(
+  frb_mode_types.BridgeWorkflowPreviewSnapshot value,
+) => WorkflowPreviewSnapshot(
+  accepted: value.accepted,
+  message: value.message,
+  currentState: value.currentState == null
+      ? null
+      : _workflowStateFromFrb(value.currentState!),
+  transitions: [
+    for (final transition in value.transitions)
+      _workflowTransitionFromFrb(transition),
+  ],
+  path: value.path,
+  terminal: value.terminal,
+);
+
+frb_mode_types.BridgeThreadModeDocument _bridgeModeDocument(
+  ModeDocument value,
+) => frb_mode_types.BridgeThreadModeDocument(
+  definition: frb_mode_types.BridgeThreadModeDefinition(
+    id: value.definition.id,
+    displayName: value.definition.displayName,
+    description: value.definition.description,
+    order: value.definition.order,
+    prompt: value.definition.prompt,
+    workflow: value.definition.workflow == null
+        ? null
+        : _bridgeWorkflowDefinition(value.definition.workflow!),
+  ),
+  editor: frb_mode_types.BridgeThreadModeEditorLayout(
+    nodes: [
+      for (final node in value.editor.nodes)
+        frb_mode_types.BridgeWorkflowNodePosition(
+          stateId: node.stateId,
+          x: node.x,
+          y: node.y,
+        ),
+    ],
+  ),
+);
+
+frb_mode_types.BridgeWorkflowDefinition _bridgeWorkflowDefinition(
+  WorkflowDefinition value,
+) => frb_mode_types.BridgeWorkflowDefinition(
+  title: value.title,
+  goal: value.goal,
+  initialStateId: value.initialStateId,
+  states: [
+    for (final state in value.states)
+      frb_mode_types.BridgeWorkflowState(
+        id: state.id,
+        title: state.title,
+        instructions: state.instructions,
+        completionCriteria: state.completionCriteria,
+        kind: state.kind == WorkflowStateKind.finalState
+            ? frb_mode_types.BridgeWorkflowStateKind.finalState
+            : frb_mode_types.BridgeWorkflowStateKind.atomic,
+      ),
+  ],
+  transitions: [
+    for (final transition in value.transitions)
+      frb_mode_types.BridgeWorkflowTransition(
+        sourceStateId: transition.sourceStateId,
+        targetStateId: transition.targetStateId,
+        guard: transition.guard,
+      ),
+  ],
+);
+
+frb_mode_types.BridgeWorkflowPreviewRequest _bridgeWorkflowPreviewRequest(
+  WorkflowPreviewRequest value,
+) => frb_mode_types.BridgeWorkflowPreviewRequest(
+  document: _bridgeModeDocument(value.document),
+  path: value.path,
+  targetStateId: value.targetStateId,
+  reason: value.reason,
 );
 
 SkillSearchResultView _skillSearchResultFromFrb(

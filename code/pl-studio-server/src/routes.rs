@@ -8,7 +8,6 @@ use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
-use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, CreateThreadRequest,
     ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
@@ -19,6 +18,7 @@ use pl_protocol::studio::{
     StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
     UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
 };
+use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
 use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
@@ -42,6 +42,28 @@ struct StudioApi;
 const MAX_MULTIPART_BODY_BYTES: usize = 200 * 1024 * 1024;
 const MAX_MULTIPART_FILE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_MULTIPART_FILES: usize = 16;
+
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveThreadModeDefinitionRequest {
+    operation_id: String,
+    expected_revision: u64,
+    #[schema(value_type = Object)]
+    document: ThreadModeDocument,
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModeDefinitionCommandRequest {
+    operation_id: String,
+    expected_revision: u64,
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ValidateThreadModeDefinitionRequest {
+    json: String,
+}
 
 #[allow(dead_code)]
 #[derive(IntoResponses)]
@@ -204,6 +226,13 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(restore_thread))
         .routes(routes!(rename_thread))
         .routes(routes!(set_thread_mode))
+        .routes(routes!(read_thread_mode_definition))
+        .routes(routes!(save_thread_mode_definition))
+        .routes(routes!(delete_thread_mode_definition))
+        .routes(routes!(reload_thread_mode_definitions))
+        .routes(routes!(validate_thread_mode_definition))
+        .routes(routes!(thread_mode_definition_schema))
+        .routes(routes!(preview_thread_mode_workflow))
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(list_thread_timeline))
@@ -477,6 +506,109 @@ async fn set_thread_mode(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(reply))
+}
+
+#[utoipa::path(get, path = "/api/v1/thread-modes/{mode_id}", operation_id = "threadMode.readDefinition", params(("mode_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
+async fn read_thread_mode_definition(
+    State(state): State<AppState>,
+    Path(mode_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .read_thread_mode_definition(&parse_mode(&mode_id)?)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(put, path = "/api/v1/thread-modes/{mode_id}", operation_id = "threadMode.saveDefinition", params(("mode_id" = String, Path)), request_body = SaveThreadModeDefinitionRequest, responses(StudioApiErrors, (status = 200)))]
+async fn save_thread_mode_definition(
+    State(state): State<AppState>,
+    Path(mode_id): Path<String>,
+    ApiJson(request): ApiJson<SaveThreadModeDefinitionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let mode_id = parse_mode(&mode_id)?;
+    if request.document.definition.id != mode_id {
+        return Err(ApiError(StudioError::invalid_argument(
+            "Thread Mode path ID must match document.id",
+        )));
+    }
+    Ok(Json(
+        state
+            .runtime
+            .save_thread_mode_definition(
+                &request.operation_id,
+                request.expected_revision,
+                request.document,
+            )
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(delete, path = "/api/v1/thread-modes/{mode_id}", operation_id = "threadMode.deleteDefinition", params(("mode_id" = String, Path)), request_body = ModeDefinitionCommandRequest, responses(StudioApiErrors, (status = 200)))]
+async fn delete_thread_mode_definition(
+    State(state): State<AppState>,
+    Path(mode_id): Path<String>,
+    ApiJson(request): ApiJson<ModeDefinitionCommandRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .delete_thread_mode_definition(
+                &request.operation_id,
+                request.expected_revision,
+                &parse_mode(&mode_id)?,
+            )
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/thread-modes/reload", operation_id = "threadMode.reloadDefinitions", request_body = ModeDefinitionCommandRequest, responses(StudioApiErrors, (status = 200)))]
+async fn reload_thread_mode_definitions(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ModeDefinitionCommandRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .reload_thread_mode_definitions(&request.operation_id, request.expected_revision)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/thread-modes/validate", operation_id = "threadMode.validateDefinition", request_body = ValidateThreadModeDefinitionRequest, responses(StudioApiErrors, (status = 200)))]
+async fn validate_thread_mode_definition(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ValidateThreadModeDefinitionRequest>,
+) -> Result<Json<pl_protocol::ThreadModeValidationResult>, ApiError> {
+    Ok(Json(
+        state.runtime.validate_thread_mode_definition(&request.json),
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/thread-modes/schema", operation_id = "threadMode.definitionSchema", responses(StudioApiErrors, (status = 200)))]
+async fn thread_mode_definition_schema(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let schema = serde_json::from_str(&state.runtime.thread_mode_definition_schema())
+        .map_err(|_| ApiError(StudioError::internal()))?;
+    Ok(Json(schema))
+}
+
+#[utoipa::path(post, path = "/api/v1/thread-modes/preview", operation_id = "threadMode.previewWorkflow", responses(StudioApiErrors, (status = 200)))]
+async fn preview_thread_mode_workflow(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<WorkflowPreviewRequest>,
+) -> Result<Json<pl_protocol::WorkflowPreviewSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .preview_thread_mode_workflow(request)
+            .map_err(ApiError::from)?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/threads/{thread_id}/turns", operation_id = "thread.listTurns", params(("thread_id" = String, Path), ("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]

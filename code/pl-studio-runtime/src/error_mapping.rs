@@ -23,6 +23,19 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         return error.clone();
     }
     if let Some(startup) = error.downcast_ref::<crate::StudioStartupError>() {
+        if let Some(ConfigRuntimeError::ModeDefinitions(cause)) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<ConfigRuntimeError>())
+        {
+            return StudioError::new(
+                StudioErrorCode::InvalidArgument,
+                format!("工作模式配置加载失败，原文件已保留：{cause:#}"),
+                false,
+            )
+            .with_details(
+                serde_json::json!({"startupStep": startup.step, "startupKind": "ModeDefinitions"}),
+            );
+        }
         if startup.kind == crate::StudioStartupErrorKind::Migration {
             return StudioError::new(
                 StudioErrorCode::InvalidArgument,
@@ -69,6 +82,11 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "actualRevision": actual,
             })),
             ConfigRuntimeError::Core(error) => pure_error(error),
+            ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(
+                StudioErrorCode::InvalidArgument,
+                format!("工作模式配置无效，原文件已保留：{error:#}"),
+                false,
+            ),
             ConfigRuntimeError::Migration(_) => StudioError::new(
                 StudioErrorCode::InvalidArgument,
                 "配置迁移失败，原文件已保留。请检查模型标识与配置声明。",

@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../features/settings/settings.dart';
+import '../features/settings/mode_editor/mode_editor_dialogs.dart';
 import '../features/shell/studio_shell.dart';
 import '../platform/desktop_tray_host.dart';
 import '../presentation/providers/studio_update_controller.dart';
@@ -48,6 +49,7 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
             GoRoute(
               path: 'settings',
               name: 'settings',
+              onExit: (context, state) => confirmLeaveModeEditor(context, ref),
               pageBuilder: (context, state) => const MaterialPage<void>(
                 restorationId: 'settings-page',
                 child: SettingsPage(),

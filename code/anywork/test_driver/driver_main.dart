@@ -156,6 +156,46 @@ Future<String> _handleDriverData(String? message) async {
       });
     case 'snapshot':
       return _driverSnapshotJson();
+    case 'mode-editor-state':
+      final editor = _client.modeEditor.state;
+      final catalog = _client.modeCatalog.state;
+      final threadId = _client.selection.state.selectedThreadId;
+      final session = threadId == null ? null : _client.sessionState(threadId);
+      final run = session?.runtime?.workflow?.currentRun;
+      return jsonEncode({
+        'document': editor.document?.toJson(),
+        'jsonText': editor.jsonText,
+        'dirty': editor.dirty,
+        'readOnly': editor.readOnly,
+        'busy': editor.busy,
+        'canUndo': editor.canUndo,
+        'canRedo': editor.canRedo,
+        'error': editor.error,
+        'issues': [for (final issue in editor.issues) issue.toJson()],
+        'preview': editor.preview?.toJson(),
+        'catalogRevision': catalog.revision,
+        'catalog': [
+          for (final mode
+              in catalog.value?.modes ?? <ThreadModeDescriptorView>[])
+            {
+              'id': mode.id,
+              'displayName': mode.displayName,
+              'readOnly': mode.readOnly,
+            },
+        ],
+        'threadId': threadId,
+        'run': run == null
+            ? null
+            : {
+                'runId': run.runId,
+                'lineageId': run.lineageId,
+                'graphHash': run.graphHash,
+                'currentStateId': run.currentStateId,
+                'currentStateTitle': run.currentStateTitle,
+                'modeDisplayName': run.modeDisplayName,
+                'modeDeleted': run.modeDeleted,
+              },
+      });
     case 'driver-diagnostics':
       return jsonEncode(_driverDiagnostics());
     case 'driver-fixture-clipboard-image':

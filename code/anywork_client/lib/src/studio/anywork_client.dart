@@ -14,6 +14,7 @@ import 'commands/command_lane.dart';
 import 'drafts/attachment_drafts.dart';
 import 'drafts/composer_draft_owner.dart';
 import 'drafts/start_session_draft_owner.dart';
+import 'mode_editor_owner.dart';
 import 'thread_session.dart';
 import 'thread_session_state.dart';
 import 'stores/project_store.dart';
@@ -47,6 +48,7 @@ class AnyworkClient {
     bool updatesEnabled = false,
   }) : budget = budget ?? ResourceBudget() {
     mutations = MutationBoard(clientId: clientId, budget: this.budget);
+    modeEditor = ModeEditorOwner(this);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
     providerUsageQueries = ProviderUsageQueries(this);
@@ -90,6 +92,10 @@ class AnyworkClient {
         if (value.loaded)
           observeResource('thread-directory', value.window.revision);
       }),
+      modeCatalog.source.watch((value) {
+        if (value.loaded)
+          observeResource('thread-mode-catalog', value.revision);
+      }),
     ]);
   }
 
@@ -99,6 +105,7 @@ class AnyworkClient {
   late final MutationBoard mutations;
   late final WorkspaceController workspace;
   late final StudioChannels channels;
+  late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;
   late final ProviderUsageQueries providerUsageQueries;
   late final SettingsCommands settingsCommands;
@@ -599,6 +606,7 @@ class AnyworkClient {
         deadline,
       ),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
+      _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),
       _joinOwner('queries', _queries.join(), deadline),
       for (final entry in _sessions.entries)

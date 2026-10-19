@@ -457,6 +457,7 @@ class ThreadModeDescriptorView {
     required this.description,
     required this.order,
     required this.hasWorkflow,
+    this.readOnly = false,
   });
 
   final String id;
@@ -464,6 +465,7 @@ class ThreadModeDescriptorView {
   final String description;
   final int order;
   final bool hasWorkflow;
+  final bool readOnly;
 
   ThreadModeId get mode => ThreadModeId.fromId(id);
 }
