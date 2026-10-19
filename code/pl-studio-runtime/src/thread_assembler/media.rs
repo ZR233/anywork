@@ -4,8 +4,9 @@ use pl_core::{context::ContextContent, tool::opaque::ToolError};
 use pl_tool::media::{RetainedToolMedia, ToolMedia, ToolMediaHost, ToolMediaKind};
 use std::sync::Arc;
 
+/// Shared resource host used by Thread tools that archive media bytes.
 #[derive(Debug)]
-pub(super) struct MediaHost(pub(super) FileResourceStore);
+pub(crate) struct MediaHost(pub(crate) FileResourceStore);
 
 impl ToolMediaHost for MediaHost {
     async fn retain(&self, media: ToolMedia) -> Result<RetainedToolMedia, ToolError> {

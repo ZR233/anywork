@@ -85,6 +85,10 @@ struct Tools {
     programmatic_tool_calling: Option<bool>,
 }
 
+/// 把一次成功观察解码为完整模型声明。
+///
+/// 这里不做目录声明的非对话排除：生图、嵌入与语音 slug 会被缓存，并只在有效目录
+/// 合成处剔除，服务能力仍能读到它们。
 pub(super) fn models(
     bytes: &[u8],
     discovery: &crate::config::ModelCatalogDiscovery,
@@ -124,17 +128,19 @@ pub(super) fn models(
             enriched.unwrap_or_else(|| model.clone()),
         );
     }
-    let mut result = records
+    let result = records
         .into_iter()
         .map(|record| normalize(record, discovery, adapter, &metadata))
         .collect::<Result<Vec<_>, _>>()?;
-    result.retain(|model| !excluded_by_discovery(&model.slug, discovery));
     validate_inventory(&result).map_err(|_| ModelCatalogQueryError::Protocol)?;
     Ok(result)
 }
 
 /// 目录声明的非对话排除规则（精确 slug 与 slug 前缀，均大小写敏感）。
-/// 解码写缓存与读取在线缓存共用这一份匹配语义，避免两处规则漂移。
+///
+/// 规则只在有效目录合成处（读取在线缓存）执行一次；成功观察保存服务端返回的完整名单，
+/// 因为非对话 slug 同时是 provider 服务能力的数据来源。本函数是该匹配语义的唯一入口，
+/// 读取侧与服务能力声明校验共用它。
 pub(crate) fn excluded_by_discovery(
     slug: &str,
     discovery: &crate::config::ModelCatalogDiscovery,

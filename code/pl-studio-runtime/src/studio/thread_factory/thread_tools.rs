@@ -129,6 +129,16 @@ impl StudioThreadFactory {
         search
             .hosted
             .extend(crate::programmatic::hosted_tool(route));
+        // Image generation is a provider service capability: absence of the declaration, an
+        // online image model or a resolvable credential leaves the tool unregistered.
+        let image_generation = config
+            .models
+            .image_generation_backend()
+            .map_err(|error| resource_error("bind image generation", error))?;
+        let image_generation_media = image_generation
+            .backend
+            .is_some()
+            .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
         let root = workspace.root().to_owned();
         let remote = match &preparation {
             CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
@@ -315,11 +325,13 @@ impl StudioThreadFactory {
             } if *policy_key == approval_policy_key(config, route) => policies.clone(),
             CatalogPreparation::Initial | CatalogPreparation::Refresh { .. } => Default::default(),
         };
+        let mut tools = tools.with_tools(search.tools);
+        if let (Some(backend), Some(media)) = (image_generation.backend, image_generation_media) {
+            tools = tools.with_image_generation(backend, media)?;
+        }
         Ok(PreparedThreadTools {
             catalog: skill_catalog,
-            tools: tools
-                .with_tools(search.tools)
-                .with_approval(approval, &policies),
+            tools: tools.with_approval(approval, &policies),
             hosted: search.hosted,
             environment,
             remote,

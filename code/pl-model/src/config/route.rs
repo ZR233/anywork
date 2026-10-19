@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{AgentRoleId, ProviderConfig, ProviderId};
 use crate::model::ModelInfo;
-use crate::provider::{ProviderConnectionMode, ProviderEndpoint};
+use crate::provider::{ImageGenerationDialect, ProviderConnectionMode, ProviderEndpoint};
 
 /// 模型推理强度的产品无关字符串值。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,7 +93,79 @@ impl ResolvedModelRoute {
     }
 }
 
+/// 一次图像生成调用的 provider 后端。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageGenerationBackend {
+    /// 提供该能力的 provider 标识。
+    pub provider_id: String,
+    /// 该 provider 实例解析出的运行时端点，已含凭据与 header。
+    pub endpoint: ProviderEndpoint,
+    /// 本次选择的生图模型 slug。
+    pub model: String,
+    /// 服务能力声明的方言。
+    pub dialect: ImageGenerationDialect,
+}
+
+/// 图像生成后端选择结果。
+///
+/// `any_declared` 区分「没有任何 provider 声明该能力」与「已声明但当前不可用」，
+/// 让上层在不注册工具时不把配置事实误报为运行故障。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageGenerationSelection {
+    /// 确定选择的可用后端；没有可用后端时为 `None`。
+    pub backend: Option<ImageGenerationBackend>,
+    /// 至少一个 provider 声明了图像生成能力。
+    pub any_declared: bool,
+}
+
 impl AgentModelConfig {
+    /// 选择确定性的图像生成后端。
+    ///
+    /// provider 按 provider id 字典序遍历；未声明能力、在线观察未命中声明前缀或凭据
+    /// 不可解析的 provider 依次跳过。命中后模型取首个出现在观察名单中的声明首选，
+    /// 否则取观察名单字典序首个。选择不按名称推断能力、价格或尺寸支持。
+    ///
+    /// # Errors
+    /// 服务能力、目录声明或端点构造失败时返回配置定义错误。
+    pub fn image_generation_backend(&self) -> Result<ImageGenerationSelection> {
+        let mut any_declared = false;
+        for (provider_id, provider) in &self.providers {
+            let Some(service) = provider.image_generation_service()? else {
+                continue;
+            };
+            any_declared = true;
+            if service.models.is_empty() || provider.resolved_bearer_token().is_none() {
+                continue;
+            }
+            let model = service
+                .capabilities
+                .preferred_models
+                .iter()
+                .find(|slug| service.models.contains(slug))
+                .cloned()
+                .unwrap_or_else(|| {
+                    service
+                        .models
+                        .first()
+                        .cloned()
+                        .expect("non-empty observed models were checked above")
+                });
+            return Ok(ImageGenerationSelection {
+                backend: Some(ImageGenerationBackend {
+                    provider_id: provider_id.to_string(),
+                    endpoint: provider.to_endpoint()?,
+                    model,
+                    dialect: service.capabilities.dialect,
+                }),
+                any_declared,
+            });
+        }
+        Ok(ImageGenerationSelection {
+            backend: None,
+            any_declared,
+        })
+    }
+
     /// Check declaration integrity without discarding persisted choices removed by an endpoint.
     /// Malformed providers, profiles, duplicate declarations, missing providers and empty routes
     /// still fail. Call `route_availability` separately; edits must use strict `validate`.

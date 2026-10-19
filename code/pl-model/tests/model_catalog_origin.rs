@@ -511,7 +511,7 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
         ]
     }))
     .await;
-    let config = openai_provider(&server.url);
+    let mut config = openai_provider(&server.url);
     let discovery = config.discovery_profile().unwrap().unwrap();
     assert_eq!(
         discovery.excluded_prefixes,
@@ -538,8 +538,31 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
             .unwrap(),
     );
     // 前缀匹配大小写敏感：不缩小写家族之外的相似 slug。
+    // 成功观察保存服务端返回的完整名单：非对话 slug 是服务能力的数据来源，
+    // 排除只在有效目录合成处执行。
     assert_eq!(
         models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "gpt-6-astra",
+            "gpt-image-2",
+            "gpt-image-1.5",
+            "dall-e-3",
+            "text-embedding-3-large",
+            "tts-1",
+            "whisper-1",
+            "omni-moderation-latest",
+            "text-moderation-latest",
+            "GPT-Image-2"
+        ]
+    );
+    config.set_model_catalog_overlay(models).unwrap();
+    assert_eq!(
+        config
+            .effective_models()
+            .unwrap()
             .iter()
             .map(|model| model.slug.as_str())
             .collect::<Vec<_>>(),
@@ -596,7 +619,7 @@ async fn exclusion_declarations_keep_bundled_and_manual_models() {
 }
 
 #[tokio::test]
-async fn excluded_slugs_are_filtered_before_inventory_validation() {
+async fn excluded_slugs_stay_in_the_observation_and_are_filtered_on_read() {
     let server = Server::json(json!({
         "data":[
             {"id":"mimo-v2.5-pro"},
@@ -607,7 +630,7 @@ async fn excluded_slugs_are_filtered_before_inventory_validation() {
         ]
     }))
     .await;
-    let config = mimo_provider(&server.url);
+    let mut config = mimo_provider(&server.url);
     let discovery = config.discovery_profile().unwrap().unwrap();
     assert_eq!(
         discovery.transport,
@@ -622,8 +645,25 @@ async fn excluded_slugs_are_filtered_before_inventory_validation() {
             .await
             .unwrap(),
     );
+    // 完整名单通过同一份库存校验，非对话 slug 不再在写入阶段丢弃。
     assert_eq!(
         models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "mimo-v2.5-pro",
+            "mimo-v2.5-asr",
+            "mimo-v2.5-tts",
+            "mimo-v2.5-tts-voiceclone",
+            "mimo-v2.5-tts-voicedesign"
+        ]
+    );
+    config.set_model_catalog_overlay(models).unwrap();
+    assert_eq!(
+        config
+            .effective_models()
+            .unwrap()
             .iter()
             .map(|model| model.slug.as_str())
             .collect::<Vec<_>>(),
@@ -649,7 +689,14 @@ async fn excluded_only_inventory_is_an_empty_success() {
             .await
             .unwrap(),
     );
-    assert!(models.is_empty());
+    // 全部为非对话模型的成功观察仍是完整缓存，只是有效目录为空。
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mimo-v2.5-asr", "mimo-v2.5-tts"]
+    );
     config.set_model_catalog_overlay(models).unwrap();
     assert!(config.effective_catalog().unwrap().is_empty());
     server.finish().await;

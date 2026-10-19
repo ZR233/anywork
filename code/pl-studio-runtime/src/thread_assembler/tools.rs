@@ -337,6 +337,40 @@ impl StudioThreadTools {
         Ok(self)
     }
 
+    /// Installs independent image generation over the selected provider backend and media host.
+    ///
+    /// The caller resolves the backend from the current directory observation, so an absent
+    /// service capability, online image model or credential never reaches this builder.
+    ///
+    /// # Errors
+    /// Returns service construction, declaration encoding or registry errors.
+    pub fn with_image_generation<H: pl_tool::media::ToolMediaHost + 'static>(
+        mut self,
+        backend: pl_model::config::ImageGenerationBackend,
+        media: std::sync::Arc<H>,
+    ) -> Result<Self, ThreadAssemblyError> {
+        let client =
+            pl_model::provider::images::ImagesClient::new(backend.endpoint).map_err(|error| {
+                ThreadAssemblyError::Resource {
+                    operation: "bind image generation",
+                    source: Box::new(error),
+                }
+            })?;
+        let declaration = pl_model::runtime::thread_tool_declaration(
+            &pl_tool::image_generation::ThreadImageGenerationTool::<H>::declaration(),
+        )?;
+        self.registrations.push(
+            pl_tool::image_generation::ThreadImageGenerationTool::new(
+                client,
+                backend.model,
+                backend.provider_id,
+                media,
+            )
+            .registration(declaration)?,
+        );
+        Ok(self)
+    }
+
     /// Installs skill discovery and read snapshots over a frozen provider directory.
     ///
     /// # Errors

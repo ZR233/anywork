@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::{ModelCatalogId, ProviderId, ProviderPresetId, builtin_model_catalog};
 use crate::model::ModelInfo;
 use crate::provider::{
-    ApplyPatchToolType, ProviderConnectionMode, ProviderEndpoint, ProviderServiceCapabilities,
-    StandaloneWebSearchDialect, ToolWirePolicy,
+    ApplyPatchToolType, ImageGenerationCapabilities, ProviderConnectionMode, ProviderEndpoint,
+    ProviderServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy,
 };
 
 /// Provider 模型目录来源。
@@ -60,6 +60,17 @@ pub enum ProviderModelOrigin {
 pub struct ProviderModelEntry {
     pub model: ModelInfo,
     pub origin: ProviderModelOrigin,
+}
+
+/// 一个 provider 实例当前可用的图像生成服务。
+///
+/// `models` 只来自在线观察，不用内置默认定义或手工模型补齐。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageGenerationService {
+    /// 声明的服务能力（方言、前缀与首选序）。
+    pub capabilities: ImageGenerationCapabilities,
+    /// 命中所声明前缀的在线模型 slug，按字典序去重；可为空。
+    pub models: Vec<String>,
 }
 
 /// 可由产品配置文件组合使用的 Provider 值对象。
@@ -168,6 +179,13 @@ impl ProviderConfig {
 
     /// 解析 preset 默认值或实例显式覆盖后的服务能力。
     pub fn service_capabilities(&self) -> Result<ProviderServiceCapabilities> {
+        let capabilities = self.resolved_service_capabilities()?;
+        self.validate_service_capabilities(&capabilities)?;
+        Ok(capabilities)
+    }
+
+    /// 解析 preset 默认值或实例显式覆盖后的服务能力，不校验目录声明一致性。
+    fn resolved_service_capabilities(&self) -> Result<ProviderServiceCapabilities> {
         match &self.capabilities {
             ProviderCapabilitySelection::Explicit(capabilities) => Ok(capabilities.clone()),
             ProviderCapabilitySelection::PresetDefaults => match self.preset_id() {
@@ -204,6 +222,82 @@ impl ProviderConfig {
                 None => Ok(ProviderServiceCapabilities::default()),
             },
         }
+    }
+
+    /// 校验服务能力与目录声明的一致性。
+    ///
+    /// 图像生成模型必须同时被目录的非对话排除规则覆盖：只有被排除的 slug 才不属于
+    /// 有效对话目录，服务能力因此不会与路由、压缩或附件校验产生第二份事实。声明缺失
+    /// 目录排除或首选模型越界都属于目录/配置定义错误，而不是运行期可用性。
+    fn validate_service_capabilities(
+        &self,
+        capabilities: &ProviderServiceCapabilities,
+    ) -> Result<()> {
+        let Some(declaration) = &capabilities.image_generation else {
+            return Ok(());
+        };
+        if declaration.model_prefixes.is_empty() {
+            return Err(PureError::ConfigError(
+                "provider image generation declaration requires at least one model prefix".into(),
+            ));
+        }
+        let discovery = self.discovery_profile()?;
+        for prefix in &declaration.model_prefixes {
+            if prefix.trim().is_empty() {
+                return Err(PureError::ConfigError(
+                    "provider image generation declaration contains an empty model prefix".into(),
+                ));
+            }
+            let covered = discovery.as_ref().is_some_and(|discovery| {
+                crate::provider::discovery::excluded_by_discovery(prefix, discovery)
+            });
+            if !covered {
+                return Err(PureError::ConfigError(format!(
+                    "provider image generation prefix is not excluded by its model catalog: {prefix}"
+                )));
+            }
+        }
+        for slug in &declaration.preferred_models {
+            if !declaration
+                .model_prefixes
+                .iter()
+                .any(|prefix| slug.starts_with(prefix.as_str()))
+            {
+                return Err(PureError::ConfigError(format!(
+                    "provider image generation preferred model does not match a declared prefix: {slug}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 返回该实例的图像生成服务及其在线可用模型；未声明能力时返回 `None`。
+    ///
+    /// # Errors
+    /// 服务能力或目录声明不一致时返回配置定义错误。
+    pub fn image_generation_service(&self) -> Result<Option<ImageGenerationService>> {
+        let Some(capabilities) = self.service_capabilities()?.image_generation else {
+            return Ok(None);
+        };
+        let models = self
+            .model_catalog_overlay
+            .iter()
+            .flatten()
+            .map(|model| model.slug.as_str())
+            .filter(|slug| {
+                capabilities
+                    .model_prefixes
+                    .iter()
+                    .any(|prefix| slug.starts_with(prefix.as_str()))
+            })
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(Some(ImageGenerationService {
+            capabilities,
+            models,
+        }))
     }
 
     /// 返回实例绑定的内置 preset；自定义 provider 返回 `None`。
@@ -258,7 +352,8 @@ impl ProviderConfig {
                     let discovery = bundled.discovery.as_ref().ok_or_else(|| {
                         PureError::Protocol("model catalog observation is unsupported".into())
                     })?;
-                    // 历史缓存（含 304 复用的旧 model.json）同样按当前目录声明剔除非对话模型。
+                    // 有效目录合成是目录声明非对话排除的唯一执行点：历史缓存（含 304
+                    // 复用的旧 model.json）同样在这里按当前声明剔除，不因缓存复用而复活。
                     overlay
                         .iter()
                         .filter(|model| {

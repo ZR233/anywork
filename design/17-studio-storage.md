@@ -148,6 +148,8 @@ repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责
 在线模型目录是可重建的 provider 观察，不是用户 desired config 或会话数据。每个实例、查询身份
 独立保存版本化 `model.json`：身份、成功/检查时间（Unix 秒）、可选 ETag 与统一模型声明；
 不保存明文认证信息，API 模型价格保存为 Unknown，计价来源由 [06](./06-model.md) 定义。
+缓存保存服务端返回的完整模型声明（含生图、嵌入与语音等非对话 slug），排除只在有效目录
+合成处执行，见 [06](./06-model.md) §6.7；非对话名单是 provider 服务能力的数据来源。
 成功文件的读取与写入共用 8 MiB 上限；规范化后的声明超过上限时保留上一份成功观察，
 不写入下次启动无法读取的文件。
 查询身份覆盖实例、完整 base URL 路径、adapter 及影响查询的 header/凭据身份；旧身份文件不
