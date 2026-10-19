@@ -1071,6 +1071,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineViewImageFailed => '读取图片失败';
 
   @override
+  String get timelineReadFileCompleted => '已读取';
+
+  @override
+  String get timelineReadFileReading => '正在读取';
+
+  @override
+  String get timelineReadFileFailed => '读取失败';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name 已完成';
   }

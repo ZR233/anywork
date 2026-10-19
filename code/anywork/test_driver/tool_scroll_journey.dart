@@ -11,6 +11,7 @@ import 'scrolling_journey.dart';
 import 'timeline_fill_journey.dart';
 import 'timeline_observation.dart';
 import 'stress_start.dart' as start;
+import 'window_control.dart';
 
 /// 产品动态正文展示预算（`PRODUCT_PREVIEW_BYTES`）。
 const _productPreviewBudgetBytes = 32 * 1024;
@@ -29,12 +30,13 @@ const _listFilesLimit = 200;
 /// 只用于有界收敛：步数用尽仍未从 render/widget 树卸载就如实失败，不靠固定 sleep。
 const _maxImageRecycleSteps = 12;
 
-/// 剧本里的 8 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
+/// 剧本里的 9 个工具调用身份（`pl-provider-fixture` 的 `gui_tool_scroll_script`）。
 ///
 /// 每个 canonical 工具调用都是独立条目：按 callId 精确判定 name/status，既不放过
 /// 漏项，也不接受陌生项；判定不依赖时间线顺序或任何活动分组。
 const _expectedToolCalls = <({String callId, String name, String status})>[
-  (callId: 'scroll-call-short', name: 'list_files', status: 'succeeded'),
+  (callId: 'scroll-call-short', name: 'read_file', status: 'succeeded'),
+  (callId: 'scroll-call-read-second', name: 'read_file', status: 'succeeded'),
   (callId: 'scroll-call-medium', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-long', name: 'list_files', status: 'succeeded'),
   (callId: 'scroll-call-arguments', name: 'exec', status: 'succeeded'),
@@ -688,6 +690,9 @@ Future<void> main(List<String> args) async {
     final thumbnail = find.byValueKey('view-image-thumbnail-$imageEntryFirst');
     await driver.sendCommand(RawTap(headerOf(toggle)));
     await driver.waitFor(thumbnail, timeout: const Duration(seconds: 10));
+    // In the stock reversed list, an expanded row grows toward earlier content.
+    // Explicitly scroll its header back into view before observing or clicking the gallery.
+    await place(toggle, 120);
     await File('${output.path}/consecutive-images-expanded.png')
         .writeAsBytes(await driver.screenshot());
     await driver.sendCommand(RawTap(thumbnail));
@@ -698,9 +703,58 @@ Future<void> main(List<String> args) async {
     if ((await probe(
           find.byValueKey('view-image-thumbnail-$imageEntryOther'),
           'observe',
-        ))['samples'].last['mounted'] !=
-        true) {
+        ))['samples'].last['mounted'] ==
+        false) {
       throw StateError('Consecutive image calls did not expand together');
+    }
+    final pidResponse = jsonDecode(await driver.requestData('pid')) as Map;
+    final guiPid = pidResponse['pid'] as int;
+    final narrow = resizeOwnedWindow(guiPid: guiPid, width: 640, height: 600);
+    final resizeEvidence = <String, Object?>{
+      'resized': narrow.resized,
+      'reason': narrow.reason,
+      'original': narrow.original?.toJson(),
+      'narrow': narrow.applied?.toJson(),
+      'diagnostics': narrow.diagnostics,
+    };
+    evidence['galleryResize'] = resizeEvidence;
+    if (narrow.resized) {
+      final shell = find.byValueKey('studio-shell');
+      Future<void> waitForWidth(int width) async {
+        for (var attempt = 0; attempt < 20; attempt++) {
+          final observed = await probe(shell, 'observe');
+          final sample = (observed['samples'] as List).last as Map;
+          if (((sample['width'] as num) - width).abs() < 1) return;
+        }
+        throw StateError('Flutter shell did not adopt native width $width');
+      }
+
+      try {
+        await waitForWidth(narrow.applied!.width);
+        await place(toggle, 120);
+        await File('${output.path}/consecutive-images-narrow.png')
+            .writeAsBytes(await driver.screenshot());
+        final group = await presentationFor(imageItem.id);
+        if (!group.expanded || group.id != imageGroup.id) {
+          throw StateError('Window resize lost the image group expansion');
+        }
+        resizeEvidence['keptExpansion'] = true;
+      } finally {
+        final original = narrow.original!;
+        final restored = resizeOwnedWindow(
+          guiPid: guiPid,
+          width: original.width,
+          height: original.height,
+        );
+        resizeEvidence['restored'] = restored.applied?.toJson();
+        if (!restored.resized) {
+          throw StateError('Could not restore GUI window: ${restored.reason}');
+        }
+        await waitForWidth(restored.applied!.width);
+      }
+      await place(toggle, 120);
+      await File('${output.path}/consecutive-images-wide-restored.png')
+          .writeAsBytes(await driver.screenshot());
     }
     // 同一 Thread、同一展示代次的真实用户滚动回收：正常外层滚轮把 b 行连同缩略图
     // 滚出 render/widget 树（History 冻结，不建立新代次），再用既有 place 滚回同一
@@ -1003,6 +1057,9 @@ Future<void> main(List<String> args) async {
     evidence['detailReads'] = detailReads;
     for (var index = 0; index < _expectedToolCalls.length; index++) {
       final expected = _expectedToolCalls[index];
+      // Image calls are validated independently above, including every source
+      // identity, gallery thumbnail, dialog and remount. They have no tool rows.
+      if (expected.name == 'view_image') continue;
       stdout.writeln('tool_scroll_case=$index:${expected.callId}');
       // 用 canonical callId 定位条目；index 只用于证据文件命名与稳定输出。
       final toolItem = toolsByCallId[expected.callId]!;
@@ -1032,7 +1089,21 @@ Future<void> main(List<String> args) async {
           );
         }
       }
-      await revealItem(toolItem.id);
+      if (index == 0) {
+        final group = await presentationFor(toolItem.id);
+        final summary = find.byValueKey(
+          'timeline-activity-summary-${group.id}',
+        );
+        await place(summary, 120);
+        await File('${output.path}/timeline-overview.png')
+            .writeAsBytes(await driver.screenshot());
+        await revealItem(toolItem.id);
+        await place(summary, 120);
+        await File('${output.path}/activity-group-expanded.png')
+            .writeAsBytes(await driver.screenshot());
+      } else {
+        await revealItem(toolItem.id);
+      }
       final tile = find.byValueKey('timeline-tool-details:${toolItem.id}');
       await place(tile, 125);
       final expanded = await probe(tile, 'tap');
@@ -1278,15 +1349,16 @@ Future<void> main(List<String> args) async {
       };
       if (samples.length < 2) return evidence;
       final first = samples.first as Map;
+      final firstPresentation = first['presentationGeometry'];
       final firstScroll = first['scroll'];
-      if (firstScroll is! Map) return evidence;
+      if (firstScroll is! Map || firstPresentation is! Map) return evidence;
       final threadId = firstScroll['threadId'];
       final generation = firstScroll['generation'];
       final initialPixel = finite(firstScroll['pixels']);
       final initialMin = finite(firstScroll['minScrollExtent']);
       final initialMax = finite(firstScroll['maxScrollExtent']);
-      final initialTop = finite(first['top']);
-      final initialHeight = finite(first['height']);
+      final initialTop = finite(firstPresentation['top']);
+      final initialHeight = finite(firstPresentation['height']);
       if (threadId is! String ||
           generation is! int ||
           initialPixel == null ||
@@ -1303,8 +1375,11 @@ Future<void> main(List<String> args) async {
       for (final sample in samples) {
         final current = sample as Map;
         final scroll = current['scroll'];
-        final top = finite(current['top']);
-        final height = finite(current['height']);
+        final presentation = current['presentationGeometry'];
+        final top = presentation is Map ? finite(presentation['top']) : null;
+        final height = presentation is Map
+            ? finite(presentation['height'])
+            : null;
         final pixels = scroll is Map ? finite(scroll['pixels']) : null;
         final min = scroll is Map ? finite(scroll['minScrollExtent']) : null;
         final max = scroll is Map ? finite(scroll['maxScrollExtent']) : null;
@@ -1484,9 +1559,9 @@ Future<void> main(List<String> args) async {
     );
     checks.add(detailPasses);
     evidence['detailReadPasses'] = detailPasses;
-    // 先取证，再算终局（latestViewportFill 的 pass 必须进入最终判定）。
-    final fill = await observeLatestViewportFill(driver, output);
-    evidence['latestViewportFill'] = fill;
+    // 原始小页与 GUI 分组分别核对；折叠后的短屏必须保留真实的更早内容入口。
+    final fill = await observeLatestPagePresentation(driver, output);
+    evidence['latestPagePresentation'] = fill;
     checks.add(fill['pass'] == true);
     evidence['checks'] = checks;
 

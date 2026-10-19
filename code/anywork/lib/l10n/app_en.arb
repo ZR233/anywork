@@ -574,6 +574,9 @@
   },
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
+  "timelineReadFileCompleted": "Read",
+  "timelineReadFileReading": "Reading",
+  "timelineReadFileFailed": "Unable to read",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {

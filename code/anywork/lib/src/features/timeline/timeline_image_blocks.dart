@@ -65,8 +65,14 @@ class _ThreadImageLoader {
     Future<Uint8List> Function() read,
   ) => _images.putIfAbsent('$threadId\u0000$attachmentId', read);
 
-  void invalidate(String threadId, String attachmentId) {
-    _images.remove('$threadId\u0000$attachmentId');
+  void invalidate(
+    String threadId,
+    String attachmentId,
+    Future<Uint8List> failed,
+  ) {
+    final key = '$threadId\u0000$attachmentId';
+    // A stale error tile must not discard a newer read started by another call.
+    if (identical(_images[key], failed)) _images.remove(key);
   }
 
   void clear() {
@@ -191,7 +197,7 @@ class _ThreadAttachmentCardState extends ConsumerState<_ThreadAttachmentCard> {
   void _retry() {
     _imageGeneration++;
     _ThreadImageCacheScope.of(context)
-        .invalidate(widget.threadId, widget.attachment.id);
+        .invalidate(widget.threadId, widget.attachment.id, _image!);
     final image = _loadImage();
     setState(() {
       _image = image;
@@ -320,8 +326,11 @@ class _ThreadToolImageThumbnailState
   void _retry() {
     _imageGeneration++;
     _ThreadImageCacheScope.of(context)
-        .invalidate(widget.threadId, widget.entry.attachment.id);
-    setState(() => _image = _loadImage());
+        .invalidate(widget.threadId, widget.entry.attachment.id, _image!);
+    final image = _loadImage();
+    setState(() {
+      _image = image;
+    });
   }
 
   Future<void> _showImage() async {
@@ -338,6 +347,7 @@ class _ThreadToolImageThumbnailState
       MemoryImage(image),
       dialogKey: StudioDriverKeys.viewImageDialog(widget.entry.entryId),
       label: widget.entry.attachment.filename,
+      sourcePath: _toolTarget(widget.entry.item),
     );
   }
 }
@@ -425,6 +435,7 @@ Future<void> _showStudioImageDialog(
   ImageProvider image, {
   required Key dialogKey,
   String? label,
+  String? sourcePath,
 }) async {
   await showDialog<void>(
     context: context,
@@ -441,48 +452,75 @@ Future<void> _showStudioImageDialog(
           760,
           math.max(200, MediaQuery.sizeOf(context).height - 80),
         ),
-        child: Stack(
+        child: Column(
           children: [
-            Positioned.fill(
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 5,
-                child: Center(
-                  child: Image(
-                    image: image,
-                    errorBuilder: (context, error, stackTrace) => Center(
-                      child: Text(context.l10n.timelineImageLoadFailed),
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: InteractiveViewer(
+                      minScale: 0.5,
+                      maxScale: 5,
+                      child: Center(
+                        child: Image(
+                          image: image,
+                          errorBuilder: (context, error, stackTrace) => Center(
+                            child: Text(context.l10n.timelineImageLoadFailed),
+                          ),
+                        ),
+                      ),
                     ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: IconButton.filledTonal(
+                      key: StudioDriverKeys.timelineImageClose,
+                      tooltip: context.l10n.timelineImageClose,
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if ((label?.isNotEmpty ?? false) ||
+                (sourcePath?.isNotEmpty ?? false))
+              Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(color: context.colors.outlineVariant),
                   ),
                 ),
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton.filledTonal(
-                key: StudioDriverKeys.timelineImageClose,
-                tooltip: context.l10n.timelineImageClose,
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close),
-              ),
-            ),
-            if (label != null && label.isNotEmpty)
-              Positioned(
-                left: 12,
-                bottom: 10,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface
-                        .withValues(alpha: 0.86),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    child: Text(label),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                child: SelectionArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (label?.isNotEmpty == true)
+                        Text(label!, style: context.text.titleSmall),
+                      if (sourcePath?.isNotEmpty == true && sourcePath != label)
+                        Padding(
+                          padding: EdgeInsets.only(
+                            top: label?.isNotEmpty == true ? 4 : 0,
+                          ),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 96),
+                            child: SingleChildScrollView(
+                              child: Text(
+                                sourcePath!,
+                                style: context.text.bodySmall?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),

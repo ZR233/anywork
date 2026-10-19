@@ -275,6 +275,7 @@ class _ToolDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tool = item.tool;
+    final compactRead = item.name == 'read_file';
     final detailLines =
         [
               _toolTarget(item),
@@ -304,23 +305,31 @@ class _ToolDetails extends StatelessWidget {
               tool?.callId ?? tool?.toolCallId ?? item.part.id,
             )
           : null,
-      padding: const EdgeInsets.only(top: 6),
+      padding: EdgeInsets.only(top: compactRead ? 2 : 6),
       child: ExpansionTile(
         key: ValueKey('timeline-tool-details:${item.id}'),
         expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        tilePadding: const EdgeInsets.symmetric(horizontal: 8),
+        tilePadding: compactRead
+            ? EdgeInsets.zero
+            : const EdgeInsets.symmetric(horizontal: 8),
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
         shape: const Border(),
         collapsedShape: const Border(),
         dense: true,
-        controlAffinity: ListTileControlAffinity.leading,
-        title: Text(
-          _toolTitle(context, item),
-          style: context.text.bodySmall?.copyWith(
-            color: context.colors.onSurface,
-          ),
-        ),
-        subtitle: detailLines.isEmpty
+        minTileHeight: compactRead ? 28 : null,
+        showTrailingIcon: !compactRead,
+        controlAffinity: compactRead
+            ? ListTileControlAffinity.trailing
+            : ListTileControlAffinity.leading,
+        title: compactRead
+            ? _readFileTitle(context)
+            : Text(
+                _toolTitle(context, item),
+                style: context.text.bodySmall?.copyWith(
+                  color: context.colors.onSurface,
+                ),
+              ),
+        subtitle: compactRead || detailLines.isEmpty
             ? null
             : Text(
                 detailLines.join('\n'),
@@ -360,6 +369,53 @@ class _ToolDetails extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Widget _readFileTitle(BuildContext context) {
+    final path = _toolTarget(item);
+    final filename = path?.split(RegExp(r'[/\\]')).last;
+    final status = switch (item.status) {
+      'succeeded' => context.l10n.timelineReadFileCompleted,
+      'failed' => context.l10n.timelineReadFileFailed,
+      'queued' ||
+      'running' ||
+      'streaming' ||
+      'approved' ||
+      'started' => context.l10n.timelineReadFileReading,
+      _ => context.toolStatusLabel(item.status),
+    };
+    final title = Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: status),
+          if (filename?.isNotEmpty == true)
+            TextSpan(
+              text: ' $filename',
+              style: const TextStyle(
+                decoration: TextDecoration.underline,
+                decorationStyle: TextDecorationStyle.dotted,
+              ),
+            ),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: context.text.bodySmall?.copyWith(
+        color: context.colors.onSurfaceVariant,
+      ),
+    );
+    final row = Row(
+      children: [
+        Icon(
+          Icons.menu_book_outlined,
+          size: 17,
+          color: context.colors.onSurfaceVariant,
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: title),
+      ],
+    );
+    return path == null ? row : Tooltip(message: path, child: row);
   }
 
   String? _resultDetail(_ToolItem item, TimelineToolPart? tool) {

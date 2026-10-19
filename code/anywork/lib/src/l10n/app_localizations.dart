@@ -2052,6 +2052,24 @@ abstract class AppLocalizations {
   /// **'Failed to read image'**
   String get timelineViewImageFailed;
 
+  /// No description provided for @timelineReadFileCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get timelineReadFileCompleted;
+
+  /// No description provided for @timelineReadFileReading.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading'**
+  String get timelineReadFileReading;
+
+  /// No description provided for @timelineReadFileFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to read'**
+  String get timelineReadFileFailed;
+
   /// No description provided for @timelineToolCompleted.
   ///
   /// In en, this message translates to:

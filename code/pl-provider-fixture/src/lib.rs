@@ -263,6 +263,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
     script.optional_title(&title);
     let identities = [
         ("scroll-item-short", "scroll-call-short"),
+        ("scroll-item-read-second", "scroll-call-read-second"),
         ("scroll-item-medium", "scroll-call-medium"),
         ("scroll-item-long", "scroll-call-long"),
         ("scroll-item-arguments", "scroll-call-arguments"),
@@ -273,7 +274,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
     ];
     let mut next_identity = 0;
     for (prompt, lines, padding, count) in [
-        ("Tool scroll short", 1, 0, 1),
+        ("Tool scroll short", 1, 0, 2),
         ("Tool scroll medium", 12, 0, 1),
         ("Tool scroll long", 200, 0, 1),
         ("Tool scroll arguments", 12, 12_000, 1),
@@ -295,6 +296,18 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: "view_image",
                         arguments: json!({"path": "tool-image.png"}).to_string(),
+                    };
+                }
+                if matches!(item_id, "scroll-item-short" | "scroll-item-read-second") {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: "read_file",
+                        arguments: json!({"path": if item_id == "scroll-item-short" {
+                            "scroll-fixture/entry-000.txt"
+                        } else {
+                            "scroll-fixture/entry-001.txt"
+                        }}).to_string(),
                     };
                 }
                 RealtimeToolCall {

@@ -124,11 +124,7 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
           children: [body!],
         ),
         child: item is TimelineImageReadGroup
-            ? _TimelineImageGroupContents(
-                item: item,
-                lease: widget.lease,
-                threadId: widget.threadId,
-              )
+            ? _TimelineImageGroupContents(item: item, threadId: widget.threadId)
             : _TimelineGroupContents(
                 item: item,
                 lease: widget.lease,
@@ -246,60 +242,115 @@ class _TimelineGroupContents extends StatelessWidget {
 class _TimelineImageGroupContents extends StatelessWidget {
   const _TimelineImageGroupContents({
     required this.item,
-    required this.lease,
     required this.threadId,
   });
   final TimelineImageReadGroup item;
-  final TimelineDisplayLease lease;
   final String threadId;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: item,
     builder: (context, _) {
-      final entries = _toolImageEntries([
-        for (final payload in item.payloads)
-          _ToolItem(_entryViewOf(payload.item)),
-      ]);
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (entries.isNotEmpty)
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final columns = math.max(
-                  1,
-                  ((constraints.maxWidth + 8) / 128).floor(),
-                );
-                final rows = (entries.length / columns).ceil();
-                return SizedBox(
-                  key: StudioDriverKeys.toolImageGallery(item.id),
-                  height: math.min(320, rows * 128.0 - 8),
-                  child: Scrollbar(
-                    child: GridView.builder(
-                      primary: false,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: columns,
-                        mainAxisExtent: 120,
-                        mainAxisSpacing: 8,
-                        crossAxisSpacing: 8,
-                      ),
-                      itemCount: entries.length,
-                      itemBuilder: (context, index) =>
-                          _ThreadToolImageThumbnail(
-                            key: ValueKey(entries[index].entryId),
-                            threadId: threadId,
-                            entry: entries[index],
-                          ),
-                    ),
+      // Flatten only this group's previews, retaining the owning call even when
+      // it has no image yet. Bytes are still read by mounted thumbnails only.
+      final entries = <({_ToolItem call, _ToolImageEntryRef? image})>[];
+      for (final payload in item.payloads) {
+        final call = _ToolItem(_entryViewOf(payload.item));
+        final images = _toolImageEntries([call]);
+        if (images.isEmpty) {
+          entries.add((call: call, image: null));
+        } else {
+          for (final image in images) {
+            entries.add((call: call, image: image));
+          }
+        }
+      }
+      if (entries.isEmpty) return const SizedBox.shrink();
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = math.max(
+            1,
+            ((constraints.maxWidth + 8) / 128).floor(),
+          );
+          final rows = (entries.length / columns).ceil();
+          return Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox(
+              key: StudioDriverKeys.toolImageGallery(item.id),
+              width: math.min(constraints.maxWidth, columns * 128.0 - 8),
+              height: math.min(320, rows * 128.0 - 8),
+              child: Scrollbar(
+                child: GridView.builder(
+                  primary: false,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    mainAxisExtent: 120,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
                   ),
-                );
-              },
+                  itemCount: entries.length,
+                  itemBuilder: (context, index) {
+                    final entry = entries[index];
+                    final image = entry.image;
+                    if (image == null) {
+                      return _TimelineImageReadStatus(item: entry.call);
+                    }
+                    return _ThreadToolImageThumbnail(
+                      key: ValueKey(image.entryId),
+                      threadId: threadId,
+                      entry: image,
+                    );
+                  },
+                ),
+              ),
             ),
-          // Every call retains an explicit result/diagnostic entry, including failed image reads.
-          _TimelineGroupContents(item: item, lease: lease, threadId: threadId),
-        ],
+          );
+        },
       );
     },
+  );
+}
+
+/// A call without an attachment keeps a small gallery slot. Diagnostics are
+/// available on demand, without adding paths and payloads below the gallery.
+class _TimelineImageReadStatus extends StatelessWidget {
+  const _TimelineImageReadStatus({required this.item});
+  final _ToolItem item;
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton(
+    onPressed: () => showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(_toolTitle(context, item)),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(child: _ToolDetails(item: item)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(context.l10n.timelineImageClose),
+          ),
+        ],
+      ),
+    ),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          item.error == null
+              ? Icons.image_outlined
+              : Icons.broken_image_outlined,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _toolTitle(context, item),
+          textAlign: TextAlign.center,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    ),
   );
 }

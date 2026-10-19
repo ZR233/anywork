@@ -1140,6 +1140,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageFailed => 'Failed to read image';
 
   @override
+  String get timelineReadFileCompleted => 'Read';
+
+  @override
+  String get timelineReadFileReading => 'Reading';
+
+  @override
+  String get timelineReadFileFailed => 'Unable to read';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name completed';
   }
