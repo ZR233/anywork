@@ -5,6 +5,19 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.20.0](https://github.com/ZR233/anywork/compare/v6.19.0...v6.20.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 模型对象与操作改用 model_id/modelId；有效模型查询增加可选 ModelType 参数；配置 schema 升为 22，目录协议升为 14。
+* **studio:** Timeline 读取 DTO 新增类型化 source；HTTP/FRB 与 Client 消费方需同步适配。canonical 调用和恢复提示仍逐条持久化，数据库 schema 与保存格式不变。
+
+### Bug Fixes
+
+* **studio:** 按活动分组折叠 Timeline 并合并连续图片与重连提示 ([#105](https://github.com/ZR233/anywork/issues/105)) ([51572f5](https://github.com/ZR233/anywork/commit/51572f5491c7773f946974ef44bae0a170bfb212))
+* **studio:** 统一模型目录并按文本资格筛选模型 ([6f2a935](https://github.com/ZR233/anywork/commit/6f2a935dacee79b14fa66fe154441f74e726aa91))
+
 ## [6.19.0](https://github.com/ZR233/anywork/compare/v6.18.0...v6.19.0) (2026-10-19)
 
 
