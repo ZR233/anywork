@@ -1,4 +1,6 @@
 mod catalog;
+mod mode_definitions;
+pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -7,8 +9,10 @@ use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
 use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
+use crate::mode::ThreadModeManager;
 use pl_model::config::ProviderId;
-use pl_protocol::studio::StudioModelCatalogStatus;
+use pl_protocol::ThreadModeDocument;
+use pl_protocol::{ThreadModeId, studio::StudioModelCatalogStatus};
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。
@@ -22,6 +26,10 @@ pub struct ConfigRuntime {
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
+    /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
+    modes: ThreadModeManager,
+    /// 文件定义的完整编辑文档；查询只读该缓存，不扫描目录。
+    mode_documents: Arc<RwLock<BTreeMap<ThreadModeId, ThreadModeDocument>>>,
 }
 
 struct RuntimeState {
@@ -98,6 +106,8 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 pub enum ConfigRuntimeError {
     #[error("configuration migration failed; original file preserved: {0}")]
     Migration(#[source] PureError),
+    #[error("work mode configuration requires repair; original files preserved: {0:#}")]
+    ModeDefinitions(#[source] anyhow::Error),
     #[error("settings revision conflict: expected {expected}, actual {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error(transparent)]
@@ -110,6 +120,9 @@ impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
             ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
+            ConfigRuntimeError::ModeDefinitions(error) => PureError::ConfigError(format!(
+                "work mode configuration requires repair: {error:#}"
+            )),
             ConfigRuntimeError::StaleRevision { expected, actual } => PureError::ConfigError(
                 format!("settings revision conflict: expected {expected}, actual {actual}"),
             ),
@@ -127,6 +140,8 @@ impl ConfigRuntime {
         super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
+        let (modes, mode_documents) = mode_definitions::initialize(store.paths())
+            .map_err(ConfigRuntimeError::ModeDefinitions)?;
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
         Ok(Self {
             store,
@@ -156,6 +171,8 @@ impl ConfigRuntime {
                 observations,
             })),
             profiles,
+            modes,
+            mode_documents: Arc::new(RwLock::new(mode_documents)),
         })
     }
 

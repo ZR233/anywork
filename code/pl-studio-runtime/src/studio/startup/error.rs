@@ -39,7 +39,10 @@ impl StudioStartupError {
         } else if source.chain().any(|cause| {
             matches!(
                 cause.downcast_ref::<crate::ConfigRuntimeError>(),
-                Some(crate::ConfigRuntimeError::Migration(_))
+                Some(
+                    crate::ConfigRuntimeError::Migration(_)
+                        | crate::ConfigRuntimeError::ModeDefinitions(_)
+                )
             )
         }) {
             StudioStartupErrorKind::Migration

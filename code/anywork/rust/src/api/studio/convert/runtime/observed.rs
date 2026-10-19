@@ -255,6 +255,7 @@ pub(crate) fn bridge_thread_mode_catalog(
                 description: mode_.description,
                 order: mode_.order,
                 has_workflow: mode_.has_workflow,
+                read_only: mode_.read_only,
             })
             .collect(),
     }

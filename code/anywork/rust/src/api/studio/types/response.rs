@@ -612,6 +612,7 @@ pub struct BridgeThreadModeDescriptor {
     pub description: String,
     pub order: u32,
     pub has_workflow: bool,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

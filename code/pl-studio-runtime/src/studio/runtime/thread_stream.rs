@@ -156,6 +156,7 @@ impl LiveSubscription {
             persistence.as_ref(),
         )?;
         runtime.annotate_model_route(&mut snapshot)?;
+        runtime.annotate_mode_availability(&mut snapshot);
         // The first frame carries the authoritative activity and the owner's typed storage state;
         // later frames only carry them when they really changed. Reading the owner's own value here
         // (and marking it seen) means the very first frame can never disagree with the owner, and the
@@ -622,7 +623,14 @@ impl StudioThreadSubscription {
                     live.refresh_observations();
                 }
                 live.observation_due = None;
-                return Ok(live.pending.pop_front());
+                let mut update = live.pending.pop_front();
+                if let Some(ThreadSubscriptionUpdate::Notification { notification }) = &mut update
+                    && let ThreadNotification::ThreadRuntimeUpdated { runtime: observed } =
+                        &mut notification.notification
+                {
+                    runtime.annotate_runtime_mode_availability(observed);
+                }
+                return Ok(update);
             }
             live.observation_due = None;
             if matches!(step, FeedStep::Closed) {
@@ -738,7 +746,24 @@ impl StudioRuntime {
             persistence.as_ref(),
         )?;
         self.annotate_model_route(&mut snapshot)?;
+        self.annotate_mode_availability(&mut snapshot);
         Ok(snapshot)
+    }
+
+    fn annotate_mode_availability(&self, snapshot: &mut pl_protocol::ThreadSnapshot) {
+        if let Some(runtime) = snapshot.runtime.as_mut() {
+            self.annotate_runtime_mode_availability(runtime);
+        }
+    }
+
+    fn annotate_runtime_mode_availability(&self, runtime: &mut pl_protocol::ThreadRuntimeSnapshot) {
+        if let Some(run) = runtime
+            .workflow
+            .as_mut()
+            .and_then(|workflow| workflow.current_run.as_mut())
+        {
+            run.mode_deleted = self.thread_modes.snapshot().mode(&run.mode_id).is_none();
+        }
     }
 
     /// 该 Thread 的 typed 持久化快照；没有登记过持久化的 Thread 为 `None`（未知不等于健康）。

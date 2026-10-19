@@ -1403,6 +1403,98 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId) async {
+    await _ensureReady();
+    return _modeDefinitionSnapshotFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.readThreadModeDefinition(modeId: modeId),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.saveThreadModeDefinition(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+          document: _bridgeModeDocument(document),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.deleteThreadModeDefinition(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+          modeId: modeId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.reloadThreadModeDefinitions(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeValidationResult> validateThreadModeDefinition(String json) async {
+    await _ensureReady();
+    return _modeValidationResultFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.validateThreadModeDefinition(json: json),
+      ),
+    );
+  }
+
+  @override
+  Future<String> threadModeDefinitionSchema() async {
+    await _ensureReady();
+    return _bridgeCall(frb_mode_editor.threadModeDefinitionSchema);
+  }
+
+  @override
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  ) async {
+    await _ensureReady();
+    return _workflowPreviewSnapshotFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.previewThreadModeWorkflow(
+          request: _bridgeWorkflowPreviewRequest(request),
+        ),
+      ),
+    );
+  }
+
+  @override
   Stream<StudioShutdownProgress> subscribeShutdownProgress() {
     if (!_runtimeReady) {
       // 无 owner（未安装 / 第二实例 / 初始化失败）：不存在可观察的进度资源。返回空流，

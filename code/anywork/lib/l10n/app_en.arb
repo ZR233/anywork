@@ -1495,9 +1495,310 @@
   "settingsModelParametersUnknown": "Model parameters unknown",
   "settingsModelPriceUnknown": "Price unknown",
   "modelTextFilterExcluded": "{model}: excluded from text models ({reasons})",
-  "@modelTextFilterExcluded": {"placeholders": {"model": {"type": "String"}, "reasons": {"type": "String"}}},
+  "@modelTextFilterExcluded": {
+    "placeholders": {
+      "model": {
+        "type": "String"
+      },
+      "reasons": {
+        "type": "String"
+      }
+    }
+  },
   "modelTextInputUnsupported": "Text input unsupported",
   "modelTextOutputUnsupported": "Text output unsupported",
   "modelContextWindowUnknown": "Context window unknown",
-  "modelTextFilterEmpty": "No matching text models. Check model parameters in provider settings."
+  "modelTextFilterEmpty": "No matching text models. Check model parameters in provider settings.",
+  "modeEditorTitle": "Work modes",
+  "modeEditorNewMode": "New mode",
+  "modeEditorImportJson": "Import JSON",
+  "modeEditorSearchHint": "Find name or id",
+  "modeEditorBuiltInGroup": "Built-in",
+  "modeEditorMyModesGroup": "My modes",
+  "modeEditorNoMatches": "No matching work modes.",
+  "modeEditorCatalogReadOnlyHint": "Built-in modes are read-only. Duplicate one to customize stages.",
+  "modeEditorReadOnly": "Read-only",
+  "modeEditorUnsaved": "Unsaved",
+  "modeEditorUndo": "Undo",
+  "modeEditorRedo": "Redo",
+  "modeEditorReload": "Reload",
+  "modeEditorDuplicate": "Duplicate",
+  "modeEditorDeleteMode": "Delete mode",
+  "modeEditorSave": "Save",
+  "modeEditorTabFlow": "Flow",
+  "modeEditorTabJson": "JSON",
+  "modeEditorTabSettings": "Settings",
+  "modeEditorTabPreview": "Preview",
+  "modeEditorDraftUnsaved": "Draft unsaved",
+  "modeEditorSelectOrCreate": "Select or create a work mode.",
+  "modeEditorOpenNotice": "Opened {id}",
+  "@modeEditorOpenNotice": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaveValidationIssues": "Validation found {count} issues before save.",
+  "@modeEditorSaveValidationIssues": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorPreSaveValidationFailed": "Pre-save validation failed: {error}",
+  "@modeEditorPreSaveValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaved": "Mode saved. Changes apply from the next turn.",
+  "modeEditorSaveFailed": "Save failed.",
+  "modeEditorReloaded": "Mode definition reloaded.",
+  "modeEditorReloadFailed": "Reload failed.",
+  "modeEditorDeleteFailed": "Delete failed.",
+  "modeEditorDeleted": "Mode deleted; thread history is kept.",
+  "modeEditorCopySuffix": "copy",
+  "modeEditorCopyCreated": "Copy created as a draft; save to publish it.",
+  "modeEditorDraftCreated": "Draft created. Save after validation.",
+  "modeEditorImportReadFailed": "Could not read mode JSON: {error}",
+  "@modeEditorImportReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorImportObjectRequired": "Mode JSON must be an object.",
+  "modeEditorInvalidModeId": "Mode id must look like mode.example.",
+  "modeEditorBuiltInCannotOverwrite": "Built-in modes cannot be overwritten.",
+  "modeEditorImportedDraft": "Configuration loaded as a draft; save to publish it.",
+  "modeEditorJsonCopied": "Mode JSON copied.",
+  "modeEditorSchemaReadFailed": "Could not read schema: {error}",
+  "@modeEditorSchemaReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorValidationPassed": "Validation passed.",
+  "modeEditorIssuesFound": "{count} issues found.",
+  "@modeEditorIssuesFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorValidationFailed": "Validation failed: {error}",
+  "@modeEditorValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorJsonApplied": "JSON applied to the draft.",
+  "modeEditorJsonApplyFailed": "JSON could not be applied.",
+  "modeEditorJsonApplyFix": "JSON could not be applied; fix the syntax or fields.",
+  "modeEditorPreviewReasonDefault": "Manually confirm stage completion and guard",
+  "modeEditorPreviewFailed": "Preview failed: {error}",
+  "@modeEditorPreviewFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorMaxStates": "At most {count} states are supported.",
+  "@modeEditorMaxStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNewFinalState": "New final state",
+  "modeEditorNewStage": "New work stage",
+  "modeEditorFinalStateAdded": "Final state added. Add an incoming path.",
+  "modeEditorStageAdded": "Stage added. Add incoming and outgoing transitions.",
+  "modeEditorContinueGuardPlaceholder": "Continue when the guard is satisfied.",
+  "modeEditorTransitionAdded": "Transition added. Complete its guard.",
+  "modeEditorNeedTwoStates": "Add at least two states before creating a transition.",
+  "modeEditorLayoutReset": "Layout reset. The workflow definition is unchanged.",
+  "modeEditorWorkflowEnabled": "Workflow enabled.",
+  "modeEditorWorkflow": "Workflow",
+  "modeEditorWorkflowGoalText": "Complete the task in stages with a reviewable path.",
+  "modeEditorStart": "Start",
+  "modeEditorStageInstructionsPlaceholder": "Describe the work for this stage.",
+  "modeEditorStageCriterionPlaceholder": "This stage goal is satisfied.",
+  "modeEditorDone": "Done",
+  "modeEditorTransitionGuardPlaceholder": "The result satisfies the goal.",
+  "modeEditorPromptDescription": "Describe this mode responsibilities, sequence, and boundaries.",
+  "modeEditorPortIn": "In",
+  "modeEditorPortOut": "Out",
+  "modeEditorGuardRequiredShort": "Guard required",
+  "modeEditorDuplicateTransition": "A transition between those states already exists.",
+  "modeEditorInitialBadge": "Start",
+  "modeEditorStageAction": "Stage",
+  "modeEditorFinalLabel": "Final",
+  "modeEditorTransitionAction": "Transition",
+  "modeEditorValidate": "Validate",
+  "modeEditorAutoLayout": "Auto layout",
+  "modeEditorZoomOut": "Zoom out",
+  "modeEditorZoomIn": "Zoom in",
+  "modeEditorFitView": "Fit view",
+  "modeEditorFlowInspector": "Flow inspector",
+  "modeEditorNoWorkflow": "This mode has no workflow",
+  "modeEditorNoWorkflowReadOnlyHint": "Duplicate this mode to add stages and transitions.",
+  "modeEditorNoWorkflowEnableHint": "Enabling a workflow adds a starting stage and a final state.",
+  "modeEditorEnableWorkflow": "Enable workflow",
+  "modeEditorUnsavedTitle": "Unsaved draft",
+  "modeEditorUnsavedBody": "Save the current changes before continuing, or discard this draft.",
+  "modeEditorCancel": "Cancel",
+  "modeEditorDiscard": "Discard",
+  "modeEditorSaveAndContinue": "Save and continue",
+  "modeEditorNewWorkMode": "New work mode",
+  "modeEditorModeName": "Mode name",
+  "modeEditorModeNameHint": "For example: Research",
+  "modeEditorModeNameRequired": "Enter a mode name.",
+  "modeEditorModeId": "Mode id",
+  "modeEditorModeIdFormat": "Use the form mode.example with lowercase letters, digits, - and _.",
+  "modeEditorModeIdExists": "That mode id already exists.",
+  "modeEditorStartingPoint": "Starting point",
+  "modeEditorMinimalWorkflow": "Minimal workflow",
+  "modeEditorNoWorkflowTemplate": "No workflow",
+  "modeEditorCreateMode": "Create mode",
+  "modeEditorImportDialogTitle": "Import mode JSON",
+  "modeEditorImportDialogBody": "Paste mode JSON. Built-in modes stay read-only; an existing custom id opens as an unsaved draft.",
+  "modeEditorLoadAsDraft": "Load as draft",
+  "modeEditorSchemaDialogTitle": "Mode JSON schema",
+  "modeEditorClose": "Close",
+  "modeEditorDeleteDialogTitle": "Delete this work mode?",
+  "modeEditorDeleteDialogBody": "Remove the \"{displayName}\" definition. Thread history is kept.",
+  "@modeEditorDeleteDialogBody": {
+    "placeholders": {
+      "displayName": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorConfirmDelete": "Delete",
+  "modeEditorRemoveStateTitle": "Delete this state?",
+  "modeEditorRemoveStateBody": "Delete \"{title}\" and its {transitionCount} related transitions. Undo can restore it.",
+  "@modeEditorRemoveStateBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "transitionCount": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorDeleteState": "Delete state",
+  "modeEditorRemoveWorkflowTitle": "Remove workflow?",
+  "modeEditorRemoveWorkflowBody": "The mode can still chat, but stage graph and workflow tools are removed. Undo is available before saving.",
+  "modeEditorRemoveWorkflow": "Remove workflow",
+  "modeEditorStateIdInvalid": "Use lowercase letters, digits, - and _ only.",
+  "modeEditorStateIdExists": "That state id exists.",
+  "modeEditorRenameStateTitle": "Rename state id",
+  "modeEditorStateId": "State id",
+  "modeEditorApply": "Apply",
+  "modeEditorAddTransition": "Add transition",
+  "modeEditorSourceState": "Source state",
+  "modeEditorChooseSource": "Choose a source.",
+  "modeEditorTargetState": "Target state",
+  "modeEditorChooseTarget": "Choose a target.",
+  "modeEditorTransitionGuard": "Transition guard",
+  "modeEditorTransitionGuardHint": "For example: after the user confirms scope",
+  "modeEditorGuardRequiredField": "Enter a guard.",
+  "modeEditorCollapse": "Collapse",
+  "modeEditorNoWorkflowPeriod": "This mode has no workflow.",
+  "modeEditorInspectorSelectHint": "Select a stage or transition on the canvas to edit its fields.",
+  "modeEditorRenameId": "Rename id",
+  "modeEditorStageTitle": "Stage title",
+  "modeEditorStageKind": "Stage kind",
+  "modeEditorAtomicStage": "Atomic stage",
+  "modeEditorFinalState": "Final state",
+  "modeEditorInitialStateSwitch": "Initial state",
+  "modeEditorInitialStateLockedHint": "The workflow always keeps one initial state; enable another stage instead.",
+  "modeEditorInitialStateHint": "A run starts from this stage.",
+  "modeEditorStageInstructions": "Stage instructions",
+  "modeEditorCompletionCriteria": "Completion criteria (one per line)",
+  "modeEditorAtomicCriteriaRequired": "An atomic stage needs at least one completion criterion; Rust validates on save.",
+  "modeEditorOutgoingTransitions": "Outgoing transitions",
+  "modeEditorAdd": "Add",
+  "modeEditorNoOutgoing": "No outgoing transitions.",
+  "modeEditorDeleteTransition": "Delete transition",
+  "modeEditorStateTransition": "State transition",
+  "modeEditorTransitionRuleHint": "One transition per source/target pair; multiple successors, self loops and cycles are allowed.",
+  "modeEditorValidationIssuesCount": "{count} issues",
+  "@modeEditorValidationIssuesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNotValidated": "Not validated",
+  "modeEditorApplyJson": "Apply JSON",
+  "modeEditorCopyJson": "Copy JSON",
+  "modeEditorSchemaLabel": "Schema",
+  "modeEditorReadOnlyCopyHint": "Read-only: copy or validate",
+  "modeEditorJsonHint": "Mode JSON keeps the six top-level fields plus editor layout.",
+  "modeEditorModeSettingsTitle": "Mode settings",
+  "modeEditorModeSettingsSubtitle": "Execution definition and editor layout are stored separately; layout never changes workflow identity.",
+  "modeEditorDisplayName": "Display name",
+  "modeEditorDescription": "Description",
+  "modeEditorOrder": "Order",
+  "modeEditorRawPrompt": "Raw prompt",
+  "modeEditorRawPromptHelper": "This is the full mode prompt injected without GUI rewriting.",
+  "modeEditorWorkflowTitle": "Workflow title",
+  "modeEditorWorkflowGoal": "Workflow goal",
+  "modeEditorInitialStateLabel": "Initial state",
+  "modeEditorWorkflowSummary": "{states} states · {transitions} transitions",
+  "@modeEditorWorkflowSummary": {
+    "placeholders": {
+      "states": {
+        "type": "int"
+      },
+      "transitions": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNoWorkflowToolHint": "Without a workflow there is no stage graph or workflow tools.",
+  "modeEditorPreviewUnavailable": "This mode has no workflow to preview.",
+  "modeEditorRunPreview": "Run preview",
+  "modeEditorPreviewSubtitle": "Bounded replay uses the production Rust state machine; it never rewrites the configured initial state.",
+  "modeEditorStartPreview": "Start preview",
+  "modeEditorRestart": "Restart",
+  "modeEditorTransitionReason": "Transition reason",
+  "modeEditorTransitionReasonHint": "Manually confirm stage completion and guard",
+  "modeEditorTransitionReasonHelper": "Sent as the reason when advancing to a successor.",
+  "modeEditorAllowedNextStates": "Allowed next states · {count}",
+  "@modeEditorAllowedNextStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorTerminalReached": "Reached a final state. Restarting never rewrites the saved initial state.",
+  "modeEditorPreviewIntroText": "Preview starts from the current JSON document. Each step follows one valid transition from the current state and keeps the path in this preview.",
+  "modeEditorPreviewAccepted": "Preview accepted.",
+  "modeEditorPreviewRejected": "Preview rejected.",
+  "modeEditorCurrentStage": "Current stage",
+  "modeEditorPath": "Path",
+  "modeEditorAdvance": "Advance",
+  "modeEditorPreviewHistory": "Preview history",
+  "modeDeletedUsingSnapshot": "Deleted mode · using saved snapshot",
+  "modeDeletedChooseAnother": "This mode was deleted. Choose another mode.",
+  "modeSnapshotBadge": "Snapshot",
+  "modeDeletedBadge": "Deleted"
 }

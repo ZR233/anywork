@@ -6,6 +6,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'key_press.dart';
 import 'pointer_drag.dart';
+import 'pointer_scroll.dart';
 import 'raw_tap.dart';
 
 typedef FlutterDriverConnector = Future<FlutterDriverClient> Function(
@@ -37,6 +38,7 @@ abstract interface class FlutterDriverClient {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   });
 
@@ -71,6 +73,7 @@ abstract interface class FlutterDriverClient {
     SerializableFinder finder, {
     double dx = 0,
     double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
     Duration? timeout,
   });
 
@@ -255,10 +258,16 @@ class FlutterDriverSession {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   }) {
     return _runSideEffectWithDeadline(
-      _client.scrollBy(scrollable, dy, timeout: timeout),
+      _client.scrollBy(
+        scrollable,
+        dy,
+        mouseWheel: mouseWheel,
+        timeout: timeout,
+      ),
       name: 'scrollBy',
       timeout: timeout,
     );
@@ -356,9 +365,16 @@ class FlutterDriverSession {
     SerializableFinder finder, {
     double dx = 0,
     double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
     Duration? timeout,
   }) {
-    return _client.dragBy(finder, dx: dx, dy: dy, timeout: timeout);
+    return _client.dragBy(
+      finder,
+      dx: dx,
+      dy: dy,
+      pointerKind: pointerKind,
+      timeout: timeout,
+    );
   }
 
   Future<void> pressKey(
@@ -515,8 +531,14 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   }) {
+    if (mouseWheel) {
+      return _driver
+          .sendCommand(PointerScroll(scrollable, -dy, timeout: timeout))
+          .then((_) {});
+    }
     return _driver.scroll(
       scrollable,
       0,
@@ -580,10 +602,17 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
     SerializableFinder finder, {
     double dx = 0,
     double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
     Duration? timeout,
   }) async {
     await _driver.sendCommand(
-      PointerDrag(finder, dy, dx: dx, timeout: timeout),
+      PointerDrag(
+        finder,
+        dy,
+        dx: dx,
+        pointerKind: pointerKind,
+        timeout: timeout,
+      ),
     );
   }
 

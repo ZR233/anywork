@@ -1,4 +1,5 @@
 mod context_replay_recovery;
+mod mode_editor;
 mod model_catalog;
 mod provider_usage;
 mod shutdown;
@@ -737,6 +738,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "history-lock"
             | "history-fault"
             | "plan-recovery"
+            | "mode-editor"
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
@@ -865,6 +867,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if matches!(
         options.scenario.as_str(),
         "plan-recovery"
+            | "mode-editor"
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
@@ -1113,6 +1116,23 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
 
     if options.scenario == "plan-recovery" {
         return run_plan_recovery_scenario(
+            &RecoveryScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
+    }
+
+    if options.scenario == "mode-editor" {
+        return mode_editor::run(
             &RecoveryScenario {
                 workspace: &workspace,
                 app_dir: &app_dir,

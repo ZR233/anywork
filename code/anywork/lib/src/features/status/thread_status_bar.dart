@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mode_catalog_store.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -169,7 +170,10 @@ class ThreadStatusBar extends StatelessWidget {
                         maxWidth: 140,
                       ),
                     if (workflowRun case final run?)
-                      _WorkflowRuntimeReadout(run: run),
+                      _WorkflowRuntimeReadout(
+                        run: run,
+                        maxWidth: constraints.maxWidth >= 1000 ? 260 : 140,
+                      ),
                     _ContextUsageConnector(threadId: threadId),
                     ThreadThroughputReadout(
                       key: StudioDriverKeys.threadThroughput,
@@ -358,22 +362,35 @@ class _LspActivityDetail extends StatelessWidget {
   }
 }
 
-class _WorkflowRuntimeReadout extends StatelessWidget {
-  const _WorkflowRuntimeReadout({required this.run});
+class _WorkflowRuntimeReadout extends ConsumerWidget {
+  const _WorkflowRuntimeReadout({required this.run, this.maxWidth = 140});
 
   final WorkflowRunView run;
+  final double maxWidth;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final catalog = ref.watch(modeCatalogStoreProvider).value;
+    final deleted = catalog == null
+        ? run.modeDeleted
+        : !catalog.modes.any((mode) => mode.id == run.modeId);
+    final stateTitle = run.currentStateTitle.isEmpty
+        ? context.workflowStateLabel(run.currentStateId)
+        : run.currentStateTitle;
+    final modeName = run.modeDisplayName.isEmpty
+        ? context.workflowModeLabel(run.modeId)
+        : run.modeDisplayName;
     return KeyedSubtree(
       key: ValueKey('workflow-runtime-${run.runId}'),
       child: _StatusReadout(
         key: ValueKey('workflow-state-${run.currentStateId}'),
         icon: run.terminal ? Icons.check_circle_outline : Icons.route_outlined,
-        label: context.workflowStateLabel(run.currentStateId),
+        label: deleted
+            ? '$stateTitle · ${context.l10n.modeDeletedUsingSnapshot}'
+            : stateTitle,
         tooltip:
-            '${context.workflowModeLabel(run.modeId)} · ${context.workflowStateLabel(run.currentStateId)}',
-        maxWidth: 140,
+            '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}',
+        maxWidth: deleted ? maxWidth : 140,
       ),
     );
   }

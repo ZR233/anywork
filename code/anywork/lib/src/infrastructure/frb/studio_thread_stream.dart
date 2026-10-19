@@ -811,6 +811,9 @@ WorkflowRuntimeView _workflowRuntimeFromFrb(
             terminal: run.lifecycle == frb.BridgeWorkflowRunLifecycle.terminal,
             startedAt: _dateFromUnix(run.startedAt),
             updatedAt: _dateFromUnix(run.updatedAt),
+            currentStateTitle: run.currentStateTitle,
+            modeDisplayName: run.modeDisplayName,
+            modeDeleted: run.modeDeleted,
           ),
   );
 }

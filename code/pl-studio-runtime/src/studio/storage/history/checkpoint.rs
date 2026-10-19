@@ -23,6 +23,39 @@ impl HistoryStore {
         Ok(result)
     }
 
+    /// Commits the Mode representation upgrade before a recovered owner can be observed.
+    /// Migration preserves the checkpoint watermark, context and workflow history. The
+    /// original checkpoint is compared inside the writer transaction, so a concurrent
+    /// commit or another recovery can never be overwritten by a stale candidate.
+    pub(crate) async fn migrate_mode_checkpoint(
+        &self,
+        original: &ThreadCheckpoint,
+        modes: &crate::mode::ThreadModeManager,
+    ) -> Result<ThreadCheckpoint> {
+        ensure!(
+            original.thread_id == self.state.thread_id,
+            "checkpoint belongs to another Thread"
+        );
+        let mut migrated = original.clone();
+        crate::mode::migrate_mode_snapshot(&mut migrated.state, modes)?;
+        if migrated.state.extensions.get("studio.mode")
+            == original.state.extensions.get("studio.mode")
+        {
+            return Ok(migrated);
+        }
+        let tx = begin_write(&self.writer().await?.db).await?;
+        let current = read(&tx, &self.state.thread_id)
+            .await?
+            .context("Mode recovery checkpoint is absent")?;
+        ensure!(
+            serde_json::to_vec(&current)? == serde_json::to_vec(original)?,
+            "checkpoint changed during Mode recovery; original data preserved"
+        );
+        write(&tx, &migrated, None).await?;
+        tx.commit().await?;
+        Ok(migrated)
+    }
+
     /// The only import boundary for a validated, fully materialized v2 TOML checkpoint.
     pub(crate) async fn import_checkpoint(
         &self,

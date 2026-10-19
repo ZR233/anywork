@@ -156,6 +156,6 @@ impl StudioRuntime {
 
     /// Reads the current process-wide Thread Mode catalog.
     pub fn read_thread_mode_catalog(&self) -> pl_protocol::ThreadModeCatalogSnapshot {
-        self.thread_modes.snapshot().catalog().clone()
+        self.config_runtime.read_thread_mode_catalog()
     }
 }

@@ -503,6 +503,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                   children: [
                     SessionModeSelector(
                       mode: thread.mode,
+                      usesSnapshot: true,
+                      snapshotDisplayName:
+                          view.workflow?.currentRun?.modeDisplayName,
                       enabled:
                           !view.hasActiveWorkflow &&
                           thread.status == ThreadStatusView.idle &&

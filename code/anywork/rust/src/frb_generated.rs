@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -841613216;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1089532460;
 
 // Section: executor
 
@@ -1095,6 +1095,21 @@ fn wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tool
                     })())
                 } })
 }
+fn wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "bridge_thread_mode_editor_layout_default", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end(); move |context|  {
+                    transform_result_sse::<_, ()>((move ||  {
+                         let output_ok = Ok::<_, ()>(crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout::default())?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+}
 fn wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1318,6 +1333,23 @@ fn wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(
             }
         },
     )
+}
+fn wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec,_,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "delete_thread_mode_definition", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+let api_expected_revision = <u64>::sse_decode(&mut deserializer);
+let api_mode_id = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context| async move {
+                    transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move || async move {
+                         let output_ok = crate::api::studio::handlers::mode_editor::delete_thread_mode_definition(api_operation_id, api_expected_revision, api_mode_id).await?;   std::result::Result::Ok(output_ok)
+                    })().await)
+                } })
 }
 fn wire__crate__api__studio__handlers__providers__discover_skills_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
@@ -1777,6 +1809,21 @@ fn wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(
             }
         },
     )
+}
+fn wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "preview_thread_mode_workflow", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_request = <crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move ||  {
+                         let output_ok = crate::api::studio::handlers::mode_editor::preview_thread_mode_workflow(api_request)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
 }
 fn wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
@@ -2381,6 +2428,44 @@ fn wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(
         },
     )
 }
+fn wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "read_thread_mode_definition",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_mode_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
+                    (move || {
+                        let output_ok =
+                            crate::api::studio::handlers::mode_editor::read_thread_mode_definition(
+                                api_mode_id,
+                            )?;
+                        std::result::Result::Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2495,6 +2580,22 @@ fn wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(
             }
         },
     )
+}
+fn wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec,_,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "reload_thread_mode_definitions", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+let api_expected_revision = <u64>::sse_decode(&mut deserializer);deserializer.end(); move |context| async move {
+                    transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move || async move {
+                         let output_ok = crate::api::studio::handlers::mode_editor::reload_thread_mode_definitions(api_operation_id, api_expected_revision).await?;   std::result::Result::Ok(output_ok)
+                    })().await)
+                } })
 }
 fn wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
@@ -3200,6 +3301,53 @@ fn wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(
         },
     )
 }
+fn wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "save_thread_mode_definition",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_expected_revision = <u64>::sse_decode(&mut deserializer);
+            let api_document =
+                <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_decode(
+                    &mut deserializer,
+                );
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::studio::handlers::mode_editor::save_thread_mode_definition(
+                                api_operation_id,
+                                api_expected_revision,
+                                api_document,
+                            )
+                            .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3845,6 +3993,36 @@ fn wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(
             }
         },
     )
+}
+fn wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "thread_mode_definition_schema", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end(); move |context|  {
+                    transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move ||  {
+                         let output_ok = crate::api::studio::handlers::mode_editor::thread_mode_definition_schema()?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+}
+fn wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "validate_thread_mode_definition", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_json = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move ||  {
+                         let output_ok = crate::api::studio::handlers::mode_editor::validate_thread_mode_definition(api_json)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
 }
 
 // Section: related_funcs
@@ -9439,6 +9617,67 @@ impl SseDecode for crate::api::studio::types::command::BridgeThreadModeCommandRe
     }
 }
 
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_displayName = <String>::sse_decode(deserializer);
+        let mut var_description = <String>::sse_decode(deserializer);
+        let mut var_order = <u32>::sse_decode(deserializer);
+        let mut var_prompt = <String>::sse_decode(deserializer);
+        let mut var_workflow = <Option<
+            crate::api::studio::types::mode_editor::BridgeWorkflowDefinition,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeThreadModeDefinition {
+            id: var_id,
+            display_name: var_displayName,
+            description: var_description,
+            order: var_order,
+            prompt: var_prompt,
+            workflow: var_workflow,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_catalog =
+            <crate::api::studio::types::response::BridgeThreadModeCatalogSnapshot>::sse_decode(
+                deserializer,
+            );
+        let mut var_definition = <Option<
+            crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot,
+        >>::sse_decode(deserializer);
+        let mut var_receipt =
+            <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply {
+            catalog: var_catalog,
+            definition: var_definition,
+            receipt: var_receipt,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_revision = <u64>::sse_decode(deserializer);
+        let mut var_document =
+            <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_decode(
+                deserializer,
+            );
+        let mut var_readOnly = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot {
+            revision: var_revision,
+            document: var_document,
+            read_only: var_readOnly,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::response::BridgeThreadModeDescriptor {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9447,12 +9686,75 @@ impl SseDecode for crate::api::studio::types::response::BridgeThreadModeDescript
         let mut var_description = <String>::sse_decode(deserializer);
         let mut var_order = <u32>::sse_decode(deserializer);
         let mut var_hasWorkflow = <bool>::sse_decode(deserializer);
+        let mut var_readOnly = <bool>::sse_decode(deserializer);
         return crate::api::studio::types::response::BridgeThreadModeDescriptor {
             id: var_id,
             display_name: var_displayName,
             description: var_description,
             order: var_order,
             has_workflow: var_hasWorkflow,
+            read_only: var_readOnly,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeDocument {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_definition =
+            <crate::api::studio::types::mode_editor::BridgeThreadModeDefinition>::sse_decode(
+                deserializer,
+            );
+        let mut var_editor =
+            <crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::mode_editor::BridgeThreadModeDocument {
+            definition: var_definition,
+            editor: var_editor,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_nodes =
+            <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition>>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout {
+            nodes: var_nodes,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_code = <String>::sse_decode(deserializer);
+        let mut var_path = <String>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue {
+            code: var_code,
+            path: var_path,
+            message: var_message,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_document = <Option<
+            crate::api::studio::types::mode_editor::BridgeThreadModeDocument,
+        >>::sse_decode(deserializer);
+        let mut var_issues = <Vec<
+            crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult {
+            document: var_document,
+            issues: var_issues,
         };
     }
 }
@@ -11248,6 +11550,86 @@ impl SseDecode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
     }
 }
 
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowDefinition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_title = <String>::sse_decode(deserializer);
+        let mut var_goal = <String>::sse_decode(deserializer);
+        let mut var_initialStateId = <String>::sse_decode(deserializer);
+        let mut var_states =
+            <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowState>>::sse_decode(
+                deserializer,
+            );
+        let mut var_transitions = <Vec<
+            crate::api::studio::types::mode_editor::BridgeWorkflowTransition,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeWorkflowDefinition {
+            title: var_title,
+            goal: var_goal,
+            initial_state_id: var_initialStateId,
+            states: var_states,
+            transitions: var_transitions,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_stateId = <String>::sse_decode(deserializer);
+        let mut var_x = <f64>::sse_decode(deserializer);
+        let mut var_y = <f64>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition {
+            state_id: var_stateId,
+            x: var_x,
+            y: var_y,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_document =
+            <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_decode(
+                deserializer,
+            );
+        let mut var_path = <Vec<String>>::sse_decode(deserializer);
+        let mut var_targetStateId = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest {
+            document: var_document,
+            path: var_path,
+            target_state_id: var_targetStateId,
+            reason: var_reason,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_accepted = <bool>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        let mut var_currentState = <Option<
+            crate::api::studio::types::mode_editor::BridgeWorkflowState,
+        >>::sse_decode(deserializer);
+        let mut var_transitions = <Vec<
+            crate::api::studio::types::mode_editor::BridgeWorkflowTransition,
+        >>::sse_decode(deserializer);
+        let mut var_path = <Vec<String>>::sse_decode(deserializer);
+        let mut var_terminal = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot {
+            accepted: var_accepted,
+            message: var_message,
+            current_state: var_currentState,
+            transitions: var_transitions,
+            path: var_path,
+            terminal: var_terminal,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11263,6 +11645,9 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
         let mut var_currentStateId = <String>::sse_decode(deserializer);
         let mut var_startedAt = <i64>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
+        let mut var_currentStateTitle = <String>::sse_decode(deserializer);
+        let mut var_modeDisplayName = <String>::sse_decode(deserializer);
+        let mut var_modeDeleted = <bool>::sse_decode(deserializer);
         return crate::api::studio::types::thread_stream::BridgeWorkflowRun {
             lineage_id: var_lineageId,
             run_id: var_runId,
@@ -11273,6 +11658,9 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
             current_state_id: var_currentStateId,
             started_at: var_startedAt,
             updated_at: var_updatedAt,
+            current_state_title: var_currentStateTitle,
+            mode_display_name: var_modeDisplayName,
+            mode_deleted: var_modeDeleted,
         };
     }
 }
@@ -11299,6 +11687,53 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeWorkflowRunti
         return crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot {
             revision: var_revision,
             current_run: var_currentRun,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_title = <String>::sse_decode(deserializer);
+        let mut var_instructions = <String>::sse_decode(deserializer);
+        let mut var_completionCriteria = <Vec<String>>::sse_decode(deserializer);
+        let mut var_kind =
+            <crate::api::studio::types::mode_editor::BridgeWorkflowStateKind>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::mode_editor::BridgeWorkflowState {
+            id: var_id,
+            title: var_title,
+            instructions: var_instructions,
+            completion_criteria: var_completionCriteria,
+            kind: var_kind,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowStateKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::mode_editor::BridgeWorkflowStateKind::Atomic,
+            1 => crate::api::studio::types::mode_editor::BridgeWorkflowStateKind::FinalState,
+            _ => unreachable!("Invalid variant for BridgeWorkflowStateKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowTransition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_sourceStateId = <String>::sse_decode(deserializer);
+        let mut var_targetStateId = <String>::sse_decode(deserializer);
+        let mut var_guard = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::mode_editor::BridgeWorkflowTransition {
+            source_state_id: var_sourceStateId,
+            target_state_id: var_targetStateId,
+            guard: var_guard,
         };
     }
 }
@@ -12098,6 +12533,18 @@ impl SseDecode for Vec<crate::api::studio::types::response::BridgeThreadModeDesc
     }
 }
 
+impl SseDecode for Vec<crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::response::BridgeThreadPersistenceSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12272,6 +12719,54 @@ impl SseDecode for Vec<crate::api::studio::types::thread_stream::BridgeUserQuest
         for idx_ in 0..len_ {
             ans_.push(
                 <crate::api::studio::types::thread_stream::BridgeUserQuestionOption>::sse_decode(
+                    deserializer,
+                ),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition>::sse_decode(
+                    deserializer,
+                ),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::mode_editor::BridgeWorkflowState>::sse_decode(
+                    deserializer,
+                ),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowTransition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::mode_editor::BridgeWorkflowTransition>::sse_decode(
                     deserializer,
                 ),
             );
@@ -12725,6 +13220,34 @@ impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeThread
 }
 
 impl SseDecode
+    for Option<crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::mode_editor::BridgeThreadModeDocument> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode
     for Option<crate::api::studio::types::thread_stream::BridgeThreadModelRouteSnapshot>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -12845,6 +13368,21 @@ impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeTurn> 
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::mode_editor::BridgeWorkflowDefinition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::mode_editor::BridgeWorkflowDefinition>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeWorkflowRun> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12865,6 +13403,21 @@ impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeWorkfl
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::mode_editor::BridgeWorkflowState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::mode_editor::BridgeWorkflowState>::sse_decode(
+                    deserializer,
+                ),
+            );
         } else {
             return None;
         }
@@ -13742,77 +14295,85 @@ fn pde_ffi_dispatcher_primary_impl(
 26 => wire__crate__api__studio__types__runtime__bridge_idle_agent_default_impl(port, ptr, rust_vec_len, data_len),
 27 => wire__crate__api__studio__types__product_topic__bridge_product_topic_validate_scope_impl(port, ptr, rust_vec_len, data_len),
 28 => wire__crate__api__studio__types__thread_activity__bridge_thread_activity_tools_default_impl(port, ptr, rust_vec_len, data_len),
-29 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
-30 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-31 => wire__crate__api__studio__handlers__providers__check_provider_usage_impl(port, ptr, rust_vec_len, data_len),
-32 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
-33 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
-34 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
-35 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-36 => wire__crate__api__studio__handlers__providers__discover_skills_impl(port, ptr, rust_vec_len, data_len),
-37 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
-38 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
-39 => wire__crate__api__studio__handlers__updater__install_studio_update_impl(port, ptr, rust_vec_len, data_len),
-40 => wire__crate__api__studio__handlers__prompt__interrupt_turn_impl(port, ptr, rust_vec_len, data_len),
-41 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
-42 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
-43 => wire__crate__api__studio__handlers__settings__load_provider_catalog_impl(port, ptr, rust_vec_len, data_len),
-44 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
-45 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
-46 => wire__crate__api__studio__handlers__chat__open_timeline_impl(port, ptr, rust_vec_len, data_len),
-47 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
-48 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-49 => wire__crate__api__studio__handlers__history__query_threads_impl(port, ptr, rust_vec_len, data_len),
-50 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
-51 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-52 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-53 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
-54 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
-55 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
-56 => wire__crate__api__studio__handlers__providers__read_provider_usage_state_impl(port, ptr, rust_vec_len, data_len),
-57 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
-59 => wire__crate__api__studio__handlers__providers__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
-60 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
-61 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
-62 => wire__crate__api__studio__handlers__history__read_thread_impl(port, ptr, rust_vec_len, data_len),
-63 => wire__crate__api__studio__handlers__history__read_thread_activity_detail_impl(port, ptr, rust_vec_len, data_len),
-64 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
-65 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
-66 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-67 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
-69 => wire__crate__api__studio__handlers__settings__remove_provider_impl(port, ptr, rust_vec_len, data_len),
-70 => wire__crate__api__studio__handlers__settings__remove_provider_model_impl(port, ptr, rust_vec_len, data_len),
-71 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
-72 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
-73 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
-74 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
-75 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
-76 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
-77 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
-80 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
-81 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
-82 => wire__crate__api__studio__handlers__settings__save_provider_impl(port, ptr, rust_vec_len, data_len),
-83 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
-84 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
-85 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
-86 => wire__crate__api__studio__handlers__providers__search_skills_impl(port, ptr, rust_vec_len, data_len),
-87 => wire__crate__api__studio__handlers__settings__set_default_provider_impl(port, ptr, rust_vec_len, data_len),
-88 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
-89 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
-94 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
-97 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
-98 => wire__crate__api__studio__subscription__thread__subscribe_thread_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
+29 => wire__crate__api__studio__types__mode_editor__bridge_thread_mode_editor_layout_default_impl(port, ptr, rust_vec_len, data_len),
+30 => wire__crate__api__studio__handlers__ssh__browse_remote_directories_impl(port, ptr, rust_vec_len, data_len),
+31 => wire__crate__api__studio__handlers__updater__cancel_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+32 => wire__crate__api__studio__handlers__providers__check_provider_usage_impl(port, ptr, rust_vec_len, data_len),
+33 => wire__crate__api__studio__handlers__updater__check_studio_update_impl(port, ptr, rust_vec_len, data_len),
+34 => wire__crate__api__studio__handlers__agent_profiles__cleanup_preserved_worktree_impl(port, ptr, rust_vec_len, data_len),
+35 => wire__crate__api__studio__subscription__product_topic__create_product_topic_subscription_impl(port, ptr, rust_vec_len, data_len),
+36 => wire__crate__api__studio__handlers__ssh__delete_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+37 => wire__crate__api__studio__handlers__mode_editor__delete_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+38 => wire__crate__api__studio__handlers__providers__discover_skills_impl(port, ptr, rust_vec_len, data_len),
+39 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
+40 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
+41 => wire__crate__api__studio__handlers__updater__install_studio_update_impl(port, ptr, rust_vec_len, data_len),
+42 => wire__crate__api__studio__handlers__prompt__interrupt_turn_impl(port, ptr, rust_vec_len, data_len),
+43 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
+44 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
+45 => wire__crate__api__studio__handlers__settings__load_provider_catalog_impl(port, ptr, rust_vec_len, data_len),
+46 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
+47 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
+48 => wire__crate__api__studio__handlers__chat__open_timeline_impl(port, ptr, rust_vec_len, data_len),
+49 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
+50 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
+51 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+52 => wire__crate__api__studio__handlers__history__query_threads_impl(port, ptr, rust_vec_len, data_len),
+53 => wire__crate__api__studio__handlers__agent_profiles__read_agent_profiles_state_impl(port, ptr, rust_vec_len, data_len),
+54 => wire__crate__api__studio__handlers__attachment__read_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+55 => wire__crate__api__studio__handlers__settings__read_deepseek_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__studio__handlers__external_state__read_lsp_state_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__studio__handlers__external_state__read_mcp_state_impl(port, ptr, rust_vec_len, data_len),
+58 => wire__crate__api__studio__handlers__persistence__read_persistence_queue_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__studio__handlers__providers__read_provider_usage_state_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__studio__handlers__lifecycle__read_recovery_state_impl(port, ptr, rust_vec_len, data_len),
+61 => wire__crate__api__studio__handlers__settings__read_settings_state_impl(port, ptr, rust_vec_len, data_len),
+62 => wire__crate__api__studio__handlers__providers__read_skills_state_impl(port, ptr, rust_vec_len, data_len),
+63 => wire__crate__api__studio__handlers__snapshot__read_studio_state_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__studio__handlers__updater__read_studio_update_state_impl(port, ptr, rust_vec_len, data_len),
+65 => wire__crate__api__studio__handlers__history__read_thread_impl(port, ptr, rust_vec_len, data_len),
+66 => wire__crate__api__studio__handlers__history__read_thread_activity_detail_impl(port, ptr, rust_vec_len, data_len),
+67 => wire__crate__api__studio__handlers__attachment__read_thread_attachment_impl(port, ptr, rust_vec_len, data_len),
+68 => wire__crate__api__studio__handlers__mode_editor__read_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+69 => wire__crate__api__studio__handlers__settings__read_web_search_settings_impl(port, ptr, rust_vec_len, data_len),
+70 => wire__crate__api__studio__handlers__ssh__reconnect_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+71 => wire__crate__api__studio__handlers__settings__reload_settings_from_disk_impl(port, ptr, rust_vec_len, data_len),
+72 => wire__crate__api__studio__handlers__mode_editor__reload_thread_mode_definitions_impl(port, ptr, rust_vec_len, data_len),
+73 => wire__crate__api__studio__handlers__attachment__remove_attachment_draft_impl(port, ptr, rust_vec_len, data_len),
+74 => wire__crate__api__studio__handlers__settings__remove_provider_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__studio__handlers__settings__remove_provider_model_impl(port, ptr, rust_vec_len, data_len),
+76 => wire__crate__api__studio__handlers__lifecycle__rename_project_impl(port, ptr, rust_vec_len, data_len),
+77 => wire__crate__api__studio__handlers__thread__rename_thread_impl(port, ptr, rust_vec_len, data_len),
+78 => wire__crate__api__studio__handlers__external_state__repair_lsp_server_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__studio__handlers__external_state__reset_lsp_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__studio__handlers__external_state__reset_mcp_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__studio__handlers__prompt__respond_interaction_impl(port, ptr, rust_vec_len, data_len),
+82 => wire__crate__api__studio__handlers__thread__restore_thread_impl(port, ptr, rust_vec_len, data_len),
+83 => wire__crate__api__studio__handlers__persistence__resume_thread_history_impl(port, ptr, rust_vec_len, data_len),
+84 => wire__crate__api__studio__handlers__persistence__retry_persistence_impl(port, ptr, rust_vec_len, data_len),
+85 => wire__crate__api__studio__handlers__lifecycle__retry_recovery_impl(port, ptr, rust_vec_len, data_len),
+86 => wire__crate__api__studio__handlers__persistence__retry_thread_history_impl(port, ptr, rust_vec_len, data_len),
+87 => wire__crate__api__studio__handlers__settings__save_provider_impl(port, ptr, rust_vec_len, data_len),
+88 => wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_impl(port, ptr, rust_vec_len, data_len),
+89 => wire__crate__api__studio__handlers__ssh__save_ssh_server_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__studio__handlers__mode_editor__save_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_impl(port, ptr, rust_vec_len, data_len),
+92 => wire__crate__api__studio__handlers__providers__search_skills_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__studio__handlers__settings__set_default_provider_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__studio__handlers__thread__set_thread_mode_impl(port, ptr, rust_vec_len, data_len),
+96 => wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__studio__handlers__thread__start_new_thread_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__studio__handlers__updater__start_studio_background_update_impl(port, ptr, rust_vec_len, data_len),
+100 => wire__crate__api__studio__handlers__lifecycle__start_studio_runtime_impl(port, ptr, rust_vec_len, data_len),
+101 => wire__crate__api__studio__handlers__prompt__submit_prompt_impl(port, ptr, rust_vec_len, data_len),
+102 => wire__crate__api__studio__subscription__shutdown__subscribe_shutdown_progress_impl(port, ptr, rust_vec_len, data_len),
+103 => wire__crate__api__studio__subscription__startup__subscribe_startup_progress_impl(port, ptr, rust_vec_len, data_len),
+104 => wire__crate__api__studio__subscription__thread__subscribe_thread_impl(port, ptr, rust_vec_len, data_len),
+105 => wire__crate__api__studio__handlers__ssh__test_ssh_connection_impl(port, ptr, rust_vec_len, data_len),
+106 => wire__crate__api__studio__handlers__mode_editor__thread_mode_definition_schema_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__studio__handlers__mode_editor__validate_thread_mode_definition_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -19930,6 +20491,91 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinition
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.display_name.into_into_dart().into_dart(),
+            self.description.into_into_dart().into_dart(),
+            self.order.into_into_dart().into_dart(),
+            self.prompt.into_into_dart().into_dart(),
+            self.workflow.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinition
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeDefinition,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeDefinition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeThreadModeDefinition {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.catalog.into_into_dart().into_dart(),
+            self.definition.into_into_dart().into_dart(),
+            self.receipt.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.revision.into_into_dart().into_dart(),
+            self.document.into_into_dart().into_dart(),
+            self.read_only.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::response::BridgeThreadModeDescriptor
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -19939,6 +20585,7 @@ impl flutter_rust_bridge::IntoDart
             self.description.into_into_dart().into_dart(),
             self.order.into_into_dart().into_dart(),
             self.has_workflow.into_into_dart().into_dart(),
+            self.read_only.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -19953,6 +20600,109 @@ impl
     > for crate::api::studio::types::response::BridgeThreadModeDescriptor
 {
     fn into_into_dart(self) -> crate::api::studio::types::response::BridgeThreadModeDescriptor {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDocument
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.definition.into_into_dart().into_dart(),
+            self.editor.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeDocument
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeDocument,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeDocument
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeThreadModeDocument {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.nodes.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.code.into_into_dart().into_dart(),
+            self.path.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.document.into_into_dart().into_dart(),
+            self.issues.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult,
+    > for crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult {
         self
     }
 }
@@ -22131,6 +22881,120 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowDefinition
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.title.into_into_dart().into_dart(),
+            self.goal.into_into_dart().into_dart(),
+            self.initial_state_id.into_into_dart().into_dart(),
+            self.states.into_into_dart().into_dart(),
+            self.transitions.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowDefinition
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowDefinition,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowDefinition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeWorkflowDefinition {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.state_id.into_into_dart().into_dart(),
+            self.x.into_into_dart().into_dart(),
+            self.y.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.document.into_into_dart().into_dart(),
+            self.path.into_into_dart().into_dart(),
+            self.target_state_id.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.accepted.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+            self.current_state.into_into_dart().into_dart(),
+            self.transitions.into_into_dart().into_dart(),
+            self.path.into_into_dart().into_dart(),
+            self.terminal.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -22143,6 +23007,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::thread_stream:
             self.current_state_id.into_into_dart().into_dart(),
             self.started_at.into_into_dart().into_dart(),
             self.updated_at.into_into_dart().into_dart(),
+            self.current_state_title.into_into_dart().into_dart(),
+            self.mode_display_name.into_into_dart().into_dart(),
+            self.mode_deleted.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -22209,6 +23076,81 @@ impl
     fn into_into_dart(
         self,
     ) -> crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::mode_editor::BridgeWorkflowState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
+            self.instructions.into_into_dart().into_dart(),
+            self.completion_criteria.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::mode_editor::BridgeWorkflowState>
+    for crate::api::studio::types::mode_editor::BridgeWorkflowState
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeWorkflowState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowStateKind
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Atomic => 0.into_dart(),
+            Self::FinalState => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowStateKind
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowStateKind,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowStateKind
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeWorkflowStateKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::mode_editor::BridgeWorkflowTransition
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.source_state_id.into_into_dart().into_dart(),
+            self.target_state_id.into_into_dart().into_dart(),
+            self.guard.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::mode_editor::BridgeWorkflowTransition
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::mode_editor::BridgeWorkflowTransition,
+    > for crate::api::studio::types::mode_editor::BridgeWorkflowTransition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::mode_editor::BridgeWorkflowTransition {
         self
     }
 }
@@ -27383,6 +28325,48 @@ impl SseEncode for crate::api::studio::types::command::BridgeThreadModeCommandRe
     }
 }
 
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.display_name, serializer);
+        <String>::sse_encode(self.description, serializer);
+        <u32>::sse_encode(self.order, serializer);
+        <String>::sse_encode(self.prompt, serializer);
+        <Option<crate::api::studio::types::mode_editor::BridgeWorkflowDefinition>>::sse_encode(
+            self.workflow,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionCommandReply {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::response::BridgeThreadModeCatalogSnapshot>::sse_encode(
+            self.catalog,
+            serializer,
+        );
+        <Option<crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot>>::sse_encode(self.definition, serializer);
+        <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_encode(
+            self.receipt,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.revision, serializer);
+        <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_encode(
+            self.document,
+            serializer,
+        );
+        <bool>::sse_encode(self.read_only, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::response::BridgeThreadModeDescriptor {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -27391,6 +28375,53 @@ impl SseEncode for crate::api::studio::types::response::BridgeThreadModeDescript
         <String>::sse_encode(self.description, serializer);
         <u32>::sse_encode(self.order, serializer);
         <bool>::sse_encode(self.has_workflow, serializer);
+        <bool>::sse_encode(self.read_only, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeDocument {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::mode_editor::BridgeThreadModeDefinition>::sse_encode(
+            self.definition,
+            serializer,
+        );
+        <crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout>::sse_encode(
+            self.editor,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeEditorLayout {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition>>::sse_encode(
+            self.nodes, serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.code, serializer);
+        <String>::sse_encode(self.path, serializer);
+        <String>::sse_encode(self.message, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeThreadModeValidationResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<crate::api::studio::types::mode_editor::BridgeThreadModeDocument>>::sse_encode(
+            self.document,
+            serializer,
+        );
+        <Vec<crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue>>::sse_encode(
+            self.issues,
+            serializer,
+        );
     }
 }
 
@@ -28645,6 +29676,63 @@ impl SseEncode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
     }
 }
 
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowDefinition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.title, serializer);
+        <String>::sse_encode(self.goal, serializer);
+        <String>::sse_encode(self.initial_state_id, serializer);
+        <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowState>>::sse_encode(
+            self.states,
+            serializer,
+        );
+        <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowTransition>>::sse_encode(
+            self.transitions,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.state_id, serializer);
+        <f64>::sse_encode(self.x, serializer);
+        <f64>::sse_encode(self.y, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_encode(
+            self.document,
+            serializer,
+        );
+        <Vec<String>>::sse_encode(self.path, serializer);
+        <Option<String>>::sse_encode(self.target_state_id, serializer);
+        <String>::sse_encode(self.reason, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowPreviewSnapshot {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.accepted, serializer);
+        <String>::sse_encode(self.message, serializer);
+        <Option<crate::api::studio::types::mode_editor::BridgeWorkflowState>>::sse_encode(
+            self.current_state,
+            serializer,
+        );
+        <Vec<crate::api::studio::types::mode_editor::BridgeWorkflowTransition>>::sse_encode(
+            self.transitions,
+            serializer,
+        );
+        <Vec<String>>::sse_encode(self.path, serializer);
+        <bool>::sse_encode(self.terminal, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -28660,6 +29748,9 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeWorkflowRun {
         <String>::sse_encode(self.current_state_id, serializer);
         <i64>::sse_encode(self.started_at, serializer);
         <i64>::sse_encode(self.updated_at, serializer);
+        <String>::sse_encode(self.current_state_title, serializer);
+        <String>::sse_encode(self.mode_display_name, serializer);
+        <bool>::sse_encode(self.mode_deleted, serializer);
     }
 }
 
@@ -28687,6 +29778,44 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeWorkflowRunti
             self.current_run,
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.title, serializer);
+        <String>::sse_encode(self.instructions, serializer);
+        <Vec<String>>::sse_encode(self.completion_criteria, serializer);
+        <crate::api::studio::types::mode_editor::BridgeWorkflowStateKind>::sse_encode(
+            self.kind, serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowStateKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::mode_editor::BridgeWorkflowStateKind::Atomic => 0,
+                crate::api::studio::types::mode_editor::BridgeWorkflowStateKind::FinalState => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowTransition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.source_state_id, serializer);
+        <String>::sse_encode(self.target_state_id, serializer);
+        <String>::sse_encode(self.guard, serializer);
     }
 }
 
@@ -29306,6 +30435,18 @@ impl SseEncode for Vec<crate::api::studio::types::response::BridgeThreadModeDesc
     }
 }
 
+impl SseEncode for Vec<crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::mode_editor::BridgeThreadModeValidationIssue>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::response::BridgeThreadPersistenceSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -29440,6 +30581,42 @@ impl SseEncode for Vec<crate::api::studio::types::thread_stream::BridgeUserQuest
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::studio::types::thread_stream::BridgeUserQuestionOption>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::mode_editor::BridgeWorkflowNodePosition>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::mode_editor::BridgeWorkflowState>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::mode_editor::BridgeWorkflowTransition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::mode_editor::BridgeWorkflowTransition>::sse_encode(
                 item, serializer,
             );
         }
@@ -29809,6 +30986,30 @@ impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeThread
 }
 
 impl SseEncode
+    for Option<crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::mode_editor::BridgeThreadModeDefinitionSnapshot>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::mode_editor::BridgeThreadModeDocument> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::mode_editor::BridgeThreadModeDocument>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode
     for Option<crate::api::studio::types::thread_stream::BridgeThreadModelRouteSnapshot>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -29914,6 +31115,18 @@ impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeTurn> 
     }
 }
 
+impl SseEncode for Option<crate::api::studio::types::mode_editor::BridgeWorkflowDefinition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::mode_editor::BridgeWorkflowDefinition>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeWorkflowRun> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -29932,6 +31145,18 @@ impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeWorkfl
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::thread_stream::BridgeWorkflowRuntimeSnapshot>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::mode_editor::BridgeWorkflowState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::mode_editor::BridgeWorkflowState>::sse_encode(
                 value, serializer,
             );
         }

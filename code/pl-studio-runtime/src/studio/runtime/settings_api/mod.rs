@@ -545,9 +545,8 @@ impl StudioRuntime {
         }
         let mode = crate::studio::thread_projection::saved_mode(&state)?
             .unwrap_or_else(|| record.mode.clone());
-        self.thread_modes
-            .snapshot()
-            .mode(&mode)
+        crate::mode::saved_registered_mode(&state)?
+            .or_else(|| self.thread_modes.snapshot().mode(&mode))
             .context("current Thread Mode is unavailable")?;
         let selector = validated_route(
             &settings.config,

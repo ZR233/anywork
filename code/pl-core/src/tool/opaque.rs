@@ -701,6 +701,7 @@ impl ToolManager {
 
     pub(crate) fn freeze(&self) -> ToolPlan {
         ToolPlan {
+            excluded_tool_ids: Default::default(),
             tools: self
                 .tools
                 .iter()
@@ -714,8 +715,16 @@ impl ToolManager {
 #[derive(Debug, Clone)]
 pub(crate) struct ToolPlan {
     tools: BTreeMap<String, FrozenTool>,
+    excluded_tool_ids: std::collections::BTreeSet<String>,
 }
 impl ToolPlan {
+    pub(crate) fn exclude_tools(&mut self, ids: &[String]) {
+        for id in ids {
+            self.tools.remove(id);
+            self.excluded_tool_ids.insert(id.clone());
+        }
+    }
+
     pub(crate) fn call_mode(&self) -> crate::model::ToolCallMode {
         if !self.tools.is_empty() && self.tools.values().all(FrozenTool::requires_solo_call) {
             crate::model::ToolCallMode::Sequential
@@ -740,7 +749,12 @@ impl ToolPlan {
     }
 
     pub(crate) fn retry_compatible(&self, current: &Self) -> bool {
-        self.tools.len() == current.tools.len()
+        self.tools.len()
+            == current
+                .tools
+                .keys()
+                .filter(|id| !self.excluded_tool_ids.contains(*id))
+                .count()
             && self.tools.iter().all(|(id, previous)| {
                 current.tools.get(id).is_some_and(|next| {
                     previous.declaration == next.declaration

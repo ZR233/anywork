@@ -1293,6 +1293,9 @@ class BridgeWorkflowRun {
   final String currentStateId;
   final PlatformInt64 startedAt;
   final PlatformInt64 updatedAt;
+  final String currentStateTitle;
+  final String modeDisplayName;
+  final bool modeDeleted;
 
   const BridgeWorkflowRun({
     required this.lineageId,
@@ -1304,6 +1307,9 @@ class BridgeWorkflowRun {
     required this.currentStateId,
     required this.startedAt,
     required this.updatedAt,
+    required this.currentStateTitle,
+    required this.modeDisplayName,
+    required this.modeDeleted,
   });
 
   @override
@@ -1316,7 +1322,10 @@ class BridgeWorkflowRun {
       lifecycle.hashCode ^
       currentStateId.hashCode ^
       startedAt.hashCode ^
-      updatedAt.hashCode;
+      updatedAt.hashCode ^
+      currentStateTitle.hashCode ^
+      modeDisplayName.hashCode ^
+      modeDeleted.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1331,7 +1340,10 @@ class BridgeWorkflowRun {
           lifecycle == other.lifecycle &&
           currentStateId == other.currentStateId &&
           startedAt == other.startedAt &&
-          updatedAt == other.updatedAt;
+          updatedAt == other.updatedAt &&
+          currentStateTitle == other.currentStateTitle &&
+          modeDisplayName == other.modeDisplayName &&
+          modeDeleted == other.modeDeleted;
 }
 
 enum BridgeWorkflowRunLifecycle { active, terminal }

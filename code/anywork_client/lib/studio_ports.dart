@@ -42,6 +42,39 @@ abstract interface class CommandTransport {
   });
 }
 
+/// Typed Mode authoring commands and read-only validation helpers.
+///
+/// The schema is the only string-based authoring surface; runtime snapshots,
+/// documents and preview results stay typed.
+abstract interface class ModeEditorTransport {
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId);
+
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeValidationResult> validateThreadModeDefinition(String json);
+
+  Future<String> threadModeDefinitionSchema();
+
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  );
+}
+
 /// 按需读取进程级持久化队列压力的可选能力。
 ///
 /// 队列压力（排队操作数、字节、最老待保存年龄、在途字节与最近错误）是诊断观测，不是权威
@@ -62,7 +95,8 @@ abstract class StudioTransport
         AttachmentTransport,
         BootstrapTransport,
         TimelineTransport,
-        CommandTransport {
+        CommandTransport,
+        ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.
   void sealForShutdown() {}
   Future<List<StudioShutdownIssue>> cancelDartSubscriptions({

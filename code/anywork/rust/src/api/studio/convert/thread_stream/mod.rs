@@ -646,6 +646,9 @@ fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
         current_state_id: value.current_state_id,
         started_at: value.started_at,
         updated_at: value.updated_at,
+        current_state_title: value.current_state_title,
+        mode_display_name: value.mode_display_name,
+        mode_deleted: value.mode_deleted,
     }
 }
 

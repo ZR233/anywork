@@ -1,5 +1,8 @@
 //! Thread Mode 的稳定协议类型。
 
+mod editor;
+pub use editor::*;
+
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -125,6 +128,7 @@ pub struct ThreadModeDescriptor {
     pub description: String,
     pub order: u32,
     pub has_workflow: bool,
+    pub read_only: bool,
 }
 
 /// 某一时刻已注册 Mode 的不可变目录投影。
@@ -134,4 +138,14 @@ pub struct ThreadModeCatalogSnapshot {
     pub revision: u64,
     #[serde(default)]
     pub modes: Vec<ThreadModeDescriptor>,
+}
+
+impl schemars::JsonSchema for ThreadModeId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ThreadModeId".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "string", "pattern": "^mode\\.[a-z0-9_-]+$", "maxLength": 64})
+    }
 }

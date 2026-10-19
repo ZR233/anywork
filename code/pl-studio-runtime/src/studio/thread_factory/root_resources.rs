@@ -26,10 +26,22 @@ impl StudioThreadFactory {
         let project = self.project_record(&thread.project_id).await?;
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
-        let checkpoint =
+        let mut checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
                 .map_err(|error| resource_error("load Thread checkpoint", error))?;
+        if let Some(checkpoint) = &mut checkpoint {
+            let history = self
+                .services
+                .store
+                .history_writer(id)
+                .await
+                .map_err(|error| resource_error("open Mode recovery writer", error))?;
+            *checkpoint = history
+                .migrate_mode_checkpoint(checkpoint, &self.services.thread_modes)
+                .await
+                .map_err(|error| resource_error("migrate saved Mode", error))?;
+        }
         let saved = checkpoint
             .as_ref()
             .map_or_else(pl_core::thread::ThreadSnapshot::default, |checkpoint| {
@@ -39,11 +51,9 @@ impl StudioThreadFactory {
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or_else(|| thread.mode.clone());
-        let mode = self
-            .services
-            .thread_modes
-            .snapshot()
-            .mode(&selected_mode)
+        let mode = crate::mode::saved_registered_mode(&saved)
+            .map_err(|error| resource_error("restore Mode snapshot", error))?
+            .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
             .ok_or_else(|| ThreadAssemblyError::Identity(thread.mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)
             .map_err(|error| resource_error("decode saved model route", error))?;
@@ -116,18 +126,15 @@ impl StudioThreadFactory {
             .await?;
         prepared.tools = prepared
             .tools
-            .with_tools(crate::workflow_tool::workflow_registrations(mode.clone())?);
+            .with_tools(crate::workflow_tool::workflow_registrations()?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
         if !saved.extensions.contains_key("studio.mode") {
             initial_extensions.insert(
                 "studio.mode".into(),
-                OpaquePayload::new(
-                    "pl.studio.mode",
-                    1,
-                    serde_json::to_string(&selected_mode)
-                        .map_err(|error| resource_error("encode root Mode", error))?,
-                )
+                crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(
+                    &mode, None,
+                ))
                 .map_err(|error| resource_error("freeze root Mode", error))?,
             );
         }

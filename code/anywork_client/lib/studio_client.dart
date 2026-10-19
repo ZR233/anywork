@@ -27,6 +27,7 @@ export 'src/studio/commands/settings_commands.dart';
 export 'src/studio/commands/thread_commands.dart';
 export 'src/studio/thread_session.dart';
 export 'src/studio/thread_session_state.dart';
+export 'src/studio/mode_editor_owner.dart';
 export 'src/studio/thread_stream_gate.dart';
 export 'src/studio/update_client.dart';
 export 'src/studio/drafts/attachment_drafts.dart';

@@ -55,6 +55,7 @@ pub(crate) fn preparer(
         options: policy(mode),
         base_instructions: route.model.base_instructions.clone(),
         instruction_binding,
+        supports_workflow: route.model.capabilities.supports_function_calling(),
     })))
 }
 
@@ -68,13 +69,53 @@ struct StudioCompaction {
     options: ThreadCompactionOptions,
     base_instructions: String,
     instruction_binding: InstructionBinding,
+    supports_workflow: bool,
 }
 impl ContextPreparationHook for StudioCompaction {
     async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
+        let ModePreparation {
+            mode,
+            mutations: mode_mutations,
+            new_turn,
+        } = match freeze_mode_for_turn(&mut request, &self.modes) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                return ContextPreparation::Failed {
+                    error,
+                    mutations: vec![],
+                };
+            }
+        };
+        if mode.as_ref().is_some_and(|mode| mode.workflow().is_some()) && !self.supports_workflow {
+            return ContextPreparation::Failed {
+                error: receipt_error(std::io::Error::other(
+                    "workflow Mode requires a model supporting function calling",
+                )),
+                mutations: vec![],
+            };
+        }
+        let excluded_tool_ids = if mode.as_ref().is_some_and(|mode| mode.workflow().is_none()) {
+            crate::workflow_tool::workflow_tool_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        request.model.tools = request
+            .model
+            .tools
+            .iter()
+            .filter(|tool| !excluded_tool_ids.contains(&tool.tool_id))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,
             &self.instruction_binding,
+            mode.as_deref(),
+            mode_mutations,
         ) {
             Ok(repair) => repair,
             Err(error) => {
@@ -84,7 +125,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         };
-        match prepare_workflow(&mut request, &self.modes) {
+        match prepare_workflow(&mut request, new_turn) {
             Ok(Some(mutation)) => instruction_repair.mutations.push(mutation),
             Ok(None) => {}
             Err(error) => {
@@ -94,7 +135,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         }
-        let facts = match current_facts(&request, &self.modes) {
+        let facts = match current_facts(&request) {
             Ok(facts) => facts,
             Err(error) => {
                 return ContextPreparation::Failed {
@@ -104,6 +145,7 @@ impl ContextPreparationHook for StudioCompaction {
             }
         };
         let unchanged = || ContextPreparation::Prepared {
+            excluded_tool_ids: excluded_tool_ids.clone(),
             expected_extension_sequence: request.extension_sequence,
             rejected_mutations: Vec::new(),
             replacement: instruction_repair.replacement.as_ref().map(|repair| {
@@ -215,6 +257,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
                 match receipt_mutation(previous, receipt) {
                     Ok(mutation) => ContextPreparation::Prepared {
+                        excluded_tool_ids: excluded_tool_ids.clone(),
                         expected_extension_sequence: request.extension_sequence,
                         rejected_mutations,
                         replacement: Some(result.replacement),
@@ -274,6 +317,8 @@ fn restore_current_instructions(
     request: &mut ContextPreparationRequest,
     base_instructions: &str,
     binding: &InstructionBinding,
+    mode: Option<&crate::mode::RegisteredThreadMode>,
+    mut mutations: Vec<ExtensionMutation>,
 ) -> Result<InstructionRepair, pl_core::model::ModelError> {
     use pl_core::context::{ContextContent, ContextRecord, ContextSource};
     let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
@@ -289,7 +334,29 @@ fn restore_current_instructions(
     }
     let mut snapshot: crate::instruction::InstructionSnapshot =
         serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-    let mut mutations = Vec::new();
+    let profile_changed = if let Some(mode) = mode {
+        let profile = snapshot
+            .developer
+            .iter_mut()
+            .find(|block| {
+                block.source.kind == crate::instruction::InstructionSourceKind::ExecutionProfile
+            })
+            .ok_or_else(|| {
+                receipt_error(std::io::Error::other(
+                    "saved instructions contain no Mode profile",
+                ))
+            })?;
+        let changed = profile.content != mode.prompt()
+            || profile.source.label != mode.descriptor().display_name;
+        profile.content = mode.prompt().to_owned();
+        profile
+            .source
+            .label
+            .clone_from(&mode.descriptor().display_name);
+        changed
+    } else {
+        false
+    };
     let previous_binding = request.extensions.get("studio.instructions.binding");
     let binding_changed = match previous_binding {
         Some(record) => {
@@ -324,7 +391,7 @@ fn restore_current_instructions(
             .map_err(receipt_error)?,
         });
     }
-    if snapshot.rebind_model_base(base_instructions) {
+    if snapshot.rebind_model_base(base_instructions) | profile_changed {
         let expected_revision = record.revision;
         record.revision = request
             .extension_sequence
@@ -426,6 +493,11 @@ fn restore_current_instructions(
         tool_calls: Vec::new(),
     };
     let normalize = |records: &[ContextRecord]| {
+        if binding.append_snapshots && !binding_changed {
+            let mut next = records.to_vec();
+            next.push(canonical.clone());
+            return next;
+        }
         std::iter::once(canonical.clone())
             .chain(
                 records
@@ -456,12 +528,93 @@ fn restore_current_instructions(
     })
 }
 
+/// Capture once at initiating root input admission. Repeated preparation, retries and all tools
+/// consume the same self-contained snapshot even when the catalog changes during the Turn.
+struct ModePreparation {
+    mode: Option<std::sync::Arc<crate::mode::RegisteredThreadMode>>,
+    mutations: Vec<ExtensionMutation>,
+    new_turn: bool,
+}
+
+fn freeze_mode_for_turn(
+    request: &mut ContextPreparationRequest,
+    modes: &crate::mode::ThreadModeManager,
+) -> Result<ModePreparation, pl_core::model::ModelError> {
+    if request
+        .extensions
+        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
+    {
+        return Ok(ModePreparation {
+            mode: None,
+            mutations: Vec::new(),
+            new_turn: false,
+        });
+    }
+    let record = request.extensions.get("studio.mode").ok_or_else(|| {
+        receipt_error(std::io::Error::other(
+            "root Thread has no saved Mode snapshot",
+        ))
+    })?;
+    let previous = crate::mode::decode_mode_snapshot(&record.payload).map_err(receipt_error)?;
+    let root_prompt = request
+        .turn_input
+        .as_ref()
+        .filter(|input| input.payload.format() == "pl.studio.prompt");
+    if root_prompt.is_some_and(|input| input.payload.version() != 1) {
+        return Err(receipt_error(std::io::Error::other(
+            "unsupported root prompt payload",
+        )));
+    }
+    let new_turn = root_prompt.is_some()
+        && previous.frozen_turn_id.as_deref() != Some(request.model.turn_id.as_str());
+    let next = if new_turn {
+        let mode = modes
+            .snapshot()
+            .mode(&previous.definition.id)
+            .unwrap_or(previous.registered().map_err(receipt_error)?);
+        previous
+            .updated_for_turn(&mode, request.model.turn_id.clone())
+            .map_err(receipt_error)?
+    } else {
+        previous
+    };
+    let mode = next.registered().map_err(receipt_error)?;
+    let payload = crate::mode::encode_mode_snapshot(&next).map_err(receipt_error)?;
+    if record.payload == payload {
+        return Ok(ModePreparation {
+            mode: Some(mode),
+            mutations: Vec::new(),
+            new_turn,
+        });
+    }
+    let expected_revision = record.revision;
+    std::sync::Arc::make_mut(&mut request.extensions).insert(
+        "studio.mode".into(),
+        pl_core::thread::extensions::ExtensionRecord {
+            revision: request.extension_sequence.saturating_add(1),
+            payload: payload.clone(),
+        },
+    );
+    Ok(ModePreparation {
+        mode: Some(mode),
+        mutations: vec![ExtensionMutation::Put {
+            id: "studio.mode".into(),
+            expected_revision: Some(expected_revision),
+            payload,
+        }],
+        new_turn,
+    })
+}
+
 /// Start only from a pending root prompt, or repair an already active graph during execution.
 /// The local preview feeds projection; core commits its mutation and facts together by CAS.
 fn prepare_workflow(
     request: &mut ContextPreparationRequest,
-    modes: &crate::mode::ThreadModeManager,
+    new_turn: bool,
 ) -> Result<Option<ExtensionMutation>, pl_core::model::ModelError> {
+    if !new_turn {
+        return Ok(None);
+    }
     if request
         .extensions
         .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
@@ -472,10 +625,9 @@ fn prepare_workflow(
         .extensions
         .get("studio.mode")
         .ok_or_else(|| receipt_error(std::io::Error::other("root Thread has no saved Mode")))?;
-    let mode_id = crate::mode::decode_saved_mode(&mode_record.payload).map_err(receipt_error)?;
-    let mode = modes.snapshot().mode(&mode_id).ok_or_else(|| {
-        receipt_error(std::io::Error::other("selected Thread Mode is unavailable"))
-    })?;
+    let saved = crate::mode::decode_mode_snapshot(&mode_record.payload).map_err(receipt_error)?;
+    let mode_id = saved.definition.id.clone();
+    let mode = saved.registered().map_err(receipt_error)?;
     let root_prompt = request
         .turn_input
         .as_ref()
@@ -539,7 +691,6 @@ fn prepare_workflow(
 /// Each projection consumes only this Thread's frozen extensions, never a parent's state.
 fn current_facts(
     request: &ContextPreparationRequest,
-    modes: &crate::mode::ThreadModeManager,
 ) -> Result<Vec<pl_core::thread::RuntimeFact>, pl_core::model::ModelError> {
     use pl_core::{context::ContextContent, thread::RuntimeFact};
     let mut facts = request
@@ -596,12 +747,15 @@ fn current_facts(
     {
         let state =
             crate::workflow_tool::decode_workflow_state(&record.payload).map_err(receipt_error)?;
-        if let Some(run) = &state.current_run {
-            let mode = modes.snapshot().mode(&run.mode_id).ok_or_else(|| {
+        if state.current_run.is_some() {
+            let saved = request.extensions.get("studio.mode").ok_or_else(|| {
                 receipt_error(std::io::Error::other(
-                    "current workflow mode is unavailable",
+                    "current workflow Mode snapshot is unavailable",
                 ))
             })?;
+            let mode = crate::mode::decode_mode_snapshot(&saved.payload)
+                .and_then(|mode| mode.registered())
+                .map_err(receipt_error)?;
             let section =
                 crate::mode::workflow_model_context_section(&state, &mode).ok_or_else(|| {
                     receipt_error(std::io::Error::other(

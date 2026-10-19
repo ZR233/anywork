@@ -1,5 +1,6 @@
 pub(crate) mod commands;
 pub(crate) mod event;
+pub(crate) mod mode_editor;
 pub(crate) mod records;
 pub(crate) mod runtime;
 pub(crate) mod settings;

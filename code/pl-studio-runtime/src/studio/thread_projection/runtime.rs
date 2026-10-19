@@ -82,7 +82,7 @@ pub(in crate::studio) fn project_runtime(
             pl_tool::todo::saved_snapshot(&record.payload, call_id)
         })
         .transpose()?;
-    let workflow = state
+    let mut workflow = state
         .extensions
         .get(crate::workflow_tool::WORKFLOW_EXTENSION)
         .map(|record| {
@@ -90,6 +90,25 @@ pub(in crate::studio) fn project_runtime(
                 .map(|state| pl_protocol::WorkflowRuntimeSnapshot::from(&state))
         })
         .transpose()?;
+    if let Some(run) = workflow
+        .as_mut()
+        .and_then(|workflow| workflow.current_run.as_mut())
+        && let Some(record) = state.extensions.get("studio.mode")
+    {
+        // Recovery/preparation owns compilation. Token projections only read saved metadata.
+        let mode =
+            crate::mode::decode_mode_snapshot(&record.payload).map_err(ProjectionError::from)?;
+        run.mode_display_name
+            .clone_from(&mode.definition.display_name);
+        if let Some(current) = mode.definition.workflow.as_ref().and_then(|graph| {
+            graph
+                .states
+                .iter()
+                .find(|state| state.id == run.current_state_id)
+        }) {
+            run.current_state_title.clone_from(&current.title);
+        }
+    }
     let plan = state
         .extensions
         .get(crate::plan_tool::PLAN_EXTENSION)

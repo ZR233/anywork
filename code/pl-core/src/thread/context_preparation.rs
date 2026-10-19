@@ -37,6 +37,8 @@ pub enum ContextPreparation {
         replacement: Option<ReplaceContext>,
         facts: Vec<RuntimeFact>,
         mutations: Vec<ExtensionMutation>,
+        /// Host-owned visibility restriction for this request. It can only remove registered tools.
+        excluded_tool_ids: Vec<String>,
     },
     Failed {
         error: ModelError,
@@ -82,7 +84,7 @@ impl Owner {
     pub(super) async fn prepare_context(
         &mut self,
         input: &StepInput,
-        plan: &crate::tool::opaque::ToolPlan,
+        plan: &mut crate::tool::opaque::ToolPlan,
         frozen_input: &[ContextRecord],
         force_compaction: bool,
     ) -> Result<(), ThreadError> {
@@ -225,6 +227,7 @@ impl Owner {
                 replacement,
                 facts,
                 mutations,
+                excluded_tool_ids,
             } => {
                 if self.state.context.revision != expected_context_revision {
                     self.commit_preparation_accounting(rejected_mutations)?;
@@ -269,6 +272,7 @@ impl Owner {
                     self.state = candidate;
                     self.publish();
                 }
+                plan.exclude_tools(&excluded_tool_ids);
                 Ok(())
             }
         }

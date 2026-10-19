@@ -58,8 +58,8 @@ impl StudioRuntime {
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
-        let thread_modes = crate::mode::ThreadModeManager::default();
-        crate::studio::thread::register_builtins(&thread_modes)?;
+        // The configuration owner established and loaded the one canonical Mode manager.
+        let thread_modes = config_runtime.thread_mode_manager();
         // Linux stdio MCP servers have no unsupervised fallback: when the host resolved the same
         // supervised worker resource used by local tool exec, inject it; otherwise the connector
         // fails loud for any local stdio server (and empty MCP hosts still boot).

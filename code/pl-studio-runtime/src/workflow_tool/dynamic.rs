@@ -2,7 +2,7 @@
 use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
-use crate::{mode::RegisteredThreadMode, thread_assembler::ThreadAssemblyError};
+use crate::thread_assembler::ThreadAssemblyError;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::extensions::ExtensionMutation,
@@ -117,7 +117,6 @@ impl WorkflowOperationKind {
 
 #[derive(Debug)]
 struct ThreadWorkflowTool {
-    mode: Arc<RegisteredThreadMode>,
     kind: WorkflowOperationKind,
 }
 impl Tool for ThreadWorkflowTool {
@@ -140,9 +139,19 @@ impl Tool for ThreadWorkflowTool {
             .get(WORKFLOW_EXTENSION)
             .ok_or_else(|| ToolError::new(WorkflowPayloadError::Missing))?;
         let previous = decode_workflow_state(&saved.payload)?;
-        let mut machine = WorkflowMachine::new(self.mode.clone(), previous.clone());
+        let mode_record = context
+            .extensions
+            .get("studio.mode")
+            .ok_or_else(|| ToolError::new(WorkflowPayloadError::Missing))?;
+        let mode = crate::mode::decode_mode_snapshot(&mode_record.payload)
+            .and_then(|snapshot| snapshot.registered())
+            .map_err(ToolError::new)?;
+        if mode.workflow().is_none() {
+            return Err(ToolError::new(WorkflowPayloadError::Missing));
+        }
+        let mut machine = WorkflowMachine::new(mode.clone(), previous.clone());
         if let Some(run) = &previous.current_run
-            && (run.mode_id != self.mode.descriptor().id
+            && (run.mode_id != mode.descriptor().id
                 || run.graph_hash != machine.graph().graph_hash())
         {
             return Err(ToolError::new(WorkflowPayloadError::GraphMismatch));
@@ -214,12 +223,7 @@ impl Tool for ThreadWorkflowTool {
 ///
 /// # Errors
 /// Returns model declaration or registration failures.
-pub fn workflow_registrations(
-    mode: Arc<RegisteredThreadMode>,
-) -> Result<Vec<Registration>, ThreadAssemblyError> {
-    if mode.workflow().is_none() {
-        return Ok(Vec::new());
-    }
+pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError> {
     [
         WorkflowOperationKind::Current,
         WorkflowOperationKind::Next,
@@ -231,14 +235,8 @@ pub fn workflow_registrations(
     .into_iter()
     .map(|kind| {
         let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-        let registration = Registration::new(
-            kind.id().into(),
-            declaration,
-            ThreadWorkflowTool {
-                mode: mode.clone(),
-                kind,
-            },
-        )?;
+        let registration =
+            Registration::new(kind.id().into(), declaration, ThreadWorkflowTool { kind })?;
         Ok(match kind {
             WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {
                 registration.with_extension_updates()

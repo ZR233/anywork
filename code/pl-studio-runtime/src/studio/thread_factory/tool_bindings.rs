@@ -399,22 +399,14 @@ impl StudioThreadFactory {
         let exposure = if child {
             crate::thread_assembler::AgentControlExposure::Disabled
         } else {
-            let mode_id = crate::studio::thread_projection::saved_mode(snapshot)
-                .map_err(|error| resource_error("read current mode for tool refresh", error))?
-                .unwrap_or(thread.mode);
-            let mode = self
-                .services
-                .thread_modes
-                .snapshot()
-                .mode(&mode_id)
+            crate::mode::saved_registered_mode(snapshot)
+                .map_err(|error| resource_error("read Mode snapshot for tool refresh", error))?
                 .ok_or_else(|| {
-                    ThreadAssemblyError::Identity(
-                        "current Mode is unavailable; reactivate this Thread".into(),
-                    )
+                    ThreadAssemblyError::Identity("current Mode snapshot is unavailable".into())
                 })?;
             prepared.tools = prepared
                 .tools
-                .with_tools(crate::workflow_tool::workflow_registrations(mode)?);
+                .with_tools(crate::workflow_tool::workflow_registrations()?);
             crate::thread_assembler::AgentControlExposure::Enabled
         };
         let commands = prepared

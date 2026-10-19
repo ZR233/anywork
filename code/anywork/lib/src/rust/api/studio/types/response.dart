@@ -1413,6 +1413,7 @@ class BridgeThreadModeDescriptor {
   final String description;
   final int order;
   final bool hasWorkflow;
+  final bool readOnly;
 
   const BridgeThreadModeDescriptor({
     required this.id,
@@ -1420,6 +1421,7 @@ class BridgeThreadModeDescriptor {
     required this.description,
     required this.order,
     required this.hasWorkflow,
+    required this.readOnly,
   });
 
   @override
@@ -1428,7 +1430,8 @@ class BridgeThreadModeDescriptor {
       displayName.hashCode ^
       description.hashCode ^
       order.hashCode ^
-      hasWorkflow.hashCode;
+      hasWorkflow.hashCode ^
+      readOnly.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1439,7 +1442,8 @@ class BridgeThreadModeDescriptor {
           displayName == other.displayName &&
           description == other.description &&
           order == other.order &&
-          hasWorkflow == other.hasWorkflow;
+          hasWorkflow == other.hasWorkflow &&
+          readOnly == other.readOnly;
 }
 
 /// 单个 Thread 的持久化水位与队列压力。
