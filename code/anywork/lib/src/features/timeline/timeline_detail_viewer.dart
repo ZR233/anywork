@@ -112,8 +112,8 @@ String _timelineFieldLabel(
   ThreadToolResultFieldView() => context.l10n.timelineToolOutput,
   ThreadToolOutputArtifactsFieldView() => context.l10n.timelineToolOutput,
   ThreadRawPayloadFieldView() => context.l10n.timelineRawRecord,
-  ThreadThinkingSummaryFieldView() ||
-  ThreadThinkingContentFieldView() => context.l10n.timelineReasoningCompleted,
+  ThreadThinkingSummaryFieldView() => context.l10n.timelineReasoningSummary,
+  ThreadThinkingContentFieldView() => context.l10n.timelineReasoningContent,
   ThreadToolUserInputFieldView() => context.l10n.timelineUserInputYourAnswer,
   ThreadTextFieldView() => context.l10n.timelineItemBodyLoad,
 };

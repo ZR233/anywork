@@ -197,6 +197,12 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         ),
         (
             "WebSocket recover",
+            "WS abandoned second fragment",
+            "ws-abandoned-second",
+            Some(8000),
+        ),
+        (
+            "WebSocket recover",
             "WS recovered answer",
             "ws-success",
             None,
@@ -209,6 +215,12 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         ),
         ("WebSocket next", "WS next turn answer", "ws-next", None),
     ] {
+        // The production policy retries WS once, then keeps HTTP for this session.
+        let protocol = if matches!(response_id, "ws-abandoned" | "ws-abandoned-second") {
+            Protocol::ResponsesWebSocket
+        } else {
+            Protocol::ResponsesHttp
+        };
         script.add(|index| {
             Step::prompt(
                 Protocol::ResponsesWebSocket,
@@ -229,10 +241,13 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
         }
         script.add(|index| {
             Step::prompt(
-                Protocol::ResponsesWebSocket,
+                protocol,
                 prompt,
                 index,
-                Reply::WebSocket(events),
+                match protocol {
+                    Protocol::ResponsesWebSocket => Reply::WebSocket(events),
+                    _ => Reply::Sse(events),
+                },
             )
         });
     }
@@ -248,6 +263,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
     script.optional_title(&title);
     let identities = [
         ("scroll-item-short", "scroll-call-short"),
+        ("scroll-item-read-second", "scroll-call-read-second"),
         ("scroll-item-medium", "scroll-call-medium"),
         ("scroll-item-long", "scroll-call-long"),
         ("scroll-item-arguments", "scroll-call-arguments"),
@@ -258,7 +274,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
     ];
     let mut next_identity = 0;
     for (prompt, lines, padding, count) in [
-        ("Tool scroll short", 1, 0, 1),
+        ("Tool scroll short", 1, 0, 2),
         ("Tool scroll medium", 12, 0, 1),
         ("Tool scroll long", 200, 0, 1),
         ("Tool scroll arguments", 12, 12_000, 1),
@@ -273,13 +289,25 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                 } else {
                     format!("i=1; while [ \"$i\" -le {lines} ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {}", "argument ".repeat(padding / 9))
                 };
-                if matches!(item_id, "scroll-item-b" | "scroll-item-c") {
+                if matches!(item_id, "scroll-item-a" | "scroll-item-b" | "scroll-item-c") {
                     // Call directly to verify that image reading is available without discovery.
                     return RealtimeToolCall {
                         item_id,
                         call_id,
                         name: "view_image",
                         arguments: json!({"path": "tool-image.png"}).to_string(),
+                    };
+                }
+                if matches!(item_id, "scroll-item-short" | "scroll-item-read-second") {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: "read_file",
+                        arguments: json!({"path": if item_id == "scroll-item-short" {
+                            "scroll-fixture/entry-000.txt"
+                        } else {
+                            "scroll-fixture/entry-001.txt"
+                        }}).to_string(),
                     };
                 }
                 RealtimeToolCall {

@@ -40,7 +40,7 @@ ProviderScope 借用注入的实例，只拥有自己的观察注册。
 | 当前项目、会话与 Settings 导航 | Client 本地意图 | Workspace / Selection controller | 选择身份；旧异步命令不能覆盖新选择 |
 | 输入、参数、route 与附件引用 | Client 草稿；受理后可靠附件由 Rust 持有 | Draft owner 与附件 ownership ledger | DraftStamp + OperationId；明确转移或放弃 |
 | 提交、pending overlay 与未知结果 | Rust mutation owner / Client operation owner | MutationBoard | OperationId 与目标 stamp；真实结果分别记录 |
-| Live/History 与已加载消息 | 当前展示 lease | InMemoryChatController 公开操作 | ThreadId + 展示代次；显式回实时或切会话释放旧集合 |
+| Live/History 与已加载消息 | 当前展示 lease | InMemoryChatController 展示项及其成员 Listenable | ThreadId + 展示代次；显式回实时或切会话释放旧集合 |
 | 光标、composing、焦点、折叠与即时滚动几何 | Widget / UI controller | 局部 UI controller | draftId / reading generation；Widget dispose |
 
 同一 canonical 资源只有一个 reducer。命令响应若携带该资源的权威 snapshot，进入同一个
@@ -114,7 +114,9 @@ composer pending interaction 队列只服务待处理交互，resolved 后不留
 只接受后端脱敏投影，详情、摘要、复制和辅助语义均不得泄漏原值。
 
 Client 只持有有界尾部基线及 typed 查询状态，当前 AppGraph 展示 lease 将内容投影为唯一
-InMemoryChatController 消息集合。库负责列表与滚动；Live/History、消息稳定身份、分页、
+InMemoryChatController 消息集合；活动、图片与重连的 GUI 分组只持有逐条 canonical 预览，
+不改变后端逐条保存。组内定向观察与展开意图由当前 lease 所有，不成为第二份正文缓存。
+库负责列表与滚动；Live/History、消息稳定身份、分页、
 详情及显示预算以 [26](./26-timeline-content.md) 为准。无服务端几何窗口镜像、跨层阅读锚点
 或另一份完整历史 rows/body cache；页查询不改变尾部订阅基线。
 

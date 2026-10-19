@@ -162,6 +162,8 @@ pub struct TimelineDetailRef {
 #[serde(rename_all = "camelCase")]
 pub struct TimelineItem {
     pub preview: ThreadItem,
+    /// 只读来源语义，不是持久化字段或 GUI 分组结果。
+    pub source: TimelineItemSource,
     pub saved: bool,
     pub lifecycle: TimelineLifecycle,
     /// 预览省略的正文总字节数；零表示所有字段都是完整正文。
@@ -170,6 +172,29 @@ pub struct TimelineItem {
     /// 逐字段的详情引用。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<TimelineDetailRef>,
+}
+
+/// 原始条目的来源；展示端不解析内部身份或本地化提示文案。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TimelineItemSource {
+    Content,
+    ModelRecovery {
+        attempt_id: String,
+        notice: TimelineRecoveryNotice,
+    },
+}
+
+/// 同一模型 attempt 逐条保存的恢复提示类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineRecoveryNotice {
+    Retry,
+    Result,
 }
 
 /// 一页请求：只有“最新”或“某条边界之前”。

@@ -992,7 +992,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningCompleted => '已思考';
 
   @override
-  String get timelineReasoningEmpty => '没有可展示的思考内容。';
+  String get timelineReasoningSummary => '概要';
+
+  @override
+  String get timelineReasoningContent => '完整内容';
 
   @override
   String get timelineReasoningBudgetLimited => '已达思考预算';
@@ -1066,6 +1069,15 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineViewImageFailed => '读取图片失败';
+
+  @override
+  String get timelineReadFileCompleted => '已读取';
+
+  @override
+  String get timelineReadFileReading => '正在读取';
+
+  @override
+  String get timelineReadFileFailed => '读取失败';
 
   @override
   String timelineToolCompleted(String name) {
@@ -1158,9 +1170,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineRolledBack => '已从有效上下文回退';
-
-  @override
-  String get timelinePendingSave => '等待保存';
 
   @override
   String get interactionSubmitEmptyAnswersHint => '未作答的问题将留空提交。';

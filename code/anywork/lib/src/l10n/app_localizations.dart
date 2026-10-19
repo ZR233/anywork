@@ -1934,11 +1934,17 @@ abstract class AppLocalizations {
   /// **'Thought'**
   String get timelineReasoningCompleted;
 
-  /// No description provided for @timelineReasoningEmpty.
+  /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:
-  /// **'No reasoning text was provided.'**
-  String get timelineReasoningEmpty;
+  /// **'Summary'**
+  String get timelineReasoningSummary;
+
+  /// No description provided for @timelineReasoningContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Content'**
+  String get timelineReasoningContent;
 
   /// No description provided for @timelineReasoningBudgetLimited.
   ///
@@ -2045,6 +2051,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Failed to read image'**
   String get timelineViewImageFailed;
+
+  /// No description provided for @timelineReadFileCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get timelineReadFileCompleted;
+
+  /// No description provided for @timelineReadFileReading.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading'**
+  String get timelineReadFileReading;
+
+  /// No description provided for @timelineReadFileFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to read'**
+  String get timelineReadFileFailed;
 
   /// No description provided for @timelineToolCompleted.
   ///
@@ -2189,12 +2213,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Rolled back from active context'**
   String get timelineRolledBack;
-
-  /// No description provided for @timelinePendingSave.
-  ///
-  /// In en, this message translates to:
-  /// **'Waiting to save'**
-  String get timelinePendingSave;
 
   /// No description provided for @interactionSubmitEmptyAnswersHint.
   ///

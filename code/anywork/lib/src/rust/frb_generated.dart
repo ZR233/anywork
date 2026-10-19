@@ -9625,15 +9625,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTimelineItem dco_decode_bridge_timeline_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeTimelineItem(
       item: dco_decode_bridge_thread_item(arr[0]),
-      saved: dco_decode_bool(arr[1]),
-      lifecycle: dco_decode_bridge_timeline_lifecycle(arr[2]),
-      omittedBytes: dco_decode_u_64(arr[3]),
-      details: dco_decode_list_bridge_timeline_detail_ref(arr[4]),
+      source: dco_decode_bridge_timeline_item_source(arr[1]),
+      saved: dco_decode_bool(arr[2]),
+      lifecycle: dco_decode_bridge_timeline_lifecycle(arr[3]),
+      omittedBytes: dco_decode_u_64(arr[4]),
+      details: dco_decode_list_bridge_timeline_detail_ref(arr[5]),
     );
+  }
+
+  @protected
+  BridgeTimelineItemSource dco_decode_bridge_timeline_item_source(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeTimelineItemSource_Content();
+      case 1:
+        return BridgeTimelineItemSource_ModelRecovery(
+          attemptId: dco_decode_String(raw[1]),
+          notice: dco_decode_bridge_timeline_recovery_notice(raw[2]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -9659,6 +9676,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTimelinePriority dco_decode_bridge_timeline_priority(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BridgeTimelinePriority.values[raw as int];
+  }
+
+  @protected
+  BridgeTimelineRecoveryNotice dco_decode_bridge_timeline_recovery_notice(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeTimelineRecoveryNotice.values[raw as int];
   }
 
   @protected
@@ -18678,17 +18703,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_item = sse_decode_bridge_thread_item(deserializer);
+    var var_source = sse_decode_bridge_timeline_item_source(deserializer);
     var var_saved = sse_decode_bool(deserializer);
     var var_lifecycle = sse_decode_bridge_timeline_lifecycle(deserializer);
     var var_omittedBytes = sse_decode_u_64(deserializer);
     var var_details = sse_decode_list_bridge_timeline_detail_ref(deserializer);
     return BridgeTimelineItem(
       item: var_item,
+      source: var_source,
       saved: var_saved,
       lifecycle: var_lifecycle,
       omittedBytes: var_omittedBytes,
       details: var_details,
     );
+  }
+
+  @protected
+  BridgeTimelineItemSource sse_decode_bridge_timeline_item_source(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return BridgeTimelineItemSource_Content();
+      case 1:
+        var var_attemptId = sse_decode_String(deserializer);
+        var var_notice = sse_decode_bridge_timeline_recovery_notice(
+          deserializer,
+        );
+        return BridgeTimelineItemSource_ModelRecovery(
+          attemptId: var_attemptId,
+          notice: var_notice,
+        );
+      default:
+        throw UnimplementedError('');
+    }
   }
 
   @protected
@@ -18722,6 +18773,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return BridgeTimelinePriority.values[inner];
+  }
+
+  @protected
+  BridgeTimelineRecoveryNotice sse_decode_bridge_timeline_recovery_notice(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeTimelineRecoveryNotice.values[inner];
   }
 
   @protected
@@ -27420,10 +27480,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_thread_item(self.item, serializer);
+    sse_encode_bridge_timeline_item_source(self.source, serializer);
     sse_encode_bool(self.saved, serializer);
     sse_encode_bridge_timeline_lifecycle(self.lifecycle, serializer);
     sse_encode_u_64(self.omittedBytes, serializer);
     sse_encode_list_bridge_timeline_detail_ref(self.details, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_timeline_item_source(
+    BridgeTimelineItemSource self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeTimelineItemSource_Content():
+        sse_encode_i_32(0, serializer);
+      case BridgeTimelineItemSource_ModelRecovery(
+        attemptId: final attemptId,
+        notice: final notice,
+      ):
+        sse_encode_i_32(1, serializer);
+        sse_encode_String(attemptId, serializer);
+        sse_encode_bridge_timeline_recovery_notice(notice, serializer);
+    }
   }
 
   @protected
@@ -27449,6 +27529,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_bridge_timeline_priority(
     BridgeTimelinePriority self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_timeline_recovery_notice(
+    BridgeTimelineRecoveryNotice self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs

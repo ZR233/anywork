@@ -241,6 +241,7 @@ pub(crate) fn timeline_item(item: &ChatItem) -> Result<TimelineItem> {
         });
     }
     Ok(TimelineItem {
+        source: crate::studio::thread_projection::order::timeline_source(&item.item_id),
         preview: canonical_item(item)?,
         saved: item.saved,
         lifecycle: match item.lifecycle {

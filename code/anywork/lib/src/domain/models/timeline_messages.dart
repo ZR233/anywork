@@ -1,5 +1,4 @@
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 /// 一条 canonical 条目在展示层的 typed 载荷。
 ///
@@ -7,11 +6,11 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 /// `InMemoryChatController.messages` 里，正文来自 canonical 预览，完整字段按
 /// [details] 指向的详情引用按需读取（design/26 §26.5、§26.8）。
 ///
-/// 这里**没有**行合并、活动分组、成员 hash 或最小 ordinal：一条 canonical item/block 身份
-/// 对应一条 Message，视觉分组由 builder 在同一身份内完成。
+/// 每个原始预览保留自己的身份；GUI 分组只引用同一载荷，不改写原始事实。
 class TimelineMessagePayload {
   const TimelineMessagePayload({
     required this.item,
+    this.source = const StudioTimelineContentSource(),
     required this.saved,
     required this.lifecycle,
     required this.omittedBytes,
@@ -21,6 +20,7 @@ class TimelineMessagePayload {
   TimelineMessagePayload.fromItem(StudioTimelineItem item)
     : this(
         item: item.item,
+        source: item.source,
         saved: item.saved,
         lifecycle: item.lifecycle,
         omittedBytes: item.omittedBytes,
@@ -28,6 +28,7 @@ class TimelineMessagePayload {
       );
 
   final ThreadItemView item;
+  final StudioTimelineItemSource source;
 
   /// 保存水位与执行终态互相独立。
   final bool saved;
@@ -90,6 +91,7 @@ class TimelineMessagePayload {
       }
       return TimelineMessagePayload(
         item: incoming.item,
+        source: incoming.source,
         saved: incoming.saved,
         lifecycle: incoming.lifecycle,
         omittedBytes: incoming.omittedBytes,
@@ -118,6 +120,7 @@ class TimelineMessagePayload {
     if (nextItem == null) return null;
     return TimelineMessagePayload(
       item: nextItem,
+      source: incoming.source,
       saved: saved || incoming.saved,
       lifecycle: incoming.terminal || terminal
           ? StudioTimelineLifecycle.terminal
@@ -187,6 +190,7 @@ class TimelineMessagePayload {
     if (!_accountingMatches(nextDetails, change.omittedBytes)) return null;
     return TimelineMessagePayload(
       item: nextItem,
+      source: source,
       saved: change.saved,
       lifecycle: change.lifecycle,
       omittedBytes: change.omittedBytes,
@@ -276,69 +280,6 @@ class TimelineMessagePayload {
     }
     return true;
   }
-}
-
-/// [Message.metadata] 里承载 typed 载荷的键。
-///
-/// 载荷是 typed 对象，不是编码后的 JSON 字符串：展示层不重新解析工具参数或问答载荷。
-const String timelinePayloadMetadataKey = 'anywork.timeline';
-
-/// 从 Message 取回 typed 载荷；不是时间线消息时返回 null。
-TimelineMessagePayload? timelinePayloadOf(Message message) {
-  final value = message.metadata?[timelinePayloadMetadataKey];
-  return value is TimelineMessagePayload ? value : null;
-}
-
-/// 一条 canonical 条目对应的唯一 Message 身份（canonical item identity）。
-///
-/// 作者只用于库的气泡布局：用户与父代理输入属于读者，其余属于助手。
-String timelineAuthorId(ThreadItemView item) {
-  final state = item.state;
-  if (state is ThreadTextItemStateView) {
-    return state.channel == ThreadTextChannel.user ||
-            state.channel == ThreadTextChannel.parentAgent
-        ? 'user'
-        : 'assistant';
-  }
-  return 'assistant';
-}
-
-/// 由 canonical 条目构造一条 Message。身份固定来自 item，不来自索引或页首。
-Message timelineMessageFor(StudioTimelineItem item) {
-  final payload = TimelineMessagePayload.fromItem(item);
-  return _messageFor(payload);
-}
-
-/// 由 typed 载荷构造 Message（用于原位更新）。
-Message _messageFor(TimelineMessagePayload payload) {
-  final item = payload.item;
-  return Message.custom(
-    id: item.id,
-    authorId: timelineAuthorId(item),
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    metadata: {timelinePayloadMetadataKey: payload},
-  );
-}
-
-/// 由 typed 载荷重建同身份 Message：权威 `Add` 收敛与逐字段更新共用同一条构造路径，
-/// 只改内容与状态，不改 canonical 身份（design/26 §26.8）。
-Message timelineMessageOfPayload(TimelineMessagePayload payload) =>
-    _messageFor(payload);
-
-/// 应用一帧 `UpdateItem`：正文与状态原位更新，身份不变。
-///
-/// 返回 null 表示本展示代次无法继续该身份（revision 不连续或状态不可表达），调用方按
-/// 显式重同步处理，绝不把旧 Message 当成已更新。
-Message? applyTimelineItemUpdate(
-  Message current,
-  StudioTimelineUpdateItem change,
-) {
-  final payload = timelinePayloadOf(current);
-  if (payload == null || payload.id != change.itemId) return null;
-  final next = payload.applyUpdate(change);
-  if (next == null) return null;
-  return _messageFor(next);
 }
 
 /// 逐字段预览的覆盖方向（用于选择唯一一份省略量账目）。

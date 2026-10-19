@@ -1049,7 +1049,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningCompleted => 'Thought';
 
   @override
-  String get timelineReasoningEmpty => 'No reasoning text was provided.';
+  String get timelineReasoningSummary => 'Summary';
+
+  @override
+  String get timelineReasoningContent => 'Content';
 
   @override
   String get timelineReasoningBudgetLimited => 'Reasoning budget reached';
@@ -1135,6 +1138,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineViewImageFailed => 'Failed to read image';
+
+  @override
+  String get timelineReadFileCompleted => 'Read';
+
+  @override
+  String get timelineReadFileReading => 'Reading';
+
+  @override
+  String get timelineReadFileFailed => 'Unable to read';
 
   @override
   String timelineToolCompleted(String name) {
@@ -1227,9 +1239,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineRolledBack => 'Rolled back from active context';
-
-  @override
-  String get timelinePendingSave => 'Waiting to save';
 
   @override
   String get interactionSubmitEmptyAnswersHint =>

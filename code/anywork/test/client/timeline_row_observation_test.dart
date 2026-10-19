@@ -8,7 +8,7 @@
 // 稳定性；另外验证公开展示状态确实只携带元数据。
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/domain/models/timeline_messages.dart';
+import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';

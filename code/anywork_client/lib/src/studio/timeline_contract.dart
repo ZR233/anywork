@@ -4,6 +4,26 @@ import '../../models.dart';
 /// [StudioTimelineItem.saved] 严格独立。
 enum StudioTimelineLifecycle { streaming, terminal }
 
+/// 后端只读来源语义；与逐条保存及 GUI 展示身份分别表达。
+sealed class StudioTimelineItemSource {
+  const StudioTimelineItemSource();
+}
+
+final class StudioTimelineContentSource extends StudioTimelineItemSource {
+  const StudioTimelineContentSource();
+}
+
+enum StudioTimelineRecoveryNotice { retry, result }
+
+final class StudioTimelineRecoverySource extends StudioTimelineItemSource {
+  const StudioTimelineRecoverySource({
+    required this.attemptId,
+    required this.notice,
+  });
+  final String attemptId;
+  final StudioTimelineRecoveryNotice notice;
+}
+
 /// 一个内容字段的详情引用：完整正文按 `(item, field, revision)` 读取。
 ///
 /// `totalBytes` 是该字段完整正文的 UTF-8 字节数，`previewBytes` 是本次预览实际携带的
@@ -44,6 +64,7 @@ class StudioTimelineDetailRef {
 class StudioTimelineItem {
   const StudioTimelineItem({
     required this.item,
+    this.source = const StudioTimelineContentSource(),
     required this.saved,
     required this.lifecycle,
     required this.omittedBytes,
@@ -51,6 +72,7 @@ class StudioTimelineItem {
   });
 
   final ThreadItemView item;
+  final StudioTimelineItemSource source;
   final bool saved;
   final StudioTimelineLifecycle lifecycle;
 

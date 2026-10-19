@@ -1,4 +1,4 @@
-import 'package:anywork/src/domain/models/timeline_messages.dart';
+import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -285,4 +285,364 @@ void main() {
     expect(first.scrollController.keepScrollOffset, isFalse);
     expect(first.controller, isA<InMemoryChatController>());
   });
+
+  StudioTimelineItem activity(
+    String id,
+    int order, {
+    String? toolName,
+    int revision = 1,
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: order,
+      revision: revision,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: toolName == null
+          ? const ThreadThinkingItemStateView(
+              summary: ['Investigating'],
+              content: [],
+              lifecycle: StreamingThreadContentView(),
+            )
+          : ThreadToolItemStateView(
+              invocation: ThreadToolInvocationView(
+                toolCallId: id,
+                name: toolName,
+                arguments: '{}',
+              ),
+              lifecycle: const RunningThreadToolView(''),
+            ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  test(
+    'consecutive thoughts/tools and image reads become separate custom items',
+    () {
+      final display = lease();
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [
+            activity('thinking', 1),
+            activity('command', 2, toolName: 'run_command'),
+            activity('image-a', 3, toolName: 'view_image'),
+            activity('image-b', 4, toolName: 'view_image'),
+            item('answer', 5),
+          ],
+        ),
+      );
+      expect(
+        display.loadedCount,
+        5,
+        reason: 'original calls remain individually addressable',
+      );
+      expect(
+        display.controller.messages.length,
+        3,
+        reason: 'two consecutive activities, two image calls and one answer are three presentation items',
+      );
+    },
+  );
+
+  test('retry and result records of one attempt share one GUI item', () {
+    StudioTimelineItem recovery(
+      String id,
+      int order,
+      StudioTimelineRecoveryNotice notice,
+    ) => StudioTimelineItem(
+      item: item(id, order).item,
+      source: StudioTimelineRecoverySource(
+        attemptId: 'attempt',
+        notice: notice,
+      ),
+      saved: true,
+      lifecycle: StudioTimelineLifecycle.terminal,
+      omittedBytes: 0,
+      details: const [],
+    );
+    final display = lease();
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          recovery('retry-1', 1, StudioTimelineRecoveryNotice.retry),
+          recovery('retry-2', 2, StudioTimelineRecoveryNotice.retry),
+          recovery('result', 3, StudioTimelineRecoveryNotice.result),
+        ],
+      ),
+    );
+    expect(display.loadedCount, 3);
+    expect(
+      display.controller.messages.length,
+      1,
+      reason: 'GUI grouping never deletes recovery facts',
+    );
+  });
+
+  test(
+    'paging preserves group identity; late body splits and removal rejoins it',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          items: [activity('c', 30), activity('d', 40)],
+          before: 'older',
+          hasOlder: true,
+        ),
+      );
+      final original = timelinePresentationOf(
+        display.controller.messages.single,
+      )!;
+      original.setExpanded(true);
+      expect(
+        display.prependOlder(
+          StudioTimelinePage(
+            items: [activity('a', 10), activity('b', 20)],
+            before: null,
+            hasOlder: false,
+          ),
+        ),
+        2,
+      );
+      expect(display.controller.messages.single.id, original.id);
+      expect(original.memberIds, ['a', 'b', 'c', 'd']);
+      expect(original.expanded, isTrue);
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            priority: StudioTimelinePriority.immediate,
+            subscriptionId: 'sub',
+            from: 1,
+            to: 2,
+            changes: [StudioTimelineAdd(item('divider', 25))],
+          ),
+        ),
+        isTrue,
+      );
+      expect(display.controller.messages.length, 3);
+      expect(
+        timelinePresentationOf(display.controller.messages.last),
+        same(original),
+      );
+      expect(original.memberIds, ['c', 'd']);
+      final prefix = timelinePresentationOf(display.controller.messages.first)!;
+      expect(prefix.memberIds, ['a', 'b']);
+      expect(prefix.expanded, isTrue);
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            priority: StudioTimelinePriority.immediate,
+            subscriptionId: 'sub',
+            from: 2,
+            to: 3,
+            changes: [const StudioTimelineRemove('divider')],
+          ),
+        ),
+        isTrue,
+      );
+      expect(display.controller.messages.single.id, original.id);
+      expect(original.memberIds, ['a', 'b', 'c', 'd']);
+      expect(display.payloads.map((p) => p.id), ['a', 'b', 'c', 'd']);
+    },
+  );
+
+  test('streaming updates only its member and summary; History freezes the whole group', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        items: [activity('a', 1), activity('b', 2)],
+        before: null,
+        hasOlder: false,
+      ),
+    );
+    final group = timelinePresentationOf(display.controller.messages.single)!;
+    var changed = 0;
+    var unaffected = 0;
+    var structural = 0;
+    group.member('a').addListener(() => changed++);
+    group.member('b').addListener(() => unaffected++);
+    group.structure.addListener(() => structural++);
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          priority: StudioTimelinePriority.immediate,
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          changes: [StudioTimelineAdd(activity('a', 1, revision: 2))],
+        ),
+      ),
+      isTrue,
+    );
+    expect(group.member('a').value.revision, 2);
+    expect(changed, 1);
+    expect(unaffected, 0);
+    expect(structural, 0);
+    expect(display.controller.messages.single.id, group.id);
+    display.enterHistory();
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          priority: StudioTimelinePriority.immediate,
+          subscriptionId: 'sub',
+          from: 2,
+          to: 3,
+          changes: [
+            StudioTimelineAdd(activity('a', 1, revision: 3)),
+            const StudioTimelineRemove('b'),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    expect(group.memberIds, ['a', 'b']);
+    expect(group.member('a').value.revision, 2);
+    expect(changed, 1);
+  });
+
+  test('structural listeners observe committed member ownership', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        items: [activity('a', 10)],
+        before: null,
+        hasOlder: false,
+      ),
+    );
+    final group = display.presentationFor('a')!;
+    group.structure.addListener(() {
+      for (final id in group.memberIds) {
+        expect(display.presentationFor(id), same(group));
+        expect(display.payloadOf(id), same(group.member(id).value));
+      }
+    });
+    display.applyPatch(
+      StudioTimelinePatch(
+        subscriptionId: 'sub',
+        from: 1,
+        to: 2,
+        priority: StudioTimelinePriority.immediate,
+        changes: [StudioTimelineAdd(activity('b', 20))],
+      ),
+    );
+    final member = group.member('a');
+    member.addListener(() {
+      expect(display.payloadOf('a'), same(member.value));
+      expect(display.presentationFor('a')!.member('a'), same(member));
+    });
+    display.applyPatch(
+      StudioTimelinePatch(
+        subscriptionId: 'sub',
+        from: 2,
+        to: 3,
+        priority: StudioTimelinePriority.immediate,
+        changes: [
+          StudioTimelineAdd(
+            StudioTimelineItem(
+              item: item('a', 2).item.copyWith(ordinal: 10),
+              saved: false,
+              lifecycle: StudioTimelineLifecycle.streaming,
+              omittedBytes: 0,
+              details: const [],
+            ),
+          ),
+        ],
+      ),
+    );
+    expect(display.presentationFor('a')!.id, group.id);
+  });
+
+  test(
+    'deleting an anchor keeps its display ID and correct later insertion order',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          items: [activity('a', 10), activity('b', 20)],
+          before: null,
+          hasOlder: false,
+        ),
+      );
+      final group = display.presentationFor('a')!..setExpanded(true);
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            const StudioTimelineRemove('a'),
+            StudioTimelineAdd(item('divider', 15)),
+          ],
+        ),
+      );
+      expect(display.presentationFor('b'), same(group));
+      expect(group.expanded, isTrue);
+      expect(
+        display.controller.messages.map(
+          (m) => timelinePresentationOf(m)!.memberIds,
+        ),
+        [
+          ['divider'],
+          ['b'],
+        ],
+      );
+    },
+  );
+
+  test(
+    'another visible activity ends an image run and different turns never join',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          items: [
+            activity('image-a', 1, toolName: 'view_image'),
+            activity('image-b', 2, toolName: 'view_image'),
+            activity('thinking', 3),
+            activity('image-c', 4, toolName: 'view_image'),
+          ],
+          before: null,
+          hasOlder: false,
+        ),
+      );
+      final groups = display.controller.messages
+          .map(timelinePresentationOf)
+          .toList();
+      expect(groups.map((g) => g!.kind), [
+        TimelinePresentationKind.images,
+        TimelinePresentationKind.activity,
+        TimelinePresentationKind.images,
+      ]);
+      expect(groups.first!.memberIds, ['image-a', 'image-b']);
+      expect(groups.last!.memberIds, ['image-c']);
+    },
+  );
 }

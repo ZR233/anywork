@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/domain/models/timeline_messages.dart';
+import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';

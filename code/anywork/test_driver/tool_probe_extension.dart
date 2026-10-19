@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_driver/driver_extension.dart';
 import 'package:flutter_driver/flutter_driver.dart' hide find;
@@ -88,11 +89,25 @@ class ToolProbeExtension extends CommandExtension {
       final production = jsonDecode(StudioDriverState.snapshotJson());
       final scroll = production is Map ? production['timelineScroll'] : null;
       final timeline = production is Map ? production['timeline'] : null;
+      Element? presentation;
+      element.visitAncestorElements((ancestor) {
+        final key = ancestor.widget.key;
+        if (key is ValueKey<String> && key.value.startsWith('timeline-row-')) {
+          presentation = ancestor;
+        }
+        return true;
+      });
+      final presentationBox = presentation?.renderObject;
       return {
         'top': offset.dy,
         'left': offset.dx,
         'width': box.size.width,
         'height': box.size.height,
+        if (presentationBox is RenderBox)
+          'presentationGeometry': {
+            'top': presentationBox.localToGlobal(Offset.zero).dy,
+            'height': presentationBox.size.height,
+          },
         'expanded': ?expanded,
         'scroll': scroll,
         // 展示模式来自同一次只读快照，供宿主断言“同 Thread/gen/History”。
@@ -159,22 +174,14 @@ class ToolProbeExtension extends CommandExtension {
           .where(
             (e) =>
                 (e.state as ScrollableState).position.axis == Axis.vertical &&
-                (e.state as ScrollableState).position.maxScrollExtent > 0,
+                (e.state as ScrollableState).position.maxScrollExtent > 0 &&
+                !_visibleInViewports(e.renderObject! as RenderBox).isEmpty,
           );
       if (candidates.isEmpty) {
         throw StateError('No vertically scrollable tool payload');
       }
       final inner = candidates.last.renderObject! as RenderBox;
-      final viewport =
-          find
-                  .byKey(const ValueKey('timeline-scrollable'))
-                  .evaluate()
-                  .single
-                  .renderObject!
-              as RenderBox;
-      final visible = (inner.localToGlobal(Offset.zero) & inner.size).intersect(
-        viewport.localToGlobal(Offset.zero) & viewport.size,
-      );
+      final visible = _visibleInViewports(inner);
       if (visible.isEmpty) {
         throw StateError('Tool payload is outside the viewport');
       }
@@ -209,6 +216,21 @@ class ToolProbeExtension extends CommandExtension {
     );
     _mouseViewId = null;
   }
+}
+
+/// Intersect every enclosing standard viewport, including the bounded activity list.
+Rect _visibleInViewports(RenderBox box) {
+  var visible = box.localToGlobal(Offset.zero) & box.size;
+  RenderObject? ancestor = box.parent;
+  while (ancestor != null) {
+    if (ancestor is RenderBox && ancestor is RenderAbstractViewport) {
+      visible = visible.intersect(
+        ancestor.localToGlobal(Offset.zero) & ancestor.size,
+      );
+    }
+    ancestor = ancestor.parent;
+  }
+  return visible;
 }
 
 class _ProbeResult extends Result {

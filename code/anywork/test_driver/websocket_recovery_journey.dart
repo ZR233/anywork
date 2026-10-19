@@ -2,6 +2,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_driver/flutter_driver.dart';
+
 import 'context_replay_recovery_journey.dart' show ReplayRecoveryJourney;
 import 'flutter_driver_session.dart';
 import 'realtime_journey.dart';
@@ -75,7 +77,17 @@ class WebSocketRecoveryJourney extends ReplayRecoveryJourney {
   @override
   Future<void> tap(String key) async {
     stdout.writeln('${DateTime.now().toIso8601String()} tap $key');
-    await super.tap(key);
+    if (key.startsWith('timeline-activity-summary-')) {
+      await driver.rawTap(
+        find.ancestor(
+          of: find.byValueKey(key),
+          matching: find.byType('ListTile'),
+          firstMatchOnly: true,
+        ),
+      );
+    } else {
+      await super.tap(key);
+    }
     stdout.writeln('${DateTime.now().toIso8601String()} tapped $key');
   }
 
@@ -129,6 +141,21 @@ class WebSocketRecoveryJourney extends ReplayRecoveryJourney {
     }
   }
 
+  Map verifyRecoveryGroup(Map<String, dynamic> snapshot, int expectedRecords) {
+    final timeline = snapshot['timeline'] as Map;
+    final groups = (timeline['presentationItems'] as List)
+        .cast<Map>()
+        .where((item) => item['kind'] == 'recovery')
+        .toList();
+    if (groups.length != 1 ||
+        (groups.single['memberIds'] as List).length != expectedRecords) {
+      throw StateError(
+        'Expected one recovery presentation with $expectedRecords original records: $groups',
+      );
+    }
+    return groups.single;
+  }
+
   @override
   Future<void> run() async {
     if (phase == 'restart') {
@@ -166,7 +193,19 @@ class WebSocketRecoveryJourney extends ReplayRecoveryJourney {
       'retrying',
     );
     final recoveringTurn = turnId(retrying);
+    final firstGroup = verifyRecoveryGroup(retrying, 1);
     await capture('retrying');
+    final retryingAgain = await waitFor(
+      (snapshot) => contains(snapshot, '正在重试（2/5）') && isBusy(snapshot),
+      'retrying-again',
+    );
+    final retryGroup = verifyRecoveryGroup(retryingAgain, 2);
+    if (retryGroup['id'] != firstGroup['id']) {
+      throw StateError('Second retry replaced the presentation identity');
+    }
+    await capture('retrying-again');
+    await tap('timeline-activity-summary-${retryGroup['id']}');
+    await capture('recovery-expanded');
     final recovered = await waitFor(
       (snapshot) =>
           answerContains(snapshot, 'WS recovered answer') &&
@@ -180,9 +219,22 @@ class WebSocketRecoveryJourney extends ReplayRecoveryJourney {
         'transparent recovery changed or failed the original Turn',
       );
     }
+    final recoveredGroup = verifyRecoveryGroup(recovered, 3);
+    if (recoveredGroup['id'] != firstGroup['id'] ||
+        recoveredGroup['expanded'] != true) {
+      throw StateError(
+        'Recovery replaced the identity or lost expansion intent',
+      );
+    }
     single(recovered, 'WS abandoned fragment');
     single(recovered, 'WS recovered answer');
     await capture('recovered');
+    await tap('timeline-activity-summary-${recoveredGroup['id']}');
+    await waitFor(
+      (snapshot) => verifyRecoveryGroup(snapshot, 3)['expanded'] == false,
+      'recovered-collapsed',
+    );
+    await capture('recovered-collapsed');
 
     final priorIds = timelineRows(recovered).map((row) => row['id']).toSet();
     await submit('WebSocket cancel');

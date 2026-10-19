@@ -12,7 +12,7 @@ import 'timeline_observation.dart';
 /// 最新小页由 tail 基线给出（默认 32 条），不是“窗口自动补满”。回到实时必须建立新
 /// 代次并从新基线开始；重复执行都由显式「回到实时」触发，不靠向上滚动手势
 /// （design/26 §26.3/§26.4）。
-Future<Map<String, Object?>> observeLatestViewportFill(
+Future<Map<String, Object?>> observeLatestPagePresentation(
   FlutterDriver driver,
   Directory output,
 ) async {
@@ -57,7 +57,20 @@ Future<Map<String, Object?>> observeLatestViewportFill(
   final observations = <String, Object?>{};
   // 每次都由显式回到实时建立新代次：重复执行不需要任何向上手势。
   for (var attempt = 0; attempt < 2; attempt++) {
-    final before = TimelineObservation.parse(await snapshot());
+    final beforeState = await snapshot();
+    final before = TimelineObservation.parse(beforeState);
+    // Collapsing 30 original tool records into one row can leave a short viewport.
+    // Page through its real affordance before requiring a physical History scroll.
+    if ((TimelineScrollObservation.parse(beforeState).maxScrollExtent ?? 0) <=
+        0) {
+      final page = await _explicitLoadOlderIfShown(driver, output);
+      observations['shortContentPage-$attempt'] = page;
+      if (page['shown'] != true || page['pass'] != true) {
+        throw StateError(
+          'Short grouped history did not expose and load its older page',
+        );
+      }
+    }
     await driver.sendCommand(PointerScroll(timeline, -250));
     await until(
       'detached-$attempt',
@@ -85,12 +98,30 @@ Future<Map<String, Object?>> observeLatestViewportFill(
     });
     final filledTimeline = TimelineObservation.parse(filled);
     final filledScroll = TimelineScrollObservation.parse(filled);
+    filledTimeline.requireConsistentIds();
+    var shortContentEntryShown = false;
+    final shortContent = (filledScroll.maxScrollExtent ?? 0) <= 0;
+    if (shortContent && filledTimeline.hasOlder) {
+      await driver.waitFor(
+        find.byValueKey('timeline-load-older'),
+        timeout: const Duration(seconds: 5),
+      );
+      shortContentEntryShown = true;
+    }
     observations['return-$attempt'] = <String, Object?>{
       'timeline': filledTimeline.summary(),
       'scroll': filledScroll.toJson(),
-      // 最新小页：条数不超过 tail 基线，且内容确实高于视口（不是空白页）。
+      // Original counts, presentation coverage and short-content access are separate facts.
       'latestPageAtMostBaseline': filledTimeline.itemCount <= 32,
-      'contentFillsViewport': (filledScroll.maxScrollExtent ?? 0) > 0,
+      'originalItemsCoveredExactlyOnce': true,
+      'presentationItemCount': filledTimeline.presentationItems.length,
+      'groupsDefaultCollapsed': filledTimeline.presentationItems.every(
+        (item) => !item.expanded,
+      ),
+      'shortContent': shortContent,
+      'shortContentEntryShown': shortContentEntryShown,
+      'olderContentAccessible':
+          !shortContent || !filledTimeline.hasOlder || shortContentEntryShown,
       'generationAdvanced': filledTimeline.generation > before.generation,
     };
     await File('${output.path}/latest-fill-$attempt.png')
@@ -107,7 +138,9 @@ Future<Map<String, Object?>> observeLatestViewportFill(
   final attemptsOk = attempts.values.every((value) {
     final record = value! as Map<String, Object?>;
     return record['latestPageAtMostBaseline'] == true &&
-        record['contentFillsViewport'] == true &&
+        record['originalItemsCoveredExactlyOnce'] == true &&
+        record['groupsDefaultCollapsed'] == true &&
+        record['olderContentAccessible'] == true &&
         record['generationAdvanced'] == true;
   });
   observations['pass'] = attemptsOk && explicit['pass'] == true;

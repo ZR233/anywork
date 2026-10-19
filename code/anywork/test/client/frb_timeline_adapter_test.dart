@@ -15,7 +15,14 @@ void main() {
   test(
     'baseline and typed changes preserve identity, fields and save facts',
     () async {
-      final bridge = _GeneratedTimeline(_baseline());
+      final bridge = _GeneratedTimeline(
+        _baseline(
+          source: const dto.BridgeTimelineItemSource.modelRecovery(
+            attemptId: 'attempt:中文',
+            notice: dto.BridgeTimelineRecoveryNotice.retry,
+          ),
+        ),
+      );
       final connection = FrbTimelineConnection(bridge);
       addTearDown(connection.close);
 
@@ -25,6 +32,15 @@ void main() {
       expect(initial.before, 'tlp1.opaque');
       expect(initial.hasOlder, isTrue);
       final first = initial.items.single;
+      expect(first.source, isA<StudioTimelineRecoverySource>());
+      expect(
+        (first.source as StudioTimelineRecoverySource).attemptId,
+        'attempt:中文',
+      );
+      expect(
+        (first.source as StudioTimelineRecoverySource).notice,
+        StudioTimelineRecoveryNotice.retry,
+      );
       expect(first.item.id, 'item-text');
       expect(first.item.threadId, 'thread-A');
       expect(first.item.ordinal, 1000000007);
@@ -449,23 +465,28 @@ void main() {
 }
 
 dto.BridgeTimelineBaseline _baseline({
+  dto.BridgeTimelineItemSource source =
+      const dto.BridgeTimelineItemSource.content(),
   int version = 41,
   String? before = 'tlp1.opaque',
   bool hasOlder = true,
 }) => dto.BridgeTimelineBaseline(
   subscriptionId: 'sub-1',
   version: BigInt.from(version),
-  items: [_wireItem()],
+  items: [_wireItem(source: source)],
   before: before,
   hasOlder: hasOlder,
 );
 
 dto.BridgeTimelineItem _wireItem({
+  dto.BridgeTimelineItemSource source =
+      const dto.BridgeTimelineItemSource.content(),
   String id = 'item-text',
   bool terminal = true,
   bool saved = false,
   BigInt? ordinal,
 }) => dto.BridgeTimelineItem(
+  source: source,
   item: item_dto.BridgeThreadItem(
     id: id,
     threadId: 'thread-A',

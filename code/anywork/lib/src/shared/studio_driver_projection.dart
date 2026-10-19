@@ -4,7 +4,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
-import '../domain/models/timeline_messages.dart';
+import '../domain/models/timeline_presentation.dart';
 import '../features/shell/shell_view.dart'
     show
         agentsForThreads,
@@ -170,9 +170,21 @@ TimelineDisplayFacts? _timelineFacts(
     hasNewOutput: view.hasNewOutput,
     preparingLive: view.isPreparingLive,
     items: [
+      for (final payload in lease?.payloads ?? const <TimelineMessagePayload>[])
+        _timelineItemFacts(payload),
+    ],
+    presentationItems: [
       for (final message in lease?.controller.messages ?? const <Message>[])
-        if (timelinePayloadOf(message) case final payload?)
-          _timelineItemFacts(payload),
+        if (timelinePresentationOf(message) case final item?)
+          TimelinePresentationFacts(
+            id: item.id,
+            kind: item.kind.name,
+            ordinal: item.position.$1,
+            memberIds: item.memberIds,
+            expanded: item.expanded,
+            activeCount: item.activeCount,
+            issueCount: item.issueCount,
+          ),
     ],
   );
 }

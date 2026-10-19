@@ -77,11 +77,28 @@ pub struct BridgeTimelineDetailRef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeTimelineItem {
     pub item: BridgeThreadItem,
+    pub source: BridgeTimelineItemSource,
     pub saved: bool,
     pub lifecycle: BridgeTimelineLifecycle,
     /// 预览省略的正文总字节数；零表示所有字段都是完整正文。
     pub omitted_bytes: u64,
     pub details: Vec<BridgeTimelineDetailRef>,
+}
+
+/// 只读来源提示；不携带 GUI 分组身份，也不改变 canonical 保存格式。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeTimelineItemSource {
+    Content,
+    ModelRecovery {
+        attempt_id: String,
+        notice: BridgeTimelineRecoveryNotice,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeTimelineRecoveryNotice {
+    Retry,
+    Result,
 }
 
 /// 一页升序预览条目、下一更旧边界与是否真的还有更旧内容。

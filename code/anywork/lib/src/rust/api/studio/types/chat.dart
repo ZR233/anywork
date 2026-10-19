@@ -13,7 +13,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeContentField with _$BridgeContentField {
@@ -305,6 +305,7 @@ class BridgeTimelineFieldUpdate {
 /// 一条时间线条目的预览值。
 class BridgeTimelineItem {
   final BridgeThreadItem item;
+  final BridgeTimelineItemSource source;
   final bool saved;
   final BridgeTimelineLifecycle lifecycle;
 
@@ -314,6 +315,7 @@ class BridgeTimelineItem {
 
   const BridgeTimelineItem({
     required this.item,
+    required this.source,
     required this.saved,
     required this.lifecycle,
     required this.omittedBytes,
@@ -323,6 +325,7 @@ class BridgeTimelineItem {
   @override
   int get hashCode =>
       item.hashCode ^
+      source.hashCode ^
       saved.hashCode ^
       lifecycle.hashCode ^
       omittedBytes.hashCode ^
@@ -334,10 +337,23 @@ class BridgeTimelineItem {
       other is BridgeTimelineItem &&
           runtimeType == other.runtimeType &&
           item == other.item &&
+          source == other.source &&
           saved == other.saved &&
           lifecycle == other.lifecycle &&
           omittedBytes == other.omittedBytes &&
           details == other.details;
+}
+
+@freezed
+sealed class BridgeTimelineItemSource with _$BridgeTimelineItemSource {
+  const BridgeTimelineItemSource._();
+
+  const factory BridgeTimelineItemSource.content() =
+      BridgeTimelineItemSource_Content;
+  const factory BridgeTimelineItemSource.modelRecovery({
+    required String attemptId,
+    required BridgeTimelineRecoveryNotice notice,
+  }) = BridgeTimelineItemSource_ModelRecovery;
 }
 
 /// 条目的执行终态事实，与保存水位 `saved` 严格独立。
@@ -372,6 +388,8 @@ class BridgeTimelinePage {
 
 /// 一帧是否需要立即应用，还是普通文本已经合帧。
 enum BridgeTimelinePriority { immediate, coalesced }
+
+enum BridgeTimelineRecoveryNotice { retry, result }
 
 /// 订阅无法继续用连续补丁表达时的原因。
 enum BridgeTimelineResyncReason { lagging, unavailable }

@@ -6,7 +6,7 @@ import 'package:flutter/widgets.dart' show ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
-import '../../domain/models/timeline_messages.dart';
+import '../../domain/models/timeline_presentation.dart';
 
 const Object _unset = Object();
 
@@ -126,7 +126,12 @@ final class TimelineDisplayLease {
     required this.threadId,
     required this.generation,
     required this.openQueries,
-  }) : _controller = InMemoryChatController();
+  }) : _controller = InMemoryChatController() {
+    _presentation = TimelinePresentationController(
+      _controller,
+      generation: generation,
+    );
+  }
 
   /// 固定 Thread 身份与展示代次；两者都不随 tail 版本变化。
   final String threadId;
@@ -139,8 +144,7 @@ final class TimelineDisplayLease {
     keepScrollOffset: false,
   );
 
-  /// 身份索引：只保存 controller 里**同一个** Message 实例，不复制正文。
-  final Map<String, Message> _loaded = {};
+  late final TimelinePresentationController _presentation;
 
   /// 已覆盖范围的最早 canonical 键（`(ordinal, id)`）。
   ///
@@ -184,7 +188,14 @@ final class TimelineDisplayLease {
   int? get appliedVersion => _appliedVersion;
   String? get olderCursor => _olderCursor;
   bool get hasOlder => _hasOlder;
-  int get loadedCount => _loaded.length;
+  int get loadedCount => _presentation.length;
+  Iterable<TimelineMessagePayload> get payloads => _presentation.payloads;
+  TimelinePresentationItem? presentationFor(String itemId) =>
+      _presentation.ownerOf(itemId);
+  void addItemListener(TimelineItemListener listener) =>
+      _presentation.addItemListener(listener);
+  void removeItemListener(TimelineItemListener listener) =>
+      _presentation.removeItemListener(listener);
   bool get isMounted => _mounted;
   bool get isRetired => _retired;
   bool get isReleased => _released.isCompleted;
@@ -201,9 +212,7 @@ final class TimelineDisplayLease {
   StudioTimelineDetailRef? detailRef(
     String itemId,
     ThreadContentFieldView field,
-  ) => _loaded[itemId] == null
-      ? null
-      : timelinePayloadOf(_loaded[itemId]!)?.detailFor(field);
+  ) => _presentation.payload(itemId)?.detailFor(field);
 
   /// 真实子树挂载。
   ///
@@ -222,8 +231,7 @@ final class TimelineDisplayLease {
 
   /// 本代次已加载身份的 typed 载荷；只读当前 Message，不复制正文。
   TimelineMessagePayload? payloadOf(String itemId) {
-    final message = _loaded[itemId];
-    return message == null ? null : timelinePayloadOf(message);
+    return _presentation.payload(itemId);
   }
 
   /// 真实子树卸载：解绑并允许销毁。
@@ -273,6 +281,7 @@ final class TimelineDisplayLease {
         if (!_released.isCompleted) _released.complete();
       },
     );
+    _presentation.dispose();
     _controller.dispose();
     _scrollController.dispose();
   }
@@ -280,7 +289,7 @@ final class TimelineDisplayLease {
   // ---- owner 内部：基线/差量应用 ----------------------------------------
 
   void adoptBaseline(StudioTimelineBaseline baseline) {
-    _loaded.clear();
+    _presentation.reset();
     _excluded.clear();
     _excludedOverflow = false;
     final ordered = [...baseline.items]
@@ -290,15 +299,9 @@ final class TimelineDisplayLease {
           (right.item.ordinal, right.id),
         ),
       );
-    final messages = <Message>[];
     for (final item in ordered) {
-      final message = timelineMessageFor(item);
-      _loaded[item.id] = message;
-      messages.add(message);
+      _presentation.add(TimelineMessagePayload.fromItem(item));
     }
-    // stock controller 的 set/insert/update/remove 都是同步修改内部列表，返回的 future
-    // 只在一个微任务后完成，不产生待消费队列，因此不必串成未 await 的正文链。
-    unawaited(_controller.setMessages(messages, animated: false));
     _appliedVersion = baseline.version;
     _olderCursor = baseline.before;
     _hasOlder = baseline.hasOlder;
@@ -334,16 +337,11 @@ final class TimelineDisplayLease {
   /// 已加载身份直接跳过。更早且未被本代次覆盖的新身份不插入（避免在分页前缀里造洞）、
   /// 也不另存待回放正文；它们由后续页查询取当时的权威值。
   bool _applyAdded(StudioTimelineItem incoming) {
-    final existing = _loaded[incoming.id];
-    if (existing != null) {
-      final payload = timelinePayloadOf(existing);
-      if (payload == null) return false;
+    final payload = _presentation.payload(incoming.id);
+    if (payload != null) {
       final next = payload.applyAdd(incoming);
       if (next == null) return false;
-      if (identical(next, payload)) return true;
-      final message = timelineMessageOfPayload(next);
-      _loaded[incoming.id] = message;
-      unawaited(_controller.updateMessage(existing, message));
+      if (!identical(next, payload)) _presentation.replace(incoming.id, next);
       return true;
     }
     final key = (incoming.item.ordinal, incoming.id);
@@ -353,21 +351,18 @@ final class TimelineDisplayLease {
       return true;
     }
     _excluded.remove(incoming.id);
-    final message = timelineMessageFor(incoming);
-    _loaded[incoming.id] = message;
-    _insertInOrder(message, key);
+    _presentation.add(TimelineMessagePayload.fromItem(incoming));
     final ceiling = _ceiling;
     if (ceiling == null || _compareCanonical(key, ceiling) > 0) _ceiling = key;
     return true;
   }
 
   bool _applyUpdated(StudioTimelineUpdateItem change) {
-    final current = _loaded[change.itemId];
+    final current = _presentation.payload(change.itemId);
     if (current != null) {
-      final next = applyTimelineItemUpdate(current, change);
+      final next = current.applyUpdate(change);
       if (next == null) return false;
-      _loaded[change.itemId] = next;
-      unawaited(_controller.updateMessage(current, next));
+      _presentation.replace(change.itemId, next);
       return true;
     }
     // 未知身份：只有能证明它属于被有意忽略的更早范围时才能安静跳过。
@@ -389,9 +384,7 @@ final class TimelineDisplayLease {
   bool _applyRemoved(String itemId) {
     // 真实删除清掉该身份的忽略证据，但**不**抹掉已经覆盖的范围下界。
     _excluded.remove(itemId);
-    final current = _loaded.remove(itemId);
-    if (current == null) return true;
-    unawaited(_controller.removeMessage(current, animated: false));
+    _presentation.remove(itemId);
     return true;
   }
 
@@ -406,10 +399,10 @@ final class TimelineDisplayLease {
       final key = (item.item.ordinal, item.id);
       if (floor != null && _compareCanonical(key, floor) >= 0) {
         // 已加载的重叠身份直接去重；未加载却在已覆盖范围内说明页前缀与本代次不连续。
-        if (_loaded.containsKey(item.id)) continue;
+        if (_presentation.contains(item.id)) continue;
         return null;
       }
-      if (_loaded.containsKey(item.id)) continue;
+      if (_presentation.contains(item.id)) continue;
       accepted.add((item, key));
     }
     accepted.sort((left, right) => _compareCanonical(left.$2, right.$2));
@@ -427,44 +420,14 @@ final class TimelineDisplayLease {
         return null;
       }
     }
-    final messages = [
-      for (final entry in accepted) timelineMessageFor(entry.$1),
-    ];
-    for (var index = 0; index < accepted.length; index++) {
-      final item = accepted[index].$1;
-      _loaded[item.id] = messages[index];
-      _excluded.remove(item.id);
+    for (final entry in accepted) {
+      _presentation.add(TimelineMessagePayload.fromItem(entry.$1));
+      _excluded.remove(entry.$1.id);
     }
-    if (messages.isNotEmpty) {
-      unawaited(
-        _controller.insertAllMessages(messages, index: 0, animated: false),
-      );
-      _floor = accepted.first.$2;
-    }
+    if (accepted.isNotEmpty) _floor = accepted.first.$2;
     _olderCursor = page.before;
     _hasOlder = page.hasOlder;
-    return messages.length;
-  }
-
-  /// 已覆盖范围内的新身份按严格 `(ordinal, id)` 顺序插入，不追加成最新消息。
-  void _insertInOrder(Message message, (int, String) key) {
-    final messages = _controller.messages;
-    var index = messages.length;
-    for (var position = 0; position < messages.length; position++) {
-      final payload = timelinePayloadOf(messages[position]);
-      if (payload == null) continue;
-      if (_compareCanonical((payload.order, payload.id), key) > 0) {
-        index = position;
-        break;
-      }
-    }
-    unawaited(
-      _controller.insertMessage(
-        message,
-        index: index == messages.length ? null : index,
-        animated: false,
-      ),
-    );
+    return accepted.length;
   }
 
   /// 记住“更早范围里已知存在但本代次不展示”的身份与位置；退出有界容量后不再声称完整。

@@ -9,15 +9,14 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_messages.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/studio_chrome.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
@@ -69,6 +68,7 @@ void main() {
   StudioTimelineItem toolItem(
     String id, {
     int ordinal = 1,
+    String name = 'exec_command',
     required String arguments,
   }) => StudioTimelineItem(
     item: ThreadItemView(
@@ -85,7 +85,7 @@ void main() {
         invocation: ThreadToolInvocationView(
           toolCallId: id,
           callId: id,
-          name: 'exec_command',
+          name: name,
           arguments: arguments,
         ),
         lifecycle: SucceededThreadToolView(
@@ -108,14 +108,16 @@ void main() {
     String id, {
     required int ordinal,
     String attachmentId = 'att-shared',
+    String name = 'view_image',
     String result = 'ok',
+    int revision = 1,
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
       threadId: 'thread',
       turnId: 'turn',
       ordinal: ordinal,
-      revision: 1,
+      revision: revision,
       createdAt: timestamp,
       updatedAt: timestamp,
       saved: true,
@@ -124,8 +126,8 @@ void main() {
         invocation: ThreadToolInvocationView(
           toolCallId: id,
           callId: id,
-          name: 'view_image',
-          arguments: '{}',
+          name: name,
+          arguments: '{"path":"/workspace/images/shot.png"}',
         ),
         lifecycle: SucceededThreadToolView(
           timestamp,
@@ -1301,10 +1303,154 @@ void main() {
     await _pumpFrames(tester, frames: 2);
   });
 
+  testWidgets('思考展开保留概要和内容，缺失字段不生成空区块', (tester) async {
+    for (final (summary, content) in [
+      (['Summary evidence'], ['Full reasoning evidence']),
+      (['Summary evidence'], <String>[]),
+      (<String>[], ['Full reasoning evidence']),
+      (<String>['  '], <String>[]),
+    ]) {
+      final lease = leaseFor(
+        items: [
+          StudioTimelineItem(
+            item: ThreadItemView(
+              id: 'thinking',
+              threadId: 'thread',
+              turnId: 'turn',
+              ordinal: 1,
+              revision: 1,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              saved: true,
+              state: ThreadThinkingItemStateView(
+                summary: summary,
+                content: content,
+                lifecycle: CompletedThreadContentView(timestamp),
+              ),
+            ),
+            saved: true,
+            lifecycle: StudioTimelineLifecycle.terminal,
+            omittedBytes: 0,
+            details: const [],
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        host(
+          TimelineView(
+            threadId: 'thread',
+            view: viewState(),
+            lease: lease,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final group = lease.presentationFor('thinking')!;
+      await tester.tap(
+        find
+            .ancestor(
+              of: find.byKey(
+                StudioDriverKeys.timelineActivitySummary(group.id),
+              ),
+              matching: find.byType(ListTile),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      final hasSummary = summary.any((chunk) => chunk.trim().isNotEmpty);
+      final hasContent = content.any((chunk) => chunk.trim().isNotEmpty);
+      if (hasSummary || hasContent) {
+        await tester.tap(
+          find
+              .ancestor(
+                of: find.byKey(
+                  StudioDriverKeys.timelineActivitySummary('thinking'),
+                ),
+                matching: find.byType(ListTile),
+              )
+              .first,
+        );
+        await tester.pumpAndSettle();
+      }
+      expect(
+        find.byKey(const ValueKey('timeline-thinking-summary-thinking')),
+        hasSummary ? findsOneWidget : findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('timeline-thinking-content-thinking')),
+        hasContent ? findsOneWidget : findsNothing,
+      );
+      expect(find.text('No reasoning text was provided.'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await lease.retire();
+    }
+  });
+
+  testWidgets('读取文件以状态和文件名单行展示，详情只在点击后构建', (tester) async {
+    final lease = leaseFor(
+      items: [
+        toolItem(
+          'read-1',
+          name: 'read_file',
+          arguments: '{"path":"/workspace/src/target.dart"}',
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      host(
+        TimelineView(
+          threadId: 'thread',
+          view: viewState(),
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () {},
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find
+          .ancestor(
+            of: find.byKey(
+              StudioDriverKeys.timelineActivitySummary(
+                lease.presentationFor('read-1')!.id,
+              ),
+            ),
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    final row = find.byKey(const ValueKey('timeline-tool-details:read-1'));
+    expect(tester.getSize(row).height, lessThanOrEqualTo(40));
+    expect(find.byIcon(Icons.menu_book_outlined), findsOneWidget);
+    expect(
+      find.textContaining('target.dart', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('/workspace/src/target.dart'), findsOneWidget);
+    expect(find.byType(StudioCodeBlock), findsNothing);
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(find.byType(StudioCodeBlock), findsNWidgets(2));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await lease.retire();
+  });
+
   // ---- S1 图片增量：默认折叠、用户展开语义与引用释放 --------------------------------
 
   testWidgets('图片组默认折叠只按需读取，同 ID 更新保持用户展开/折叠，引用释放可判别', (tester) async {
-    final transport = _ImageTransport();
+    final transport = _ImageTransport(failures: 1);
     final client = AnyworkClient(transport: transport, clientId: 'd4a-images');
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     addTearDown(() => client.close(deadline: deadline));
@@ -1312,12 +1458,37 @@ void main() {
 
     final lease = leaseFor(
       items: [
-        imageToolItem('call-a', ordinal: 1),
+        imageToolItem('call-a', ordinal: 1, name: 'mcp__plot'),
         imageToolItem('call-b', ordinal: 2),
       ],
     );
     final entryA = StudioDriverKeys.toolImageEntryId('call-a', 'att-shared');
     final entryB = StudioDriverKeys.toolImageEntryId('call-b', 'att-shared');
+    Finder toggleFor(String id) => find
+        .ancestor(
+          of: find.byKey(
+            StudioDriverKeys.timelineActivitySummary(
+              lease.presentationFor(id)!.id,
+            ),
+          ),
+          matching: find.byType(ListTile),
+        )
+        .first;
+    var version = 0;
+    void patch(List<StudioTimelineChange> changes) {
+      expect(
+        lease.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'test',
+            from: version,
+            to: ++version,
+            priority: StudioTimelinePriority.immediate,
+            changes: changes,
+          ),
+        ),
+        isTrue,
+      );
+    }
 
     await tester.pumpWidget(
       host(
@@ -1337,10 +1508,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 默认折叠：没有缩略图，也没有任何字节读取（生产不再自动展开）。
-    expect(
-      find.byKey(StudioDriverKeys.viewImageToggle(entryA)),
-      findsOneWidget,
-    );
+    expect(toggleFor('call-a'), findsOneWidget);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsNothing,
@@ -1351,84 +1519,128 @@ void main() {
     );
     expect(transport.reads, isEmpty, reason: '折叠状态不得读取原图');
 
-    // 用户明确展开 call-a：才读一次该附件。
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    // 连续调用共用展开意图，两个缩略图复用同一附件读取。
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
+    expect(transport.reads, ['thread:att-shared']);
+    expect(
+      find.byKey(StudioDriverKeys.timelineImageRetry(entryA)),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.timelineImageRetry(entryB)),
+      findsOneWidget,
+    );
+    // Each call keeps its own retry identity; both share the retried byte read.
+    await tester.tap(find.byKey(StudioDriverKeys.timelineImageRetry(entryA)));
+    await _pumpFrames(tester);
+    await tester.tap(find.byKey(StudioDriverKeys.timelineImageRetry(entryB)));
+    await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsOneWidget,
     );
-    expect(transport.reads, ['thread:att-shared']);
+    expect(
+      find.byKey(StudioDriverKeys.viewImageThumbnail(entryB)),
+      findsOneWidget,
+    );
+    expect(transport.reads, ['thread:att-shared', 'thread:att-shared']);
+    expect(
+      find.byKey(const ValueKey('timeline-tool-details:call-a')),
+      findsNothing,
+    );
+    expect(find.text('/workspace/images/shot.png'), findsNothing);
+    await tester.tap(find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)));
+    await tester.pumpAndSettle();
+    expect(find.text('/workspace/images/shot.png'), findsOneWidget);
+    expect(find.text('shot.png'), findsOneWidget);
+    // Tools may return text alongside images (including MCP). Keep that result
+    // available inside the viewer without adding tool rows below thumbnails.
+    await tester.tap(find.byKey(ValueKey('timeline-image-details-$entryA')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('timeline-tool-details:call-a')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('timeline-image-details-close')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.timelineImageClose));
+    await tester.pumpAndSettle();
 
     // 同 canonicalID 的普通内容更新：保持用户已展开，且共享缓存不重读。
-    Message messageOf(String id) =>
-        lease.controller.messages.firstWhere((message) => message.id == id);
-    await tester.runAsync(
-      () => lease.controller.updateMessage(
-        messageOf('call-a'),
-        timelineMessageFor(
-          imageToolItem('call-a', ordinal: 1, result: 'ok (streamed)'),
+    patch([
+      StudioTimelineAdd(
+        imageToolItem(
+          'call-a',
+          ordinal: 1,
+          name: 'mcp__plot',
+          result: 'ok (streamed)',
+          revision: 2,
         ),
       ),
-    );
+    ]);
     await _pumpFrames(tester);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsOneWidget,
       reason: '用户展开后同 ID 更新保持展开',
     );
-    expect(transport.reads, hasLength(1), reason: '同附件不得重读');
+    expect(transport.reads, hasLength(2), reason: '同附件不得重读');
 
     // 用户主动折叠后再更新：不得自动展开。
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsNothing,
     );
-    await tester.runAsync(
-      () => lease.controller.updateMessage(
-        messageOf('call-a'),
-        timelineMessageFor(
-          imageToolItem('call-a', ordinal: 1, result: 'ok (final)'),
+    patch([
+      StudioTimelineAdd(
+        imageToolItem(
+          'call-a',
+          ordinal: 1,
+          name: 'mcp__plot',
+          result: 'ok (final)',
+          revision: 3,
         ),
       ),
-    );
+    ]);
     await _pumpFrames(tester);
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryA)),
       findsNothing,
       reason: '用户折叠后同 ID 更新不得自动展开',
     );
-    expect(transport.reads, hasLength(1));
+    expect(transport.reads, hasLength(2));
 
     // 共享引用：移除 call-a 后 call-b 仍持有该附件 → 缓存保留，展开不重读。
-    await tester.runAsync(
-      () => lease.controller.removeMessage(messageOf('call-a')),
-    );
+    patch([const StudioTimelineRemove('call-a')]);
     await _pumpFrames(tester);
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryB)));
+    await tester.tap(toggleFor('call-b'));
     await _pumpFrames(tester);
+    await tester.pumpAndSettle();
     expect(
       find.byKey(StudioDriverKeys.viewImageThumbnail(entryB)),
       findsOneWidget,
     );
-    expect(transport.reads, hasLength(1), reason: '共享附件在仍有引用时不丢缓存');
+    expect(transport.reads, hasLength(2), reason: '共享附件在仍有引用时不丢缓存');
 
     // 最后一个引用消失 → 缓存释放：重新插入并展开会重新读取。
-    await tester.runAsync(
-      () => lease.controller.removeMessage(messageOf('call-b')),
-    );
+    patch([const StudioTimelineRemove('call-b')]);
     await _pumpFrames(tester);
-    await tester.runAsync(
-      () => lease.controller.insertMessage(
-        timelineMessageFor(imageToolItem('call-a', ordinal: 3)),
-      ),
-    );
+    patch([
+      StudioTimelineAdd(imageToolItem('call-a', ordinal: 3, name: 'mcp__plot')),
+    ]);
     await _pumpFrames(tester);
-    await tester.tap(find.byKey(StudioDriverKeys.viewImageToggle(entryA)));
+    await tester.tap(toggleFor('call-a'));
     await _pumpFrames(tester);
-    expect(transport.reads, hasLength(2), reason: '最后引用释放后重新展开必须重新读取');
+    await tester.pumpAndSettle();
+    expect(transport.reads, hasLength(3), reason: '最后引用释放后重新展开必须重新读取');
 
     await tester.pumpWidget(const SizedBox.shrink());
     await _pumpFrames(tester);
@@ -1469,13 +1681,29 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
+        find
+            .ancestor(
+              of: find.byKey(
+                StudioDriverKeys.timelineActivitySummary(
+                  lease.presentationFor('tool-1')!.id,
+                ),
+              ),
+              matching: find.byType(ListTile),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
         find.byKey(const ValueKey<String>('timeline-tool-details:tool-1')),
       );
       await tester.pumpAndSettle();
-      final candidates = find.byWidgetPredicate(
-        (widget) =>
-            widget is SingleChildScrollView &&
-            widget.scrollDirection == Axis.vertical,
+      final candidates = find.descendant(
+        of: find.byKey(const ValueKey<String>('timeline-tool-details:tool-1')),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is SingleChildScrollView &&
+              widget.scrollDirection == Axis.vertical,
+        ),
       );
       expect(candidates, findsWidgets);
       // 选出工具参数那个真正可滚动的内部区域（有独立 extent）。
@@ -1928,6 +2156,8 @@ final class _DetailConnection implements StudioTimelineConnection {
 
 /// 真实附件字节通路的受控 backend：记录实际读取，返回可解码的 1×1 PNG。
 final class _ImageTransport implements StudioTransport {
+  _ImageTransport({this.failures = 0});
+  int failures;
   final List<String> reads = [];
 
   @override
@@ -1936,6 +2166,10 @@ final class _ImageTransport implements StudioTransport {
     String attachmentId,
   ) async {
     reads.add('$threadId:$attachmentId');
+    if (failures > 0) {
+      failures--;
+      throw StateError('Fixture image temporarily unavailable');
+    }
     return _onePixelPng;
   }
 
