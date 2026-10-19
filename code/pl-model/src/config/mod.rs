@@ -2,6 +2,7 @@
 
 mod catalog;
 mod id;
+mod model_catalog;
 mod provider;
 mod route;
 

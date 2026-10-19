@@ -82,7 +82,7 @@ pub(crate) struct ManualGuiOptions {
     /// Reusable web-search probe provider ids, forwarded to the Driver probe.
     #[arg(long, value_name = "ID,ID,ID")]
     pub(crate) web_search_providers: Option<String>,
-    /// Reusable web-search probe model slugs, forwarded to the Driver probe.
+    /// Reusable web-search probe model model_ids, forwarded to the Driver probe.
     #[arg(long, value_name = "MODEL,MODEL,MODEL")]
     pub(crate) web_search_models: Option<String>,
     /// Label the reusable web-search probe as a fixture or real provider run.
@@ -722,7 +722,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             control.openai.payload.is_none(),
-            "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable slug"
+            "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable model_id"
         );
     }
     // The statistics, realtime, history and plan-recovery journeys are fully
@@ -2859,13 +2859,13 @@ fn fixture_config(
         // Distinct metadata in the same isolated provider exercises the real
         // settings projection without creating system credential accounts.
         let mut preset = models[0].clone();
-        preset.slug = "fixture-preset".into();
+        preset.model_id = "fixture-preset".into();
         preset.display_name = "Fixture with a model preset".into();
         preset.context_window = Some(64_000);
         preset.max_context_window = Some(64_000);
         preset.auto_compact_token_limit = Some(24_000);
         let mut unknown = models[0].clone();
-        unknown.slug = "fixture-unknown".into();
+        unknown.model_id = "fixture-unknown".into();
         unknown.display_name = "Fixture with unknown context capacity".into();
         unknown.context_window = None;
         unknown.max_context_window = None;
@@ -3072,21 +3072,29 @@ fn capture(
     output: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut command = process::path_command("dart", &[]);
+    let driver_log_path = output.join("capture-driver.log");
+    let driver_log = File::create(&driver_log_path)?;
+    // This host script only connects to the existing Flutter VM. Running it directly
+    // avoids rebuilding the application's unrelated native assets via `dart run`.
+    let mut command = process::path_command(
+        "dart",
+        &["--packages=.dart_tool/package_config.json".into()],
+    );
     command
         .current_dir(app_dir)
-        .args(["run", "test_driver/manual_capture.dart", vm_url])
+        .args(["test_driver/manual_capture.dart", vm_url])
         .arg(output)
         .env("ANYWORK_HOME", home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(driver_log.try_clone()?))
+        .stderr(Stdio::from(driver_log));
     let mut capture = OwnedProcess::start(&mut command, false)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if let Some(status) = capture.child.try_wait()? {
             ensure!(
                 status.success(),
-                "Driver capture or shutdown failed; human verdict pending"
+                "Driver capture or shutdown failed ({status}); see {}; human verdict pending",
+                driver_log_path.display()
             );
             return Ok(());
         }

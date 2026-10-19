@@ -32,8 +32,8 @@ use pl_protocol::trace::TraceTextChannel;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
 use serde_json::{Value, json};
 
-fn model(slug: &str, profile: ModelTransportProfile) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.binding.set_transport(profile);
     model
 }

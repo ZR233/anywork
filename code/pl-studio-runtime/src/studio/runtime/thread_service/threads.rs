@@ -73,12 +73,11 @@ impl StudioRuntime {
             .config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
-        let mode_definition = self
-            .thread_modes
+        self.thread_modes
             .snapshot()
             .mode(&request.mode)
             .context("requested Thread Mode is unavailable")?;
-        crate::mode::validate_thread_mode_model(Some(&mode_definition), &route.model)?;
+
         self.attachment_drafts
             .validate_for_model(&route.model, &drafts)?;
         // 校验走内存目录 owner：open_project 的落库是异步跟随的。

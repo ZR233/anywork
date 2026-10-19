@@ -191,7 +191,7 @@ impl ResponsesRequestBody {
                 .request
                 .api_model
                 .clone()
-                .unwrap_or_else(|| model.slug.clone()),
+                .unwrap_or_else(|| model.model_id.clone()),
             instructions: request.instructions.clone(),
             input,
             stream: true,

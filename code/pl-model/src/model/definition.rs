@@ -51,14 +51,14 @@ impl BundledModelDefinition {
     pub fn parse(json: &str, catalog: &str) -> Result<Self, ModelDefinitionError> {
         let definition: Self =
             serde_json::from_str(json).map_err(|_| ModelDefinitionError::Decode)?;
-        if definition.schema_version != 1 || definition.catalog != catalog {
+        if definition.schema_version != 2 || definition.catalog != catalog {
             return Err(ModelDefinitionError::Identity);
         }
         validate_inventory(&definition.models).map_err(|_| ModelDefinitionError::Declaration)?;
         let suggested = definition
             .models
             .iter()
-            .find(|m| m.slug == definition.suggested_model)
+            .find(|m| m.model_id == definition.suggested_model)
             .ok_or(ModelDefinitionError::Recommendation)?;
         let supported_efforts = suggested.supported_efforts();
         let valid_recommendation = match &definition.suggested_effort {
@@ -86,9 +86,9 @@ pub fn bundled_model_definition(
 }
 
 pub(crate) fn validate_inventory(models: &[ModelInfo]) -> Result<(), ()> {
-    let mut slugs = std::collections::BTreeSet::new();
+    let mut model_ids = std::collections::BTreeSet::new();
     for model in models {
-        if model.slug.trim().is_empty() || !slugs.insert(&model.slug) {
+        if model.model_id.trim().is_empty() || !model_ids.insert(&model.model_id) {
             return Err(());
         }
         model.validate().map_err(|_| ())?;

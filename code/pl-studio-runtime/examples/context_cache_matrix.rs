@@ -48,7 +48,7 @@ fn instruction(revision: u64, append: bool, previous: Option<String>) -> Result<
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let provider_id = args.next().context("provider required")?;
-    let slug = args.next().context("model required")?;
+    let model_id = args.next().context("model required")?;
     let output = PathBuf::from(args.next().context("new output required")?);
     tokio::fs::create_dir(&output).await?;
     let home =
@@ -59,9 +59,9 @@ async fn main() -> Result<()> {
         .clone()
         .try_into()?;
     let model = provider
-        .effective_models()?
+        .effective_models(None)?
         .into_iter()
-        .find(|model| model.slug == slug)
+        .find(|model| model.model_id == model_id)
         .context("model missing")?;
     let effort = model
         .parameters
@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     }.await;
     let close = thread.close().await;
-    tokio::fs::write(output.join("report.json"), serde_json::to_vec_pretty(&json!({"provider":provider_id,"model":slug,"protocol":protocol,"effort":effort,"appendInstructions":append,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
+    tokio::fs::write(output.join("report.json"), serde_json::to_vec_pretty(&json!({"provider":provider_id,"model":model_id,"protocol":protocol,"effort":effort,"appendInstructions":append,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
     execution?;
     close?;
     Ok(())

@@ -39,11 +39,11 @@ Future<BridgeSettingsStateResponse> readSettingsState() =>
 Future<BridgeSettingsCommandReply> removeProviderModel({
   required BigInt expectedSettingsRevision,
   required String providerId,
-  required String slug,
+  required String modelId,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveProviderModel(
   expectedSettingsRevision: expectedSettingsRevision,
   providerId: providerId,
-  slug: slug,
+  modelId: modelId,
 );
 
 Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({

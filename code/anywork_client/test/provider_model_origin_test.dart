@@ -4,19 +4,19 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 const _online = ProviderModelView(
-  slug: 'online-model',
+  modelId: 'online-model',
   displayName: 'Online',
   reasoningEfforts: [],
   origin: ProviderModelOrigin.online,
 );
 const _bundled = ProviderModelView(
-  slug: 'bundled-model',
+  modelId: 'bundled-model',
   displayName: 'Bundled',
   reasoningEfforts: [],
   origin: ProviderModelOrigin.bundled,
 );
 const _manual = ProviderModelView(
-  slug: 'manual-model',
+  modelId: 'manual-model',
   displayName: 'Manual',
   reasoningEfforts: [],
   origin: ProviderModelOrigin.manual,
@@ -57,10 +57,10 @@ SettingsStateSnapshot _snapshot(
 );
 
 class _RemoveCall {
-  _RemoveCall(this.revision, this.providerId, this.slug);
+  _RemoveCall(this.revision, this.providerId, this.modelId);
   final int revision;
   final String providerId;
-  final String slug;
+  final String modelId;
   final reply = Completer<SettingsCommandReply>();
 }
 
@@ -83,9 +83,9 @@ class _Transport implements StudioTransport {
   Future<SettingsCommandReply> removeProviderModel(
     int revision,
     String providerId,
-    String slug,
+    String modelId,
   ) {
-    final call = _RemoveCall(revision, providerId, slug);
+    final call = _RemoveCall(revision, providerId, modelId);
     calls.add(call);
     return call.reply.future;
   }
@@ -125,17 +125,21 @@ AnyworkClient _client(_Transport transport, ProviderSettingsView provider) {
 
 void main() {
   test(
-    'providerWithCatalogMetadata projects origin groups without slug diffs',
+    'providerWithCatalogMetadata projects origin groups without modelId diffs',
     () {
       final joined = providerWithCatalogMetadata(
         _provider(),
         const ProviderCatalogView.empty(),
       );
-      expect(joined.onlineModels.map((model) => model.slug), ['online-model']);
-      expect(joined.bundledModels.map((model) => model.slug), [
+      expect(joined.onlineModels.map((model) => model.modelId), [
+        'online-model',
+      ]);
+      expect(joined.bundledModels.map((model) => model.modelId), [
         'bundled-model',
       ]);
-      expect(joined.customModels.map((model) => model.slug), ['manual-model']);
+      expect(joined.customModels.map((model) => model.modelId), [
+        'manual-model',
+      ]);
       expect(joined.models.map((model) => model.origin), [
         ProviderModelOrigin.online,
         ProviderModelOrigin.bundled,
@@ -156,7 +160,7 @@ void main() {
       final call = await transport.calls.stream.first;
       expect(call.revision, 7);
       expect(call.providerId, 'fixture');
-      expect(call.slug, 'manual-model');
+      expect(call.modelId, 'manual-model');
       final remaining = _provider(
         models: const [_online, _bundled],
         connections: const {},
@@ -188,7 +192,7 @@ void main() {
       final snapshot = await pending;
       expect(snapshot.revision, 8);
       final provider = client.settings.state.canonical!.providers.single;
-      expect(provider.models.map((model) => model.slug), [
+      expect(provider.models.map((model) => model.modelId), [
         'online-model',
         'bundled-model',
       ]);
@@ -200,4 +204,53 @@ void main() {
       expect(provider.autoCompactLimits.containsKey('manual-model'), isFalse);
     },
   );
+
+  test('a newer config response cannot roll back type support and parameter defaults', () {
+    final transport = _Transport();
+    final subscription = transport.calls.stream.listen((_) {});
+    addTearDown(subscription.cancel);
+    final client = _client(transport, _provider());
+    final updated = _online.copyWith(
+      typeSupport: const [ModelTypeSupportView(modelType: ModelType.text)],
+      contextWindow: 4096,
+      reasoningEfforts: const ['low', 'high'],
+      defaultReasoningEffort: 'high',
+    );
+    client.settings.merge(
+      _snapshot(7, _provider(models: [updated]), modelCatalogRevision: 4),
+    );
+    client.settings.merge(
+      _snapshot(8, _provider(models: const [_online]), modelCatalogRevision: 2),
+    );
+    final merged = client.settings.state.canonical!;
+    expect(merged.revision, 8);
+    expect(merged.modelCatalogRevision, 4);
+    final model = merged.providers.single
+        .modelsFor(type: ModelType.text)
+        .single;
+    expect(model.modelId, 'online-model');
+    expect(model.defaultReasoningEffort, 'high');
+    expect(model.reasoningEfforts, ['low', 'high']);
+    final excluded = updated.copyWith(
+      typeSupport: const [
+        ModelTypeSupportView(
+          modelType: ModelType.text,
+          exclusions: [ModelTypeExclusion.contextWindowUnknown],
+        ),
+      ],
+    );
+    client.settings.merge(
+      _snapshot(8, _provider(models: [excluded]), modelCatalogRevision: 5),
+    );
+    expect(
+      client.settings.state.canonical!.providers.single.modelsFor(
+        type: ModelType.text,
+      ),
+      isEmpty,
+    );
+    expect(
+      client.settings.state.canonical!.providers.single.models.single.modelId,
+      'online-model',
+    );
+  });
 }

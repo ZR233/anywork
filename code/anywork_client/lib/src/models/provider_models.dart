@@ -2,6 +2,23 @@ import 'model_catalog.dart';
 
 enum ModelModalityView { text, image, audio, video, file }
 
+enum ModelType { text }
+
+enum ModelTypeExclusion {
+  textInputUnsupported,
+  textOutputUnsupported,
+  contextWindowUnknown,
+}
+
+class ModelTypeSupportView {
+  const ModelTypeSupportView({
+    required this.modelType,
+    this.exclusions = const [],
+  });
+  final ModelType modelType;
+  final List<ModelTypeExclusion> exclusions;
+}
+
 enum ModelInputSourceView { local, remoteUrl }
 
 class ModelInputCapabilityView {
@@ -45,9 +62,10 @@ class ProviderPriceTierView {
 
 class ProviderModelView {
   const ProviderModelView({
-    required this.slug,
+    required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
+    this.typeSupport = const [],
     this.description = '',
     this.contextWindow,
     this.maxContextWindow,
@@ -59,6 +77,7 @@ class ProviderModelView {
     this.reasoningLabel = '',
     this.defaultReasoningEffort = '',
     this.currency = '',
+    this.priceSource = '',
     this.priceTiers = const [],
     this.baseInstructions = '',
     this.wireProtocol = 'chat_completions',
@@ -68,7 +87,14 @@ class ProviderModelView {
     this.origin = ProviderModelOrigin.bundled,
   });
 
-  final String slug;
+  final String modelId;
+  final List<ModelTypeSupportView> typeSupport;
+
+  ModelTypeSupportView? supportFor(ModelType type) =>
+      typeSupport.where((support) => support.modelType == type).firstOrNull;
+
+  bool matchesType(ModelType type) =>
+      supportFor(type)?.exclusions.isEmpty == true;
   final String displayName;
   final List<String> reasoningEfforts;
   final String description;
@@ -84,6 +110,7 @@ class ProviderModelView {
   final String reasoningLabel;
   final String defaultReasoningEffort;
   final String currency;
+  final String priceSource;
   final List<ProviderPriceTierView> priceTiers;
   final String baseInstructions;
   final String wireProtocol;
@@ -93,9 +120,10 @@ class ProviderModelView {
   final ProviderModelOrigin origin;
 
   ProviderModelView copyWith({
-    String? slug,
+    String? modelId,
     String? displayName,
     List<String>? reasoningEfforts,
+    List<ModelTypeSupportView>? typeSupport,
     String? description,
     int? contextWindow,
     int? maxContextWindow,
@@ -107,6 +135,7 @@ class ProviderModelView {
     String? reasoningLabel,
     String? defaultReasoningEffort,
     String? currency,
+    String? priceSource,
     List<ProviderPriceTierView>? priceTiers,
     String? baseInstructions,
     String? wireProtocol,
@@ -116,9 +145,10 @@ class ProviderModelView {
     ProviderModelOrigin? origin,
   }) {
     return ProviderModelView(
-      slug: slug ?? this.slug,
+      modelId: modelId ?? this.modelId,
       displayName: displayName ?? this.displayName,
       reasoningEfforts: reasoningEfforts ?? this.reasoningEfforts,
+      typeSupport: typeSupport ?? this.typeSupport,
       description: description ?? this.description,
       contextWindow: contextWindow ?? this.contextWindow,
       maxContextWindow: maxContextWindow ?? this.maxContextWindow,
@@ -132,6 +162,7 @@ class ProviderModelView {
       defaultReasoningEffort:
           defaultReasoningEffort ?? this.defaultReasoningEffort,
       currency: currency ?? this.currency,
+      priceSource: priceSource ?? this.priceSource,
       priceTiers: priceTiers ?? this.priceTiers,
       baseInstructions: baseInstructions ?? this.baseInstructions,
       wireProtocol: wireProtocol ?? this.wireProtocol,
@@ -152,7 +183,7 @@ class ProviderModelView {
 /// `safeLimit` 为上下文 90% 安全上限，上下文未知时为 `null`。
 class ProviderModelAutoCompactView {
   const ProviderModelAutoCompactView({
-    required this.slug,
+    required this.modelId,
     required this.defaultLimit,
     this.overrideLimit,
     this.effectiveLimit,
@@ -166,7 +197,7 @@ class ProviderModelAutoCompactView {
     );
     final defaultLimit = model.autoCompactTokenLimit ?? safeLimit;
     return ProviderModelAutoCompactView(
-      slug: model.slug,
+      modelId: model.modelId,
       defaultLimit: defaultLimit,
       overrideLimit: null,
       effectiveLimit: _effective(defaultLimit, safeLimit),
@@ -194,7 +225,7 @@ class ProviderModelAutoCompactView {
     return selected < safeLimit ? selected : safeLimit;
   }
 
-  final String slug;
+  final String modelId;
   final int? defaultLimit;
   final int? overrideLimit;
   final int? effectiveLimit;
@@ -208,7 +239,7 @@ class ProviderModelAutoCompactView {
   ProviderModelAutoCompactView withOverride(int? overrideLimit) {
     final normalized = overrideLimit == defaultLimit ? null : overrideLimit;
     return ProviderModelAutoCompactView(
-      slug: slug,
+      modelId: modelId,
       defaultLimit: defaultLimit,
       overrideLimit: normalized,
       effectiveLimit: _effective(normalized ?? defaultLimit, safeLimit),
@@ -223,7 +254,7 @@ class ProviderModelAutoCompactView {
   /// explicit write intent, which uses [withOverride].
   ProviderModelAutoCompactView withStoredOverride(int? overrideLimit) {
     return ProviderModelAutoCompactView(
-      slug: slug,
+      modelId: modelId,
       defaultLimit: defaultLimit,
       overrideLimit: overrideLimit,
       effectiveLimit: _effective(overrideLimit ?? defaultLimit, safeLimit),
@@ -278,6 +309,11 @@ class ProviderSettingsView {
   final int usageQueryRevision;
   final String defaultModel;
   final List<ProviderModelView> models;
+
+  /// Queries the canonical model-layer classification; omitted type returns the full catalog.
+  List<ProviderModelView> modelsFor({ModelType? type}) => type == null
+      ? models
+      : models.where((model) => model.matchesType(type)).toList();
   final Map<String, String> modelConnectionModes;
   final Map<String, ProviderModelAutoCompactView> autoCompactLimits;
   final String status;
@@ -309,12 +345,12 @@ class ProviderSettingsView {
   List<ProviderModelView> get customModels =>
       modelsWithOrigin(ProviderModelOrigin.manual);
 
-  ProviderSettingsView withModelConnection(String slug, String mode) {
+  ProviderSettingsView withModelConnection(String modelId, String mode) {
     ProviderModelView update(ProviderModelView model) =>
-        model.slug == slug ? model.copyWith(connectionMode: mode) : model;
+        model.modelId == modelId ? model.copyWith(connectionMode: mode) : model;
     return copyWith(
       models: models.map(update).toList(),
-      modelConnectionModes: {...modelConnectionModes, slug: mode},
+      modelConnectionModes: {...modelConnectionModes, modelId: mode},
     );
   }
 
@@ -323,7 +359,7 @@ class ProviderSettingsView {
   /// 优先使用 canonical snapshot 的解析结果；草稿中尚未持久化的模型（新建 provider 或
   /// 新增自定义模型）按目录预设或上下文 90% 推导，不写入用户配置。
   ProviderModelAutoCompactView autoCompactLimitFor(ProviderModelView model) {
-    return autoCompactLimits[model.slug] ??
+    return autoCompactLimits[model.modelId] ??
         ProviderModelAutoCompactView.forModel(model);
   }
 
@@ -332,7 +368,7 @@ class ProviderSettingsView {
     ProviderModelAutoCompactView limit,
   ) {
     return copyWith(
-      autoCompactLimits: {...autoCompactLimits, limit.slug: limit},
+      autoCompactLimits: {...autoCompactLimits, limit.modelId: limit},
     );
   }
 
@@ -535,7 +571,7 @@ ProviderSettingsView providerWithCatalogMetadata(
   ProviderModelView applyConnectionMode(ProviderModelView model) =>
       model.copyWith(
         connectionMode:
-            provider.modelConnectionModes[model.slug] ??
+            provider.modelConnectionModes[model.modelId] ??
             model.defaultConnectionMode,
       );
   final effectiveModels = provider.models.map(applyConnectionMode).toList();

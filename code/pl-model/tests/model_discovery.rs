@@ -6,8 +6,8 @@ use pl_model::{
     },
     model::{
         BundledModelDefinition, ModelDefinitionError, ModelInfo, ModelModality, ModelParameter,
-        ModelPricing, ModelTransportProfile, ParameterWire, WireAssignment,
-        bundled_model_definition,
+        ModelPricing, ModelTransportProfile, ModelType, ModelTypeExclusion, ParameterWire,
+        WireAssignment, bundled_model_definition,
     },
     provider::{
         ProviderAdapterKind, ProviderConnectionMode, ProviderEndpoint,
@@ -89,8 +89,8 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
         _ => panic!("expected updated catalog"),
     }
 }
-fn cached_model(slug: &str, adapter: ProviderAdapterKind) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn cached_model(model_id: &str, adapter: ProviderAdapterKind) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.context_window = None;
     model.max_output_tokens = None;
     model
@@ -108,6 +108,512 @@ async fn discover(body: Value, adapter: ProviderAdapterKind) -> Vec<ModelInfo> {
     let result = updated(query.execute(None).await.unwrap());
     server.finish().await;
     result
+}
+
+fn accept_observation(provider: &mut ProviderConfig, mut models: Vec<ModelInfo>, order: u64) {
+    for model in &mut models {
+        if let Some(observation) = &mut model.observation {
+            observation.commit(order);
+        }
+    }
+    provider.set_model_catalog_overlay(models).unwrap();
+}
+
+#[tokio::test]
+async fn text_lists_use_the_final_global_definition_and_do_not_gate_route_execution() {
+    let mut a = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    accept_observation(&mut a, discover(json!({"data":[
+        {"id":"shared","input_modalities":["text"],"output_modalities":["text"]},
+        {"id":"unknown-budget","input_modalities":["text"],"output_modalities":["text"]},
+        {"id":"max-only","max_context_window":4096},
+        {"id":"without-tools-or-prices","context_window":2048,"supports_function_calling":false},
+        {"id":"image-output","context_window":1024,"input_modalities":["text"],"output_modalities":["image"]},
+        {"id":"image-input","context_window":1024,"input_modalities":["image"],"output_modalities":["text"]},
+        {"id":"empty-output","context_window":1024,"output_modalities":[]}
+    ]}), ProviderAdapterKind::OpenAi).await, 10);
+    let mut b = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    accept_observation(
+        &mut b,
+        discover(
+            json!({"data":[{"id":"shared","context_window":8192}]}),
+            ProviderAdapterKind::Xai,
+        )
+        .await,
+        20,
+    );
+    let a_id = ProviderId::new("a").unwrap();
+    let b_id = ProviderId::new("b").unwrap();
+    let mut config = AgentModelConfig {
+        providers: [(a_id.clone(), a), (b_id.clone(), b)].into(),
+        routes: Default::default(),
+    };
+    config.reconcile_model_catalog().unwrap();
+    let a = &config.providers[&a_id];
+    let all = a.effective_catalog(None).unwrap();
+    assert_eq!(all.len(), 7);
+    assert_eq!(
+        a.effective_models(Some(ModelType::Text))
+            .unwrap()
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["max-only", "shared", "without-tools-or-prices"]
+    );
+    assert_eq!(
+        config.providers[&b_id]
+            .effective_models(Some(ModelType::Text))
+            .unwrap()
+            .len(),
+        1
+    );
+    let shared = all
+        .iter()
+        .find(|entry| entry.model.model_id == "shared")
+        .unwrap();
+    assert_eq!(shared.model.context_window, Some(8192));
+    assert_eq!(model_descriptor(shared).type_support[0].exclusions, []);
+    for (id, reason) in [
+        ("unknown-budget", ModelTypeExclusion::ContextWindowUnknown),
+        ("image-output", ModelTypeExclusion::TextOutputUnsupported),
+        ("image-input", ModelTypeExclusion::TextInputUnsupported),
+        ("empty-output", ModelTypeExclusion::TextOutputUnsupported),
+    ] {
+        let entry = all.iter().find(|entry| entry.model.model_id == id).unwrap();
+        assert_eq!(
+            entry.model.type_support(ModelType::Text).exclusions,
+            [reason]
+        );
+    }
+    accept_observation(config.providers.get_mut(&b_id).unwrap(), discover(json!({"data":[{"id":"shared","context_window":null,"max_context_window":null,"input_modalities":[]}]}), ProviderAdapterKind::Xai).await, 30);
+    config.reconcile_model_catalog().unwrap();
+    for id in [a_id, b_id] {
+        let provider = &config.providers[&id];
+        assert!(
+            provider
+                .effective_models(Some(ModelType::Text))
+                .unwrap()
+                .iter()
+                .all(|model| model.model_id != "shared")
+        );
+        assert!(
+            provider
+                .effective_models(None)
+                .unwrap()
+                .iter()
+                .any(|model| model.model_id == "shared")
+        );
+        assert_eq!(
+            config
+                .route_availability(&ModelRouteConfig {
+                    provider: id,
+                    model: "shared".into(),
+                    effort: None
+                })
+                .unwrap(),
+            ModelRouteAvailability::Available
+        );
+    }
+}
+
+#[tokio::test]
+async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_withdrawn_candidates()
+ {
+    let server = Server::responses(vec![
+        http(200, "", &json!({"data":[{"id":"shared-effort","context_window":4096,"supportsReasoningEffort":true,"reasoningEffort":"high","reasoningEfforts":[{"value":"low","label":"Low"},{"value":"high","label":"High","default":true}]}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":"shared-effort","reasoningEfforts":[{"value":"low"},{"value":"high"}]}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":"shared-effort","reasoningEfforts":[{"value":"low"}]}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":"shared-effort","reasoningEffort":null}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":"shared-effort","supportsReasoningEffort":false}]}).to_string()),
+    ]).await;
+    let mut a = provider(&server.url, ProviderAdapterKind::Xai);
+    let query = ModelCatalogQuery::for_provider(&a).unwrap();
+    let mut models = updated(query.execute(None).await.unwrap());
+    assert_eq!(models[0].supported_efforts(), ["low", "high"]);
+    assert_eq!(models[0].default_effort().as_deref(), Some("high"));
+    accept_observation(&mut a, models.clone(), 10);
+    models = a.effective_models(None).unwrap();
+    let mut b = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
+    accept_observation(
+        &mut b,
+        discover(
+            json!({"data":[{"id":"shared-effort","reasoningEffort":"low"}]}),
+            ProviderAdapterKind::OpenAi,
+        )
+        .await,
+        20,
+    );
+    let a_id = ProviderId::new("a").unwrap();
+    let mut config = AgentModelConfig {
+        providers: [(a_id.clone(), a), (ProviderId::new("b").unwrap(), b)].into(),
+        routes: Default::default(),
+    };
+    for order in [30, 40, 50, 60] {
+        let cache = ModelCatalogQueryCache {
+            identity: query.identity().into(),
+            etag: None,
+            models,
+        };
+        let next = updated(query.execute(Some(&cache)).await.unwrap());
+        accept_observation(config.providers.get_mut(&a_id).unwrap(), next, order);
+        models = config.providers[&a_id].effective_models(None).unwrap();
+        assert_eq!(
+            models[0].observation.as_ref().unwrap().parameter_defaults["effort"].order,
+            if order < 50 { 10 } else { 50 }
+        );
+        config.reconcile_model_catalog().unwrap();
+        for provider in config.providers.values() {
+            let model = provider.effective_models(None).unwrap().remove(0);
+            if order < 60 {
+                assert_eq!(model.default_effort().as_deref(), Some("low"));
+                assert_eq!(
+                    model.effort_parameter().unwrap().default.as_deref(),
+                    (order < 50).then_some("low")
+                );
+                if order >= 40 {
+                    assert_eq!(model.supported_efforts(), ["low"]);
+                }
+            } else {
+                assert!(model.supported_efforts().is_empty());
+                assert!(
+                    model.capabilities.reasoning,
+                    "fixed reasoning survives effort withdrawal"
+                );
+            }
+        }
+    }
+    server.finish().await;
+}
+
+#[tokio::test]
+async fn global_catalog_shares_explicit_fields_and_keeps_route_membership_prices_and_wire() {
+    let a = discover(json!({"data":[
+        {"id":"shared", "context_window":4096, "max_output_tokens":128, "input_modalities":["text"],
+         "supports_function_calling":true, "effort":{"supported_levels":["medium"]}},
+        {"id":"shared", "display_name":"Final A", "supports_streaming":false}
+    ]}), ProviderAdapterKind::OpenAi).await;
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].context_window, Some(4096));
+    let b = discover(
+        json!({"data":[{"id":"shared", "context_window":8192,
+            "max_output_tokens":null, "input_modalities":[], "supports_function_calling":false,
+            "effort":{"supported_levels":[]}, "prompt_text_token_price":20000,
+            "completion_text_token_price":100000, "cached_prompt_text_token_price":5000
+        }]}),
+        ProviderAdapterKind::Xai,
+    )
+    .await;
+    let mut local = cached_model("shared", ProviderAdapterKind::OpenAi);
+    local.pricing = ModelPricing::published(
+        "USD",
+        vec![pl_model::model::TokenPriceTier::flat(1.0, 4.0, None, None)],
+        "local-a",
+    );
+    local.max_output_tokens = Some(256);
+    let mut first = ProviderConfig::from_bundled_catalog(
+        ProviderEndpoint::openai(None),
+        ModelCatalogId::new("openai").unwrap(),
+        vec![local.clone()],
+    );
+    let mut second = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    accept_observation(&mut first, a, 1);
+    accept_observation(&mut second, b, 2);
+    let mut explicit = ModelInfo::compatible("shared");
+    explicit.pricing = ModelPricing::published(
+        "CNY",
+        vec![pl_model::model::TokenPriceTier::flat(3.0, 6.0, None, None)],
+        "local-c",
+    );
+    let mut config = AgentModelConfig::default();
+    for (id, provider) in [
+        ("z-first", first),
+        ("a-second", second),
+        (
+            "third",
+            ProviderConfig::from_explicit_models(
+                ProviderEndpoint::compatible("third", "http://127.0.0.1:1"),
+                vec![explicit.clone()],
+            ),
+        ),
+        (
+            "unrelated",
+            ProviderConfig::from_explicit_models(
+                ProviderEndpoint::compatible("unrelated", "http://127.0.0.1:1"),
+                vec![ModelInfo::compatible("other")],
+            ),
+        ),
+    ] {
+        config
+            .providers
+            .insert(ProviderId::new(id).unwrap(), provider);
+    }
+    config.reconcile_model_catalog().unwrap();
+    for id in ["z-first", "a-second", "third"] {
+        let route = config
+            .resolve_route(
+                AgentRoleId::new("test").unwrap(),
+                &ModelRouteConfig {
+                    provider: ProviderId::new(id).unwrap(),
+                    model: "shared".into(),
+                    effort: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(route.model.display_name, "Final A");
+        assert_eq!(route.model.context_window, Some(8192));
+        assert_eq!(route.model.max_output_tokens, None);
+        assert!(route.model.capabilities.input.is_empty());
+        assert!(!route.model.capabilities.supports_function_calling());
+        assert!(!route.model.capabilities.streaming);
+        assert!(route.model.parameters.is_empty());
+        if id == "z-first" {
+            assert_eq!(route.model.pricing, local.pricing);
+            assert_eq!(route.model.binding.transport, local.binding.transport);
+        }
+        if id == "third" {
+            assert_eq!(route.model.pricing, explicit.pricing);
+            assert_eq!(route.model.binding.transport, explicit.binding.transport);
+        }
+        if id == "a-second" {
+            assert_eq!(
+                route.model.binding.transport,
+                ModelTransportProfile::responses_http()
+            );
+            let ModelPricing::Rates {
+                currency, tiers, ..
+            } = route.model.pricing
+            else {
+                panic!("online price missing")
+            };
+            assert_eq!(currency, "USD");
+            assert_eq!(tiers[0].input_per_mtok, 2.0);
+            assert_eq!(tiers[0].output_per_mtok, 10.0);
+            assert_eq!(tiers[0].cache_read_per_mtok, Some(0.5));
+        }
+    }
+    assert_eq!(
+        config.providers[&ProviderId::new("unrelated").unwrap()]
+            .effective_models(None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        config.providers[&ProviderId::new("unrelated").unwrap()]
+            .effective_models(None)
+            .unwrap()[0]
+            .model_id,
+        "other"
+    );
+    let first_snapshot = config.clone();
+    config.reconcile_model_catalog().unwrap();
+    assert_eq!(config, first_snapshot);
+    let withdrawn = ModelRouteConfig {
+        provider: ProviderId::new("third").unwrap(),
+        model: "shared".into(),
+        effort: Some(ReasoningEffort::new("medium")),
+    };
+    config
+        .routes
+        .insert(AgentRoleId::new("test").unwrap(), withdrawn.clone());
+    config.validate_declarations().unwrap();
+    assert!(matches!(
+        config.route_availability(&withdrawn).unwrap(),
+        ModelRouteAvailability::EffortUnavailable { .. }
+    ));
+    assert!(
+        config
+            .resolve_route(AgentRoleId::new("test").unwrap(), &withdrawn)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn missing_fields_and_304_keep_original_order_while_later_success_wins_globally() {
+    let server = Server::responses(vec![
+        http(
+            200,
+            "ETag: \"v1\"\r\n",
+            &json!({"data":[{"id":"shared","context_window":4096,"max_context_window":4096}]})
+                .to_string(),
+        ),
+        http(
+            200,
+            "ETag: \"v2\"\r\n",
+            &json!({"data":[{"id":"shared","description":"new description"}]}).to_string(),
+        ),
+        http(304, "", ""),
+    ])
+    .await;
+    let mut first = provider(&server.url, ProviderAdapterKind::OpenAi);
+    let query = ModelCatalogQuery::for_provider(&first).unwrap();
+    let mut models = updated(query.execute(None).await.unwrap());
+    for model in &mut models {
+        model.observation.as_mut().unwrap().commit(1);
+    }
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: Some("\"v1\"".into()),
+        models,
+    };
+    let mut second = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    accept_observation(
+        &mut second,
+        discover(
+            json!({"data":[{"id":"shared","context_window":8192,
+                "effort":{"supported_levels":["high"]}}]}),
+            ProviderAdapterKind::Xai,
+        )
+        .await,
+        2,
+    );
+    let mut newest = updated(query.execute(Some(&cache)).await.unwrap());
+    for model in &mut newest {
+        model.observation.as_mut().unwrap().commit(3);
+    }
+    assert_eq!(
+        newest[0].observation.as_ref().unwrap().fields
+            [&pl_model::model::ModelMetadataField::ContextWindow],
+        1
+    );
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: Some("\"v2\"".into()),
+        models: newest.clone(),
+    };
+    assert!(matches!(
+        query.execute(Some(&cache)).await.unwrap(),
+        ModelCatalogQueryResult::NotModified { .. }
+    ));
+    first.set_model_catalog_overlay(newest).unwrap();
+    let mut config = AgentModelConfig::default();
+    config
+        .providers
+        .insert(ProviderId::new("z-first").unwrap(), first);
+    config
+        .providers
+        .insert(ProviderId::new("a-second").unwrap(), second);
+    config.providers.insert(
+        ProviderId::new("chat-route").unwrap(),
+        ProviderConfig::from_explicit_models(
+            ProviderEndpoint::compatible("chat-route", "http://127.0.0.1:1"),
+            vec![ModelInfo::compatible("shared")],
+        ),
+    );
+    config.reconcile_model_catalog().unwrap();
+    for (id, provider) in &config.providers {
+        let model = provider.effective_models(None).unwrap().remove(0);
+        assert_eq!(model.context_window, Some(8192));
+        assert_eq!(model.max_context_window, Some(8192));
+        assert_eq!(model.description.as_deref(), Some("new description"));
+        assert_eq!(model.supported_efforts(), ["high"]);
+        let wire = model.effort_parameter().unwrap().wire_for("high").unwrap();
+        assert_eq!(
+            wire.set[0].path,
+            if id.as_str() == "chat-route" {
+                "reasoning_effort"
+            } else {
+                "reasoning.effort"
+            }
+        );
+    }
+    assert!(
+        server.finish().await[2]
+            .to_ascii_lowercase()
+            .contains("if-none-match: \"v2\"")
+    );
+}
+
+#[tokio::test]
+async fn later_success_wins_when_provider_requests_complete_out_of_start_order() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).await.unwrap();
+            headers.push(byte[0]);
+        }
+        started_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        socket
+            .write_all(
+                http(
+                    200,
+                    "",
+                    &json!({"data":[{"id":"shared","context_window":4096}]}).to_string(),
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let mut slow = provider(&url, ProviderAdapterKind::OpenAi);
+    let query = ModelCatalogQuery::for_provider(&slow).unwrap();
+    let mut first_started = Box::pin(query.execute(None));
+    tokio::select! {
+        result = &mut first_started => panic!("response completed before release: {result:?}"),
+        ready = started_rx => ready.unwrap(),
+    }
+    let mut fast = provider("http://127.0.0.1:1", ProviderAdapterKind::Xai);
+    accept_observation(
+        &mut fast,
+        discover(
+            json!({"data":[{"id":"shared","display_name":"Fast source",
+                "context_window":8192,"max_output_tokens":512}]}),
+            ProviderAdapterKind::Xai,
+        )
+        .await,
+        1,
+    );
+    release_tx.send(()).unwrap();
+    accept_observation(&mut slow, updated(first_started.await.unwrap()), 2);
+    server.await.unwrap();
+    let mut config = AgentModelConfig::default();
+    config
+        .providers
+        .insert(ProviderId::new("a-slow").unwrap(), slow);
+    config
+        .providers
+        .insert(ProviderId::new("z-fast").unwrap(), fast);
+    config.reconcile_model_catalog().unwrap();
+    for provider in config.providers.values() {
+        let model = provider.effective_models(None).unwrap().remove(0);
+        assert_eq!(model.context_window, Some(4096));
+        assert_eq!(model.display_name, "Fast source");
+        assert_eq!(model.max_output_tokens, Some(512));
+    }
+}
+
+#[tokio::test]
+async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates() {
+    for record in [
+        json!({"id":"shared","prompt_text_token_price":-1,"completion_text_token_price":10}),
+        json!({"id":"shared","prompt_text_token_price":1}),
+        json!({"id":"shared","pricing":{"kind":"rates","currency":"USD","tiers":[]}}),
+    ] {
+        let server = Server::json(json!({"data":[record]})).await;
+        let query =
+            ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::Xai))
+                .unwrap();
+        assert_eq!(
+            query.execute(None).await.unwrap_err(),
+            ModelCatalogQueryError::Protocol
+        );
+        server.finish().await;
+    }
+    let models = discover(
+        json!({"data":[{"id":"shared","pricing":{"per_image":1,"currency":"USD"}}]}),
+        ProviderAdapterKind::Xai,
+    )
+    .await;
+    assert_eq!(models[0].pricing, ModelPricing::Unknown);
+    let zero_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000,"long_context_threshold":0}]}), ProviderAdapterKind::Xai).await;
+    let omitted_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000}]}), ProviderAdapterKind::Xai).await;
+    assert_eq!(zero_threshold[0].pricing, omitted_threshold[0].pricing);
 }
 
 #[tokio::test]
@@ -135,7 +641,7 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     assert!(lower.contains("authorization: bearer synthetic-token\r\n"));
     assert!(lower.contains("x-account: synthetic-account\r\n"));
     let model = &models[0];
-    assert_eq!(model.slug, "unregistered-Future-ID");
+    assert_eq!(model.model_id, "unregistered-Future-ID");
     assert_eq!(model.resolved_context_window(), None);
     assert_eq!(model.max_output_tokens, None);
     assert!(model.supported_efforts().is_empty());
@@ -153,7 +659,7 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     assert_eq!(model.pricing, ModelPricing::Unknown);
     config.set_model_catalog_overlay(models.clone()).unwrap();
     let descriptor: pl_model::config::ModelDescriptor =
-        model_descriptor(&config.effective_catalog().unwrap()[0]);
+        model_descriptor(&config.effective_catalog(None).unwrap()[0]);
     assert_eq!(descriptor.context_window, None);
     assert_eq!(descriptor.max_context_window, None);
     assert_eq!(descriptor.max_output_tokens, None);
@@ -249,7 +755,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         let models = discover(body, adapter).await;
         let mut model = models[0].clone();
         assert_eq!(model.supported_efforts(), ["gentle", "new-ultra"]);
-        assert_eq!(model.default_effort().as_deref(), Some("gentle"));
+        assert_eq!(model.default_effort().as_deref(), Some("new-ultra"));
         assert_eq!(model.context_window, Some(64000));
         assert!(
             model
@@ -259,7 +765,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert!(model.base_instructions.is_empty());
         let mut config = provider("http://127.0.0.1:1", adapter);
         config.set_model_catalog_overlay(models).unwrap();
-        let descriptor = model_descriptor(&config.effective_catalog().unwrap()[0]);
+        let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
         assert_eq!(descriptor.context_window, Some(64000));
         let preset = (adapter == ProviderAdapterKind::OpenAi).then_some(12_000);
         assert_eq!(descriptor.auto_compact_token_limit, preset);
@@ -270,7 +776,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert_eq!(descriptor.pricing, None);
         let reasoning = descriptor.reasoning.unwrap();
         assert_eq!(reasoning.candidates, ["gentle", "new-ultra"]);
-        assert_eq!(reasoning.default.as_deref(), Some("gentle"));
+        assert_eq!(reasoning.default.as_deref(), Some("new-ultra"));
         let fixture = FixtureServer::start(vec![
             Step::prompt(
                 Protocol::ResponsesHttp,
@@ -389,8 +895,8 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
         })
         .unwrap();
     let server = Server::responses(vec![
-        http(200,"", &json!({"data":[{"id":known.slug}]}).to_string()),
-        http(200,"", &json!({"models":[{"slug":known.slug,"supported_reasoning_levels":[],"input_modalities":[],"output_modalities":[],"supports_streaming":false,"supports_function_calling":false}]}).to_string()),
+        http(200,"", &json!({"data":[{"id":known.model_id}]}).to_string()),
+        http(200,"", &json!({"models":[{"slug":known.model_id,"supported_reasoning_levels":[],"input_modalities":[],"output_modalities":[],"supports_streaming":false,"supports_function_calling":false}]}).to_string()),
         http(200,"", &json!({"data":[{"id":"cached-only"}]}).to_string()),
         http(200,"", &json!({"data":[{"id":"cached-only","capabilities":{"input":[{"modality":"text","sources":[]}]}}]}).to_string()),
     ]).await;
@@ -408,7 +914,7 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
     assert!(!second[0].capabilities.streaming);
     assert!(!second[0].capabilities.tools.function_calling);
     let mut cached = first[0].clone();
-    cached.slug = "cached-only".into();
+    cached.model_id = "cached-only".into();
     cached.context_window = Some(12345);
     cached.capabilities.input = vec![pl_model::model::ModelInputCapability::text()];
     cached.binding.request.media.clear();
@@ -421,7 +927,7 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
     assert_eq!(third[0].context_window, Some(12345));
     assert_eq!(third[0].pricing, ModelPricing::Unknown);
     assert!(
-        third[0]
+        !third[0]
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
@@ -446,21 +952,22 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     let adapter = ProviderAdapterKind::OpenAi;
-    let slug = "gpt-6.1-sol";
+    let model_id = "gpt-6.1-sol";
     let mut old = discover(
         json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Sol","description":"Provider description without capability declarations."}]}),
         adapter,
     )
     .await
     .remove(0);
-    old.slug = slug.into();
+    old.model_id = model_id.into();
+    old.observation = None;
     // Persisted skeleton from the previous text-only normalization rule.
     old.capabilities.input = vec![pl_model::model::ModelInputCapability::text()];
     old.binding.request.media.clear();
     let description = old.description.clone();
     let server = Server::responses(vec![
-        http(200, "", &json!({"data":[{"id":slug,"display_name":"GPT-6.1 Sol","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
-        http(200, "", &json!({"data":[{"id":slug,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Sol","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model_id,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
     ]).await;
     let mut config = provider(&server.url, adapter);
     let query = ModelCatalogQuery::for_provider(&config).unwrap();
@@ -469,13 +976,34 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         etag: None,
         models: vec![old],
     };
-    // Startup/304/failure retain the successful inventory, enriched before GUI projection.
+    // Unknown legacy provenance stays usable and is completed by the canonical global catalog.
     config
         .set_model_catalog_overlay(cache.models.clone())
         .unwrap();
-    let startup = config.effective_models().unwrap().remove(0);
+    let mut canonical = AgentModelConfig {
+        providers: [(ProviderId::new("instance").unwrap(), config.clone())].into(),
+        routes: Default::default(),
+    };
+    canonical.reconcile_model_catalog().unwrap();
+    let startup = canonical
+        .providers
+        .values()
+        .next()
+        .unwrap()
+        .effective_models(None)
+        .unwrap()
+        .remove(0);
     assert_eq!(startup.display_name, "GPT-6.1 Sol");
-    assert_eq!(startup.description, description);
+    assert_eq!(
+        startup.description,
+        bundled_model_definition("openai")
+            .unwrap()
+            .models
+            .into_iter()
+            .find(|model| model.model_id == model_id)
+            .unwrap()
+            .description
+    );
     assert!(
         startup
             .capabilities
@@ -483,8 +1011,8 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     );
     let models = updated(query.execute(Some(&cache)).await.unwrap());
     config.set_model_catalog_overlay(models).unwrap();
-    let mut model = config.effective_models().unwrap().remove(0);
-    assert_eq!(model.slug, slug);
+    let mut model = config.effective_models(None).unwrap().remove(0);
+    assert_eq!(model.model_id, model_id);
     assert_eq!(model.description, description);
     assert_eq!(model.context_window, Some(1_050_000));
     assert_eq!(
@@ -511,7 +1039,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     );
     let explicit = updated(query.execute(None).await.unwrap());
     config.set_model_catalog_overlay(explicit).unwrap();
-    let explicit = config.effective_models().unwrap().remove(0);
+    let explicit = config.effective_models(None).unwrap().remove(0);
     assert!(
         !explicit
             .capabilities
@@ -524,7 +1052,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         Protocol::ResponsesHttp,
         "describe",
         0,
-        Reply::Sse(responses_text("a pixel", "gpt61-image", slug)),
+        Reply::Sse(responses_text("a pixel", "gpt61-image", model_id)),
     )])
     .await
     .unwrap();
@@ -573,7 +1101,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         .unwrap();
     assert_eq!(reply.content.as_deref(), Some("a pixel"));
     let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].body["model"], slug);
+    assert_eq!(records[0].body["model"], model_id);
     assert_eq!(
         records[0].body["input"][0]["content"][1]["type"],
         "input_image"
@@ -602,13 +1130,13 @@ async fn observed_window_lifts_undeclared_inherited_budget_limit() {
             .unwrap(),
     );
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0].slug, "deepseek-flash");
+    assert_eq!(models[0].model_id, "deepseek-flash");
     assert_eq!(models[0].context_window, Some(1_048_576));
     assert_eq!(models[0].max_context_window, Some(1_048_576));
     // 未违反上限的继承默认预算保持原值。
     assert_eq!(models[0].max_output_tokens, Some(384_000));
     config.set_model_catalog_overlay(models).unwrap();
-    let entry = &config.effective_catalog().unwrap()[0];
+    let entry = &config.effective_catalog(None).unwrap()[0];
     assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
     assert_eq!(entry.model.max_context_window, Some(1_048_576));
     server.finish().await;
@@ -622,7 +1150,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let builtin = definition
         .models
         .iter()
-        .find(|model| model.slug == "gpt-6.1-sol")
+        .find(|model| model.model_id == "gpt-6.1-sol")
         .unwrap();
     assert!(!builtin.supported_efforts().is_empty());
     assert!(builtin.capabilities.reasoning);
@@ -677,7 +1205,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     assert!(raised[0].capabilities.reasoning);
     let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
     config.set_model_catalog_overlay(raised.clone()).unwrap();
-    let effective = config.effective_catalog().unwrap();
+    let effective = config.effective_catalog(None).unwrap();
     let entry = &effective[0];
     assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
     // 价格仍只按本地精确 ID 关联。
@@ -728,7 +1256,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
             .await
             .unwrap(),
     );
-    assert_eq!(online_effort[0].slug, "unregistered-online-effort");
+    assert_eq!(online_effort[0].model_id, "unregistered-online-effort");
     assert!(online_effort[0].capabilities.reasoning);
     assert_eq!(online_effort[0].supported_efforts(), ["low", "high"]);
     // 在线声明的 wire 规则原样透传到该模型的 effort 参数。
@@ -841,14 +1369,14 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
     assert_eq!(
         models
             .iter()
-            .map(|model| model.slug.as_str())
+            .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>(),
         ["deepseek-flash", "deepseek-v4-pro"]
     );
     // 未知字段（如 `api_capabilities`）被忽略，且不使整份名单解析失败。
     let flash = models
         .iter()
-        .find(|model| model.slug == "deepseek-flash")
+        .find(|model| model.model_id == "deepseek-flash")
         .unwrap();
     assert_eq!(flash.display_name, "DeepSeek-V4.1-Flash");
     assert_eq!(flash.context_window, Some(1_048_576));
@@ -872,18 +1400,18 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
     assert_eq!(flash.pricing, ModelPricing::Unknown);
     config.set_model_catalog_overlay(models).unwrap();
     let definition = bundled_model_definition("deepseek").unwrap();
-    let effective = config.effective_catalog().unwrap();
-    for slug in ["deepseek-flash", "deepseek-v4-pro"] {
+    let effective = config.effective_catalog(None).unwrap();
+    for model_id in ["deepseek-flash", "deepseek-v4-pro"] {
         let entry = effective
             .iter()
-            .find(|entry| entry.model.slug == slug)
+            .find(|entry| entry.model.model_id == model_id)
             .unwrap();
         assert_eq!(entry.origin, pl_model::config::ProviderModelOrigin::Online);
         // 价格只按该 provider 绑定目录的大小写敏感精确 ID 关联。
         let local = definition
             .models
             .iter()
-            .find(|model| model.slug == slug)
+            .find(|model| model.model_id == model_id)
             .unwrap();
         assert_eq!(entry.model.pricing, local.pricing);
         assert_ne!(entry.model.pricing, ModelPricing::Unknown);
@@ -903,12 +1431,12 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     let builtin = definition
         .models
         .iter()
-        .find(|model| model.slug == "deepseek-flash")
+        .find(|model| model.model_id == "deepseek-flash")
         .unwrap();
     let builtin_pro = definition
         .models
         .iter()
-        .find(|model| model.slug == "deepseek-v4-pro")
+        .find(|model| model.model_id == "deepseek-v4-pro")
         .unwrap();
     assert!(!builtin.supported_efforts().is_empty());
     assert!(builtin.capabilities.reasoning);
@@ -940,7 +1468,7 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     assert_eq!(
         models
             .iter()
-            .map(|model| model.slug.as_str())
+            .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>(),
         ["deepseek-flash", "deepseek-v4-pro"]
     );
@@ -969,10 +1497,10 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
 
     // 有效目录只按精确 ID 关联本地价格，在线清除结果不被内置定义重写。
     config.set_model_catalog_overlay(models.clone()).unwrap();
-    let effective = config.effective_catalog().unwrap();
+    let effective = config.effective_catalog(None).unwrap();
     let flash_entry = effective
         .iter()
-        .find(|entry| entry.model.slug == "deepseek-flash")
+        .find(|entry| entry.model.model_id == "deepseek-flash")
         .unwrap();
     assert_eq!(
         flash_entry.origin,
@@ -988,7 +1516,7 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     assert_eq!(descriptor.max_context_window, Some(1_048_576));
     let pro_entry = effective
         .iter()
-        .find(|entry| entry.model.slug == "deepseek-v4-pro")
+        .find(|entry| entry.model.model_id == "deepseek-v4-pro")
         .unwrap();
     assert_eq!(pro_entry.model.pricing, builtin_pro.pricing);
     assert_eq!(pro_entry.model.context_window, Some(524_288));
@@ -1073,7 +1601,7 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
     };
     let error = query.execute(Some(&cache)).await.unwrap_err();
     assert_eq!(error, ModelCatalogQueryError::Protocol);
-    assert_eq!(cache.models[0].slug, "last-good");
+    assert_eq!(cache.models[0].model_id, "last-good");
     server.finish().await;
 }
 
@@ -1081,11 +1609,11 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
 async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact_ids() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
-    let slug = known.slug.clone();
+    let model_id = known.model_id.clone();
     let foreign = bundled_model_definition("deepseek").unwrap().models[0]
-        .slug
+        .model_id
         .clone();
-    let api = discover(json!({"data":[{"id":slug},{"id":slug.to_uppercase()},{"id":format!("{slug}-variant")},{"id":foreign},{"id":"manual"}]}), ProviderAdapterKind::OpenAi).await;
+    let api = discover(json!({"data":[{"id":model_id},{"id":model_id.to_uppercase()},{"id":format!("{model_id}-variant")},{"id":foreign},{"id":"manual"}]}), ProviderAdapterKind::OpenAi).await;
     let mut config = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
     let mut manual = ModelInfo::compatible("manual");
     manual.display_name = "Authoritative manual model".into();
@@ -1097,58 +1625,70 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
         additional_models.push(manual.clone());
     }
     config.set_model_catalog_overlay(api).unwrap();
-    let effective = config.effective_models().unwrap();
+    let effective = config.effective_models(None).unwrap();
     assert_eq!(
-        effective.iter().find(|m| m.slug == slug).unwrap().pricing,
+        effective
+            .iter()
+            .find(|m| m.model_id == model_id)
+            .unwrap()
+            .pricing,
         known.pricing
     );
     for model in effective
         .iter()
-        .filter(|m| m.slug != slug && m.slug != "manual")
+        .filter(|m| m.model_id != model_id && m.model_id != "manual")
     {
         assert_eq!(model.pricing, ModelPricing::Unknown);
         assert_eq!(model.context_window, None);
     }
     assert_eq!(
-        effective.iter().find(|m| m.slug == "manual").unwrap(),
+        effective.iter().find(|m| m.model_id == "manual").unwrap(),
         &manual
     );
     let persisted = serde_json::to_value(&config).unwrap();
     let reread: ProviderConfig = serde_json::from_value(persisted).unwrap();
     assert!(!reread.has_model_catalog_overlay());
     config.set_model_catalog_overlay(Vec::new()).unwrap();
-    assert_eq!(config.effective_models().unwrap(), vec![manual]);
+    assert_eq!(config.effective_models(None).unwrap(), vec![manual]);
     if let pl_model::config::ProviderModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
         additional_models.push(known.clone());
     }
-    assert!(config.effective_catalog().is_err());
+    assert_eq!(
+        config
+            .effective_catalog(None)
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.model.model_id == known.model_id)
+            .count(),
+        1
+    );
     let empty = discover(json!({"data":[]}), ProviderAdapterKind::DeepSeek).await;
     assert!(empty.is_empty());
     let mut fresh = provider("http://127.0.0.1:1", ProviderAdapterKind::DeepSeek);
     fresh.set_model_catalog_overlay(empty).unwrap();
-    assert!(fresh.effective_models().unwrap().is_empty());
+    assert!(fresh.effective_models(None).unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn availability_preserves_removed_choice_without_weakening_strict_edits_or_structure_validation()
  {
     let mut selected_provider = provider("http://127.0.0.1:1", ProviderAdapterKind::OpenAi);
-    let mut selected = selected_provider.effective_models().unwrap()[0].clone();
-    selected.slug = "remote-only-choice".into();
+    let mut selected = selected_provider.effective_models(None).unwrap()[0].clone();
+    selected.model_id = "remote-only-choice".into();
     selected_provider
         .set_model_catalog_overlay(vec![selected.clone()])
         .unwrap();
     selected_provider
         .set_model_connection_mode(
-            &selected.slug,
+            &selected.model_id,
             pl_model::provider::ProviderConnectionMode::Http,
         )
         .unwrap();
     selected_provider
-        .set_model_auto_compact_override(&selected.slug, Some(1234))
+        .set_model_auto_compact_override(&selected.model_id, Some(1234))
         .unwrap();
     selected_provider
         .set_model_catalog_overlay(Vec::new())
@@ -1157,7 +1697,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     let role = AgentRoleId::new("explorer").unwrap();
     let route = ModelRouteConfig {
         provider: id.clone(),
-        model: selected.slug.clone(),
+        model: selected.model_id.clone(),
         effort: selected.default_effort().map(ReasoningEffort::new),
     };
     let mut config = AgentModelConfig {
@@ -1169,7 +1709,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         config.route_availability(&route).unwrap(),
         ModelRouteAvailability::ModelUnavailable {
             provider: id.clone(),
-            model: selected.slug.clone()
+            model: selected.model_id.clone()
         }
     );
     assert!(config.validate().is_err());
@@ -1188,7 +1728,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     let mut narrowed = cached_model("connection-choice", ProviderAdapterKind::OpenAi);
     narrowed.binding.transport.supported_connection_modes = vec![ProviderConnectionMode::WebSocket];
     let server = Server::json(json!({"models":[{
-        "slug": narrowed.slug,
+        "slug": narrowed.model_id,
         "binding": narrowed.binding,
         "input_modalities": ["text"],
         "context_window": 64000
@@ -1212,7 +1752,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         .set_model_catalog_overlay(observed)
         .unwrap();
     connection_provider.validate_declarations(&id).unwrap();
-    let display = model_descriptor(&connection_provider.effective_catalog().unwrap()[0]);
+    let display = model_descriptor(&connection_provider.effective_catalog(None).unwrap()[0]);
     assert_eq!(display.context_window, Some(64000));
     assert_eq!(display.transport.default_connection_mode, "web_socket");
     assert_eq!(display.transport.connection_modes.len(), 1);
@@ -1296,9 +1836,9 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         ..
     } = &mut explicit.catalog
     {
-        connection_overrides.insert(narrowed.slug.clone(), ProviderConnectionMode::Http);
+        connection_overrides.insert(narrowed.model_id.clone(), ProviderConnectionMode::Http);
     }
-    assert!(explicit.effective_models().is_err());
+    assert!(explicit.effective_models(None).is_err());
     assert!(explicit.validate_declarations(&id).is_err());
     let mut non_discovery = connection_config.clone();
     let provider = non_discovery.providers.get_mut(&id).unwrap();
@@ -1323,7 +1863,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .binding
             .transport
             .default_connection_mode = ProviderConnectionMode::Http;
-        connection_overrides.insert(narrowed.slug.clone(), ProviderConnectionMode::WebSocket);
+        connection_overrides.insert(narrowed.model_id.clone(), ProviderConnectionMode::WebSocket);
     }
     assert!(bad_profile.validate_declarations().is_err());
     let instance = connection_config.providers.get_mut(&id).unwrap();
@@ -1404,12 +1944,15 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
 async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_mutating_cache() {
     let invalid_profile = json!({"transport":{"protocol":"chat_completions","supported_connection_modes":["web_socket"],"default_connection_mode":"web_socket"},"request":{"protocol":{"api":"chatCompletions","parallelToolCalls":false,"maxTokensField":"max_tokens","includeUsage":false,"toolStream":false}}});
     let mut invalid_bodies = vec![
-        json!({"data":[{"id":"ok"},{"id":"ok"}]}),
         json!({"data":[{"id":" "}]}),
         json!({"data":[{"id":"ok","context_window":0}]}),
         json!({"data":[{"id":"ok","max_output_tokens":-1}]}),
         json!({"data":[{"id":"ok","effort":{"supported_levels":["one"],"default_level":"absent"}}]}),
         json!({"data":[{"id":"ok","effort":{"supported_levels":["one"],"default_level":"one"},"default_reasoning_level":"absent"}]}),
+        json!({"data":[{"id":"ok","reasoningEfforts":[{"value":"low","default":true},{"value":"high","default":true}]}]}),
+        json!({"data":[{"id":"ok","reasoningEfforts":[{"value":"low","default":true}],"reasoningEffort":"high"}]}),
+        json!({"data":[{"id":"ok","reasoningEfforts":[{"value":"low"}],"supportsReasoningEffort":false}]}),
+        json!({"data":[{"id":"ok","reasoningEfforts":[{"value":"low"},{"value":"low"}]}]}),
         json!({"models":[{"slug":"ok","supported_reasoning_levels":[{"effort":"one"},{"effort":"one"}]}]}),
         json!({"data":[{"id":"ok","binding":invalid_profile}]}),
         json!({"data":[{"id":"ok","input_modalities":["video"]}]}),
@@ -1453,7 +1996,7 @@ async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_
         let error = query.execute(Some(&cache)).await.unwrap_err();
         assert_eq!(error, ModelCatalogQueryError::Protocol);
         assert!(!format!("{error:?}: {error}").contains("synthetic-secret-response"));
-        assert_eq!(cache.models[0].slug, "last-good");
+        assert_eq!(cache.models[0].model_id, "last-good");
         server.finish().await;
     }
 }
@@ -1495,7 +2038,7 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
     let mut priced = cached_model("cached-price", ProviderAdapterKind::OpenAi);
     priced.pricing = ModelPricing::published(
         "USD",
-        vec![pl_model::model::TokenPriceTier::flat(1.0, 2.0, None, None)],
+        vec![pl_model::model::TokenPriceTier::flat(-1.0, 2.0, None, None)],
         "https://synthetic.invalid/pricing",
     );
     corrupt.models.push(priced);
@@ -1523,7 +2066,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     let mut model = cached_model("profile-order", ProviderAdapterKind::OpenAi);
     model.binding.transport.supported_connection_modes.reverse();
     let models = discover(
-        json!({"data":[{"id":model.slug,"binding":model.binding,"input_modalities":["text"]}]}),
+        json!({"data":[{"id":model.model_id,"binding":model.binding,"input_modalities":["text"]}]}),
         ProviderAdapterKind::OpenAi,
     )
     .await;
@@ -1542,7 +2085,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         )
         .unwrap();
     assert_eq!(
-        config.effective_models().unwrap()[0]
+        config.effective_models(None).unwrap()[0]
             .binding
             .transport
             .default_connection_mode,
@@ -1554,10 +2097,10 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         http(
             200,
             "ETag: \"narrowed\"\r\n",
-            &json!({"models":[{"slug":model.slug,"binding":model.binding,"input_modalities":["text"]}]}).to_string(),
+            &json!({"models":[{"slug":model.model_id,"binding":model.binding,"input_modalities":["text"]}]}).to_string(),
         ),
         http(304, "", ""),
-        http(200, "", &json!({"data":[{"id":model.slug}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model.model_id}]}).to_string()),
     ])
     .await;
     let query =
@@ -1576,7 +2119,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     let inherited = updated(query.execute(Some(&cache)).await.unwrap());
     assert_eq!(inherited[0].binding.transport, model.binding.transport);
     config.set_model_catalog_overlay(inherited.clone()).unwrap();
-    let descriptor = model_descriptor(&config.effective_catalog().unwrap()[0]);
+    let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
     assert_eq!(descriptor.transport.connection_modes.len(), 1);
     assert_eq!(descriptor.transport.connection_modes[0].id, "web_socket");
     for modes in [
@@ -1599,7 +2142,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
             ModelCatalogQueryError::Protocol
         );
     }
-    assert_eq!(config.effective_models().unwrap(), inherited);
+    assert_eq!(config.effective_models(None).unwrap(), inherited);
     let requests = server.finish().await;
     assert_eq!(requests.len(), 3);
     assert!(
@@ -1610,7 +2153,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
 
     let deepseek = cached_model("deepseek-profile", ProviderAdapterKind::DeepSeek);
     let observed = discover(
-        json!({"models":[{"slug":deepseek.slug,"binding":deepseek.binding,"input_modalities":["text"]}]}),
+        json!({"models":[{"slug":deepseek.model_id,"binding":deepseek.binding,"input_modalities":["text"]}]}),
         ProviderAdapterKind::DeepSeek,
     )
     .await;
@@ -1619,7 +2162,7 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         ModelTransportProfile::responses_http()
     );
     let server =
-        Server::json(json!({"models":[{"slug":model.slug,"binding":model.binding}]})).await;
+        Server::json(json!({"models":[{"slug":model.model_id,"binding":model.binding}]})).await;
     let query =
         ModelCatalogQuery::for_provider(&provider(&server.url, ProviderAdapterKind::DeepSeek))
             .unwrap();
@@ -1725,7 +2268,7 @@ async fn whole_body_timeout_and_future_drop_release_borrow_without_changing_last
             "fixture connection was not reclaimed after cancel={cancel}"
         );
         assert_eq!(closed.unwrap().unwrap(), 0);
-        assert_eq!(retained_cache.models[0].slug, "last-good");
+        assert_eq!(retained_cache.models[0].model_id, "last-good");
     }
 }
 
@@ -1740,7 +2283,7 @@ fn malformed_bundled_definition_is_packaging_failure_not_user_config_reset() {
     assert!(matches!(error, pl_protocol::PureError::Provider(_)));
 
     let mut definition = BundledModelDefinition {
-        schema_version: 1,
+        schema_version: 2,
         catalog: "synthetic".into(),
         suggested_model: "one".into(),
         suggested_effort: None,
@@ -1757,6 +2300,7 @@ fn malformed_bundled_definition_is_packaging_failure_not_user_config_reset() {
     );
     let candidates = vec!["gentle".to_owned(), "stronger".to_owned()];
     definition.models[0].parameters.push(ModelParameter {
+        default: None,
         name: "effort".into(),
         label: None,
         wire: candidates

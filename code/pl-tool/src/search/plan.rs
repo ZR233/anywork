@@ -192,7 +192,7 @@ pub fn plan_openai_web_search(
         return Ok(hosted_plan(
             configured_mode,
             current.provider_id.clone(),
-            Some(current.model.slug.clone()),
+            Some(current.model.model_id.clone()),
             HostedWebSearchDialect::OpenAiResponses,
         ));
     }
@@ -367,17 +367,17 @@ fn search_service_model(
 ) -> Result<(Option<String>, Option<u64>)> {
     match dialect {
         StandaloneWebSearchDialect::OpenAiSearchApi => {
-            let models = provider.effective_models()?;
+            let models = provider.effective_models(None)?;
             let model = models
                 .iter()
-                .find(|model| model.slug == OPENAI_SEARCH_MODEL)
+                .find(|model| model.model_id == OPENAI_SEARCH_MODEL)
                 .or_else(|| models.first())
                 .ok_or_else(|| {
                     PureError::ConfigError(format!(
                         "provider {provider_id} has no models for standalone web search"
                     ))
                 })?;
-            Ok((Some(model.slug.clone()), model.max_output_tokens))
+            Ok((Some(model.model_id.clone()), model.max_output_tokens))
         }
         StandaloneWebSearchDialect::DeepSeekToolsApi => Ok((None, None)),
     }

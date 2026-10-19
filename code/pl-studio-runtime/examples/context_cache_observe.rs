@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let id = args.next().context("provider required")?;
-    let slug = args.next().context("model required")?;
+    let model_id = args.next().context("model required")?;
     let artifacts = PathBuf::from(args.next().context("new artifact directory required")?);
     tokio::fs::create_dir(&artifacts).await?;
     let instruction_history = args.next().as_deref() == Some("--instruction-history");
@@ -42,9 +42,9 @@ async fn main() -> Result<()> {
     .await??;
     provider.bearer_token = stored.or(provider.bearer_token);
     let mut model = provider
-        .effective_models()?
+        .effective_models(None)?
         .into_iter()
-        .find(|m| m.slug == slug)
+        .find(|m| m.model_id == model_id)
         .context("model missing")?;
     let effort = model
         .parameters
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     }.await;
     let close = thread.close().await;
-    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"provider":id,"model":slug,"effort":effort,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
+    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"provider":id,"model":model_id,"effort":effort,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
     execution?;
     close?;
     Ok(())

@@ -223,7 +223,7 @@ pub struct ProviderSettingsUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelUpdate {
-    pub slug: String,
+    pub model_id: String,
     pub display_name: String,
     pub wire_protocol: String,
     pub context_window: u64,
@@ -233,7 +233,7 @@ pub struct ProviderModelUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelConnectionUpdate {
-    pub slug: String,
+    pub model_id: String,
     pub connection_mode: String,
 }
 
@@ -243,7 +243,7 @@ pub struct ProviderModelConnectionUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelAutoCompactUpdate {
-    pub slug: String,
+    pub model_id: String,
     pub limit: u64,
 }
 

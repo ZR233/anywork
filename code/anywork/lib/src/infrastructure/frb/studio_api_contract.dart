@@ -200,7 +200,7 @@ frb.ProviderInput _providerInputFromCommand(ProviderCommand provider) {
     customModels: [
       for (final model in provider.customModels)
         frb.ProviderModelInput(
-          slug: model.slug,
+          modelId: model.modelId,
           displayName: model.displayName,
           wireProtocol: model.wireProtocol,
           contextWindow: BigInt.from(model.contextWindow),
@@ -210,14 +210,14 @@ frb.ProviderInput _providerInputFromCommand(ProviderCommand provider) {
     modelConnectionModes: [
       for (final model in provider.modelConnectionModes)
         frb.ProviderModelConnectionInput(
-          slug: model.slug,
+          modelId: model.modelId,
           connectionMode: model.connectionMode,
         ),
     ],
     modelAutoCompactLimits: [
       for (final limit in provider.modelAutoCompactLimits)
         frb.ProviderModelAutoCompactInput(
-          slug: limit.slug,
+          modelId: limit.modelId,
           limit: BigInt.from(limit.limit),
         ),
     ],
@@ -1967,7 +1967,7 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<SettingsCommandReply> removeProviderModel(
     int expectedSettingsRevision,
     String providerId,
-    String slug,
+    String modelId,
   ) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
@@ -1975,7 +1975,7 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
         () => frb.removeProviderModel(
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           providerId: providerId,
-          slug: slug,
+          modelId: modelId,
         ),
       ),
     );

@@ -265,22 +265,22 @@ struct PlannedToolCall {
     call_id: String,
 }
 
-/// One step's identity inside one Turn: `{slug}-t{generation}`.
+/// One step's identity inside one Turn: `{model_id}-t{generation}`.
 ///
-/// The `slug` names the scenario step (for example `mcp-search`), and the
+/// The `model_id` names the scenario step (for example `mcp-search`), and the
 /// `generation` is how many earlier Turns of the same Thread already declared a
 /// call to the same tool. The pair is unique across a Thread's history while
 /// staying constant for every model request that belongs to the same Turn.
-fn call_slug(slug: &str, generation: usize) -> String {
-    format!("{slug}-t{generation}")
+fn call_slug(model_id: &str, generation: usize) -> String {
+    format!("{model_id}-t{generation}")
 }
 
-fn call_id_for(slug: &str, generation: usize) -> String {
-    format!("{}-call", call_slug(slug, generation))
+fn call_id_for(model_id: &str, generation: usize) -> String {
+    format!("{}-call", call_slug(model_id, generation))
 }
 
-fn planned(name: &str, arguments: Value, slug: &str, generation: usize) -> PlannedToolCall {
-    let identity = call_slug(slug, generation);
+fn planned(name: &str, arguments: Value, model_id: &str, generation: usize) -> PlannedToolCall {
+    let identity = call_slug(model_id, generation);
     PlannedToolCall {
         name: name.to_owned(),
         arguments: arguments.to_string(),
@@ -493,7 +493,7 @@ pub(super) async fn responses(
             .filter(|call| call.as_str() == name)
             .count()
     };
-    let expected = |slug: &str, name: &str| call_id_for(slug, generation(name));
+    let expected = |model_id: &str, name: &str| call_id_for(model_id, generation(name));
 
     let mut accepted = true;
     let mut note: Option<&'static str> = None;

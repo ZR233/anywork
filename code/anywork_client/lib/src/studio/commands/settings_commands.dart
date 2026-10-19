@@ -42,7 +42,7 @@ class SettingsCommands {
   /// 其它模型覆盖、目录、endpoint 和凭据不会被发起输入时的旧快照覆盖。
   Future<SettingsStateSnapshot> setModelAutoCompactLimit(
     String providerId,
-    String slug,
+    String modelId,
     int? limit,
   ) {
     if (limit != null && limit <= 0) {
@@ -51,19 +51,19 @@ class SettingsCommands {
       );
     }
     return _run(
-      'model-auto-compact:${providerId.length}:$providerId:$slug',
-      target: CommandTarget(providerId: providerId, model: slug),
+      'model-auto-compact:${providerId.length}:$providerId:$modelId',
+      target: CommandTarget(providerId: providerId, model: modelId),
       (revision, operationId) {
         final provider = _client.settings.state.canonical?.providers
             .where((provider) => provider.id == providerId)
             .firstOrNull;
         final model = provider?.models
-            .where((model) => model.slug == slug)
+            .where((model) => model.modelId == modelId)
             .firstOrNull;
         if (provider == null || model == null) {
           throw StudioFailure(
             code: StudioFailureCode.notFound,
-            message: 'Provider model is unavailable: $providerId/$slug',
+            message: 'Provider model is unavailable: $providerId/$modelId',
             retryable: false,
             correlationId: 'client-model-auto-compact',
           );
@@ -83,12 +83,12 @@ class SettingsCommands {
 
   Future<SettingsStateSnapshot> removeProviderModel(
     String providerId,
-    String slug,
+    String modelId,
   ) {
     return _run(
-      'provider-model:${providerId.length}:$providerId:$slug',
-      target: CommandTarget(providerId: providerId, model: slug),
-      (revision, _) => _api.removeProviderModel(revision, providerId, slug),
+      'provider-model:${providerId.length}:$providerId:$modelId',
+      target: CommandTarget(providerId: providerId, model: modelId),
+      (revision, _) => _api.removeProviderModel(revision, providerId, modelId),
     );
   }
 

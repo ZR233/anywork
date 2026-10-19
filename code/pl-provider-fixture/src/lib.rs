@@ -68,7 +68,7 @@ pub use model_catalog::kick_hang_probes as model_catalog_kick_hang_probes;
 pub use model_catalog::self_check as model_catalog_self_check;
 pub use model_catalog::{
     CONTROL_FILE_NAME as MODEL_CATALOG_CONTROL_FILE_NAME,
-    DEEPSEEK_PATH as MODEL_CATALOG_DEEPSEEK_PATH, MIMO_DISCOVERY_EXCLUDED_SLUGS,
+    DEEPSEEK_PATH as MODEL_CATALOG_DEEPSEEK_PATH, MIMO_MEDIA_MODEL_IDS,
     MIMO_PATH as MODEL_CATALOG_MIMO_PATH, ModelCatalogControl, ModelCatalogProviderControl,
     ModelCatalogRequestReport, OPENAI_PATH as MODEL_CATALOG_OPENAI_PATH,
     OPENAI_SECOND_PATH as MODEL_CATALOG_OPENAI_SECOND_PATH,

@@ -11,8 +11,11 @@ use crate::model::profile_error::ModelProfileError;
 use crate::provider::{ProviderConnectionMode, ProviderWireProtocol};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelInfo {
-    pub slug: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<super::ModelObservation>,
     pub display_name: String,
     pub description: Option<String>,
 
@@ -307,7 +310,7 @@ impl ModelInfo {
         for capability in &self.capabilities.input {
             if modalities.contains(&capability.modality) {
                 return Err(ModelProfileError::DuplicateInputModality {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -315,7 +318,7 @@ impl ModelInfo {
             if capability.modality == ModelModality::Text {
                 if !capability.sources.is_empty() {
                     return Err(ModelProfileError::TextInputDeclaresMediaSources {
-                        model: self.slug.clone(),
+                        model: self.model_id.clone(),
                     });
                 }
                 continue;
@@ -325,44 +328,44 @@ impl ModelInfo {
                 .request
                 .media_profile(capability.modality)
                 .ok_or_else(|| ModelProfileError::ModalityWithoutMediaProfile {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 })?;
             if capability.sources.is_empty() {
                 return Err(ModelProfileError::ModalityWithoutAdmittedSources {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.first_send.is_empty() || profile.replay.is_empty() {
                 return Err(ModelProfileError::MissingSendOrReplayRepresentations {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.wire.modality() != profile.modality {
                 return Err(ModelProfileError::WireModalityMismatch {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                     wire: profile.wire,
                 });
             }
             if profile.wire.protocol() != self.binding.transport.protocol {
                 return Err(ModelProfileError::WireProtocolMismatch {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     wire: profile.wire,
                     protocol: self.binding.transport.protocol,
                 });
             }
             if has_duplicates(&profile.first_send) || has_duplicates(&profile.replay) {
                 return Err(ModelProfileError::RepeatedMediaRepresentation {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.replay.contains(&MediaRepresentation::RemoteUrl) {
                 return Err(ModelProfileError::ReplayUsesRemoteUrl {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -377,7 +380,7 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::LocalSourceWithoutDurableRepresentation {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -387,7 +390,7 @@ impl ModelInfo {
                     .contains(&crate::model::ModelInputSource::RemoteUrl)
             {
                 return Err(ModelProfileError::RemoteUrlStrategyWithoutAdmission {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -397,7 +400,7 @@ impl ModelInfo {
                 .all(|representation| *representation == MediaRepresentation::RemoteUrl)
             {
                 return Err(ModelProfileError::ReplayNotDurable {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -406,14 +409,14 @@ impl ModelInfo {
         for profile in &self.binding.request.media {
             if profile_modalities.contains(&profile.modality) {
                 return Err(ModelProfileError::DuplicateMediaProfile {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: profile.modality,
                 });
             }
             profile_modalities.push(profile.modality);
             if !self.capabilities.supports_input_modality(profile.modality) {
                 return Err(ModelProfileError::MediaProfileForUndeclaredModality {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: profile.modality,
                 });
             }
@@ -438,7 +441,7 @@ impl ModelInfo {
                 .is_some_and(|t| !t.is_finite() || t < 0.0)
         {
             return Err(ModelProfileError::InvalidBudget {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
             });
         }
         let mut names = std::collections::BTreeSet::new();
@@ -447,6 +450,10 @@ impl ModelInfo {
             if parameter.name.trim().is_empty()
                 || !names.insert(&parameter.name)
                 || parameter.candidates.is_empty()
+                || parameter
+                    .default
+                    .as_ref()
+                    .is_some_and(|value| !parameter.candidates.contains(value))
                 || parameter
                     .candidates
                     .iter()
@@ -464,11 +471,11 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::InvalidParameter {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                 });
             }
         }
-        self.binding.transport.validate(&self.slug)?;
+        self.binding.transport.validate(&self.model_id)?;
         if !matches!(
             (
                 &self.binding.request.protocol,
@@ -483,19 +490,19 @@ impl ModelInfo {
             )
         ) {
             return Err(ModelProfileError::ProtocolOptionsMismatch {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
                 protocol: self.binding.transport.protocol,
             });
         }
         if self.auto_compact_token_limit == Some(0) {
             return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
             });
         }
         self.pricing
             .validate()
             .map_err(|source| ModelProfileError::InvalidPricing {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
                 source,
             })?;
         self.validate_media_contract()
@@ -503,6 +510,42 @@ impl ModelInfo {
 
     pub fn resolved_context_window(&self) -> Option<u64> {
         self.context_window.or(self.max_context_window)
+    }
+
+    /// Classify a final merged model; prices, tools and execution availability are independent.
+    pub fn type_support(&self, model_type: super::ModelType) -> super::ModelTypeSupport {
+        use super::{ModelType, ModelTypeExclusion as Exclusion};
+        let mut exclusions = Vec::new();
+        match model_type {
+            ModelType::Text => {
+                if !self
+                    .capabilities
+                    .supports_input_modality(super::ModelModality::Text)
+                {
+                    exclusions.push(Exclusion::TextInputUnsupported);
+                }
+                if !self
+                    .capabilities
+                    .supports_output_modality(super::ModelModality::Text)
+                {
+                    exclusions.push(Exclusion::TextOutputUnsupported);
+                }
+                if !self
+                    .resolved_context_window()
+                    .is_some_and(|window| window > 0)
+                {
+                    exclusions.push(Exclusion::ContextWindowUnknown);
+                }
+            }
+        }
+        super::ModelTypeSupport {
+            model_type,
+            exclusions,
+        }
+    }
+
+    pub fn matches_type(&self, model_type: super::ModelType) -> bool {
+        self.type_support(model_type).exclusions.is_empty()
     }
 
     /// 模型预设优先，否则使用当前上下文容量的 90%；两者都未知时保持未知。
@@ -535,10 +578,11 @@ impl ModelInfo {
     }
 
     /// Basic compatible model with configurable local 32K/4K budgets.
-    pub fn compatible(slug: &str) -> Self {
+    pub fn compatible(model_id: &str) -> Self {
         Self {
-            slug: slug.to_string(),
-            display_name: slug.to_string(),
+            observation: None,
+            model_id: model_id.to_string(),
+            display_name: model_id.to_string(),
             description: None,
             context_window: Some(32_000),
             max_context_window: Some(32_000),
@@ -581,10 +625,10 @@ impl ModelInfo {
             .unwrap_or_default()
     }
 
-    /// 返回 effort 的默认值（模型声明的候选值首项，且该首项是最弱强度），若模型未声明 effort 返回 None。
+    /// 返回模型声明的默认 effort；未声明默认时使用候选首项。
     pub fn default_effort(&self) -> Option<String> {
         self.effort_parameter()
-            .and_then(|parameter| parameter.candidates.first().cloned())
+            .and_then(|parameter| parameter.default_candidate(None))
     }
 }
 

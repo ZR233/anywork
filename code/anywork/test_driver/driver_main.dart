@@ -1109,7 +1109,7 @@ Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
   return <String, Object?>{
     'availability': 'available',
     // The list projection deliberately contains count/status metadata only.
-    // Model slugs are retained in the detail projection below.
+    // Model model_ids are retained in the detail projection below.
     'list': [
       for (final provider in providers)
         <String, Object?>{
@@ -1126,7 +1126,7 @@ Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
           'models': [
             for (final model in provider.models)
               <String, Object?>{
-                'slug': model.slug,
+                'modelId': model.modelId,
                 'name': model.displayName,
                 'origin': model.origin.name,
                 'contextWindow': model.contextWindow,

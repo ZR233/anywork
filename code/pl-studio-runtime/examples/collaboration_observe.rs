@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     // Copy bytes, never save a hydrated config: the credential store belongs to the user.
     std::fs::copy(installed.paths().config_file(), home.join("config.toml"))?;
     if let Ok(provider_id) = std::env::var("ANYWORK_OBSERVATION_PROVIDER") {
-        let slug = std::env::var("ANYWORK_OBSERVATION_MODEL")
+        let model_id = std::env::var("ANYWORK_OBSERVATION_MODEL")
             .context("selected observation provider requires ANYWORK_OBSERVATION_MODEL")?;
         let mut config: toml::Value =
             toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
@@ -58,9 +58,9 @@ async fn main() -> Result<()> {
             .clone();
         let provider: pl_model::config::ProviderConfig = selected.clone().try_into()?;
         let model = provider
-            .effective_models()?
+            .effective_models(None)?
             .into_iter()
-            .find(|m| m.slug == slug)
+            .find(|m| m.model_id == model_id)
             .context("observation model is not configured")?;
         let effort = model
             .parameters
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
         for (_, route) in routes.iter_mut() {
             let route = route.as_table_mut().context("invalid route")?;
             route.insert("provider".into(), provider_id.clone().into());
-            route.insert("model".into(), slug.clone().into());
+            route.insert("model".into(), model_id.clone().into());
             if let Some(effort) = effort {
                 route.insert("effort".into(), effort.clone().into());
             } else {
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         for (_, route) in modes.iter_mut() {
             let route = route.as_table_mut().context("invalid mode route")?;
             route.insert("provider".into(), provider_id.clone().into());
-            route.insert("model".into(), slug.clone().into());
+            route.insert("model".into(), model_id.clone().into());
             if let Some(effort) = effort {
                 route.insert("effort".into(), effort.clone().into());
             } else {

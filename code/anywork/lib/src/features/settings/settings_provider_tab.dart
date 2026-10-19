@@ -79,8 +79,8 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     super.dispose();
   }
 
-  void _changeCompact(String providerId, String slug, int? value) {
-    final key = (providerId, slug);
+  void _changeCompact(String providerId, String modelId, int? value) {
+    final key = (providerId, modelId);
     final current = _compactIntents[key];
     if (current != null && current.value == value && !current.failed) return;
     _compactIntents[key]?.timer?.cancel();
@@ -92,15 +92,15 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     );
   }
 
-  void _invalidateCompact(String providerId, String slug) {
-    final key = (providerId, slug);
+  void _invalidateCompact(String providerId, String modelId) {
+    final key = (providerId, modelId);
     final intent = _compactIntents.remove(key);
     intent?.timer?.cancel();
     if (intent != null) setState(() {});
   }
 
-  void _commitCompact(String providerId, String slug) {
-    final key = (providerId, slug);
+  void _commitCompact(String providerId, String modelId) {
+    final key = (providerId, modelId);
     final intent = _compactIntents[key];
     if (intent == null) return;
     if (intent.failed) {
@@ -261,10 +261,11 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
               failed: entry.value.failed,
             ),
       },
-      onAutoCompactChanged: (slug, value) =>
-          _changeCompact(selectedId!, slug, value),
-      onAutoCompactCommit: (slug) => _commitCompact(selectedId!, slug),
-      onAutoCompactInvalid: (slug) => _invalidateCompact(selectedId!, slug),
+      onAutoCompactChanged: (modelId, value) =>
+          _changeCompact(selectedId!, modelId, value),
+      onAutoCompactCommit: (modelId) => _commitCompact(selectedId!, modelId),
+      onAutoCompactInvalid: (modelId) =>
+          _invalidateCompact(selectedId!, modelId),
       onRemoveManualModel: selected == null
           ? (_) {}
           : (model) => unawaited(_removeManualModel(selected, model)),
@@ -339,7 +340,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         provider.name,
         provider.id,
         provider.defaultModel,
-        for (final model in provider.models) model.slug,
+        for (final model in provider.models) model.modelId,
         for (final model in provider.models) model.displayName,
         for (final model in provider.models) model.wireProtocol,
         for (final model in provider.models) model.connectionMode,
@@ -438,14 +439,14 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
 
   void _addCustomModel() {
     _updateDraft((provider) {
-      final existing = provider.models.map((model) => model.slug).toSet();
-      var slug = 'custom-model';
-      for (var index = 2; existing.contains(slug); index += 1) {
-        slug = 'custom-model-$index';
+      final existing = provider.models.map((model) => model.modelId).toSet();
+      var modelId = 'custom-model';
+      for (var index = 2; existing.contains(modelId); index += 1) {
+        modelId = 'custom-model-$index';
       }
       final model = ProviderModelView(
-        slug: slug,
-        displayName: slug,
+        modelId: modelId,
+        displayName: modelId,
         contextWindow: 32000,
         maxOutputTokens: 4096,
         reasoningEfforts: const [],
@@ -459,7 +460,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
         models: [...provider.models, model],
         defaultModel: ModelRouteQueries.defaultModelAfterAddition(
           provider.defaultModel,
-          slug,
+          modelId,
         ),
       );
     });
@@ -468,24 +469,24 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   void _updateCustomModel(int index, ProviderModelView model) {
     _updateDraft((provider) {
       final previousModel = provider.customModels[index];
-      final previousSlug = previousModel.slug;
+      final previousModelId = previousModel.modelId;
       final connections = {...provider.modelConnectionModes};
-      if (previousSlug != model.slug ||
+      if (previousModelId != model.modelId ||
           previousModel.wireProtocol != model.wireProtocol) {
-        connections.remove(previousSlug);
+        connections.remove(previousModelId);
       }
       // 保留既有用户覆盖：同名编辑不得丢覆盖，仅更名时迁移；上下文窗口变化时按新容量
       // 重算派生默认、安全上限与生效值，保留用户覆盖。
       final limits = {...provider.autoCompactLimits};
       final recalculated = ProviderModelAutoCompactView.forModel(model)
-          .withOverride(limits[previousSlug]?.overrideLimit);
-      if (previousSlug != model.slug) {
-        limits.remove(previousSlug);
+          .withOverride(limits[previousModelId]?.overrideLimit);
+      if (previousModelId != model.modelId) {
+        limits.remove(previousModelId);
       }
-      limits[model.slug] = recalculated;
+      limits[model.modelId] = recalculated;
       final models = [
         for (final candidate in provider.models)
-          if (candidate.slug == previousSlug)
+          if (candidate.modelId == previousModelId)
             model.copyWith(origin: ProviderModelOrigin.manual)
           else
             candidate,
@@ -493,8 +494,8 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
       return provider.copyWith(
         modelConnectionModes: connections,
         autoCompactLimits: limits,
-        defaultModel: provider.defaultModel == previousSlug
-            ? model.slug
+        defaultModel: provider.defaultModel == previousModelId
+            ? model.modelId
             : provider.defaultModel,
         models: models,
       );
@@ -504,20 +505,20 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
   void _removeCustomModel(int index) {
     _updateDraft((provider) {
       final custom = [...provider.customModels];
-      final removedSlug = custom[index].slug;
+      final removedModelId = custom[index].modelId;
       custom.removeAt(index);
       final models = [
         for (final candidate in provider.models)
-          if (candidate.slug != removedSlug) candidate,
+          if (candidate.modelId != removedModelId) candidate,
       ];
-      final limits = {...provider.autoCompactLimits}..remove(removedSlug);
+      final limits = {...provider.autoCompactLimits}..remove(removedModelId);
       final connections = {...provider.modelConnectionModes}
-        ..remove(removedSlug);
+        ..remove(removedModelId);
       // 仅当被移除的模型正是当前默认模型时才改写，避免覆盖无法解析的
       // canonical defaultModel。
       final defaultModel = ModelRouteQueries.defaultModelAfterRemoval(
         current: provider.defaultModel,
-        removed: removedSlug,
+        removed: removedModelId,
         remaining: models,
       );
       return provider.copyWith(
@@ -555,7 +556,7 @@ class _ProvidersTabState extends ConsumerState<ProvidersTab> {
     try {
       await _client.settingsCommands.removeProviderModel(
         provider.id,
-        model.slug,
+        model.modelId,
       );
     } catch (_) {
       if (!mounted) return;

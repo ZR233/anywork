@@ -1499,7 +1499,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBaseUrl => 'Base URL';
 
   @override
-  String get settingsModelSlug => 'Model slug';
+  String get settingsModelId => 'Model model_id';
 
   @override
   String get settingsReasoningEfforts => 'Reasoning efforts';
@@ -1538,9 +1538,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelOriginManual => 'Manual';
 
   @override
-  String get settingsUnverifiedOnlineModel => 'Unverified model';
-
-  @override
   String get settingsRemoveManualModelConfirmTitle =>
       'Delete this manual model?';
 
@@ -1556,8 +1553,8 @@ class AppLocalizationsEn extends AppLocalizations {
       'Could not delete this manual model.';
 
   @override
-  String get settingsManualModelSlugConflict =>
-      'A model with this slug already exists in the online or bundled catalog.';
+  String get settingsManualModelIdConflict =>
+      'A model with this model_id already exists in the online or bundled catalog.';
 
   @override
   String settingsBundledModels(int count) {
@@ -2915,4 +2912,28 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineUserInputSecretHidden => 'Sensitive answer hidden';
+
+  @override
+  String get settingsModelParametersUnknown => 'Model parameters unknown';
+
+  @override
+  String get settingsModelPriceUnknown => 'Price unknown';
+
+  @override
+  String modelTextFilterExcluded(String model, String reasons) {
+    return '$model: excluded from text models ($reasons)';
+  }
+
+  @override
+  String get modelTextInputUnsupported => 'Text input unsupported';
+
+  @override
+  String get modelTextOutputUnsupported => 'Text output unsupported';
+
+  @override
+  String get modelContextWindowUnknown => 'Context window unknown';
+
+  @override
+  String get modelTextFilterEmpty =>
+      'No matching text models. Check model parameters in provider settings.';
 }

@@ -47,7 +47,7 @@ ProviderSettingsView _provider(String id, {int usageQueryRevision = 1}) {
     defaultModel: 'model',
     models: const [
       ProviderModelView(
-        slug: 'model',
+        modelId: 'model',
         displayName: 'Model',
         reasoningEfforts: ['medium'],
       ),

@@ -114,14 +114,15 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                             ?.name ??
                         _providerId;
                     final unavailableLabel =
-                        _providerUnavailable || _modelUnavailable
-                        ? l10n.settingsAgentRouteUnavailable(
-                            [
-                              providerName,
-                              _model,
-                            ].where((part) => part.isNotEmpty).join(' / '),
-                          )
-                        : null;
+                        modelTextFilterMessage(context, _selectedModel) ??
+                        (_providerUnavailable || _modelUnavailable
+                            ? l10n.settingsAgentRouteUnavailable(
+                                [
+                                  providerName,
+                                  _model,
+                                ].where((part) => part.isNotEmpty).join(' / '),
+                              )
+                            : null);
                     final errorText = field.errorText;
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -145,7 +146,6 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                                 providerId: _providerId,
                                 model: _model,
                                 unresolvedLabel: unavailableLabel,
-                                showUnresolvedOption: unavailableLabel != null,
                                 enabled: options.isNotEmpty,
                                 onSelected: (option) {
                                   setState(() {
@@ -312,7 +312,7 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
 
   ProviderModelView? get _selectedModel =>
       _modelsFor(_providerId)
-          .where((model) => model.slug == _model)
+          .where((model) => model.modelId == _model)
           .firstOrNull;
 
   List<String> get _efforts => _selectedModel?.reasoningEfforts ?? const [];
@@ -324,10 +324,7 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
   bool get _modelUnavailable => _model.isNotEmpty && _selectedModel == null;
 
   List<ModelSelectionOption> get _modelSelectionOptions =>
-      buildModelSelectionOptions(
-        widget.providers,
-        modelsForProvider: (provider) => provider.models,
-      );
+      buildModelSelectionOptions(widget.providers, type: ModelType.text);
 
   bool get _effortUnavailable => _effort != null && !_efforts.contains(_effort);
 

@@ -10,8 +10,8 @@ use pl_model::provider::ProviderEndpoint;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-fn model(slug: &str, capacity: Option<u64>) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn model(model_id: &str, capacity: Option<u64>) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.context_window = capacity;
     model.max_context_window = capacity;
     model
@@ -46,7 +46,7 @@ fn route_defaults_use_model_preset_then_ninety_percent_of_current_capacity() {
         maximum_only,
     ]));
     config.validate().unwrap();
-    for (slug, expected) in [
+    for (model_id, expected) in [
         ("preset", 150_000),
         ("derived", 360_000),
         ("current", 90_000),
@@ -57,12 +57,12 @@ fn route_defaults_use_model_preset_then_ninety_percent_of_current_capacity() {
                 AgentRoleId::new("executor").unwrap(),
                 &ModelRouteConfig {
                     provider: ProviderId::new("fixture").unwrap(),
-                    model: slug.into(),
+                    model: model_id.into(),
                     effort: None,
                 },
             )
             .unwrap();
-        assert_eq!(route.auto_compact_limit, Some(expected), "{slug}");
+        assert_eq!(route.auto_compact_limit, Some(expected), "{model_id}");
     }
 }
 
@@ -95,7 +95,7 @@ fn overrides_clamp_restore_and_remain_isolated_without_mutating_model_presets() 
     first
         .set_model_auto_compact_override("first", Some(500_000))
         .unwrap();
-    let declared = first.effective_models().unwrap();
+    let declared = first.effective_models(None).unwrap();
     assert_eq!(declared[0].auto_compact_token_limit, Some(150_000));
     assert_eq!(
         first.resolved_auto_compact_limit(&declared[0]),

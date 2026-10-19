@@ -132,9 +132,38 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
 
 #[tokio::test]
 async fn known_configuration_migration_and_cold_sessions_survive_initialization() -> Result<()> {
+    use crate::studio::storage::calls::{
+        CallsStore, PurposeUsageProjection, SessionUsageProjection,
+    };
     let temp = tempfile::tempdir()?;
     let home = temp.path();
     let paths = seed(home).await?;
+    let frozen_cost = pl_protocol::RuntimeCostAmount {
+        currency: "USD".into(),
+        amount: 3.25,
+    };
+    let calls = CallsStore::open(&paths.calls_database()).await?;
+    calls.start().await;
+    let mut durable = calls.subscribe_durable_ticket();
+    calls.replace_session_usage(SessionUsageProjection {
+        root_thread_id: "cold".into(),
+        thread_id: "cold".into(),
+        revision: 7,
+        has_unpriced_usage: false,
+        purpose_costs: vec![PurposeUsageProjection {
+            purpose: Some("turn".into()),
+            estimated_costs: vec![frozen_cost.clone()],
+        }],
+    })?;
+    let ticket = calls.admitted_ticket();
+    drop(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            durable.wait_for(|&watermark| watermark >= ticket),
+        )
+        .await??,
+    );
+    calls.close().await?;
     let store = crate::config::ConfigStore::new(paths.config_paths());
     let mut config = crate::config::StudioConfig::default_config().expect("bundled defaults");
     config.instructions.user = "preserved user instructions".into();
@@ -163,6 +192,69 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     assert_eq!(std::fs::read(cold)?, b"intentionally invalid cold history");
     assert!(!home.join("startup-backups").exists());
     runtime.shutdown_runtime().await?;
+    for _ in 0..2 {
+        let calls = CallsStore::open(&paths.calls_database()).await?;
+        let rollups = calls.session_cost_rollups().await?;
+        assert_eq!(rollups.len(), 1);
+        assert_eq!(rollups[0].root_thread_id, "cold");
+        assert_eq!(
+            rollups[0].estimated_costs.as_slice(),
+            std::slice::from_ref(&frozen_cost)
+        );
+        calls.close().await?;
+        let reopened = StudioRuntime::initialize(options(home)).await?;
+        assert!(reopened.startup_recovery.is_none());
+        reopened.shutdown_runtime().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn conflicting_model_id_migration_preserves_original_through_startup() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path();
+    let paths = seed(home).await?;
+    let mut config = crate::config::StudioConfig::default_config()?;
+    let provider = config
+        .models
+        .providers
+        .get_mut(&pl_model::config::ProviderId::new("deepseek")?)
+        .expect("default provider");
+    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+        additional_models, ..
+    } = &mut provider.catalog
+    {
+        additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+    }
+    crate::config::ConfigStore::new(paths.config_paths()).save(&config)?;
+    let path = home.join("config.toml");
+    let mut value: toml::Value = toml::from_str(&std::fs::read_to_string(&path)?)?;
+    value["schema_version"] = 21.into();
+    value["models"]["providers"]["deepseek"]["catalog"]["additional_models"][0]
+        .as_table_mut()
+        .expect("model table")
+        .insert("slug".into(), "conflicting-id".into());
+    std::fs::write(&path, toml::to_string(&value)?)?;
+    let original = std::fs::read(&path)?;
+    for _ in 0..2 {
+        let error = match StudioRuntime::initialize(options(home)).await {
+            Ok(runtime) => {
+                runtime.shutdown_runtime().await?;
+                anyhow::bail!("migration conflict unexpectedly started Studio")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+        let public = crate::studio_error_from_anyhow(error.into());
+        assert!(public.message.contains("原文件已保留"));
+        assert_eq!(std::fs::read(&path)?, original);
+        assert!(!home.join("startup-backups").exists());
+        assert!(!home.join("startup-recovery.toml").exists());
+        assert_eq!(
+            std::fs::read(home.join("sessions/old/checkpoint"))?,
+            b"old session"
+        );
+    }
     Ok(())
 }
 

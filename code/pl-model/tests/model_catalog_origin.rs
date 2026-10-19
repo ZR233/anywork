@@ -92,9 +92,9 @@ async fn overlay_replaces_bundled_members_and_keeps_manual_priority_with_exact_p
     let withdrawn = definition
         .models
         .iter()
-        .find(|model| model.slug != known.slug)
+        .find(|model| model.model_id != known.model_id)
         .unwrap();
-    let server = Server::json(json!({"data":[{"id": known.slug}, {"id":"online-only"}]})).await;
+    let server = Server::json(json!({"data":[{"id": known.model_id}, {"id":"online-only"}]})).await;
     let mut config = openai_provider(&server.url);
     let mut manual = ModelInfo::compatible("manual");
     manual.pricing = known.pricing.clone();
@@ -112,27 +112,27 @@ async fn overlay_replaces_bundled_members_and_keeps_manual_priority_with_exact_p
             .unwrap(),
     );
     config.set_model_catalog_overlay(observed).unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert!(
         catalog
             .iter()
-            .all(|entry| entry.model.slug != withdrawn.slug)
+            .all(|entry| entry.model.model_id != withdrawn.model_id)
     );
     let known_entry = catalog
         .iter()
-        .find(|entry| entry.model.slug == known.slug)
+        .find(|entry| entry.model.model_id == known.model_id)
         .unwrap();
     assert_eq!(known_entry.origin, ProviderModelOrigin::Online);
     assert_eq!(known_entry.model.pricing, known.pricing);
     let unknown = catalog
         .iter()
-        .find(|entry| entry.model.slug == "online-only")
+        .find(|entry| entry.model.model_id == "online-only")
         .unwrap();
     assert_eq!(unknown.origin, ProviderModelOrigin::Online);
     assert_eq!(unknown.model.pricing, ModelPricing::Unknown);
     let manual_entry = catalog
         .iter()
-        .find(|entry| entry.model.slug == "manual")
+        .find(|entry| entry.model.model_id == "manual")
         .unwrap();
     assert_eq!(manual_entry.origin, ProviderModelOrigin::Manual);
     assert_eq!(manual_entry.model, manual);
@@ -153,14 +153,14 @@ fn bundled_without_overlay_keeps_bundled_origin_and_manual_members() {
     {
         additional_models.push(manual.clone());
     }
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert!(
         catalog
             .iter()
             .any(|entry| entry.origin == ProviderModelOrigin::Bundled)
     );
     assert!(catalog.iter().any(|entry| {
-        entry.origin == ProviderModelOrigin::Manual && entry.model.slug == "manual"
+        entry.origin == ProviderModelOrigin::Manual && entry.model.model_id == "manual"
     }));
     assert!(
         catalog
@@ -170,11 +170,11 @@ fn bundled_without_overlay_keeps_bundled_origin_and_manual_members() {
 }
 
 #[tokio::test]
-async fn same_slug_manual_model_hides_online_entry() {
-    let slug = "shared-online";
-    let server = Server::json(json!({"data":[{"id": slug}]})).await;
+async fn same_id_manual_model_hides_online_entry() {
+    let model_id = "shared-online";
+    let server = Server::json(json!({"data":[{"id": model_id}]})).await;
     let mut config = openai_provider(&server.url);
-    let mut manual = ModelInfo::compatible(slug);
+    let mut manual = ModelInfo::compatible(model_id);
     manual.display_name = "Authoritative manual".into();
     if let ProviderModelCatalogConfig::Bundled {
         additional_models, ..
@@ -190,10 +190,10 @@ async fn same_slug_manual_model_hides_online_entry() {
             .unwrap(),
     );
     config.set_model_catalog_overlay(observed).unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     let matches: Vec<_> = catalog
         .iter()
-        .filter(|entry| entry.model.slug == slug)
+        .filter(|entry| entry.model.model_id == model_id)
         .collect();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, ProviderModelOrigin::Manual);
@@ -202,13 +202,13 @@ async fn same_slug_manual_model_hides_online_entry() {
 }
 
 #[tokio::test]
-async fn removing_same_slug_manual_restores_online_entry() {
+async fn removing_same_id_manual_restores_online_entry() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
-    let slug = "shared-online";
-    let server = Server::json(json!({"data":[{"id": slug}, {"id": known.slug}]})).await;
+    let model_id = "shared-online";
+    let server = Server::json(json!({"data":[{"id": model_id}, {"id": known.model_id}]})).await;
     let mut config = openai_provider(&server.url);
-    let mut manual = ModelInfo::compatible(slug);
+    let mut manual = ModelInfo::compatible(model_id);
     manual.display_name = "Temporary manual".into();
     if let ProviderModelCatalogConfig::Bundled {
         additional_models, ..
@@ -224,31 +224,31 @@ async fn removing_same_slug_manual_restores_online_entry() {
             .unwrap(),
     );
     config.set_model_catalog_overlay(observed).unwrap();
-    let before = config.effective_catalog().unwrap();
+    let before = config.effective_catalog(None).unwrap();
     let matches: Vec<_> = before
         .iter()
-        .filter(|entry| entry.model.slug == slug)
+        .filter(|entry| entry.model.model_id == model_id)
         .collect();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, ProviderModelOrigin::Manual);
 
-    config.remove_manual_model(slug).unwrap();
-    let after = config.effective_catalog().unwrap();
+    config.remove_manual_model(model_id).unwrap();
+    let after = config.effective_catalog(None).unwrap();
     let restored = after
         .iter()
-        .filter(|entry| entry.model.slug == slug)
+        .filter(|entry| entry.model.model_id == model_id)
         .collect::<Vec<_>>();
-    // Restored same-slug overlay members are not in the bundled membership/price
-    // table, so pricing is Unknown. A bundled priced slug cannot be used as the
-    // same-slug manual because catalog_membership rejects additional_models that
-    // collide with bundled slugs. Exact price join is asserted on the in-overlay
-    // bundled priced slug below.
+    // Restored same-model_id overlay members are not in the bundled membership/price
+    // table, so pricing is Unknown. A bundled priced model_id cannot be used as the
+    // same-model_id manual because catalog_membership rejects additional_models that
+    // collide with bundled model_ids. Exact price join is asserted on the in-overlay
+    // bundled priced model_id below.
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].origin, ProviderModelOrigin::Online);
     assert_eq!(restored[0].model.pricing, ModelPricing::Unknown);
     let priced = after
         .iter()
-        .find(|entry| entry.model.slug == known.slug)
+        .find(|entry| entry.model.model_id == known.model_id)
         .unwrap();
     assert_eq!(priced.origin, ProviderModelOrigin::Online);
     assert_eq!(priced.model.pricing, known.pricing);
@@ -260,11 +260,11 @@ fn explicit_catalog_is_entirely_manual() {
     let models = vec![ModelInfo::compatible("one"), ModelInfo::compatible("two")];
     let config =
         ProviderConfig::from_explicit_models(ProviderEndpoint::openai(None), models.clone());
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert_eq!(
         catalog
             .iter()
-            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("one", ProviderModelOrigin::Manual),
@@ -275,9 +275,9 @@ fn explicit_catalog_is_entirely_manual() {
 }
 
 #[test]
-fn remove_manual_model_clears_overrides_and_rejects_non_manual_slugs() {
+fn remove_manual_model_clears_overrides_and_rejects_non_manual_ids() {
     let mut config = openai_provider("http://127.0.0.1:1");
-    let bundled_slug = config.effective_models().unwrap()[0].slug.clone();
+    let bundled_slug = config.effective_models(None).unwrap()[0].model_id.clone();
     let mut keep = ModelInfo::compatible("keep-manual");
     keep.display_name = "Keep".into();
     let mut remove = ModelInfo::compatible("remove-manual");
@@ -303,14 +303,14 @@ fn remove_manual_model_clears_overrides_and_rejects_non_manual_slugs() {
     }
     let before = config.clone();
     config.remove_manual_model("remove-manual").unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert!(
         catalog
             .iter()
-            .all(|entry| entry.model.slug != "remove-manual")
+            .all(|entry| entry.model.model_id != "remove-manual")
     );
     assert!(catalog.iter().any(|entry| {
-        entry.origin == ProviderModelOrigin::Manual && entry.model.slug == "keep-manual"
+        entry.origin == ProviderModelOrigin::Manual && entry.model.model_id == "keep-manual"
     }));
     assert!(!config.connection_overrides().contains_key("remove-manual"));
     assert!(
@@ -364,11 +364,11 @@ fn remove_manual_model_applies_to_explicit_catalog() {
         auto_compact_overrides.insert("keep".into(), 3_000);
     }
     config.remove_manual_model("remove").unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert_eq!(
         catalog
             .iter()
-            .map(|entry| entry.model.slug.as_str())
+            .map(|entry| entry.model.model_id.as_str())
             .collect::<Vec<_>>(),
         vec!["keep"]
     );
@@ -382,8 +382,8 @@ fn remove_manual_model_applies_to_explicit_catalog() {
     ));
 }
 
-fn manual_model(slug: &str) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn manual_model(model_id: &str) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.context_window = None;
     model.max_output_tokens = None;
     model
@@ -393,8 +393,8 @@ fn manual_model(slug: &str) -> ModelInfo {
 }
 
 #[test]
-fn historical_cache_is_filtered_when_resolving_effective_catalog() {
-    // 修复前写入的在线缓存可能仍含已被排除的非对话 slug。
+fn historical_cache_preserves_complete_membership() {
+    // 修复前写入的在线缓存可能仍含已被排除的非对话 model_id。
     let mut config = openai_provider("http://127.0.0.1:1");
     config
         .set_model_catalog_overlay(vec![
@@ -404,31 +404,25 @@ fn historical_cache_is_filtered_when_resolving_effective_catalog() {
             manual_model("GPT-Image-2"),
         ])
         .unwrap();
+    let ids = config
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .map(|model| model.model_id)
+        .collect::<Vec<_>>();
     assert_eq!(
-        config
-            .effective_catalog()
-            .unwrap()
-            .iter()
-            .map(|entry| (entry.model.slug.as_str(), entry.origin))
-            .collect::<Vec<_>>(),
-        vec![
-            ("gpt-6-astra", ProviderModelOrigin::Online),
-            ("GPT-Image-2", ProviderModelOrigin::Online)
+        ids,
+        [
+            "GPT-Image-2",
+            "gpt-6-astra",
+            "gpt-image-2",
+            "text-embedding-3-large"
         ]
-    );
-    assert_eq!(
-        config
-            .effective_models()
-            .unwrap()
-            .iter()
-            .map(|model| model.slug.as_str())
-            .collect::<Vec<_>>(),
-        vec!["gpt-6-astra", "GPT-Image-2"]
     );
 }
 
 #[test]
-fn excluded_online_entry_never_hides_the_manual_model_with_the_same_slug() {
+fn online_and_manual_members_share_one_route() {
     let mut config = ProviderConfig::from_bundled_catalog(
         ProviderEndpoint::openai(Some("http://127.0.0.1:1".into())),
         ModelCatalogId::new("openai").unwrap(),
@@ -442,10 +436,10 @@ fn excluded_online_entry_never_hides_the_manual_model_with_the_same_slug() {
         .unwrap();
     assert_eq!(
         config
-            .effective_catalog()
+            .effective_catalog(None)
             .unwrap()
             .iter()
-            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("gpt-6-astra", ProviderModelOrigin::Online),
@@ -455,7 +449,7 @@ fn excluded_online_entry_never_hides_the_manual_model_with_the_same_slug() {
 }
 
 #[test]
-fn exclusion_is_driven_only_by_the_catalog_discovery_declaration() {
+fn explicit_catalogs_do_not_acquire_discovery() {
     // 智谱目录不声明发现能力，不可能持有在线缓存；其手工图像类模型保留。
     let mut zhipu = ProviderConfig::from_bundled_catalog(
         ProviderEndpoint::zhipu(None),
@@ -467,8 +461,8 @@ fn exclusion_is_driven_only_by_the_catalog_discovery_declaration() {
         zhipu.set_model_catalog_overlay(Vec::new()),
         Err(pl_protocol::PureError::Protocol(_))
     ));
-    assert!(zhipu.effective_catalog().unwrap().iter().any(|entry| {
-        entry.model.slug == "gpt-image-manual" && entry.origin == ProviderModelOrigin::Manual
+    assert!(zhipu.effective_catalog(None).unwrap().iter().any(|entry| {
+        entry.model.model_id == "gpt-image-manual" && entry.origin == ProviderModelOrigin::Manual
     }));
     // openai-compatible 是用户完全自定义的显式目录，同样不排除任何条目。
     let mut compatible = ProviderConfig::from_explicit_models(
@@ -485,17 +479,17 @@ fn exclusion_is_driven_only_by_the_catalog_discovery_declaration() {
     ));
     assert_eq!(
         compatible
-            .effective_catalog()
+            .effective_catalog(None)
             .unwrap()
             .iter()
-            .map(|entry| entry.model.slug.as_str())
+            .map(|entry| entry.model.model_id.as_str())
             .collect::<Vec<_>>(),
         vec!["gpt-image-2", "text-embedding-3-large"]
     );
 }
 
 #[tokio::test]
-async fn excluded_prefixes_drop_non_conversational_families_only() {
+async fn discovery_keeps_all_model_families_and_exact_case() {
     let server = Server::json(json!({
         "data":[
             {"id":"gpt-6-astra"},
@@ -514,22 +508,9 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
     let config = openai_provider(&server.url);
     let discovery = config.discovery_profile().unwrap().unwrap();
     assert_eq!(
-        discovery.excluded_prefixes,
-        [
-            "gpt-image-",
-            "dall-e-",
-            "text-embedding-",
-            "tts-",
-            "whisper-",
-            "omni-moderation-",
-            "text-moderation-"
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>()
+        discovery.transport,
+        ModelTransportProfile::responses_websocket()
     );
-    // OpenAI 目录不使用精确 slug 排除，两条声明互不依赖。
-    assert!(discovery.excluded_slugs.is_empty());
     let models = updated(
         ModelCatalogQuery::for_provider(&config)
             .unwrap()
@@ -537,19 +518,30 @@ async fn excluded_prefixes_drop_non_conversational_families_only() {
             .await
             .unwrap(),
     );
-    // 前缀匹配大小写敏感：不缩小写家族之外的相似 slug。
+    // 前缀匹配大小写敏感：不缩小写家族之外的相似 model_id。
     assert_eq!(
         models
             .iter()
-            .map(|model| model.slug.as_str())
+            .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["gpt-6-astra", "GPT-Image-2"]
+        vec![
+            "gpt-6-astra",
+            "gpt-image-2",
+            "gpt-image-1.5",
+            "dall-e-3",
+            "text-embedding-3-large",
+            "tts-1",
+            "whisper-1",
+            "omni-moderation-latest",
+            "text-moderation-latest",
+            "GPT-Image-2"
+        ]
     );
     server.finish().await;
 }
 
 #[tokio::test]
-async fn exclusion_declarations_keep_bundled_and_manual_models() {
+async fn discovery_keeps_manual_members_and_complete_online_inventory() {
     let server = Server::json(json!({
         "data":[{"id":"gpt-6-astra"},{"id":"gpt-image-2"}]
     }))
@@ -562,7 +554,7 @@ async fn exclusion_declarations_keep_bundled_and_manual_models() {
         vec![manual_model("gpt-image-manual")],
     );
     // 尚无在线成功观察时，内置默认名单完整保留；排除声明只作用于在线结果。
-    let defaults = config.effective_catalog().unwrap();
+    let defaults = config.effective_catalog(None).unwrap();
     assert_eq!(
         defaults
             .iter()
@@ -571,7 +563,7 @@ async fn exclusion_declarations_keep_bundled_and_manual_models() {
         bundled.models.len()
     );
     assert!(defaults.iter().any(|entry| {
-        entry.origin == ProviderModelOrigin::Manual && entry.model.slug == "gpt-image-manual"
+        entry.origin == ProviderModelOrigin::Manual && entry.model.model_id == "gpt-image-manual"
     }));
     let models = updated(
         ModelCatalogQuery::for_provider(&config)
@@ -581,14 +573,15 @@ async fn exclusion_declarations_keep_bundled_and_manual_models() {
             .unwrap(),
     );
     config.set_model_catalog_overlay(models).unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     assert_eq!(
         catalog
             .iter()
-            .map(|entry| (entry.model.slug.as_str(), entry.origin))
+            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("gpt-6-astra", ProviderModelOrigin::Online),
+            ("gpt-image-2", ProviderModelOrigin::Online),
             ("gpt-image-manual", ProviderModelOrigin::Manual)
         ]
     );
@@ -596,7 +589,7 @@ async fn exclusion_declarations_keep_bundled_and_manual_models() {
 }
 
 #[tokio::test]
-async fn excluded_slugs_are_filtered_before_inventory_validation() {
+async fn discovery_keeps_mimo_media_models() {
     let server = Server::json(json!({
         "data":[
             {"id":"mimo-v2.5-pro"},
@@ -613,8 +606,8 @@ async fn excluded_slugs_are_filtered_before_inventory_validation() {
         discovery.transport,
         ModelTransportProfile::chat_completions_http()
     );
-    // MiMo 仍只按精确 slug 排除语音模型，不声明前缀家族。
-    assert!(discovery.excluded_prefixes.is_empty());
+    // MiMo 仍只按精确 model_id 排除语音模型，不声明前缀家族。
+
     let models = updated(
         ModelCatalogQuery::for_provider(&config)
             .unwrap()
@@ -625,15 +618,21 @@ async fn excluded_slugs_are_filtered_before_inventory_validation() {
     assert_eq!(
         models
             .iter()
-            .map(|model| model.slug.as_str())
+            .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["mimo-v2.5-pro"]
+        vec![
+            "mimo-v2.5-pro",
+            "mimo-v2.5-asr",
+            "mimo-v2.5-tts",
+            "mimo-v2.5-tts-voiceclone",
+            "mimo-v2.5-tts-voicedesign"
+        ]
     );
     server.finish().await;
 }
 
 #[tokio::test]
-async fn excluded_only_inventory_is_an_empty_success() {
+async fn media_only_inventory_remains_selectable() {
     let server = Server::json(json!({
         "data":[
             {"id":"mimo-v2.5-asr"},
@@ -649,9 +648,9 @@ async fn excluded_only_inventory_is_an_empty_success() {
             .await
             .unwrap(),
     );
-    assert!(models.is_empty());
+    assert_eq!(models.len(), 2);
     config.set_model_catalog_overlay(models).unwrap();
-    assert!(config.effective_catalog().unwrap().is_empty());
+    assert_eq!(config.effective_catalog(None).unwrap().len(), 2);
     server.finish().await;
 }
 
@@ -661,7 +660,7 @@ async fn chat_discovery_profile_accepts_chat_transport_and_joins_exact_prices() 
     let priced = catalog
         .models
         .iter()
-        .find(|model| model.slug == "mimo-v2.5-pro")
+        .find(|model| model.model_id == "mimo-v2.5-pro")
         .unwrap();
     let server =
         Server::json(json!({"data":[{"id":"mimo-v2.5-pro"},{"id":"mimo-chat-only"}]})).await;
@@ -678,16 +677,16 @@ async fn chat_discovery_profile_accepts_chat_transport_and_joins_exact_prices() 
         ModelTransportProfile::chat_completions_http()
     );
     config.set_model_catalog_overlay(models).unwrap();
-    let catalog = config.effective_catalog().unwrap();
+    let catalog = config.effective_catalog(None).unwrap();
     let joined = catalog
         .iter()
-        .find(|entry| entry.model.slug == "mimo-v2.5-pro")
+        .find(|entry| entry.model.model_id == "mimo-v2.5-pro")
         .unwrap();
     assert_eq!(joined.origin, ProviderModelOrigin::Online);
     assert_eq!(joined.model.pricing, priced.pricing);
     let unknown = catalog
         .iter()
-        .find(|entry| entry.model.slug == "mimo-chat-only")
+        .find(|entry| entry.model.model_id == "mimo-chat-only")
         .unwrap();
     assert_eq!(unknown.model.pricing, ModelPricing::Unknown);
     server.finish().await;
@@ -703,7 +702,7 @@ fn unknown_online_price_is_not_zero_and_descriptor_keeps_origin() {
     observed.context_window = None;
     observed.max_output_tokens = None;
     config.set_model_catalog_overlay(vec![observed]).unwrap();
-    let entry = &config.effective_catalog().unwrap()[0];
+    let entry = &config.effective_catalog(None).unwrap()[0];
     assert_eq!(entry.origin, ProviderModelOrigin::Online);
     assert_eq!(entry.model.pricing, ModelPricing::Unknown);
     let descriptor = model_descriptor(entry);

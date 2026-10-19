@@ -141,8 +141,10 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；已知 18/19/20 版本走数据保全式迁移路径。
-    pub(crate) fn load_for_startup(&self) -> Result<StudioConfig> {
+    /// 也不替换为默认配置；已知 18/19/20/21 版本走数据保全式迁移路径。
+    pub(crate) fn load_for_startup(
+        &self,
+    ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
         if self.config_absent()? {
             let mut config = StudioConfig::default_config()?;
             self.hydrate_credentials(&mut config)?;
@@ -150,7 +152,7 @@ impl ConfigStore {
         }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so the supported 18/19/20 configs reach
+        // Version dispatch precedes the strict parse so the supported 18/19/20/21 configs reach
         // their data-preserving migration instead of failing current-schema validation.
         #[derive(serde::Deserialize)]
         struct Version {
@@ -160,11 +162,13 @@ impl ConfigStore {
             .ok()
             .and_then(|text| toml::from_str::<Version>(text).ok())
             .map(|version| version.schema_version)
-            .filter(|version| matches!(version, 18..=20))
+            .filter(|version| matches!(version, 18..=21))
         {
             return self
                 .migrate_legacy_config_for_startup(&content, version)
-                .map_err(|error| self.config_path_error(error));
+                .map_err(|error| {
+                    super::ConfigRuntimeError::Migration(self.config_path_error(error))
+                });
         }
         // Unknown/future versions, malformed TOML and current-schema validation failures
         // all fail closed here: the original bytes stay on disk untouched.
@@ -213,6 +217,7 @@ impl ConfigStore {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
         let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
+        let rewritten = migrate_model_identifiers(&rewritten)?;
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
@@ -221,7 +226,7 @@ impl ConfigStore {
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
-            20 => {}
+            20 | 21 => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -493,6 +498,44 @@ fn reject_inline_credentials(config: &StudioConfig) -> Result<()> {
     Ok(())
 }
 
+/// Decode legacy identifiers only at the migration boundary. Never rewrite arbitrary vendor bodies.
+fn migrate_model_identifiers(text: &str) -> Result<String> {
+    let mut value: toml::Value =
+        toml::from_str(text).map_err(|_| PureError::ConfigError("invalid legacy config".into()))?;
+    if let Some(providers) = value
+        .get_mut("models")
+        .and_then(|v| v.get_mut("providers"))
+        .and_then(toml::Value::as_table_mut)
+    {
+        for (_, provider) in providers.iter_mut() {
+            if let Some(catalog) = provider.get_mut("catalog") {
+                for key in ["models", "additional_models"] {
+                    if let Some(models) = catalog.get_mut(key).and_then(toml::Value::as_array_mut) {
+                        for model in models {
+                            let table = model.as_table_mut().ok_or_else(|| {
+                                PureError::ConfigError("invalid legacy model declaration".into())
+                            })?;
+                            if let Some(legacy) = table.remove("slug") {
+                                if table
+                                    .get("model_id")
+                                    .is_some_and(|current| current != &legacy)
+                                {
+                                    return Err(PureError::ConfigError(
+                                        "conflicting model identifiers in legacy config".into(),
+                                    ));
+                                }
+                                table.insert("model_id".into(), legacy);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    toml::to_string(&value)
+        .map_err(|_| PureError::ConfigError("could not encode migrated config".into()))
+}
+
 fn write_config_backup(config_path: &Path, content: &[u8], kind: &str) -> Result<PathBuf> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -585,6 +628,104 @@ mod tests {
     fn write_table(path: &Path, table: &toml::Table) {
         fs::write(path, toml::to_string(table).expect("serialize test config"))
             .expect("write test config");
+    }
+
+    #[test]
+    fn schema_21_model_ids_migrate_without_losing_routes_overrides_or_credentials() {
+        use pl_model::{
+            config::ProviderModelCatalogConfig, model::ModelInfo, provider::ProviderConnectionMode,
+        };
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        let id = ProviderId::new("deepseek").unwrap();
+        let provider = config.models.providers.get_mut(&id).unwrap();
+        provider.bearer_token = Some("synthetic-migration-secret".into());
+        if let ProviderModelCatalogConfig::Bundled {
+            additional_models,
+            connection_overrides,
+            auto_compact_overrides,
+            ..
+        } = &mut provider.catalog
+        {
+            additional_models.push(ModelInfo::compatible("exact-Unchanged-ID"));
+            connection_overrides.insert("exact-Unchanged-ID".into(), ProviderConnectionMode::Http);
+            auto_compact_overrides.insert("exact-Unchanged-ID".into(), 1234);
+        }
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 21.into();
+        let model = table
+            .get_mut("models")
+            .unwrap()
+            .get_mut("providers")
+            .unwrap()
+            .get_mut("deepseek")
+            .unwrap()
+            .get_mut("catalog")
+            .unwrap()
+            .get_mut("additional_models")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()[0]
+            .as_table_mut()
+            .unwrap();
+        let identifier = model.remove("model_id").unwrap();
+        model.insert("slug".into(), identifier);
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            fs::read(migrated_backups(path).pop().unwrap()).unwrap(),
+            original
+        );
+        let persisted = fs::read(path).unwrap();
+        assert_eq!(store.load_for_startup().unwrap(), config);
+        assert_eq!(fs::read(path).unwrap(), persisted);
+        assert_eq!(migrated_backups(path).len(), 1);
+    }
+
+    #[test]
+    fn conflicting_legacy_model_identifiers_leave_original_file_untouched() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+            additional_models, ..
+        } = &mut config
+            .models
+            .providers
+            .get_mut(&ProviderId::new("deepseek").unwrap())
+            .unwrap()
+            .catalog
+        {
+            additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+        }
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 21.into();
+        let model = table
+            .get_mut("models")
+            .unwrap()
+            .get_mut("providers")
+            .unwrap()
+            .get_mut("deepseek")
+            .unwrap()
+            .get_mut("catalog")
+            .unwrap()
+            .get_mut("additional_models")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()[0]
+            .as_table_mut()
+            .unwrap();
+        model.insert("slug".into(), "different-id".into());
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        assert!(store.load_for_startup().is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(migrated_backups(path).is_empty());
     }
 
     fn read_table(path: &Path) -> toml::Table {
@@ -724,7 +865,7 @@ mod tests {
             loaded.schema_version,
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
-        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(loaded.schema_version, 22);
         assert_eq!(
             capabilities.web_search.standalone,
             Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
@@ -749,7 +890,7 @@ mod tests {
         let persisted = fs::read_to_string(path).expect("read migrated config");
         let persisted_table: toml::Table =
             toml::from_str(&persisted).expect("parse migrated config");
-        assert_eq!(persisted_table["schema_version"].as_integer(), Some(21));
+        assert_eq!(persisted_table["schema_version"].as_integer(), Some(22));
         assert_eq!(
             persisted_table["models"]["providers"]["deepseek"]["capabilities"]["web_search"]
                 ["standalone"]
@@ -788,7 +929,7 @@ mod tests {
         let loaded = store
             .load_for_startup()
             .expect("schema 20 without dialect token migrates");
-        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(loaded.schema_version, 22);
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
         assert_eq!(
@@ -809,7 +950,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(22));
+        table.insert("schema_version".into(), toml::Value::Integer(23));
         write_table(path, &table);
         let original = fs::read(path).expect("original future-schema bytes");
 
@@ -817,7 +958,10 @@ mod tests {
             .load_for_startup()
             .expect_err("future schema must fail closed");
         assert!(
-            matches!(error, PureError::ConfigError(_)),
+            matches!(
+                error,
+                super::super::ConfigRuntimeError::Core(PureError::ConfigError(_))
+            ),
             "future schema is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);
@@ -856,7 +1000,10 @@ mod tests {
             .load_for_startup()
             .expect_err("invalid schema 20 must not migrate");
         assert!(
-            matches!(error, PureError::ConfigError(_)),
+            matches!(
+                error,
+                super::super::ConfigRuntimeError::Migration(PureError::ConfigError(_))
+            ),
             "migration failure is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);

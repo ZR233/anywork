@@ -33,7 +33,7 @@ void main() {
                         providerId: 'provider',
                         providerName: 'Provider',
                         descriptor: ProviderModelView(
-                          slug: 'model',
+                          modelId: 'model',
                           displayName: 'Model',
                           reasoningEfforts: [],
                         ),

@@ -156,7 +156,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-6-astra",
+      "model_id": "gpt-6-astra",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -317,7 +317,7 @@
         "verifiedAt": 1790985600,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-6.1-sol",
+      "model_id": "gpt-6.1-sol",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -487,7 +487,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-6-sol",
+      "model_id": "gpt-6-sol",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -657,7 +657,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-6-luna",
+      "model_id": "gpt-6-luna",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -809,7 +809,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-5.5",
+      "model_id": "gpt-5.5",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -970,7 +970,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-5.6-sol",
+      "model_id": "gpt-5.6-sol",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -1131,7 +1131,7 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-5.6-terra",
+      "model_id": "gpt-5.6-terra",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -1292,14 +1292,14 @@
         "verifiedAt": 1788566400,
         "weeklyAdjustment": null
       },
-      "slug": "gpt-5.6-luna",
+      "model_id": "gpt-5.6-luna",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
       }
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "suggestedEffort": "none",
   "suggestedModel": "gpt-6-sol"
 }

@@ -338,7 +338,7 @@ Future<List<String>> _effortOptions(
     final models = provider['models'];
     if (models is! List) continue;
     for (final candidate in models) {
-      if (candidate is! Map || candidate['slug'] != model) continue;
+      if (candidate is! Map || candidate['modelId'] != model) continue;
       final efforts = candidate['reasoningEfforts'];
       if (efforts is! List) continue;
       return efforts.map((value) => '$value').toList();

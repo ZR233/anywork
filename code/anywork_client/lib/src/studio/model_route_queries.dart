@@ -100,7 +100,9 @@ abstract final class ModelRouteQueries {
         .where((candidate) => candidate.id == providerId)
         .firstOrNull;
     final models = provider?.models;
-    return models?.where((candidate) => candidate.slug == modelId).firstOrNull;
+    return models
+        ?.where((candidate) => candidate.modelId == modelId)
+        .firstOrNull;
   }
 
   /// A model selection keeps a supported effort, then uses the declared model
@@ -211,22 +213,30 @@ abstract final class ModelRouteQueries {
         configured != null &&
         (configured.providerId.isNotEmpty || configured.model.isNotEmpty);
     if (hasRoute) {
+      final descriptor = model(
+        providers,
+        configured.providerId,
+        configured.model,
+      );
       return RoleRouteQuery(
         providerId: configured.providerId,
         model: configured.model,
-        effort: configured.effort.isEmpty ? null : configured.effort,
-        descriptor: model(providers, configured.providerId, configured.model),
+        effort: configured.effort.isEmpty
+            ? effortAfterModelSelection(descriptor, null)
+            : configured.effort,
+        descriptor: descriptor,
         hasConfiguredRoute: true,
       );
     }
     for (final provider in providers) {
-      final descriptor = provider.models
-          .where((candidate) => candidate.slug.isNotEmpty)
+      final descriptor = provider
+          .modelsFor(type: ModelType.text)
+          .where((candidate) => candidate.modelId.isNotEmpty)
           .firstOrNull;
       if (descriptor == null) continue;
       return RoleRouteQuery(
         providerId: provider.id,
-        model: descriptor.slug,
+        model: descriptor.modelId,
         effort: effortAfterModelSelection(descriptor, null),
         descriptor: descriptor,
         hasConfiguredRoute: false,
@@ -244,15 +254,7 @@ abstract final class ModelRouteQueries {
   static RoleRouteQuery newAgentProfileRoute(
     List<ProviderSettingsView> providers,
   ) {
-    final provider = providers.firstOrNull;
-    final descriptor = provider?.models.firstOrNull;
-    return RoleRouteQuery(
-      providerId: provider?.id ?? '',
-      model: descriptor?.slug ?? '',
-      effort: agentProfileEffort(descriptor, null),
-      descriptor: descriptor,
-      hasConfiguredRoute: false,
-    );
+    return roleRoute(providers: providers, roles: const [], role: '');
   }
 
   static StudioThread? threadIdentity({
@@ -281,22 +283,14 @@ abstract final class ModelRouteQueries {
         : null;
   }
 
-  static bool? requiresFunctionCalling(
-    ThreadModeCatalogView? catalog,
-    ThreadModeId mode,
-  ) => catalog?.modes
-      .where((descriptor) => descriptor.id == mode.id)
-      .firstOrNull
-      ?.hasWorkflow;
-
   static String defaultModelAfterRemoval({
     required String current,
     required String removed,
     required List<ProviderModelView> remaining,
-  }) => current == removed ? remaining.firstOrNull?.slug ?? '' : current;
+  }) => current == removed ? remaining.firstOrNull?.modelId ?? '' : current;
 
   static String defaultModelForCustomProvider(ProviderSettingsView provider) =>
-      provider.customModels.firstOrNull?.slug ?? '';
+      provider.customModels.firstOrNull?.modelId ?? '';
 
   static String defaultModelAfterAddition(String current, String added) =>
       current.isEmpty ? added : current;

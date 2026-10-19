@@ -65,7 +65,6 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
   final settings = ref.watch(settingsStoreProvider);
   final directory = ref.watch(threadDirectoryStoreProvider);
   final attachments = ref.watch(attachmentDraftsProvider);
-  final catalog = ref.watch(modeCatalogStoreProvider).value;
   final thread = ModelRouteQueries.threadIdentity(
     threadId: threadId,
     directory: [...directory.window.threads, ...directory.overlayThreads],
@@ -93,9 +92,6 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     workflow: session.workflow,
     providers: settings.canonical?.providers ?? const [],
     settingsLoaded: settings.configLoaded,
-    requiresFunctionCalling: thread == null
-        ? null
-        : ModelRouteQueries.requiresFunctionCalling(catalog, thread.mode),
     targetDiagnostic: projectId == null
         ? null
         : attachments.diagnostics[attachmentTargetKey(projectId, threadId)],
@@ -148,9 +144,6 @@ class StartPageComposerProjection {
   }
 
   ModeModelRouteView? laneRoute(ThreadModeId mode) => _route(mode).lane;
-
-  bool? requiresFunctionCalling(ThreadModeId mode) =>
-      ModelRouteQueries.requiresFunctionCalling(modeCatalog, mode);
 
   String? routeFailure(ThreadModeId mode) {
     return _route(mode).failure;
@@ -210,7 +203,6 @@ class ComposerDockView {
     required this.workflow,
     required this.providers,
     required this.settingsLoaded,
-    required this.requiresFunctionCalling,
     required this.targetDiagnostic,
     required this.additionalDiagnostics,
   });
@@ -228,7 +220,6 @@ class ComposerDockView {
   final WorkflowRuntimeView? workflow;
   final List<ProviderSettingsView> providers;
   final bool settingsLoaded;
-  final bool? requiresFunctionCalling;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
 
@@ -262,7 +253,6 @@ class ComposerDockView {
           routeFailure == other.routeFailure &&
           workflow == other.workflow &&
           settingsLoaded == other.settingsLoaded &&
-          requiresFunctionCalling == other.requiresFunctionCalling &&
           targetDiagnostic == other.targetDiagnostic &&
           identical(providers, other.providers) &&
           identical(additionalDiagnostics, other.additionalDiagnostics);
@@ -284,7 +274,6 @@ class ComposerDockView {
     routeFailure,
     workflow,
     settingsLoaded,
-    requiresFunctionCalling,
     targetDiagnostic,
     identityHashCode(providers),
     identityHashCode(additionalDiagnostics),

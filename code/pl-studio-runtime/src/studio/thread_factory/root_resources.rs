@@ -57,17 +57,13 @@ impl StudioThreadFactory {
             .unwrap_or_else(|| default_route.clone());
         let resolved_route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)
-            .and_then(|resolved| {
-                crate::mode::validate_thread_mode_model(Some(&mode), &resolved.model)?;
-                Ok(resolved)
-            });
+            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector);
         let (route, model_available) = match resolved_route {
             Ok(route) => (route, true),
             Err(error) if has_saved_route => {
                 tracing::warn!(thread_id = id, %error, "saved Thread model route is unavailable");
                 let fallback = config.resolve_mode_model_route(&selected_mode)?;
-                crate::mode::validate_thread_mode_model(Some(&mode), &fallback.model)?;
+
                 (fallback, false)
             }
             Err(error) => return Err(error.into()),

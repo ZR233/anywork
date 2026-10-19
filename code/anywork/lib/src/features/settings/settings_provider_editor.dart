@@ -173,11 +173,11 @@ class ProviderEditor extends StatelessWidget {
                       label: Text(context.l10n.settingsDefaultModel),
                       expandedInsets: EdgeInsets.zero,
                       dropdownMenuEntries: [
-                        // canonical default model 不在当前列表时保留原 slug 并
+                        // canonical default model 不在当前列表时保留原 modelId 并
                         // 标注 unavailable，不静默回退到 models.first。
                         if (provider.defaultModel.isNotEmpty &&
                             !models.any(
-                              (model) => model.slug == provider.defaultModel,
+                              (model) => model.modelId == provider.defaultModel,
                             ))
                           DropdownMenuEntry<String>(
                             value: provider.defaultModel,
@@ -194,10 +194,10 @@ class ProviderEditor extends StatelessWidget {
                           ),
                         for (final model in models)
                           DropdownMenuEntry<String>(
-                            value: model.slug,
-                            label: '${model.displayName} (${model.slug})',
+                            value: model.modelId,
+                            label: '${model.displayName} (${model.modelId})',
                             labelWidget: Text(
-                              '${model.displayName} (${model.slug})',
+                              '${model.displayName} (${model.modelId})',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -247,7 +247,7 @@ class ProviderEditor extends StatelessWidget {
                               ? null
                               : (mode) => onUpdate(
                                   (item) => item.withModelConnection(
-                                    model.slug,
+                                    model.modelId,
                                     mode,
                                   ),
                                 ),
@@ -279,7 +279,7 @@ class ProviderEditor extends StatelessWidget {
                               ? null
                               : (mode) => onUpdate(
                                   (item) => item.withModelConnection(
-                                    model.slug,
+                                    model.modelId,
                                     mode,
                                   ),
                                 ),
@@ -311,12 +311,12 @@ class ProviderEditor extends StatelessWidget {
                           index: index,
                           model: provider.customModels[index],
                           enabled: !saving,
-                          conflictingSlug: provider.models.any(
+                          conflictingModelId: provider.models.any(
                             (candidate) =>
                                 candidate.origin !=
                                     ProviderModelOrigin.manual &&
-                                candidate.slug ==
-                                    provider.customModels[index].slug,
+                                candidate.modelId ==
+                                    provider.customModels[index].modelId,
                           ),
                           onChanged: (model) =>
                               onUpdateCustomModel(index, model),
@@ -362,14 +362,14 @@ class _CustomModelEditor extends StatelessWidget {
     required this.index,
     required this.model,
     required this.enabled,
-    required this.conflictingSlug,
+    required this.conflictingModelId,
     required this.onChanged,
     required this.onRemove,
   });
   final int index;
   final ProviderModelView model;
   final bool enabled;
-  final bool conflictingSlug;
+  final bool conflictingModelId;
   final ValueChanged<ProviderModelView> onChanged;
   final VoidCallback onRemove;
 
@@ -384,15 +384,15 @@ class _CustomModelEditor extends StatelessWidget {
               Expanded(
                 child: SettingsTextEdit(
                   key: StudioDriverKeys.customModelId(index),
-                  label: context.l10n.settingsModelSlug,
-                  value: model.slug,
+                  label: context.l10n.settingsModelId,
+                  value: model.modelId,
                   enabled: enabled,
                   onChanged: (value) => onChanged(
                     model.copyWith(
-                      slug: value,
+                      modelId: value,
                       origin: ProviderModelOrigin.manual,
                       displayName:
-                          model.displayName == model.slug ||
+                          model.displayName == model.modelId ||
                               model.displayName == 'Custom model'
                           ? value
                           : model.displayName,
@@ -407,11 +407,11 @@ class _CustomModelEditor extends StatelessWidget {
               ),
             ],
           ),
-          if (conflictingSlug)
+          if (conflictingModelId)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                context.l10n.settingsManualModelSlugConflict,
+                context.l10n.settingsManualModelIdConflict,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),

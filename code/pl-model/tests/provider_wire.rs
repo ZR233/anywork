@@ -41,6 +41,32 @@ fn user(text: &str) -> Message {
 }
 
 #[test]
+fn selectable_models_still_reject_unsupported_tools_before_io() {
+    let mut model = ModelInfo::compatible("selectable-text-model");
+    model.capabilities.tools.function_calling = false;
+    let runtime = ModelRuntime::new(
+        ProviderEndpoint::compatible("fixture", "http://127.0.0.1:1"),
+        model,
+    )
+    .unwrap();
+    let request = CompletionRequest::builder()
+        .messages(vec![user("hello")])
+        .build();
+    assert!(runtime.prepare_request(request).is_ok());
+    let request = CompletionRequest::builder()
+        .messages(vec![user("hello")])
+        .tools(vec![ToolSpec::function(
+            "lookup",
+            "Lookup",
+            json!({"type":"object"}),
+        )])
+        .build();
+    assert!(
+        matches!(runtime.prepare_request(request), Err(pl_protocol::PureError::ConfigError(message)) if message == "model selectable-text-model does not support function calling")
+    );
+}
+
+#[test]
 fn retained_media_is_validated_before_model_admission() {
     use pl_core::context::ResourceReference;
     use pl_model::model::{
@@ -84,17 +110,17 @@ fn request(prompt: &str) -> CompletionRequest {
         .build()
 }
 
-fn model(slug: &str, profile: ModelTransportProfile) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.binding.set_transport(profile);
     model
 }
 
-fn bundled(slug: &str) -> ModelInfo {
+fn bundled(model_id: &str) -> ModelInfo {
     default_models()
         .unwrap()
         .into_iter()
-        .find(|model| model.slug == slug)
+        .find(|model| model.model_id == model_id)
         .unwrap()
 }
 
@@ -103,8 +129,8 @@ fn deepseek_catalog_does_not_advertise_ignored_responses_web_search() {
     let endpoint = ProviderEndpoint::deepseek(None);
     assert!(!endpoint.service_capabilities.web_search.hosted_responses);
 
-    for slug in ["deepseek-flash", "deepseek-v4-pro"] {
-        assert!(!bundled(slug).capabilities.web_search, "{slug}");
+    for model_id in ["deepseek-flash", "deepseek-v4-pro"] {
+        assert!(!bundled(model_id).capabilities.web_search, "{model_id}");
     }
 }
 
@@ -1778,10 +1804,10 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
         .unwrap();
     let model = preset
         .provider
-        .effective_models()
+        .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.slug == "grok-4.7")
+        .find(|model| model.model_id == "grok-4.7")
         .unwrap();
     assert_eq!(
         model.binding.transport,
@@ -2363,10 +2389,10 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
         .unwrap();
     let model = preset
         .provider
-        .effective_models()
+        .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.slug == "glm-5.3")
+        .find(|model| model.model_id == "glm-5.3")
         .unwrap();
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
@@ -2410,10 +2436,10 @@ async fn new_openai_provider_routes_gpt6_sol_none_effort_through_responses() {
         .unwrap();
     let mut model = preset
         .provider
-        .effective_models()
+        .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.slug == preset.suggested_model)
+        .find(|model| model.model_id == preset.suggested_model)
         .unwrap();
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
@@ -2777,7 +2803,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         None,
     );
     assert!(other_account.validate_context_origin(&context).is_err());
-    info.slug = "target-model".into();
+    info.model_id = "target-model".into();
     info.capabilities.native_context_family = None;
     let unproven = ThreadModel::new(
         ModelRuntime::new_with_provider_id("source", endpoint.clone(), info.clone()).unwrap(),

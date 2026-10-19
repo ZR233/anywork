@@ -3,8 +3,6 @@
 mod compiler;
 mod context;
 mod manager;
-mod model_compatibility;
-pub(crate) use model_compatibility::validate_thread_mode_model;
 mod registration;
 mod runtime;
 pub mod state;

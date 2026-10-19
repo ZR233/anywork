@@ -11,8 +11,8 @@ use pl_protocol::{
 use super::{ModelCatalogId, ModelDescriptor, ProviderConfig, ProviderPresetId};
 use super::{ProviderModelEntry, ProviderModelOrigin};
 use crate::model::{
-    ModelInfo, ModelModality, bundled_model_definition, default_models, mimo_default_model_slugs,
-    zhipu_default_model_slugs, zhipu_responses_default_model_slugs, zhipu_responses_models,
+    ModelInfo, ModelModality, bundled_model_definition, default_models, mimo_default_model_ids,
+    zhipu_default_model_ids, zhipu_responses_default_model_ids, zhipu_responses_models,
 };
 use crate::provider::{
     ProviderConnectionMode, ProviderEndpoint, ProviderServiceCapabilities, ProviderWireProtocol,
@@ -22,32 +22,10 @@ use crate::provider::{
 const MIMO_API_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const MIMO_TOKEN_PLAN_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
 
-const MIMO_DISCOVERY_EXCLUDED_SLUGS: &[&str] = &[
-    "mimo-v2.5-asr",
-    "mimo-v2.5-tts",
-    "mimo-v2.5-tts-voiceclone",
-    "mimo-v2.5-tts-voicedesign",
-];
-
-/// OpenAI 官方的非对话模型家族（图像生成、嵌入、语音与审核），按厂商文档静态声明。
-const OPENAI_DISCOVERY_EXCLUDED_PREFIXES: &[&str] = &[
-    "gpt-image-",
-    "dall-e-",
-    "text-embedding-",
-    "tts-",
-    "whisper-",
-    "omni-moderation-",
-    "text-moderation-",
-];
-
 /// 目录声明的在线探测能力；未声明时该 catalog 保持静态或显式语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCatalogDiscovery {
     pub transport: crate::model::ModelTransportProfile,
-    /// 精确排除的非对话模型 slug；只作用于在线观察结果。
-    pub excluded_slugs: Vec<String>,
-    /// 按 slug 前缀声明排除的非对话模型家族；与 `excluded_slugs` 一样只作用于在线观察结果。
-    pub excluded_prefixes: Vec<String>,
 }
 
 /// 一组由 PL 维护且对产品只读的模型定义。
@@ -92,11 +70,6 @@ impl ProviderCatalogRegistry {
                 models: openai.models,
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_websocket(),
-                    excluded_slugs: Vec::new(),
-                    excluded_prefixes: OPENAI_DISCOVERY_EXCLUDED_PREFIXES
-                        .iter()
-                        .map(|prefix| (*prefix).to_string())
-                        .collect(),
                 }),
             },
             ModelCatalog {
@@ -104,8 +77,6 @@ impl ProviderCatalogRegistry {
                 models: deepseek.models,
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_http(),
-                    excluded_slugs: Vec::new(),
-                    excluded_prefixes: Vec::new(),
                 }),
             },
             ModelCatalog {
@@ -113,11 +84,9 @@ impl ProviderCatalogRegistry {
                 models: xai.models,
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_http(),
-                    excluded_slugs: Vec::new(),
-                    excluded_prefixes: Vec::new(),
                 }),
             },
-            model_catalog("zhipu", zhipu_default_model_slugs())?,
+            model_catalog("zhipu", zhipu_default_model_ids())?,
             zhipu_responses_catalog(),
             mimo_catalog()?,
             model_catalog("openai-compatible", &[])?,
@@ -245,14 +214,14 @@ impl ProviderCatalogRegistry {
                 model
                     .binding
                     .transport
-                    .validate(&model.slug)
+                    .validate(&model.model_id)
                     .map_err(|error| PureError::ConfigError(error.to_string()))?;
             }
             if !preset.suggested_model.is_empty()
                 && !catalog
                     .models
                     .iter()
-                    .any(|model| model.slug == preset.suggested_model)
+                    .any(|model| model.model_id == preset.suggested_model)
             {
                 return Err(PureError::ConfigError(format!(
                     "provider preset {} references missing suggested model: {}",
@@ -334,10 +303,10 @@ pub fn builtin_model_catalog(id: &ModelCatalogId) -> Result<ModelCatalog> {
         .ok_or_else(|| PureError::ConfigError(format!("unknown model catalog: {id}")))
 }
 
-fn model_catalog(id: &str, slugs: &[&str]) -> Result<ModelCatalog> {
+fn model_catalog(id: &str, model_ids: &[&str]) -> Result<ModelCatalog> {
     let models = default_models()?
         .into_iter()
-        .filter(|model| slugs.contains(&model.slug.as_str()))
+        .filter(|model| model_ids.contains(&model.model_id.as_str()))
         .collect();
     Ok(ModelCatalog {
         id: ModelCatalogId::new(id).expect("static model catalog id is valid"),
@@ -347,24 +316,19 @@ fn model_catalog(id: &str, slugs: &[&str]) -> Result<ModelCatalog> {
 }
 
 fn mimo_catalog() -> Result<ModelCatalog> {
-    let mut catalog = model_catalog("mimo", mimo_default_model_slugs())?;
+    let mut catalog = model_catalog("mimo", mimo_default_model_ids())?;
     catalog.discovery = Some(ModelCatalogDiscovery {
         transport: crate::model::ModelTransportProfile::chat_completions_http(),
-        excluded_slugs: MIMO_DISCOVERY_EXCLUDED_SLUGS
-            .iter()
-            .map(|slug| (*slug).to_string())
-            .collect(),
-        excluded_prefixes: Vec::new(),
     });
     Ok(catalog)
 }
 
-/// Coding Plan 的 Responses 目录与通用 Chat 目录共用模型 slug，因此独立构造而不是按 slug 过滤。
+/// Coding Plan 的 Responses 目录与通用 Chat 目录共用模型 model_id，因此独立构造而不是按 model_id 过滤。
 fn zhipu_responses_catalog() -> ModelCatalog {
-    let slugs = zhipu_responses_default_model_slugs();
+    let model_ids = zhipu_responses_default_model_ids();
     let models = zhipu_responses_models()
         .into_iter()
-        .filter(|model| slugs.contains(&model.slug.as_str()))
+        .filter(|model| model_ids.contains(&model.model_id.as_str()))
         .collect();
     ModelCatalog {
         id: ModelCatalogId::new("zhipu-responses").expect("static model catalog id is valid"),
@@ -474,12 +438,13 @@ pub fn model_descriptor(entry: &ProviderModelEntry) -> ModelDescriptor {
                 .label
                 .clone()
                 .unwrap_or_else(|| "Reasoning effort".to_string()),
-            default: parameter.candidates.first().cloned(),
+            default: parameter.default_candidate(None),
             candidates: parameter.candidates.clone(),
         });
     let pricing = model.pricing.catalog_pricing();
     ModelDescriptor {
-        id: model.slug.clone(),
+        id: model.model_id.clone(),
+        type_support: vec![model.type_support(crate::model::ModelType::Text)],
         origin: match entry.origin {
             ProviderModelOrigin::Bundled => pl_protocol::ModelOriginDto::Bundled,
             ProviderModelOrigin::Online => pl_protocol::ModelOriginDto::Online,

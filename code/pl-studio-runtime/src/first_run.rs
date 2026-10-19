@@ -63,14 +63,14 @@ impl ProviderTemplateKind {
     }
 
     pub fn default_models(&self) -> Result<Vec<ModelInfo>> {
-        self.preset()?.provider.effective_models()
+        self.preset()?.provider.effective_models(None)
     }
 
-    pub fn default_model_slugs(&self) -> Result<Vec<String>> {
+    pub fn default_model_ids(&self) -> Result<Vec<String>> {
         Ok(self
             .default_models()?
             .into_iter()
-            .map(|model| model.slug)
+            .map(|model| model.model_id)
             .collect())
     }
 
@@ -99,9 +99,9 @@ impl FirstRunModelDraft {
         Self { config }
     }
 
-    pub fn custom(slug: impl Into<String>) -> Self {
+    pub fn custom(model_id: impl Into<String>) -> Self {
         Self {
-            config: ModelInfo::compatible(&slug.into()),
+            config: ModelInfo::compatible(&model_id.into()),
         }
     }
 }
@@ -177,7 +177,7 @@ impl FirstRunProviderDraft {
             }
         }
 
-        let models = provider.effective_models()?;
+        let models = provider.effective_models(None)?;
         validate_models(&self.key, &default_model, &models)?;
 
         Ok(provider)
@@ -345,24 +345,24 @@ fn validate_provider_key(key: &str) -> Result<()> {
 }
 
 fn validate_models(provider_key: &str, default_model: &str, models: &[ModelInfo]) -> Result<()> {
-    let mut slugs = BTreeSet::new();
+    let mut model_ids = BTreeSet::new();
     for model in models {
-        if model.slug.trim().is_empty() {
+        if model.model_id.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has a model with empty slug"
+                "provider {provider_key} has a model with empty model_id"
             )));
         }
-        if !slugs.insert(model.slug.clone()) {
+        if !model_ids.insert(model.model_id.clone()) {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has duplicate model slug: {}",
-                model.slug
+                "provider {provider_key} has duplicate model model_id: {}",
+                model.model_id
             )));
         }
     }
 
     let _model = models
         .iter()
-        .find(|model| model.slug == default_model)
+        .find(|model| model.model_id == default_model)
         .ok_or_else(|| {
             PureError::ConfigError(format!(
                 "provider {provider_key} default_model is not in models: {default_model}"
@@ -371,14 +371,14 @@ fn validate_models(provider_key: &str, default_model: &str, models: &[ModelInfo]
     Ok(())
 }
 
-fn role_effort(provider: &ProviderConfig, model_slug: &str) -> Result<Option<String>> {
-    let models = provider.effective_models()?;
+fn role_effort(provider: &ProviderConfig, model_id: &str) -> Result<Option<String>> {
+    let models = provider.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.slug == model_slug)
+        .find(|model| model.model_id == model_id)
         .ok_or_else(|| {
             PureError::ConfigError(format!(
-                "default model is missing from provider: {model_slug}"
+                "default model is missing from provider: {model_id}"
             ))
         })?;
     Ok(model.default_effort())

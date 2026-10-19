@@ -99,7 +99,7 @@ pub(crate) fn bridge_settings(
                     .model_connection_modes
                     .into_iter()
                     .map(|mode| BridgeModelConnectionSettingsDto {
-                        slug: mode.slug,
+                        model_id: mode.model_id,
                         connection_mode: mode.connection_mode,
                     })
                     .collect(),
@@ -107,7 +107,7 @@ pub(crate) fn bridge_settings(
                     .model_auto_compact_limits
                     .into_iter()
                     .map(|limit| BridgeModelAutoCompactSettingsDto {
-                        slug: limit.slug,
+                        model_id: limit.model_id,
                         default_limit: limit.default_limit,
                         override_limit: limit.override_limit,
                         effective_limit: limit.effective_limit,
@@ -231,7 +231,7 @@ fn bridge_custom_model_settings(
             .collect(),
         context_window: model.context_window,
         max_output_tokens: model.max_output_tokens,
-        slug: model.slug,
+        model_id: model.model_id,
         display_name: model.display_name,
         reasoning_efforts: model.reasoning_efforts,
         base_instructions: model.base_instructions,
@@ -271,7 +271,7 @@ pub(crate) fn provider_settings_request(
                 .custom_models
                 .into_iter()
                 .map(|model| pl_protocol::studio::ProviderModelUpdate {
-                    slug: model.slug,
+                    model_id: model.model_id,
                     display_name: model.display_name,
                     wire_protocol: model.wire_protocol,
                     context_window: model.context_window,
@@ -282,7 +282,7 @@ pub(crate) fn provider_settings_request(
                 .model_connection_modes
                 .into_iter()
                 .map(|mode| pl_protocol::studio::ProviderModelConnectionUpdate {
-                    slug: mode.slug,
+                    model_id: mode.model_id,
                     connection_mode: mode.connection_mode,
                 })
                 .collect(),
@@ -291,7 +291,7 @@ pub(crate) fn provider_settings_request(
                 .into_iter()
                 .map(
                     |limit| pl_protocol::studio::ProviderModelAutoCompactUpdate {
-                        slug: limit.slug,
+                        model_id: limit.model_id,
                         limit: limit.limit,
                     },
                 )

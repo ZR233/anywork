@@ -126,8 +126,8 @@ impl AgentModelConfig {
             ))
         })?;
         provider.validate_declarations(&route.provider)?;
-        let models = provider.effective_models()?;
-        let Some(model) = models.iter().find(|model| model.slug == route.model) else {
+        let models = provider.effective_models(None)?;
+        let Some(model) = models.iter().find(|model| model.model_id == route.model) else {
             if provider.discovery_profile()?.is_none() {
                 return Err(PureError::ConfigError(format!(
                     "model route references missing model: {}",
@@ -159,13 +159,22 @@ impl AgentModelConfig {
             Some(effort) => candidates.iter().any(|c| c == effort.as_str()),
         };
         if !valid {
-            // Hand-written models are authoritative desired declarations, not external
-            // observations. Their invalid choices remain strict even on an online provider.
-            if provider.discovery_profile()?.is_none()
-                || provider
-                    .editable_models()
-                    .iter()
-                    .any(|manual| manual.slug == route.model)
+            // Local selections stay strict unless a shared online declaration withdrew
+            // their candidates. Keep that saved route explicitly unavailable.
+            let observed_candidates = model.observation.as_ref().is_some_and(|observation| {
+                observation
+                    .fields
+                    .contains_key(&crate::model::ModelMetadataField::Parameters)
+                    || observation
+                        .fields
+                        .contains_key(&crate::model::ModelMetadataField::Reasoning)
+            });
+            if !observed_candidates
+                && (provider.discovery_profile()?.is_none()
+                    || provider
+                        .editable_models()
+                        .iter()
+                        .any(|manual| manual.model_id == route.model))
             {
                 return Err(PureError::ConfigError(
                     "model route has invalid effort selection".into(),
@@ -220,10 +229,10 @@ impl AgentModelConfig {
                 route.provider
             ))
         })?;
-        let models = provider.effective_models()?;
+        let models = provider.effective_models(None)?;
         let model = models
             .iter()
-            .find(|model| model.slug == route.model)
+            .find(|model| model.model_id == route.model)
             .cloned()
             .ok_or_else(|| {
                 PureError::ConfigError(format!(

@@ -231,8 +231,8 @@ abstract final class StudioDriverKeys {
   static const providerModelAdd = ValueKey<String>('provider-model-add');
   static ValueKey<String> providerManualModelDelete(
     String providerId,
-    String slug,
-  ) => ValueKey<String>('settings.provider.$providerId.model.$slug.delete');
+    String modelId,
+  ) => ValueKey<String>('settings.provider.$providerId.model.$modelId.delete');
   static const providerManualModelDeleteConfirm = ValueKey<String>(
     'settings.provider.model.delete.confirm',
   );

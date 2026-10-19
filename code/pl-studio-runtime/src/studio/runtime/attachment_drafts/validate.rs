@@ -29,7 +29,10 @@ fn validate_predicted_counts(
             .capabilities
             .input_capability(model_modality(modality))
             .with_context(|| {
-                format!("model {} does not support {:?} input", model.slug, modality)
+                format!(
+                    "model {} does not support {:?} input",
+                    model.model_id, modality
+                )
             })?;
         if let Some(max_count) = capability.limits.max_count {
             ensure!(count <= max_count, "attachment count exceeds model limit");
@@ -223,7 +226,12 @@ pub(super) fn validate_model_source(
     let capability = model
         .capabilities
         .input_capability(model_modality)
-        .with_context(|| format!("model {} does not support {:?} input", model.slug, modality))?;
+        .with_context(|| {
+            format!(
+                "model {} does not support {:?} input",
+                model.model_id, modality
+            )
+        })?;
     let source = match source {
         DraftSourceKind::Local => ModelInputSource::Local,
         DraftSourceKind::RemoteUrl => ModelInputSource::RemoteUrl,
@@ -231,7 +239,7 @@ pub(super) fn validate_model_source(
     ensure!(
         capability.supports_source(source),
         "model {} does not support {:?} {:?} input",
-        model.slug,
+        model.model_id,
         source,
         modality
     );
@@ -239,14 +247,19 @@ pub(super) fn validate_model_source(
         .binding
         .request
         .media_profile(model_modality)
-        .with_context(|| format!("model {} has no {:?} request profile", model.slug, modality))?;
+        .with_context(|| {
+            format!(
+                "model {} has no {:?} request profile",
+                model.model_id, modality
+            )
+        })?;
     ensure!(
         profile.replay.iter().any(|representation| matches!(
             representation,
             MediaRepresentation::DataUrl | MediaRepresentation::ProviderFile
         )),
         "model {} cannot replay {:?} snapshots",
-        model.slug,
+        model.model_id,
         modality
     );
     Ok(())
@@ -263,7 +276,7 @@ fn validate_mix_policy(
     ensure!(
         unique.len() <= 1,
         "model {} accepts only one attachment modality per request",
-        model.slug
+        model.model_id
     );
     Ok(())
 }

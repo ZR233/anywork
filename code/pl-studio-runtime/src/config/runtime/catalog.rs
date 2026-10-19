@@ -102,18 +102,37 @@ impl ConfigRuntime {
             Ok(ModelCatalogQueryResult::Updated {
                 identity,
                 etag,
-                models,
+                mut models,
             }) => {
                 if identity != probe.query.identity() {
                     return Ok(());
                 }
-                Ok(SuccessCache::new(
-                    &probe.provider,
-                    &identity,
-                    etag,
-                    models,
-                    unix_seconds(),
-                ))
+                let minimum = state
+                    .observations
+                    .values()
+                    .filter_map(|observation| observation.cache.as_ref())
+                    .flat_map(|cache| &cache.models)
+                    .filter_map(|model| model.observation.as_ref())
+                    .map(pl_model::model::ModelObservation::latest_order)
+                    .max()
+                    .unwrap_or(0);
+                match model_catalog::next_observation_order(self.store.paths(), minimum) {
+                    Ok(order) => {
+                        for model in &mut models {
+                            if let Some(observation) = &mut model.observation {
+                                observation.commit(order);
+                            }
+                        }
+                        Ok(SuccessCache::new(
+                            &probe.provider,
+                            &identity,
+                            etag,
+                            models,
+                            unix_seconds(),
+                        ))
+                    }
+                    Err(_) => Err(StudioModelCatalogError::CacheWrite),
+                }
             }
             Ok(ModelCatalogQueryResult::NotModified { identity, etag }) => {
                 if identity != probe.query.identity() {
@@ -141,14 +160,23 @@ impl ConfigRuntime {
             Ok(cache) => {
                 // Validate the complete proposed observation before touching the previous durable file.
                 next.cache = Some(cache.clone());
-                let effective = effective_runtime_config(&desired, &next_observations)?;
-                effective.validate_declarations()?;
-                match cache.persist(self.store.paths(), &probe.provider, probe.query.identity()) {
-                    Ok(()) => {
-                        if effective.models.providers.get(&probe.provider)
-                            != current_providers.get(&probe.provider)
-                        {
-                            affected.push(probe.provider.clone());
+                let accepted = (|| {
+                    let effective = effective_runtime_config(&desired, &next_observations)
+                        .map_err(|_| StudioModelCatalogError::Protocol)?;
+                    effective
+                        .validate_declarations()
+                        .map_err(|_| StudioModelCatalogError::Protocol)?;
+                    cache
+                        .persist(self.store.paths(), &probe.provider, probe.query.identity())
+                        .map_err(|_| StudioModelCatalogError::CacheWrite)?;
+                    Ok(effective)
+                })();
+                match accepted {
+                    Ok(effective) => {
+                        for (id, provider) in &effective.models.providers {
+                            if current_providers.get(id) != Some(provider) {
+                                affected.push(id.clone());
+                            }
                         }
                         effective_config = Some(effective);
                         let next = next_observations.get_mut(&probe.provider).ok_or_else(|| {
@@ -160,12 +188,12 @@ impl ConfigRuntime {
                         next.status.error = None;
                         next.status.cache_warning = None;
                     }
-                    Err(_) => {
+                    Err(error) => {
                         let next = next_observations.get_mut(&probe.provider).ok_or_else(|| {
                             PureError::ConfigError("model observation is missing".into())
                         })?;
                         next.cache = old.cache.clone();
-                        next.status.error = Some(StudioModelCatalogError::CacheWrite);
+                        next.status.error = Some(error);
                     }
                 }
             }

@@ -30,16 +30,16 @@ Future<void> main(List<String> args) async {
     final id = '${fixture['id']}';
     final model = '${fixture['defaultModel']}';
     final siblings = {
-      for (final slug in _models(fixture))
-        if (slug != model) slug: _limit(baseline, id, slug),
+      for (final modelId in _models(fixture))
+        if (modelId != model) modelId: _limit(baseline, id, modelId),
     };
     await recorder.openProviders();
     await recorder.assertProviderListRedacted(id, model);
     await recorder.openDetails(id);
     await recorder.capture('details-defaults', await recorder.readSnapshot());
     await driver.waitForAbsent(find.byValueKey('provider-save'));
-    final preset = _models(fixture).singleWhere((slug) {
-      final limit = _limit(baseline, id, slug);
+    final preset = _models(fixture).singleWhere((modelId) {
+      final limit = _limit(baseline, id, modelId);
       return limit['safe'] != null && limit['default'] != limit['safe'];
     });
     await recorder._scrollTo(
@@ -102,7 +102,7 @@ Future<void> main(List<String> args) async {
     }
 
     final unknown = _models(fixture)
-        .where((slug) => _limit(baseline, id, slug)['safe'] == null)
+        .where((modelId) => _limit(baseline, id, modelId)['safe'] == null)
         .single;
     if (_limit(baseline, id, unknown)['default'] != null) {
       throw StateError('unknown-capacity fixture fabricated a default');
@@ -194,12 +194,12 @@ class _Recorder {
   Future<void> assertProviderListRedacted(String id, String model) async {
     verifyProviderListRedacted(
       await readSnapshot(),
-      fixtureModelSlug: model,
+      fixtureModelId: model,
       providerId: id,
     );
     final tree = await driver.renderTree();
     if (tree.contains(model)) {
-      throw StateError('provider list rendered model slug');
+      throw StateError('provider list rendered model modelId');
     }
   }
 
@@ -231,26 +231,26 @@ class _Recorder {
     );
   }
 
-  Future<void> setCompactInput(String id, String slug, String value) async {
+  Future<void> setCompactInput(String id, String modelId, String value) async {
     final finder = find.byValueKey(
-      'provider-$id-model-$slug-auto-compact-input',
+      'provider-$id-model-$modelId-auto-compact-input',
     );
     await _scrollTo(finder);
     await driver.tap(finder);
     await driver.enterText(value);
   }
 
-  Future<void> moveCompactSlider(String id, String slug) async {
+  Future<void> moveCompactSlider(String id, String modelId) async {
     final finder = find.byValueKey(
-      'provider-$id-model-$slug-auto-compact-slider',
+      'provider-$id-model-$modelId-auto-compact-slider',
     );
     await _scrollTo(finder);
     await driver.rawTap(finder);
   }
 
-  Future<void> tapCompactReset(String id, String slug) async {
+  Future<void> tapCompactReset(String id, String modelId) async {
     final finder = find.byValueKey(
-      'provider-$id-model-$slug-auto-compact-reset',
+      'provider-$id-model-$modelId-auto-compact-reset',
     );
     await _scrollTo(finder);
     await driver.tap(finder);
@@ -269,8 +269,8 @@ List<String> _models(Map<String, dynamic> provider) => [
 Map<String, dynamic> _limit(
   Map<String, dynamic> snapshot,
   String id,
-  String slug,
+  String modelId,
 ) => (_provider(snapshot, id)['autoCompactLimits'] as List)
     .cast<Map>()
-    .singleWhere((limit) => limit['slug'] == slug)
+    .singleWhere((limit) => limit['modelId'] == modelId)
     .cast<String, dynamic>();

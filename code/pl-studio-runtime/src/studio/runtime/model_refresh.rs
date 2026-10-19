@@ -84,12 +84,10 @@ impl StudioRuntime {
             if !is_child {
                 let mode_id =
                     crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(record.mode);
-                let mode = self
-                    .thread_modes
+                self.thread_modes
                     .snapshot()
                     .mode(&mode_id)
                     .context("current Thread Mode is unavailable")?;
-                crate::mode::validate_thread_mode_model(Some(&mode), &route.model)?;
             }
             Ok((route, config))
         }

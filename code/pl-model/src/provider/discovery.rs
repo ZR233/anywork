@@ -1,8 +1,6 @@
 //! Endpoint-owned model discovery, independent of inference/model selection.
 mod decode;
-
 pub(crate) use decode::enrich_unknown_model_fallback;
-pub(crate) use decode::excluded_by_discovery;
 
 use super::ProviderEndpoint;
 use crate::{
@@ -56,7 +54,7 @@ pub enum ModelCatalogQueryError {
 pub struct ModelCatalogQueryCache {
     pub identity: String,
     pub etag: Option<String>,
-    /// Cached/API pricing must be Unknown. Local current prices are joined by ProviderConfig.
+    /// Successful route declarations, including supported online token pricing.
     pub models: Vec<ModelInfo>,
 }
 
@@ -186,11 +184,7 @@ impl ModelCatalogQuery {
             crate::model::validate_inventory(&cache.models)
                 .map_err(|_| ModelCatalogQueryError::Protocol)?;
             if cache.models.iter().any(|model| {
-                !matches!(model.pricing, crate::model::ModelPricing::Unknown)
-                    || !valid_discovery_transport(
-                        &model.binding.transport,
-                        &self.discovery.transport,
-                    )
+                !valid_discovery_transport(&model.binding.transport, &self.discovery.transport)
             }) {
                 return Err(ModelCatalogQueryError::Protocol);
             }

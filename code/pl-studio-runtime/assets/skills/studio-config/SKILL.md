@@ -27,7 +27,7 @@ Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories a
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 21`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 22`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Unrecoverable global data corruption, unsupported versions and invalid references trigger one complete startup backup of `config.toml`, `agents/`, `v2/` and `studio/v2/` under `<home>/startup-backups/<unique-id>/original/`, followed by initialization with current defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery. The UI reports the backup location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures do not reset global data.
@@ -55,7 +55,7 @@ Web search is not a single selection. Both services are resolved independently o
 
 ## Model compaction thresholds
 
-Each provider catalog may store `auto_compact_overrides` keyed by exact model slug. A missing key means no user override: use the model's explicit `auto_compact_token_limit` preset, otherwise floor 90% of its resolved context capacity (`context_window`, falling back to `max_context_window`). Unknown capacity disables automatic compaction; never substitute zero or a guessed window. User overrides must be positive and the effective value cannot exceed the 90% safety limit. Restore default by removing only the corresponding override key; do not copy computed defaults into the configuration.
+Each provider catalog may store `auto_compact_overrides` keyed by exact model model_id. A missing key means no user override: use the model's explicit `auto_compact_token_limit` preset, otherwise floor 90% of its resolved context capacity (`context_window`, falling back to `max_context_window`). Unknown capacity disables automatic compaction; never substitute zero or a guessed window. User overrides must be positive and the effective value cannot exceed the 90% safety limit. Restore default by removing only the corresponding override key; do not copy computed defaults into the configuration.
 
 Edit a threshold directly in the provider detail card's model list: valid input saves automatically, and restore default clears the override. Other provider connection, credential and model-declaration edits still use their editor's Save/Cancel draft. A successful configuration reply does not change an in-flight model request; new bindings use it at their next safe refresh boundary.
 
@@ -69,11 +69,15 @@ The four built-in Zhipu MCP servers only borrow a usable key from `preset = "zhi
 
 A provider catalog either bundles a built-in model list or declares only user models. `additional_models` entries are user-authored and the only entries a user may add or delete; a `Bundled` catalog without an observation still resolves to its built-in list.
 
-Online discovery is declared per catalog, never per adapter: a catalog that supports it records the discovery transport and any excluded non-chat slugs. Once during startup the runtime queries every instance whose catalog declares discovery, one independent task per instance with its own query identity, timeout and cache file. A successful response replaces that instance's observed list as a whole, and a valid empty list is an accepted replacement. A failed query only records that instance's typed error and falls back to its built-in list; other instances and the first screen are unaffected, and no global revision or reset is triggered.
+Online discovery is declared per catalog, never per adapter: a catalog that supports it records the discovery transport; no model families are excluded. Once during startup the runtime queries every instance whose catalog declares discovery, one independent task per instance with its own query identity, timeout and cache file. A successful response replaces that instance's observed list as a whole, and a valid empty list is an accepted replacement. A failed query records that instance's typed error and retains its last successful snapshot, or its built-in list on first launch; it does not rewrite saved configuration or reset selections. Catalog status and shared metadata changes publish through the separate catalog revision.
 
-The effective model list is the observed online list union user models when an observation exists, otherwise the built-in list union user models; a user model with the same slug wins and hides the other entry. Snapshots mark every entry's origin (`bundled`, `online`, `manual`) so the UI groups them instead of inferring from slug differences.
+The effective model list is the observed online list union user models when an observation exists, otherwise the built-in list union user models; members are deduplicated by exact (provider_id, model_id); intrinsic fields merge globally by model_id, with the latest explicit online field ahead of explicit configuration and built-in definitions. Snapshots mark every entry's origin (`bundled`, `online`, `manual`) so the UI groups them instead of inferring from model_id differences.
 
-There is no manual or periodic refresh: the directory is synchronized once per launch, its status is read-only, and restarting the app is the only way to resynchronize. Deleting a user model requires an expected settings revision, is rejected for non-user entries, and also removes that slug's connection and compaction overrides. Model prices are inherited from the built-in catalog by exact, case-sensitive slug only; a slug without a price stays unpriced rather than zero, and a catalog change never recomputes recorded costs.
+Model queries without a type return this complete catalog. Session and Agent menus request the `text` type: the backend checks text input, text output and a positive resolved context window after the global merge. Provider settings keep the complete catalog. A saved route that no longer matches the filter remains selected with an explanation; filtering never rewrites routes or replaces request-time validation. Unknown context stays unknown unless an exact-ID declaration supplies it.
+
+Parameter defaults are independent of candidate order. A valid explicit selection takes precedence over a configured default, then the model-declared default, then the first candidate. Online defaults retain their own declaration order: missing fields and HTTP 304 do not promote an old value, explicit null clears it, and a default cannot restore withdrawn candidates. Cache normalization upgrades keep the last successful snapshot while forcing a fresh response body before resuming conditional requests.
+
+There is no manual or periodic refresh: the directory is synchronized once per launch, its status is read-only, and restarting the app is the only way to resynchronize. Deleting a user model requires an expected settings revision, is rejected for non-user entries, and also removes that model_id's connection and compaction overrides. Supported online prices with explicit currency and token units override only that provider route; missing or unsupported prices keep the local route price. Invalid recognized prices reject the observation. A route without a price stays unpriced rather than zero, and a catalog change never recomputes recorded costs.
 
 The Providers tab reads the catalog snapshot produced by that startup synchronization; it does not poll instances or retrigger queries when the tab becomes visible. The read-only `usageQueryRevision` is a non-secret, runtime-owned query identity, not a TOML setting or secret fingerprint.
 
@@ -82,7 +86,7 @@ The Providers tab reads the catalog snapshot produced by that startup synchroniz
 Every provider needs `name`, `base_url`, and a `catalog` section; every role needs a route. `effort` is optional and must match the model's supported effort candidates.
 
 ```toml
-schema_version = 21
+schema_version = 22
 
 [deepseek_web_search]
 enabled = true

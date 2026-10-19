@@ -404,14 +404,14 @@ impl StudioRuntime {
             .providers
             .get(&provider_id)
             .ok_or_else(|| invalid_settings_argument("Default provider does not exist"))?;
-        let models = provider.effective_models()?;
+        let models = provider.effective_models(None)?;
         let current_route = current
             .config
             .mode_model_routes
             .get(&ThreadModeId::simple())
             .filter(|route| route.provider == provider_id);
         let model = current_route
-            .and_then(|route| models.iter().find(|model| model.slug == route.model))
+            .and_then(|route| models.iter().find(|model| model.model_id == route.model))
             .or_else(|| {
                 current
                     .config
@@ -419,12 +419,12 @@ impl StudioRuntime {
                     .routes
                     .values()
                     .find(|route| route.provider == provider_id)
-                    .and_then(|route| models.iter().find(|model| model.slug == route.model))
+                    .and_then(|route| models.iter().find(|model| model.model_id == route.model))
             })
             .or_else(|| models.first())
             .ok_or_else(|| invalid_settings_argument("Default provider has no usable models"))?;
         let effort = current_route
-            .and_then(|route| (route.model == model.slug).then_some(route.effort.as_ref()))
+            .and_then(|route| (route.model == model.model_id).then_some(route.effort.as_ref()))
             .flatten()
             .map(|effort| effort.as_str().to_string())
             .or_else(|| model.default_effort());
@@ -432,7 +432,7 @@ impl StudioRuntime {
             &current.config,
             "Default provider",
             provider_id.as_str(),
-            &model.slug,
+            &model.model_id,
             effort.as_deref(),
         )?;
         let mut next = current.config.clone();
@@ -454,9 +454,11 @@ impl StudioRuntime {
         request: RemoveProviderModelRequest,
     ) -> Result<SettingsCommandReply> {
         let provider_id = ProviderId::new(request.provider_id.trim())?;
-        let slug = request.slug.trim();
-        if slug.is_empty() {
-            return Err(invalid_settings_argument("Model slug must not be empty"));
+        let model_id = request.model_id.trim();
+        if model_id.is_empty() {
+            return Err(invalid_settings_argument(
+                "Model model_id must not be empty",
+            ));
         }
         let mut changed = false;
         let state = self.config_runtime.update_with_effective(
@@ -468,7 +470,7 @@ impl StudioRuntime {
                         "provider does not exist: {provider_id}"
                     ))
                 })?;
-                provider.remove_manual_model(slug)?;
+                provider.remove_manual_model(model_id)?;
                 next.validate_declarations()?;
                 changed = desired != &next;
                 Ok(next)
@@ -476,7 +478,7 @@ impl StudioRuntime {
         )?;
         self.publish_settings_state(state.clone())?;
         self.settings_command_reply(
-            format!("remove-provider-model:{provider_id}:{slug}"),
+            format!("remove-provider-model:{provider_id}:{model_id}"),
             &state,
             changed,
             CommandEffectPoint::FutureSession,
@@ -543,8 +545,7 @@ impl StudioRuntime {
         }
         let mode = crate::studio::thread_projection::saved_mode(&state)?
             .unwrap_or_else(|| record.mode.clone());
-        let mode_definition = self
-            .thread_modes
+        self.thread_modes
             .snapshot()
             .mode(&mode)
             .context("current Thread Mode is unavailable")?;
@@ -559,7 +560,7 @@ impl StudioRuntime {
             .config
             .models
             .resolve_route(StudioRole::Planner.id(), &selector)?;
-        crate::mode::validate_thread_mode_model(Some(&mode_definition), &route.model)?;
+
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
@@ -807,24 +808,22 @@ pub(super) fn validated_route(
     config: &crate::StudioConfig,
     subject: &str,
     provider_id: &str,
-    model_slug: &str,
+    model_id: &str,
     effort: Option<&str>,
 ) -> Result<ModelRouteConfig> {
     let provider_id = provider_id.trim();
-    let model_slug = model_slug.trim();
+    let model_id = model_id.trim();
     let provider_key = ProviderId::new(provider_id)?;
     let provider = config
         .models
         .providers
         .get(&provider_key)
         .with_context(|| format!("{subject} references missing provider: {provider_id}"))?;
-    let models = provider.effective_models()?;
+    let models = provider.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.slug == model_slug)
-        .with_context(|| {
-            format!("{subject} references missing model: {provider_id}.{model_slug}")
-        })?;
+        .find(|model| model.model_id == model_id)
+        .with_context(|| format!("{subject} references missing model: {provider_id}.{model_id}"))?;
     let resolved_effort = match effort.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => {
             if !model
@@ -833,7 +832,7 @@ pub(super) fn validated_route(
                 .any(|candidate| candidate == value)
             {
                 bail!(
-                    "{subject} uses unsupported effort '{value}' for model {provider_id}.{model_slug}"
+                    "{subject} uses unsupported effort '{value}' for model {provider_id}.{model_id}"
                 );
             }
             Some(value.to_string())
@@ -842,7 +841,7 @@ pub(super) fn validated_route(
     };
     Ok(ModelRouteConfig {
         provider: provider_key,
-        model: model_slug.to_string(),
+        model: model_id.to_string(),
         effort: resolved_effort.map(ReasoningEffort::new),
     })
 }

@@ -323,7 +323,7 @@ class DemoStudioTransport extends StudioTransport
   SettingsStateSnapshot _demoSettingsState() {
     final defaultProvider = _demoDefaultProvider();
     final defaultModel = defaultProvider.models
-        .where((model) => model.slug == defaultProvider.defaultModel)
+        .where((model) => model.modelId == defaultProvider.defaultModel)
         .firstOrNull;
     final effort = defaultModel?.defaultReasoningEffort;
     final resolvedEffort = effort?.isNotEmpty == true
@@ -456,13 +456,13 @@ class DemoStudioTransport extends StudioTransport
     final models = _providerCatalog.modelsFor(preset.modelCatalogId);
     final model =
         models
-            .where((candidate) => candidate.slug == preset.suggestedModel)
+            .where((candidate) => candidate.modelId == preset.suggestedModel)
             .firstOrNull ??
         models.first;
     return ModeModelRouteView(
       modeId: mode,
       providerId: preset.id,
-      model: model.slug,
+      model: model.modelId,
       effort: model.defaultReasoningEffort.isNotEmpty
           ? model.defaultReasoningEffort
           : model.reasoningEfforts.firstOrNull ?? '',
@@ -1419,7 +1419,7 @@ class DemoStudioTransport extends StudioTransport
           [
             for (final m in p.customModels)
               [
-                m.slug,
+                m.modelId,
                 m.displayName,
                 m.wireProtocol,
                 m.contextWindow,
@@ -1991,7 +1991,7 @@ class DemoStudioTransport extends StudioTransport
     final selected = current.providers
         .firstWhere((provider) => provider.id == providerId)
         .models
-        .firstWhere((candidate) => candidate.slug == model);
+        .firstWhere((candidate) => candidate.modelId == model);
     final selectedEffort = selected.reasoningEfforts.contains(effort)
         ? effort
         : selected.reasoningEfforts.firstOrNull ?? '';
@@ -3099,17 +3099,17 @@ class DemoStudioTransport extends StudioTransport
   Future<SettingsCommandReply> removeProviderModel(
     int expectedSettingsRevision,
     String providerId,
-    String slug,
+    String modelId,
   ) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
-    if (slug.trim().isEmpty) {
-      throw StateError('Model slug must not be empty');
+    if (modelId.trim().isEmpty) {
+      throw StateError('Model modelId must not be empty');
     }
     final providers = [
       for (final provider in before.providers)
         if (provider.id == providerId)
-          _demoRemoveManualModel(provider, slug)
+          _demoRemoveManualModel(provider, modelId)
         else
           provider,
     ];
@@ -3119,7 +3119,7 @@ class DemoStudioTransport extends StudioTransport
     _providers = providers;
     _settingsRevision += 1;
     return _demoSettingsReply(
-      OperationId('remove-provider-model:$providerId:$slug'),
+      OperationId('remove-provider-model:$providerId:$modelId'),
       before,
     );
   }
@@ -3326,20 +3326,20 @@ class DemoStudioTransport extends StudioTransport
 
   ProviderSettingsView _demoRemoveManualModel(
     ProviderSettingsView provider,
-    String slug,
+    String modelId,
   ) {
     final target = provider.models
-        .where((model) => model.slug == slug)
+        .where((model) => model.modelId == modelId)
         .firstOrNull;
     if (target == null || target.origin != ProviderModelOrigin.manual) {
-      throw StateError('unknown demo manual model: ${provider.id} / $slug');
+      throw StateError('unknown demo manual model: ${provider.id} / $modelId');
     }
     final models = [
       for (final model in provider.models)
-        if (model.slug != slug) model,
+        if (model.modelId != modelId) model,
     ];
-    final connections = {...provider.modelConnectionModes}..remove(slug);
-    final limits = {...provider.autoCompactLimits}..remove(slug);
+    final connections = {...provider.modelConnectionModes}..remove(modelId);
+    final limits = {...provider.autoCompactLimits}..remove(modelId);
     return provider.copyWith(
       models: models,
       modelConnectionModes: connections,
@@ -3363,7 +3363,7 @@ class DemoStudioTransport extends StudioTransport
       throw StateError('unknown demo provider: $providerId');
     }
     final selected = provider.models
-        .where((candidate) => candidate.slug == model)
+        .where((candidate) => candidate.modelId == model)
         .firstOrNull;
     if (selected == null) {
       throw StateError('unknown demo model: $providerId / $model');

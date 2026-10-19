@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
@@ -331,7 +332,6 @@ class ModelRoleSelector extends StatelessWidget {
     this.unavailableReason,
     this.blockedReason,
     this.onExplain,
-    this.requiresFunctionCalling = false,
     super.key,
   });
 
@@ -351,25 +351,15 @@ class ModelRoleSelector extends StatelessWidget {
   final String? blockedReason;
   final ValueChanged<String>? onExplain;
 
-  /// Workflow modes are admitted only to models whose catalog declares
-  /// function calling.  The runtime enforces the same invariant; filtering
-  /// the projection prevents a selectable catalog item from producing a
-  /// predictable Bridge rejection.
-  final bool requiresFunctionCalling;
-
   @override
   Widget build(BuildContext context) {
-    final options = modelOptions(
-      providers,
-      requiresFunctionCalling: requiresFunctionCalling,
-    );
+    final options = modelOptions(providers);
     final current = modelForRoute(providers, providerId, model);
-    final warning = !available || current == null;
+    final filterMessage = modelTextFilterMessage(context, current?.descriptor);
+    final warning = !available || current == null || filterMessage != null;
     final selectionBlockedReason =
         blockedReason ??
-        (options.isEmpty
-            ? context.l10n.statusModelRouteUnavailableFallback
-            : null);
+        (options.isEmpty ? context.l10n.modelTextFilterEmpty : null);
     void explain(String message) {
       if (onExplain case final callback?) {
         callback(message);
@@ -391,13 +381,15 @@ class ModelRoleSelector extends StatelessWidget {
             child: IconButton(
               key: const ValueKey('model-route-warning'),
               padding: EdgeInsets.zero,
-              tooltip: context.l10n.statusModelRouteUnavailable,
+              tooltip:
+                  filterMessage ?? context.l10n.statusModelRouteUnavailable,
               onPressed: () => explain(
-                unavailableReason?.isNotEmpty == true
-                    ? context.l10n.statusModelRouteUnavailableDetail(
-                        unavailableReason!,
-                      )
-                    : context.l10n.statusModelRouteUnavailableFallback,
+                filterMessage ??
+                    (unavailableReason?.isNotEmpty == true
+                        ? context.l10n.statusModelRouteUnavailableDetail(
+                            unavailableReason!,
+                          )
+                        : context.l10n.statusModelRouteUnavailableFallback),
               ),
               icon: Icon(
                 Icons.warning_amber_outlined,
@@ -420,7 +412,11 @@ class ModelRoleSelector extends StatelessWidget {
           providerId: providerId,
           model: model,
           fieldLabel: context.l10n.statusPlannerModel,
-          tooltip: selectionBlockedReason ?? context.l10n.statusPlannerModel,
+          tooltip:
+              selectionBlockedReason ??
+              filterMessage ??
+              context.l10n.statusPlannerModel,
+          unresolvedLabel: filterMessage,
           labelMaxWidth: 140,
           // Pending is an optimistic projection, not a lock.  The controller
           // supersedes older route intents by stable target identity, so users
@@ -469,7 +465,12 @@ class ReasoningEffortSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     final currentModel = modelForRoute(providers, providerId, model);
     final efforts = currentModel?.reasoningEfforts ?? const [];
-    final selectedEffort = effort?.isNotEmpty == true ? effort : null;
+    final selectedEffort = effort?.isNotEmpty == true
+        ? effort
+        : ModelRouteQueries.effortAfterModelSelection(
+            currentModel?.descriptor,
+            null,
+          );
     if (selectedEffort == null && efforts.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -541,7 +542,7 @@ ModelSelectionOption? modelForRoute(
   String providerId,
   String model,
 ) {
-  final options = modelOptions(providers);
+  final options = buildModelSelectionOptions(providers);
   return options
       .where(
         (option) => option.providerId == providerId && option.model == model,
@@ -549,22 +550,5 @@ ModelSelectionOption? modelForRoute(
       .firstOrNull;
 }
 
-List<ModelSelectionOption> modelOptions(
-  List<ProviderSettingsView> providers, {
-  bool requiresFunctionCalling = false,
-}) {
-  return buildModelSelectionOptions(
-    providers,
-    modelsForProvider: (provider) {
-      final models = provider.models;
-      return models
-          .where(
-            (model) =>
-                model.slug.isNotEmpty &&
-                (!requiresFunctionCalling ||
-                    model.capabilities.contains('tools')),
-          )
-          .toList();
-    },
-  );
-}
+List<ModelSelectionOption> modelOptions(List<ProviderSettingsView> providers) =>
+    buildModelSelectionOptions(providers, type: ModelType.text);

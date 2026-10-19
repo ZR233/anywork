@@ -126,7 +126,7 @@ StudioState _agentWorkspacePreviewState({
               defaultModel: 'planner/model',
               models: [
                 ProviderModelView(
-                  slug: 'planner/model',
+                  modelId: 'planner/model',
                   displayName: 'Main agent model',
                   reasoningEfforts: ['high'],
                   wireProtocol: 'responses',

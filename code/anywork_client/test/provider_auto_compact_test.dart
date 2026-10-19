@@ -4,7 +4,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 const _alpha = ProviderModelView(
-  slug: 'alpha',
+  modelId: 'alpha',
   displayName: 'Alpha',
   reasoningEfforts: [],
   contextWindow: 1000,
@@ -12,13 +12,13 @@ const _alpha = ProviderModelView(
   autoCompactTokenLimit: 200,
 );
 const _beta = ProviderModelView(
-  slug: 'beta',
+  modelId: 'beta',
   displayName: 'Beta',
   reasoningEfforts: [],
   maxContextWindow: 2000,
 );
 const _orphan = ProviderModelAutoCompactView(
-  slug: 'temporarily-unlisted',
+  modelId: 'temporarily-unlisted',
   defaultLimit: null,
   overrideLimit: 777,
 );
@@ -33,7 +33,7 @@ final _provider = ProviderSettingsView(
   autoCompactLimits: {
     'alpha': ProviderModelAutoCompactView.forModel(_alpha),
     'beta': ProviderModelAutoCompactView.forModel(_beta).withOverride(250),
-    _orphan.slug: _orphan,
+    _orphan.modelId: _orphan,
   },
 );
 
@@ -134,10 +134,62 @@ AnyworkClient _client(_Transport transport) {
 }
 
 Map<String, int> _limits(ProviderCommand command) => {
-  for (final item in command.modelAutoCompactLimits) item.slug: item.limit,
+  for (final item in command.modelAutoCompactLimits) item.modelId: item.limit,
 };
 
 void main() {
+  test('one catalog revision updates shared metadata across routes and rejects older responses', () {
+    SettingsStateSnapshot frame(int settings, int catalog, int context) =>
+        SettingsStateSnapshot(
+          revision: settings,
+          modelCatalogRevision: catalog,
+          providers: [
+            for (final id in ['first', 'second'])
+              ProviderSettingsView(
+                id: id,
+                name: id,
+                baseUrl: '',
+                defaultModel: 'shared',
+                status: '',
+                usageLabel: '',
+                models: [
+                  ProviderModelView(
+                    modelId: 'shared',
+                    displayName: 'Shared',
+                    reasoningEfforts: const [],
+                    contextWindow: context,
+                  ),
+                ],
+              ),
+          ],
+        );
+    var state = mergeSettingsProjection(
+      const SettingsProjectionState(),
+      frame(1, 1, 1000),
+    );
+    state = mergeSettingsProjection(
+      state,
+      frame(1, 2, 2000),
+      scope: SettingsMergeScope.catalogOnly,
+    );
+    expect(
+      state.canonical!.providers.map(
+        (provider) => provider.models.single.contextWindow,
+      ),
+      [2000, 2000],
+    );
+    state = mergeSettingsProjection(state, frame(2, 1, 1000));
+    expect(state.settingsRevision, 2);
+    expect(state.modelCatalogRevision, 2);
+    expect(
+      state.canonical!.providers.map(
+        (provider) => provider.models.single.contextWindow,
+      ),
+      [2000, 2000],
+    );
+    expect(mergeSettingsProjection(state, frame(1, 1, 1000)), same(state));
+  });
+
   test(
     'catalog revisions reproject limits while preserving stored overrides',
     () {
@@ -174,7 +226,7 @@ void main() {
       }
 
       const enlarged = ProviderModelView(
-        slug: 'alpha',
+        modelId: 'alpha',
         displayName: 'Alpha',
         reasoningEfforts: [],
         contextWindow: 2000,
@@ -193,7 +245,7 @@ void main() {
       expect(alphaLimit().effectiveLimit, 150);
 
       const unknownWithPreset = ProviderModelView(
-        slug: 'alpha',
+        modelId: 'alpha',
         displayName: 'Alpha',
         reasoningEfforts: [],
         autoCompactTokenLimit: 150,
@@ -223,12 +275,12 @@ void main() {
       expect(alphaLimit().safeLimit, isNull);
       expect(alphaLimit().effectiveLimit, isNull);
       expect(
-        currentProvider().autoCompactLimits[_orphan.slug]?.overrideLimit,
+        currentProvider().autoCompactLimits[_orphan.modelId]?.overrideLimit,
         777,
       );
 
       const restored = ProviderModelView(
-        slug: 'alpha',
+        modelId: 'alpha',
         displayName: 'Alpha',
         reasoningEfforts: [],
         contextWindow: 1000,
@@ -244,7 +296,7 @@ void main() {
       expect(_limits(ProviderCommandBuilder.buildProvider(currentProvider())), {
         'alpha': 150,
         'beta': 250,
-        _orphan.slug: 777,
+        _orphan.modelId: 777,
       });
 
       final configReply = _snapshot(
@@ -285,7 +337,7 @@ void main() {
     expect(derived.withOverride(null).effectiveLimit, 1800);
     for (final capacity in [null, 0, 1]) {
       final model = ProviderModelView(
-        slug: 'unknown',
+        modelId: 'unknown',
         displayName: '',
         reasoningEfforts: const [],
         contextWindow: capacity,
@@ -304,7 +356,7 @@ void main() {
       8100000000000000000,
     );
     final command = ProviderCommandBuilder.buildProvider(_provider);
-    expect(_limits(command), {'beta': 250, _orphan.slug: 777});
+    expect(_limits(command), {'beta': 250, _orphan.modelId: 777});
     expect(_provider.autoCompactLimits['alpha']?.overrideLimit, isNull);
     final joined = providerWithCatalogMetadata(
       _provider.copyWith(
@@ -318,7 +370,7 @@ void main() {
       ),
       const ProviderCatalogView.empty(),
     );
-    expect(joined.customModels.map((model) => model.slug), ['alpha']);
+    expect(joined.customModels.map((model) => model.modelId), ['alpha']);
     expect(joined.onlineModels, isEmpty);
     expect(
       joined.customModels.single.autoCompactTokenLimit,
@@ -371,7 +423,7 @@ void main() {
     expect(_limits(retried.command), {
       'alpha': 100,
       'beta': 400,
-      _orphan.slug: 777,
+      _orphan.modelId: 777,
     });
     final afterFirst = external.withAutoCompactLimit(
       ProviderModelAutoCompactView.forModel(_alpha).withOverride(100),
@@ -402,7 +454,7 @@ void main() {
     expect(_limits(next.command), {
       'alpha': 150,
       'beta': 400,
-      _orphan.slug: 777,
+      _orphan.modelId: 777,
     });
     final afterSecond = external.withAutoCompactLimit(
       ProviderModelAutoCompactView.forModel(_alpha).withOverride(150),
@@ -412,7 +464,7 @@ void main() {
     await calls.moveNext();
     final restoring = calls.current;
     expect(restoring.revision, 4);
-    expect(_limits(restoring.command), {'alpha': 150, _orphan.slug: 777});
+    expect(_limits(restoring.command), {'alpha': 150, _orphan.modelId: 777});
     var joined = false;
     final closing = commands.close().then((_) => joined = true);
     await Future<void>.delayed(Duration.zero);

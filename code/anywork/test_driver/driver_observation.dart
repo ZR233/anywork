@@ -250,12 +250,12 @@ Map<String, dynamic>? _providerObservation(Map<String, dynamic> snapshot) {
   return providers is Map ? providers.cast<String, dynamic>() : null;
 }
 
-/// Verifies the list/detail split without treating a detail model slug as a
-/// list label. The list projection is deliberately metadata-only; model slugs
+/// Verifies the list/detail split without treating a detail model modelId as a
+/// list label. The list projection is deliberately metadata-only; model model_ids
 /// remain observable only in the detail projection.
 void verifyProviderListRedacted(
   Map<String, dynamic> snapshot, {
-  required String fixtureModelSlug,
+  required String fixtureModelId,
   String? providerId,
 }) {
   final list = driverProviderListObservation(snapshot);
@@ -263,9 +263,9 @@ void verifyProviderListRedacted(
     throw StateError('provider list observation is unavailable');
   }
   final encodedList = jsonEncode(list);
-  if (encodedList.contains(fixtureModelSlug)) {
+  if (encodedList.contains(fixtureModelId)) {
     throw StateError(
-      'provider list observation leaked fixture model slug $fixtureModelSlug',
+      'provider list observation leaked fixture model modelId $fixtureModelId',
     );
   }
   if (RegExp(r'\+\d+').hasMatch(encodedList)) {
@@ -280,12 +280,12 @@ void verifyProviderListRedacted(
     final models = provider['models'];
     return models is List &&
         models.any(
-          (model) => model is Map && model['slug'] == fixtureModelSlug,
+          (model) => model is Map && model['modelId'] == fixtureModelId,
         );
   });
   if (!hasModelDetail) {
     throw StateError(
-      'provider detail observation omitted fixture model $fixtureModelSlug',
+      'provider detail observation omitted fixture model $fixtureModelId',
     );
   }
 }

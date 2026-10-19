@@ -62,7 +62,7 @@ pub(super) fn provider_edit(
 
 fn provider_model_edit(input: ProviderModelUpdate) -> Result<ProviderModelEdit> {
     Ok(ProviderModelEdit {
-        slug: input.slug,
+        model_id: input.model_id,
         display_name: input.display_name,
         protocol: parse_provider_protocol(&input.wire_protocol)?,
         context_window: input.context_window,
@@ -75,15 +75,15 @@ fn model_connection_modes(
 ) -> Result<std::collections::BTreeMap<String, ProviderConnectionMode>> {
     let mut modes = std::collections::BTreeMap::new();
     for input in inputs {
-        let slug = input.slug.trim();
-        if slug.is_empty() {
+        let model_id = input.model_id.trim();
+        if model_id.is_empty() {
             return Err(invalid_settings_argument(
-                "Model connection slug must not be empty",
+                "Model connection model_id must not be empty",
             ));
         }
         if modes
             .insert(
-                slug.to_string(),
+                model_id.to_string(),
                 parse_provider_connection_mode(&input.connection_mode)?,
             )
             .is_some()
@@ -99,10 +99,10 @@ fn model_auto_compact_limits(
 ) -> Result<std::collections::BTreeMap<String, u64>> {
     let mut limits = std::collections::BTreeMap::new();
     for input in inputs {
-        let slug = input.slug.trim();
-        if slug.is_empty() {
+        let model_id = input.model_id.trim();
+        if model_id.is_empty() {
             return Err(invalid_settings_argument(
-                "Model auto compact slug must not be empty",
+                "Model auto compact model_id must not be empty",
             ));
         }
         if input.limit == 0 {
@@ -110,7 +110,7 @@ fn model_auto_compact_limits(
                 "Model auto compact limit must be a positive integer",
             ));
         }
-        if limits.insert(slug.to_string(), input.limit).is_some() {
+        if limits.insert(model_id.to_string(), input.limit).is_some() {
             return Err(invalid_settings_argument(
                 "Duplicate model auto compact limit",
             ));

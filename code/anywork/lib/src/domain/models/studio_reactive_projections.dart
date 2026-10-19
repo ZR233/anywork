@@ -652,8 +652,13 @@ int _providerHash(ProviderSettingsView provider) => Object.hashAll([
 ]);
 
 bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
-    left.slug == right.slug &&
+    left.modelId == right.modelId &&
     left.displayName == right.displayName &&
+    _listEqualsBy(
+      left.typeSupport,
+      right.typeSupport,
+      _modelTypeSupportEquals,
+    ) &&
     listEquals(left.reasoningEfforts, right.reasoningEfforts) &&
     left.description == right.description &&
     left.contextWindow == right.contextWindow &&
@@ -670,6 +675,7 @@ bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
     left.reasoningLabel == right.reasoningLabel &&
     left.defaultReasoningEffort == right.defaultReasoningEffort &&
     left.currency == right.currency &&
+    left.priceSource == right.priceSource &&
     _listEqualsBy(left.priceTiers, right.priceTiers, _priceTierEquals) &&
     left.baseInstructions == right.baseInstructions &&
     left.wireProtocol == right.wireProtocol &&
@@ -679,8 +685,9 @@ bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
     left.origin == right.origin;
 
 int _providerModelHash(ProviderModelView model) => Object.hashAll([
-  model.slug,
+  model.modelId,
   model.displayName,
+  Object.hashAll(model.typeSupport.map(_modelTypeSupportHash)),
   Object.hashAll(model.reasoningEfforts),
   model.description,
   model.contextWindow,
@@ -693,6 +700,7 @@ int _providerModelHash(ProviderModelView model) => Object.hashAll([
   model.reasoningLabel,
   model.defaultReasoningEffort,
   model.currency,
+  model.priceSource,
   Object.hashAll(model.priceTiers.map(_priceTierHash)),
   model.baseInstructions,
   model.wireProtocol,
@@ -701,6 +709,16 @@ int _providerModelHash(ProviderModelView model) => Object.hashAll([
   model.connectionMode,
   model.origin,
 ]);
+
+bool _modelTypeSupportEquals(
+  ModelTypeSupportView left,
+  ModelTypeSupportView right,
+) =>
+    left.modelType == right.modelType &&
+    listEquals(left.exclusions, right.exclusions);
+
+int _modelTypeSupportHash(ModelTypeSupportView support) =>
+    Object.hash(support.modelType, Object.hashAll(support.exclusions));
 
 bool _inputCapabilityEquals(
   ModelInputCapabilityView left,
@@ -772,14 +790,14 @@ bool _autoCompactEquals(
   ProviderModelAutoCompactView left,
   ProviderModelAutoCompactView right,
 ) =>
-    left.slug == right.slug &&
+    left.modelId == right.modelId &&
     left.defaultLimit == right.defaultLimit &&
     left.overrideLimit == right.overrideLimit &&
     left.effectiveLimit == right.effectiveLimit &&
     left.safeLimit == right.safeLimit;
 
 int _autoCompactHash(ProviderModelAutoCompactView value) => Object.hash(
-  value.slug,
+  value.modelId,
   value.defaultLimit,
   value.overrideLimit,
   value.effectiveLimit,

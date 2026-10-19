@@ -258,7 +258,7 @@ abstract class StudioTransport
   Future<SettingsCommandReply> removeProviderModel(
     int expectedSettingsRevision,
     String providerId,
-    String slug,
+    String modelId,
   );
   Future<SettingsCommandReply> applySettingsField(
     int expectedSettingsRevision,

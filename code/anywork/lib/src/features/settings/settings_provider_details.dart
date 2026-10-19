@@ -35,7 +35,7 @@ class ProviderDetails extends StatelessWidget {
   final ValueChanged<ProviderSettingsView> onEdit;
   final VoidCallback? onRefreshUsage;
   final Map<String, ModelAutoCompactEdit> autoCompactEdits;
-  final void Function(String slug, int? value) onAutoCompactChanged;
+  final void Function(String modelId, int? value) onAutoCompactChanged;
   final ValueChanged<String> onAutoCompactCommit;
   final ValueChanged<String> onAutoCompactInvalid;
   final ValueChanged<ProviderModelView> onRemoveManualModel;
@@ -197,16 +197,16 @@ class ProviderDetails extends StatelessWidget {
           else
             for (final model in models)
               ProviderModelReadout(
-                key: ValueKey((provider.id, model.slug)),
+                key: ValueKey((provider.id, model.modelId)),
                 model: model,
                 providerId: provider.id,
                 framed: true,
                 autoCompact: provider.autoCompactLimitFor(model),
-                autoCompactEdit: autoCompactEdits[model.slug],
+                autoCompactEdit: autoCompactEdits[model.modelId],
                 onAutoCompactChanged: (value) =>
-                    onAutoCompactChanged(model.slug, value),
-                onAutoCompactCommit: () => onAutoCompactCommit(model.slug),
-                onAutoCompactInvalid: () => onAutoCompactInvalid(model.slug),
+                    onAutoCompactChanged(model.modelId, value),
+                onAutoCompactCommit: () => onAutoCompactCommit(model.modelId),
+                onAutoCompactInvalid: () => onAutoCompactInvalid(model.modelId),
                 onDelete: onRemove == null ? null : () => onRemove(model),
               ),
         ],

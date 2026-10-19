@@ -133,13 +133,13 @@ pub enum StudioModelCatalogCacheWarning {
     Declaration,
 }
 
-/// 删除手动模型的配置命令。只接受 `additional_models` 或 Explicit 目录中的 slug。
+/// 删除手动模型的配置命令。只接受 `additional_models` 或 Explicit 目录中的 model_id。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveProviderModelRequest {
     pub expected_revision: u64,
     pub provider_id: String,
-    pub slug: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -148,7 +148,7 @@ pub struct StudioCustomModelSettings {
     pub input_capabilities: Vec<crate::ModelInputCapabilityDto>,
     pub context_window: u64,
     pub max_output_tokens: u64,
-    pub slug: String,
+    pub model_id: String,
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
     pub base_instructions: String,
@@ -160,7 +160,7 @@ pub struct StudioCustomModelSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelConnectionSettings {
-    pub slug: String,
+    pub model_id: String,
     pub connection_mode: String,
 }
 
@@ -172,7 +172,7 @@ pub struct StudioModelConnectionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelAutoCompactSettings {
-    pub slug: String,
+    pub model_id: String,
     pub default_limit: Option<u64>,
     pub override_limit: Option<u64>,
     pub effective_limit: Option<u64>,

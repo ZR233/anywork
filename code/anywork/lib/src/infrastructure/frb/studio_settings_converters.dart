@@ -155,12 +155,12 @@ ProviderSettingsView _providerSettingsFromFrb(
 }) {
   final connectionModes = {
     for (final mode in value.modelConnectionModes)
-      mode.slug: mode.connectionMode,
+      mode.modelId: mode.connectionMode,
   };
   final autoCompactLimits = {
     for (final limit in value.modelAutoCompactLimits)
-      limit.slug: ProviderModelAutoCompactView(
-        slug: limit.slug,
+      limit.modelId: ProviderModelAutoCompactView(
+        modelId: limit.modelId,
         defaultLimit: limit.defaultLimit?.toInt(),
         overrideLimit: limit.overrideLimit?.toInt(),
         effectiveLimit: limit.effectiveLimit?.toInt(),

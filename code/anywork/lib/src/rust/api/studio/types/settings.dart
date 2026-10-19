@@ -10,14 +10,14 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 /// Provider 配置中由用户定义的模型，不复制内置 catalog 元数据。
 class BridgeCustomModelSettingsDto {
   final List<BridgeModelInputCapability> inputCapabilities;
   final BigInt contextWindow;
   final BigInt maxOutputTokens;
-  final String slug;
+  final String modelId;
   final String displayName;
   final List<String> reasoningEfforts;
   final String baseInstructions;
@@ -29,7 +29,7 @@ class BridgeCustomModelSettingsDto {
     required this.inputCapabilities,
     required this.contextWindow,
     required this.maxOutputTokens,
-    required this.slug,
+    required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
     required this.baseInstructions,
@@ -43,7 +43,7 @@ class BridgeCustomModelSettingsDto {
       inputCapabilities.hashCode ^
       contextWindow.hashCode ^
       maxOutputTokens.hashCode ^
-      slug.hashCode ^
+      modelId.hashCode ^
       displayName.hashCode ^
       reasoningEfforts.hashCode ^
       baseInstructions.hashCode ^
@@ -59,7 +59,7 @@ class BridgeCustomModelSettingsDto {
           inputCapabilities == other.inputCapabilities &&
           contextWindow == other.contextWindow &&
           maxOutputTokens == other.maxOutputTokens &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           displayName == other.displayName &&
           reasoningEfforts == other.reasoningEfforts &&
           baseInstructions == other.baseInstructions &&
@@ -256,14 +256,14 @@ class BridgeModeModelSettingsDto {
 
 /// provider 实例中某模型上下文压缩阈值的三层 canonical 视图。
 class BridgeModelAutoCompactSettingsDto {
-  final String slug;
+  final String modelId;
   final BigInt? defaultLimit;
   final BigInt? overrideLimit;
   final BigInt? effectiveLimit;
   final BigInt? safeLimit;
 
   const BridgeModelAutoCompactSettingsDto({
-    required this.slug,
+    required this.modelId,
     this.defaultLimit,
     this.overrideLimit,
     this.effectiveLimit,
@@ -272,7 +272,7 @@ class BridgeModelAutoCompactSettingsDto {
 
   @override
   int get hashCode =>
-      slug.hashCode ^
+      modelId.hashCode ^
       defaultLimit.hashCode ^
       overrideLimit.hashCode ^
       effectiveLimit.hashCode ^
@@ -283,7 +283,7 @@ class BridgeModelAutoCompactSettingsDto {
       identical(this, other) ||
       other is BridgeModelAutoCompactSettingsDto &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           defaultLimit == other.defaultLimit &&
           overrideLimit == other.overrideLimit &&
           effectiveLimit == other.effectiveLimit &&
@@ -475,28 +475,29 @@ class BridgeModelCatalogStatusDto {
 
 /// Provider 实例对 canonical catalog 模型的连接方式覆盖。
 class BridgeModelConnectionSettingsDto {
-  final String slug;
+  final String modelId;
   final String connectionMode;
 
   const BridgeModelConnectionSettingsDto({
-    required this.slug,
+    required this.modelId,
     required this.connectionMode,
   });
 
   @override
-  int get hashCode => slug.hashCode ^ connectionMode.hashCode;
+  int get hashCode => modelId.hashCode ^ connectionMode.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeModelConnectionSettingsDto &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           connectionMode == other.connectionMode;
 }
 
 class BridgeModelDescriptor {
   final String id;
+  final List<BridgeModelTypeSupport> typeSupport;
   final BridgeModelOrigin origin;
   final String displayName;
   final String? description;
@@ -511,6 +512,7 @@ class BridgeModelDescriptor {
 
   const BridgeModelDescriptor({
     required this.id,
+    required this.typeSupport,
     required this.origin,
     required this.displayName,
     this.description,
@@ -527,6 +529,7 @@ class BridgeModelDescriptor {
   @override
   int get hashCode =>
       id.hashCode ^
+      typeSupport.hashCode ^
       origin.hashCode ^
       displayName.hashCode ^
       description.hashCode ^
@@ -545,6 +548,7 @@ class BridgeModelDescriptor {
       other is BridgeModelDescriptor &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          typeSupport == other.typeSupport &&
           origin == other.origin &&
           displayName == other.displayName &&
           description == other.description &&
@@ -734,6 +738,35 @@ class BridgeModelTransportDescriptor {
           protocol == other.protocol &&
           connectionModes == other.connectionModes &&
           defaultConnectionMode == other.defaultConnectionMode;
+}
+
+enum BridgeModelType { text }
+
+enum BridgeModelTypeExclusion {
+  textInputUnsupported,
+  textOutputUnsupported,
+  contextWindowUnknown,
+}
+
+class BridgeModelTypeSupport {
+  final BridgeModelType modelType;
+  final List<BridgeModelTypeExclusion> exclusions;
+
+  const BridgeModelTypeSupport({
+    required this.modelType,
+    required this.exclusions,
+  });
+
+  @override
+  int get hashCode => modelType.hashCode ^ exclusions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelTypeSupport &&
+          runtimeType == other.runtimeType &&
+          modelType == other.modelType &&
+          exclusions == other.exclusions;
 }
 
 class BridgeProviderCatalogSnapshot {
@@ -1273,56 +1306,56 @@ class ProviderInput {
 
 /// 某模型上下文压缩阈值用户覆盖的输入项；`limit` 必须为正整数 tokens。
 class ProviderModelAutoCompactInput {
-  final String slug;
+  final String modelId;
   final BigInt limit;
 
   const ProviderModelAutoCompactInput({
-    required this.slug,
+    required this.modelId,
     required this.limit,
   });
 
   @override
-  int get hashCode => slug.hashCode ^ limit.hashCode;
+  int get hashCode => modelId.hashCode ^ limit.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ProviderModelAutoCompactInput &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           limit == other.limit;
 }
 
 class ProviderModelConnectionInput {
-  final String slug;
+  final String modelId;
   final String connectionMode;
 
   const ProviderModelConnectionInput({
-    required this.slug,
+    required this.modelId,
     required this.connectionMode,
   });
 
   @override
-  int get hashCode => slug.hashCode ^ connectionMode.hashCode;
+  int get hashCode => modelId.hashCode ^ connectionMode.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ProviderModelConnectionInput &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           connectionMode == other.connectionMode;
 }
 
 class ProviderModelInput {
-  final String slug;
+  final String modelId;
   final String displayName;
   final String wireProtocol;
   final BigInt contextWindow;
   final BigInt maxOutputTokens;
 
   const ProviderModelInput({
-    required this.slug,
+    required this.modelId,
     required this.displayName,
     required this.wireProtocol,
     required this.contextWindow,
@@ -1331,7 +1364,7 @@ class ProviderModelInput {
 
   @override
   int get hashCode =>
-      slug.hashCode ^
+      modelId.hashCode ^
       displayName.hashCode ^
       wireProtocol.hashCode ^
       contextWindow.hashCode ^
@@ -1342,7 +1375,7 @@ class ProviderModelInput {
       identical(this, other) ||
       other is ProviderModelInput &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           displayName == other.displayName &&
           wireProtocol == other.wireProtocol &&
           contextWindow == other.contextWindow &&

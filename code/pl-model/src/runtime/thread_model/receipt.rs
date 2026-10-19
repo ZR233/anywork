@@ -90,7 +90,7 @@ impl ModelCallBinding {
     pub(super) fn capture(runtime: &ModelRuntime, purpose: &str) -> Self {
         Self {
             provider_instance_id: runtime.provider_instance_id().to_owned(),
-            requested_model: runtime.model().slug.clone(),
+            requested_model: runtime.model().model_id.clone(),
             adapter: runtime.endpoint().adapter,
             protocol: runtime.model().binding.transport.protocol,
             isolation: crate::runtime::binding_cache_namespace(

@@ -1,9 +1,11 @@
 //! Private provider wire DTOs. Product prompts, shell settings and tool permissions are intentionally absent.
+mod reasoning;
 use super::ModelCatalogQueryError;
 use crate::model::*;
 use crate::provider::ProviderAdapterKind;
+use reasoning::{Effort, ReasoningDeclaration};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -13,24 +15,69 @@ struct Envelope {
     success: Option<bool>,
 }
 
+fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+enum OnlinePricing {
+    Tokens(ModelPricing),
+    Other,
+}
+
+impl<'de> Deserialize<'de> for OnlinePricing {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| matches!(kind, "rates" | "unknown"))
+        {
+            serde_json::from_value(value)
+                .map(Self::Tokens)
+                .map_err(|_| serde::de::Error::custom("invalid token pricing declaration"))
+        } else {
+            Ok(Self::Other)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Record {
     id: Option<String>,
+    #[serde(rename = "modelId", alias = "model_id")]
+    model_id: Option<String>,
+    context_length: Option<u64>,
+    pricing: Option<OnlinePricing>,
+    prompt_text_token_price: Option<f64>,
+    completion_text_token_price: Option<f64>,
+    cached_prompt_text_token_price: Option<f64>,
+    prompt_text_token_price_long_context: Option<f64>,
+    completion_text_token_price_long_context: Option<f64>,
+    cached_prompt_text_token_price_long_context: Option<f64>,
+    long_context_threshold: Option<u64>,
     slug: Option<String>,
     name: Option<String>,
     display_name: Option<String>,
-    description: Option<String>,
-    context_window: Option<u64>,
-    max_context_window: Option<u64>,
-    auto_compact_token_limit: Option<u64>,
-    max_output_tokens: Option<u64>,
-    default_temperature: Option<f32>,
+    #[serde(default, deserialize_with = "nullable")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable")]
+    context_window: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable")]
+    max_context_window: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable")]
+    auto_compact_token_limit: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable")]
+    max_output_tokens: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "nullable")]
+    default_temperature: Option<Option<f32>>,
     input_modalities: Option<Vec<ModelModality>>,
     output_modalities: Option<Vec<ModelModality>>,
-    effort: Option<Effort>,
-    supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
-    default_reasoning_level: Option<String>,
-    parameters: Option<Vec<ModelParameter>>,
+    #[serde(flatten)]
+    reasoning: ReasoningDeclaration,
     binding: Option<ModelBinding>,
     capabilities: Option<Capabilities>,
     supports_parallel_tool_calls: Option<bool>,
@@ -41,8 +88,161 @@ struct Record {
 }
 
 impl Record {
+    fn declared_fields(&self) -> Vec<ModelMetadataField> {
+        use ModelMetadataField::*;
+        let mut fields = Vec::new();
+        for (present, field) in [
+            (
+                self.name.is_some() || self.display_name.is_some(),
+                DisplayName,
+            ),
+            (self.description.is_some(), Description),
+            (self.context_window.is_some(), ContextWindow),
+            (self.max_context_window.is_some(), MaxContextWindow),
+            (
+                self.auto_compact_token_limit.is_some(),
+                AutoCompactTokenLimit,
+            ),
+            (self.max_output_tokens.is_some(), MaxOutputTokens),
+            (self.default_temperature.is_some(), DefaultTemperature),
+            (self.input_modalities.is_some(), Input),
+            (self.output_modalities.is_some(), Output),
+            (self.supports_streaming.is_some(), Streaming),
+            (self.supports_temperature.is_some(), Temperature),
+            (self.supports_reasoning.is_some(), Reasoning),
+            (self.supports_function_calling.is_some(), FunctionCalling),
+            (
+                self.supports_parallel_tool_calls.is_some(),
+                ParallelToolCalls,
+            ),
+            (self.reasoning.declares_parameters(), Parameters),
+        ] {
+            if present {
+                fields.push(field);
+            }
+        }
+        if let Some(c) = &self.capabilities {
+            for (present, field) in [
+                (c.input.is_some(), Input),
+                (c.output.is_some(), Output),
+                (c.streaming.is_some(), Streaming),
+                (c.temperature.is_some(), Temperature),
+                (c.reasoning.is_some(), Reasoning),
+                (c.web_search.is_some(), WebSearch),
+            ] {
+                if present {
+                    fields.push(field);
+                }
+            }
+            if let Some(t) = &c.tools {
+                for (present, field) in [
+                    (t.function_calling.is_some(), FunctionCalling),
+                    (t.parallel_tool_calls.is_some(), ParallelToolCalls),
+                    (t.custom_tools.is_some(), CustomTools),
+                    (t.freeform_tools.is_some(), FreeformTools),
+                    (
+                        t.programmatic_tool_calling.is_some(),
+                        ProgrammaticToolCalling,
+                    ),
+                ] {
+                    if present {
+                        fields.push(field);
+                    }
+                }
+            }
+        }
+        // Candidate declarations also define reasoning; an explicit false withdraws inherited effort.
+        if self.reasoning.declares_candidates()
+            && self.reasoning.supports_effort != Some(false)
+            && !fields.contains(&Reasoning)
+        {
+            fields.push(Reasoning);
+        }
+        if self.supports_reasoning == Some(false)
+            || self.capabilities.as_ref().and_then(|c| c.reasoning) == Some(false)
+        {
+            fields.push(Parameters);
+        }
+        fields
+    }
+
+    fn online_pricing(&self) -> Result<Option<ModelPricing>, ModelCatalogQueryError> {
+        if [
+            self.prompt_text_token_price,
+            self.completion_text_token_price,
+            self.cached_prompt_text_token_price,
+            self.prompt_text_token_price_long_context,
+            self.completion_text_token_price_long_context,
+            self.cached_prompt_text_token_price_long_context,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|price| !price.is_finite() || price < 0.0)
+        {
+            return Err(ModelCatalogQueryError::Protocol);
+        }
+        let pricing = match &self.pricing {
+            Some(OnlinePricing::Tokens(ModelPricing::Unknown)) => None,
+            Some(OnlinePricing::Tokens(pricing)) => Some(pricing.clone()),
+            _ => match (
+                self.prompt_text_token_price,
+                self.completion_text_token_price,
+            ) {
+                (Some(input), Some(output)) => {
+                    // xAI documents USD cents per 100 million tokens: divide by 10,000 for USD/Mtok.
+                    let mut tiers = vec![TokenPriceTier::flat(
+                        input / 10_000.0,
+                        output / 10_000.0,
+                        self.cached_prompt_text_token_price.map(|p| p / 10_000.0),
+                        None,
+                    )];
+                    if let Some(threshold) = self.long_context_threshold.filter(|v| *v > 0) {
+                        tiers[0].input_until = Some(threshold);
+                        let mut long = TokenPriceTier::flat(
+                            self.prompt_text_token_price_long_context
+                                .filter(|v| *v != 0.0)
+                                .unwrap_or(input)
+                                / 10_000.0,
+                            self.completion_text_token_price_long_context
+                                .filter(|v| *v != 0.0)
+                                .unwrap_or(output)
+                                / 10_000.0,
+                            self.cached_prompt_text_token_price_long_context
+                                .filter(|v| *v != 0.0)
+                                .or(self.cached_prompt_text_token_price)
+                                .map(|v| v / 10_000.0),
+                            None,
+                        );
+                        long.input_from = threshold;
+                        tiers.push(long);
+                    }
+                    Some(ModelPricing::published_at(
+                        "USD",
+                        tiers,
+                        "provider model catalog",
+                        0,
+                    ))
+                }
+                (None, None) => None,
+                _ => return Err(ModelCatalogQueryError::Protocol),
+            },
+        };
+        if let Some(value) = &pricing {
+            value
+                .validate()
+                .map_err(|_| ModelCatalogQueryError::Protocol)?;
+        }
+        Ok(pricing)
+    }
+
     fn identifier(&self) -> Result<&str, ModelCatalogQueryError> {
-        let id = match (self.id.as_deref(), self.slug.as_deref()) {
+        if let (Some(a), Some(b)) = (&self.model_id, &self.id)
+            && a != b
+        {
+            return Err(ModelCatalogQueryError::Protocol);
+        }
+        let wire_id = self.model_id.as_deref().or(self.id.as_deref());
+        let id = match (wire_id, self.slug.as_deref()) {
             (Some(id), None) | (None, Some(id)) => id,
             (Some(id), Some(slug)) if id == slug => id,
             _ => return Err(ModelCatalogQueryError::Protocol),
@@ -55,18 +255,6 @@ impl Record {
 }
 
 #[derive(Deserialize)]
-struct Effort {
-    supported_levels: Vec<String>,
-    default_level: Option<String>,
-}
-#[derive(Deserialize)]
-struct ReasoningLevel {
-    effort: String,
-    // Descriptions are presentation metadata, not candidates or protocol instructions.
-    #[serde(rename = "description")]
-    _description: Option<String>,
-}
-#[derive(Deserialize)]
 struct Capabilities {
     input: Option<Vec<ModelInputCapability>>,
     output: Option<Vec<ModelModality>>,
@@ -75,6 +263,9 @@ struct Capabilities {
     reasoning: Option<bool>,
     web_search: Option<bool>,
     tools: Option<Tools>,
+    reasoning_effort: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "nullable")]
+    default_reasoning_effort: Option<Option<String>>,
 }
 #[derive(Deserialize)]
 struct Tools {
@@ -101,75 +292,96 @@ pub(super) fn models(
         (Some(records), None) | (None, Some(records)) => records,
         _ => return Err(ModelCatalogQueryError::Protocol),
     };
-    // Reject duplicate IDs before cloning inherited metadata. A repeated ID must not
-    // multiply a large cached declaration into an unbounded normalization allocation.
-    {
-        let mut ids = HashSet::new();
-        for record in &records {
-            if !ids.insert(record.identifier()?) {
-                return Err(ModelCatalogQueryError::Protocol);
-            }
-        }
-    }
     let mut metadata = defaults
         .iter()
-        .map(|model| (model.slug.as_str(), model.clone()))
+        .map(|model| (model.model_id.clone(), model.clone()))
         .collect::<HashMap<_, _>>();
     for model in previous.into_iter().flatten() {
-        let enriched = metadata.get(model.slug.as_str()).and_then(|current| {
+        let enriched = metadata.get(&model.model_id).and_then(|current| {
             enrich_unknown_model_fallback(model, current, &discovery.transport, adapter)
         });
         metadata.insert(
-            model.slug.as_str(),
+            model.model_id.clone(),
             enriched.unwrap_or_else(|| model.clone()),
         );
     }
-    let mut result = records
-        .into_iter()
-        .map(|record| normalize(record, discovery, adapter, &metadata))
-        .collect::<Result<Vec<_>, _>>()?;
-    result.retain(|model| !excluded_by_discovery(&model.slug, discovery));
+    let mut positions = HashMap::new();
+    let mut result = Vec::new();
+    for record in records {
+        let id = record.identifier()?.to_owned();
+        let model = normalize(record, discovery, adapter, &metadata)?;
+        metadata.insert(model.model_id.clone(), model.clone());
+        if let Some(&index) = positions.get(&id) {
+            result[index] = model;
+        } else {
+            positions.insert(id, result.len());
+            result.push(model);
+        }
+    }
     validate_inventory(&result).map_err(|_| ModelCatalogQueryError::Protocol)?;
     Ok(result)
 }
 
-/// 目录声明的非对话排除规则（精确 slug 与 slug 前缀，均大小写敏感）。
-/// 解码写缓存与读取在线缓存共用这一份匹配语义，避免两处规则漂移。
-pub(crate) fn excluded_by_discovery(
-    slug: &str,
-    discovery: &crate::config::ModelCatalogDiscovery,
-) -> bool {
-    discovery
-        .excluded_slugs
-        .iter()
-        .any(|excluded| excluded == slug)
-        || discovery
-            .excluded_prefixes
-            .iter()
-            .any(|prefix| slug.starts_with(prefix.as_str()))
-}
-
 fn normalize(
-    record: Record,
+    mut record: Record,
     discovery: &crate::config::ModelCatalogDiscovery,
     adapter: ProviderAdapterKind,
-    metadata: &HashMap<&str, ModelInfo>,
+    metadata: &HashMap<String, ModelInfo>,
 ) -> Result<ModelInfo, ModelCatalogQueryError> {
-    let slug = record.identifier()?.to_owned();
-    let known = metadata.get(slug.as_str());
+    let model_id = record.identifier()?.to_owned();
+    if record.context_window.is_none() {
+        record.context_window = record.context_length.map(Some);
+    }
+    if !record.reasoning.declares_candidates()
+        && let Some(capabilities) = &mut record.capabilities
+        && let Some(levels) = capabilities.reasoning_effort.take()
+    {
+        record.reasoning.effort = Some(Effort {
+            supported_levels: levels,
+            default_level: capabilities.default_reasoning_effort.take(),
+        });
+    }
+    let declarations = record.declared_fields();
+    let budgets = [
+        (ModelMetadataField::ContextWindow, record.context_window),
+        (
+            ModelMetadataField::MaxContextWindow,
+            record.max_context_window,
+        ),
+    ];
+    let clear_context = record.context_window == Some(None);
+    let clear_max_context = record.max_context_window == Some(None);
+    let clear_compact = record.auto_compact_token_limit == Some(None);
+    let clear_output = record.max_output_tokens == Some(None);
+    let clear_temperature = record.default_temperature == Some(None);
+    let pricing = record.online_pricing()?;
+    let known = metadata.get(model_id.as_str());
     let mut model = known
         .cloned()
-        .unwrap_or_else(|| minimal(&slug, &discovery.transport, adapter));
-    model.pricing = ModelPricing::Unknown;
+        .unwrap_or_else(|| minimal(&model_id, &discovery.transport, adapter));
+    let declared_price = pricing.is_some();
+    if let Some(pricing) = pricing {
+        model.pricing = pricing;
+    } else if model
+        .observation
+        .as_ref()
+        .and_then(|o| o.price_order)
+        .is_none()
+    {
+        model.pricing = ModelPricing::Unknown;
+    }
     if let Some(value) = record.display_name.or(record.name) {
         model.display_name = value;
     }
     if let Some(value) = record.description {
-        model.description = Some(value);
+        model.description = value;
     }
     // 在线预算只覆盖它实际声明的字段；缺失的配对字段按观测事实单侧收敛，
     // 不凭空补成固定预算。同时声明两者时仍由 validate 要求自身一致。
-    match (record.context_window, record.max_context_window) {
+    match (
+        record.context_window.flatten(),
+        record.max_context_window.flatten(),
+    ) {
         (Some(current), Some(max)) => {
             model.context_window = Some(current);
             model.max_context_window = Some(max);
@@ -191,13 +403,13 @@ fn normalize(
         }
         (None, None) => {}
     }
-    if let Some(value) = record.max_output_tokens {
+    if let Some(value) = record.max_output_tokens.flatten() {
         model.max_output_tokens = Some(value);
     }
-    if let Some(value) = record.auto_compact_token_limit {
+    if let Some(value) = record.auto_compact_token_limit.flatten() {
         model.auto_compact_token_limit = Some(value);
     }
-    if let Some(value) = record.default_temperature {
+    if let Some(value) = record.default_temperature.flatten() {
         model.default_temperature = Some(value);
     }
     let explicit_binding = record.binding.is_some();
@@ -289,7 +501,7 @@ fn normalize(
     // capability list (including an empty one) must never be replaced by this default.
     let input_modalities = record
         .input_modalities
-        .or_else(|| (!supplied_media_profile).then(default_input_modalities));
+        .or_else(|| (!supplied_media_profile && known.is_none()).then(default_input_modalities));
     if let Some(modalities) = input_modalities {
         model.capabilities.input = input_capabilities(modalities);
         if !explicit_binding {
@@ -313,63 +525,9 @@ fn normalize(
     if let Some(value) = record.output_modalities {
         model.capabilities.output = value;
     }
-    let default_reasoning_level = record.default_reasoning_level;
-    let declared_parameters = record.parameters.is_some();
-    let (levels, default) = match (record.effort, record.supported_reasoning_levels) {
-        (Some(effort), None) => (Some(effort.supported_levels), effort.default_level),
-        (None, Some(levels)) => (Some(levels.into_iter().map(|l| l.effort).collect()), None),
-        (None, None) => (None, None),
-        _ => return Err(ModelCatalogQueryError::Protocol),
-    };
-    if declared_parameters && levels.is_some() {
-        return Err(ModelCatalogQueryError::Protocol);
-    }
-    if let Some(parameters) = record.parameters {
-        let effort_path = if uses_responses_effort(adapter) {
-            "reasoning.effort"
-        } else {
-            "reasoning_effort"
-        };
-        if parameters.iter().any(|p| {
-            p.name != "effort"
-                || p.wire.iter().any(|(candidate, w)| {
-                    !w.remove.is_empty()
-                        || w.set.len() != 1
-                        || w.set[0].path != effort_path
-                        || w.set[0].value != serde_json::Value::String(candidate.clone())
-                })
-        }) {
-            return Err(ModelCatalogQueryError::Protocol);
-        }
-        model.parameters = parameters;
-    }
-    // 在线候选声明（含空集合）是完整的候选事实，不从内置定义补回。
-    let declared_candidates = declared_parameters || levels.is_some();
-    if let Some(levels) = levels {
-        model.parameters.retain(|p| p.name != "effort");
-        if !levels.is_empty() {
-            model.parameters.push(effort_parameter(levels, adapter));
-        }
-    }
-    // 在线明确关闭 reasoning 时，继承的 effort 候选随之失效；同一报文既关闭
-    // reasoning 又给出非空候选属于在线声明自身冲突，不以任一方静默覆盖另一方。
-    if explicit_reasoning == Some(false) && !model.supported_efforts().is_empty() {
-        if declared_candidates {
-            return Err(ModelCatalogQueryError::Protocol);
-        }
-        model
-            .parameters
-            .retain(|parameter| parameter.name != "effort");
-    }
-    if declared_candidates && explicit_reasoning.is_none() {
-        // 未单独声明 reasoning 能力时，能力随在线候选收敛。
-        model.capabilities.reasoning = !model.supported_efforts().is_empty();
-    }
-    for default in default.into_iter().chain(default_reasoning_level) {
-        if !model.supported_efforts().contains(&default) {
-            return Err(ModelCatalogQueryError::Protocol);
-        }
-    }
+    record
+        .reasoning
+        .apply(&mut model, adapter, explicit_reasoning)?;
     if adapter == ProviderAdapterKind::DeepSeek {
         model.binding.request.body.remove("thinking");
         if !model.supported_efforts().is_empty() {
@@ -380,6 +538,35 @@ fn normalize(
                 .insert("thinking".into(), serde_json::json!({"type":"enabled"}));
         }
     }
+    if clear_context {
+        model.context_window = None;
+    }
+    if clear_max_context {
+        model.max_context_window = None;
+    }
+    if clear_compact {
+        model.auto_compact_token_limit = None;
+    }
+    if clear_output {
+        model.max_output_tokens = None;
+    }
+    if clear_temperature {
+        model.default_temperature = None;
+    }
+    let observation = model
+        .observation
+        .get_or_insert_with(ModelObservation::default);
+    for (field, value) in budgets {
+        if let Some(value) = value {
+            observation.budgets.insert(field, value);
+        }
+    }
+    if declared_price {
+        observation.price_order = Some(0);
+    }
+    for field in declarations {
+        observation.declare(field);
+    }
     model
         .validate()
         .map_err(|_| ModelCatalogQueryError::Protocol)?;
@@ -387,7 +574,7 @@ fn normalize(
 }
 
 fn minimal(
-    slug: &str,
+    model_id: &str,
     transport: &crate::model::ModelTransportProfile,
     adapter: ProviderAdapterKind,
 ) -> ModelInfo {
@@ -404,8 +591,9 @@ fn minimal(
         },
     };
     ModelInfo {
-        slug: slug.into(),
-        display_name: slug.into(),
+        model_id: model_id.into(),
+        observation: None,
+        display_name: model_id.into(),
         description: None,
         context_window: None,
         max_context_window: None,
@@ -478,9 +666,17 @@ pub(crate) fn enrich_unknown_model_fallback(
     transport: &crate::model::ModelTransportProfile,
     adapter: ProviderAdapterKind,
 ) -> Option<ModelInfo> {
-    let mut skeleton = minimal(&model.slug, transport, adapter);
+    if model
+        .observation
+        .as_ref()
+        .is_some_and(|o| !o.fields.is_empty())
+    {
+        return None;
+    }
+    let mut skeleton = minimal(&model.model_id, transport, adapter);
     skeleton.display_name.clone_from(&model.display_name);
     skeleton.description.clone_from(&model.description);
+    skeleton.observation.clone_from(&model.observation);
     let uses_current_default = *model == skeleton;
     if !uses_current_default {
         // Only the complete historical skeleton is eligible for same-ID metadata
@@ -503,7 +699,7 @@ pub(crate) fn enrich_unknown_model_fallback(
             .media
             .clone_from(&model.binding.request.media);
     }
-    if model.display_name != model.slug {
+    if model.display_name != model.model_id {
         enriched.display_name.clone_from(&model.display_name);
     }
     if model.description.is_some() {
@@ -526,6 +722,7 @@ fn effort_parameter(candidates: Vec<String>, adapter: ProviderAdapterKind) -> Mo
         "reasoning_effort"
     };
     ModelParameter {
+        default: None,
         name: "effort".into(),
         label: None,
         wire: candidates

@@ -2,7 +2,7 @@
 //!
 //! 参见 design/06-model.md 6.9 节。同 provider 的模型共享 capabilities、
 //! truncation_policy、effort 参数声明和 base body。具体模型实例通过差异字段
-//! （slug、display_name、context_window 等）从 family 派生，避免在
+//! （model_id、display_name、context_window 等）从 family 派生，避免在
 //! `default_models` 中为每个模型重复构造完整 `ModelInfo`。
 
 use crate::model::capabilities::ModelCapabilities;
@@ -34,7 +34,7 @@ pub struct ModelFamily {
 /// 家族内单个具体模型的差异字段，[`ModelFamily::instantiate`] 的输入。
 #[derive(Debug, Clone)]
 pub struct ModelInstanceSpec {
-    pub slug: &'static str,
+    pub model_id: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
     pub context_window: u64,
@@ -47,7 +47,7 @@ impl ModelFamily {
     /// 用差异字段实例化一个具体 `ModelInfo`。
     pub fn instantiate(&self, spec: ModelInstanceSpec) -> ModelInfo {
         let ModelInstanceSpec {
-            slug,
+            model_id,
             display_name,
             description,
             context_window,
@@ -56,7 +56,8 @@ impl ModelFamily {
             pricing,
         } = spec;
         ModelInfo {
-            slug: slug.to_string(),
+            observation: None,
+            model_id: model_id.to_string(),
             display_name: display_name.to_string(),
             description: Some(description.to_string()),
             context_window: Some(context_window),

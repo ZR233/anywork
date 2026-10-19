@@ -49,7 +49,7 @@ impl MediaRepresentationPlan {
                     if existing != *modality {
                         return Err(protocol_error(format!(
                             "model={} attachment modality conflict for attachment {attachment_id}",
-                            model.slug
+                            model.model_id
                         )));
                     }
                     continue;
@@ -66,7 +66,7 @@ impl MediaRepresentationPlan {
         {
             return Err(protocol_error(format!(
                 "model={} rejects mixed media modalities",
-                model.slug
+                model.model_id
             )));
         }
 
@@ -84,7 +84,7 @@ impl MediaRepresentationPlan {
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no media request profile",
-                        model.slug,
+                        model.model_id,
                         modality_label(modality),
                         media.len()
                     ))
@@ -108,13 +108,13 @@ impl MediaRepresentationPlan {
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no common media representation",
-                        model.slug,
+                        model.model_id,
                         modality_label(modality),
                         media.len()
                     ))
                 })?;
             tracing::info!(
-                model = %model.slug,
+                model = %model.model_id,
                 modality = modality_label(modality),
                 representation = representation_label(representation),
                 count = media.len(),
@@ -243,14 +243,14 @@ fn prepared_content<'a>(
     let [media] = matching.as_slice() else {
         return Err(protocol_error(format!(
             "model={} modality={} attachment {attachment_id} must have exactly one prepared payload",
-            model.slug,
+            model.model_id,
             modality_label(modality)
         )));
     };
     if media.modality != modality {
         return Err(protocol_error(format!(
             "model={} attachment {attachment_id} prepared modality does not match message content",
-            model.slug
+            model.model_id
         )));
     }
     Ok(media)

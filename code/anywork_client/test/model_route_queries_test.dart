@@ -2,6 +2,59 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'typed model queries preserve full catalogs and configured excluded routes',
+    () {
+      final eligible = _provider.models.single;
+      final unknown = eligible.copyWith(
+        modelId: 'unknown-budget',
+        typeSupport: const [
+          ModelTypeSupportView(
+            modelType: ModelType.text,
+            exclusions: [ModelTypeExclusion.contextWindowUnknown],
+          ),
+        ],
+      );
+      final mixed = _provider.copyWith(models: [unknown, eligible]);
+      expect(mixed.modelsFor().map((model) => model.modelId), [
+        'unknown-budget',
+        'observed-model',
+      ]);
+      expect(
+        mixed.modelsFor(type: ModelType.text).map((model) => model.modelId),
+        ['observed-model'],
+      );
+      final role = ModelRouteQueries.roleRoute(
+        providers: [mixed],
+        roles: const [
+          RoleSettingsView(
+            key: 'worker',
+            providerId: 'provider',
+            model: 'unknown-budget',
+            effort: 'high',
+          ),
+        ],
+        role: 'worker',
+      );
+      expect(role.model, 'unknown-budget');
+      expect(role.descriptor, same(unknown));
+      expect(
+        role.unavailable,
+        isFalse,
+        reason: 'list qualification is independent of execution availability',
+      );
+      expect(
+        ModelRouteQueries.newAgentProfileRoute([mixed]).model,
+        'observed-model',
+      );
+      expect(
+        ModelRouteQueries.newAgentProfileRoute([
+          mixed.copyWith(models: [unknown]),
+        ]).model,
+        isEmpty,
+      );
+    },
+  );
   test('pending model intent cannot fabricate an observed route revision', () {
     const canonical = ThreadModelRouteView(
       providerId: 'provider',
@@ -88,6 +141,20 @@ void main() {
     expect(unconfigured.model, 'observed-model');
     expect(unconfigured.effort, 'medium');
     expect(unconfigured.hasConfiguredRoute, isFalse);
+    final configuredDefault = ModelRouteQueries.roleRoute(
+      providers: [_provider],
+      roles: const [
+        RoleSettingsView(
+          key: 'worker',
+          providerId: 'provider',
+          model: 'observed-model',
+          effort: '',
+        ),
+      ],
+      role: 'worker',
+    );
+    expect(configuredDefault.effort, 'medium');
+    expect(configuredDefault.hasConfiguredRoute, isTrue);
   });
 
   test('throughput uses only a complete sample from the current Turn', () {
@@ -145,7 +212,8 @@ void main() {
 
   test('model selection keeps a supported effort then a declared candidate default', () {
     const model = ProviderModelView(
-      slug: 'observed-model',
+      modelId: 'observed-model',
+      typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
       displayName: 'Observed model',
       reasoningEfforts: ['low', 'medium', 'high'],
       defaultReasoningEffort: 'medium',
@@ -154,7 +222,7 @@ void main() {
     expect(ModelRouteQueries.effortAfterModelSelection(model, null), 'medium');
 
     const emptyDefault = ProviderModelView(
-      slug: 'observed-model',
+      modelId: 'observed-model',
       displayName: 'Observed model',
       reasoningEfforts: ['low', 'high'],
     );
@@ -164,7 +232,7 @@ void main() {
     );
 
     const mismatchedDefault = ProviderModelView(
-      slug: 'observed-model',
+      modelId: 'observed-model',
       displayName: 'Observed model',
       reasoningEfforts: ['low', 'high'],
       defaultReasoningEffort: 'medium',
@@ -180,7 +248,7 @@ void main() {
     );
 
     const emptyCatalog = ProviderModelView(
-      slug: 'observed-model',
+      modelId: 'observed-model',
       displayName: 'Observed model',
       reasoningEfforts: [],
       defaultReasoningEffort: 'medium',
@@ -204,9 +272,10 @@ const _provider = ProviderSettingsView(
   defaultModel: 'observed-model',
   models: [
     ProviderModelView(
-      slug: 'observed-model',
+      modelId: 'observed-model',
       displayName: 'Observed model',
       reasoningEfforts: ['medium', 'high'],
+      typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
       defaultReasoningEffort: 'medium',
     ),
   ],

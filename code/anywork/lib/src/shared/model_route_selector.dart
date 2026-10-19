@@ -13,7 +13,7 @@ import 'studio_menu_label.dart';
 /// A catalog model paired with its provider-instance identity for selection.
 ///
 /// Display names are presentation only. Equality deliberately follows the
-/// canonical route identity: provider ID plus model slug.
+/// canonical route identity: provider ID plus model modelId.
 class ModelSelectionOption {
   const ModelSelectionOption({
     required this.providerId,
@@ -27,10 +27,11 @@ class ModelSelectionOption {
   final String? providerIconKey;
   final ProviderModelView descriptor;
 
-  String get model => descriptor.slug;
+  String get model => descriptor.modelId;
 
-  String get displayName =>
-      descriptor.displayName.isEmpty ? descriptor.slug : descriptor.displayName;
+  String get displayName => descriptor.displayName.isEmpty
+      ? descriptor.modelId
+      : descriptor.displayName;
 
   List<String> get reasoningEfforts => descriptor.reasoningEfforts;
 
@@ -49,23 +50,46 @@ class ModelSelectionOption {
   int get hashCode => Object.hash(providerId, model);
 }
 
-/// Builds presentation options while leaving each caller in charge of which
-/// catalog models (including any existing fallback) are selectable.
+/// Localize backend-owned exclusions without evaluating capabilities or budgets again.
+String? modelTextFilterMessage(BuildContext context, ProviderModelView? model) {
+  if (model == null || model.matchesType(ModelType.text)) return null;
+  final exclusions = model.supportFor(ModelType.text)?.exclusions;
+  final reasons = exclusions == null
+      ? context.l10n.settingsModelParametersUnknown
+      : exclusions
+            .map(
+              (reason) => switch (reason) {
+                ModelTypeExclusion.textInputUnsupported =>
+                  context.l10n.modelTextInputUnsupported,
+                ModelTypeExclusion.textOutputUnsupported =>
+                  context.l10n.modelTextOutputUnsupported,
+                ModelTypeExclusion.contextWindowUnknown =>
+                  context.l10n.modelContextWindowUnknown,
+              },
+            )
+            .join(' / ');
+  return context.l10n.modelTextFilterExcluded(
+    model.displayName.isEmpty ? model.modelId : model.displayName,
+    reasons,
+  );
+}
+
+/// Queries the canonical type classification; presentation only deduplicates routes.
 List<ModelSelectionOption> buildModelSelectionOptions(
   List<ProviderSettingsView> providers, {
-  required List<ProviderModelView> Function(ProviderSettingsView provider)
-  modelsForProvider,
+  ModelType? type,
 }) {
-  return [
+  return {
     for (final provider in providers)
-      for (final model in modelsForProvider(provider))
-        ModelSelectionOption(
-          providerId: provider.id,
-          providerName: provider.name,
-          providerIconKey: provider.iconKey,
-          descriptor: model,
-        ),
-  ];
+      for (final model in provider.modelsFor(type: type))
+        if (model.modelId.isNotEmpty)
+          (provider.id, model.modelId): ModelSelectionOption(
+            providerId: provider.id,
+            providerName: provider.name,
+            providerIconKey: provider.iconKey,
+            descriptor: model,
+          ),
+  }.values.toList(growable: false);
 }
 
 typedef ModelSelectionOptionKeyBuilder = Key Function(
@@ -90,7 +114,6 @@ class ModelRouteSelector extends StatefulWidget {
     required this.fieldLabel,
     required this.selectorKey,
     this.unresolvedLabel,
-    this.showUnresolvedOption = false,
     this.enabled = true,
     this.tooltip,
     this.onBlockedTap,
@@ -106,7 +129,6 @@ class ModelRouteSelector extends StatefulWidget {
   final String fieldLabel;
   final Key selectorKey;
   final String? unresolvedLabel;
-  final bool showUnresolvedOption;
   final bool enabled;
   final String? tooltip;
   final VoidCallback? onBlockedTap;
@@ -143,7 +165,11 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
       widget.model,
     );
     final selectedLabel =
-        selected?.displayName ?? widget.unresolvedLabel ?? widget.model;
+        selected?.displayName ??
+        widget.unresolvedLabel ??
+        (widget.model.isEmpty && widget.options.isEmpty
+            ? context.l10n.modelTextFilterEmpty
+            : widget.model);
     final canSelect = widget.enabled && widget.options.isNotEmpty;
     final menuSize = _menuSize(context);
     final contentWidth = math.max(0.0, menuSize.width - 32);
@@ -165,7 +191,8 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     bool canSelect,
     String selectedLabel,
   ) {
-    final tooltip = widget.tooltip ?? widget.fieldLabel;
+    final tooltip =
+        widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel;
     return Tooltip(
       message: tooltip,
       child: Semantics(
@@ -208,13 +235,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     ModelSelectionOption? selected,
   ) {
     final children = <Widget>[];
-    if (widget.showUnresolvedOption &&
-        selected == null &&
-        widget.unresolvedLabel != null) {
-      children.add(
-        _unresolvedEntry(context, contentWidth, widget.unresolvedLabel!),
-      );
-    }
     for (final group in _groups()) {
       children.add(_providerHeading(context, contentWidth, group));
       for (final option in group.options) {
@@ -361,26 +381,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  static Widget _unresolvedEntry(
-    BuildContext context,
-    double contentWidth,
-    String label,
-  ) {
-    return SizedBox(
-      width: contentWidth,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Text(
-          label,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       ),
     );

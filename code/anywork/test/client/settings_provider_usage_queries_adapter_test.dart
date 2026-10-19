@@ -191,7 +191,7 @@ ProviderSettingsView _provider(
     defaultModel: 'model',
     models: const [
       ProviderModelView(
-        slug: 'model',
+        modelId: 'model',
         displayName: 'Model',
         reasoningEfforts: ['medium'],
       ),

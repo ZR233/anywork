@@ -12,8 +12,8 @@ use crate::model::info::{
 };
 use crate::model::parameter::{ParameterWire, WireAssignment};
 
-pub use mimo::mimo_default_model_slugs;
-pub use zhipu::{zhipu_default_model_slugs, zhipu_responses_default_model_slugs};
+pub use mimo::mimo_default_model_ids;
+pub use zhipu::{zhipu_default_model_ids, zhipu_responses_default_model_ids};
 
 pub(crate) use zhipu::responses_models as zhipu_responses_models;
 

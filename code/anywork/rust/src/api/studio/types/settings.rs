@@ -36,7 +36,7 @@ pub struct ProviderInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelInput {
-    pub slug: String,
+    pub model_id: String,
     pub display_name: String,
     pub wire_protocol: String,
     pub context_window: u64,
@@ -46,7 +46,7 @@ pub struct ProviderModelInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelConnectionInput {
-    pub slug: String,
+    pub model_id: String,
     pub connection_mode: String,
 }
 
@@ -54,7 +54,7 @@ pub struct ProviderModelConnectionInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelAutoCompactInput {
-    pub slug: String,
+    pub model_id: String,
     pub limit: u64,
 }
 
@@ -513,7 +513,7 @@ pub struct BridgeCustomModelSettingsDto {
     pub input_capabilities: Vec<BridgeModelInputCapability>,
     pub context_window: u64,
     pub max_output_tokens: u64,
-    pub slug: String,
+    pub model_id: String,
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
     pub base_instructions: String,
@@ -526,7 +526,7 @@ pub struct BridgeCustomModelSettingsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelConnectionSettingsDto {
-    pub slug: String,
+    pub model_id: String,
     pub connection_mode: String,
 }
 
@@ -534,7 +534,7 @@ pub struct BridgeModelConnectionSettingsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelAutoCompactSettingsDto {
-    pub slug: String,
+    pub model_id: String,
     pub default_limit: Option<u64>,
     pub override_limit: Option<u64>,
     pub effective_limit: Option<u64>,
@@ -686,6 +686,7 @@ pub struct BridgeModelCatalogDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelDescriptor {
     pub id: String,
+    pub type_support: Vec<BridgeModelTypeSupport>,
     pub origin: BridgeModelOrigin,
     pub display_name: String,
     pub description: Option<String>,
@@ -697,6 +698,27 @@ pub struct BridgeModelDescriptor {
     pub capabilities: BridgeModelCapabilities,
     pub reasoning: Option<BridgeModelReasoningDescriptor>,
     pub pricing: Option<BridgeModelPricing>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeModelType {
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeModelTypeExclusion {
+    TextInputUnsupported,
+    TextOutputUnsupported,
+    ContextWindowUnknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelTypeSupport {
+    pub model_type: BridgeModelType,
+    pub exclusions: Vec<BridgeModelTypeExclusion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -829,6 +851,30 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
     fn from(model: pl_protocol::ModelDescriptor) -> Self {
         Self {
             id: model.id,
+            type_support: model
+                .type_support
+                .into_iter()
+                .map(|support| BridgeModelTypeSupport {
+                    model_type: match support.model_type {
+                        pl_protocol::ModelType::Text => BridgeModelType::Text,
+                    },
+                    exclusions: support
+                        .exclusions
+                        .into_iter()
+                        .map(|reason| match reason {
+                            pl_protocol::ModelTypeExclusion::TextInputUnsupported => {
+                                BridgeModelTypeExclusion::TextInputUnsupported
+                            }
+                            pl_protocol::ModelTypeExclusion::TextOutputUnsupported => {
+                                BridgeModelTypeExclusion::TextOutputUnsupported
+                            }
+                            pl_protocol::ModelTypeExclusion::ContextWindowUnknown => {
+                                BridgeModelTypeExclusion::ContextWindowUnknown
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
             origin: model.origin.into(),
             display_name: model.display_name,
             description: model.description,

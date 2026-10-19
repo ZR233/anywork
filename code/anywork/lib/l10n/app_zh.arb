@@ -35,8 +35,12 @@
   "sidebarArchiveSessionFailedReason": "无法归档该会话：{reason}（诊断编号：{correlationId}）",
   "@sidebarArchiveSessionFailedReason": {
     "placeholders": {
-      "reason": {"type": "String"},
-      "correlationId": {"type": "String"}
+      "reason": {
+        "type": "String"
+      },
+      "correlationId": {
+        "type": "String"
+      }
     }
   },
   "sidebarArchiveSessionConfirmTitle": "归档会话",
@@ -232,7 +236,11 @@
   "statusModelRouteUnavailable": "当前模型不可用，查看原因",
   "statusModelRouteUnavailableDetail": "当前模型不可用：{reason}",
   "@statusModelRouteUnavailableDetail": {
-    "placeholders": {"reason": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
   },
   "statusModelRouteUnavailableFallback": "当前模型路由不可用，请检查供应商和模型设置。",
   "statusModelSwitchWhileRunning": "会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。",
@@ -380,11 +388,19 @@
   "timelineViewImageRead": "已读取图片",
   "timelineImagesViewed": "已查看 {count} 张图像",
   "@timelineImagesViewed": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineImagesProduced": "{count} 张图像",
   "@timelineImagesProduced": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineViewImageReading": "正在读取图片",
   "timelineViewImageFailed": "读取图片失败",
@@ -522,7 +538,7 @@
   "settingsDisplayName": "显示名称",
   "settingsProtocolType": "协议类型",
   "settingsBaseUrl": "基础 URL",
-  "settingsModelSlug": "模型标识",
+  "settingsModelId": "模型标识",
   "settingsReasoningEfforts": "思考强度",
   "settingsEdit": "编辑",
   "settingsCancel": "取消",
@@ -535,12 +551,11 @@
   "settingsModelOriginOnline": "在线",
   "settingsModelOriginBundled": "内置",
   "settingsModelOriginManual": "手动",
-  "settingsUnverifiedOnlineModel": "未校验模型",
   "settingsRemoveManualModelConfirmTitle": "删除此手动模型？",
   "settingsRemoveManualModelConfirmBody": "此操作不可撤销。模型会离开有效目录，其连接方式和压缩阈值覆盖会被清除。历史调用、账单和会话费用保持不变。",
   "settingsRemoveManualModelConfirmAction": "删除",
   "settingsRemoveManualModelFailed": "无法删除此手动模型。",
-  "settingsManualModelSlugConflict": "该标识已存在于在线或内置目录中。",
+  "settingsManualModelIdConflict": "该标识已存在于在线或内置目录中。",
   "settingsBundledModels": "{count} 个内置模型",
   "settingsDefaultBadge": "默认",
   "settingsReadyBadge": "就绪",
@@ -1082,5 +1097,13 @@
   },
   "timelineUserInputYourAnswer": "你的回答",
   "timelineUserInputNoAnswer": "未提供回答",
-  "timelineUserInputSecretHidden": "敏感回答已隐藏"
+  "timelineUserInputSecretHidden": "敏感回答已隐藏",
+  "settingsModelParametersUnknown": "模型参数未知",
+  "settingsModelPriceUnknown": "价格未知",
+  "modelTextFilterExcluded": "{model}：不符合文本筛选条件（{reasons}）",
+  "@modelTextFilterExcluded": {"placeholders": {"model": {"type": "String"}, "reasons": {"type": "String"}}},
+  "modelTextInputUnsupported": "不支持文本输入",
+  "modelTextOutputUnsupported": "不支持文本输出",
+  "modelContextWindowUnknown": "上下文大小未知",
+  "modelTextFilterEmpty": "没有符合文本条件的模型，请在模型服务商设置中查看参数"
 }

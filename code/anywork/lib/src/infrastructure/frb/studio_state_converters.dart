@@ -231,7 +231,7 @@ ProviderSettingsView _providerCatalogSettingsFromFrb(
     id: value.id,
     name: value.id,
     baseUrl: '',
-    defaultModel: models.isEmpty ? '' : models.first.slug,
+    defaultModel: models.isEmpty ? '' : models.first.modelId,
     models: models,
     modelCatalog: _modelCatalogStatusFromFrb(value.modelCatalog),
     status: 'catalog',

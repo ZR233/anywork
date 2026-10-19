@@ -133,7 +133,7 @@ pub(super) fn project_request(
         }
     }
 
-    request.validate_against(&model.slug, &capabilities)?;
+    request.validate_against(&model.model_id, &capabilities)?;
     Ok(request)
 }
 

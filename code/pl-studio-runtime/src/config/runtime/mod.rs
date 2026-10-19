@@ -96,6 +96,8 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error("configuration migration failed; original file preserved: {0}")]
+    Migration(#[source] PureError),
     #[error("settings revision conflict: expected {expected}, actual {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error(transparent)]
@@ -107,7 +109,7 @@ type ConfigRuntimeResult<T> = std::result::Result<T, ConfigRuntimeError>;
 impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
-            ConfigRuntimeError::Core(error) => error,
+            ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
             ConfigRuntimeError::StaleRevision { expected, actual } => PureError::ConfigError(
                 format!("settings revision conflict: expected {expected}, actual {actual}"),
             ),
@@ -495,20 +497,20 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
         }
     }
     for (id, provider) in &next.models.providers {
-        let models = provider.effective_models()?;
-        for (slug, mode) in provider.connection_overrides() {
+        let models = provider.effective_models(None)?;
+        for (model_id, mode) in provider.connection_overrides() {
             if old
                 .models
                 .providers
                 .get(id)
-                .and_then(|old| old.connection_overrides().get(slug))
+                .and_then(|old| old.connection_overrides().get(model_id))
                 == Some(mode)
             {
                 continue;
             }
             let model = models
                 .iter()
-                .find(|model| model.slug == *slug)
+                .find(|model| model.model_id == *model_id)
                 .ok_or_else(|| {
                     PureError::ConfigError(
                         "new connection override references unavailable model".into(),

@@ -14,7 +14,7 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let provider_id = args.next().context("usage: model_observe PROVIDER MODEL TASK_FILE ARTIFACT_DIR [--image FILE | --image-url URL | --image-base64 FILE] [--followup TASK_FILE]")?;
-    let model_slug = args.next().context("missing model")?;
+    let model_id = args.next().context("missing model")?;
     let mut tasks = vec![PathBuf::from(args.next().context("missing task file")?)];
     let artifacts = PathBuf::from(args.next().context("missing artifact directory")?);
     tokio::fs::create_dir(&artifacts)
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     .await?;
     let result = observe(
         &provider_id,
-        &model_slug,
+        &model_id,
         &mut tasks,
         args.collect(),
         &artifacts,
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
 
 async fn observe(
     provider_id: &str,
-    slug: &str,
+    model_id: &str,
     tasks: &mut Vec<PathBuf>,
     args: Vec<String>,
     artifacts: &std::path::Path,
@@ -109,9 +109,9 @@ async fn observe(
     .await??;
     provider.bearer_token = stored.or(provider.bearer_token);
     let model = provider
-        .effective_models()?
+        .effective_models(None)?
         .into_iter()
-        .find(|m| m.slug == slug)
+        .find(|m| m.model_id == model_id)
         .context("model is not in the selected provider catalog")?;
     let effort = model
         .parameters
@@ -182,7 +182,7 @@ async fn observe(
                     summary: None,
                 }))
                 .build();
-            println!("Observing {provider_id}/{slug}, turn {}", index + 1);
+            println!("Observing {provider_id}/{model_id}, turn {}", index + 1);
             let response = tokio::time::timeout(
                 Duration::from_secs(180),
                 runtime.complete(
@@ -220,7 +220,7 @@ async fn observe(
     tokio::fs::write(
         artifacts.join("report.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "provider":provider_id,"model":slug,"execution":"completed","review":"pending"
+            "provider":provider_id,"model":model_id,"execution":"completed","review":"pending"
         }))?,
     )
     .await?;

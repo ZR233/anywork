@@ -1088,6 +1088,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelType dco_decode_bridge_model_type(dynamic raw);
+
+  @protected
+  BridgeModelTypeExclusion dco_decode_bridge_model_type_exclusion(dynamic raw);
+
+  @protected
+  BridgeModelTypeSupport dco_decode_bridge_model_type_support(dynamic raw);
+
+  @protected
   BridgePendingPersistence dco_decode_bridge_pending_persistence(dynamic raw);
 
   @protected
@@ -1891,6 +1900,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeModelPriceTier> dco_decode_list_bridge_model_price_tier(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeModelTypeExclusion> dco_decode_list_bridge_model_type_exclusion(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeModelTypeSupport> dco_decode_list_bridge_model_type_support(
     dynamic raw,
   );
 
@@ -3626,6 +3645,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelType sse_decode_bridge_model_type(SseDeserializer deserializer);
+
+  @protected
+  BridgeModelTypeExclusion sse_decode_bridge_model_type_exclusion(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelTypeSupport sse_decode_bridge_model_type_support(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgePendingPersistence sse_decode_bridge_pending_persistence(
     SseDeserializer deserializer,
   );
@@ -4611,6 +4643,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeModelPriceTier> sse_decode_list_bridge_model_price_tier(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeModelTypeExclusion> sse_decode_list_bridge_model_type_exclusion(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeModelTypeSupport> sse_decode_list_bridge_model_type_support(
     SseDeserializer deserializer,
   );
 
@@ -6672,6 +6714,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_model_type(
+    BridgeModelType self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_type_exclusion(
+    BridgeModelTypeExclusion self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_type_support(
+    BridgeModelTypeSupport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_pending_persistence(
     BridgePendingPersistence self,
     SseSerializer serializer,
@@ -7874,6 +7934,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_model_price_tier(
     List<BridgeModelPriceTier> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_model_type_exclusion(
+    List<BridgeModelTypeExclusion> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_model_type_support(
+    List<BridgeModelTypeSupport> self,
     SseSerializer serializer,
   );
 

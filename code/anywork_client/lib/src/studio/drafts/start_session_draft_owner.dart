@@ -351,7 +351,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         .where((value) => value.id == route.providerId)
         .firstOrNull;
     final model = provider?.models
-        .where((value) => value.slug == route.model)
+        .where((value) => value.modelId == route.model)
         .firstOrNull;
     if (model == null) throw StateError('The selected model is unavailable');
     return ModeModelRouteView(

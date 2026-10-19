@@ -116,7 +116,7 @@ fn build_compaction_body(
         .prefix
         .clone()
         .provider_compatible(custom_tool_projection);
-    completion.validate_against(&model_info.slug, &effective_capabilities)?;
+    completion.validate_against(&model_info.model_id, &effective_capabilities)?;
     let OpenAiRequestBody::Responses(mut body) = OpenAiProtocol::responses().build_request(
         &completion,
         &model_info,

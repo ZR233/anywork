@@ -93,7 +93,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
                     .ok()
                     .map(|response| response.model.clone())
                     .filter(|model| !model.is_empty())
-                    .unwrap_or_else(|| route.model.slug.clone())
+                    .unwrap_or_else(|| route.model.model_id.clone())
             },
             |observation| observation.sent_model.clone(),
         ),

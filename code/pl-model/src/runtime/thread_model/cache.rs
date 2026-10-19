@@ -15,7 +15,7 @@ pub(super) fn key(runtime: &ModelRuntime, thread_id: &str) -> Option<String> {
             runtime.endpoint(),
         ),
         thread_id,
-        &runtime.model().slug,
+        &runtime.model().model_id,
         runtime.model().binding.transport.protocol,
     ))
 }

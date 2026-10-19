@@ -7,7 +7,7 @@ import 'timeline_observation.dart';
 Future<void> main(List<String> args) async {
   if (args.length != 2) {
     stderr.writeln(
-      'usage: dart run test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
+      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
     );
     exitCode = 64;
     return;

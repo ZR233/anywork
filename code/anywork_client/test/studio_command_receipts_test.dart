@@ -376,12 +376,12 @@ SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
       usageLabel: '',
       models: [
         ProviderModelView(
-          slug: 'alpha',
+          modelId: 'alpha',
           displayName: 'Alpha',
           reasoningEfforts: ['medium'],
         ),
         ProviderModelView(
-          slug: 'beta',
+          modelId: 'beta',
           displayName: 'Beta',
           reasoningEfforts: ['medium'],
         ),

@@ -52,7 +52,7 @@ pub(crate) fn model_catalog_snapshot(
             Ok(StudioModelCatalogProvider {
                 id: id.to_string(),
                 effective_models: provider
-                    .effective_catalog()?
+                    .effective_catalog(None)?
                     .iter()
                     .map(pl_model::config::model_descriptor)
                     .collect(),
@@ -85,7 +85,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
         .iter()
         .map(|(id, provider)| {
             let models = provider
-                .effective_catalog()?
+                .effective_catalog(None)?
                 .into_iter()
                 .map(|entry| entry.model)
                 .collect::<Vec<_>>();
@@ -95,7 +95,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 .values()
                 .find(|route| route.provider == *id)
                 .map(|route| route.model.clone())
-                .or_else(|| models.first().map(|model| model.slug.clone()))
+                .or_else(|| models.first().map(|model| model.model_id.clone()))
                 .unwrap_or_default();
             let service_capabilities = provider.service_capabilities()?;
             let catalog_id = match &provider.catalog {
@@ -149,8 +149,8 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 model_connection_modes: provider
                     .connection_overrides()
                     .iter()
-                    .map(|(slug, mode)| StudioModelConnectionSettings {
-                        slug: slug.clone(),
+                    .map(|(model_id, mode)| StudioModelConnectionSettings {
+                        model_id: model_id.clone(),
                         connection_mode: connection_mode_label(*mode).to_string(),
                     })
                     .collect(),
@@ -159,9 +159,9 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                     let mut limits = models
                         .iter()
                         .map(|model| {
-                            let override_limit = overrides.get(&model.slug).copied();
+                            let override_limit = overrides.get(&model.model_id).copied();
                             StudioModelAutoCompactSettings {
-                                slug: model.slug.clone(),
+                                model_id: model.model_id.clone(),
                                 default_limit: model.default_auto_compact_token_limit(),
                                 override_limit,
                                 effective_limit: model
@@ -175,11 +175,13 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                     limits.extend(
                         overrides
                             .iter()
-                            .filter(|(slug, _)| {
-                                !models.iter().any(|model| model.slug == slug.as_str())
+                            .filter(|(model_id, _)| {
+                                !models
+                                    .iter()
+                                    .any(|model| model.model_id == model_id.as_str())
                             })
-                            .map(|(slug, limit)| StudioModelAutoCompactSettings {
-                                slug: slug.clone(),
+                            .map(|(model_id, limit)| StudioModelAutoCompactSettings {
+                                model_id: model_id.clone(),
                                 default_limit: None,
                                 override_limit: Some(*limit),
                                 effective_limit: None,
@@ -301,7 +303,7 @@ fn custom_model_settings(model: &ModelInfo) -> StudioCustomModelSettings {
         input_capabilities: model.capabilities.input.iter().map(Into::into).collect(),
         context_window: model.context_window.unwrap_or(32_000),
         max_output_tokens: model.max_output_tokens.unwrap_or(4_096),
-        slug: model.slug.clone(),
+        model_id: model.model_id.clone(),
         display_name: model.display_name.clone(),
         reasoning_efforts: reasoning_efforts.to_vec(),
         base_instructions: model.base_instructions.clone(),

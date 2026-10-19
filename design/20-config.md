@@ -98,7 +98,7 @@ canonical provider 构造目标模型的覆盖变更，保留其余模型、连�
 
 ## 20.2 配置职责
 
-每个 provider 的模型目录独立保存按模型 slug 索引的压缩阈值覆盖值，bundled、附加与 explicit
+每个 provider 的模型目录独立保存按模型 model_id 索引的压缩阈值覆盖值，bundled、附加与 explicit
 模型使用同一解析规则。覆盖值为正整数 tokens，缺省表示使用解析后的模型默认值（目录预设或
 上下文 90% 推导）；恢复默认仅删除对应模型覆盖项，显式选择与非空默认值相等时也归一化为
 缺省。每项覆盖以可选语义读取，缺键为 `None`，无覆盖的集合不序列化；该布局保持不变，
@@ -174,7 +174,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 21
+schema_version = 22
 
 disabled_system_agents = []
 
@@ -258,7 +258,7 @@ catalog，而 Zhipu（通用 Chat API）与 Zhipu Coding Plan（官方 OpenAI Re
 不声明 hosted search。当前不保留 Anthropic 占位：只有实现第二种协议族的
 typed codec、能力模型与测试后，才可写入配置或 catalog。
 
-canonical catalog 与自定义/附加模型使用同一个模型信息结构：slug、display_name、
+canonical catalog 与自定义/附加模型使用同一个模型信息结构：model_id、display_name、
 description、context_window、max_context_window、auto_compact_token_limit、
 default_temperature、max_output_tokens、pricing、parameters、binding（transport 与协议
 适用 request 配置）、capabilities、truncation_policy 与 base_instructions。capabilities
@@ -277,14 +277,10 @@ ModelPricing 明确区分未知价格与包含费率的定义：货币不做汇�
 来源、核对日期及完整档位保存在后端目录，设置页直接展示后端提供的行；文档不保存价格
 快照。
 
-Bundled 默认定义只读，`additional_models` 只能添加不与默认定义冲突的 slug，不支持用户对默认
-条目的字段级覆盖；完全自定义 provider 用 `Explicit` 保存完整模型列表。支持在线探测的 bundled
-目录可叠加非持久成功观察，按 [06](./06-model.md) 选择完整 API 名单并保留手工声明优先权；不将
-explicit 目录自动改为远程目录，不借此改变 config.toml schema 或既有模型字段命名。
-手动模型（`additional_models` 与 `Explicit.models`）是唯一可由用户增删的目录条目，来源标记为
-`manual`，与在线名单分属不同事实源；删除命令只接受手动条目，删除时同步清除该 slug 的
-connection override 与压缩阈值覆盖，且不触碰历史调用与账单。手动模型与在线名单同名时以手动
-声明为准，在线条目不出现在有效目录中。
+Bundled 默认定义只读；显式配置的同 ID 模型定义优先于内置定义，所有模型固有参数经全局目录统一解析。
+在线名单与手工配置共同决定供应商成员，不把共享参数扩散为其他供应商的可用路由。
+同 ID 在线明确字段优先于本地补全；价格、凭据、传输与参数 wire 仍由各路由拥有。
+手动模型及其连接、压缩覆盖沿用既有增删边界，不改写历史账单。
 
 ### 在线模型观察与配置校验
 
@@ -304,19 +300,21 @@ revision，也不触发数据重置。运行期不存在第二次自动同步，
 目录的既有 route/effort/connection override 因缓存缺失或服务撤下模型/候选而不可用时，保持用户
 选择并返回外部绑定 unavailable，不自动猜模型、删覆盖值或触发全局数据重置。显式手工目录、
 缺失 provider、坏 schema 与声明本身继续严格校验；用户新保存/切换的选择须在当前有效目录中合法。
-已知配置版本迁移仍使用既有数据保全流程，模型观察自身不引入新的 TOML 版本。
+schema 18 至 21 接续数据保全迁移到 22；模型观察缓存独立升级并保留未知来源旧快照。
+解析规则升级保留旧成功快照，但在新规则成功获取正文前不发送旧 ETag；失败继续使用旧快照，
+不能用清空缓存完成升级。模型类型只是最终目录查询条件，不写入供应商配置或改写已有路由。
 
 各实例探测按自身 generation/查询身份裁决结果，并合并到当前 desired 状态，不以开始时的旧全局
 Settings revision 提交。别家成功不得使本家 stale；用户更换地址、headers、凭据或目录来源、删除
 实例后，旧结果丢弃。等待网络不持全局配置锁。
-目录变化只通知受影响 provider 的绑定消费者：在途请求保持冻结，后续安全边界 deferred 重绑或
-明确 unavailable；不因目录观察重装无关 provider 的工具或重算历史费用。
+全局字段变化在一次目录 revision 通知所有受影响 provider 的绑定消费者：在途请求保持冻结，
+后续安全边界 deferred 重绑或明确 unavailable；不因目录观察重装无关 provider 的工具或重算历史费用。
 
 有效目录的每条成员携带来源：`online`（本次或同身份最后成功的在线名单）、`bundled`（尚无成功
 观察时的内置默认定义）、`manual`（用户手动添加）。来源由后端解析并随 descriptor 发布，界面
 据此分组与标注，不按配置差集或 preset 自行推导。删除手动模型使用独立命令
-（`removeProviderModel`，携带 expected revision 与 provider/slug）：只接受手动条目，删除后同步
-清除该 slug 的连接覆盖与压缩阈值覆盖；若它是该实例的默认模型，保留字段并沿用“选择以不可用
+（`removeProviderModel`，携带 expected revision 与 provider/model_id）：只接受手动条目，删除后同步
+清除该 model_id 的连接覆盖与压缩阈值覆盖；若它是该实例的默认模型，保留字段并沿用“选择以不可用
 保留”的语义。目录观察、模型来源与手动模型增删都不改变 desired route 的其他字段。
 
 ## 20.6 提示词配置
@@ -432,7 +430,7 @@ preset、endpoint、凭证提示、协议、允许连接模式、suggested model
   WebSocket 在发起网络请求前拒绝。
 - API key 非空（本地无鉴权服务允许省略）。
 - 每个角色 route 的 model 必须存在于对应 provider 的有效模型集合；同一 provider 下模型
-  slug 不重复。
+  model_id 不重复。
 - 角色引用的默认模型必须声明 effort 参数且至少一个候选值，用于生成角色 effort。
 
 ## 20.11 凭据策略
@@ -538,3 +536,11 @@ Mode、role 的旧快照带入提交。
 状态和有效模型描述。它不会修改 desired route，也不会阻塞配置 command。route 指向被撤下的
 模型时保留 desired 值并返回 unavailable；用户显式选择的新 route 仍需按当前有效目录校验。
 删除手动模型的命令走配置 lane（canonical-CAS 与联合校验），与目录观察互不代替。
+
+## 20.15 模型标识与全局目录
+
+配置 schema 22 将模型对象中的 `slug` 迁移为 `model_id`，保留标识值、供应商与凭据关联、连接和压缩覆盖。
+旧字段只在版本化迁移边界解码；冲突或校验失败保留原文件。全局目录以 [模型契约](./06-model.md)
+为准，Mode 不再限制模型；请求准备校验保留。
+已知版本迁移失败以独立的 Migration 错误沿启动链路传播，不能进入持久化数据损坏的自动重置流程；
+界面报告迁移失败与原文件保留，修正配置后可重新启动。

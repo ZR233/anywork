@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs, io::Read, path::PathBuf};
 
 use pl_model::{
     config::{ProviderConfig, ProviderId},
-    model::{ModelInfo, ModelPricing},
+    model::ModelInfo,
     provider::discovery::{ModelCatalogQuery, ModelCatalogQueryCache, ModelCatalogQueryError},
 };
 use pl_protocol::studio::{
@@ -18,7 +18,27 @@ use super::{ConfigPaths, StudioConfig};
 use crate::Result;
 
 const CACHE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
-const NORMALIZATION_REVISION: u32 = 1;
+const NORMALIZATION_REVISION: u32 = 3;
+
+/// Keep acquisition order across removals and restarts. Persisting the watermark
+/// before a cache may leave a harmless gap; it can never make an old field newer.
+pub(super) fn next_observation_order(paths: &ConfigPaths, minimum: u64) -> Result<u64> {
+    let directory = paths.config_dir().join("v2/model-catalogs");
+    fs::create_dir_all(&directory)?;
+    let path = directory.canonicalize()?.join("sequence.json");
+    let previous = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<u64>(&bytes).map_err(|_| {
+            pl_protocol::PureError::ConfigError("invalid model observation sequence".into())
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    let order = previous.max(minimum).checked_add(1).ok_or_else(|| {
+        pl_protocol::PureError::ConfigError("model observation sequence exhausted".into())
+    })?;
+    pl_tool::workspace::write_file_atomically(&path, order.to_string().as_bytes())?;
+    Ok(order)
+}
 
 #[derive(Clone)]
 pub(super) struct Observation {
@@ -59,7 +79,7 @@ impl SuccessCache {
         success_at: i64,
     ) -> Self {
         Self {
-            schema: 1,
+            schema: 2,
             normalization_revision: NORMALIZATION_REVISION,
             identity: full_identity(provider, identity),
             success_at,
@@ -185,6 +205,7 @@ pub(super) fn effective(
             provider.set_model_catalog_overlay(cache.models.clone())?;
         }
     }
+    config.models.reconcile_model_catalog()?;
     Ok(config)
 }
 
@@ -206,8 +227,33 @@ fn read_cache(
     if bytes.len() > CACHE_BYTES_LIMIT {
         return Err(CacheWarning::Schema);
     }
-    let cache: SuccessCache = serde_json::from_slice(&bytes).map_err(|_| CacheWarning::Schema)?;
-    if cache.schema != 1
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| CacheWarning::Schema)?;
+    let migrated = value.get("schema").and_then(serde_json::Value::as_u64) == Some(1);
+    if migrated {
+        let models = value
+            .get_mut("models")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or(CacheWarning::Schema)?;
+        for model in models {
+            let object = model.as_object_mut().ok_or(CacheWarning::Schema)?;
+            if let Some(legacy) = object.remove("slug") {
+                if object
+                    .get("model_id")
+                    .is_some_and(|current| current != &legacy)
+                {
+                    return Err(CacheWarning::Declaration);
+                }
+                object.insert("model_id".into(), legacy);
+            }
+            // Legacy normalized values survive, but cannot claim field presence or recency.
+            object.remove("observation");
+        }
+        value["schema"] = 2.into();
+        value["normalizationRevision"] = 1.into();
+    }
+    let cache: SuccessCache = serde_json::from_value(value).map_err(|_| CacheWarning::Schema)?;
+    if cache.schema != 2
         || cache.normalization_revision > NORMALIZATION_REVISION
         || cache.success_at <= 0
         || cache.checked_at < cache.success_at
@@ -224,17 +270,15 @@ fn read_cache(
     {
         return Err(CacheWarning::Declaration);
     }
-    if cache
-        .models
-        .iter()
-        .any(|model| !matches!(model.pricing, ModelPricing::Unknown))
-    {
-        return Err(CacheWarning::Declaration);
-    }
     let mut checked = provider.clone();
     checked
         .set_model_catalog_overlay(cache.models.clone())
         .map_err(|_| CacheWarning::Declaration)?;
+    if migrated {
+        cache
+            .persist(paths, provider_id, identity)
+            .map_err(|_| CacheWarning::Read)?;
+    }
     Ok(Some(cache))
 }
 
@@ -274,4 +318,124 @@ pub(crate) fn query_error(error: ModelCatalogQueryError) -> Result<CatalogError>
         ModelCatalogQueryError::CacheIdentity => CatalogError::CacheIdentity,
         ModelCatalogQueryError::UnexpectedNotModified => CatalogError::UnexpectedNotModified,
     })
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use pl_model::{
+        config::ModelCatalogId, model::ModelTransportProfile, provider::ProviderEndpoint,
+    };
+
+    fn legacy_cache(
+        paths: &ConfigPaths,
+        conflict: bool,
+    ) -> (ProviderId, ProviderConfig, String, Vec<u8>) {
+        let id = ProviderId::new("migration-instance").unwrap();
+        let provider = ProviderConfig::from_bundled_catalog(
+            ProviderEndpoint::openai(None),
+            ModelCatalogId::new("openai").unwrap(),
+            vec![],
+        );
+        let identity = ModelCatalogQuery::for_provider(&provider)
+            .unwrap()
+            .identity()
+            .to_owned();
+        let mut model = ModelInfo::compatible("exact-Unchanged-ID");
+        model
+            .binding
+            .set_transport(ModelTransportProfile::responses_websocket());
+        let cache = SuccessCache::new(&id, &identity, Some("\"legacy\"".into()), vec![model], 123);
+        let mut value = serde_json::to_value(cache).unwrap();
+        value["schema"] = 1.into();
+        value["normalizationRevision"] = 1.into();
+        let object = value["models"][0].as_object_mut().unwrap();
+        let model_id = object.remove("model_id").unwrap();
+        object.insert("slug".into(), model_id);
+        if conflict {
+            object.insert("model_id".into(), "different-id".into());
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let path = cache_path(paths, &id, &identity);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &bytes).unwrap();
+        (id, provider, identity, bytes)
+    }
+
+    #[test]
+    fn old_cache_migrates_atomically_keeps_snapshot_and_forces_a_body_once() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_config_dir(home.path());
+        let (id, mut provider, identity, _) = legacy_cache(&paths, false);
+        let cache = read_cache(&paths, &id, &identity, &provider)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cache.models[0].model_id, "exact-Unchanged-ID");
+        assert!(cache.models[0].observation.is_none());
+        assert_eq!(cache.query_etag(), None);
+        assert_eq!(cache.success_at, 123);
+        provider
+            .set_model_catalog_overlay(cache.models.clone())
+            .unwrap();
+        assert_eq!(provider.effective_models(None).unwrap()[0], cache.models[0]);
+        let persisted = fs::read(cache_path(&paths, &id, &identity)).unwrap();
+        let again = read_cache(&paths, &id, &identity, &provider)
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.models, cache.models);
+        assert_eq!(
+            fs::read(cache_path(&paths, &id, &identity)).unwrap(),
+            persisted
+        );
+        assert_eq!(again.query_etag(), None);
+        let mut previous_normalization = cache.clone();
+        previous_normalization.normalization_revision = NORMALIZATION_REVISION - 1;
+        previous_normalization
+            .persist(&paths, &id, &identity)
+            .unwrap();
+        let previous = read_cache(&paths, &id, &identity, &provider)
+            .unwrap()
+            .unwrap();
+        assert_eq!(previous.models, cache.models);
+        assert_eq!(previous.query_etag(), None);
+        let current = SuccessCache::new(
+            &id,
+            &identity,
+            Some("\"current\"".into()),
+            previous.models,
+            124,
+        );
+        current.persist(&paths, &id, &identity).unwrap();
+        let reloaded = read_cache(&paths, &id, &identity, &provider)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.query_etag(), Some("\"current\""));
+    }
+
+    #[test]
+    fn conflicting_cached_ids_keep_original_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_config_dir(home.path());
+        let (id, provider, identity, original) = legacy_cache(&paths, true);
+        assert!(matches!(
+            read_cache(&paths, &id, &identity, &provider),
+            Err(CacheWarning::Declaration)
+        ));
+        assert_eq!(
+            fs::read(cache_path(&paths, &id, &identity)).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn migrated_sequence_never_reuses_order_after_sources_disappear() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_config_dir(home.path());
+        assert_eq!(next_observation_order(&paths, 17).unwrap(), 18);
+        assert_eq!(next_observation_order(&paths, 0).unwrap(), 19);
+        let path = paths.config_dir().join("v2/model-catalogs/sequence.json");
+        fs::write(&path, b"broken").unwrap();
+        assert!(next_observation_order(&paths, 0).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"broken");
+    }
 }

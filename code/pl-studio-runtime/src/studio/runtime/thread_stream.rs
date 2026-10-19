@@ -917,19 +917,7 @@ impl StudioRuntime {
         } else {
             pl_protocol::AgentRoleId::new(snapshot.thread.role.clone())?
         };
-        let resolved = config
-            .models
-            .resolve_route(role, &selector)
-            .and_then(|resolved| {
-                if snapshot.thread.parent_thread_id.is_none() {
-                    let mode = self.thread_modes.snapshot().mode(&snapshot.thread.mode);
-                    crate::mode::validate_thread_mode_model(
-                        mode.as_ref().map(|mode| mode.as_ref()),
-                        &resolved.model,
-                    )?;
-                }
-                Ok(resolved)
-            });
+        let resolved = config.models.resolve_route(role, &selector);
         match resolved {
             Ok(_) => {
                 route.available = true;

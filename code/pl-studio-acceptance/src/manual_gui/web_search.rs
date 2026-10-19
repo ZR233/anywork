@@ -110,14 +110,14 @@ fn build_provider(
     adapter: ProviderAdapterKind,
     base_url: &str,
     credential_env: Option<&str>,
-    model_slug: &str,
+    model_id: &str,
     capabilities: ProviderServiceCapabilities,
     model_web_search: bool,
 ) -> ProviderConfig {
     let mut endpoint = ProviderEndpoint::compatible(name, base_url);
     endpoint.adapter = adapter;
     endpoint.service_capabilities = capabilities;
-    let mut model = ModelInfo::compatible(model_slug);
+    let mut model = ModelInfo::compatible(model_id);
     model.display_name = format!("Fixture {name}");
     model.capabilities.web_search = model_web_search;
     model

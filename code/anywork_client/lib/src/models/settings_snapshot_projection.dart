@@ -75,15 +75,15 @@ Map<String, ProviderModelAutoCompactView> _projectAutoCompactLimits(
 ) {
   final projected = <String, ProviderModelAutoCompactView>{
     for (final model in catalogProvider.models)
-      model.slug: ProviderModelAutoCompactView.forModel(model)
+      model.modelId: ProviderModelAutoCompactView.forModel(model)
           .withStoredOverride(
-            configProvider.autoCompactLimits[model.slug]?.overrideLimit,
+            configProvider.autoCompactLimits[model.modelId]?.overrideLimit,
           ),
   };
   for (final entry in configProvider.autoCompactLimits.entries) {
     if (projected.containsKey(entry.key)) continue;
     projected[entry.key] = ProviderModelAutoCompactView(
-      slug: entry.key,
+      modelId: entry.key,
       defaultLimit: null,
       overrideLimit: entry.value.overrideLimit,
     );

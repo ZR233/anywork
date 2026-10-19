@@ -77,9 +77,12 @@ class ProviderModelReadout extends StatelessWidget {
                       ),
                     ),
                     _originBadge(context),
-                    if (_unverifiedOnline)
+                    if (model.priceTiers.isEmpty)
+                      Text(context.l10n.settingsModelPriceUnknown),
+                    if (model.contextWindow == null &&
+                        model.maxContextWindow == null)
                       Text(
-                        context.l10n.settingsUnverifiedOnlineModel,
+                        context.l10n.settingsModelParametersUnknown,
                         style: context.text.labelSmall?.copyWith(
                           color: context.colors.onSurfaceVariant,
                         ),
@@ -87,7 +90,7 @@ class ProviderModelReadout extends StatelessWidget {
                   ],
                 ),
                 Text(
-                  model.slug,
+                  model.modelId,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.text.bodySmall?.copyWith(
@@ -112,7 +115,7 @@ class ProviderModelReadout extends StatelessWidget {
                     inputCapabilities.join(' · '),
                     key: StudioDriverKeys.modelCapabilityTags(
                       providerId,
-                      model.slug,
+                      model.modelId,
                     ),
                     style: context.text.labelSmall?.copyWith(
                       color: context.colors.onSurfaceVariant,
@@ -143,7 +146,7 @@ class ProviderModelReadout extends StatelessWidget {
             IconButton(
               key: StudioDriverKeys.providerManualModelDelete(
                 providerId,
-                model.slug,
+                model.modelId,
               ),
               tooltip: context.l10n.settingsRemoveManualModelConfirmTitle,
               icon: const Icon(Icons.delete_outline),
@@ -153,12 +156,8 @@ class ProviderModelReadout extends StatelessWidget {
           if (price.isNotEmpty) ...[
             const SizedBox(width: 10),
             Tooltip(
-              message: model.priceTiers
-                  .map(
-                    (tier) =>
-                        '${tier.label}\n${context.l10n.settingsPriceTierUnit(model.currency)} · ${context.l10n.settingsPriceInput}: ${tier.input} · ${context.l10n.settingsPriceOutput}: ${tier.output} · ${context.l10n.settingsPriceCacheRead}: ${tier.cacheRead ?? "—"} · ${context.l10n.settingsPriceCacheWrite}: ${tier.cacheWrite ?? "—"}',
-                  )
-                  .join('\n\n'),
+              message:
+                  '${model.priceSource}\n${model.priceTiers.map((tier) => '${tier.label}\n${context.l10n.settingsPriceTierUnit(model.currency)} · ${context.l10n.settingsPriceInput}: ${tier.input} · ${context.l10n.settingsPriceOutput}: ${tier.output} · ${context.l10n.settingsPriceCacheRead}: ${tier.cacheRead ?? "—"} · ${context.l10n.settingsPriceCacheWrite}: ${tier.cacheWrite ?? "—"}').join('\n\n')}',
               child: Text(
                 price,
                 style: context.text.labelSmall?.copyWith(
@@ -182,7 +181,7 @@ class ProviderModelReadout extends StatelessWidget {
               child: SegmentedButton<String>(
                 key: StudioDriverKeys.providerModelConnectionMode(
                   providerId,
-                  model.slug,
+                  model.modelId,
                 ),
                 segments: [
                   for (final mode in model.supportedConnectionModes)
@@ -191,7 +190,7 @@ class ProviderModelReadout extends StatelessWidget {
                       label: KeyedSubtree(
                         key: StudioDriverKeys.providerModelConnectionModeOption(
                           providerId,
-                          model.slug,
+                          model.modelId,
                           mode,
                         ),
                         child: Text(context.modelConnectionLabel(mode)),
@@ -214,7 +213,7 @@ class ProviderModelReadout extends StatelessWidget {
             child: ProviderModelAutoCompactControl(
               limit: autoCompact!,
               providerId: providerId,
-              modelSlug: model.slug,
+              modelId: model.modelId,
               edit: autoCompactEdit,
               onOverrideChanged: onAutoCompactChanged,
               onEditingComplete: onAutoCompactCommit,
@@ -236,9 +235,6 @@ class ProviderModelReadout extends StatelessWidget {
       ),
     );
   }
-
-  bool get _unverifiedOnline =>
-      model.origin == ProviderModelOrigin.online && model.priceTiers.isEmpty;
 
   Widget _originBadge(BuildContext context) {
     final label = switch (model.origin) {

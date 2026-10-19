@@ -34,7 +34,7 @@ impl StudioRuntime {
         let route = config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)?;
-        crate::mode::validate_thread_mode_model(Some(&mode), &route.model)?;
+
         let thread = self.ensure_thread_owner(thread_id).await?;
         let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
         let _installation = tokio::select! {

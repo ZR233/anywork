@@ -377,7 +377,7 @@ async fn generate_title(
     let model = model_observation.as_ref().map_or_else(
         || {
             billing_model(
-                &route.model.slug,
+                &route.model.model_id,
                 result.as_ref().ok().map(|response| response.model()),
             )
         },

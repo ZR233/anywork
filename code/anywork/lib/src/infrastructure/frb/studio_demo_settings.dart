@@ -35,7 +35,8 @@ const demoProviderCatalogFixture = ProviderCatalogView(
     'openai-compatible': [],
     'future-catalog': [
       ProviderModelView(
-        slug: 'future-model',
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-model',
         displayName: 'Future Model',
         reasoningEfforts: ['eco', 'balanced', 'max'],
         defaultReasoningEffort: 'balanced',
@@ -64,7 +65,8 @@ const demoProviderCatalogFixture = ProviderCatalogView(
         origin: ProviderModelOrigin.bundled,
       ),
       ProviderModelView(
-        slug: 'future-text',
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-text',
         displayName: 'Future Text',
         reasoningEfforts: ['eco', 'balanced'],
         defaultReasoningEffort: 'balanced',
@@ -83,7 +85,8 @@ const demoProviderCatalogFixture = ProviderCatalogView(
         origin: ProviderModelOrigin.bundled,
       ),
       ProviderModelView(
-        slug: 'future-vision',
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-vision',
         displayName: 'Future Vision',
         reasoningEfforts: ['balanced', 'max'],
         defaultReasoningEffort: 'max',
@@ -139,7 +142,8 @@ List<ProviderSettingsView> _providersFromCommands(
     final customModels = provider.customModels
         .map(
           (model) => ProviderModelView(
-            slug: model.slug,
+            typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+            modelId: model.modelId,
             displayName: model.displayName,
             reasoningEfforts: const [],
             contextWindow: model.contextWindow,
@@ -151,18 +155,18 @@ List<ProviderSettingsView> _providersFromCommands(
             origin: ProviderModelOrigin.manual,
           ),
         )
-        .where((model) => model.slug.isNotEmpty)
+        .where((model) => model.modelId.isNotEmpty)
         .toList();
     final template =
         catalog.preset(provider.templateKind) ?? catalog.presets.first;
     final connectionModes = {
       for (final model in provider.modelConnectionModes)
-        model.slug: model.connectionMode,
+        model.modelId: model.connectionMode,
     };
     ProviderModelView withCurrentConnection(ProviderModelView model) =>
         model.copyWith(
           connectionMode:
-              connectionModes[model.slug] ?? model.defaultConnectionMode,
+              connectionModes[model.modelId] ?? model.defaultConnectionMode,
         );
     final previousProvider = previous
         .where((item) => item.id == (provider.originalId ?? provider.id))
@@ -182,13 +186,13 @@ List<ProviderSettingsView> _providersFromCommands(
     ];
     final autoCompactOverrides = {
       for (final limit in provider.modelAutoCompactLimits)
-        limit.slug: limit.limit,
+        limit.modelId: limit.limit,
     };
     final autoCompactLimits = {
       for (final model in models)
-        model.slug: _demoAutoCompactLimit(
+        model.modelId: _demoAutoCompactLimit(
           model,
-          override: autoCompactOverrides[model.slug],
+          override: autoCompactOverrides[model.modelId],
         ),
     };
     final hasToken = switch (provider.secret.action) {

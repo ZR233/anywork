@@ -231,7 +231,7 @@ impl std::fmt::Debug for InvocationRunner {
         formatter
             .debug_struct("InvocationRunner")
             .field("provider", &self.provider_instance_id)
-            .field("model", &self.model.slug)
+            .field("model", &self.model.model_id)
             .field("transport", &self.model.binding.transport)
             .field("pricing_mode", &self.pricing_mode)
             .finish_non_exhaustive()
@@ -402,7 +402,7 @@ impl InvocationRunner {
         let retry_jitter_key = original_trace
             .as_ref()
             .map(|trace| trace.inference_id.as_str())
-            .unwrap_or(self.model.slug.as_str())
+            .unwrap_or(self.model.model_id.as_str())
             .to_string();
         let mut attempt_number = 0_u32;
         let mut transport_attempts = 0_u64;
@@ -790,7 +790,7 @@ impl InvocationRunner {
         Ok((
             body,
             InferenceModelObservation {
-                configured_model: self.model.slug.clone(),
+                configured_model: self.model.model_id.clone(),
                 sent_model,
                 reported_model: None,
             },
@@ -942,7 +942,7 @@ impl InvocationRunner {
         let model_info = &self.model;
         let mut hasher = DefaultHasher::new();
         self.endpoint.connection_fingerprint().hash(&mut hasher);
-        model_info.slug.hash(&mut hasher);
+        model_info.model_id.hash(&mut hasher);
         model_info.binding.transport.protocol.hash(&mut hasher);
         model_info
             .binding

@@ -27,7 +27,10 @@ pub struct ModelParameter {
     /// 面向用户的显示名，缺失时回退到 name。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// 候选值域（GUI 渲染为下拉选项；按强度从弱到强排列，首项为最弱默认值）。
+    /// Independent model default; candidate order remains unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// 候选值域（GUI 按声明顺序渲染为下拉选项）。
     pub candidates: Vec<String>,
     /// 每个候选值对应的 wire 写入规则，key 必须是 candidates 中的值。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -48,12 +51,17 @@ impl ModelParameter {
     /// 返回参数的默认候选值。
     ///
     /// 若调用方传入的默认值存在且属于候选值域，优先返回该值；否则回退到
-    /// candidates 首项。这样宿主产品可以保留配置文件里的显式默认值，同时仍由
+    /// 模型默认值，再回退到 candidates 首项。这样宿主产品可以保留配置文件里的显式默认值，同时仍由
     /// pl-model 统一维护回退规则。
     pub fn default_candidate(&self, configured_default: Option<&str>) -> Option<String> {
         configured_default
             .filter(|candidate| self.has_candidate(candidate))
             .map(ToString::to_string)
+            .or_else(|| {
+                self.default
+                    .clone()
+                    .filter(|candidate| self.has_candidate(candidate))
+            })
             .or_else(|| self.candidates.first().cloned())
     }
 
@@ -98,7 +106,7 @@ pub enum MissingCandidatePolicy {
 pub struct ModelParameterCandidateRequest<'a> {
     /// 用户或上层策略显式指定的候选值。
     pub requested: Option<&'a str>,
-    /// 配置中声明的默认候选值；若不存在或无效则回退到候选值首项。
+    /// 配置中声明的默认候选值；若不存在或无效则取模型默认，再取候选值首项。
     pub default_candidate: Option<&'a str>,
     /// 没有显式选择时采用的策略。
     pub missing: MissingCandidatePolicy,

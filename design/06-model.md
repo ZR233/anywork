@@ -70,7 +70,7 @@ protocol request 和 typed stream event 解析，不向 pl-core 暴露。
 Studio 读取这些能力做装配校验和 UI 展示：图片输入必须要求模型声明 image 输入，工具调用必须匹配
 工具能力，推理请求必须匹配 reasoning 能力。provider 私有差异不扩散到 pl-core。
 
-提示词缓存不是由模型 slug 隐式推断的基础能力：provider 服务能力声明 endpoint 的缓存方言，模型
+提示词缓存不是由模型 model_id 隐式推断的基础能力：provider 服务能力声明 endpoint 的缓存方言，模型
 目录声明该模型是否报告缓存写入 token，核心层把两者与 wire protocol 合成为穷尽的有效缓存策略。
 未声明能力的自定义 Responses/Chat endpoint 默认不发送任何缓存专属字段。
 
@@ -113,13 +113,13 @@ xAI 与 OpenAI-compatible 拥有各自的类型化客户端，动态路由返回
 core 冻结工具计划（ToolPlan）并拥有工具权限、执行、并发与结果提交；供应商边界落实原生
 function/custom 工具、programmatic caller、hosted search、thinking 与工具流优化。原生优化不得
 丢失其他已注册工具；reasoning、caller、opaque context 与工具结果配对在多轮、重试和恢复中保持
-完整。具体模型和 endpoint 的显式能力决定优化，不按 slug 或 URL 猜测。
+完整。具体模型和 endpoint 的显式能力决定优化，不按 model_id 或 URL 猜测。
 
 每个 provider 实例保存 preset 身份、endpoint override、凭证、headers、tool wire policy、服务
 能力和 catalog binding；具体模型由角色 route 选择，不保存第二份 provider 默认模型。唯一有效目录
 由一个解析入口产出：每条成员携带来源（`bundled` 默认定义、`online` 在线名单、`manual` 用户手动
 模型），成员资格与来源不分散到投影或界面自行推导；不从全局列表兜底，也不从默认定义补回在线名单
-缺失的模型。目录可按 slug 保存当前连接方式 override。reasoning/thinking/effort 的 wire 规则由
+缺失的模型。目录可按 model_id 保存当前连接方式 override。reasoning/thinking/effort 的 wire 规则由
 模型 parameters 声明驱动（见 6.8）。
 
 OpenAI-compatible 自定义模型必须显式提供完整 transport profile：Chat 模型只能声明
@@ -142,10 +142,10 @@ WebSocket 或 HTTP，Chat Completions 只支持 HTTP。协议由模型 transport
 provider 实例统一决定；同一 provider 实例下的不同模型可以使用不同协议。
 
 transport profile 是模型信息的必填字段，包含 protocol、supported_connection_modes 与
-default_connection_mode；provider 的模型目录可按模型 slug 保存 connection_overrides，解析后的
+default_connection_mode；provider 的模型目录可按模型 model_id 保存 connection_overrides，解析后的
 模型把 override 投影为本次请求的最终连接方式。Chat + WS、空支持列表、默认模式不在支持列表，
 以及用户新保存的 override 指向未知或不支持模式的模型，都在保存时拒绝，校验失败返回类型化的模型
-profile 错误（携带 slug 与涉事模态/wire 上下文）；媒体契约校验使用同一错误类型。在线目录变化使
+profile 错误（携带 model_id 与涉事模态/wire 上下文）；媒体契约校验使用同一错误类型。在线目录变化使
 既有选择不可用时，保留选择并报告外部绑定不可用，不将其判为用户数据损坏或自动改选。
 显式手工目录及声明本身仍严格校验。Web 与 Flutter 只渲染模型目录返回的 transport 和当前 override，不按 preset ID 推断。
 
@@ -232,7 +232,7 @@ effort 等可调参数的 wire 写入由通用透传机制驱动，协议层不�
 为 parameter wire > base body > 协议默认字段。
 
 每次 inference 在最终请求体完成全部覆盖后冻结模型身份观察：`configuredModel` 是目录中选中的
-slug，`sentModel` 是最终 wire body 实际发送的 `model`，`reportedModel` 是 Provider 明确报告的
+model_id，`sentModel` 是最终 wire body 实际发送的 `model`，`reportedModel` 是 Provider 明确报告的
 模型。请求体缺失 `model`、值不是字符串或只有空白时，在发送前以协议错误拒绝。该观察由统一
 invocation runtime 产生并随成功、失败和宿主只读响应传播；普通 Turn、压缩、自动标题和自动审批
 不得各自重新推断。Chat、Responses HTTP 和 Responses WebSocket 将模型声明归一化为 canonical
@@ -335,73 +335,41 @@ codec 还定义 `video_url` 与 `file_url`，但模型只有在精确请求契�
 产品宿主使用自己的配置读取完整的模型配置，经校验与解析得到已解析模型路由后，才交给 pl-model
 构造模型绑定或辅助请求客户端；pl-core 与 pl-model 都不读取 `~/.anywork/config.toml`。
 
-Bundled catalog 只读，配置只能通过 `additional_models` 追加不冲突 slug；完全自定义 provider
+Bundled catalog 只读，配置通过 `additional_models` 补充成员或覆盖同 ID 的本地定义；完全自定义 provider
 使用显式模型列表。附加与显式模型都必须声明 transport；模型目录的 connection_overrides 只保存
 当前模式选择，不修改模型声明的支持矩阵。
 
 ### 在线目录与默认定义
 
-OpenAI、DeepSeek 与 xAI 的默认模型目录由各自版本化 `model.json` 定义随二进制发布，复用完整
-ModelInfo 声明与既有模型字段序列化契约，统一提供模型集合、推荐模型/effort 与已记录价格。
-默认定义不在 Rust 名单或 preset 中重复维护；装配失败属于程序内部定义错误，不是用户配置损坏。
-在线探测能力由目录自身声明，而不是由适配器白名单推断：声明包含该目录发现使用的 transport
-profile 与明确排除的非对话模型：精确 slug 列表，以及按 slug 前缀声明的非对话模型家族，两者都来自
-厂商文档的静态事实，只作用于在线观察结果，不影响内置默认名单或手工模型。当前 OpenAI 使用
-Responses + WebSocket 发现，并排除图像生成、嵌入、语音与审核家族（`gpt-image-`、`dall-e-`、
-`text-embedding-`、`tts-`、`whisper-`、`omni-moderation-`、`text-moderation-`）；DeepSeek 与 xAI
-使用 Responses + HTTP；MiMo 使用 Chat Completions + HTTP 发现并排除其 TTS/ASR 语音模型；智谱
-（通用 API 与 Coding Plan）不提供公开模型列表接口、openai-compatible 由用户完全自定义，因此都不
-声明发现能力并保持既有静态或显式语义。新增或撤销某目录的发现能力只改目录声明，不新增 adapter
-分支。
+模型标识统一为 model_id（camelCase 协议为 modelId），按原始字符串精确匹配。
+模型固有定义按 ID 全局合并；可调用成员按 (provider_id, model_id) 区分，供应商名单不会因
+全局定义补全而扩张。名称、预算、模态、能力与参数候选共享；凭据、传输、参数 wire 和价格归路由。
 
-在线查询由 endpoint 的窄能力执行，不要求先选择模型，且始终在当前 `base_url` 的路径前缀后
-追加 `/models`，保留既有查询参数与 provider 鉴权/header 规则。不得插入额外 `/v1`、固定请求
-Codex 后端或按 URL 猜测 adapter。每次探测单次请求、整体上限 10 秒、响应体上限 4 MiB，禁止
-自动重试与重定向；取消释放请求，不创建无主任务。错误保留必要状态与类型化原因，不回显认证头、
-token、带凭据 URL 或无界正文。
+目录解析是 pl-model 的唯一合成入口，Studio 以 desired 配置和成功观察构造 canonical 快照。
+在线逐字段明确声明优先于显式本地配置和内置定义；多个在线来源采用最近成功获取该字段的值。
+缺失字段不清除已有声明，也不刷新该字段顺序；明确 false、空集合与可空字段的 null 是实际声明。
+同一响应重复 ID 按报文顺序逐字段合并；缺省骨架不是在线能力事实。HTTP 304 只更新检查状态。
+源内名单替换上一份成功名单，不累计已撤回成员；本地同 ID 合并，源内及跨源结果均保持确定顺序。
+本地补全采用显式配置优先于内置定义；同优先级按稳定供应商 ID 排序。上下文与上限分别保存原始
+声明与顺序，只有较新的单侧声明可使继承配对值收敛；同一报文自相矛盾的预算仍拒收。
 
-typed 适配边界接受 OpenAI-compatible 的 `data`/`id` 与 Codex 富声明的 `models`/`slug`。
-归一化名称、描述、上下文/输出/压缩预算、模态和 effort；候选及 wire 继续数据驱动，不使用固定
-effort 枚举。服务端默认 effort 如有提供须属于候选，但不改写既有 route 或内部摘要的最弱选择。
-模型元数据按当前在线明确声明、同查询身份的最后成功声明、同精确 ID 的内置定义依次补全；
-内置字段只补在线缺失项，不得使在线明确声明失效或被拒收，显式空值域和否定不补回。
-该优先级覆盖名称、预算、模态、能力、effort 候选与受约束的传输声明，不改变手工模型优先权、
-用户连接/压缩覆盖或本地精确计价规则。输入模态参照 Codex 的默认契约：当前 API 未声明
-`input_modalities`，也未声明 `capabilities.input` 时默认文本与图片，并提供对应 Responses 图片输入编码；
-该默认与模型名称无关，不表示真实供应商已验证支持。当前显式模态声明仍优先，包括仅文本与空列表。
-服务端声明的 `context_window` 若大于继承默认定义的上限 `max_context_window`，以观测窗口抬升该上限
-（观测事实优先于过时的本地默认）；反之，API 只声明更小的 `max_context_window` 时，继承的当前窗口
-收敛到该在线上限，不能因内置当前窗口更大而拒绝名单或继续使用旧容量。未知的配对字段不凭空补成
-固定预算；API 同时声明两个字段时仍要求自身一致，不一致仍按无效预算失败。
-在线明确关闭 reasoning 时清除继承的 effort 候选；在线明确给出空的 `parameters` 或 effort 候选时，
-不继承内置候选，未单独声明的 reasoning 能力随在线候选收敛。当前报文同时明确关闭 reasoning 又声明
-非空 effort 候选时属于在线声明自身冲突，必须失败，不以任意一方静默覆盖另一方。
-其他缺失字段只按同一精确 ID 使用已有成功/默认声明补全。
-旧成功缓存中除显示名、描述外与未知 ID 默认骨架完全相同的记录不代表能力否定；
-若新二进制已收录该精确 ID，查询补全与有效目录解析均使用当前内置定义升级该骨架，
-保留服务端已有显示名与描述。其他缓存声明保留，当前 API 明确字段
-仍优先；不添加 API 名单外的模型，也不修改手工定义。GPT‑6.1 Sol 的图片输入、预算与 effort
-依据 [官方模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol) 收录。
-未知预算保持未知，不把 ID-only 列表称为完整参数声明，不凭名字推断窗口或 reasoning 能力；
-媒体能力还须满足已有 binding/profile 校验。Codex 的产品指令、shell 与工具权限不进入模型声明。
-重复/空 ID、错误 envelope、无效预算或 profile 明确失败；合法空名单是成功声明，不伪装为失败。
+发现复用 endpoint 的 /models，保留路径前缀、查询参数与鉴权；不按 URL 猜测供应商，不发推理探针。
+单次请求整体上限 10 秒、响应体上限 4 MiB，无自动重试和重定向；取消释放请求，失败保留上次成功。
+适配层接受现役外部 data/id 与 models/slug 格式，内部只使用 model_id。
+不按模型家族、模态或工具能力排除在线成员，所有 Mode 使用同一完整目录。有效目录查询可选模型类型，
+未指定时返回全部；文本类型要求最终合并结果同时支持文本输入和输出，且解析上下文容量为正数
+（当前窗口优先，否则最大窗口）。筛选不考虑价格、工具或 Mode，不在发现和合并前裁剪成员。
+类型匹配由模型层计算并随目录发布，宿主只查询已发布的类型，不复制判定规则。请求准备仍执行工具、媒体、
+参数、历史和协议校验。未知模型参数保持未知，名称和价格不能证明请求兼容。
 
-provider 的唯一有效目录按本次在线成功、同查询身份最后成功、从未成功时默认定义选择；成功名单
-替换上一份 API 名单，不累计历史模型，也不从默认定义补回 API 未列出的 ID。手工附加模型保留
-完整声明及优先权，原有 bundled slug 冲突规则不变；完全 explicit 目录不自动转为在线目录。
-目录声明的非对话排除（精确 slug 与前缀）在解码与读取在线缓存两处一致执行：历史缓存的
-`model.json` 若仍含已被排除的非对话 slug，解析有效目录时同样剔除，不因条件请求 304 复用旧缓存
-而复活；排除不作用于内置默认定义与手工模型。
-在线声明只进入非持久 overlay，不写入 `additional_models`，所有路由与展示复用同一解析入口。
-使用默认定义（尚无成功观察）时来源标记为 `bundled`，由目录状态表达“尚未同步”，不能伪装成
-在线名单；手工模型与在线名单同名时手工条目优先，在线条目不出现在有效目录中。被移除的模型
-不再出现在有效目录，其按 slug 保存的压缩阈值与连接覆盖仍保留但不生效，用户选择以不可用状态
-保留（见 [20](./20-config.md)）。
+在线观察保留字段来源与成功顺序，缓存不能把继承默认值重新解释为在线声明。全局参数变化须在
+同一目录 revision 中更新所有受影响路由，执行与展示消费相同结果。缓存迁移和身份隔离见
+[17](./17-studio-storage.md)，双 revision 和配置迁移见 [20](./20-config.md)。
 
-API 价格字段不可信为本地计价事实。价格只按该 provider 绑定目录/手工记录的大小写敏感精确 ID
-关联，不按前缀、别名或其他供应商同名项匹配。在线成功缓存保存 Unknown 价格，解析时关联当前
-本地价格；缺价仍保留用量并标记未计价，不伪造零费用。缓存身份、文件与回退见 [17](./17-studio-storage.md)，
-启动探测及 desired/目录水位见 [20](./20-config.md)。
+价格仅在相同供应商路由内合成：单位、币种明确且现有计价引擎能够表达的在线价格优先，缺失或
+不支持的格式使用本地价格，均未知时保留未计价。非法的已识别价格使观察失败。xAI token 价格按
+其官方单位换算；图像等其他计费单位不冒充 token 单价。历史请求沿用冻结的价格快照。
+设置页分别展示参数未知、价格未知和同步失败，不再把缺价标记成“未校验模型”。
 
 模型信息中的 `base_instructions` 是模型级基础提示词来源，进入 Studio 的 instruction
 assembler；配置中的 `[instructions].base_override` 可以完整替换它。模型信息中的
@@ -410,7 +378,7 @@ assembler；配置中的 `[instructions].base_override` 可以完整替换它。
 固定 token 数兜底。容量以 `context_window` 为准，缺失才回退 `max_context_window`，不得
 用更大的最大容量覆盖当前窗口。该规则同样适用于附加、自定义和在线发现模型，不按模型名
 推断阈值；当前内置 GPT-6.1 Sol 的 475,000 tokens 是产品目录预设，不表示官方 CLI 的承诺。
-用户覆盖独立于模型默认元信息，以 provider 实例与模型 slug 为身份，优先于默认值；实际生效值
+用户覆盖独立于模型默认元信息，以 provider 实例与模型 model_id 为身份，优先于默认值；实际生效值
 取所选阈值与上下文容量 90% 的较小值。显式默认和覆盖值必须为正整数，安全上限不能通过覆盖
 绕过；容量未知或推导安全上限非正时不自动压缩。默认值在没有声明也没有已知容量时保持未知。
 目录 descriptor 携带可空的模型预设，设置投影区分可空默认值、用户覆盖值、生效值与安全上限，
@@ -445,7 +413,10 @@ effort（推理强度）不是固定的全局枚举，而是"模型声明的可�
 写入供应商请求体。
 
 每个模型参数声明包含：参数名（effort 的 name 为 `effort`）、可选显示名（缺失回退参数名）、
-候选值域（固定按推理强度从弱到强排列）与 wire 规则表（每个候选值 → 写入规则）。写入规则由
+候选值域（保留声明顺序）、可选默认候选与 wire 规则表（每个候选值 → 写入规则）。默认候选独立于
+候选顺序；选择优先级为有效显式选择、配置默认、模型默认、候选首项。在线默认值独立保留存在性和
+获取顺序，缺失不提升旧值优先级，明确清空生效；候选收窄不能恢复已撤销值，同次声明自相矛盾时
+拒绝该观察并保留成功快照。写入规则由
 set 列表（嵌套 dot 路径 + 透传字符串值，如 `reasoning.effort`、`thinking.type`）与 remove
 列表（dot 路径）组成；应用时按 dot 路径逐层写入或移除嵌套 JSON 对象字段，移除不存在的字段
 静默忽略。wire 规则表使用按候选值索引的静态结构而非动态 JSON 值，保持配置友好且无需运行时
@@ -469,7 +440,7 @@ GLM-5.2 的"一个选择联动多个字段"和"none 时移除字段"由 wire 的
 effort 选择只改变 `reasoning_effort` 值，Coding Plan 的 OpenAI Response 协议端点按官方映射只
 接受 `reasoning.effort`，不携带 thinking 字段。
 
-所有模型的候选必须按思考强度从弱到强声明，因此首项是该模型可用的最弱强度。内部摘要类请求
+内置模型的候选按思考强度从弱到强声明，在线候选保持供应商顺序，不因默认值重新排列。内部摘要类请求
 （例如 Thread 自动命名）沿用 Explorer 路由的模型，并选择该数组首项，不复制 provider/model 或
 重新定义强度枚举。
 
@@ -679,8 +650,8 @@ token。这是本地模型 token 费用估算，不是供应商账单，不包�
 关闭计价、价格/用量不足、已估算与零费用分别表示；历史只读取冻结账单，不按现价重算。Core、
 Studio、Flutter 仅归属、累计和展示，不再次解释供应商 usage 或价格。具体单价、时段定义与
 退役模型以代码中的模型目录为唯一事实源，设计文档不保存价格快照。
-价格回填与成员资格是两个正交事实：有效目录只在模型 ID 与当前内置目录大小写敏感精确命中时
-继承其价格定义，未命中的在线模型保持未知价格；模型从在线名单消失、来源切换或手动模型被删除
+价格回填与成员资格是两个正交事实：在线价格只覆盖声明它的供应商路由；缺失或不支持的格式仅按
+同一路由的精确模型 ID 回填显式配置或内置价格，仍无价格时保持未知。模型从在线名单消失、来源切换或手动模型被删除
 都不改写已保存的冻结账单，也不触发历史费用重算。
 
 普通 API 预设默认计价；Coding Plan、Token Plan 和自定义兼容预设默认不计价，用户选择只影响

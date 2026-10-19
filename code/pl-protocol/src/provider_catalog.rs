@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Provider/模型目录跨产品传输协议版本。
-pub const PROVIDER_CATALOG_SCHEMA_VERSION: u32 = 12;
+pub const PROVIDER_CATALOG_SCHEMA_VERSION: u32 = 14;
 
 /// 无敏感信息、可供 Web 与桌面端直接渲染的 Provider 目录快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -88,10 +88,34 @@ pub enum ModelOriginDto {
     Manual,
 }
 
+/// Optional classification for final catalog queries.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelType {
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelTypeExclusion {
+    TextInputUnsupported,
+    TextOutputUnsupported,
+    ContextWindowUnknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTypeSupport {
+    pub model_type: ModelType,
+    pub exclusions: Vec<ModelTypeExclusion>,
+}
+
 /// UI 和外部宿主需要的模型元数据投影。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct ModelDescriptor {
     pub id: String,
+    #[serde(rename = "typeSupport")]
+    pub type_support: Vec<ModelTypeSupport>,
     pub origin: ModelOriginDto,
     pub display_name: String,
     pub description: Option<String>,

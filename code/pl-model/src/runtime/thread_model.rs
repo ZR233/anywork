@@ -207,7 +207,7 @@ impl CoreModelSession for ThreadModelSession {
             super::PromptCacheInput {
                 scope: &self.purpose,
                 provider: runtime.endpoint(),
-                model: &runtime.model().slug,
+                model: &runtime.model().model_id,
                 instructions: encoded.instructions.as_deref().unwrap_or_default(),
                 prelude_messages: &[],
                 context_hash: &context_hash,

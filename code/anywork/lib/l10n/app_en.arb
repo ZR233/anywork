@@ -35,8 +35,12 @@
   "sidebarArchiveSessionFailedReason": "Could not archive this session: {reason} (diagnostic ID: {correlationId})",
   "@sidebarArchiveSessionFailedReason": {
     "placeholders": {
-      "reason": {"type": "String"},
-      "correlationId": {"type": "String"}
+      "reason": {
+        "type": "String"
+      },
+      "correlationId": {
+        "type": "String"
+      }
     }
   },
   "sidebarArchiveSessionConfirmTitle": "Archive session",
@@ -308,7 +312,11 @@
   "statusModelRouteUnavailable": "Current model unavailable; show reason",
   "statusModelRouteUnavailableDetail": "Current model unavailable: {reason}",
   "@statusModelRouteUnavailableDetail": {
-    "placeholders": {"reason": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
   },
   "statusModelRouteUnavailableFallback": "The current model route is unavailable. Check the provider and model settings.",
   "statusModelSwitchWhileRunning": "This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.",
@@ -566,11 +574,19 @@
   "timelineViewImageRead": "Image read",
   "timelineImagesViewed": "{count, plural, =1{Viewed 1 image} other{Viewed {count} images}}",
   "@timelineImagesViewed": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineImagesProduced": "{count, plural, =1{1 image} other{{count} images}}",
   "@timelineImagesProduced": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
@@ -791,7 +807,7 @@
   "settingsDisplayName": "Display name",
   "settingsProtocolType": "Protocol type",
   "settingsBaseUrl": "Base URL",
-  "settingsModelSlug": "Model slug",
+  "settingsModelId": "Model model_id",
   "settingsReasoningEfforts": "Reasoning efforts",
   "settingsEdit": "Edit",
   "settingsCancel": "Cancel",
@@ -804,12 +820,11 @@
   "settingsModelOriginOnline": "Online",
   "settingsModelOriginBundled": "Bundled",
   "settingsModelOriginManual": "Manual",
-  "settingsUnverifiedOnlineModel": "Unverified model",
   "settingsRemoveManualModelConfirmTitle": "Delete this manual model?",
   "settingsRemoveManualModelConfirmBody": "This cannot be undone. The model leaves the catalog, and its connection and compact overrides are cleared. History, bills, and session costs stay unchanged.",
   "settingsRemoveManualModelConfirmAction": "Delete",
   "settingsRemoveManualModelFailed": "Could not delete this manual model.",
-  "settingsManualModelSlugConflict": "A model with this slug already exists in the online or bundled catalog.",
+  "settingsManualModelIdConflict": "A model with this model_id already exists in the online or bundled catalog.",
   "settingsBundledModels": "{count} bundled",
   "@settingsBundledModels": {
     "placeholders": {
@@ -1115,7 +1130,9 @@
   "settingsStudioUpdateReady": "Version {version} is downloaded and will install when you close anywork.",
   "@settingsStudioUpdateReady": {
     "placeholders": {
-      "version": { "type": "String" }
+      "version": {
+        "type": "String"
+      }
     }
   },
   "settingsStudioUpdateReleaseNotes": "Release notes",
@@ -1474,5 +1491,13 @@
   },
   "timelineUserInputYourAnswer": "Your answer",
   "timelineUserInputNoAnswer": "No answer provided",
-  "timelineUserInputSecretHidden": "Sensitive answer hidden"
+  "timelineUserInputSecretHidden": "Sensitive answer hidden",
+  "settingsModelParametersUnknown": "Model parameters unknown",
+  "settingsModelPriceUnknown": "Price unknown",
+  "modelTextFilterExcluded": "{model}: excluded from text models ({reasons})",
+  "@modelTextFilterExcluded": {"placeholders": {"model": {"type": "String"}, "reasons": {"type": "String"}}},
+  "modelTextInputUnsupported": "Text input unsupported",
+  "modelTextOutputUnsupported": "Text output unsupported",
+  "modelContextWindowUnknown": "Context window unknown",
+  "modelTextFilterEmpty": "No matching text models. Check model parameters in provider settings."
 }

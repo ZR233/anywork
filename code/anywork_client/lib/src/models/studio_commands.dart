@@ -20,13 +20,13 @@ class ProviderSecretCommand {
 
 class ProviderModelCommand {
   const ProviderModelCommand({
-    required this.slug,
+    required this.modelId,
     required this.displayName,
     required this.wireProtocol,
     required this.contextWindow,
     required this.maxOutputTokens,
   });
-  final String slug;
+  final String modelId;
   final String displayName;
   final String wireProtocol;
   final int contextWindow;
@@ -35,22 +35,22 @@ class ProviderModelCommand {
 
 class ProviderModelConnectionCommand {
   const ProviderModelConnectionCommand({
-    required this.slug,
+    required this.modelId,
     required this.connectionMode,
   });
 
-  final String slug;
+  final String modelId;
   final String connectionMode;
 }
 
 /// 某模型上下文压缩阈值用户覆盖的命令项；`limit` 为正整数 tokens。
 class ProviderModelAutoCompactCommand {
   const ProviderModelAutoCompactCommand({
-    required this.slug,
+    required this.modelId,
     required this.limit,
   });
 
-  final String slug;
+  final String modelId;
   final int limit;
 }
 
@@ -110,7 +110,7 @@ abstract final class ProviderCommandBuilder {
       customModels: [
         for (final model in provider.customModels)
           ProviderModelCommand(
-            slug: model.slug.trim(),
+            modelId: model.modelId.trim(),
             displayName: model.displayName.trim(),
             wireProtocol: model.wireProtocol,
             contextWindow: model.contextWindow ?? 32000,
@@ -120,7 +120,7 @@ abstract final class ProviderCommandBuilder {
       modelConnectionModes: [
         for (final override in provider.modelConnectionModes.entries)
           ProviderModelConnectionCommand(
-            slug: override.key.trim(),
+            modelId: override.key.trim(),
             connectionMode: override.value,
           ),
       ],
@@ -139,15 +139,15 @@ abstract final class ProviderCommandBuilder {
     for (final entry in provider.autoCompactLimits.entries) {
       final limit = entry.value;
       final override = limit.overrideLimit;
-      final slug = entry.key;
-      if (override == null || override <= 0 || slug.isEmpty) {
+      final modelId = entry.key;
+      if (override == null || override <= 0 || modelId.isEmpty) {
         continue;
       }
       if (override == limit.defaultLimit) {
         continue;
       }
       commands.add(
-        ProviderModelAutoCompactCommand(slug: slug, limit: override),
+        ProviderModelAutoCompactCommand(modelId: modelId, limit: override),
       );
     }
     return commands;
@@ -155,13 +155,13 @@ abstract final class ProviderCommandBuilder {
 
   static ProviderSettingsView normalizeProvider(ProviderSettingsView provider) {
     final models = provider.models
-        .where((model) => model.slug.trim().isNotEmpty)
+        .where((model) => model.modelId.trim().isNotEmpty)
         .toList();
-    // canonical defaultModel 非空时始终保留（含当前无法解析的 slug），只有
+    // canonical defaultModel 非空时始终保留（含当前无法解析的 modelId），只有
     // 空值才回退到首个模型；仅用户显式选择才替换。
     final defaultModel = provider.defaultModel.isNotEmpty
         ? provider.defaultModel
-        : models.firstOrNull?.slug ?? '';
+        : models.firstOrNull?.modelId ?? '';
     return provider.copyWith(
       id: provider.id.trim(),
       name: provider.name.trim(),

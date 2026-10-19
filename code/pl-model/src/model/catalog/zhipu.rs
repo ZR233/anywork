@@ -17,7 +17,7 @@ use crate::model::info::{
 };
 use crate::model::parameter::{ModelParameter, ParameterWire, WireAssignment};
 
-const ZHIPU_GLM_DEFAULT_MODEL_SLUGS: &[&str] = &[
+const ZHIPU_GLM_DEFAULT_MODEL_MODEL_IDS: &[&str] = &[
     "glm-5.3",
     "glm-5.3-flash",
     "glm-5.2",
@@ -28,14 +28,14 @@ const ZHIPU_GLM_DEFAULT_MODEL_SLUGS: &[&str] = &[
     "glm-4.7-flash",
 ];
 
-pub fn zhipu_default_model_slugs() -> &'static [&'static str] {
-    ZHIPU_GLM_DEFAULT_MODEL_SLUGS
+pub fn zhipu_default_model_ids() -> &'static [&'static str] {
+    ZHIPU_GLM_DEFAULT_MODEL_MODEL_IDS
 }
 
-const ZHIPU_GLM_RESPONSES_DEFAULT_MODEL_SLUGS: &[&str] = &["glm-5.3", "glm-5.3-flash"];
+const ZHIPU_GLM_RESPONSES_DEFAULT_MODEL_MODEL_IDS: &[&str] = &["glm-5.3", "glm-5.3-flash"];
 
-pub fn zhipu_responses_default_model_slugs() -> &'static [&'static str] {
-    ZHIPU_GLM_RESPONSES_DEFAULT_MODEL_SLUGS
+pub fn zhipu_responses_default_model_ids() -> &'static [&'static str] {
+    ZHIPU_GLM_RESPONSES_DEFAULT_MODEL_MODEL_IDS
 }
 
 pub(super) fn models() -> Vec<ModelInfo> {
@@ -47,7 +47,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
     vec![
         // GLM-5.3（始终思考，effort 候选值按弱到强 low/high/max，联动 reasoning_effort + thinking）
         zhipu_glm53.instantiate(ModelInstanceSpec {
-            slug: "glm-5.3",
+            model_id: "glm-5.3",
             display_name: "GLM-5.3",
             description:
                 "Zhipu flagship model for complex coding and agent work with always-on thinking.",
@@ -58,7 +58,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
         }),
         // GLM-5.3-Flash（GLM-5.3 同款始终思考 wire 的原生多模态版本，支持图片输入）
         zhipu_glm53_flash.instantiate(ModelInstanceSpec {
-            slug: "glm-5.3-flash",
+            model_id: "glm-5.3-flash",
             display_name: "GLM-5.3-Flash",
             description:
                 "Zhipu native multimodal coding model with always-on thinking and image input.",
@@ -69,7 +69,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
         }),
         // GLM-5.2（effort 候选值按弱到强 none/high/max，联动 reasoning_effort + thinking）
         zhipu_glm52.instantiate(ModelInstanceSpec {
-            slug: "glm-5.2",
+            model_id: "glm-5.2",
             display_name: "GLM-5.2",
             description: "Zhipu latest flagship model with stronger coding and long-horizon agent work.",
             context_window: 1_000_000,
@@ -79,7 +79,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
         }),
         // 文本模型（effort 候选值按弱到强 none/enabled，映射 thinking 开关）
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-5",
+            model_id: "glm-5",
             display_name: "GLM-5",
             description: "Zhipu high-intelligence foundation model for coding and agentic planning.",
             context_window: 200_000,
@@ -88,7 +88,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-5"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-5-turbo",
+            model_id: "glm-5-turbo",
             display_name: "GLM-5-Turbo",
             description: "Zhipu GLM-5 Turbo model optimized for long task continuity.",
             context_window: 200_000,
@@ -97,7 +97,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-5-turbo"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.7",
+            model_id: "glm-4.7",
             display_name: "GLM-4.7",
             description: "Zhipu high-intelligence model for dialogue, reasoning, agents, and coding.",
             context_window: 200_000,
@@ -106,7 +106,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.7"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.7-flashx",
+            model_id: "glm-4.7-flashx",
             display_name: "GLM-4.7-FlashX",
             description: "Zhipu lightweight high-speed model for general text tasks.",
             context_window: 200_000,
@@ -115,7 +115,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.7-flashx"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.6",
+            model_id: "glm-4.6",
             display_name: "GLM-4.6",
             description: "Zhipu model with stronger coding, reasoning, and tool calling.",
             context_window: 200_000,
@@ -124,7 +124,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.6"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.5-air",
+            model_id: "glm-4.5-air",
             display_name: "GLM-4.5-Air",
             description: "Zhipu cost-effective model for reasoning, coding, and agent tasks.",
             context_window: 128_000,
@@ -133,7 +133,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.5-air"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.5-airx",
+            model_id: "glm-4.5-airx",
             display_name: "GLM-4.5-AirX",
             description: "Zhipu fast cost-effective model for latency-sensitive tasks.",
             context_window: 128_000,
@@ -142,7 +142,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.5-airx"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4-long",
+            model_id: "glm-4-long",
             display_name: "GLM-4-Long",
             description: "Zhipu long-context model for very large inputs and memory-heavy tasks.",
             context_window: 1_000_000,
@@ -151,7 +151,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4-long"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4-flashx-250414",
+            model_id: "glm-4-flashx-250414",
             display_name: "GLM-4-FlashX-250414",
             description: "Zhipu high-speed low-cost Flash model with higher concurrency.",
             context_window: 128_000,
@@ -160,7 +160,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4-flashx-250414"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.7-flash",
+            model_id: "glm-4.7-flash",
             display_name: "GLM-4.7-Flash",
             description: "Zhipu free GLM-4.7 base model.",
             context_window: 200_000,
@@ -169,7 +169,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.7-flash"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4.5-flash",
+            model_id: "glm-4.5-flash",
             display_name: "GLM-4.5-Flash",
             description: "Zhipu free GLM-4.5 model, marked by the official docs as being phased out.",
             context_window: 128_000,
@@ -178,7 +178,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.5-flash"),
         }),
         zhipu_text.instantiate(ModelInstanceSpec {
-            slug: "glm-4-flash-250414",
+            model_id: "glm-4-flash-250414",
             display_name: "GLM-4-Flash-250414",
             description: "Zhipu free GLM-4 Flash model for long-context multilingual tool use.",
             context_window: 128_000,
@@ -188,7 +188,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
         }),
         // 视觉模型
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-5v-turbo",
+            model_id: "glm-5v-turbo",
             display_name: "GLM-5V-Turbo",
             description:
                 "Zhipu multimodal coding model for visual understanding and agent workflows.",
@@ -198,7 +198,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-5v-turbo"),
         }),
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-4.6v",
+            model_id: "glm-4.6v",
             display_name: "GLM-4.6V",
             description: "Zhipu visual reasoning model with native tool calling.",
             context_window: 128_000,
@@ -207,7 +207,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.6v"),
         }),
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-4.1v-thinking-flashx",
+            model_id: "glm-4.1v-thinking-flashx",
             display_name: "GLM-4.1V-Thinking-FlashX",
             description: "Zhipu lightweight visual reasoning model for complex scene understanding.",
             context_window: 64_000,
@@ -216,7 +216,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.1v-thinking-flashx"),
         }),
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-4.6v-flash",
+            model_id: "glm-4.6v-flash",
             display_name: "GLM-4.6V-Flash",
             description: "Zhipu free visual reasoning model with tool calling.",
             context_window: 128_000,
@@ -225,7 +225,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.6v-flash"),
         }),
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-4.1v-thinking-flash",
+            model_id: "glm-4.1v-thinking-flash",
             display_name: "GLM-4.1V-Thinking-Flash",
             description: "Zhipu free visual reasoning model for multi-step analysis.",
             context_window: 64_000,
@@ -234,7 +234,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-4.1v-thinking-flash"),
         }),
         zhipu_vision.instantiate(ModelInstanceSpec {
-            slug: "glm-4v-flash",
+            model_id: "glm-4v-flash",
             display_name: "GLM-4V-Flash",
             description: "Zhipu free image understanding model with multilingual support.",
             context_window: 16_000,
@@ -245,7 +245,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
     ]
 }
 
-fn zhipu_pricing(slug: &str) -> ModelPricing {
+fn zhipu_pricing(model_id: &str) -> ModelPricing {
     let flat = |input, output, read| vec![TokenPriceTier::flat(input, output, Some(read), None)];
     let two = |input, output, read, long_input, long_output, long_read| {
         let mut short = TokenPriceTier::flat(input, output, Some(read), None);
@@ -271,7 +271,7 @@ fn zhipu_pricing(slug: &str) -> ModelPricing {
         tiers.insert(1, medium);
         tiers
     };
-    let tiers = match slug {
+    let tiers = match model_id {
         "glm-5.3" | "glm-5.2" => flat(8.0, 28.0, 2.0),
         // Current introductory tariff shown on the official pricing page on 2026-09-05.
         "glm-5.3-flash" => flat(0.4, 1.4, 0.115),
@@ -396,6 +396,7 @@ fn chat_parallel_request_profile() -> ModelRequestProfile {
 /// Zhipu 普通模型 effort：候选值按弱到强 none/enabled，映射 `thinking.type` 开关。
 fn zhipu_plain_effort_parameter() -> ModelParameter {
     ModelParameter {
+        default: None,
         name: "effort".to_string(),
         label: None,
         candidates: vec!["none".to_string(), "enabled".to_string()],
@@ -433,6 +434,7 @@ fn zhipu_plain_effort_parameter() -> ModelParameter {
 /// GLM-5.2 effort：候选值按弱到强 none/high/max，联动 `reasoning_effort` 与 `thinking`。
 fn zhipu_glm52_effort_parameter() -> ModelParameter {
     ModelParameter {
+        default: None,
         name: "effort".to_string(),
         label: None,
         candidates: vec!["none".to_string(), "high".to_string(), "max".to_string()],
@@ -456,6 +458,7 @@ fn zhipu_glm52_effort_parameter() -> ModelParameter {
 /// GLM-5.3 effort：候选值按弱到强 low/high/max，三档共用「始终思考」wire，仅切换 reasoning_effort。
 fn zhipu_glm53_effort_parameter() -> ModelParameter {
     ModelParameter {
+        default: None,
         name: "effort".to_string(),
         label: None,
         candidates: vec!["low".to_string(), "high".to_string(), "max".to_string()],
@@ -536,7 +539,7 @@ pub(crate) fn responses_models() -> Vec<ModelInfo> {
     let glm53_flash = zhipu_responses_flash_family();
     vec![
         glm53.instantiate(ModelInstanceSpec {
-            slug: "glm-5.3",
+            model_id: "glm-5.3",
             display_name: "GLM-5.3",
             description:
                 "Zhipu flagship model for complex coding and agent work with always-on thinking.",
@@ -546,7 +549,7 @@ pub(crate) fn responses_models() -> Vec<ModelInfo> {
             pricing: zhipu_pricing("glm-5.3"),
         }),
         glm53_flash.instantiate(ModelInstanceSpec {
-            slug: "glm-5.3-flash",
+            model_id: "glm-5.3-flash",
             display_name: "GLM-5.3-Flash",
             description:
                 "Zhipu native multimodal coding model with always-on thinking and image input.",
@@ -600,6 +603,7 @@ fn zhipu_responses_family(
 /// Responses 形态 effort：候选值按弱到强 low/high/max，透传到 `reasoning.effort`。
 fn zhipu_responses_effort_parameter() -> ModelParameter {
     ModelParameter {
+        default: None,
         name: "effort".to_string(),
         label: None,
         candidates: vec!["low".to_string(), "high".to_string(), "max".to_string()],

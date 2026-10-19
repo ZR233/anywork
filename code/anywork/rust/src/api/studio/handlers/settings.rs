@@ -63,7 +63,7 @@ pub async fn read_settings_state() -> Result<BridgeSettingsStateResponse, Bridge
 pub async fn remove_provider_model(
     expected_settings_revision: u64,
     provider_id: String,
-    slug: String,
+    model_id: String,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
@@ -72,7 +72,7 @@ pub async fn remove_provider_model(
             .remove_provider_model(pl_protocol::studio::RemoveProviderModelRequest {
                 expected_revision: expected_settings_revision,
                 provider_id,
-                slug,
+                model_id,
             })?,
     ))
 }

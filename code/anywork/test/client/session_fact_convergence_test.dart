@@ -227,7 +227,7 @@ ProviderModelView? _modelFor(
   for (final provider in providers) {
     if (provider.id != providerId) continue;
     for (final candidate in provider.models) {
-      if (candidate.slug == model) return candidate;
+      if (candidate.modelId == model) return candidate;
     }
   }
   return null;

@@ -453,12 +453,26 @@ abstract final class StudioDriverState {
               'pricingEnabled': provider.pricingEnabled,
               'hasBearerToken': provider.hasBearerToken,
               'status': provider.status,
-              'models': [for (final model in provider.models) model.slug],
+              'models': [for (final model in provider.models) model.modelId],
+              'textModels': [
+                for (final model in provider.modelsFor(type: ModelType.text))
+                  model.modelId,
+              ],
               'modelDetails': [
                 for (final model in provider.models)
                   {
-                    'slug': model.slug,
+                    'modelId': model.modelId,
                     'contextWindow': model.contextWindow,
+                    'maxContextWindow': model.maxContextWindow,
+                    'typeSupport': [
+                      for (final support in model.typeSupport)
+                        {
+                          'modelType': support.modelType.name,
+                          'exclusions': support.exclusions
+                              .map((reason) => reason.name)
+                              .toList(),
+                        },
+                    ],
                     'maxOutputTokens': model.maxOutputTokens,
                     'reasoningEfforts': model.reasoningEfforts,
                     'defaultReasoningEffort': model.defaultReasoningEffort,
@@ -473,12 +487,12 @@ abstract final class StudioDriverState {
                 'cacheWarning': provider.modelCatalog.cacheWarning?.name,
                 'lastSuccessAt': provider.modelCatalog.lastSuccessAt,
               },
-              // 压缩阈值四层视图：slug → {default, override, effective, safe}。
+              // 压缩阈值四层视图：modelId → {default, override, effective, safe}。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
                 for (final model in provider.models)
                   {
-                    'slug': model.slug,
+                    'modelId': model.modelId,
                     'default': provider.autoCompactLimitFor(model).defaultLimit,
                     'override': provider
                         .autoCompactLimitFor(model)
@@ -728,7 +742,7 @@ abstract final class StudioDriverState {
   static List<String> _modelCapabilities(AgentWorkspaceView workspace) {
     for (final provider in workspace.providers) {
       for (final model in provider.models) {
-        if (model.slug == workspace.runtime.model) {
+        if (model.modelId == workspace.runtime.model) {
           return [
             for (final capability in model.inputCapabilities)
               capability.modality.name,
@@ -742,7 +756,7 @@ abstract final class StudioDriverState {
   static Map<String, Object?>? _modelProvider(AgentWorkspaceView workspace) {
     for (final provider in workspace.providers) {
       if (provider.models.any(
-        (model) => model.slug == workspace.runtime.model,
+        (model) => model.modelId == workspace.runtime.model,
       )) {
         return {
           'id': provider.id,

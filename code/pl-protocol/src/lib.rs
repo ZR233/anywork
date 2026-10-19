@@ -89,9 +89,10 @@ pub use provider_catalog::{
     CredentialDescriptorDto, ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor,
     ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto, ModelOriginDto,
     ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor, ModelTransportDescriptor,
-    PROVIDER_CATALOG_SCHEMA_VERSION, ProviderCatalogSnapshot, ProviderConnectionModeDescriptor,
-    ProviderPresetDescriptor, ProviderServiceCapabilitiesDescriptor,
-    WebSearchProviderCapabilitiesDescriptor, WebSearchResolutionDescriptor,
+    ModelType, ModelTypeExclusion, ModelTypeSupport, PROVIDER_CATALOG_SCHEMA_VERSION,
+    ProviderCatalogSnapshot, ProviderConnectionModeDescriptor, ProviderPresetDescriptor,
+    ProviderServiceCapabilitiesDescriptor, WebSearchProviderCapabilitiesDescriptor,
+    WebSearchResolutionDescriptor,
 };
 pub use timeline_content::{
     ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,

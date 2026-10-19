@@ -23,6 +23,16 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         return error.clone();
     }
     if let Some(startup) = error.downcast_ref::<crate::StudioStartupError>() {
+        if startup.kind == crate::StudioStartupErrorKind::Migration {
+            return StudioError::new(
+                StudioErrorCode::InvalidArgument,
+                "配置迁移失败，原文件已保留。请检查模型标识与配置声明后重新启动。",
+                false,
+            )
+            .with_details(
+                serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
+            );
+        }
         if let Some(original) = error
             .chain()
             .find_map(|cause| cause.downcast_ref::<StudioError>())
@@ -34,6 +44,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             crate::StudioStartupErrorKind::Environment => (StudioErrorCode::Storage, true),
             crate::StudioStartupErrorKind::Cancelled => (StudioErrorCode::Cancelled, true),
             crate::StudioStartupErrorKind::Internal => (StudioErrorCode::Internal, false),
+            crate::StudioStartupErrorKind::Migration => (StudioErrorCode::InvalidArgument, false),
         };
         return StudioError::new(code, format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind), retryable)
             .with_details(serde_json::json!({"startupStep": startup.step, "startupKind": format!("{:?}", startup.kind)}));
@@ -58,6 +69,11 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "actualRevision": actual,
             })),
             ConfigRuntimeError::Core(error) => pure_error(error),
+            ConfigRuntimeError::Migration(_) => StudioError::new(
+                StudioErrorCode::InvalidArgument,
+                "配置迁移失败，原文件已保留。请检查模型标识与配置声明。",
+                false,
+            ),
         };
     }
     if error.downcast_ref::<serde_json::Error>().is_some() {

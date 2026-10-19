@@ -170,7 +170,7 @@
           ]
         }
       },
-      "slug": "deepseek-flash",
+      "model_id": "deepseek-flash",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -310,14 +310,14 @@
           ]
         }
       },
-      "slug": "deepseek-v4-pro",
+      "model_id": "deepseek-v4-pro",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
       }
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "suggestedEffort": "high",
   "suggestedModel": "deepseek-flash"
 }

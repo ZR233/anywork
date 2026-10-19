@@ -3,6 +3,7 @@ use sea_orm::{DbErr, RuntimeErr, SqlxError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StudioStartupErrorKind {
     PersistentData,
+    Migration,
     Environment,
     Cancelled,
     Internal,
@@ -33,10 +34,17 @@ impl StudioStartupError {
 
     pub(crate) fn input(step: &'static str, source: impl Into<anyhow::Error>) -> Self {
         let source = source.into();
-        let kind = if is_data_error(&source) {
-            StudioStartupErrorKind::PersistentData
-        } else if has_environment_error(&source) {
+        let kind = if has_environment_error(&source) {
             StudioStartupErrorKind::Environment
+        } else if source.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<crate::ConfigRuntimeError>(),
+                Some(crate::ConfigRuntimeError::Migration(_))
+            )
+        }) {
+            StudioStartupErrorKind::Migration
+        } else if is_data_error(&source) {
+            StudioStartupErrorKind::PersistentData
         } else {
             StudioStartupErrorKind::Internal
         };

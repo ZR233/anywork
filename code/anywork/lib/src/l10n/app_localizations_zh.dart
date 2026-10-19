@@ -1419,7 +1419,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBaseUrl => '基础 URL';
 
   @override
-  String get settingsModelSlug => '模型标识';
+  String get settingsModelId => '模型标识';
 
   @override
   String get settingsReasoningEfforts => '思考强度';
@@ -1458,9 +1458,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelOriginManual => '手动';
 
   @override
-  String get settingsUnverifiedOnlineModel => '未校验模型';
-
-  @override
   String get settingsRemoveManualModelConfirmTitle => '删除此手动模型？';
 
   @override
@@ -1474,7 +1471,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsRemoveManualModelFailed => '无法删除此手动模型。';
 
   @override
-  String get settingsManualModelSlugConflict => '该标识已存在于在线或内置目录中。';
+  String get settingsManualModelIdConflict => '该标识已存在于在线或内置目录中。';
 
   @override
   String settingsBundledModels(int count) {
@@ -2768,4 +2765,27 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineUserInputSecretHidden => '敏感回答已隐藏';
+
+  @override
+  String get settingsModelParametersUnknown => '模型参数未知';
+
+  @override
+  String get settingsModelPriceUnknown => '价格未知';
+
+  @override
+  String modelTextFilterExcluded(String model, String reasons) {
+    return '$model：不符合文本筛选条件（$reasons）';
+  }
+
+  @override
+  String get modelTextInputUnsupported => '不支持文本输入';
+
+  @override
+  String get modelTextOutputUnsupported => '不支持文本输出';
+
+  @override
+  String get modelContextWindowUnknown => '上下文大小未知';
+
+  @override
+  String get modelTextFilterEmpty => '没有符合文本条件的模型，请在模型服务商设置中查看参数';
 }

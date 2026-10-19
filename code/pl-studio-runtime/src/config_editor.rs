@@ -13,7 +13,7 @@ use pl_model::provider::{ProviderConnectionMode, ProviderEndpoint, ProviderWireP
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderModelEdit {
-    pub slug: String,
+    pub model_id: String,
     pub display_name: String,
     pub protocol: ProviderWireProtocol,
     pub context_window: u64,
@@ -48,15 +48,15 @@ pub fn provider_template_kind(provider: &ProviderConfig) -> Result<Option<Provid
 
 impl ProviderModelEdit {
     fn to_model_info(&self, current: Option<&ModelInfo>) -> Result<ModelInfo> {
-        let slug = non_empty_trimmed(&self.slug, "model slug")?;
+        let model_id = non_empty_trimmed(&self.model_id, "model model_id")?;
         let mut model = current
-            .filter(|model| model.slug == slug)
+            .filter(|model| model.model_id == model_id)
             .cloned()
-            .unwrap_or_else(|| ModelInfo::compatible(&slug));
+            .unwrap_or_else(|| ModelInfo::compatible(&model_id));
         if let Some(current) = current
-            && current.slug == slug
+            && current.model_id == model_id
             && current.display_name
-                == trim_optional(Some(&self.display_name)).unwrap_or_else(|| slug.clone())
+                == trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone())
             && current.context_window.unwrap_or(32_000) == self.context_window
             && current.max_output_tokens.unwrap_or(4_096) == self.max_output_tokens
             && current.binding.transport.protocol == self.protocol
@@ -64,7 +64,7 @@ impl ProviderModelEdit {
             return Ok(current.clone());
         }
         model.display_name =
-            trim_optional(Some(&self.display_name)).unwrap_or_else(|| slug.clone());
+            trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone());
         if self.context_window == 0
             || self.max_output_tokens == 0
             || self.max_output_tokens > self.context_window
@@ -97,7 +97,7 @@ impl ProviderModelEdit {
         model
             .binding
             .transport
-            .validate(&slug)
+            .validate(&model_id)
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
         Ok(model)
     }
@@ -128,7 +128,7 @@ impl ProviderEdit {
                 edit.to_model_info(
                     current_models
                         .iter()
-                        .find(|model| model.slug.trim() == edit.slug.trim()),
+                        .find(|model| model.model_id.trim() == edit.model_id.trim()),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -187,24 +187,24 @@ impl ProviderEdit {
             }
         };
         let previous_limits = config.auto_compact_overrides().clone();
-        let declared = config.effective_models()?;
+        let declared = config.effective_models(None)?;
         let mut limits = BTreeMap::new();
-        for (slug, limit) in &self.model_auto_compact_limits {
+        for (model_id, limit) in &self.model_auto_compact_limits {
             if *limit == 0 {
                 return Err(PureError::ConfigError(
                     "model auto compact limit must be a positive integer".into(),
                 ));
             }
-            if let Some(model) = declared.iter().find(|model| model.slug == *slug) {
+            if let Some(model) = declared.iter().find(|model| model.model_id == *model_id) {
                 if Some(*limit) != model.default_auto_compact_token_limit() {
-                    limits.insert(slug.clone(), *limit);
+                    limits.insert(model_id.clone(), *limit);
                 }
             } else if config.discovery_profile()?.is_some()
-                && previous_limits.get(slug) == Some(limit)
+                && previous_limits.get(model_id) == Some(limit)
             {
-                limits.insert(slug.clone(), *limit);
+                limits.insert(model_id.clone(), *limit);
             } else {
-                return Err(PureError::ConfigError(format!("unknown model: {slug}")));
+                return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
             }
         }
         match &mut config.catalog {
@@ -226,7 +226,7 @@ impl ProviderEdit {
         config.name = name;
         config.base_url = base_url;
         config.bearer_token = bearer_token;
-        let models = config.effective_models()?;
+        let models = config.effective_models(None)?;
         if config.discovery_profile()?.is_none() {
             validate_models(&provider_key, &default_model, &models)?;
         }
@@ -323,10 +323,10 @@ pub fn remove_provider(
             ))
         })?;
         let replacement = replacement.expect("validated replacement provider");
-        let models = replacement.effective_models()?;
+        let models = replacement.effective_models(None)?;
         let model = models
             .iter()
-            .find(|model| model.slug == route.model)
+            .find(|model| model.model_id == route.model)
             .or_else(|| models.first())
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
@@ -345,7 +345,7 @@ pub fn remove_provider(
             .cloned()
             .or_else(|| model.default_effort().map(ReasoningEffort::new));
         route.provider = replacement_id.clone();
-        route.model = model.slug.clone();
+        route.model = model.model_id.clone();
         route.effort = effort;
         Ok(())
     };
@@ -393,24 +393,24 @@ fn validate_provider_key(key: &str) -> Result<String> {
 }
 
 fn validate_models(provider_key: &str, default_model: &str, models: &[ModelInfo]) -> Result<()> {
-    let mut slugs = BTreeSet::new();
+    let mut model_ids = BTreeSet::new();
     for model in models {
-        if model.slug.trim().is_empty() {
+        if model.model_id.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has a model with empty slug"
+                "provider {provider_key} has a model with empty model_id"
             )));
         }
-        if !slugs.insert(model.slug.clone()) {
+        if !model_ids.insert(model.model_id.clone()) {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has duplicate model slug: {}",
-                model.slug
+                "provider {provider_key} has duplicate model model_id: {}",
+                model.model_id
             )));
         }
     }
 
     let _model = models
         .iter()
-        .find(|model| model.slug == default_model)
+        .find(|model| model.model_id == default_model)
         .ok_or_else(|| {
             PureError::ConfigError(format!(
                 "provider {provider_key} default_model is not in models: {default_model}"

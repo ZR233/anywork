@@ -262,13 +262,13 @@ AnyworkClient _client(
           usageLabel: '',
           models: [
             ProviderModelView(
-              slug: 'alpha',
+              modelId: 'alpha',
               displayName: 'Alpha',
               reasoningEfforts: ['medium'],
               defaultReasoningEffort: 'medium',
             ),
             ProviderModelView(
-              slug: 'beta',
+              modelId: 'beta',
               displayName: 'Beta',
               reasoningEfforts: ['high'],
               defaultReasoningEffort: 'high',

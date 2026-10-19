@@ -2688,11 +2688,11 @@ abstract class AppLocalizations {
   /// **'Base URL'**
   String get settingsBaseUrl;
 
-  /// No description provided for @settingsModelSlug.
+  /// No description provided for @settingsModelId.
   ///
   /// In en, this message translates to:
-  /// **'Model slug'**
-  String get settingsModelSlug;
+  /// **'Model model_id'**
+  String get settingsModelId;
 
   /// No description provided for @settingsReasoningEfforts.
   ///
@@ -2766,12 +2766,6 @@ abstract class AppLocalizations {
   /// **'Manual'**
   String get settingsModelOriginManual;
 
-  /// No description provided for @settingsUnverifiedOnlineModel.
-  ///
-  /// In en, this message translates to:
-  /// **'Unverified model'**
-  String get settingsUnverifiedOnlineModel;
-
   /// No description provided for @settingsRemoveManualModelConfirmTitle.
   ///
   /// In en, this message translates to:
@@ -2796,11 +2790,11 @@ abstract class AppLocalizations {
   /// **'Could not delete this manual model.'**
   String get settingsRemoveManualModelFailed;
 
-  /// No description provided for @settingsManualModelSlugConflict.
+  /// No description provided for @settingsManualModelIdConflict.
   ///
   /// In en, this message translates to:
-  /// **'A model with this slug already exists in the online or bundled catalog.'**
-  String get settingsManualModelSlugConflict;
+  /// **'A model with this model_id already exists in the online or bundled catalog.'**
+  String get settingsManualModelIdConflict;
 
   /// No description provided for @settingsBundledModels.
   ///
@@ -5225,6 +5219,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Sensitive answer hidden'**
   String get timelineUserInputSecretHidden;
+
+  /// No description provided for @settingsModelParametersUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Model parameters unknown'**
+  String get settingsModelParametersUnknown;
+
+  /// No description provided for @settingsModelPriceUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Price unknown'**
+  String get settingsModelPriceUnknown;
+
+  /// No description provided for @modelTextFilterExcluded.
+  ///
+  /// In en, this message translates to:
+  /// **'{model}: excluded from text models ({reasons})'**
+  String modelTextFilterExcluded(String model, String reasons);
+
+  /// No description provided for @modelTextInputUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Text input unsupported'**
+  String get modelTextInputUnsupported;
+
+  /// No description provided for @modelTextOutputUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Text output unsupported'**
+  String get modelTextOutputUnsupported;
+
+  /// No description provided for @modelContextWindowUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Context window unknown'**
+  String get modelContextWindowUnknown;
+
+  /// No description provided for @modelTextFilterEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching text models. Check model parameters in provider settings.'**
+  String get modelTextFilterEmpty;
 }
 
 class _AppLocalizationsDelegate

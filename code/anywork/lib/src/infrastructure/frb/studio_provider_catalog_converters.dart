@@ -53,7 +53,26 @@ ProviderModelView _providerModelFromCatalog(frb.BridgeModelDescriptor model) {
   final reasoning = model.reasoning;
   final pricing = model.pricing;
   return ProviderModelView(
-    slug: model.id,
+    modelId: model.id,
+    typeSupport: [
+      for (final support in model.typeSupport)
+        ModelTypeSupportView(
+          modelType: switch (support.modelType) {
+            frb.BridgeModelType.text => ModelType.text,
+          },
+          exclusions: [
+            for (final reason in support.exclusions)
+              switch (reason) {
+                frb.BridgeModelTypeExclusion.textInputUnsupported =>
+                  ModelTypeExclusion.textInputUnsupported,
+                frb.BridgeModelTypeExclusion.textOutputUnsupported =>
+                  ModelTypeExclusion.textOutputUnsupported,
+                frb.BridgeModelTypeExclusion.contextWindowUnknown =>
+                  ModelTypeExclusion.contextWindowUnknown,
+              },
+          ],
+        ),
+    ],
     displayName: model.displayName,
     description: model.description ?? '',
     contextWindow: model.contextWindow?.toInt(),
@@ -72,6 +91,7 @@ ProviderModelView _providerModelFromCatalog(frb.BridgeModelDescriptor model) {
     reasoningLabel: reasoning?.label ?? '',
     defaultReasoningEffort: reasoning?.defaultCandidate ?? '',
     currency: pricing?.currency ?? '',
+    priceSource: pricing?.source ?? '',
     priceTiers: [
       for (final tier in pricing?.tiers ?? <frb.BridgeModelPriceTier>[])
         ProviderPriceTierView(

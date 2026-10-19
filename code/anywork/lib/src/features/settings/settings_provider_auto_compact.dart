@@ -21,7 +21,7 @@ class ProviderModelAutoCompactControl extends StatefulWidget {
     super.key,
     required this.limit,
     required this.providerId,
-    required this.modelSlug,
+    required this.modelId,
     this.edit,
     this.onOverrideChanged,
     this.onEditingComplete,
@@ -30,7 +30,7 @@ class ProviderModelAutoCompactControl extends StatefulWidget {
 
   final ProviderModelAutoCompactView limit;
   final String providerId;
-  final String modelSlug;
+  final String modelId;
   final ModelAutoCompactEdit? edit;
   final ValueChanged<int?>? onOverrideChanged;
   final VoidCallback? onEditingComplete;
@@ -174,7 +174,7 @@ class _ProviderModelAutoCompactControlState
     final field = TextField(
       key: StudioDriverKeys.providerModelAutoCompactInput(
         widget.providerId,
-        widget.modelSlug,
+        widget.modelId,
       ),
       controller: _controller,
       focusNode: _focus,
@@ -198,7 +198,7 @@ class _ProviderModelAutoCompactControlState
         : Slider(
             key: StudioDriverKeys.providerModelAutoCompactSlider(
               widget.providerId,
-              widget.modelSlug,
+              widget.modelId,
             ),
             min: 1,
             max: safe.toDouble(),
@@ -241,7 +241,7 @@ class _ProviderModelAutoCompactControlState
                 TextButton.icon(
                   key: StudioDriverKeys.providerModelAutoCompactReset(
                     widget.providerId,
-                    widget.modelSlug,
+                    widget.modelId,
                   ),
                   icon: const Icon(Icons.restart_alt, size: 16),
                   label: Text(context.l10n.settingsModelAutoCompactRestore),

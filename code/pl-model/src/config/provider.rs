@@ -14,14 +14,14 @@ use crate::provider::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ProviderModelCatalogConfig {
-    /// 引用 PL 内置只读目录，并允许追加不冲突的自定义模型。
+    /// 引用 PL 内置只读目录；显式模型可补充成员或覆盖同 ID 的本地定义。
     Bundled {
         catalog: ModelCatalogId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         additional_models: Vec<ModelInfo>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         connection_overrides: BTreeMap<String, ProviderConnectionMode>,
-        /// 按模型 slug 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
+        /// 按模型 model_id 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         auto_compact_overrides: BTreeMap<String, u64>,
     },
@@ -30,7 +30,7 @@ pub enum ProviderModelCatalogConfig {
         models: Vec<ModelInfo>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         connection_overrides: BTreeMap<String, ProviderConnectionMode>,
-        /// 按模型 slug 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
+        /// 按模型 model_id 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         auto_compact_overrides: BTreeMap<String, u64>,
     },
@@ -92,6 +92,8 @@ pub struct ProviderConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelInfo>>,
+    #[serde(skip)]
+    resolved_catalog: Option<Vec<ProviderModelEntry>>,
 }
 
 impl ProviderConfig {
@@ -150,6 +152,7 @@ impl ProviderConfig {
             capabilities: ProviderCapabilitySelection::Explicit(service_capabilities),
             catalog,
             model_catalog_overlay: None,
+            resolved_catalog: None,
         }
     }
 
@@ -211,131 +214,132 @@ impl ProviderConfig {
         self.preset.as_ref()
     }
 
-    /// 解析 PL 内置目录和产品附加目录，返回唯一有效模型列表。
+    /// 查询有效模型列表；None 返回全部。类型条件须在全局目录合并后使用。
     /// 远程目录撤下的旧连接 override 保留在配置中，不注入当前声明；展示可继续发布，
     /// 实际请求必须经过 `AgentModelConfig::resolve_route` 的严格连接选择校验。
-    pub fn effective_models(&self) -> Result<Vec<ModelInfo>> {
+    pub fn effective_models(
+        &self,
+        model_type: Option<crate::model::ModelType>,
+    ) -> Result<Vec<ModelInfo>> {
         Ok(self
-            .effective_catalog()?
+            .effective_catalog(model_type)?
             .into_iter()
             .map(|entry| entry.model)
             .collect())
     }
 
-    /// 唯一有效目录合成入口。每条成员携带来源，不从默认定义补回在线名单缺失的模型。
-    pub fn effective_catalog(&self) -> Result<Vec<ProviderModelEntry>> {
-        apply_connection_overrides(
-            self.catalog_membership()?,
-            self.connection_overrides(),
-            self.discovery_profile()?.is_some(),
-            self.editable_models(),
-        )
+    /// 有效目录查询；每条成员携带来源，不从默认定义补回在线名单缺失的模型。
+    /// 类型筛选消费已合并的定义，不用于发现阶段或改变供应商成员。
+    pub fn effective_catalog(
+        &self,
+        model_type: Option<crate::model::ModelType>,
+    ) -> Result<Vec<ProviderModelEntry>> {
+        let catalog = if let Some(catalog) = &self.resolved_catalog {
+            catalog.clone()
+        } else {
+            apply_connection_overrides(
+                self.catalog_membership()?,
+                self.connection_overrides(),
+                self.discovery_profile()?.is_some(),
+                self.editable_models(),
+            )?
+        };
+        Ok(catalog
+            .into_iter()
+            .filter(|entry| model_type.is_none_or(|kind| entry.model.matches_type(kind)))
+            .collect())
     }
 
     fn catalog_membership(&self) -> Result<Vec<ProviderModelEntry>> {
-        match &self.catalog {
+        let (defaults, additional) = match &self.catalog {
             ProviderModelCatalogConfig::Bundled {
                 catalog,
                 additional_models,
                 ..
-            } => {
-                let bundled = builtin_model_catalog(catalog)?;
-                let mut slugs = bundled
-                    .models
-                    .iter()
-                    .map(|model| model.slug.clone())
-                    .collect::<BTreeSet<_>>();
-                for model in additional_models {
-                    if !slugs.insert(model.slug.clone()) {
-                        return Err(PureError::ConfigError(format!(
-                            "additional model conflicts with bundled model: {}",
-                            model.slug
-                        )));
-                    }
-                }
-                let mut entries = if let Some(overlay) = &self.model_catalog_overlay {
-                    // Overlay publication already required a catalog discovery declaration.
-                    let discovery = bundled.discovery.as_ref().ok_or_else(|| {
-                        PureError::Protocol("model catalog observation is unsupported".into())
-                    })?;
-                    // 历史缓存（含 304 复用的旧 model.json）同样按当前目录声明剔除非对话模型。
-                    overlay
-                        .iter()
-                        .filter(|model| {
-                            !crate::provider::discovery::excluded_by_discovery(
-                                &model.slug,
-                                discovery,
-                            ) && !additional_models
-                                .iter()
-                                .any(|manual| manual.slug == model.slug)
-                        })
-                        .map(|model| {
-                            let mut model = model.clone();
-                            if let Some(local) =
-                                bundled.models.iter().find(|local| local.slug == model.slug)
-                                && let Some(enriched) =
-                                    crate::provider::discovery::enrich_unknown_model_fallback(
-                                        &model,
-                                        local,
-                                        &discovery.transport,
-                                        self.adapter,
-                                    )
-                            {
-                                model = enriched;
-                            }
-                            join_bundled_pricing(&mut model, &bundled.models);
-                            ProviderModelEntry {
-                                model,
-                                origin: ProviderModelOrigin::Online,
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    bundled
-                        .models
-                        .iter()
-                        .cloned()
-                        .map(|model| ProviderModelEntry {
-                            model,
-                            origin: ProviderModelOrigin::Bundled,
-                        })
-                        .collect()
-                };
-                entries.extend(
-                    additional_models
-                        .iter()
-                        .cloned()
-                        .map(|model| ProviderModelEntry {
-                            model,
-                            origin: ProviderModelOrigin::Manual,
-                        }),
-                );
-                Ok(entries)
-            }
-            ProviderModelCatalogConfig::Explicit { models, .. } => Ok(models
-                .iter()
-                .cloned()
-                .map(|model| ProviderModelEntry {
-                    model,
+            } => (
+                builtin_model_catalog(catalog)?.models,
+                additional_models.as_slice(),
+            ),
+            ProviderModelCatalogConfig::Explicit { models, .. } => (Vec::new(), models.as_slice()),
+        };
+        let mut local = defaults
+            .iter()
+            .cloned()
+            .map(|model| {
+                (
+                    model.model_id.clone(),
+                    ProviderModelEntry {
+                        model,
+                        origin: ProviderModelOrigin::Bundled,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for model in additional {
+            local.insert(
+                model.model_id.clone(),
+                ProviderModelEntry {
+                    model: model.clone(),
                     origin: ProviderModelOrigin::Manual,
-                })
-                .collect()),
+                },
+            );
         }
+        let Some(overlay) = &self.model_catalog_overlay else {
+            return Ok(local.into_values().collect());
+        };
+        let mut entries = local
+            .iter()
+            .filter(|(_, entry)| entry.origin == ProviderModelOrigin::Manual)
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let discovery = self.discovery_profile()?;
+        for observed in overlay {
+            let declared = local.get(&observed.model_id);
+            let enriched = declared.and_then(|entry| {
+                discovery.as_ref().and_then(|discovery| {
+                    crate::provider::discovery::enrich_unknown_model_fallback(
+                        observed,
+                        &entry.model,
+                        &discovery.transport,
+                        self.adapter,
+                    )
+                })
+            });
+            let observed = enriched.as_ref().unwrap_or(observed);
+            let mut model = declared
+                .filter(|entry| entry.origin == ProviderModelOrigin::Manual)
+                .map(|entry| entry.model.clone())
+                .unwrap_or_else(|| observed.clone());
+            if !matches!(observed.pricing, crate::model::ModelPricing::Unknown) {
+                model.pricing = observed.pricing.clone();
+            }
+            if matches!(model.pricing, crate::model::ModelPricing::Unknown) {
+                model.pricing = local
+                    .get(&model.model_id)
+                    .map(|entry| entry.model.pricing.clone())
+                    .unwrap_or_default();
+            }
+            let origin =
+                if declared.is_some_and(|entry| entry.origin == ProviderModelOrigin::Manual) {
+                    ProviderModelOrigin::Manual
+                } else {
+                    ProviderModelOrigin::Online
+                };
+            entries.insert(model.model_id.clone(), ProviderModelEntry { model, origin });
+        }
+        Ok(entries.into_values().collect())
     }
 
     /// Publish a complete successful inventory; even an empty inventory replaces defaults.
     /// The host owns query identity/generation checks and durable publication ordering.
     /// # Errors
     /// Explicit/unsupported catalogs or any invalid declaration reject the whole observation.
-    pub fn set_model_catalog_overlay(&mut self, mut models: Vec<ModelInfo>) -> Result<()> {
+    pub fn set_model_catalog_overlay(&mut self, models: Vec<ModelInfo>) -> Result<()> {
         let Some(discovery) = self.discovery_profile()? else {
             return Err(PureError::Protocol(
                 "model catalog observation is unsupported".into(),
             ));
         };
-        for model in &mut models {
-            model.pricing = crate::model::ModelPricing::Unknown;
-        }
         crate::model::validate_inventory(&models)
             .map_err(|_| PureError::Protocol("invalid model catalog observation".into()))?;
         if models.iter().any(|model| {
@@ -348,6 +352,7 @@ impl ProviderConfig {
                 "invalid model catalog observation profile".into(),
             ));
         }
+        self.resolved_catalog = None;
         self.model_catalog_overlay = Some(models);
         Ok(())
     }
@@ -370,6 +375,18 @@ impl ProviderConfig {
     /// that identity's cache. This does not delete a cache or mutate desired configuration.
     pub fn clear_model_catalog_overlay(&mut self) {
         self.model_catalog_overlay = None;
+        self.resolved_catalog = None;
+    }
+
+    pub(crate) fn model_observations(&self) -> &[ModelInfo] {
+        self.model_catalog_overlay.as_deref().unwrap_or_default()
+    }
+
+    pub(crate) fn clear_resolved_catalog(&mut self) {
+        self.resolved_catalog = None;
+    }
+    pub(crate) fn set_resolved_catalog(&mut self, entries: Vec<ProviderModelEntry>) {
+        self.resolved_catalog = Some(entries);
     }
 
     /// Structural validation for startup/reconciliation. Missing observed models or withdrawn
@@ -378,7 +395,7 @@ impl ProviderConfig {
         self.validate_structure(provider_id, false)
     }
 
-    /// 返回按模型 slug 保存的当前连接方式 override。
+    /// 返回按模型 model_id 保存的当前连接方式 override。
     pub fn connection_overrides(&self) -> &BTreeMap<String, ProviderConnectionMode> {
         match &self.catalog {
             ProviderModelCatalogConfig::Bundled {
@@ -392,7 +409,7 @@ impl ProviderConfig {
         }
     }
 
-    /// 返回按模型 slug 保存的上下文压缩阈值用户覆盖。
+    /// 返回按模型 model_id 保存的上下文压缩阈值用户覆盖。
     ///
     /// 覆盖值独立于 [`ModelInfo::auto_compact_token_limit`] 默认元信息，缺省表示使用模型默认值。
     pub fn auto_compact_overrides(&self) -> &BTreeMap<String, u64> {
@@ -412,7 +429,7 @@ impl ProviderConfig {
     ///
     /// 生效值取「用户覆盖或模型默认」与上下文 90% 安全上限的较小值；上下文未知返回 `None`。
     pub fn resolved_auto_compact_limit(&self, model: &ModelInfo) -> Option<u64> {
-        let override_limit = self.auto_compact_overrides().get(&model.slug).copied();
+        let override_limit = self.auto_compact_overrides().get(&model.model_id).copied();
         model.resolved_auto_compact_limit_with(override_limit)
     }
 
@@ -428,21 +445,21 @@ impl ProviderConfig {
 
     /// 删除一个手动模型（`additional_models` / `Explicit.models`）。
     ///
-    /// 同时删除该 slug 的 connection override 与 auto-compact override。
-    /// 非手动条目（在线或内置模型）与不存在的 slug 返回类型化配置错误，不改变任何状态。
+    /// 同时删除该 model_id 的 connection override 与 auto-compact override。
+    /// 非手动条目（在线或内置模型）与不存在的 model_id 返回类型化配置错误，不改变任何状态。
     ///
     /// # Errors
     ///
-    /// 仅接受 `Bundled.additional_models` 或 `Explicit.models` 中的精确 slug。成功时删除该
+    /// 仅接受 `Bundled.additional_models` 或 `Explicit.models` 中的精确 model_id。成功时删除该
     /// 手动条目及其 `connection_overrides`、`auto_compact_overrides`，不修改 overlay 与
-    /// 角色路由选择。非手动或不存在的 slug 返回 `PureError::ConfigError`，且状态零修改。
-    pub fn remove_manual_model(&mut self, slug: &str) -> Result<()> {
+    /// 角色路由选择。非手动或不存在的 model_id 返回 `PureError::ConfigError`，且状态零修改。
+    pub fn remove_manual_model(&mut self, model_id: &str) -> Result<()> {
         if !self
             .editable_models()
             .iter()
-            .any(|model| model.slug == slug)
+            .any(|model| model.model_id == model_id)
         {
-            return Err(PureError::ConfigError(format!("unknown model: {slug}")));
+            return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
         }
         match &mut self.catalog {
             ProviderModelCatalogConfig::Bundled {
@@ -451,9 +468,9 @@ impl ProviderConfig {
                 auto_compact_overrides,
                 ..
             } => {
-                additional_models.retain(|model| model.slug != slug);
-                connection_overrides.remove(slug);
-                auto_compact_overrides.remove(slug);
+                additional_models.retain(|model| model.model_id != model_id);
+                connection_overrides.remove(model_id);
+                auto_compact_overrides.remove(model_id);
             }
             ProviderModelCatalogConfig::Explicit {
                 models,
@@ -461,9 +478,9 @@ impl ProviderConfig {
                 auto_compact_overrides,
                 ..
             } => {
-                models.retain(|model| model.slug != slug);
-                connection_overrides.remove(slug);
-                auto_compact_overrides.remove(slug);
+                models.retain(|model| model.model_id != model_id);
+                connection_overrides.remove(model_id);
+                auto_compact_overrides.remove(model_id);
             }
         }
         Ok(())
@@ -478,7 +495,7 @@ impl ProviderConfig {
         let catalog = self.catalog_membership()?;
         let selected = catalog
             .iter()
-            .find(|candidate| candidate.model.slug == model)
+            .find(|candidate| candidate.model.model_id == model)
             .map(|candidate| &candidate.model)
             .ok_or_else(|| PureError::ConfigError(format!("unknown model: {model}")))?;
         if !selected
@@ -522,10 +539,10 @@ impl ProviderConfig {
         model: &str,
         limit: Option<u64>,
     ) -> Result<()> {
-        let catalog = self.catalog_membership()?;
+        let catalog = self.effective_catalog(None)?;
         let selected = catalog
             .iter()
-            .find(|candidate| candidate.model.slug == model)
+            .find(|candidate| candidate.model.model_id == model)
             .map(|candidate| &candidate.model)
             .ok_or_else(|| PureError::ConfigError(format!("unknown model: {model}")))?;
         let restore_default = match limit {
@@ -633,7 +650,7 @@ impl ProviderConfig {
                 "provider {provider_id} must define at least one model"
             )));
         }
-        let mut slugs = BTreeSet::new();
+        let mut model_ids = BTreeSet::new();
         for model in &models {
             model
                 .validate()
@@ -641,29 +658,29 @@ impl ProviderConfig {
             model
                 .validate_media_contract()
                 .map_err(|error| PureError::ConfigError(error.to_string()))?;
-            if model.slug.trim().is_empty() {
+            if model.model_id.trim().is_empty() {
                 return Err(PureError::ConfigError(format!(
-                    "provider {provider_id} contains a model with empty slug"
+                    "provider {provider_id} contains a model with empty model_id"
                 )));
             }
-            if !slugs.insert(model.slug.as_str()) {
+            if !model_ids.insert(model.model_id.as_str()) {
                 return Err(PureError::ConfigError(format!(
                     "provider {provider_id} contains duplicate model: {}",
-                    model.slug
+                    model.model_id
                 )));
             }
         }
-        for (slug, limit) in self.auto_compact_overrides() {
+        for (model_id, limit) in self.auto_compact_overrides() {
             if *limit == 0 {
                 return Err(PureError::ConfigError(format!(
-                    "provider {provider_id} model {slug} auto compact limit must be a positive integer"
+                    "provider {provider_id} model {model_id} auto compact limit must be a positive integer"
                 )));
             }
-            if !slugs.contains(slug.as_str())
+            if !model_ids.contains(model_id.as_str())
                 && (strict_availability || self.discovery_profile()?.is_none())
             {
                 return Err(PureError::ConfigError(format!(
-                    "provider {provider_id} auto compact override references unknown model: {slug}"
+                    "provider {provider_id} auto compact override references unknown model: {model_id}"
                 )));
             }
         }
@@ -722,21 +739,24 @@ fn apply_connection_overrides(
             .model
             .binding
             .transport
-            .validate(&entry.model.slug)
+            .validate(&entry.model.model_id)
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
     }
-    for (slug, mode) in overrides {
-        if slug.trim().is_empty() {
+    for (model_id, mode) in overrides {
+        if model_id.trim().is_empty() {
             return Err(PureError::ConfigError(
                 "connection override has empty model".into(),
             ));
         }
-        let Some(entry) = entries.iter_mut().find(|entry| entry.model.slug == *slug) else {
+        let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.model.model_id == *model_id)
+        else {
             if allow_unavailable {
                 continue;
             }
             return Err(PureError::ConfigError(format!(
-                "connection override references unknown model: {slug}"
+                "connection override references unknown model: {model_id}"
             )));
         };
         if !entry
@@ -746,24 +766,20 @@ fn apply_connection_overrides(
             .supported_connection_modes
             .contains(mode)
         {
-            if allow_unavailable && !editable_models.iter().any(|manual| manual.slug == *slug) {
+            if allow_unavailable
+                && !editable_models
+                    .iter()
+                    .any(|manual| manual.model_id == *model_id)
+            {
                 // Preserve desired state, but keep the current display profile valid.
                 // Route availability/strict resolution must reject this saved selection.
                 continue;
             }
             return Err(PureError::ConfigError(format!(
-                "model {slug} does not support connection mode {mode:?}"
+                "model {model_id} does not support connection mode {mode:?}"
             )));
         }
         entry.model.binding.transport.default_connection_mode = *mode;
     }
     Ok(entries)
-}
-
-pub(crate) fn join_bundled_pricing(model: &mut ModelInfo, bundled: &[ModelInfo]) {
-    model.pricing = bundled
-        .iter()
-        .find(|local| local.slug == model.slug)
-        .map(|local| local.pricing.clone())
-        .unwrap_or(crate::model::ModelPricing::Unknown);
 }

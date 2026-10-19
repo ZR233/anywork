@@ -150,11 +150,7 @@ class _StartPageComposerBodyState
     final projection = ref.watch(startPageComposerViewProvider);
     final projectId = projection.project?.id;
     final mode = projection.mode;
-    final requiresFunctionCalling = projection.requiresFunctionCalling(mode);
-    final selectorsEnabled =
-        projection.canSubmit &&
-        projection.settingsLoaded &&
-        requiresFunctionCalling != null;
+    final selectorsEnabled = projection.canSubmit && projection.settingsLoaded;
     final route = projection.displayRoute(mode);
     final pending = projection.routePending(mode);
     final model = route == null
@@ -214,7 +210,6 @@ class _StartPageComposerBodyState
                     effort: route?.effort,
                     // Unknown capabilities keep selectors disabled until the
                     // Client catalog arrives; no model is admitted by fallback.
-                    requiresFunctionCalling: requiresFunctionCalling ?? false,
                     pending: pending,
                     enabled: selectorsEnabled,
                     unavailableReason: unavailableReason,
@@ -524,9 +519,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       providerId: route?.providerId,
                       model: route?.model,
                       effort: route?.effort,
-                      requiresFunctionCalling:
-                          view.requiresFunctionCalling ?? false,
-                      enabled: view.requiresFunctionCalling != null,
+                      enabled: view.settingsLoaded,
                       pending: view.routePending,
                       available: route?.available ?? false,
                       routeUnavailableReason: route?.unavailableReason,
@@ -1177,7 +1170,6 @@ class _StopButton extends ConsumerWidget {
 /// route 为空时仍保留模型选择器，并显示不可用原因，避免静默隐藏。
 List<Widget> _modelRouteSelectorChildren({
   required List<ProviderSettingsView> providers,
-  required bool requiresFunctionCalling,
   required bool pending,
   bool enabled = true,
   required String unavailableReason,
@@ -1204,7 +1196,6 @@ List<Widget> _modelRouteSelectorChildren({
         providerId: providerId ?? '',
         model: model ?? '',
         effort: effort,
-        requiresFunctionCalling: requiresFunctionCalling,
         enabled: enabled,
         pending: pending,
         available: false,
@@ -1222,7 +1213,6 @@ List<Widget> _modelRouteSelectorChildren({
       providerId: providerId,
       model: model,
       effort: effort,
-      requiresFunctionCalling: requiresFunctionCalling,
       enabled: enabled,
       pending: pending,
       available: available,
