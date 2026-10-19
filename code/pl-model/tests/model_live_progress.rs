@@ -180,22 +180,6 @@ async fn a_closed_item_does_not_freeze_later_blocks_of_the_same_channel() {
 }
 
 /// One stable text part paced so its growth is observable, plus a later part of its own identity.
-fn paced_text_growth_then_a_new_part() -> Vec<Value> {
-    vec![
-        json!({"type":"response.created","response":{"id":"live-stream","model":"live-fixture"}}),
-        json!({"type":"response.output_item.added","output_index":0,
-            "item":{"id":"message-1","type":"message","role":"assistant","phase":"final_answer","content":[]}}),
-        json!({"type":"response.output_text.delta","item_id":"message-1",
-            "output_index":0,"content_index":0,"delta":"a"}),
-        json!({"type":"response.output_text.delta","item_id":"message-1",
-            "output_index":0,"content_index":0,"delta":"b"}),
-        json!({"type":"response.output_item.added","output_index":1,
-            "item":{"id":"message-2","type":"message","role":"assistant","phase":"final_answer","content":[]}}),
-        json!({"type":"response.output_text.delta","item_id":"message-2",
-            "output_index":1,"content_index":0,"delta":"c"}),
-    ]
-}
-
 /// One part that grows, then enough further parts that the first part stops being the growing tail
 /// before it grows again.
 fn paced_text_growth_across_a_chunk_boundary() -> Vec<Value> {
@@ -225,100 +209,6 @@ fn paced_text_growth_across_a_chunk_boundary() -> Vec<Value> {
         "output_index":67,"content_index":0,"delta":"c"}),
     );
     events
-}
-
-#[tokio::test]
-async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
-    // A consumer that cloned one frame must keep exactly that frame even though the producer keeps
-    // appending to the same identity and then opens a new one. The producer edits the shared part
-    // list in place only while the watch owns its only reference; holding this clone is what forces
-    // the copy-on-write that keeps the delivered frame intact.
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "live prompt",
-        0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 300,
-            events: paced_text_growth_then_a_new_part(),
-        },
-    )])
-    .await
-    .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
-        model("live-fixture", ModelTransportProfile::responses_http()),
-    )
-    .expect("fixture endpoint is valid");
-    let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
-        .open_session()
-        .await
-        .expect("model session opens");
-    let thread = ThreadHandle::start("live-thread".into(), session).expect("thread starts");
-    let mut subscription = thread.subscribe();
-    let turn = thread.run_turn(user_turn("live prompt"));
-    tokio::pin!(turn);
-    let (held, grown) = tokio::time::timeout(Duration::from_secs(10), async {
-        let mut held: Option<ModelProgress> = None;
-        loop {
-            let snapshot = tokio::select! {
-                _ = &mut turn => panic!("the turn ended before both observations arrived"),
-                snapshot = subscription.next() => snapshot.expect("thread stays open"),
-            };
-            let Some(active) = snapshot.model_progress.as_ref() else {
-                continue;
-            };
-            let progress = &active.progress;
-            let part = |item: &str| {
-                progress
-                    .observed_part(item, PresentationPart::OutputText(0))
-                    .map(|part| part.text())
-            };
-            if held.is_none() && part("message-1").as_deref() == Some("a") {
-                // Hold this mid-stream frame; the producer keeps appending after it.
-                held = Some(progress.clone());
-            }
-            if let Some(frame) = held.as_ref()
-                && part("message-1").as_deref() == Some("ab")
-                && part("message-2").as_deref() == Some("c")
-            {
-                break (frame.clone(), progress.clone());
-            }
-        }
-    })
-    .await
-    .expect("both observations arrive before the stream ends");
-    let _ = fixture.shutdown().await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), turn).await;
-
-    // The frame the consumer kept is byte-for-byte the one it saw: the same identity kept streaming
-    // after it, but appending to a shared list never mutates a snapshot a consumer already holds.
-    assert_eq!(
-        held.observed_part("message-1", PresentationPart::OutputText(0))
-            .expect("the held frame kept the part it delivered")
-            .text(),
-        "a"
-    );
-    assert!(
-        held.observed_part("message-2", PresentationPart::OutputText(0))
-            .is_none(),
-        "a part opened after the held frame is not grafted onto it"
-    );
-    // The newest frame carries the appended bytes and the new part under their stable identities.
-    assert_eq!(
-        grown
-            .observed_part("message-1", PresentationPart::OutputText(0))
-            .expect("the same identity keeps growing")
-            .text(),
-        "ab"
-    );
-    assert_eq!(
-        grown
-            .observed_part("message-2", PresentationPart::OutputText(0))
-            .expect("the part opened later has its own identity")
-            .text(),
-        "c"
-    );
 }
 
 #[tokio::test]

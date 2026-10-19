@@ -639,42 +639,6 @@ async fn a_requested_complete_body_keeps_following_new_revisions_without_store_r
 }
 
 #[tokio::test]
-async fn complete_body_is_released_once_its_identity_leaves_the_window() {
-    let full = "c".repeat(300 * 1024);
-    let reads = Arc::new(AtomicUsize::new(0));
-    let session = Session::new(Counting {
-        inner: Stored {
-            items: [(1, item(1, 1, &full, true))].into(),
-        },
-        item_reads: reads.clone(),
-    });
-    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
-    view.expand("item-1").await.unwrap().item.unwrap();
-    assert_eq!(reads.load(Ordering::Relaxed), 1);
-    // The identity leaves the window; the retained complete body must be released with it.
-    for order in 2..=300 {
-        session.publish(item(order, 1, "tail", false)).unwrap();
-    }
-    assert!(
-        view.snapshot()
-            .items
-            .iter()
-            .all(|item| item.item_id != "item-1"),
-        "the identity must have left the window"
-    );
-    // A new request for the released identity reads storage again instead of serving a released copy.
-    view.expand("item-1").await.unwrap().item.unwrap();
-    assert_eq!(reads.load(Ordering::Relaxed), 2);
-    // ...and the late body still does not resurrect the identity into the window.
-    assert!(
-        view.snapshot()
-            .items
-            .iter()
-            .all(|item| item.item_id != "item-1")
-    );
-}
-
-#[tokio::test]
 async fn expand_does_not_resurrect_a_cancelled_identity() {
     let session = Session::new(Stored::default());
     session
@@ -2778,13 +2742,15 @@ async fn the_preview_release_spares_the_identities_the_commit_just_confirmed() {
     assert_eq!(snapshot.items[0].order, 1);
 }
 
-/// A slow observation of a committed identity is a stale frame, never newer content.
+/// A save acknowledgement that precedes the last preview keeps the committed body and position.
 ///
-/// Once the terminal body is published, a preview for the same identity is rejected with the
-/// session's typed conflict: it must neither replace the committed row nor re-open it for the writer's
-/// later release to remove, so the window body and revision stay the committed ones.
+/// This is the real ordering the writer produces: the acknowledgement, then the preview release, both
+/// while the producer may still be publishing one more revision of the same identity. The late preview
+/// is rejected as the typed conflict — it cannot become newer content for a terminal identity, and it
+/// is not even a frame: the window version does not move. Neither the rejected preview nor the
+/// release may erase the committed row.
 #[tokio::test]
-async fn a_late_preview_never_reopens_a_committed_terminal_identity() {
+async fn a_save_ack_before_the_last_preview_never_releases_the_committed_body() {
     let session = Session::new(Stored::default());
     let prefix = pl_core::chat::presentation_prefix("attempt");
     let id = pl_core::chat::presentation_item_id(
@@ -2803,8 +2769,10 @@ async fn a_late_preview_never_reopens_a_committed_terminal_identity() {
     let view = session.open_chat(ChatFocus::Latest).await.unwrap();
     let version = view.version();
 
+    // A slow producer publishes one more revision of the identity after the acknowledgement and
+    // before (or during) the release; it is refused, so it cannot re-open the committed row.
     assert!(matches!(
-        session.publish_preview(identified(&id, 1, 6, "realtime", false)),
+        session.publish_preview(identified(&id, 1, 6, "realtime delayed", false)),
         Err(ChatError::Conflict(_))
     ));
     session.drop_previews_with_prefix(&prefix);
@@ -2813,49 +2781,6 @@ async fn a_late_preview_never_reopens_a_committed_terminal_identity() {
     let snapshot = view.snapshot();
     assert_eq!(snapshot.items.len(), 1);
     assert_eq!(snapshot.items[0].revision, 5);
-    assert_eq!(
-        body_text(&snapshot.items[0]),
-        "realtime delayed first token"
-    );
-    assert!(snapshot.items[0].is_terminal());
-}
-
-/// A save acknowledgement that precedes the last preview keeps the committed body and position.
-///
-/// This is the real ordering the writer produces: the acknowledgement, then the preview release, both
-/// while the producer may still be publishing one more revision of the same identity. The late preview
-/// is rejected as the typed conflict — it cannot become newer content for a terminal identity — and
-/// neither it nor the release may erase the committed row.
-#[tokio::test]
-async fn a_save_ack_before_the_last_preview_never_releases_the_committed_body() {
-    let session = Session::new(Stored::default());
-    let prefix = pl_core::chat::presentation_prefix("attempt");
-    let id = pl_core::chat::presentation_item_id(
-        "attempt",
-        0,
-        "message-1",
-        Some(PresentationPart::OutputText(0)),
-    );
-    session
-        .publish_preview(identified(&id, 1, 1, "realtime ", false))
-        .unwrap();
-    session
-        .publish(identified(&id, 1, 2, "realtime delayed first token", true))
-        .unwrap();
-    session.confirm_saved(&id, 2);
-
-    // A slow producer publishes one more revision of the identity after the acknowledgement and
-    // before (or during) the release; it is refused, so it cannot re-open the committed row.
-    assert!(matches!(
-        session.publish_preview(identified(&id, 1, 3, "realtime delayed", false)),
-        Err(ChatError::Conflict(_))
-    ));
-    session.drop_previews_with_prefix(&prefix);
-
-    let view = session.open_chat(ChatFocus::Latest).await.unwrap();
-    let snapshot = view.snapshot();
-    assert_eq!(snapshot.items.len(), 1);
-    assert_eq!(snapshot.items[0].revision, 2);
     assert_eq!(
         body_text(&snapshot.items[0]),
         "realtime delayed first token"

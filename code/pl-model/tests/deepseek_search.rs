@@ -591,52 +591,34 @@ async fn deepseek_search_preserves_a_long_non_json_http_failure_body() {
 }
 
 /// 2xx 但正文不是合法 JSON：错误仍然失败，完整原始正文可从 `observed_response` 无损取得，
-/// usage/model 未知、不伪造搜索成功。
+/// usage/model 未知、不伪造搜索成功。长 UTF-8 正文与非 UTF-8 字节都逐字节留存。
 #[tokio::test]
-async fn deepseek_search_preserves_a_malformed_json_success_body() {
-    let body = format!("{{ not json {}", "y".repeat(2048));
-    let server = mock_server(Reply::Raw {
-        status: 200,
-        content_type: "application/json",
-        body: body.clone().into_bytes(),
-    })
-    .await;
-    let client = SearchClient::new(
-        &endpoint(server.base_url(), Some("k")),
-        SearchOptions::default(),
-    )
-    .unwrap();
-    let error = client
-        .search(&SearchRequest::new("query"), CancellationToken::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(error, SearchError::InvalidResponse { .. }));
-    assert_eq!(observed_raw_body(&error), body.into_bytes());
-    server.finish().await;
-}
-
-/// 非 UTF-8 字节的完整正文同样无损留存：base64 载荷逐字节等于原始正文。
-#[tokio::test]
-async fn deepseek_search_preserves_non_utf8_response_bytes() {
-    let body = vec![0xff, 0xfe, 0x00, 0x80, b'o', b'k', 0xc3, 0x28, 0xa0, 0xa1];
-    let server = mock_server(Reply::Raw {
-        status: 200,
-        content_type: "application/json",
-        body: body.clone(),
-    })
-    .await;
-    let client = SearchClient::new(
-        &endpoint(server.base_url(), Some("k")),
-        SearchOptions::default(),
-    )
-    .unwrap();
-    let error = client
-        .search(&SearchRequest::new("query"), CancellationToken::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(error, SearchError::InvalidResponse { .. }));
-    assert_eq!(observed_raw_body(&error), body);
-    server.finish().await;
+async fn deepseek_search_preserves_a_malformed_success_body_losslessly() {
+    // A long legal-UTF-8 body exercises the byte cap; non-UTF-8 bytes prove the payload is not
+    // round-tripped through a lossy text conversion.
+    for body in [
+        format!("{{ not json {}", "y".repeat(2048)).into_bytes(),
+        vec![0xff, 0xfe, 0x00, 0x80, b'o', b'k', 0xc3, 0x28, 0xa0, 0xa1],
+    ] {
+        let server = mock_server(Reply::Raw {
+            status: 200,
+            content_type: "application/json",
+            body: body.clone(),
+        })
+        .await;
+        let client = SearchClient::new(
+            &endpoint(server.base_url(), Some("k")),
+            SearchOptions::default(),
+        )
+        .unwrap();
+        let error = client
+            .search(&SearchRequest::new("query"), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, SearchError::InvalidResponse { .. }));
+        assert_eq!(observed_raw_body(&error), body);
+        server.finish().await;
+    }
 }
 
 /// JSON error 详情同样有界，且仍然保留已解析的原始响应。

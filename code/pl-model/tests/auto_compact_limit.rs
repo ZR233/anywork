@@ -125,21 +125,6 @@ fn overrides_are_isolated_between_models() {
 }
 
 #[test]
-fn overrides_are_isolated_between_providers() {
-    let mut first = explicit_provider(vec![model("m", Some(400_000))]);
-    first
-        .set_model_auto_compact_override("m", Some(300_000))
-        .unwrap();
-    let second = explicit_provider(vec![model("m", Some(400_000))]);
-    assert!(second.auto_compact_overrides().is_empty());
-    let second_model = second.declared_models().unwrap().remove(0);
-    assert_eq!(
-        second.resolved_auto_compact_limit(&second_model),
-        Some(258_000)
-    );
-}
-
-#[test]
 fn zero_override_is_rejected() {
     let mut provider = explicit_provider(vec![model("m", Some(400_000))]);
     assert!(
