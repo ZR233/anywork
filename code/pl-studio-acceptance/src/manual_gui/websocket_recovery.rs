@@ -38,20 +38,14 @@ pub(super) fn run(
             let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log)?;
             let vm = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
             let log = File::create(&driver_log)?;
-            let mut command = process::path_command("dart", &[]);
+            let script = if native {
+                "test_driver/call_lifecycle_recovery_journey.dart"
+            } else {
+                "test_driver/websocket_recovery_journey.dart"
+            };
+            let mut command = driver_command(context.app_dir, script);
             command
-                .current_dir(context.app_dir)
-                .args([
-                    "run",
-                    if native {
-                        "test_driver/call_lifecycle_recovery_journey.dart"
-                    } else {
-                        "test_driver/websocket_recovery_journey.dart"
-                    },
-                    phase,
-                    "ws",
-                    &vm,
-                ])
+                .args([phase, "ws", &vm])
                 .arg(&project)
                 .arg(context.output)
                 .arg(context.working)

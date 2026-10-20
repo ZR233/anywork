@@ -120,12 +120,12 @@ capture 或通用会话临时目录；换位置时同时按本地真实目录调
 
 ### Driver 宿主与原生文本输入
 
-- Journey 客户端由独立 `dart run` 执行，不能导入 `package:flutter/services.dart` 等依赖
+- Journey 客户端由独立 Dart VM 执行，不能导入 `package:flutter/services.dart` 等依赖
   `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
   `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
   宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
-- 仅连接现有 GUI 的纯 Dart 脚本可使用当前应用的 `--packages=.dart_tool/package_config.json`
-  直接执行，避免为宿主脚本重新构建 Flutter native assets。工具包装可能把非零退出映射成
+- 仅连接现有 GUI 的纯 Dart 脚本统一使用当前应用的 `--packages=.dart_tool/package_config.json`
+  直接执行，不通过 `dart run` 重新触发应用的构建钩子或原生资源构建。工具包装可能把非零退出映射成
   自身失败；同时核对原始 Dart 退出码，不能把 usage 失败误认为导入或编译失败。
 - Driver 的 DTO 列表投影使用显式类型的空集合，避免 `?? const []` 将循环元素降为 dynamic、
   令分析器漏报已删除的 getter。统计等接口须以非空真实记录调用取证，空列表成功不能证明字段迁移完整。

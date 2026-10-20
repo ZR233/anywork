@@ -275,11 +275,33 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
     script.finish()
 }
 
+/// Original tool arguments shared by the scripted replies and the native Driver's independent
+/// input manifest. The dialect describes the execution workspace, not the Driver host.
+pub fn gui_tool_scroll_expected_arguments(
+    powershell: bool,
+) -> std::collections::BTreeMap<&'static str, String> {
+    let padding = "argument ".repeat(12_000 / 9);
+    let command = if powershell {
+        format!(
+            "1..12 | ForEach-Object {{ Write-Output ('line-' + $_ + ' tool output') }} # {padding}"
+        )
+    } else {
+        format!(
+            "i=1; while [ \"$i\" -le 12 ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {padding}"
+        )
+    };
+    std::collections::BTreeMap::from([(
+        "scroll-call-arguments",
+        realtime_exec_arguments(&command, None),
+    )])
+}
+
 /// Real file listings and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
 /// `powershell` selects the workspace's command dialect, independently of this host.
 pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec<Step> {
     let mut script = RealtimeScript::new();
+    let expected_arguments = gui_tool_scroll_expected_arguments(powershell);
     let title = session_title_prompt("Tool scroll short");
     script.optional_title(&title);
     let identities = [
@@ -294,22 +316,17 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         ("scroll-item-failed", "scroll-call-failed"),
     ];
     let mut next_identity = 0;
-    for (prompt, lines, padding, count) in [
-        ("Tool scroll short", 1, 0, 2),
-        ("Tool scroll medium", 12, 0, 1),
-        ("Tool scroll long", 200, 0, 1),
-        ("Tool scroll arguments", 12, 12_000, 1),
-        ("Tool scroll multiple", 80, 0, 3),
-        ("Tool scroll failed", 0, 0, 1),
+    for (prompt, lines, count) in [
+        ("Tool scroll short", 1, 2),
+        ("Tool scroll medium", 12, 1),
+        ("Tool scroll long", 200, 1),
+        ("Tool scroll arguments", 0, 1),
+        ("Tool scroll multiple", 80, 3),
+        ("Tool scroll failed", 0, 1),
     ] {
         let calls = identities[next_identity..next_identity + count]
             .iter()
             .map(|&(item_id, call_id)| {
-                let command = if powershell {
-                    format!("1..{lines} | ForEach-Object {{ Write-Output ('line-' + $_ + ' tool output') }} # {}", "argument ".repeat(padding / 9))
-                } else {
-                    format!("i=1; while [ \"$i\" -le {lines} ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {}", "argument ".repeat(padding / 9))
-                };
                 if matches!(item_id, "scroll-item-a" | "scroll-item-b" | "scroll-item-c") {
                     // Call directly to verify that image reading is available without discovery.
                     return RealtimeToolCall {
@@ -328,18 +345,23 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                             "scroll-fixture/entry-000.txt"
                         } else {
                             "scroll-fixture/entry-001.txt"
-                        }}).to_string(),
+                        }})
+                        .to_string(),
+                    };
+                }
+                if let Some(arguments) = expected_arguments.get(call_id) {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: arguments.clone(),
                     };
                 }
                 RealtimeToolCall {
                     item_id,
                     call_id,
-                    name: if padding > 0 { TOOL_EXEC_NAME } else { "list_files" },
-                    arguments: if padding > 0 {
-                        realtime_exec_arguments(&command, None)
-                    } else {
-                        json!({"path":"scroll-fixture", "limit":lines}).to_string()
-                    },
+                    name: "list_files",
+                    arguments: json!({"path":"scroll-fixture", "limit":lines}).to_string(),
                 }
             })
             .collect::<Vec<_>>();

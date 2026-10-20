@@ -451,10 +451,9 @@ pub(super) fn run(
             let gui_pid = gui.child.id();
             let log = File::create(&driver_log)?;
             let allow_turn_failure = fault != WebSearchFault::None;
-            let mut command = process::path_command("dart", &[]);
+            let mut command =
+                driver_command(context.app_dir, "test_driver/web_search_journey.dart");
             command
-                .current_dir(context.app_dir)
-                .args(["run", "test_driver/web_search_journey.dart"])
                 .arg(format!("--phase={phase}"))
                 .arg(format!("--vm={vm_url}"))
                 .arg(format!("--project={}", project.display()))

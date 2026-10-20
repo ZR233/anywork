@@ -1757,7 +1757,18 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_reopened_studio_sink_accepts_a_thread_with_durable_history() -> Result<()> {
         let id = "reopened-durable-thread";
-        let (temp, store, original) = sink(id).await?;
+        let temp = tempfile::tempdir()?;
+        // Native paths remain literal, including URI-looking characters and deep data roots.
+        let database = temp
+            .path()
+            .join("存储 %2F #")
+            .join("nested".repeat(16))
+            .join("studio/v2/studio.sqlite");
+        let store = StudioStore::open(&database).await?;
+        let thread = test_thread(id);
+        register_test_thread(&store, &thread).await?;
+        let original = ThreadStorageSink::new(store.clone(), thread, None).await?;
+        spawn_live_projection(&original);
         let write = ticket(id, 1);
         let checkpoint = write.checkpoint.clone();
         original.admit(id, write)?;
@@ -1765,7 +1776,7 @@ mod storage_fault_tests {
         drop(original);
         drop(store);
 
-        let reopened_store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let reopened_store = StudioStore::open(&database).await?;
         assert!(
             ThreadStorageSink::new(reopened_store.clone(), test_thread(id), None,)
                 .await
@@ -2128,7 +2139,15 @@ mod storage_fault_tests {
             .session_paths("project-test", "missing-visible")?
             .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared("DELETE FROM history_items WHERE item_id='visible-input'")
             .await?;
 
@@ -3124,7 +3143,15 @@ mod storage_fault_tests {
             .session_paths("project-test", "sqlite-rejection")?
             .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled writer rejection'); END",
@@ -3237,7 +3264,15 @@ mod storage_fault_tests {
             .session_paths("project-test", "concurrent-results")?
             .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled concurrent rejection'); END",
@@ -3388,7 +3423,15 @@ mod storage_fault_tests {
             .session_paths("project-test", "atomic-failure")?
             .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_watermark BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled atomic rejection'); END",
@@ -3430,24 +3473,42 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn missing_blob_blocks_checkpoint_until_the_same_attachment_is_durable() -> Result<()> {
-        let (_temp, store, sink) = sink("blob-fence").await?;
-        let blob = store
-            .session_paths("project-test", "blob-fence")?
-            .blobs_dir()
-            .join("restored-blob");
-        let attachment = crate::studio::AttachmentRecord {
-            id: "blob-1".to_owned(),
-            thread_id: "blob-fence".to_owned(),
+        use pl_core::context::ResourceReader as _;
+        use sha2::Digest as _;
+
+        let (temp, store, sink) = sink("blob-fence").await?;
+        let session = store.session_paths("project-test", "blob-fence")?;
+        let source = temp.path().join("attachment-draft");
+        let bytes = b"restored";
+        tokio::fs::write(&source, bytes).await?;
+        let draft = crate::studio::store::attachment::AttachmentDraftObject {
+            draft_id: "draft-1".to_owned(),
             modality: pl_protocol::studio::StudioAttachmentModality::File,
             media_type: "text/plain".to_owned(),
-            filename: None,
-            storage_path: blob.to_string_lossy().into_owned(),
-            byte_size: 8,
-            content_sha256: "0123456789abcdef".to_owned(),
+            filename: "attachment.txt".to_owned(),
+            storage_path: source,
+            byte_size: bytes.len() as u64,
+            content_sha256: hex::encode(sha2::Sha256::digest(bytes)),
             width: None,
             height: None,
-            created_at: 1,
+            initial_remote_url: None,
         };
+        let attachment = store
+            .promote_attachment_drafts("blob-fence", &[draft])
+            .await?
+            .pop()
+            .context("promoted attachment is missing")?;
+        let reference = store.retain_attachment_resource(&attachment).await?;
+        let blob = session.root().join(&attachment.blob_relative_path);
+        tokio::fs::remove_file(&blob).await?;
+        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
+        assert_eq!(
+            resources
+                .read(reference, tokio_util::sync::CancellationToken::new())
+                .await?
+                .as_ref(),
+            bytes
+        );
         store.record_attachments(vec![attachment.clone()]).await?;
         let mut status = sink.0.channel.subscribe();
         sink.admit(
@@ -3472,7 +3533,7 @@ mod storage_fault_tests {
         assert_eq!(failed.queued_records, 1);
         assert!(sink.flush("blob-fence", 1).await.is_err());
         tokio::fs::create_dir_all(blob.parent().expect("blob has a parent")).await?;
-        tokio::fs::write(&blob, b"restored").await?;
+        tokio::fs::write(&blob, bytes).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
             store
@@ -3495,7 +3556,15 @@ mod storage_fault_tests {
             .session_paths("project-test", "closed-view")?
             .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled closed-view rejection'); END",

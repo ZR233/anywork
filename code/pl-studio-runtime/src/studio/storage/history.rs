@@ -12,8 +12,8 @@ use pl_protocol::thread::TimelineCursor;
 use pl_protocol::{ThreadItem, ThreadItemKind, ThreadItemState, TimelineTurn};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
-    SqliteTransactionMode, Statement, TransactionOptions, TransactionTrait, Value,
+    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, SqliteTransactionMode,
+    Statement, TransactionOptions, TransactionTrait, Value,
 };
 
 const HISTORY_SCHEMA_VERSION: i64 = 8;
@@ -269,7 +269,7 @@ impl HistoryStore {
                     .parent()
                     .context("history database path has no parent directory")?;
                 tokio::fs::create_dir_all(parent).await?;
-                let db = connect(crate::studio::paths::sqlite_url(&self.state.path)).await?;
+                let db = connect(&self.state.path).await?;
                 let database_id = initialize(&db, &self.state.thread_id).await?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
                     db,
@@ -1486,20 +1486,24 @@ fn chat_history_error(error: anyhow::Error) -> ChatError {
     ChatError::History(error.into_boxed_dyn_error())
 }
 
-async fn connect(url: String) -> Result<DatabaseConnection> {
-    let mut options = ConnectOptions::new(url);
-    options
-        .max_connections(1)
-        .min_connections(1)
-        .connect_timeout(Duration::from_secs(8))
-        .acquire_timeout(Duration::from_secs(8))
-        .map_sqlx_sqlite_opts(|options| {
+async fn connect(path: &Path) -> Result<DatabaseConnection> {
+    let mut options = crate::studio::paths::sqlite_file_options(
+        path,
+        crate::studio::paths::SqliteFileMode::Create,
+        |options| {
             options
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Full)
                 .busy_timeout(Duration::from_secs(5))
                 .foreign_keys(true)
-        })
+        },
+    )
+    .await?;
+    options
+        .max_connections(1)
+        .min_connections(1)
+        .connect_timeout(Duration::from_secs(8))
+        .acquire_timeout(Duration::from_secs(8))
         .sqlx_logging(false);
     Ok(Database::connect(options).await?)
 }
@@ -1562,19 +1566,22 @@ pub(crate) fn is_retryable_write(message: &str) -> bool {
 /// mutate the database is issued here; a concurrent WAL writer stays visible through its
 /// checkpoint, so cold pagination is neither gated on nor able to disturb the writer.
 async fn connect_read_only(path: &Path) -> Result<DatabaseConnection> {
-    let mut options = ConnectOptions::new(crate::studio::paths::sqlite_read_only_url(path));
+    let mut options = crate::studio::paths::sqlite_file_options(
+        path,
+        crate::studio::paths::SqliteFileMode::ReadOnly,
+        |options| {
+            // Only read-safe settings: cold reads must not change the journal or schema.
+            options
+                .busy_timeout(Duration::from_secs(5))
+                .foreign_keys(true)
+        },
+    )
+    .await?;
     options
         .max_connections(1)
         .min_connections(1)
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
-        .map_sqlx_sqlite_opts(|options| {
-            // `journal_mode`/`synchronous` are write-side settings; only the read-safe
-            // `busy_timeout` (not a PRAGMA) and `foreign_keys` are applied.
-            options
-                .busy_timeout(Duration::from_secs(5))
-                .foreign_keys(true)
-        })
         .sqlx_logging(false);
     Database::connect(options).await.with_context(|| {
         format!(
@@ -2877,7 +2884,15 @@ mod storage_fault_tests {
                 },
             )
             .await?;
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
              UPDATE history_meta SET schema_version=2",
@@ -2888,7 +2903,15 @@ mod storage_fault_tests {
 
         let migrated = HistoryStore::open(&path, "legacy-plan").await?;
         assert_eq!(migrated.watermark().await?, 1);
-        let old = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let old = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         let version = old
             .query_one_raw(statement(
                 "SELECT schema_version FROM history_meta WHERE id=1",
@@ -3702,8 +3725,15 @@ mod storage_fault_tests {
             .await?
             .context("checkpoint")?;
         assert_eq!(row.try_get::<String>("", "payload")?, encoded);
-        let recovery =
-            sea_orm::Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        let recovery = sea_orm::Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         recovery
             .execute_unprepared("DROP TRIGGER reject_context_migration")
             .await?;
@@ -4948,8 +4978,15 @@ mod storage_fault_tests {
         assert_eq!(unchanged.revision, saved.revision);
         drop(failed);
 
-        let recovery =
-            sea_orm::Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        let recovery = sea_orm::Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         recovery
             .execute_unprepared("DROP TRIGGER reject_plan_history")
             .await?;

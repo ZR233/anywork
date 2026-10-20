@@ -538,7 +538,7 @@ async fn migrate_attachment_catalog(
             record.thread_id == thread_id,
             "attachment catalog record belongs to another Thread"
         );
-        let recorded = PathBuf::from(&record.storage_path);
+        let recorded = PathBuf::from(&record.blob_relative_path);
         let relative = if recorded.is_absolute() {
             ensure!(
                 recorded.starts_with(&source_blobs),
@@ -589,8 +589,8 @@ async fn migrate_attachment_catalog(
             metadata.len() == record.byte_size,
             "attachment blob length does not match its catalog record"
         );
-        if record.storage_path != relative {
-            record.storage_path = relative;
+        if record.blob_relative_path != relative {
+            record.blob_relative_path = relative;
             changed = true;
         }
     }
@@ -1013,7 +1013,8 @@ mod layout_migration_tests {
         let blobs = dir.join("blobs/aa");
         tokio::fs::create_dir_all(&blobs).await?;
         tokio::fs::write(blobs.join("blob"), b"blob-bytes").await?;
-        let storage_path = blobs.join("blob");
+        // The old production writer derived absolute blob paths from its canonical Store home.
+        let storage_path = tokio::fs::canonicalize(blobs.join("blob")).await?;
         let catalog = toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
             schema_version: 1,
             thread_id: thread_id.to_owned(),
@@ -1023,7 +1024,7 @@ mod layout_migration_tests {
                 modality: pl_protocol::studio::StudioAttachmentModality::File,
                 media_type: "text/plain".into(),
                 filename: None,
-                storage_path: storage_path.to_string_lossy().into_owned(),
+                blob_relative_path: storage_path.to_string_lossy().into_owned(),
                 byte_size: 10,
                 content_sha256: "aa".into(),
                 width: None,
@@ -1062,7 +1063,10 @@ mod layout_migration_tests {
         );
         let attachments = store.list_thread_attachments("thread-a").await?;
         assert_eq!(attachments.len(), 1);
-        assert!(PathBuf::from(&attachments[0].storage_path).starts_with(session.blobs_dir()));
+        assert_eq!(
+            store.read_attachment_bytes("thread-a", "att-1").await?,
+            b"blob-bytes"
+        );
         let persisted = tokio::fs::read_to_string(session.attachments_catalog()).await?;
         assert!(!persisted.contains(session.blobs_dir().to_string_lossy().as_ref()));
         assert!(persisted.contains("blobs/aa/blob"));
@@ -1265,7 +1269,7 @@ mod layout_migration_tests {
         reset_layout_for_legacy(&paths, "project-b", "thread-b").await?;
         let source = write_legacy_session(&paths, "thread-a", b"history-bytes").await?;
         let other = write_legacy_session(&paths, "thread-b", b"other-bytes").await?;
-        let foreign = other.join("blobs/aa/blob");
+        let foreign = tokio::fs::canonicalize(other.join("blobs/aa/blob")).await?;
         let catalog = toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
             schema_version: 1,
             thread_id: "thread-a".into(),
@@ -1275,7 +1279,7 @@ mod layout_migration_tests {
                 modality: pl_protocol::studio::StudioAttachmentModality::File,
                 media_type: "text/plain".into(),
                 filename: None,
-                storage_path: foreign.to_string_lossy().into_owned(),
+                blob_relative_path: foreign.to_string_lossy().into_owned(),
                 byte_size: 10,
                 content_sha256: "aa".into(),
                 width: None,

@@ -574,7 +574,12 @@ async fn table_columns(db: &DatabaseConnection, table: &str) -> Result<BTreeSet<
 /// 测试用：在目标路径上建立一个旧 schema（v4 表结构）数据库。
 #[cfg(test)]
 pub(super) async fn seed_legacy_for_test(path: &Path, seed_sql: &str) -> Result<()> {
-    let mut options = ConnectOptions::new(crate::studio::paths::sqlite_url(path));
+    let mut options = crate::studio::paths::sqlite_file_options(
+        path,
+        crate::studio::paths::SqliteFileMode::Create,
+        |options| options,
+    )
+    .await?;
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
     db.execute_unprepared(LEGACY_SCHEMA_SQL).await?;
@@ -589,7 +594,12 @@ pub(super) async fn seed_version_for_test(
     schema_version: i64,
     seed_sql: &str,
 ) -> Result<()> {
-    let mut options = ConnectOptions::new(crate::studio::paths::sqlite_url(path));
+    let mut options = crate::studio::paths::sqlite_file_options(
+        path,
+        crate::studio::paths::SqliteFileMode::Create,
+        |options| options,
+    )
+    .await?;
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
     db.execute_unprepared(
@@ -861,7 +871,15 @@ mod storage_fault_tests {
             "UPDATE calls_meta SET schema_version=5; DROP TABLE model_calls;",
         )
         .await?;
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         ensure_schema(&db).await?;
         let tx = db.begin().await?;
         summary::replace(
@@ -1012,7 +1030,15 @@ mod storage_fault_tests {
         let now = crate::studio::unix_seconds();
         seed_legacy_for_test(&path, &format!("INSERT INTO model_calls(thread_id,call_id,turn_id,attempt_id,revision,admitted_at,started_at,status,terminal,body_ref) VALUES('thread','call','turn','call',1,{now},{now},'running',0,'{hash}');")).await?;
         assert!(CallsStore::open(&path).await.is_err());
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         assert!(table_exists(&db, "model_calls").await?);
         assert_eq!(
             db.query_one_raw(statement("SELECT schema_version FROM calls_meta", vec![]))

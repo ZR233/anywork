@@ -30,8 +30,8 @@ use pl_core::thread::{AttemptOutcome, ThreadEffectBatch};
 use pl_protocol::{InferenceBillingRecord, RuntimeCostAmount};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
-    DatabaseTransaction, QueryResult, Statement, TransactionTrait, Value,
+    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DatabaseTransaction,
+    QueryResult, Statement, TransactionTrait, Value,
 };
 use tokio::sync::{Notify, watch};
 
@@ -297,19 +297,23 @@ impl CallsStore {
             CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await?,
             CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await?,
         };
-        let mut options = ConnectOptions::new(crate::studio::paths::sqlite_url(path));
-        options
-            .max_connections(2)
-            .min_connections(2)
-            .connect_timeout(Duration::from_secs(8))
-            .acquire_timeout(Duration::from_secs(8))
-            .map_sqlx_sqlite_opts(|options| {
+        let mut options = crate::studio::paths::sqlite_file_options(
+            path,
+            crate::studio::paths::SqliteFileMode::Create,
+            |options| {
                 options
                     .journal_mode(SqliteJournalMode::Wal)
                     .synchronous(SqliteSynchronous::Full)
                     .busy_timeout(Duration::from_secs(5))
                     .foreign_keys(true)
-            })
+            },
+        )
+        .await?;
+        options
+            .max_connections(2)
+            .min_connections(2)
+            .connect_timeout(Duration::from_secs(8))
+            .acquire_timeout(Duration::from_secs(8))
             .sqlx_logging(false);
         let db = Database::connect(options).await?;
         if let Err(error) = schema::initialize(&db, &mut log, &root_dir).await {

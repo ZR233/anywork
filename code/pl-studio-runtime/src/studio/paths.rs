@@ -273,12 +273,43 @@ fn validate_studio_home(path: PathBuf, source: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn sqlite_url(path: &Path) -> String {
-    sqlite_url_with_mode(path, "rwc")
+pub(crate) enum SqliteFileMode {
+    ReadOnly,
+    #[cfg(test)]
+    ReadWrite,
+    Create,
 }
 
-pub(crate) fn sqlite_read_only_url(path: &Path) -> String {
-    sqlite_url_with_mode(path, "ro")
+/// Keeps filesystem names out of URI parsing and preserves native canonical prefixes.
+/// Parent creation belongs to writers; this boundary never creates a directory or database.
+pub(crate) async fn sqlite_file_options(
+    path: &Path,
+    mode: SqliteFileMode,
+    configure: impl Fn(
+        sea_orm::sqlx::sqlite::SqliteConnectOptions,
+    ) -> sea_orm::sqlx::sqlite::SqliteConnectOptions
+    + Send
+    + Sync
+    + 'static,
+) -> Result<sea_orm::ConnectOptions> {
+    let parent = path
+        .parent()
+        .context("SQLite database path has no parent")?;
+    let filename = path
+        .file_name()
+        .context("SQLite database path has no filename")?;
+    let native = tokio::fs::canonicalize(parent).await?.join(filename);
+    let mut options = sea_orm::ConnectOptions::new("sqlite:");
+    // SeaORM keeps one mapper. Compose the native filename and each store's tuning here.
+    options.map_sqlx_sqlite_opts(move |options| {
+        configure(
+            options
+                .filename(&native)
+                .read_only(matches!(mode, SqliteFileMode::ReadOnly))
+                .create_if_missing(matches!(mode, SqliteFileMode::Create)),
+        )
+    });
+    Ok(options)
 }
 
 pub fn project_name(path: &Path) -> String {
@@ -287,17 +318,6 @@ pub fn project_name(path: &Path) -> String {
         .filter(|name| !name.trim().is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| path.display().to_string())
-}
-
-fn sqlite_url_with_mode(path: &Path, mode: &str) -> String {
-    let path = path.to_string_lossy();
-    let path = path
-        .strip_prefix(r"\\?\UNC\")
-        .map(|path| format!("//{path}"))
-        .or_else(|| path.strip_prefix(r"\\?\").map(ToOwned::to_owned))
-        .unwrap_or_else(|| path.into_owned())
-        .replace('\\', "/");
-    format!("sqlite://{path}?mode={mode}")
 }
 
 pub(crate) fn posix_relative(path: &Path) -> Result<String> {

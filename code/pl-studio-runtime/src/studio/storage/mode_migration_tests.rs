@@ -381,7 +381,15 @@ async fn migrate_model_access(
 
 /// 故障注入与结构降级只通过真实 SQLite 文件完成，不使用生产句柄的私有入口。
 async fn raw_database(path: &std::path::Path) -> Result<sea_orm::DatabaseConnection> {
-    Ok(sea_orm::Database::connect(crate::studio::paths::sqlite_url(path)).await?)
+    Ok(sea_orm::Database::connect(
+        crate::studio::paths::sqlite_file_options(
+            path,
+            crate::studio::paths::SqliteFileMode::Create,
+            |options| options,
+        )
+        .await?,
+    )
+    .await?)
 }
 
 fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
