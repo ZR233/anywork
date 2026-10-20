@@ -168,8 +168,8 @@ fn decode_profile_payload(
         let object = value
             .as_object_mut()
             .context("saved Agent Profile is not an object")?;
-        // 冻结的 Profile 使用 camelCase 协议字段。
-        super::payload_alias::rename_key(object, "provider", "accountId")?;
+        // 冻结 Profile 的 provider_id 按 camelCase 写成 providerId，与模型路由不同。
+        super::payload_alias::rename_key(object, "providerId", "accountId")?;
         super::payload_alias::rename_key(object, "model", "modelId")?;
     }
     serde_json::from_value(value).with_context(|| format!("decode saved {label}"))
@@ -226,7 +226,7 @@ mod tests {
                 "description": "",
                 "whenToUse": "",
                 "systemInstructions": "",
-                "provider": "deepseek",
+                "providerId": "deepseek",
                 "model": "deepseek-flash",
                 "effort": "high",
                 "source": "config",

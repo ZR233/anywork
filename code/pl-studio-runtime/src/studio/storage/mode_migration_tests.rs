@@ -303,10 +303,10 @@ fn restored_mode_snapshot_keeps_graph_revision_when_a_new_catalog_assigns_a_diff
 // ── 模型接入扩展表示迁移与压缩来源恢复 ──
 
 const LEGACY_ROUTE: &str = r#"{"provider":"deepseek","model":"deepseek-flash","effort":"high"}"#;
-/// HEAD 真实 v1 冻结 Profile 载荷（camelCase，含 `provider`/`model`）。
+/// 旧版实际写出的 v1 冻结 Profile 载荷（camelCase，含 `providerId`/`model`）。
 const LEGACY_PROFILE: &str = r#"{
     "profileId":"reviewer","displayName":"Reviewer","description":"","whenToUse":"",
-    "systemInstructions":"","provider":"deepseek","model":"deepseek-flash","effort":"high",
+    "systemInstructions":"","providerId":"deepseek","model":"deepseek-flash","effort":"high",
     "source":"config","revision":"1","contentHash":"","system":true,"enabled":true,
     "workspaceMode":"unrestricted"
 }"#;
@@ -581,13 +581,34 @@ async fn legacy_child_profile_representation_is_committed_once_before_recovery()
     assert_eq!(profile.account_id, "deepseek");
     assert_eq!(profile.model_id, "deepseek-flash");
     assert_eq!(profile.effort.as_deref(), Some("high"));
+    let mut expected = legacy.clone();
+    expected
+        .state
+        .extensions
+        .get_mut("studio.agent-profile")
+        .context("saved profile")?
+        .payload = crate::studio::model_route::encode_profile(&profile)?;
+    assert_eq!(
+        serde_json::to_vec(&migrated)?,
+        serde_json::to_vec(&expected)?,
+        "表示迁移只更新 Profile 编码，历史、业务状态和水位保持不变"
+    );
 
     let durable = store.checkpoint().await?.context("durable profile")?;
     assert_eq!(
-        durable.state.extensions["studio.agent-profile"]
-            .payload
-            .version(),
-        2
+        serde_json::to_vec(&durable)?,
+        serde_json::to_vec(&migrated)?,
+        "恢复返回前持久化当前 Profile"
+    );
+    drop(store);
+
+    let reopened = HistoryStore::open(&path, "migration").await?;
+    let checkpoint = reopened.checkpoint().await?.context("reopened profile")?;
+    let again = migrate_model_access(&reopened, &checkpoint).await?;
+    assert_eq!(
+        serde_json::to_vec(&again)?,
+        serde_json::to_vec(&durable)?,
+        "重开后再次迁移不改变已保存状态"
     );
     Ok(())
 }

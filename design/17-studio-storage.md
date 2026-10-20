@@ -392,6 +392,8 @@ lease 不是清理候选。显式 cleanup 在服务端重新验证前置条件�
 已有 v2 的产品模型路由与 Agent Profile 扩展在持久化解码边界按版本转换 provider/model 字段，
 保留原 ID、effort、扩展 revision、checkpoint fence 与历史；在唯一 writer 的事务内发布当前
 结构，迁移失败不激活模型、不前移版本。按需打开、恢复和继续父子会话使用相同边界，不批量激活。
+冻结 Profile 的旧字段按其序列化契约 `providerId`/`model` 转为 `accountId`/`modelId`，不能套用
+模型路由的 `provider` 字段名。新旧字段同时存在且身份冲突时拒绝迁移并保留原检查点。
 typed 账单和调用记录只转换已知账号字段，不改写厂商不透明正文或以当前配置猜测历史身份。
 
 恢复 owner 前的 checkpoint 维护同时覆盖根会话模型路由与子会话冻结 Profile：仅在内存中
