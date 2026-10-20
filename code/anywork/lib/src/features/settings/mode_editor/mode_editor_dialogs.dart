@@ -263,7 +263,7 @@ class _ImportModeDialogState extends State<_ImportModeDialog> {
                 maxLines: null,
                 textAlignVertical: TextAlignVertical.top,
                 style: const TextStyle(
-                  fontFamily: 'monospace',
+                  fontFamily: studioCodeFontFamily,
                   fontSize: 12,
                   height: 1.5,
                 ),
@@ -310,7 +310,7 @@ Future<void> showSchemaDialog(BuildContext context, String schema) {
           child: SelectableText(
             schema,
             style: const TextStyle(
-              fontFamily: 'monospace',
+              fontFamily: studioCodeFontFamily,
               fontSize: 12,
               height: 1.5,
             ),

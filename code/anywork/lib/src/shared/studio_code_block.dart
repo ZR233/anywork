@@ -38,14 +38,13 @@ class StudioCodeBlock extends StatelessWidget {
     final textTheme = Theme.of(context).textTheme;
     final languageLabel = language?.trim() ?? '';
     final codeTextStyle =
-        textStyle ??
-        textTheme.bodyMedium?.copyWith(
-          color: colors.onSurface,
-          fontFamily: 'JetBrains Mono',
-          fontFamilyFallback: const ['Consolas', 'monospace'],
-          fontSize: (textTheme.bodyMedium?.fontSize ?? 14) * 0.92,
-          height: 1.35,
-        );
+        (textStyle ??
+                textTheme.bodyMedium?.copyWith(
+                  color: colors.onSurface,
+                  fontSize: (textTheme.bodyMedium?.fontSize ?? 14) * 0.92,
+                  height: 1.35,
+                ))
+            ?.copyWith(fontFamily: studioCodeFontFamily);
 
     Widget codeBody = Padding(
       padding: padding,
@@ -93,8 +92,6 @@ class StudioCodeBlock extends StatelessWidget {
                           languageTextStyle ??
                           textTheme.labelSmall?.copyWith(
                             color: colors.onSurfaceVariant,
-                            fontFamily: 'JetBrains Mono',
-                            fontFamilyFallback: const ['Consolas', 'monospace'],
                           ),
                     ),
                   ),

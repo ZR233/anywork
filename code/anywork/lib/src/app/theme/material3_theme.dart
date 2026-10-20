@@ -1,10 +1,11 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'siamese_scheme.dart';
 import 'studio_tokens.dart';
 
-/// The single, system-independent Studio theme, including third-party content.
+/// The single Studio theme, with platform typography and third-party content.
 ThemeData pureStudioTheme() => _studioTheme;
 
 // Stable identity avoids spurious AnimatedTheme transitions on unrelated rebuilds.
@@ -19,10 +20,10 @@ ThemeData _createStudioTheme() {
     borderRadius: BorderRadius.circular(StudioRadii.sm),
     borderSide: BorderSide(color: scheme.outline),
   );
-  final text = Typography.material2021().black.apply(
-    bodyColor: scheme.onSurface,
-    displayColor: scheme.onSurface,
-  );
+  final text = Typography.material2021(
+    platform: defaultTargetPlatform,
+    colorScheme: scheme,
+  ).black.apply(bodyColor: scheme.onSurface, displayColor: scheme.onSurface);
   Color? stateOverlay(Set<WidgetState> states) {
     if (states.contains(WidgetState.disabled)) return Colors.transparent;
     if (states.contains(WidgetState.pressed)) {
@@ -57,7 +58,6 @@ ThemeData _createStudioTheme() {
     visualDensity: VisualDensity.compact,
     scaffoldBackgroundColor: scheme.surface,
     canvasColor: scheme.surface,
-    fontFamilyFallback: const ['Inter', 'Noto Sans SC', 'Segoe UI'],
     textTheme: text,
     iconTheme: IconThemeData(color: scheme.onSurfaceVariant),
     hoverColor: scheme.primary.withValues(alpha: 0.06),

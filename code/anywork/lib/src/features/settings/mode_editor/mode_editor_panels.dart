@@ -146,7 +146,7 @@ class _ModeJsonPanelState extends State<ModeJsonPanel> {
               textAlignVertical: TextAlignVertical.top,
               onChanged: widget.onChanged,
               style: const TextStyle(
-                fontFamily: 'monospace',
+                fontFamily: studioCodeFontFamily,
                 fontSize: 12,
                 height: 1.6,
               ),
@@ -1034,7 +1034,7 @@ class _IssueList extends StatelessWidget {
                       issues[index].code,
                       style: context.text.labelSmall?.copyWith(
                         color: context.colors.onErrorContainer,
-                        fontFamily: 'monospace',
+                        fontFamily: studioCodeFontFamily,
                       ),
                     ),
                   ),

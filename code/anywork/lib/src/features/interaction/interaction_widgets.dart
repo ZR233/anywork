@@ -247,10 +247,7 @@ class InteractionCodeBlock extends StatelessWidget {
       horizontalScroll: false,
       backgroundColor: colors.surfaceContainerLow,
       borderColor: colors.outlineVariant,
-      textStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-        fontFamily: 'JetBrains Mono',
-        fontFamilyFallback: const ['Consolas', 'monospace'],
-      ),
+      textStyle: Theme.of(context).textTheme.bodySmall,
     );
   }
 }

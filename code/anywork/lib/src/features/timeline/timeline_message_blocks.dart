@@ -483,7 +483,11 @@ class _RawRecordBlock extends StatelessWidget {
                     children: [
                       Text('${payload.format} · v${payload.version}'),
                       const SizedBox(height: 8),
-                      SelectableText(payload.content),
+                      SelectableText(
+                        payload.content,
+                        style: DefaultTextStyle.of(context).style
+                            .copyWith(fontFamily: studioCodeFontFamily),
+                      ),
                     ],
                   ),
                 ),
