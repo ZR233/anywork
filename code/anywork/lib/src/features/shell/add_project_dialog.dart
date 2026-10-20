@@ -444,7 +444,7 @@ class _AddProjectDialogState extends ConsumerState<_AddProjectDialog> {
             '${server.username}@${server.hostName}:${server.port}',
             style: context.text.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
-              fontFamily: 'monospace',
+              fontFamily: studioCodeFontFamily,
             ),
           ),
         ),

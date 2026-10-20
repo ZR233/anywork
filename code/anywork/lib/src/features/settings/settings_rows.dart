@@ -47,7 +47,6 @@ class _SettingsRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: context.text.bodySmall?.copyWith(
                       color: context.colors.onSurfaceVariant,
-                      fontFamily: subtitle!.contains('/') ? 'Consolas' : null,
                     ),
                   ),
                 ],

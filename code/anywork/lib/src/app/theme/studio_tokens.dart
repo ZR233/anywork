@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'studio_semantic_colors.dart';
 
 export 'studio_semantic_colors.dart';
+export 'studio_typography.dart';
 
 final class StudioRadii {
   const StudioRadii._();

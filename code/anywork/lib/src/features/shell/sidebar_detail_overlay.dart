@@ -45,10 +45,15 @@ class _SidebarHoverDetail extends StatelessWidget {
 
 /// 详情卡中的一行：前置标识（图标或状态点）+ 值。
 class _SidebarDetailRow extends StatelessWidget {
-  const _SidebarDetailRow({required this.leading, required this.value});
+  const _SidebarDetailRow({
+    required this.leading,
+    required this.value,
+    this.monospace = false,
+  });
 
   final Widget leading;
   final String value;
+  final bool monospace;
 
   @override
   Widget build(BuildContext context) {
@@ -62,7 +67,10 @@ class _SidebarDetailRow extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: context.text.bodySmall?.copyWith(height: 1.3),
+              style: context.text.bodySmall?.copyWith(
+                height: 1.3,
+                fontFamily: monospace ? studioCodeFontFamily : null,
+              ),
             ),
           ),
         ],

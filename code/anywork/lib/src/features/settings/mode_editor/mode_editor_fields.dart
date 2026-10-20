@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/theme/studio_tokens.dart';
+
 /// Controlled text field that keeps IME composition while canonical values
 /// echo back from the Client-owned draft.
 class ModeEditorTextField extends StatefulWidget {
@@ -64,7 +66,11 @@ class _ModeEditorTextFieldState extends State<ModeEditorTextField> {
       keyboardType: widget.keyboardType,
       onChanged: widget.onChanged,
       style: widget.monospace
-          ? const TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.55)
+          ? const TextStyle(
+              fontFamily: studioCodeFontFamily,
+              fontSize: 12,
+              height: 1.55,
+            )
           : null,
       decoration: InputDecoration(
         labelText: widget.label,
