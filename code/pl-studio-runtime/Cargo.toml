@@ -43,6 +43,9 @@ rust-embed = { workspace = true }
 dunce = { workspace = true }
 zstd = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [[example]]
 name = "collaboration_observe"
 required-features = ["live-tests"]

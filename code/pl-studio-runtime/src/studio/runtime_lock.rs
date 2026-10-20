@@ -69,11 +69,11 @@ pub(super) struct RuntimeLock {
 
 #[derive(Clone, Default)]
 pub(super) struct RuntimeLockOwner {
-    lock: Arc<Mutex<Option<RuntimeLock>>>,
+    lock: Arc<Mutex<Option<Arc<RuntimeLock>>>>,
 }
 
 impl RuntimeLockOwner {
-    pub(super) fn new(lock: Option<RuntimeLock>) -> Self {
+    pub(super) fn new(lock: Option<Arc<RuntimeLock>>) -> Self {
         Self {
             lock: Arc::new(Mutex::new(lock)),
         }
@@ -156,6 +156,7 @@ impl Drop for RuntimeLock {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct ResolvedRuntimeOptions {
     pub paths: StudioPaths,
     pub host: StudioHostKind,

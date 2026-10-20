@@ -88,11 +88,6 @@ const _pidRequest = 'pid';
 /// budget, exit-request count, typed shutdown report and observed stages.
 const _exitStatusRequest = 'exit-status';
 
-/// Localized second-instance banners produced by the real fatal widget when the
-/// instance lock is refused; matched through the widget tree, never a snapshot
-/// guess (see `runtime_banners.dart` / `startupInstanceBusy`).
-const _busyTexts = <String>['已有实例在运行', 'Another instance is already running'];
-
 /// Localized fatal-startup banners rendered when initialization truly fails;
 /// used to prove a real failure widget instead of an absent-workspace guess.
 const _fatalTexts = <String>['糊来帮无法启动', 'anywork could not start'];
@@ -203,8 +198,6 @@ class ShutdownJourney {
         await _runReopen('normal', requireSettled: true);
       case 'busy-hold':
         await _runBusyHold();
-      case 'busy-second':
-        await _runBusySecond();
       case 'busy-reopen':
         await _runReopen('busy_continue', requireSettled: true);
       case 'duplicate':
@@ -299,8 +292,8 @@ class ShutdownJourney {
   // ---------------------------------------------------------------- busy ---
 
   /// Keeps the first instance alive while a second instance shares the home, then
-  /// proves the first still submits and saves a real turn after the second is
-  /// closed.
+  /// proves the first still submits and saves a real turn after the duplicate
+  /// redirects and exits.
   Future<void> _runBusyHold() async {
     await mark('busy_hold_connected');
     await _writeNativeIdentity('busy-hold');
@@ -313,65 +306,13 @@ class ShutdownJourney {
       timeout: const Duration(seconds: 120),
     );
     await mark('busy_hold_reopened');
-    // The coordinator closes the second instance and only then signals this
-    // instance to continue, so the two requests can never interleave.
-    await _awaitSignal('busy-second-closed', const Duration(seconds: 600));
+    // Continue only after the coordinator proves native redirection and self-exit.
+    await _awaitSignal('busy-second-redirected', const Duration(seconds: 600));
     final continued = await _settleTurn(1, 'busy_continue', prior: threadId);
     checks['busyContinuedSameThread'] = continued.threadId == threadId;
     await _writeObserved('busy_continue', continued, _answers[1]);
     await mark('busy_continued');
     await _requestAppExit('busy');
-  }
-
-  /// Records whatever the second instance exposes about the instance lock: the
-  /// typed `instanceBusy` code in the snapshot, or (if it never reached a usable
-  /// Driver) the connection failure. The coordinator also greps the GUI log.
-  Future<void> _runBusySecond() async {
-    await mark('busy_second_connected');
-    await _writeNativeIdentity('busy-second');
-    // The second instance renders the real instance-busy banner
-    // (`runtime_banners.dart` `startupInstanceBusy`); a snapshot-only check
-    // cannot prove the widget, so match the live widget tree text.
-    final busyText = await _awaitAnyText(
-      _busyTexts,
-      const Duration(seconds: 90),
-    );
-    // Read the live projection into a local that does *not* shadow the
-    // `snapshot()` method (a same-named local would be referenced before it is
-    // declared inside its own initializer).
-    final snap = await snapshot();
-    final encoded = jsonEncode(snap);
-    final busy =
-        encoded.contains('instanceBusy') ||
-        encoded.contains('已有实例') ||
-        encoded.contains('instance busy');
-    checks['busySecondInstanceBusy'] = busy || busyText != null;
-    checks['busySecondBusyWidget'] = busyText != null;
-    observations['busySecondBusyText'] = busyText;
-    observations['busySecondSnapshot'] = summarize(snap);
-    observations['busySecondNavigation'] = snap['navigation'];
-    observations['busySecondRecoveryIssues'] = snap['recoveryIssues'];
-    // The snapshot may legitimately not carry the typed startup failure, so the
-    // widget text above is the primary busy proof. The read-only `exit-status`
-    // projection is then used to record the typed `instanceBusy` code and its
-    // non-empty bridge correlation rather than guessing them from UI text. These
-    // are evidence checks: the coordinator judges this instance from the widget
-    // text and the real OS exit report, never from these fields alone.
-    final status = await _exitStatus();
-    final startup = status?['startup'];
-    observations['busySecondStartup'] = startup;
-    observations['busySecondNativeExit'] = status?['nativeExit'];
-    checks['busySecondTypedStartupFailure'] =
-        startup is Map && startup['failureCode'] == 'instanceBusy';
-    checks['busySecondStartupCorrelation'] =
-        startup is Map &&
-        (startup['correlationId'] as String?)?.isNotEmpty == true;
-    await shot('busy_second');
-    await mark('busy_observed');
-    // The coordinator closes this second instance through a real
-    // `WM_DELETE_WINDOW` on its isolated display, so the journey must NOT request
-    // the Dart `beginExit` path here: that would pre-empt the native GTK close
-    // hook the delete event is meant to exercise.
   }
 
   // ----------------------------------------------------------- duplicate ---

@@ -1,4 +1,5 @@
 #include "flutter_window.h"
+#include "desktop_instance.h"
 
 #include <windows.h>
 
@@ -265,10 +266,13 @@ std::vector<uint8_t> LoadTerminalIconPng() {
 
 }  // namespace
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project, DesktopInstanceActivation* activation)
+    : project_(project), activation_(activation) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  // Virtual teardown must run before members and the derived object disappear.
+  OnDestroy();
+}
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
@@ -384,6 +388,7 @@ bool FlutterWindow::OnCreate() {
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
+    activation_->WindowReady([this]() { ShowMainWindow(); });
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -395,6 +400,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  activation_->WindowDestroyed();
   // Clear the native close callback before the channel disappears; the deadline
   // thread keeps running so engine/window teardown cannot disarm the exit bound.
   anywork::StudioHostLifecycle::Instance().ClearExitRequestCallback();
@@ -413,6 +419,11 @@ void FlutterWindow::OnDestroy() {
     host_apps_channel_.reset();
   }
   if (flutter_controller_) {
+    if (flutter_controller_->engine() && flutter_controller_->view()) {
+      // Flutter's wrapper always invokes its stored callback. Replace it with
+      // a no-op that cannot retain this window; an empty function is not a cancel API.
+      flutter_controller_->engine()->SetNextFrameCallback([]() {});
+    }
     flutter_controller_ = nullptr;
   }
 
