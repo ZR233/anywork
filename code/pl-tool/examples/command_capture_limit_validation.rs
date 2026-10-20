@@ -216,11 +216,11 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
             .is_err()
     );
 
-    let linked = root.path().join("outside");
-    std::fs::create_dir_all(&linked)?;
-    let link = root.path().join(files.scratch()).join("escape");
     #[cfg(unix)]
     {
+        let linked = root.path().join("outside");
+        std::fs::create_dir_all(&linked)?;
+        let link = root.path().join(files.scratch()).join("escape");
         std::os::unix::fs::symlink(&linked, &link)?;
         let policy =
             pl_tool::workspace::ToolPathPolicy::new(root.path().to_path_buf(), false, "file")?;
