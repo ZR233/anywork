@@ -1137,7 +1137,14 @@ impl ContextCapacity {
         match estimate {
             None if !accepts_unknown => Err(ThreadError::UnknownCapacity),
             Some(estimate)
-                if estimate.accuracy == EstimateAccuracy::Approximate && !accepts_approximate =>
+                if estimate.accuracy == EstimateAccuracy::LowerBound
+                    && estimate.tokens <= limit
+                    && !accepts_unknown =>
+            {
+                Err(ThreadError::UnknownCapacity)
+            }
+            Some(estimate)
+                if estimate.accuracy != EstimateAccuracy::Exact && !accepts_approximate =>
             {
                 Err(ThreadError::UnknownCapacity)
             }

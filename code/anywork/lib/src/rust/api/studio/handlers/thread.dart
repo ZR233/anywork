@@ -51,6 +51,10 @@ Future<BridgeArchiveThreadCommandReply> archiveThread({
   threadId: threadId,
 );
 
+/// Forces one idle context compaction through the canonical Thread owner.
+Future<void> compactThread({required String threadId}) => RustLib.instance.api
+    .crateApiStudioHandlersThreadCompactThread(threadId: threadId);
+
 /// Changes the selected root Thread to a registered Thread Mode ID.
 ///
 /// # Errors

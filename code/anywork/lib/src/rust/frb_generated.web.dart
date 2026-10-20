@@ -358,6 +358,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_model_catalog_state_data(dynamic raw);
 
   @protected
+  BridgeModelContextAdjustment
+  dco_decode_box_autoadd_bridge_model_context_adjustment(dynamic raw);
+
+  @protected
+  BridgeModelContextUnavailable
+  dco_decode_box_autoadd_bridge_model_context_unavailable(dynamic raw);
+
+  @protected
   BridgeModelPerformanceSnapshot
   dco_decode_box_autoadd_bridge_model_performance_snapshot(dynamic raw);
 
@@ -1150,6 +1158,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelConnectionSettingsDto
   dco_decode_bridge_model_connection_settings_dto(dynamic raw);
+
+  @protected
+  BridgeModelContextAdjustment dco_decode_bridge_model_context_adjustment(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelContextResolution dco_decode_bridge_model_context_resolution(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelContextUnavailable dco_decode_bridge_model_context_unavailable(
+    dynamic raw,
+  );
 
   @protected
   BridgeModelDescriptor dco_decode_bridge_model_descriptor(dynamic raw);
@@ -2322,6 +2345,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_model_catalog_error(dynamic raw);
 
   @protected
+  BridgeModelContextAdjustment?
+  dco_decode_opt_box_autoadd_bridge_model_context_adjustment(dynamic raw);
+
+  @protected
+  BridgeModelContextUnavailable?
+  dco_decode_opt_box_autoadd_bridge_model_context_unavailable(dynamic raw);
+
+  @protected
   BridgeModelPricing? dco_decode_opt_box_autoadd_bridge_model_pricing(
     dynamic raw,
   );
@@ -2910,6 +2941,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelCatalogStateData
   sse_decode_box_autoadd_bridge_model_catalog_state_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelContextAdjustment
+  sse_decode_box_autoadd_bridge_model_context_adjustment(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelContextUnavailable
+  sse_decode_box_autoadd_bridge_model_context_unavailable(
     SseDeserializer deserializer,
   );
 
@@ -3932,6 +3975,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelConnectionSettingsDto
   sse_decode_bridge_model_connection_settings_dto(SseDeserializer deserializer);
+
+  @protected
+  BridgeModelContextAdjustment sse_decode_bridge_model_context_adjustment(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelContextResolution sse_decode_bridge_model_context_resolution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelContextUnavailable sse_decode_bridge_model_context_unavailable(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeModelDescriptor sse_decode_bridge_model_descriptor(
@@ -5374,6 +5432,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelContextAdjustment?
+  sse_decode_opt_box_autoadd_bridge_model_context_adjustment(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelContextUnavailable?
+  sse_decode_opt_box_autoadd_bridge_model_context_unavailable(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelPricing? sse_decode_opt_box_autoadd_bridge_model_pricing(
     SseDeserializer deserializer,
   );
@@ -6082,6 +6152,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_model_catalog_state_data(
     BridgeModelCatalogStateData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_context_adjustment(
+    BridgeModelContextAdjustment self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_context_unavailable(
+    BridgeModelContextUnavailable self,
     SseSerializer serializer,
   );
 
@@ -7273,6 +7355,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_model_connection_settings_dto(
     BridgeModelConnectionSettingsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_context_adjustment(
+    BridgeModelContextAdjustment self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_context_resolution(
+    BridgeModelContextResolution self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_context_unavailable(
+    BridgeModelContextUnavailable self,
     SseSerializer serializer,
   );
 
@@ -9013,6 +9113,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_model_catalog_error(
     BridgeModelCatalogError? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_context_adjustment(
+    BridgeModelContextAdjustment? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_context_unavailable(
+    BridgeModelContextUnavailable? self,
     SseSerializer serializer,
   );
 

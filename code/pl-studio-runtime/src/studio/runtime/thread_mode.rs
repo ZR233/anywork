@@ -11,6 +11,27 @@ use pl_core::{
 use pl_protocol::ThreadModeId;
 
 impl StudioRuntime {
+    /// Explicit user reduction, serialized with prompt admission and normal context preparation.
+    pub async fn compact_thread(&self, thread_id: &str) -> Result<()> {
+        let lifecycle = self.lifecycle_lock.lock().await;
+        self.read_owned_thread(thread_id).await?;
+        anyhow::ensure!(!self.thread_is_busy(thread_id).await?, "Thread is busy");
+        let thread = self.ensure_thread_owner(thread_id).await?;
+        let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
+        let _installation = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Closed.into()),
+            guard = gate.lock_owned() => guard,
+        };
+        // The per-Thread gate now owns admission; shutdown must be able to cancel this model call.
+        drop(lifecycle);
+        thread
+            .compact_context(thread.snapshot().context.revision, cancellation)
+            .await?;
+        thread.flush().await?;
+        Ok(())
+    }
+
     pub async fn set_thread_mode(
         &self,
         operation_id: String,

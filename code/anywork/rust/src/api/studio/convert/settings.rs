@@ -109,10 +109,7 @@ pub(crate) fn bridge_settings(
                     .into_iter()
                     .map(|limit| BridgeModelAutoCompactSettingsDto {
                         model_id: limit.model_id,
-                        default_limit: limit.default_limit,
                         override_limit: limit.override_limit,
-                        effective_limit: limit.effective_limit,
-                        safe_limit: limit.safe_limit,
                     })
                     .collect(),
                 catalog_id: account.catalog_id,

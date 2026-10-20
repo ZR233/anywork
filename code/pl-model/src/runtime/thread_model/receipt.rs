@@ -108,9 +108,9 @@ impl ModelCallBinding {
                 runtime.endpoint(),
             ),
             purpose: purpose.to_owned(),
-            context_window: runtime.model().resolved_context_window(),
+            context_window: runtime.context().context_window,
             max_context_window: runtime.model().max_context_window,
-            auto_compact_limit: runtime.auto_compact_limit(),
+            auto_compact_limit: runtime.context().auto_compact_limit,
         }
     }
 }

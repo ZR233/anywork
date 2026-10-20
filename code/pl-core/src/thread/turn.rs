@@ -232,10 +232,13 @@ impl Owner {
                 content,
                 cancellation: input.cancellation.clone(),
             };
-            let result = match correction_source.take() {
-                Some(source) => self.correct_step(step_input, source).await,
-                None => self.step(step_input).await,
-            };
+            let result = self
+                .step_in_turn(
+                    step_input,
+                    correction_source.take(),
+                    &mut recovered_capacity,
+                )
+                .await;
             let output = match result {
                 Err(ThreadError::Model(ref error))
                     if error.kind == crate::model::ModelFailureKind::ContextLimit

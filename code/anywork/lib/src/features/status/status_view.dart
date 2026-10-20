@@ -73,13 +73,29 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
 }
 
 @riverpod
+CommandStatus? statusCompactionCommand(Ref ref, String threadId) {
+  final commands = ref.read(anyworkClientProvider).threadCommands;
+  final key = 'compact:$threadId';
+  var current = commands.state.commands[key];
+  observeClient(ref, commands.source, (next) {
+    if (current == next.commands[key]) return;
+    current = next.commands[key];
+    ref.invalidateSelf();
+  });
+  return current;
+}
+
+@riverpod
 StudioContextProjection? statusContextProjection(Ref ref, String threadId) {
+  final accounts = ref.watch(settingsAccountsViewProvider).accounts;
   return _observeSession(
     ref,
     threadId,
     (session) => StudioContextProjection.fromRuntime(
       threadId,
       session.runtime ?? statusEmptyRuntime,
+      accounts: accounts,
+      isBusy: session.activeTurn?.state.isBusy ?? false,
     ),
   );
 }

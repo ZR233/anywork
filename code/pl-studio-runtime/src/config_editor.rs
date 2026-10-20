@@ -16,8 +16,8 @@ pub struct AccountModelEdit {
     pub model_id: String,
     pub display_name: String,
     pub protocol: WireApi,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,25 +59,28 @@ impl AccountModelEdit {
             && current.model_id == model_id
             && current.display_name
                 == trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone())
-            && current.context_window.unwrap_or(32_000) == self.context_window
-            && current.max_output_tokens.unwrap_or(4_096) == self.max_output_tokens
+            && current.context_window == self.context_window
+            && current.max_output_tokens == self.max_output_tokens
             && current.binding.transport.protocol == self.protocol
         {
             return Ok(current.clone());
         }
         model.display_name =
             trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone());
-        if self.context_window == 0
-            || self.max_output_tokens == 0
-            || self.max_output_tokens > self.context_window
+        if self.context_window == Some(0)
+            || self.max_output_tokens == Some(0)
+            || self
+                .max_output_tokens
+                .zip(self.context_window)
+                .is_some_and(|(output, window)| output > window)
         {
             return Err(PureError::ConfigError(
                 "custom model budgets must be positive and output must fit its context".into(),
             ));
         }
-        model.context_window = Some(self.context_window);
-        model.max_context_window = Some(self.context_window);
-        model.max_output_tokens = Some(self.max_output_tokens);
+        model.context_window = self.context_window;
+        model.max_context_window = self.context_window;
+        model.max_output_tokens = self.max_output_tokens;
         model.binding.request.protocol = match self.protocol {
             WireApi::Responses => {
                 pl_model::model::ModelProtocolOptions::Responses(Default::default())
@@ -191,40 +194,17 @@ impl AccountEdit {
                 config
             }
         };
-        let previous_limits = config.auto_compact_overrides().clone();
-        let declared = config.effective_models(None)?;
-        let mut limits = BTreeMap::new();
-        for (model_id, limit) in &self.model_auto_compact_limits {
-            if *limit == 0 {
-                return Err(PureError::ConfigError(
-                    "model auto compact limit must be a positive integer".into(),
-                ));
-            }
-            if let Some(model) = declared.iter().find(|model| model.model_id == *model_id) {
-                if Some(*limit) != model.default_auto_compact_token_limit() {
-                    limits.insert(model_id.clone(), *limit);
-                }
-            } else if config.discovery_profile()?.is_some()
-                && previous_limits.get(model_id) == Some(limit)
-            {
-                limits.insert(model_id.clone(), *limit);
-            } else {
-                return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
-            }
-        }
+        config.replace_model_auto_compact_overrides(self.model_auto_compact_limits.clone())?;
         match &mut config.catalog {
             AccountModelCatalogConfig::Bundled {
                 connection_overrides,
-                auto_compact_overrides,
                 ..
             }
             | AccountModelCatalogConfig::Explicit {
                 connection_overrides,
-                auto_compact_overrides,
                 ..
             } => {
                 *connection_overrides = self.model_connection_modes.clone();
-                *auto_compact_overrides = limits;
             }
         }
         config.pricing_mode = self.pricing_mode;

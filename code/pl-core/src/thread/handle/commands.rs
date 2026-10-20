@@ -66,6 +66,11 @@ pub(in crate::thread) enum Command {
         Vec<RuntimeFact>,
         oneshot::Sender<Result<ContextSnapshot, ThreadError>>,
     ),
+    CompactContext(
+        u64,
+        CancellationToken,
+        oneshot::Sender<Result<ContextSnapshot, ThreadError>>,
+    ),
     ReplaceContext(
         ReplaceContext,
         oneshot::Sender<Result<ContextSnapshot, ThreadError>>,
@@ -104,6 +109,7 @@ impl Command {
             Self::Capacity(_, reply) => closed(reply),
             Self::UpdateFacts(_, reply) | Self::PatchRuntimeFacts(_, reply) => closed(reply),
             Self::ReplaceContext(_, reply) => closed(reply),
+            Self::CompactContext(_, _, reply) => closed(reply),
             Self::Execute(_, _, reply) => closed(reply),
             Self::Step(_, reply) => closed(reply),
             Self::Close(reply) => closed(reply),

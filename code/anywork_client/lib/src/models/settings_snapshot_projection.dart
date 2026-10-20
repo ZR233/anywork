@@ -1,4 +1,3 @@
-import 'account_models.dart';
 import 'studio_state_snapshots.dart';
 
 /// 配置与模型目录进入同一条 merge path 的范围。
@@ -69,28 +68,6 @@ SettingsProjectionState mergeSettingsProjection(
   );
 }
 
-Map<String, AccountModelAutoCompactView> _projectAutoCompactLimits(
-  AccountSettingsView configProvider,
-  AccountSettingsView catalogProvider,
-) {
-  final projected = <String, AccountModelAutoCompactView>{
-    for (final model in catalogProvider.models)
-      model.modelId: AccountModelAutoCompactView.forModel(model)
-          .withStoredOverride(
-            configProvider.autoCompactLimits[model.modelId]?.overrideLimit,
-          ),
-  };
-  for (final entry in configProvider.autoCompactLimits.entries) {
-    if (projected.containsKey(entry.key)) continue;
-    projected[entry.key] = AccountModelAutoCompactView(
-      modelId: entry.key,
-      defaultLimit: null,
-      overrideLimit: entry.value.overrideLimit,
-    );
-  }
-  return projected;
-}
-
 /// 把配置字段与模型目录字段合成为一个领域快照。
 SettingsStateSnapshot projectSettingsSnapshot({
   required SettingsStateData configData,
@@ -107,10 +84,6 @@ SettingsStateSnapshot projectSettingsSnapshot({
         account.copyWith(
           models: catalogProvider.models,
           modelCatalog: catalogProvider.modelCatalog,
-          autoCompactLimits: _projectAutoCompactLimits(
-            account,
-            catalogProvider,
-          ),
         )
       else
         account,

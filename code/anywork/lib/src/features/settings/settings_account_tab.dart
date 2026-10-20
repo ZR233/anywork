@@ -458,15 +458,16 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
           previousModel.wireApi != model.wireApi) {
         connections.remove(previousModelId);
       }
-      // 保留既有用户覆盖：同名编辑不得丢覆盖，仅更名时迁移；上下文窗口变化时按新容量
-      // 重算派生默认、安全上限与生效值，保留用户覆盖。
+      // 草稿仅保留覆盖意图；保存后由后端重新解析容量与最终阈值。
       final limits = {...account.autoCompactLimits};
-      final recalculated = AccountModelAutoCompactView.forModel(model)
-          .withOverride(limits[previousModelId]?.overrideLimit);
+      final overrideDraft = AccountModelAutoCompactView(
+        modelId: model.modelId,
+        overrideLimit: limits[previousModelId]?.overrideLimit,
+      );
       if (previousModelId != model.modelId) {
         limits.remove(previousModelId);
       }
-      limits[model.modelId] = recalculated;
+      limits[model.modelId] = overrideDraft;
       final models = [
         for (final candidate in account.models)
           if (candidate.modelId == previousModelId)

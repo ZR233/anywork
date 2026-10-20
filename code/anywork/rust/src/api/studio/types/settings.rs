@@ -38,8 +38,8 @@ pub struct AccountModelInput {
     pub model_id: String,
     pub display_name: String,
     pub wire_api: String,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -514,8 +514,8 @@ impl From<pl_protocol::studio::StudioModelCatalogStatus> for BridgeModelCatalogS
 #[serde(rename_all = "camelCase")]
 pub struct BridgeCustomModelSettingsDto {
     pub input_capabilities: Vec<BridgeModelInputCapability>,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
     pub model_id: String,
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
@@ -538,10 +538,7 @@ pub struct BridgeModelConnectionSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelAutoCompactSettingsDto {
     pub model_id: String,
-    pub default_limit: Option<u64>,
     pub override_limit: Option<u64>,
-    pub effective_limit: Option<u64>,
-    pub safe_limit: Option<u64>,
 }
 
 /// 角色到 account/model/effort 的 canonical 路由。
@@ -697,12 +694,34 @@ pub struct BridgeModelDescriptor {
     pub description: Option<String>,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
-    pub auto_compact_token_limit: Option<u64>,
+    pub context: BridgeModelContextResolution,
     pub max_output_tokens: Option<u64>,
     pub transport: BridgeModelTransportDescriptor,
     pub capabilities: BridgeModelCapabilities,
     pub reasoning: Option<BridgeModelReasoningDescriptor>,
     pub pricing: Option<BridgeModelPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelContextResolution {
+    pub unavailable: Option<BridgeModelContextUnavailable>,
+    pub context_window: Option<u64>,
+    pub input_token_limit: Option<u64>,
+    pub auto_compact_limit: Option<u64>,
+    pub adjustment: Option<BridgeModelContextAdjustment>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeModelContextUnavailable {
+    WindowUnknown,
+    InvalidParameters,
+    InputBudgetExhausted,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeModelContextAdjustment {
+    SafetyLimit,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -717,6 +736,8 @@ pub enum BridgeModelTypeExclusion {
     TextInputUnsupported,
     TextOutputUnsupported,
     ContextWindowUnknown,
+    ContextParametersInvalid,
+    InputBudgetExhausted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -874,6 +895,12 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                             pl_protocol::ModelTypeExclusion::TextOutputUnsupported => {
                                 BridgeModelTypeExclusion::TextOutputUnsupported
                             }
+                            pl_protocol::ModelTypeExclusion::ContextParametersInvalid => {
+                                BridgeModelTypeExclusion::ContextParametersInvalid
+                            }
+                            pl_protocol::ModelTypeExclusion::InputBudgetExhausted => {
+                                BridgeModelTypeExclusion::InputBudgetExhausted
+                            }
                             pl_protocol::ModelTypeExclusion::ContextWindowUnknown => {
                                 BridgeModelTypeExclusion::ContextWindowUnknown
                             }
@@ -886,7 +913,27 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
             description: model.description,
             context_window: model.context_window,
             max_context_window: model.max_context_window,
-            auto_compact_token_limit: model.auto_compact_token_limit,
+            context: BridgeModelContextResolution {
+                unavailable: model.context.unavailable.map(|reason| match reason {
+                    pl_protocol::ModelContextUnavailable::WindowUnknown => {
+                        BridgeModelContextUnavailable::WindowUnknown
+                    }
+                    pl_protocol::ModelContextUnavailable::InvalidParameters => {
+                        BridgeModelContextUnavailable::InvalidParameters
+                    }
+                    pl_protocol::ModelContextUnavailable::InputBudgetExhausted => {
+                        BridgeModelContextUnavailable::InputBudgetExhausted
+                    }
+                }),
+                context_window: model.context.context_window,
+                input_token_limit: model.context.input_token_limit,
+                auto_compact_limit: model.context.auto_compact_limit,
+                adjustment: model.context.adjustment.map(|reason| match reason {
+                    pl_protocol::ModelContextAdjustment::SafetyLimit => {
+                        BridgeModelContextAdjustment::SafetyLimit
+                    }
+                }),
+            },
             max_output_tokens: model.max_output_tokens,
             transport: BridgeModelTransportDescriptor {
                 protocol: model.transport.protocol,

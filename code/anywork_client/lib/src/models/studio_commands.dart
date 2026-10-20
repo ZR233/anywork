@@ -28,8 +28,8 @@ class AccountModelCommand {
   final String modelId;
   final String displayName;
   final String wireApi;
-  final int contextWindow;
-  final int maxOutputTokens;
+  final int? contextWindow;
+  final int? maxOutputTokens;
 }
 
 class AccountModelConnectionCommand {
@@ -116,8 +116,8 @@ abstract final class AccountCommandBuilder {
             modelId: model.modelId.trim(),
             displayName: model.displayName.trim(),
             wireApi: model.wireApi,
-            contextWindow: model.contextWindow ?? 32000,
-            maxOutputTokens: model.maxOutputTokens ?? 4096,
+            contextWindow: model.contextWindow,
+            maxOutputTokens: model.maxOutputTokens,
           ),
       ],
       modelConnectionModes: [
@@ -133,7 +133,7 @@ abstract final class AccountCommandBuilder {
 
   /// 该 account 实例完整的压缩阈值覆盖集合；未列出模型恢复默认，未修改模型保留覆盖。
   ///
-  /// 覆盖值与模型默认相同或为空时不下发，交由服务端按默认解析；只保留正整数值。
+  /// 只下发用户原始意图；默认归一化和有效值解析由服务端负责。
   static List<AccountModelAutoCompactCommand> _autoCompactCommands(
     AccountSettingsView account,
   ) {
@@ -144,9 +144,6 @@ abstract final class AccountCommandBuilder {
       final override = limit.overrideLimit;
       final modelId = entry.key;
       if (override == null || override <= 0 || modelId.isEmpty) {
-        continue;
-      }
-      if (override == limit.defaultLimit) {
         continue;
       }
       commands.add(

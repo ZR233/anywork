@@ -56,7 +56,7 @@ impl StudioRuntime {
         effect: CommandEffectPoint,
     ) -> Result<SettingsCommandReply> {
         Ok(SettingsCommandReply {
-            snapshot: self.read_settings_response(state)?,
+            snapshot: self.read_settings_response()?,
             // ConfigStore::save has completed its file/credential transaction;
             // this does not claim that existing Threads adopted the settings.
             receipt: self.command_receipt(

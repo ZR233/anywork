@@ -30,10 +30,11 @@ mod workflow;
 pub use account_catalog::{
     ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
     AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
-    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor, ModelInputCapabilityDto,
-    ModelInputSourceDto, ModelModalityDto, ModelOriginDto, ModelPriceTierDto, ModelPricingDto,
-    ModelReasoningDescriptor, ModelTransportDescriptor, ModelType, ModelTypeExclusion,
-    ModelTypeSupport, WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
+    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelContextAdjustment, ModelContextResolution,
+    ModelContextUnavailable, ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
+    ModelModalityDto, ModelOriginDto, ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor,
+    ModelTransportDescriptor, ModelType, ModelTypeExclusion, ModelTypeSupport,
+    WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
 };
 pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport, UsageStatus,

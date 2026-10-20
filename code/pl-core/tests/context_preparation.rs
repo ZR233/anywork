@@ -79,6 +79,7 @@ struct CapacityModel {
     dispatched: Arc<std::sync::atomic::AtomicUsize>,
     always_exceeds: bool,
     during_execution: bool,
+    fail_after_local_recovery: bool,
 }
 impl pl_core::model::ModelSession for CapacityModel {
     async fn prepare(
@@ -101,9 +102,10 @@ impl pl_core::model::ModelSession for CapacityModel {
             });
         }
         let dispatched = self.dispatched.clone();
+        let fail_after_local_recovery = self.fail_after_local_recovery;
         Ok(pl_core::model::PreparedModelCall::new(async move {
             dispatched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if exceeds {
+            if exceeds || fail_after_local_recovery {
                 return Err(pl_core::model::ModelError {
                     kind: pl_core::model::ModelFailureKind::ContextLimit,
                     details: None,
@@ -177,6 +179,7 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
                 dispatched: dispatched.clone(),
                 always_exceeds,
                 during_execution,
+                fail_after_local_recovery: false,
             }),
         )
         .unwrap();
@@ -290,6 +293,62 @@ impl pl_core::model::ModelSession for MeasuredThenFailed {
 struct ObserveUsage(
     Arc<Mutex<Vec<Option<pl_core::thread::context_preparation::PreviousContextUsage>>>>,
 );
+
+#[derive(Debug)]
+struct ObserveFilteredUsage(Arc<Mutex<Vec<bool>>>);
+impl ContextPreparationHook for ObserveFilteredUsage {
+    async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
+        if let Some(previous) = &request.previous_usage {
+            assert!(!previous.matches_input(&request.model));
+            request.model.tools = Default::default();
+            request.model.solo_tool_ids = Default::default();
+            request.model.tool_call_mode = pl_core::model::ToolCallMode::Parallel;
+            assert!(previous.matches_input(&request.model));
+            let mut altered = request.model.clone();
+            Arc::make_mut(&mut altered.context.records)[0].content = vec![text("changed prefix")];
+            assert!(!previous.matches_input(&altered));
+            altered = request.model.clone();
+            altered.tool_call_mode = pl_core::model::ToolCallMode::Sequential;
+            assert!(!previous.matches_input(&altered));
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .push(request.previous_usage.is_some());
+        ContextPreparation::Prepared {
+            expected_extension_sequence: request.extension_sequence,
+            rejected_mutations: vec![],
+            replacement: None,
+            facts: request.current_facts.to_vec(),
+            mutations: vec![],
+            excluded_tool_ids: vec!["workflow".into()],
+        }
+    }
+}
+
+#[tokio::test]
+async fn filtered_tool_plan_keeps_the_previous_measurement_available_for_final_preview() {
+    let thread = ThreadHandle::start(
+        "filtered-measurement".into(),
+        DynModelSession::new(MeasuredThenFailed(0)),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![tool_support::tool("workflow", &Arc::default())])
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(ObserveFilteredUsage(
+            seen.clone(),
+        ))))
+        .await
+        .unwrap();
+    thread.run_turn(turn("first")).await.unwrap();
+    assert!(thread.run_turn(turn("next")).await.is_err());
+    assert_eq!(*seen.lock().unwrap(), [false, true]);
+    thread.close().await.unwrap();
+}
 impl ContextPreparationHook for ObserveUsage {
     async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
         self.0.lock().unwrap().push(request.previous_usage);
@@ -797,4 +856,111 @@ async fn prepared_tool_visibility_controls_both_model_declarations_and_call_admi
         );
         thread.close().await.unwrap();
     }
+}
+
+#[derive(Debug)]
+struct RecoveryAsRebuild(Arc<Mutex<Vec<bool>>>);
+impl ContextPreparationHook for RecoveryAsRebuild {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        let mut result = CapacityRecovery(self.0.clone()).before_step(request).await;
+        if let ContextPreparation::Prepared {
+            replacement: Some(replacement),
+            ..
+        } = &mut result
+        {
+            replacement.reason = pl_core::thread::ContextReplacementReason::Rebuild;
+        }
+        result
+    }
+}
+
+#[tokio::test]
+async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recovery() {
+    for rebuild in [false, true] {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let forced = Arc::new(Mutex::new(Vec::new()));
+        let thread = ThreadHandle::start(
+            format!("mixed-overflow-{rebuild}"),
+            DynModelSession::new(CapacityModel {
+                observed: observed.clone(),
+                dispatched: Default::default(),
+                always_exceeds: false,
+                during_execution: false,
+                fail_after_local_recovery: true,
+            }),
+        )
+        .unwrap();
+        thread
+            .replace_context(pl_core::thread::ReplaceContext {
+                expected_revision: 0,
+                reason: pl_core::thread::ContextReplacementReason::Rebuild,
+                records: vec![pl_core::context::ContextRecord {
+                    id: "large-history".into(),
+                    turn_id: None,
+                    source: ContextSource::Runtime {
+                        source_id: "history".into(),
+                    },
+                    content: vec![text("large")],
+                    tool_calls: vec![],
+                }],
+            })
+            .await
+            .unwrap();
+        let hook = if rebuild {
+            ContextPreparer::new(RecoveryAsRebuild(forced.clone()))
+        } else {
+            ContextPreparer::new(CapacityRecovery(forced.clone()))
+        };
+        thread.set_context_preparation(Some(hook)).await.unwrap();
+        let result = thread.run_turn(turn("mixed")).await;
+        assert!(
+            matches!(result, Err(pl_core::thread::ThreadError::Model(ref error)) if error.kind == pl_core::model::ModelFailureKind::ContextLimit)
+        );
+        assert_eq!(*forced.lock().unwrap(), [false, true]);
+        assert_eq!(observed.lock().unwrap().len(), if rebuild { 1 } else { 2 });
+        thread.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn manual_compaction_commits_without_new_input_or_model_turn_and_can_continue() {
+    let (model, observed) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("manual-compaction".into(), DynModelSession::new(model)).unwrap();
+    thread.run_turn(turn("original")).await.unwrap();
+    let before = thread.snapshot();
+    let forced = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(CapacityRecovery(forced.clone()))))
+        .await
+        .unwrap();
+    let reduced = thread
+        .compact_context(before.context.revision, Default::default())
+        .await
+        .unwrap();
+    assert!(reduced.revision > before.context.revision);
+    assert_eq!(*forced.lock().unwrap(), [true]);
+    assert_eq!(
+        observed.lock().unwrap().len(),
+        1,
+        "the main model must not run a hidden prompt"
+    );
+    assert_eq!(thread.snapshot().inputs.len(), before.inputs.len());
+    assert_eq!(thread.snapshot().turns.len(), before.turns.len());
+    assert!(matches!(
+        thread
+            .compact_context(before.context.revision, Default::default())
+            .await,
+        Err(pl_core::thread::ThreadError::ContextConflict { .. })
+    ));
+    let cancelled = tokio_util::sync::CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        thread.compact_context(reduced.revision, cancelled).await,
+        Err(pl_core::thread::ThreadError::Cancelled)
+    ));
+    assert_eq!(thread.snapshot().context.revision, reduced.revision);
+    thread.run_turn(turn("continue")).await.unwrap();
+    assert_eq!(observed.lock().unwrap().len(), 2);
+    thread.close().await.unwrap();
 }

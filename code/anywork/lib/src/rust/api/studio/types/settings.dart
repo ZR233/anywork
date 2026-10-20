@@ -10,7 +10,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 class AccountInput {
   final String accountId;
@@ -114,15 +114,15 @@ class AccountModelInput {
   final String modelId;
   final String displayName;
   final String wireApi;
-  final BigInt contextWindow;
-  final BigInt maxOutputTokens;
+  final BigInt? contextWindow;
+  final BigInt? maxOutputTokens;
 
   const AccountModelInput({
     required this.modelId,
     required this.displayName,
     required this.wireApi,
-    required this.contextWindow,
-    required this.maxOutputTokens,
+    this.contextWindow,
+    this.maxOutputTokens,
   });
 
   @override
@@ -396,8 +396,8 @@ class BridgeConnectionModeDescriptor {
 /// Account 配置中由用户定义的模型，不复制内置 catalog 元数据。
 class BridgeCustomModelSettingsDto {
   final List<BridgeModelInputCapability> inputCapabilities;
-  final BigInt contextWindow;
-  final BigInt maxOutputTokens;
+  final BigInt? contextWindow;
+  final BigInt? maxOutputTokens;
   final String modelId;
   final String displayName;
   final List<String> reasoningEfforts;
@@ -408,8 +408,8 @@ class BridgeCustomModelSettingsDto {
 
   const BridgeCustomModelSettingsDto({
     required this.inputCapabilities,
-    required this.contextWindow,
-    required this.maxOutputTokens,
+    this.contextWindow,
+    this.maxOutputTokens,
     required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
@@ -638,26 +638,15 @@ class BridgeModeModelSettingsDto {
 /// account 实例中某模型上下文压缩阈值的三层 canonical 视图。
 class BridgeModelAutoCompactSettingsDto {
   final String modelId;
-  final BigInt? defaultLimit;
   final BigInt? overrideLimit;
-  final BigInt? effectiveLimit;
-  final BigInt? safeLimit;
 
   const BridgeModelAutoCompactSettingsDto({
     required this.modelId,
-    this.defaultLimit,
     this.overrideLimit,
-    this.effectiveLimit,
-    this.safeLimit,
   });
 
   @override
-  int get hashCode =>
-      modelId.hashCode ^
-      defaultLimit.hashCode ^
-      overrideLimit.hashCode ^
-      effectiveLimit.hashCode ^
-      safeLimit.hashCode;
+  int get hashCode => modelId.hashCode ^ overrideLimit.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -665,10 +654,7 @@ class BridgeModelAutoCompactSettingsDto {
       other is BridgeModelAutoCompactSettingsDto &&
           runtimeType == other.runtimeType &&
           modelId == other.modelId &&
-          defaultLimit == other.defaultLimit &&
-          overrideLimit == other.overrideLimit &&
-          effectiveLimit == other.effectiveLimit &&
-          safeLimit == other.safeLimit;
+          overrideLimit == other.overrideLimit;
 }
 
 class BridgeModelCapabilities {
@@ -876,6 +862,49 @@ class BridgeModelConnectionSettingsDto {
           connectionMode == other.connectionMode;
 }
 
+enum BridgeModelContextAdjustment { safetyLimit }
+
+class BridgeModelContextResolution {
+  final BridgeModelContextUnavailable? unavailable;
+  final BigInt? contextWindow;
+  final BigInt? inputTokenLimit;
+  final BigInt? autoCompactLimit;
+  final BridgeModelContextAdjustment? adjustment;
+
+  const BridgeModelContextResolution({
+    this.unavailable,
+    this.contextWindow,
+    this.inputTokenLimit,
+    this.autoCompactLimit,
+    this.adjustment,
+  });
+
+  @override
+  int get hashCode =>
+      unavailable.hashCode ^
+      contextWindow.hashCode ^
+      inputTokenLimit.hashCode ^
+      autoCompactLimit.hashCode ^
+      adjustment.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelContextResolution &&
+          runtimeType == other.runtimeType &&
+          unavailable == other.unavailable &&
+          contextWindow == other.contextWindow &&
+          inputTokenLimit == other.inputTokenLimit &&
+          autoCompactLimit == other.autoCompactLimit &&
+          adjustment == other.adjustment;
+}
+
+enum BridgeModelContextUnavailable {
+  windowUnknown,
+  invalidParameters,
+  inputBudgetExhausted,
+}
+
 class BridgeModelDescriptor {
   final String modelId;
   final List<BridgeModelTypeSupport> typeSupport;
@@ -884,7 +913,7 @@ class BridgeModelDescriptor {
   final String? description;
   final BigInt? contextWindow;
   final BigInt? maxContextWindow;
-  final BigInt? autoCompactTokenLimit;
+  final BridgeModelContextResolution context;
   final BigInt? maxOutputTokens;
   final BridgeModelTransportDescriptor transport;
   final BridgeModelCapabilities capabilities;
@@ -899,7 +928,7 @@ class BridgeModelDescriptor {
     this.description,
     this.contextWindow,
     this.maxContextWindow,
-    this.autoCompactTokenLimit,
+    required this.context,
     this.maxOutputTokens,
     required this.transport,
     required this.capabilities,
@@ -916,7 +945,7 @@ class BridgeModelDescriptor {
       description.hashCode ^
       contextWindow.hashCode ^
       maxContextWindow.hashCode ^
-      autoCompactTokenLimit.hashCode ^
+      context.hashCode ^
       maxOutputTokens.hashCode ^
       transport.hashCode ^
       capabilities.hashCode ^
@@ -935,7 +964,7 @@ class BridgeModelDescriptor {
           description == other.description &&
           contextWindow == other.contextWindow &&
           maxContextWindow == other.maxContextWindow &&
-          autoCompactTokenLimit == other.autoCompactTokenLimit &&
+          context == other.context &&
           maxOutputTokens == other.maxOutputTokens &&
           transport == other.transport &&
           capabilities == other.capabilities &&
@@ -1127,6 +1156,8 @@ enum BridgeModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
   contextWindowUnknown,
+  contextParametersInvalid,
+  inputBudgetExhausted,
 }
 
 class BridgeModelTypeSupport {

@@ -296,7 +296,7 @@ impl StudioRuntime {
         // 查询路径只读该投影，不再承担建立/写盘职责。
         self.model_performance.initialize_projection().await;
         check_cancelled(cancellation)?;
-        self.publish_settings_state(settings)
+        self.publish_settings_state()
             .map_err(|error| internal("publish_settings", error))?;
         observer(StudioStartupStage::StartingServices);
         // Mode catalog 只在真实注册变化时发布；内置注册是第一次装载事实。

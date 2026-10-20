@@ -63,6 +63,60 @@ pub enum AccountModelOrigin {
 pub struct AccountModelEntry {
     pub model: ModelInfo,
     pub origin: AccountModelOrigin,
+    pub context: pl_protocol::ModelContextResolution,
+}
+
+impl AccountModelEntry {
+    pub fn new(model: ModelInfo, origin: AccountModelOrigin) -> Self {
+        Self {
+            context: model.resolve_context(None),
+            model,
+            origin,
+        }
+    }
+
+    pub fn type_support(
+        &self,
+        model_type: crate::model::ModelType,
+    ) -> crate::model::ModelTypeSupport {
+        use crate::model::{ModelModality, ModelType, ModelTypeExclusion as Exclusion};
+        let mut exclusions = Vec::new();
+        match model_type {
+            ModelType::Text => {
+                if !self
+                    .model
+                    .capabilities
+                    .supports_input_modality(ModelModality::Text)
+                {
+                    exclusions.push(Exclusion::TextInputUnsupported);
+                }
+                if !self
+                    .model
+                    .capabilities
+                    .supports_output_modality(ModelModality::Text)
+                {
+                    exclusions.push(Exclusion::TextOutputUnsupported);
+                }
+            }
+        }
+        if let Some(reason) = self.context.unavailable {
+            exclusions.push(match reason {
+                pl_protocol::ModelContextUnavailable::WindowUnknown => {
+                    Exclusion::ContextWindowUnknown
+                }
+                pl_protocol::ModelContextUnavailable::InvalidParameters => {
+                    Exclusion::ContextParametersInvalid
+                }
+                pl_protocol::ModelContextUnavailable::InputBudgetExhausted => {
+                    Exclusion::InputBudgetExhausted
+                }
+            });
+        }
+        crate::model::ModelTypeSupport {
+            model_type,
+            exclusions,
+        }
+    }
 }
 
 /// 可由产品配置文件组合使用的 Account 值对象。
@@ -248,10 +302,22 @@ impl AccountConfig {
                 self.discovery_profile()?.is_some(),
                 self.editable_models(),
             )?
+            .into_iter()
+            .map(|mut entry| {
+                entry.context = entry.model.resolve_context(
+                    self.auto_compact_overrides()
+                        .get(&entry.model.model_id)
+                        .copied(),
+                );
+                entry
+            })
+            .collect()
         };
         Ok(catalog
             .into_iter()
-            .filter(|entry| model_type.is_none_or(|kind| entry.model.matches_type(kind)))
+            .filter(|entry| {
+                model_type.is_none_or(|kind| entry.type_support(kind).exclusions.is_empty())
+            })
             .collect())
     }
 
@@ -273,20 +339,14 @@ impl AccountConfig {
             .map(|model| {
                 (
                     model.model_id.clone(),
-                    AccountModelEntry {
-                        model,
-                        origin: AccountModelOrigin::Bundled,
-                    },
+                    AccountModelEntry::new(model, AccountModelOrigin::Bundled),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         for model in additional {
             local.insert(
                 model.model_id.clone(),
-                AccountModelEntry {
-                    model: model.clone(),
-                    origin: AccountModelOrigin::Manual,
-                },
+                AccountModelEntry::new(model.clone(), AccountModelOrigin::Manual),
             );
         }
         let Some(overlay) = &self.model_catalog_overlay else {
@@ -330,7 +390,10 @@ impl AccountConfig {
             } else {
                 AccountModelOrigin::Online
             };
-            entries.insert(model.model_id.clone(), AccountModelEntry { model, origin });
+            entries.insert(
+                model.model_id.clone(),
+                AccountModelEntry::new(model, origin),
+            );
         }
         Ok(entries.into_values().collect())
     }
@@ -428,14 +491,6 @@ impl AccountConfig {
                 ..
             } => auto_compact_overrides,
         }
-    }
-
-    /// 解析某模型（含 account 实例覆盖）的实际生效压缩阈值。
-    ///
-    /// 生效值取「用户覆盖或模型默认」与预留输出后的安全输入上限的较小值；上下文未知返回 `None`。
-    pub fn resolved_auto_compact_limit(&self, model: &ModelInfo) -> Option<u64> {
-        let override_limit = self.auto_compact_overrides().get(&model.model_id).copied();
-        model.resolved_auto_compact_limit_with(override_limit)
     }
 
     /// 返回可由产品编辑的模型列表，不包含 PL 内置只读模型。
@@ -553,7 +608,7 @@ impl AccountConfig {
                     "model {model} auto compact limit must be a positive integer"
                 )));
             }
-            Some(limit) => Some(limit) == selected.default_auto_compact_token_limit(),
+            Some(limit) => Some(limit) == selected.resolve_context(None).auto_compact_limit,
         };
         if restore_default {
             self.auto_compact_overrides_mut().remove(model);
@@ -563,6 +618,52 @@ impl AccountConfig {
                 limit.expect("positive override is present"),
             );
         }
+        let override_limit = self.auto_compact_overrides().get(model).copied();
+        if let Some(catalog) = &mut self.resolved_catalog {
+            for entry in catalog
+                .iter_mut()
+                .filter(|entry| entry.model.model_id == model)
+            {
+                entry.context = entry.model.resolve_context(override_limit);
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces one account's override intent atomically and normalizes model defaults here.
+    /// Unobserved discovery members retain only an already saved, unchanged override.
+    pub fn replace_model_auto_compact_overrides(
+        &mut self,
+        overrides: BTreeMap<String, u64>,
+    ) -> Result<()> {
+        let catalog = self.effective_catalog(None)?;
+        let previous = self.auto_compact_overrides().clone();
+        let discovery = self.discovery_profile()?.is_some();
+        let mut candidate = self.clone();
+        candidate.auto_compact_overrides_mut().clear();
+        for (model, limit) in overrides {
+            if limit == 0 {
+                return Err(PureError::ConfigError(
+                    "model auto compact limit must be a positive integer".into(),
+                ));
+            }
+            if catalog.iter().any(|entry| entry.model.model_id == model) {
+                candidate.set_model_auto_compact_override(&model, Some(limit))?;
+            } else if discovery && previous.get(&model) == Some(&limit) {
+                candidate.auto_compact_overrides_mut().insert(model, limit);
+            } else {
+                return Err(PureError::ConfigError(format!("unknown model: {model}")));
+            }
+        }
+        let limits = candidate.auto_compact_overrides().clone();
+        if let Some(catalog) = &mut candidate.resolved_catalog {
+            for entry in catalog {
+                entry.context = entry
+                    .model
+                    .resolve_context(limits.get(&entry.model.model_id).copied());
+            }
+        }
+        *self = candidate;
         Ok(())
     }
 

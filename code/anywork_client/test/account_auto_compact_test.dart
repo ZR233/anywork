@@ -9,7 +9,12 @@ const _alpha = AccountModelView(
   reasoningEfforts: [],
   contextWindow: 1000,
   maxContextWindow: 4000,
-  autoCompactTokenLimit: 200,
+  context: ModelContextView(
+    unavailable: null,
+    contextWindow: 1000,
+    inputTokenLimit: 900,
+    autoCompactLimit: 200,
+  ),
 );
 const _beta = AccountModelView(
   modelId: 'beta',
@@ -19,7 +24,6 @@ const _beta = AccountModelView(
 );
 const _orphan = AccountModelAutoCompactView(
   modelId: 'temporarily-unlisted',
-  defaultLimit: null,
   overrideLimit: 777,
 );
 final _account = AccountSettingsView(
@@ -31,8 +35,11 @@ final _account = AccountSettingsView(
   usageLabel: '',
   models: const [_alpha, _beta],
   autoCompactLimits: {
-    'alpha': AccountModelAutoCompactView.forModel(_alpha),
-    'beta': AccountModelAutoCompactView.forModel(_beta).withOverride(250),
+    'alpha': AccountModelAutoCompactView(modelId: _alpha.modelId),
+    'beta': AccountModelAutoCompactView(
+      modelId: _beta.modelId,
+      overrideLimit: 250,
+    ),
     _orphan.modelId: _orphan,
   },
 );
@@ -191,189 +198,131 @@ void main() {
   });
 
   test(
-    'catalog revisions reproject limits while preserving stored overrides',
+    'catalog policy is passed through unchanged across independent watermarks',
     () {
       final configured = _account.withAutoCompactLimit(
-        AccountModelAutoCompactView.forModel(_alpha).withOverride(150),
+        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 150),
       );
       var state = mergeSettingsProjection(
         const SettingsProjectionState(),
         _snapshot(1, configured),
       );
-
-      AccountSettingsView currentAccount() => state.canonical!.accounts.single;
-      AccountModelAutoCompactView alphaLimit() =>
-          currentAccount().autoCompactLimits['alpha']!;
-      SettingsStateSnapshot catalogFrame(
+      AccountSettingsView current() => state.canonical!.accounts.single;
+      AccountModelAutoCompactView limit() => current().autoCompactLimitFor(
+        current().models
+                .where((model) => model.modelId == 'alpha')
+                .firstOrNull ??
+            const AccountModelView(
+              modelId: 'alpha',
+              displayName: '',
+              reasoningEfforts: [],
+            ),
+      );
+      SettingsStateSnapshot frame(
         int revision,
         List<AccountModelView> models,
-      ) {
-        return SettingsStateSnapshot(
-          revision: 999,
-          modelCatalogRevision: revision,
-          accounts: [
-            _account.copyWith(
-              name: 'Catalog metadata',
-              models: models,
-              autoCompactLimits: {
-                'alpha': AccountModelAutoCompactView.forModel(_alpha)
-                    .withOverride(999),
-              },
-            ),
-          ],
-        );
-      }
-
-      const enlarged = AccountModelView(
-        modelId: 'alpha',
-        displayName: 'Alpha',
-        reasoningEfforts: [],
+      ) => SettingsStateSnapshot(
+        revision: 999,
+        modelCatalogRevision: revision,
+        accounts: [_account.copyWith(name: 'catalog', models: models)],
+      );
+      const backendPolicy = ModelContextView(
+        unavailable: null,
         contextWindow: 2000,
-        maxContextWindow: 4000,
-        maxOutputTokens: 500,
+        inputTokenLimit: 1500,
+        autoCompactLimit: 137,
+        adjustment: ModelContextAdjustment.safetyLimit,
       );
       state = mergeSettingsProjection(
         state,
-        catalogFrame(2, [enlarged, _beta]),
+        frame(2, [
+          _alpha.copyWith(contextWindow: 2000, context: backendPolicy),
+          _beta,
+        ]),
         scope: SettingsMergeScope.catalogOnly,
       );
       expect(state.settingsRevision, 1);
-      expect(currentAccount().name, 'Fixture');
-      expect(alphaLimit().defaultLimit, 1500);
-      expect(alphaLimit().safeLimit, 1500);
-      expect(alphaLimit().overrideLimit, 150);
-      expect(alphaLimit().effectiveLimit, 150);
-
-      const unknownWithTemplate = AccountModelView(
-        modelId: 'alpha',
-        displayName: 'Alpha',
-        reasoningEfforts: [],
-        autoCompactTokenLimit: 150,
-      );
-      state = mergeSettingsProjection(
-        state,
-        catalogFrame(3, [unknownWithTemplate, _beta]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      expect(alphaLimit().defaultLimit, 150);
+      expect(current().name, 'Fixture');
+      expect(limit().overrideLimit, 150);
       expect(
-        alphaLimit().overrideLimit,
-        150,
-        reason:
-            'read-only projection must not consume an equal stored override',
+        limit().context,
+        same(backendPolicy),
+        reason: 'backend policy is not reconstructed from capacity or override',
       );
-      expect(alphaLimit().safeLimit, isNull);
-      expect(alphaLimit().effectiveLimit, isNull);
-
       state = mergeSettingsProjection(
         state,
-        catalogFrame(4, [_beta]),
+        frame(3, [
+          const AccountModelView(
+            modelId: 'alpha',
+            displayName: '',
+            reasoningEfforts: [],
+          ),
+          _beta,
+        ]),
         scope: SettingsMergeScope.catalogOnly,
       );
-      expect(alphaLimit().overrideLimit, 150);
-      expect(alphaLimit().defaultLimit, isNull);
-      expect(alphaLimit().safeLimit, isNull);
-      expect(alphaLimit().effectiveLimit, isNull);
-      expect(
-        currentAccount().autoCompactLimits[_orphan.modelId]?.overrideLimit,
-        777,
-      );
-
-      const restored = AccountModelView(
-        modelId: 'alpha',
-        displayName: 'Alpha',
-        reasoningEfforts: [],
-        contextWindow: 1000,
-      );
+      expect(limit().overrideLimit, 150);
+      expect(limit().context.autoCompactLimit, isNull);
       state = mergeSettingsProjection(
         state,
-        catalogFrame(5, [restored, _beta]),
+        frame(4, [_beta]),
         scope: SettingsMergeScope.catalogOnly,
       );
-      expect(alphaLimit().defaultLimit, 900);
-      expect(alphaLimit().overrideLimit, 150);
-      expect(alphaLimit().effectiveLimit, 150);
-      expect(_limits(AccountCommandBuilder.buildAccount(currentAccount())), {
-        'alpha': 150,
-        'beta': 250,
-        _orphan.modelId: 777,
-      });
-
-      final configReply = _snapshot(
-        2,
-        configured.withAutoCompactLimit(
-          AccountModelAutoCompactView.forModel(_alpha).withOverride(300),
-        ),
+      expect(current().autoCompactLimits['alpha']?.overrideLimit, 150);
+      expect(current().autoCompactLimits[_orphan.modelId]?.overrideLimit, 777);
+      state = mergeSettingsProjection(
+        state,
+        frame(5, [_alpha.copyWith(context: backendPolicy), _beta]),
+        scope: SettingsMergeScope.catalogOnly,
+      );
+      final reply = configured.withAutoCompactLimit(
+        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 300),
       );
       state = mergeSettingsProjection(
         state,
-        configReply,
+        _snapshot(2, reply),
         scope: SettingsMergeScope.configOnly,
       );
       expect(state.modelCatalogRevision, 5);
+      expect(limit().overrideLimit, 300);
       expect(
-        alphaLimit().defaultLimit,
-        900,
-        reason: 'config replies retain the newer catalog metadata',
+        limit().context,
+        same(backendPolicy),
+        reason: 'old config replies cannot roll back final catalog policy',
       );
-      expect(alphaLimit().overrideLimit, 300);
-      expect(alphaLimit().effectiveLimit, 300);
+      expect(_limits(AccountCommandBuilder.buildAccount(current())), {
+        'alpha': 300,
+        'beta': 250,
+        _orphan.modelId: 777,
+      });
       expect(
         mergeSettingsProjection(state, _snapshot(1, configured)),
         same(state),
-        reason: 'older combined snapshots cannot roll either watermark back',
       );
     },
   );
 
-  test('model metadata derives nullable defaults and payload stores only complete overrides', () {
-    final template = AccountModelAutoCompactView.forModel(_alpha);
-    final derived = AccountModelAutoCompactView.forModel(_beta);
-    expect(template.defaultLimit, 200);
-    expect(template.safeLimit, 900, reason: 'current window precedes maximum');
-    expect(derived.defaultLimit, 1800, reason: 'maximum is a fallback');
-    expect(template.withOverride(1500).effectiveLimit, 900);
-    expect(template.withOverride(200).overrideLimit, isNull);
-    expect(derived.withOverride(null).effectiveLimit, 1800);
-    for (final capacity in [null, 0, 1]) {
-      final model = AccountModelView(
-        modelId: 'unknown',
-        displayName: '',
-        reasoningEfforts: const [],
-        contextWindow: capacity,
-      );
-      final unknown = AccountModelAutoCompactView.forModel(model);
-      expect(unknown.defaultLimit, isNull);
-      expect(unknown.withOverride(15).effectiveLimit, isNull);
-      final declared = AccountModelAutoCompactView.forModel(
-        model.copyWith(autoCompactTokenLimit: 20),
-      );
-      expect(declared.defaultLimit, 20);
-      expect(declared.effectiveLimit, isNull);
-    }
-    expect(
-      AccountModelAutoCompactView.safeLimitForContext(9000000000000000001),
-      8100000000000000000,
+  test('payload preserves raw intent and unknown manual capacities', () {
+    final selected = _account.withAutoCompactLimit(
+      const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 200),
     );
-    final command = AccountCommandBuilder.buildAccount(_account);
-    expect(_limits(command), {'beta': 250, _orphan.modelId: 777});
-    expect(_account.autoCompactLimits['alpha']?.overrideLimit, isNull);
-    final joined = accountWithCatalogMetadata(
-      _account.copyWith(
-        models: [
-          _alpha.copyWith(origin: ModelOrigin.manual, contextWindow: 1000),
-          _beta,
-        ],
-      ),
-      const AccountCatalogView.empty(),
+    final command = AccountCommandBuilder.buildAccount(selected);
+    expect(_limits(command), {
+      'alpha': 200,
+      'beta': 250,
+      _orphan.modelId: 777,
+    }, reason: 'only the backend normalizes an equal default');
+    final unknown = AccountModelView(
+      modelId: 'unknown',
+      displayName: '',
+      reasoningEfforts: const [],
+      origin: ModelOrigin.manual,
     );
-    expect(joined.customModels.map((model) => model.modelId), ['alpha']);
-    expect(joined.onlineModels, isEmpty);
-    expect(
-      joined.customModels.single.autoCompactTokenLimit,
-      _alpha.autoCompactTokenLimit,
-      reason: 'origin grouping does not drop catalog token templates',
+    final saved = AccountCommandBuilder.buildAccount(
+      selected.copyWith(models: [unknown]),
     );
+    expect(saved.customModels.single.contextWindow, isNull);
+    expect(saved.customModels.single.maxOutputTokens, isNull);
   });
 
   test('inline intents rebuild at lane entry and every CAS retry without dropping siblings or unavailable overrides', () async {
@@ -399,7 +348,10 @@ void main() {
           pricingEnabled: true,
         )
         .withAutoCompactLimit(
-          AccountModelAutoCompactView.forModel(_beta).withOverride(400),
+          AccountModelAutoCompactView(
+            modelId: _beta.modelId,
+            overrideLimit: 400,
+          ),
         );
     transport.refreshed = _snapshot(2, external);
     initial.reply.completeError(
@@ -423,7 +375,7 @@ void main() {
       _orphan.modelId: 777,
     });
     final afterFirst = external.withAutoCompactLimit(
-      AccountModelAutoCompactView.forModel(_alpha).withOverride(100),
+      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 100),
     );
     retried.complete(3, afterFirst);
     await first;
@@ -454,7 +406,7 @@ void main() {
       _orphan.modelId: 777,
     });
     final afterSecond = external.withAutoCompactLimit(
-      AccountModelAutoCompactView.forModel(_alpha).withOverride(150),
+      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 150),
     );
     next.complete(4, afterSecond);
     await second;
@@ -473,7 +425,7 @@ void main() {
     restoring.complete(
       5,
       afterSecond.withAutoCompactLimit(
-        AccountModelAutoCompactView.forModel(_beta),
+        AccountModelAutoCompactView(modelId: _beta.modelId),
       ),
     );
     await reset;
@@ -514,7 +466,10 @@ void main() {
     calls.current.complete(
       2,
       _account.withAutoCompactLimit(
-        AccountModelAutoCompactView.forModel(_alpha).withOverride(150),
+        AccountModelAutoCompactView(
+          modelId: _alpha.modelId,
+          overrideLimit: 150,
+        ),
       ),
     );
     await retry;

@@ -63,6 +63,10 @@ String? modelTextFilterMessage(BuildContext context, AccountModelView? model) {
                   context.l10n.modelTextInputUnsupported,
                 ModelTypeExclusion.textOutputUnsupported =>
                   context.l10n.modelTextOutputUnsupported,
+                ModelTypeExclusion.contextParametersInvalid =>
+                  context.l10n.modelContextParametersInvalid,
+                ModelTypeExclusion.inputBudgetExhausted =>
+                  context.l10n.modelInputBudgetExhausted,
                 ModelTypeExclusion.contextWindowUnknown =>
                   context.l10n.modelContextWindowUnknown,
               },

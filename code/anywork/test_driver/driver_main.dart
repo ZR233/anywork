@@ -34,6 +34,7 @@ import 'key_press_extension.dart';
 import 'tool_probe_extension.dart';
 import 'runtime_event_evidence.dart';
 import 'page_switch_extension.dart';
+import 'pointer_hover_extension.dart';
 
 /// Native-only Driver entrypoint. Product and release builds use lib/main.dart.
 void main() {
@@ -44,6 +45,7 @@ void main() {
     handler: _handleDriverData,
     commands: <CommandExtension>[
       RawTapCommandExtension(),
+      PointerHoverCommandExtension(),
       PageSwitchCommandExtension(
         client: () => _client,
         owner: () => _container.read(appGraphProvider).timeline,

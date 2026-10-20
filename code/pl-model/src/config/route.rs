@@ -60,6 +60,11 @@ pub enum ModelRouteAvailability {
         account_id: AccountId,
         model_id: String,
     },
+    TypeUnsupported {
+        account_id: AccountId,
+        model_id: String,
+        exclusions: Vec<crate::model::ModelTypeExclusion>,
+    },
     EffortUnavailable {
         account_id: AccountId,
         model_id: String,
@@ -79,8 +84,7 @@ pub struct ResolvedModelRoute {
     pub account_id: AccountId,
     pub endpoint: ProtocolEndpoint,
     pub model: ModelInfo,
-    /// 该 account 实例与模型下实际生效的上下文压缩阈值；`None` 表示不自动压缩。
-    pub auto_compact_limit: Option<u64>,
+    pub context: pl_protocol::ModelContextResolution,
     pub effort: Option<ReasoningEffort>,
 }
 
@@ -141,8 +145,11 @@ impl AgentModelConfig {
             ))
         })?;
         account.validate_declarations(&route.account_id)?;
-        let models = account.effective_models(None)?;
-        let Some(model) = models.iter().find(|model| model.model_id == route.model_id) else {
+        let models = account.effective_catalog(None)?;
+        let Some(model) = models
+            .iter()
+            .find(|entry| entry.model.model_id == route.model_id)
+        else {
             if account.discovery_profile()?.is_none() {
                 return Err(PureError::ConfigError(format!(
                     "model route references missing model: {}",
@@ -154,6 +161,15 @@ impl AgentModelConfig {
                 model_id: route.model_id.clone(),
             });
         };
+        let support = model.type_support(crate::model::ModelType::Text);
+        if !support.exclusions.is_empty() {
+            return Ok(ModelRouteAvailability::TypeUnsupported {
+                account_id: route.account_id.clone(),
+                model_id: route.model_id.clone(),
+                exclusions: support.exclusions,
+            });
+        }
+        let model = &model.model;
         if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
                 .binding
@@ -244,10 +260,10 @@ impl AgentModelConfig {
                 route.account_id
             ))
         })?;
-        let models = account.effective_models(None)?;
+        let models = account.effective_catalog(None)?;
         let model = models
             .iter()
-            .find(|model| model.model_id == route.model_id)
+            .find(|entry| entry.model.model_id == route.model_id)
             .cloned()
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
@@ -255,6 +271,15 @@ impl AgentModelConfig {
                     route.account_id, route.model_id
                 ))
             })?;
+        let context = model.context.clone();
+        let support = model.type_support(crate::model::ModelType::Text);
+        if !support.exclusions.is_empty() {
+            return Err(PureError::ConfigError(format!(
+                "model {}.{} is unavailable: {:?}",
+                route.account_id, route.model_id, support.exclusions
+            )));
+        }
+        let model = model.model;
         if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
                 .binding
@@ -302,7 +327,7 @@ impl AgentModelConfig {
             role,
             account_id: route.account_id.clone(),
             endpoint: account.to_endpoint()?,
-            auto_compact_limit: account.resolved_auto_compact_limit(&model),
+            context,
             model,
             effort: route.effort.clone(),
         })

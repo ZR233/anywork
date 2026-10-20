@@ -283,7 +283,7 @@ impl StudioRuntime {
             profile_id,
             profile,
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
             &state,
@@ -317,7 +317,7 @@ impl StudioRuntime {
                 }
                 Ok(config)
             })?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
             &state,

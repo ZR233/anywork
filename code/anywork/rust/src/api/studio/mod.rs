@@ -9,9 +9,9 @@ pub mod types;
 pub use self::handlers::{
     BridgeStudioUpdateOperation, BridgeTimeline, activate_project, admit_attachment_drafts,
     apply_settings_field, archive_project, archive_thread, authenticate_ssh_server,
-    browse_remote_directories, check_account_usage, check_studio_update, delete_ssh_server,
-    delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics, init_app,
-    install_studio_update, interrupt_turn, list_ssh_servers, list_threads_page,
+    browse_remote_directories, check_account_usage, check_studio_update, compact_thread,
+    delete_ssh_server, delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics,
+    init_app, install_studio_update, interrupt_turn, list_ssh_servers, list_threads_page,
     load_account_catalog, open_project, open_remote_project, open_timeline,
     prepare_startup_attempt, preview_thread_mode_workflow, probe_lsp_server, query_threads,
     read_account_usage_state, read_agent_profiles_state, read_attachment_draft,

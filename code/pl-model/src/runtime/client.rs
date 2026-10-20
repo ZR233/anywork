@@ -12,12 +12,7 @@ use pl_protocol::{PricingMode, Result};
 #[derive(Debug, Clone)]
 pub struct ModelRuntime {
     runner: InvocationRunner,
-    /// Finally resolved automatic compaction threshold of the bound route.
-    ///
-    /// The product resolves it once from the real route, so a user override and the safety ceiling
-    /// are already applied here. A runtime bound without a route keeps it unknown instead of
-    /// deriving a policy of its own.
-    auto_compact_limit: Option<u64>,
+    context: pl_protocol::ModelContextResolution,
 }
 
 impl ModelRuntime {
@@ -33,7 +28,7 @@ impl ModelRuntime {
         )?
         .with_pricing_mode(route.pricing_mode);
         Ok(Self {
-            auto_compact_limit: route.auto_compact_limit,
+            context: route.context.clone(),
             ..runtime
         })
     }
@@ -47,8 +42,12 @@ impl ModelRuntime {
         model: ModelInfo,
     ) -> Result<Self> {
         Ok(Self {
+            context: {
+                let mut context = model.resolve_context(None);
+                context.auto_compact_limit = None;
+                context
+            },
             runner: InvocationRunner::new_with_account_id(id, endpoint, model)?,
-            auto_compact_limit: None,
         })
     }
 
@@ -72,9 +71,8 @@ impl ModelRuntime {
         self.runner.connection_fingerprint()
     }
 
-    /// Returns the frozen compaction threshold of this route, or `None` when it does not compact.
-    pub fn auto_compact_limit(&self) -> Option<u64> {
-        self.auto_compact_limit
+    pub fn context(&self) -> &pl_protocol::ModelContextResolution {
+        &self.context
     }
 
     /// Freezes this account route's monetary accounting choice for subsequent invocations.

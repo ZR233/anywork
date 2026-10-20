@@ -151,7 +151,15 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         });
         resolved.push(entry);
     }
-    let resolved: Vec<AccountModelEntry> = resolved;
+    let mut resolved: Vec<AccountModelEntry> = resolved;
+    for entry in &mut resolved {
+        entry.context = entry.model.resolve_context(
+            account
+                .auto_compact_overrides()
+                .get(&entry.model.model_id)
+                .copied(),
+        );
+    }
     account.set_resolved_catalog(resolved);
     Ok(())
 }

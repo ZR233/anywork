@@ -112,8 +112,7 @@ impl StudioRuntime {
                 ))
             }
             StudioProductTopic::ModelCatalog => {
-                let settings = self.config_runtime.read()?;
-                let catalog_state = self.config_runtime.read_catalog()?;
+                let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
                 let catalog =
                     super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
                 StudioProductBaselineState::ModelCatalog(Box::new(

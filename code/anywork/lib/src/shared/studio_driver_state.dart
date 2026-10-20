@@ -493,20 +493,21 @@ abstract final class StudioDriverState {
                 'cacheWarning': account.modelCatalog.cacheWarning?.name,
                 'lastSuccessAt': account.modelCatalog.lastSuccessAt,
               },
-              // 压缩阈值四层视图：modelId → {default, override, effective, safe}。
+              // 配置意图与模型层最终解析结果，Driver 不派生阈值。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
                 for (final model in account.models)
                   {
                     'modelId': model.modelId,
-                    'default': account.autoCompactLimitFor(model).defaultLimit,
                     'override': account
                         .autoCompactLimitFor(model)
                         .overrideLimit,
                     'effective': account
                         .autoCompactLimitFor(model)
-                        .effectiveLimit,
-                    'safe': account.autoCompactLimitFor(model).safeLimit,
+                        .context
+                        .autoCompactLimit,
+                    'adjustment': model.context.adjustment?.name,
+                    'unavailable': model.context.unavailable?.name,
                   },
               ],
             },

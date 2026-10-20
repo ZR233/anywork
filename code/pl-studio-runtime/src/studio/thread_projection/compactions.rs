@@ -7,10 +7,7 @@ pub(super) fn receipt(
     if payload.format() != "pl.studio.compaction" {
         return Ok(None);
     }
-    if payload.version() != 1 {
-        return Err(ProjectionError::UnsupportedOutput(
-            "unsupported compaction receipt version".into(),
-        ));
-    }
-    Ok(Some(serde_json::from_str(payload.content())?))
+    crate::compaction::decode_receipt(payload.version(), payload.content())
+        .map(Some)
+        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))
 }

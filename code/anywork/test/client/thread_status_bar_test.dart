@@ -1,5 +1,6 @@
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/status/status_view.dart';
+import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,104 @@ import 'support/recording_demo_transport.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'idle context follows canonical catalog while running binding stays frozen',
+    () async {
+      final graph = AppGraph(
+        transport: RecordingDemoTransport(),
+        clientId: 'context-policy',
+      );
+      addTearDown(() => graph.close(deadline: _deadline()));
+      await graph.client.bootstrap();
+      await graph.client.directoryCommands.selectThread('thread-main');
+      final session = graph.client.existingSession('thread-main')!;
+      await session.timeline.state.waitFor(
+        (state) => state.snapshot is StudioTimelineBaselineFrame,
+      );
+      final initial = session.state.workspace!;
+      final canonical = graph.client.settings.state.canonical!;
+      final account = canonical.accounts.first;
+      final model = account.models.first;
+      final frozen = initial.runtime.copyWith(
+        modelId: model.modelId,
+        autoCompactLimit: 922000,
+        modelRoute: ThreadModelRouteView(
+          accountId: account.id,
+          modelId: model.modelId,
+          effort: null,
+          revision: 1,
+          available: true,
+        ),
+      );
+      session.applySnapshot(initial.copyWith(runtime: frozen));
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final context = container.listen(
+        statusContextProjectionProvider('thread-main'),
+        (_, _) {},
+      );
+      addTearDown(context.close);
+      final accounts = [
+        account.copyWith(
+          models: [
+            model.copyWith(
+              context: const ModelContextView(
+                unavailable: null,
+                contextWindow: 1050000,
+                inputTokenLimit: 922000,
+                autoCompactLimit: 14780,
+              ),
+            ),
+          ],
+        ),
+      ];
+      final updated = SettingsStateSnapshot(
+        revision: canonical.revision,
+        modelCatalogRevision: canonical.modelCatalogRevision + 1,
+        accounts: accounts,
+      );
+      graph.client.settings.merge(updated);
+      expect(context.read()?.autoCompactLimit, 14780);
+      expect(context.read()?.contextWindow, 1050000);
+      graph.client.settings.merge(canonical);
+      expect(
+        context.read()?.autoCompactLimit,
+        14780,
+        reason: 'late catalog cannot undo settings return',
+      );
+      final running = StudioContextProjection.fromRuntime(
+        'thread-main',
+        frozen,
+        accounts: accounts,
+        isBusy: true,
+      );
+      expect(running.autoCompactLimit, 922000);
+      expect(
+        frozen.autoCompactLimit,
+        922000,
+        reason: 'historical binding is immutable',
+      );
+      graph.client.settings.merge(
+        SettingsStateSnapshot(
+          revision: canonical.revision,
+          modelCatalogRevision: updated.modelCatalogRevision + 1,
+          accounts: [
+            account.copyWith(
+              models: [model.copyWith(context: const ModelContextView())],
+            ),
+          ],
+        ),
+      );
+      expect(
+        context.read()?.autoCompactLimit,
+        isNull,
+        reason: 'unknown must not reuse an old threshold',
+      );
+    },
+  );
 
   test('status projections isolate throughput from context, chrome, and unrelated facts', () async {
     final transport = RecordingDemoTransport();

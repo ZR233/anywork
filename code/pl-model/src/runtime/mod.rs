@@ -45,8 +45,8 @@ pub use pl_protocol::{PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPro
 mod thread_model;
 pub use thread_model::{
     ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
-    ThreadCompaction, ThreadCompactionOptions, ThreadCompactionStrategy, ThreadModel,
-    ToolAttachment, attachment_content, decode_attachment, migrate_legacy_compaction,
+    ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
+    ThreadModel, ToolAttachment, attachment_content, decode_attachment, migrate_legacy_compaction,
     model_failure_receipt, model_request_receipt, model_response_receipt, thread_tool_declaration,
     validate_attachment_content,
 };

@@ -1,4 +1,5 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter/foundation.dart' show listEquals;
 
 import 'agent_workspace_view.dart';
@@ -33,21 +34,37 @@ class StudioContextProjection {
     return StudioContextProjection.fromRuntime(
       state.selectedThreadId,
       state.runtime,
+      accounts: state.accounts,
+      isBusy: state.isBusy,
     );
   }
 
   factory StudioContextProjection.fromRuntime(
     String? threadId,
-    ThreadRuntimeView runtime,
-  ) {
+    ThreadRuntimeView runtime, {
+    required List<AccountSettingsView> accounts,
+    required bool isBusy,
+  }) {
     final live = runtime.liveUsage;
+    final route = runtime.modelRoute;
+    // Idle status follows the backend's current directory. Running requests and history
+    // retain their frozen binding; this projection never calculates a capacity or limit.
+    final currentModel = isBusy || route == null
+        ? null
+        : ModelRouteQueries.model(accounts, route.accountId, route.modelId);
     return StudioContextProjection(
       threadId: threadId,
-      modelId: runtime.modelId,
+      modelId: currentModel?.modelId ?? runtime.modelId,
       contextTokens: live?.latestContextTokens ?? runtime.contextTokens,
-      contextWindow: runtime.contextWindow,
-      maxContextWindow: runtime.maxContextWindow,
-      autoCompactLimit: runtime.autoCompactLimit,
+      contextWindow: currentModel == null
+          ? runtime.contextWindow
+          : currentModel.context.contextWindow ?? 0,
+      maxContextWindow: currentModel == null
+          ? runtime.maxContextWindow
+          : currentModel.maxContextWindow,
+      autoCompactLimit: currentModel == null
+          ? runtime.autoCompactLimit
+          : currentModel.context.autoCompactLimit,
       totalTokens: runtime.totalTokens,
       costLabel: runtime.costLabel,
       promptTokens: runtime.promptTokens,
@@ -613,7 +630,7 @@ bool _accountModelEquals(AccountModelView left, AccountModelView right) =>
     left.description == right.description &&
     left.contextWindow == right.contextWindow &&
     left.maxContextWindow == right.maxContextWindow &&
-    left.autoCompactTokenLimit == right.autoCompactTokenLimit &&
+    left.context == right.context &&
     left.maxOutputTokens == right.maxOutputTokens &&
     _listEqualsBy(
       left.inputCapabilities,
@@ -642,7 +659,7 @@ int _accountModelHash(AccountModelView model) => Object.hashAll([
   model.description,
   model.contextWindow,
   model.maxContextWindow,
-  model.autoCompactTokenLimit,
+  model.context,
   model.maxOutputTokens,
   Object.hashAll(model.inputCapabilities.map(_inputCapabilityHash)),
   Object.hashAll(model.outputModalities),
@@ -738,18 +755,11 @@ bool _autoCompactEquals(
   AccountModelAutoCompactView right,
 ) =>
     left.modelId == right.modelId &&
-    left.defaultLimit == right.defaultLimit &&
     left.overrideLimit == right.overrideLimit &&
-    left.effectiveLimit == right.effectiveLimit &&
-    left.safeLimit == right.safeLimit;
+    left.context == right.context;
 
-int _autoCompactHash(AccountModelAutoCompactView value) => Object.hash(
-  value.modelId,
-  value.defaultLimit,
-  value.overrideLimit,
-  value.effectiveLimit,
-  value.safeLimit,
-);
+int _autoCompactHash(AccountModelAutoCompactView value) =>
+    Object.hash(value.modelId, value.overrideLimit, value.context);
 
 bool _stringMapEquals(Map<String, String> left, Map<String, String> right) {
   if (left.length != right.length) return false;

@@ -202,8 +202,12 @@ frb.AccountInput _accountInputFromCommand(AccountCommand account) {
           modelId: model.modelId,
           displayName: model.displayName,
           wireApi: model.wireApi,
-          contextWindow: BigInt.from(model.contextWindow),
-          maxOutputTokens: BigInt.from(model.maxOutputTokens),
+          contextWindow: model.contextWindow == null
+              ? null
+              : BigInt.from(model.contextWindow!),
+          maxOutputTokens: model.maxOutputTokens == null
+              ? null
+              : BigInt.from(model.maxOutputTokens!),
         ),
     ],
     modelConnectionModes: [
@@ -1396,6 +1400,12 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       modeDefaultSaved: response.modeDefaultSaved,
       warning: response.warning,
     );
+  }
+
+  @override
+  Future<void> compactThread(String threadId) async {
+    await _ensureReady();
+    await _bridgeCall(() => frb.compactThread(threadId: threadId));
   }
 
   @override

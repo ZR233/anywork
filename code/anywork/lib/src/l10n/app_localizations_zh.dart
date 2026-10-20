@@ -2343,7 +2343,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactTitle => '上下文压缩阈值';
 
   @override
-  String get settingsModelAutoCompactRestore => '恢复默认';
+  String get settingsModelAutoCompactRestore => '恢复自动';
 
   @override
   String get settingsModelAutoCompactSaving => '正在自动应用…';
@@ -2355,19 +2355,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactRetry => '重试';
 
   @override
-  String get settingsModelAutoCompactDefaultLabel => '默认';
-
-  @override
-  String get settingsModelAutoCompactOverrideLabel => '用户';
+  String get settingsModelAutoCompactOverrideLabel => '配置方式';
 
   @override
   String get settingsModelAutoCompactEffectiveLabel => '生效';
 
   @override
-  String get settingsModelAutoCompactSafeLabel => '安全上限';
-
-  @override
-  String get settingsModelAutoCompactUsingDefault => '使用默认';
+  String get settingsModelAutoCompactUsingDefault => '自动';
 
   @override
   String get settingsModelAutoCompactInputLabel => '阈值（词元）';
@@ -2380,11 +2374,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactUnknownCapacity => '上下文容量未知，无法计算自动压缩阈值。';
-
-  @override
-  String settingsModelAutoCompactAboveSafe(String value) {
-    return '超过安全上限，实际按 $value 生效。';
-  }
 
   @override
   String get settingsPriceInput => '输入';
@@ -2810,7 +2799,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineActivityTitle => '思考与工具';
 
   @override
-  String get timelineContextCompacted => '上下文已自动压缩';
+  String get timelineContextCompacted => '上下文已压缩';
 
   @override
   String timelineCompactionDetail(int before, int after) {
@@ -3572,4 +3561,25 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get conversationActivityWaitingTimer => '计时器';
+
+  @override
+  String get settingsModelAutoCompactAdjusted => '已根据模型上下文容量与输出预留调整生效阈值。';
+
+  @override
+  String get modelContextParametersInvalid => '上下文参数不一致';
+
+  @override
+  String get modelInputBudgetExhausted => '预留输出后没有可用输入容量';
+
+  @override
+  String get statusCompactNow => '立即压缩';
+
+  @override
+  String get statusCompacting => '正在压缩…';
+
+  @override
+  String get statusCompactionFailed => '压缩失败，请重试。';
+
+  @override
+  String get settingsModelAutoCompactCustom => '自定义';
 }

@@ -62,7 +62,16 @@ final class _Transport implements StudioTransport {
   final routes = StreamController<_RouteCall>.broadcast();
   final stops = StreamController<_StopCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
+  final compactions = <Completer<void>>[];
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
+
+  @override
+  Future<void> compactThread(String threadId) {
+    expect(threadId, 'thread');
+    final reply = Completer<void>();
+    compactions.add(reply);
+    return reply.future;
+  }
 
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
@@ -451,6 +460,40 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final pending = client.threadCommands.compactThread('thread');
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      client.threadCommands.state.commands['compact:thread']?.phase,
+      CommandPhase.pending,
+    );
+    await expectLater(
+      client.threadCommands.compactThread('thread'),
+      throwsStateError,
+    );
+    expect(transport.compactions, hasLength(1));
+    final failed = expectLater(pending, throwsStateError);
+    transport.compactions.single.completeError(
+      StateError('compression failed'),
+    );
+    await failed;
+    expect(
+      client.threadCommands.state.commands['compact:thread']?.phase,
+      CommandPhase.failed,
+    );
+    final retry = client.threadCommands.compactThread('thread');
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.compactions, hasLength(2));
+    transport.compactions.last.complete();
+    await retry;
+    expect(
+      client.threadCommands.state.commands,
+      isNot(contains('compact:thread')),
+    );
+  });
+
   test('route conflict resync replaces only its runtime binding and preserves ChatView', () async {
     final transport = _RouteConflictTransport();
     final client = _client(transport);

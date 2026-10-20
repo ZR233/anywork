@@ -4,7 +4,7 @@ import 'package:test/test.dart';
 /// 模板只负责创建默认值，不是已有账号或统计的身份来源。
 void main() {
   const catalog = AccountCatalogView(
-    schemaVersion: 15,
+    schemaVersion: 16,
     revision: 'catalog-r1',
     templates: [
       AccountTemplateView(

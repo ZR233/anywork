@@ -218,10 +218,7 @@ impl ConfigRuntime {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
         state.catalog.updated_at = unix_seconds();
         state.catalog.catalogs = statuses(&state.observations);
-        let _ = self.catalog_updates.send(CatalogChange {
-            snapshot: state.catalog.clone(),
-            affected,
-        });
+        let _ = self.catalog_updates.send(CatalogChange { affected });
     }
 
     /// Serializes with commit, prevents new publication, and cancels outstanding network futures.

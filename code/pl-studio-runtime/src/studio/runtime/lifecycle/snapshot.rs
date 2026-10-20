@@ -1,14 +1,13 @@
 use anyhow::Result;
 
-use crate::config::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
 use crate::studio::{StudioRecoveryIssue, StudioRuntimeSnapshot};
 
 use super::super::StudioRuntime;
 
 impl StudioRuntime {
-    pub(crate) fn publish_settings_state(&self, settings: ConfigRuntimeSnapshot) -> Result<()> {
+    pub(crate) fn publish_settings_state(&self) -> Result<()> {
+        let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
         let config = super::super::settings_api::settings_config_snapshot(&settings)?;
-        let catalog_state = self.config_runtime.read_catalog()?;
         let catalog =
             super::super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
         self.settings_updates.send_replace(settings);
@@ -33,11 +32,8 @@ impl StudioRuntime {
         Ok(())
     }
 
-    pub(in crate::studio::runtime) fn publish_model_catalog_state(
-        &self,
-        catalog_state: ModelCatalogRuntimeSnapshot,
-    ) -> Result<()> {
-        let settings = self.config_runtime.read()?;
+    pub(in crate::studio::runtime) fn publish_model_catalog_state(&self) -> Result<()> {
+        let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
         let catalog =
             super::super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
         self.agent_facility.product_events.emit_model_catalog_state(

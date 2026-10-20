@@ -49,6 +49,26 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return _lane.run(action);
   }
 
+  Future<void> compactThread(String threadId) {
+    _ensureOpen();
+    final key = 'compact:$threadId';
+    if (state.commands[key]?.phase == CommandPhase.pending) {
+      return Future<void>.error(StateError('Context compaction is pending'));
+    }
+    _begin(key, label: threadId);
+    return _lane.enqueue(() async {
+      try {
+        if (_blocksThread(threadId))
+          throw StateError('Thread access is blocked by recovery');
+        await _api.compactThread(threadId);
+        _clear(key);
+      } catch (error) {
+        _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+  }
+
   Future<void> setThreadModelRoute({
     String? threadId,
     required String accountId,

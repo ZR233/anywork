@@ -838,6 +838,26 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Forces one idle reduction using the installed preparer, preserving input and tool history.
+    /// # Errors
+    /// Rejects stale context, busy/closed owners, cancellation and unsuccessful compaction.
+    pub async fn compact_context(
+        &self,
+        expected_revision: u64,
+        cancellation: CancellationToken,
+    ) -> Result<ContextSnapshot, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::CompactContext(
+                expected_revision,
+                cancellation,
+                reply,
+            ))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Replaces context after a successful host transformation, retaining both versions.
     /// Tool executors cannot invoke this operation through their restricted CallContext.
     ///

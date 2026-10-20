@@ -1,3 +1,9 @@
+import 'dart:async';
+
+import 'package:anywork_client/studio_client.dart' show CommandPhase;
+
+import '../../presentation/providers/client_provider.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -231,7 +237,25 @@ class _ContextUsageConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final projection = ref.watch(statusContextProjectionProvider(threadId));
     if (projection == null) return const SizedBox.shrink();
-    return ContextUsageReadout(projection: projection);
+    final command = ref.watch(statusCompactionCommandProvider(threadId));
+    final busy = ref.watch(statusBarViewProvider(threadId))?.isBusy ?? true;
+    final compacting = command?.phase == CommandPhase.pending;
+    return ContextUsageReadout(
+      projection: projection,
+      compacting: compacting,
+      compactionFailed: command?.phase == CommandPhase.failed,
+      onCompact: busy || compacting || !projection.hasUsage
+          ? null
+          : () {
+              unawaited(
+                ref
+                    .read(anyworkClientProvider)
+                    .threadCommands
+                    .compactThread(threadId)
+                    .catchError((Object _) {}),
+              );
+            },
+    );
   }
 }
 

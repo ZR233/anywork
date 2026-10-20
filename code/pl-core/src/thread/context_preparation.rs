@@ -19,11 +19,46 @@ pub struct ContextPreparationRequest {
     pub previous_usage: Option<PreviousContextUsage>,
 }
 
-/// Usage may assist capacity checks only for the exact retained context and bound route.
+/// Candidate observation; validate the final input with [`Self::matches_input`] and its route.
 #[derive(Debug, Clone)]
 pub struct PreviousContextUsage {
     pub usage: crate::model::ModelUsage,
     pub origin: ModelUsageOrigin,
+}
+
+impl PreviousContextUsage {
+    /// Checks the retained input prefix and final tool plan after host visibility changes.
+    /// The model implementation must separately verify `origin.binding.route_identity`.
+    pub fn matches_input(&self, request: &ModelRequest) -> bool {
+        let Some(expected) = &self.origin.input_hash else {
+            return false;
+        };
+        let Some(prefix) = request
+            .context
+            .records
+            .get(..self.origin.input_record_count)
+        else {
+            return false;
+        };
+        if request.context.records[self.origin.input_record_count..]
+            .iter()
+            .any(|record| {
+                matches!(
+                    record.source,
+                    ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+                )
+            })
+        {
+            return false;
+        }
+        input_hash(
+            prefix,
+            &request.tools,
+            request.tool_call_mode,
+            &request.solo_tool_ids,
+        )
+        .is_ok_and(|actual| actual == *expected)
+    }
 }
 
 /// Prepared replacement and producer facts. Successful replacement and receipts commit together.
@@ -87,9 +122,9 @@ impl Owner {
         plan: &mut crate::tool::opaque::ToolPlan,
         frozen_input: &[ContextRecord],
         force_compaction: bool,
-    ) -> Result<(), ThreadError> {
+    ) -> Result<bool, ThreadError> {
         let Some(hook) = self.context_preparation.clone() else {
-            return Ok(());
+            return Ok(false);
         };
         let mut preview_records = self.state.context.records.to_vec();
         preview_records.extend_from_slice(frozen_input);
@@ -139,46 +174,14 @@ impl Owner {
             current_facts: self.state.runtime_facts.clone(),
             extensions: Arc::new(self.state.extensions.clone()),
             extension_sequence: expected_extension_sequence,
-            // Unbound historical usage must never stand in for the current frozen input.
+            // Validation needs the final tool plan, including host exclusions. The model checks
+            // this candidate with matches_input after transforming the request preview.
             previous_usage: self
                 .state
                 .last_attempt_usage_origin
                 .as_ref()
                 .filter(|origin| {
                     origin.binding.route_identity.is_some() && origin.input_hash.is_some()
-                })
-                .filter(|origin| {
-                    !self
-                        .state
-                        .context
-                        .records
-                        .get(origin.input_record_count..)
-                        .is_none_or(|tail| {
-                            tail.iter().any(|record| {
-                                matches!(
-                                    record.source,
-                                    ContextSource::Instruction
-                                        | ContextSource::InstructionSnapshot { .. }
-                                )
-                            })
-                        })
-                })
-                .filter(|origin| {
-                    self.state
-                        .context
-                        .records
-                        .get(..origin.input_record_count)
-                        .is_some_and(|records| {
-                            input_hash(
-                                records,
-                                &plan.declarations(),
-                                plan.call_mode(),
-                                &plan.solo_tool_ids(),
-                            )
-                            .ok()
-                            .as_ref()
-                                == origin.input_hash.as_ref()
-                        })
                 })
                 .and_then(|origin| {
                     self.state
@@ -216,7 +219,7 @@ impl Owner {
             return Err(ThreadError::Cancelled);
         }
         match result {
-            ContextPreparation::Unchanged => Ok(()),
+            ContextPreparation::Unchanged => Ok(false),
             ContextPreparation::Failed { error, mutations } => {
                 self.commit_preparation_accounting(mutations)?;
                 Err(ThreadError::Model(Arc::new(error)))
@@ -246,6 +249,9 @@ impl Owner {
                         actual: Some(self.state.extension_sequence),
                     });
                 }
+                let compacted = replacement.as_ref().is_some_and(|replacement| {
+                    replacement.reason == ContextReplacementReason::Compaction
+                });
                 let mut candidate = self.state.clone();
                 let staged = (|| {
                     if let Some(replacement) = replacement {
@@ -273,7 +279,7 @@ impl Owner {
                     self.publish();
                 }
                 plan.exclude_tools(&excluded_tool_ids);
-                Ok(())
+                Ok(compacted)
             }
         }
     }
