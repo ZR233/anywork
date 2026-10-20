@@ -258,19 +258,39 @@ async fn repository_manager(
 /// create settles the durable lease through the existing
 /// `WorktreeCreateFailureDisposition` and never bypasses a Git lock or a registered
 /// worktree identity.
-pub(in crate::studio) async fn create_root_session_worktree(
+pub(in crate::studio) async fn create_root_session_worktree<F>(
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     project: &ProjectRecord,
     thread_id: &str,
-) -> Result<WorktreeLease> {
+    progress: &F,
+) -> anyhow::Result<WorktreeLease>
+where
+    F: Fn(pl_protocol::studio::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
+{
+    use pl_protocol::studio::ThreadPreparationStage;
+    progress(ThreadPreparationStage::ResolvingRepository, None, None);
     let project_root = resolved_project_root(project)?;
     let (repository_root, manager) =
-        repository_manager(ssh_manager, project.ssh_alias.as_deref(), &project_root).await?;
+        repository_manager(ssh_manager, project.ssh_alias.as_deref(), &project_root)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
+                    pl_protocol::studio::StudioErrorCode::Unavailable,
+                    "Could not resolve the project's Git repository. Check that the project is inside a Git repository and the repository is accessible.",
+                    false,
+                ))
+            })?;
     let base_commit = manager
         .resolve_head(&repository_root)
         .await
-        .map_err(|error| lifecycle_error(error.to_string()))?;
+        .map_err(|error| {
+            anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Unavailable,
+                "Could not resolve the repository's HEAD. Check that the repository has a commit and is accessible.",
+                false,
+            ))
+        })?;
     let ownership = WorktreeOwnership::Session {
         thread_id: thread_id.to_owned(),
     };
@@ -300,6 +320,11 @@ pub(in crate::studio) async fn create_root_session_worktree(
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
+    progress(
+        ThreadPreparationStage::CreatingWorktree,
+        Some(&durable.path),
+        Some(&durable.branch),
+    );
     let handle = match manager
         .create(WorktreeCreateSpec {
             repo_root: repository_root,
@@ -312,11 +337,15 @@ pub(in crate::studio) async fn create_root_session_worktree(
         Ok(handle) => handle,
         Err(error) => {
             settle_failed_create(worktrees, durable, &error).await;
-            return Err(lifecycle_error(error.to_string()));
+            return Err(anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Unavailable,
+                "Git could not create or check out the session worktree. Check repository permissions and available disk space.",
+                false,
+            )));
         }
     };
     if !workspace_paths_equal(&handle.path, &path, remote)? || handle.branch != durable.branch {
-        return Err(settle_identity_mismatch(worktrees, durable));
+        return Err(settle_identity_mismatch(worktrees, durable).into());
     }
     Ok(durable)
 }

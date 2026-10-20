@@ -209,6 +209,13 @@ markSubmitting、accepted、observed 和 durable 均关联同一 DraftStamp + Op
 TextEditingController 保存 composing/selection，draftId 变化时替换；同一草稿的普通重建不反复
 重写 controller.text，旧完成也不能直接清空当前 controller。
 
+新会话环境准备属于冻结提交的临时展示状态，由 StartDraft owner 按 `inputId`、项目及提交身份
+维护唯一镜像。Widget 与 Riverpod 只读观察当前项目的镜像，Settings 往返或观察销毁不取消
+创建命令。阶段来自同一次 typed 创建流，成功／失败终态只结算一次；终态前断流保留
+UnknownOutcome，不自动重发。旧提交的进度和 finally 不覆盖新尝试或较新的草稿，成功结果
+仅在导航意图仍属于原提交时自动选择新 Thread。成功移除准备镜像，失败保留原阶段和原因；
+准备信息不成为目录事实或聊天历史，也不承担取消与工作树资源释放责任。
+
 附件 ledger 分开记录逻辑草稿引用和冻结提交引用。提交成功只转移冻结引用，较新草稿继续
 引用的相同附件 ID 仍有效。只有最后一个 owner 释放后才请求 native 删除；删除失败保留 owner、
 诊断与预算。未知受理结果保留冻结引用，不因页面退出、放弃当前草稿或全局 orphan sweep 删除。

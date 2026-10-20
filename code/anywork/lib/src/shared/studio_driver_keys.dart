@@ -7,6 +7,12 @@ import 'studio_driver_key_values.dart';
 abstract final class StudioDriverKeys {
   static const shell = ValueKey<String>(StudioDriverKeyValues.shell);
   static const startPage = ValueKey<String>(StudioDriverKeyValues.startPage);
+  static const threadPreparation = ValueKey<String>(
+    StudioDriverKeyValues.threadPreparation,
+  );
+  static const threadPreparationDetails = ValueKey<String>(
+    StudioDriverKeyValues.threadPreparationDetails,
+  );
 
   /// 已选中但尚未打开的会话占位；首屏恢复的选择不自动打开会话（§6.1）。
   static const unopenedThread = ValueKey<String>('studio-unopened-thread');

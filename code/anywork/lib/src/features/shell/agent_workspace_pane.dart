@@ -852,7 +852,9 @@ class _StudioStartPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final project = ref.watch(startPageComposerViewProvider).project;
+    final projection = ref.watch(startPageComposerViewProvider);
+    final project = projection.project;
+    final preparation = projection.preparation;
     return Scaffold(
       key: StudioDriverKeys.startPage,
       backgroundColor: context.colors.surface,
@@ -874,28 +876,36 @@ class _StudioStartPage extends ConsumerWidget {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          project == null
-                              ? context.l10n.startPageOpenProjectTitle
-                              : context.l10n.startPageWelcome,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(
-                                color: context.colors.onSurface,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          project == null
-                              ? context.l10n.startPageOpenProjectBody
-                              : context.l10n.startPageProject(project.name),
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: context.colors.onSurfaceVariant,
-                              ),
-                        ),
+                        if (project != null && preparation != null)
+                          ThreadPreparationCard(
+                            key: ValueKey(preparation.inputId),
+                            project: project,
+                            preparation: preparation,
+                          )
+                        else ...[
+                          Text(
+                            project == null
+                                ? context.l10n.startPageOpenProjectTitle
+                                : context.l10n.startPageWelcome,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(
+                                  color: context.colors.onSurface,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            project == null
+                                ? context.l10n.startPageOpenProjectBody
+                                : context.l10n.startPageProject(project.name),
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
                         const SizedBox(height: 28),
                         const StartPageComposerDock(),
                       ],

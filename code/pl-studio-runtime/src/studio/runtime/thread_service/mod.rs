@@ -13,6 +13,7 @@ impl StudioRuntime {
         &self,
         project_id: String,
         request: pl_protocol::studio::CreateThreadRequest,
+        preparation_observer: Option<super::ThreadPreparationObserver>,
     ) -> Result<StudioStartNewThreadResponse> {
         let mode = pl_protocol::ThreadModeId::from_label(request.mode.trim()).map_err(|_| {
             anyhow::Error::new(pl_protocol::studio::StudioError::invalid_argument(
@@ -27,6 +28,7 @@ impl StudioRuntime {
             route: request.route,
             workspace_mode: request.workspace_mode,
             options: super::StudioSubmitPromptOptions::default(),
+            preparation_observer,
         })
         .await
     }

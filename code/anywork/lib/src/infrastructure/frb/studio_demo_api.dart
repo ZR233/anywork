@@ -1279,69 +1279,114 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<StartNewThreadResult> startNewThread(
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
     String? workspaceMode,
-  }) async {
-    final projects = _demoProjectDirectory().values;
-    if (!projects.any((project) => project.id == projectId)) {
-      throw StateError('unknown demo project $projectId');
-    }
-    if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
-      throw ArgumentError.value(input.text, 'text', 'empty');
-    }
-    final requestedWorkspaceMode = switch (workspaceMode?.trim()) {
-      null || '' || 'local' => ThreadWorkspaceMode.local,
-      'worktree' => ThreadWorkspaceMode.worktree,
-      final other => throw ArgumentError.value(
-        other,
-        'workspaceMode',
-        'must be local or worktree',
-      ),
-    };
-    final now = DateTime.now();
-    final provisionalTitle = _demoProvisionalThreadTitle(input.text);
-    final threadId = 'thread-created-${++_threadSequence}';
-    final projectPath = projects
-        .firstWhere((project) => project.id == projectId)
-        .path;
-    final thread = StudioThread(
-      id: threadId,
-      projectId: projectId,
-      title: provisionalTitle,
-      mode: mode,
-      role: 'planner',
-      createdAt: now,
-      updatedAt: now,
-      workspaceMode: requestedWorkspaceMode,
-      workspacePath: requestedWorkspaceMode == ThreadWorkspaceMode.worktree
-          ? _demoWorktreePath(projectPath, threadId)
-          : projectPath,
-    );
-    _createdRootThreads.add(thread);
-    _ensureWorkspaceFixture();
-    _selectedThreadId = thread.id;
-    final workspace = _workspaces[thread.id]!;
-    _workspaces[thread.id] = workspace.copyWith(
-      runtime: workspace.runtime.copyWith(
-        modelId: route.modelId,
-        modelRoute: ThreadModelRouteView(
-          accountId: route.accountId,
-          modelId: route.modelId,
-          effort: route.effort,
-          revision: 1,
-          available: true,
+  }) async* {
+    try {
+      final projects = _demoProjectDirectory().values;
+      if (!projects.any((project) => project.id == projectId)) {
+        throw StateError('unknown demo project $projectId');
+      }
+      if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
+        throw ArgumentError.value(input.text, 'text', 'empty');
+      }
+      final requestedWorkspaceMode = switch (workspaceMode?.trim()) {
+        null || '' || 'local' => ThreadWorkspaceMode.local,
+        'worktree' => ThreadWorkspaceMode.worktree,
+        final other => throw ArgumentError.value(
+          other,
+          'workspaceMode',
+          'must be local or worktree',
         ),
-      ),
-    );
-    final receipt = await _submitPrompt(thread.id, input);
-    if (input.text.trim().isNotEmpty) {
-      unawaited(_completeDemoThreadTitle(thread.id, provisionalTitle));
+      };
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.checkingProject,
+        ),
+      );
+      final now = DateTime.now();
+      final provisionalTitle = _demoProvisionalThreadTitle(input.text);
+      final threadId = 'thread-created-${++_threadSequence}';
+      final projectPath = projects
+          .firstWhere((project) => project.id == projectId)
+          .path;
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.preparingWorkspace,
+        ),
+      );
+      final thread = StudioThread(
+        id: threadId,
+        projectId: projectId,
+        title: provisionalTitle,
+        mode: mode,
+        role: 'planner',
+        createdAt: now,
+        updatedAt: now,
+        workspaceMode: requestedWorkspaceMode,
+        workspacePath: requestedWorkspaceMode == ThreadWorkspaceMode.worktree
+            ? _demoWorktreePath(projectPath, threadId)
+            : projectPath,
+      );
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.initializingSession,
+          workspacePath: thread.workspacePath,
+        ),
+      );
+      _createdRootThreads.add(thread);
+      _ensureWorkspaceFixture();
+      _selectedThreadId = thread.id;
+      final workspace = _workspaces[thread.id]!;
+      _workspaces[thread.id] = workspace.copyWith(
+        runtime: workspace.runtime.copyWith(
+          modelId: route.modelId,
+          modelRoute: ThreadModelRouteView(
+            accountId: route.accountId,
+            modelId: route.modelId,
+            effort: route.effort,
+            revision: 1,
+            available: true,
+          ),
+        ),
+      );
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.submittingPrompt,
+          workspacePath: thread.workspacePath,
+        ),
+      );
+      final receipt = await _submitPrompt(thread.id, input);
+      if (input.text.trim().isNotEmpty) {
+        unawaited(_completeDemoThreadTitle(thread.id, provisionalTitle));
+      }
+      yield NewThreadStartSucceeded(
+        StartNewThreadResult(thread: thread, receipt: receipt),
+      );
+    } catch (error) {
+      yield NewThreadStartFailed(
+        StudioFailure(
+          code: error is ArgumentError
+              ? StudioFailureCode.invalidArgument
+              : StudioFailureCode.internal,
+          message: error.toString(),
+          retryable: false,
+          correlationId: newStudioCorrelationId(),
+        ),
+      );
     }
-    return StartNewThreadResult(thread: thread, receipt: receipt);
   }
 
   @override

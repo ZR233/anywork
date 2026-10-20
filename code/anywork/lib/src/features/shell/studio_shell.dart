@@ -43,6 +43,7 @@ import '../timeline/timeline_connector.dart';
 import '../timeline/timeline_session_view.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
+import 'thread_preparation_card.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';

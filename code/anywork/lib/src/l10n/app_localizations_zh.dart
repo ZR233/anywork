@@ -301,6 +301,87 @@ class AppLocalizationsZh extends AppLocalizations {
   String get startPageWelcome => '想从哪里开始？';
 
   @override
+  String get preparationTitle => '正在准备会话';
+
+  @override
+  String get preparationSubtitle => '准备好工作空间后，将自动开始处理你的请求。';
+
+  @override
+  String get preparationFailedTitle => '环境准备未完成';
+
+  @override
+  String get preparationRetainedBody => '输入与附件已保留，可调整后重新发送。';
+
+  @override
+  String get preparationUnknownTitle => '尚未确认创建结果';
+
+  @override
+  String get preparationUnknownBody => '连接已中断，尚不能确认会话是否创建成功。请勿重复发送。';
+
+  @override
+  String get preparationCheckProject => '检查项目';
+
+  @override
+  String get preparationWorkspace => '准备工作区';
+
+  @override
+  String get preparationInitializeSession => '初始化会话';
+
+  @override
+  String get preparationSubmitPrompt => '提交请求';
+
+  @override
+  String get preparationWaiting => '等待开始准备…';
+
+  @override
+  String get preparationCheckingProject => '正在检查项目与会话配置…';
+
+  @override
+  String get preparationPreparingWorkspace => '正在准备会话工作区…';
+
+  @override
+  String get preparationResolvingRepository => '正在检查 Git 仓库与基线提交…';
+
+  @override
+  String get preparationCreatingWorktree => '正在创建工作树并检出文件…';
+
+  @override
+  String get preparationInitializingSession => '正在初始化会话环境…';
+
+  @override
+  String get preparationSubmittingPrompt => '正在提交你的第一条请求…';
+
+  @override
+  String get preparationMoreDetails => '更多详情';
+
+  @override
+  String get preparationProjectLabel => '项目';
+
+  @override
+  String get preparationRemoteLabel => '远程主机';
+
+  @override
+  String get preparationPathLabel => '工作区路径';
+
+  @override
+  String get preparationBranchLabel => '工作树分支';
+
+  @override
+  String get preparationDiagnosticLabel => '诊断编号';
+
+  @override
+  String get preparationStepComplete => '已完成';
+
+  @override
+  String get preparationStepPending => '待开始';
+
+  @override
+  String get preparationStepRunning => '进行中';
+
+  @override
+  String get preparationStepFailed => '未完成';
+
+  @override
   String startPageProject(String project) {
     return '当前项目：$project';
   }

@@ -193,6 +193,7 @@ async fn collect(
                 },
                 workspace_mode,
             },
+            None,
         )
         .await?;
     let thread = created.thread;

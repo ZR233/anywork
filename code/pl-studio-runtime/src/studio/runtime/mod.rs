@@ -7,6 +7,13 @@ use crate::studio::{ProductEventBus, StudioActiveTurn, StudioRuntimeState, Studi
 use pl_protocol::studio::StudioPromptInput;
 use pl_tool::mcp::McpRuntimeHandle;
 
+pub use pl_protocol::studio::{ThreadPreparationProgress, ThreadPreparationStage};
+
+/// Nonblocking observation of a creation command. The observer must not reenter the runtime;
+/// losing observation does not cancel creation or transfer its resource ownership.
+pub type ThreadPreparationObserver =
+    std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
+
 mod account_usage;
 mod attachment_drafts;
 mod background_task;
@@ -73,6 +80,7 @@ pub struct StudioStartNewThreadRequest {
     pub route: pl_protocol::studio::NewThreadModelRoute,
     pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub options: StudioSubmitPromptOptions,
+    pub preparation_observer: Option<ThreadPreparationObserver>,
 }
 
 /// Studio UI 提交 prompt 的附加选项。

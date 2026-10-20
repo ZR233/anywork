@@ -9,6 +9,10 @@ export 'package:anywork_client/models.dart'
         StartSessionDraft,
         StartSessionProjectDraft,
         StartSessionModelIntent,
+        NewThreadPreparation,
+        NewThreadPreparationPhase,
+        ThreadPreparationProgress,
+        ThreadPreparationStage,
         overlayStartSessionRoute;
 
 part 'start_session_controller.g.dart';

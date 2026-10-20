@@ -12,6 +12,7 @@ pub mod settings;
 pub mod shutdown;
 pub mod ssh;
 pub mod thread_activity;
+pub mod thread_preparation;
 pub mod thread_stream;
 pub mod updater;
 
@@ -29,5 +30,6 @@ pub use settings::*;
 pub use shutdown::*;
 pub use ssh::*;
 pub use thread_activity::*;
+pub use thread_preparation::*;
 pub use thread_stream::*;
 pub use updater::*;

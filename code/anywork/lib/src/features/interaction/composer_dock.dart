@@ -229,6 +229,8 @@ class _StartPageComposerBodyState
                 ],
               ),
               submissionLocked: projection.submitting,
+              showSubmissionError:
+                  projection.preparation?.failure?.toString() != composer.error,
               onChanged: _updateDraft,
               onSubmit: () => unawaited(_submit()),
               inputCapabilities: model?.inputCapabilities ?? const [],
@@ -617,6 +619,7 @@ class _PromptComposerPanel extends StatefulWidget {
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
+    this.showSubmissionError = true,
   });
 
   final ComposerThreadState composer;
@@ -644,6 +647,7 @@ class _PromptComposerPanel extends StatefulWidget {
 
   /// 起始页在设置 lane 排空前就置位的提交哨兵。线程路径保持 false。
   final bool submissionLocked;
+  final bool showSubmissionError;
 
   @override
   State<_PromptComposerPanel> createState() => _PromptComposerPanelState();
@@ -918,13 +922,13 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
               ),
             ),
           ),
-          if (composer.error case final error?)
+          if (widget.showSubmissionError && composer.error != null)
             Align(
               alignment: Alignment.centerLeft,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 2, 8, 6),
                 child: Text(
-                  error,
+                  composer.error!,
                   key: StudioDriverKeys.composerError,
                   style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: colors.error),

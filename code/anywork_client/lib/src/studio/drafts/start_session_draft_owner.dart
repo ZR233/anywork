@@ -176,7 +176,27 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       _client.attachments.reportNewThreadFailure(projectId, error);
       return Future<bool>.value(false);
     }
-    state = state.copyWith(submitting: true);
+    final completion = Completer<bool>();
+    late final Future<bool> pending;
+    pending = completion.future.whenComplete(() {
+      if (identical(_pending, pending)) {
+        _pending = null;
+        if (!_closed) state = state.copyWith(submitting: false);
+      }
+    });
+    // Publish ownership before notifying synchronous observers or starting transport work.
+    _pending = pending;
+    state = state.copyWith(
+      submitting: true,
+      preparations: {
+        ...state.preparations,
+        projectId: NewThreadPreparation(
+          projectId: projectId,
+          inputId: frozen.input.inputId,
+          workspaceMode: frozen.project.workspaceMode,
+        ),
+      },
+    );
     final binding = _client.attachments.newThreadBinding(projectId);
     final composer = binding.read();
     binding.write(
@@ -189,13 +209,11 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         cleanupFailureDraftIds: composer.cleanupFailureDraftIds,
       ),
     );
-    final task = _submit(frozen);
-    _pending = task;
-    return task.whenComplete(() {
-      if (identical(_pending, task)) _pending = null;
-      if (!_closed && state.submitting)
-        state = state.copyWith(submitting: false);
-    });
+    unawaited(
+      _submit(frozen)
+          .then(completion.complete, onError: completion.completeError),
+    );
+    return pending;
   }
 
   Future<bool> _submit(FrozenStartSessionSubmission frozen) async {
@@ -208,6 +226,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         mode: frozen.project.mode,
         workspaceMode: frozen.project.workspaceMode.id,
         route: frozen.route,
+        onProgress: (progress) => _progress(frozen, progress),
       );
       if (result == null) {
         final failure = StateError('New Thread submission was not accepted');
@@ -220,14 +239,11 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
           threadId: null,
         );
         _failure(binding.read(), frozen, failure);
+        _preparationFailure(frozen, failure, known: true);
         return false;
       }
-      if (result.thread.projectId != frozen.projectId ||
-          result.receipt.threadId != result.thread.id ||
-          result.receipt.inputId != frozen.input.inputId) {
-        throw StateError('New Thread submission receipt did not match');
-      }
       acceptedResult = result;
+      _clearPreparation(frozen);
       _observations.removeWhere((entry) => entry.isCancelled);
       _observations.add(
         observeSubmittedInput(
@@ -268,7 +284,10 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         threadId: result.thread.id,
       );
       return true;
-    } catch (error) {
+    } catch (cause) {
+      final error = cause is NewThreadStartFailed ? cause.error : cause;
+      final rejected =
+          cause is NewThreadStartFailed || isKnownSubmissionRejection(error);
       if (acceptedResult != null) {
         frozen.operation.syncFailed(error);
         await _client.attachments.completeFrozen(
@@ -278,7 +297,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
           projectId: frozen.projectId,
           threadId: acceptedResult.thread.id,
         );
-      } else if (isKnownSubmissionRejection(error)) {
+      } else if (rejected) {
         frozen.operation.reject(error);
         await _client.attachments.completeFrozen(
           operationId: frozen.operation.id,
@@ -292,8 +311,56 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         frozen.operation.unknownOutcome(error);
       }
       _failure(binding.read(), frozen, error);
+      if (acceptedResult == null)
+        _preparationFailure(frozen, error, known: rejected);
       return false;
     }
+  }
+
+  void _progress(
+    FrozenStartSessionSubmission frozen,
+    ThreadPreparationProgress progress,
+  ) {
+    if (_closed) return;
+    final current = state.preparations[frozen.projectId];
+    if (current == null ||
+        current.inputId != frozen.input.inputId ||
+        current.phase != NewThreadPreparationPhase.preparing)
+      return;
+    if (current.progress != null &&
+        progress.stage.index < current.progress!.stage.index)
+      return;
+    state = state.copyWith(
+      preparations: {
+        ...state.preparations,
+        frozen.projectId: current.withProgress(progress),
+      },
+    );
+  }
+
+  void _preparationFailure(
+    FrozenStartSessionSubmission frozen,
+    Object error, {
+    required bool known,
+  }) {
+    if (_closed) return;
+    final current = state.preparations[frozen.projectId];
+    if (current == null || current.inputId != frozen.input.inputId) return;
+    state = state.copyWith(
+      preparations: {
+        ...state.preparations,
+        frozen.projectId: current.withFailure(error, known: known),
+      },
+    );
+  }
+
+  void _clearPreparation(FrozenStartSessionSubmission frozen) {
+    if (_closed ||
+        state.preparations[frozen.projectId]?.inputId != frozen.input.inputId)
+      return;
+    state = state.copyWith(
+      preparations: {...state.preparations}..remove(frozen.projectId),
+    );
   }
 
   void _failure(
@@ -376,6 +443,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     if (_closed) return;
     state = state.copyWith(
       projects: {...state.projects}..remove(projectId),
+      preparations: {...state.preparations}..remove(projectId),
       revision: state.revision + 1,
     );
     _permits.remove(projectId)?.release();

@@ -620,6 +620,168 @@ abstract class AppLocalizations {
   /// **'What can I help you build?'**
   String get startPageWelcome;
 
+  /// No description provided for @preparationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing your session'**
+  String get preparationTitle;
+
+  /// No description provided for @preparationSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your request will start once the workspace is ready.'**
+  String get preparationSubtitle;
+
+  /// No description provided for @preparationFailedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Environment setup incomplete'**
+  String get preparationFailedTitle;
+
+  /// No description provided for @preparationRetainedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Your prompt and attachments are saved. Adjust the settings and send again.'**
+  String get preparationRetainedBody;
+
+  /// No description provided for @preparationUnknownTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Creation outcome unconfirmed'**
+  String get preparationUnknownTitle;
+
+  /// No description provided for @preparationUnknownBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection ended before session creation was confirmed. Do not send again.'**
+  String get preparationUnknownBody;
+
+  /// No description provided for @preparationCheckProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Check project'**
+  String get preparationCheckProject;
+
+  /// No description provided for @preparationWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Prepare workspace'**
+  String get preparationWorkspace;
+
+  /// No description provided for @preparationInitializeSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Initialize session'**
+  String get preparationInitializeSession;
+
+  /// No description provided for @preparationSubmitPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit request'**
+  String get preparationSubmitPrompt;
+
+  /// No description provided for @preparationWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting to begin…'**
+  String get preparationWaiting;
+
+  /// No description provided for @preparationCheckingProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking the project and session configuration…'**
+  String get preparationCheckingProject;
+
+  /// No description provided for @preparationPreparingWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing the session workspace…'**
+  String get preparationPreparingWorkspace;
+
+  /// No description provided for @preparationResolvingRepository.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking the Git repository and base commit…'**
+  String get preparationResolvingRepository;
+
+  /// No description provided for @preparationCreatingWorktree.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating the worktree and checking out files…'**
+  String get preparationCreatingWorktree;
+
+  /// No description provided for @preparationInitializingSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Initializing the session environment…'**
+  String get preparationInitializingSession;
+
+  /// No description provided for @preparationSubmittingPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitting your first request…'**
+  String get preparationSubmittingPrompt;
+
+  /// No description provided for @preparationMoreDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'More details'**
+  String get preparationMoreDetails;
+
+  /// No description provided for @preparationProjectLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Project'**
+  String get preparationProjectLabel;
+
+  /// No description provided for @preparationRemoteLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote host'**
+  String get preparationRemoteLabel;
+
+  /// No description provided for @preparationPathLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Workspace path'**
+  String get preparationPathLabel;
+
+  /// No description provided for @preparationBranchLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree branch'**
+  String get preparationBranchLabel;
+
+  /// No description provided for @preparationDiagnosticLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic ID'**
+  String get preparationDiagnosticLabel;
+
+  /// No description provided for @preparationStepComplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete'**
+  String get preparationStepComplete;
+
+  /// No description provided for @preparationStepPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get preparationStepPending;
+
+  /// No description provided for @preparationStepRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'In progress'**
+  String get preparationStepRunning;
+
+  /// No description provided for @preparationStepFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete'**
+  String get preparationStepFailed;
+
   /// No description provided for @startPageProject.
   ///
   /// In en, this message translates to:

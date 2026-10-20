@@ -6,6 +6,7 @@ import 'collection_equality.dart';
 import 'thread_directory_models.dart';
 import 'settings_models.dart';
 import 'studio_enums.dart';
+import 'thread_preparation_models.dart';
 
 class SubmitPromptReceipt {
   const SubmitPromptReceipt({
@@ -466,6 +467,7 @@ class StartSessionDraft {
     this.projects = const {},
     this.modelIntents = const {},
     this.effortIntents = const {},
+    this.preparations = const {},
     this.submitting = false,
     this.revision = 0,
   });
@@ -473,6 +475,7 @@ class StartSessionDraft {
   final Map<String, StartSessionProjectDraft> projects;
   final Map<String, StartSessionModelIntent> modelIntents;
   final Map<String, String> effortIntents;
+  final Map<String, NewThreadPreparation> preparations;
   final bool submitting;
   final int revision;
 
@@ -494,6 +497,7 @@ class StartSessionDraft {
     Map<String, StartSessionProjectDraft>? projects,
     Map<String, StartSessionModelIntent>? modelIntents,
     Map<String, String>? effortIntents,
+    Map<String, NewThreadPreparation>? preparations,
     bool? submitting,
     int? revision,
   }) {
@@ -501,6 +505,7 @@ class StartSessionDraft {
       projects: projects ?? this.projects,
       modelIntents: modelIntents ?? this.modelIntents,
       effortIntents: effortIntents ?? this.effortIntents,
+      preparations: preparations ?? this.preparations,
       submitting: submitting ?? this.submitting,
       revision: revision ?? this.revision,
     );
@@ -514,7 +519,8 @@ class StartSessionDraft {
           revision == other.revision &&
           _mapEquals(projects, other.projects) &&
           _mapEquals(modelIntents, other.modelIntents) &&
-          _mapEquals(effortIntents, other.effortIntents);
+          _mapEquals(effortIntents, other.effortIntents) &&
+          _mapEquals(preparations, other.preparations);
 
   @override
   int get hashCode => Object.hash(
@@ -523,6 +529,7 @@ class StartSessionDraft {
     _mapHash(projects),
     _mapHash(modelIntents),
     _mapHash(effortIntents),
+    _mapHash(preparations),
   );
 }
 

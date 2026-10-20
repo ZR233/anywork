@@ -1223,33 +1223,31 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<StartNewThreadResult> startNewThread(
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
     String? workspaceMode,
-  }) async {
+  }) async* {
     await _ensureReady();
-    final response = await _bridgeCall(
-      () => frb.startNewThread(
-        projectId: projectId,
-        input: _bridgePromptInput(input),
-        mode: mode.id,
-        accountId: route.accountId,
-        modelId: route.modelId,
-        effort: route.effort.isEmpty ? null : route.effort,
-        workspaceMode: workspaceMode,
-      ),
-    );
-    return StartNewThreadResult(
-      thread: _threadFromFrb(response.thread),
-      receipt: SubmitPromptReceipt(
-        threadId: response.receipt.threadId,
-        inputId: response.receipt.inputId,
-        cursor: response.receipt.revision.toInt(),
-      ),
-    );
+    try {
+      await for (final event in frb.startNewThread(
+        request: frb.BridgeStartNewThreadRequest(
+          projectId: projectId,
+          input: _bridgePromptInput(input),
+          mode: mode.id,
+          accountId: route.accountId,
+          modelId: route.modelId,
+          effort: route.effort.isEmpty ? null : route.effort,
+          workspaceMode: workspaceMode,
+        ),
+      )) {
+        yield _newThreadStartEventFromFrb(event);
+      }
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(_studioFailure(error), stackTrace);
+    }
   }
 
   @override
