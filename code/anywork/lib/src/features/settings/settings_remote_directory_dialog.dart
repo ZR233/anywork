@@ -323,7 +323,10 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
                 key: StudioDriverKeys.sshDirectoryEntry(entry.path),
                 leading: const Icon(Icons.folder_outlined),
                 title: Tooltip(
-                  message: entry.path,
+                  richMessage: TextSpan(
+                    text: entry.path,
+                    style: const TextStyle(fontFamily: studioCodeFontFamily),
+                  ),
                   child: Text(
                     entry.name,
                     maxLines: 1,

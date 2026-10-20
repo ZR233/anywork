@@ -41,6 +41,10 @@ Widget _agentWorkspacePreview(StudioState state) {
     themeMode: ThemeMode.light,
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
+    builder: (context, child) => Theme(
+      data: pureStudioTheme(locale: Localizations.localeOf(context)),
+      child: child ?? const SizedBox(),
+    ),
     home: Scaffold(
       body:
           workspace == null ||

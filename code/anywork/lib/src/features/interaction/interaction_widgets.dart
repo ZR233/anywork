@@ -224,6 +224,7 @@ class InfoChip extends StatelessWidget {
             label,
             style: context.text.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
+              fontFamily: studioCodeFontFamily,
             ),
           ),
         ),

@@ -338,6 +338,7 @@ class _ToolDetails extends StatelessWidget {
                 style: context.text.bodySmall?.copyWith(
                   color: context.colors.onSurfaceVariant,
                   height: 1.4,
+                  fontFamily: studioCodeFontFamily,
                 ),
               ),
         children: [
@@ -392,6 +393,7 @@ class _ToolDetails extends StatelessWidget {
             TextSpan(
               text: ' $filename',
               style: const TextStyle(
+                fontFamily: studioCodeFontFamily,
                 decoration: TextDecoration.underline,
                 decorationStyle: TextDecorationStyle.dotted,
               ),
@@ -415,7 +417,15 @@ class _ToolDetails extends StatelessWidget {
         Expanded(child: title),
       ],
     );
-    return path == null ? row : Tooltip(message: path, child: row);
+    return path == null
+        ? row
+        : Tooltip(
+            richMessage: TextSpan(
+              text: path,
+              style: const TextStyle(fontFamily: studioCodeFontFamily),
+            ),
+            child: row,
+          );
   }
 
   String? _resultDetail(_ToolItem item, TimelineToolPart? tool) {
