@@ -9,6 +9,7 @@ import 'package:anywork_client/models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'timeline_wait_indicator.dart';
+import 'timeline_wait_blocks.dart';
 
 /// 输入框上方的固定当前活动条（单行）。
 ///
@@ -89,7 +90,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   void dispose() {
     // 活动条消失（活动结束/切走会话/面板被移除）必须与收起等价：否则 controller 会为
     // 一个已经结束的活动保留展开标记与尾随刷新，Driver 的 `expanded` 诊断也会残留为 true。
-    // 这里只写 controller 的私有标记与只读诊断，不改 provider，因此可以在卸载期安全调用。
+    // 这里只写 controller 的私有标记与只读诊断，不改 account，因此可以在卸载期安全调用。
     if (_expandedIdentity != null) {
       _expandedIdentity = null;
       widget.onCollapse?.call();
@@ -134,9 +135,14 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
     final view = widget.view;
     final label = context.conversationActivityLabel(view);
     final error = view.errorMessage?.trim();
+    final waitSummary = view.wait == null
+        ? null
+        : timelineWaitSubtitle(context, view.wait!);
     final summary = view.summary?.trim();
     final secondary = error != null && error.isNotEmpty
         ? error
+        : waitSummary != null && waitSummary.isNotEmpty
+        ? waitSummary
         : summary != null && summary.isNotEmpty
         ? summary
         : null;
@@ -237,10 +243,18 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
                 // 极窄窗口下先让数量徽标、再让摘要退出，标签本身始终可收缩；
                 // 这样 Row 里只剩可收缩文本与固定尺寸图标，不会挤出 RenderFlex。
                 final width = constraints.maxWidth;
+                final wait = view.wait;
+                // Wait already states the real target count in the subtitle.
+                // Do not reuse the parallel-tool badge (it would count wait itself).
                 final showBadge =
-                    view.activeToolCount > 1 && width >= _badgeMinWidth;
+                    wait == null &&
+                    view.activeToolCount > 1 &&
+                    width >= _badgeMinWidth;
+                // Keep wait target/duration text visible in a narrow row;
+                // ordinary activity still drops the summary first.
                 final showSummary =
-                    secondary != null && width >= _summaryMinWidth;
+                    secondary != null &&
+                    (wait != null || width >= _summaryMinWidth);
                 return Row(
                   children: [
                     _leading(context, view, color),
@@ -373,42 +387,76 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
                           ),
                         ),
                       ),
-                    for (final (index, detail) in view.details.indexed) ...[
-                      if (index > 0)
-                        Divider(
-                          height: 1,
-                          thickness: 1,
-                          color: context.colors.outlineVariant.withValues(
-                            alpha: 0.5,
-                          ),
-                        ),
+                    if (view.wait != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (detail.hasTitle) ...[
-                              Text(
-                                detail.title!.trim(),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: context.text.labelLarge?.copyWith(
-                                  color: context.colors.onSurface,
+                        child: TimelineWaitDetails(
+                          presentation: view.wait!,
+                          identity: view.identity,
+                          diagnostics: view.details.isEmpty
+                              ? null
+                              : Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    for (final detail in view.details)
+                                      if (detail.body.trim().isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 8,
+                                          ),
+                                          child: SelectableText(
+                                            detail.body.trim(),
+                                            style: context.text.bodySmall
+                                                ?.copyWith(
+                                                  color: context
+                                                      .colors
+                                                      .onSurfaceVariant,
+                                                  height: 1.4,
+                                                ),
+                                          ),
+                                        ),
+                                  ],
                                 ),
-                              ),
-                              const SizedBox(height: 6),
-                            ],
-                            SelectableText(
-                              detail.body.trim(),
-                              style: context.text.bodySmall?.copyWith(
-                                color: context.colors.onSurfaceVariant,
-                                height: 1.45,
-                              ),
-                            ),
-                          ],
                         ),
                       ),
-                    ],
+                    if (view.wait == null)
+                      for (final (index, detail) in view.details.indexed) ...[
+                        if (index > 0)
+                          Divider(
+                            height: 1,
+                            thickness: 1,
+                            color: context.colors.outlineVariant.withValues(
+                              alpha: 0.5,
+                            ),
+                          ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (detail.hasTitle) ...[
+                                Text(
+                                  detail.title!.trim(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: context.text.labelLarge?.copyWith(
+                                    color: context.colors.onSurface,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                              ],
+                              SelectableText(
+                                detail.body.trim(),
+                                style: context.text.bodySmall?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                  height: 1.45,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                   ],
                 ),
               ),

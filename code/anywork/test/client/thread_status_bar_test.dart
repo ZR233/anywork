@@ -1,184 +1,319 @@
-import 'package:flutter/material.dart';
+import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/status/status_view.dart';
+import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
+import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/status/thread_status_bar.dart';
-import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'support/recording_demo_transport.dart';
 
 void main() {
-  testWidgets(
-    'throughput readout keeps the last value when runtime has no new sample',
-    (tester) async {
-      await tester.pumpWidget(
-        _harness(
-          _readout(
-            threadId: 'thread-1',
-            runtime: _runtime(
-              contextTokens: 100,
-              liveUsage: _liveUsage(
-                turnId: 'turn-1',
-                attemptId: 'attempt-1',
-                completionTokens: 25,
-                decodeMillis: 1000,
-              ),
-            ),
-          ),
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'idle context follows canonical catalog while running binding stays frozen',
+    () async {
+      final graph = AppGraph(
+        transport: RecordingDemoTransport(),
+        clientId: 'context-policy',
+      );
+      addTearDown(() => graph.close(deadline: _deadline()));
+      await graph.client.bootstrap();
+      await graph.client.directoryCommands.selectThread('thread-main');
+      final session = graph.client.existingSession('thread-main')!;
+      await session.timeline.state.waitFor(
+        (state) => state.snapshot is StudioTimelineBaselineFrame,
+      );
+      final initial = session.state.workspace!;
+      final canonical = graph.client.settings.state.canonical!;
+      final account = canonical.accounts.first;
+      final model = account.models.first;
+      final frozen = initial.runtime.copyWith(
+        modelId: model.modelId,
+        autoCompactLimit: 922000,
+        modelRoute: ThreadModelRouteView(
+          accountId: account.id,
+          modelId: model.modelId,
+          effort: null,
+          revision: 1,
+          available: true,
         ),
       );
-      expect(find.text('25 t/s'), findsOneWidget);
-
-      await tester.pumpWidget(
-        _harness(
-          _readout(
-            threadId: 'thread-1',
-            runtime: _runtime(
-              contextTokens: 200,
-              turnCompletionTokens: 0,
-              turnDecodeMillis: 0,
+      session.applySnapshot(initial.copyWith(runtime: frozen));
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final context = container.listen(
+        statusContextProjectionProvider('thread-main'),
+        (_, _) {},
+      );
+      addTearDown(context.close);
+      final accounts = [
+        account.copyWith(
+          models: [
+            model.copyWith(
+              context: const ModelContextView(
+                unavailable: null,
+                contextWindow: 1050000,
+                inputTokenLimit: 922000,
+                autoCompactLimit: 14780,
+              ),
             ),
-          ),
+          ],
+        ),
+      ];
+      final updated = SettingsStateSnapshot(
+        revision: canonical.revision,
+        modelCatalogRevision: canonical.modelCatalogRevision + 1,
+        accounts: accounts,
+      );
+      graph.client.settings.merge(updated);
+      expect(context.read()?.autoCompactLimit, 14780);
+      expect(context.read()?.contextWindow, 1050000);
+      graph.client.settings.merge(canonical);
+      expect(
+        context.read()?.autoCompactLimit,
+        14780,
+        reason: 'late catalog cannot undo settings return',
+      );
+      final running = StudioContextProjection.fromRuntime(
+        'thread-main',
+        frozen,
+        accounts: accounts,
+        isBusy: true,
+      );
+      expect(running.autoCompactLimit, 922000);
+      expect(
+        frozen.autoCompactLimit,
+        922000,
+        reason: 'historical binding is immutable',
+      );
+      graph.client.settings.merge(
+        SettingsStateSnapshot(
+          revision: canonical.revision,
+          modelCatalogRevision: updated.modelCatalogRevision + 1,
+          accounts: [
+            account.copyWith(
+              models: [model.copyWith(context: const ModelContextView())],
+            ),
+          ],
         ),
       );
       expect(
-        find.text('25 t/s'),
-        findsOneWidget,
-        reason: 'an unrelated runtime update must not clear the readout',
+        context.read()?.autoCompactLimit,
+        isNull,
+        reason: 'unknown must not reuse an old threshold',
       );
     },
   );
 
-  testWidgets('throughput readout clears for a new partial sample and thread', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _harness(
-        _readout(
-          threadId: 'thread-1',
-          runtime: _runtime(
-            contextTokens: 100,
-            liveUsage: _liveUsage(
-              turnId: 'turn-1',
-              attemptId: 'attempt-1',
-              completionTokens: 25,
-              decodeMillis: 1000,
-            ),
-          ),
+  test('status projections isolate throughput from context, chrome, and unrelated facts', () async {
+    final transport = RecordingDemoTransport();
+    final graph = AppGraph(transport: transport, clientId: 'status-throughput');
+    addTearDown(() => graph.close(deadline: _deadline()));
+    await graph.client.bootstrap();
+    await graph.client.directoryCommands.selectThread('thread-main');
+    final session = graph.client.existingSession('thread-main')!;
+    await session.timeline.state.waitFor(
+      (state) => state.snapshot is StudioTimelineBaselineFrame,
+    );
+    final composer = graph.client.existingComposer('thread-main')!;
+    composer.updateDraft('keep this draft');
+    final initial = session.state.workspace!;
+    session.applySnapshot(
+      initial.copyWith(
+        runtime: initial.runtime.copyWith(
+          contextTokens: 100,
+          turnCompletionTokens: 25,
+          turnDecodeMillis: 1000,
+          activeSkills: const ['skill-a'],
+          activeMcpServers: const ['mcp-a'],
+          activeLspServers: const ['lsp-a'],
         ),
       ),
     );
-    expect(find.text('25 t/s'), findsOneWidget);
 
-    await tester.pumpWidget(
-      _harness(
-        _readout(
-          threadId: 'thread-1',
-          runtime: _runtime(
-            contextTokens: 120,
-            liveUsage: _liveUsage(
-              turnId: 'turn-2',
-              attemptId: 'attempt-2',
-              completionTokens: 10,
-            ),
+    final container = ProviderContainer(
+      overrides: [appGraphProvider.overrideWithValue(graph)],
+    );
+    addTearDown(container.dispose);
+    var throughputNotifications = 0;
+    var contextNotifications = 0;
+    var chromeNotifications = 0;
+    final throughput = container.listen(
+      statusThroughputProjectionProvider('thread-main'),
+      (_, _) => throughputNotifications++,
+    );
+    final context = container.listen(
+      statusContextProjectionProvider('thread-main'),
+      (_, _) => contextNotifications++,
+    );
+    final chrome = container.listen(
+      statusBarViewProvider('thread-main'),
+      (_, _) => chromeNotifications++,
+    );
+    addTearDown(throughput.close);
+    addTearDown(context.close);
+    addTearDown(chrome.close);
+
+    expect(throughput.read()?.tokensPerSecond, 25);
+    expect(context.read()?.contextTokens, 100);
+    expect(chrome.read()?.thread.id, 'thread-main');
+    expect(chrome.read()?.activeSkills, ['skill-a']);
+    throughputNotifications = 0;
+    contextNotifications = 0;
+    chromeNotifications = 0;
+    final observersBefore = graph.client.budget.used(ResourceKind.observer);
+    final timelineConnections = transport.timelines.length;
+
+    session.applyNotification(
+      _runtimeFrame(
+        session,
+        session.state.runtime!.copyWith(
+          contextTokens: 100,
+          liveUsage: const ThreadRuntimeLiveUsageView(
+            turnId: 'turn-2',
+            attemptId: 'attempt-2',
+            completionTokens: 10,
+            state: ThreadRuntimeUsageState.live,
+            observationSequence: 1,
           ),
+          activeSkills: List<String>.of(['skill-a']),
+          activeMcpServers: List<String>.of(['mcp-a']),
+          activeLspServers: List<String>.of(['lsp-a']),
         ),
       ),
     );
     expect(
-      find.text('- t/s'),
-      findsOneWidget,
-      reason: 'a new incomplete attempt must not borrow the old speed',
+      throughput.read()?.tokensPerSecond,
+      25,
+      reason: 'a partial live sample must keep the confirmed Turn pair',
+    );
+    expect(contextNotifications, 0);
+    expect(
+      chromeNotifications,
+      0,
+      reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await tester.pumpWidget(
-      _harness(
-        _readout(
-          threadId: 'thread-1',
-          runtime: _runtime(
-            contextTokens: 140,
-            liveUsage: _liveUsage(
-              turnId: 'turn-2',
-              attemptId: 'attempt-2',
-              completionTokens: 20,
-              decodeMillis: 500,
-              observationSequence: 2,
-            ),
+    session.applyNotification(
+      _runtimeFrame(
+        session,
+        session.state.runtime!.copyWith(
+          liveUsage: const ThreadRuntimeLiveUsageView(
+            turnId: 'turn-2',
+            attemptId: 'attempt-2',
+            completionTokens: 20,
+            decodeMillis: 500,
+            state: ThreadRuntimeUsageState.live,
+            observationSequence: 2,
+          ),
+          activeSkills: List<String>.of(['skill-a']),
+          activeMcpServers: List<String>.of(['mcp-a']),
+          activeLspServers: List<String>.of(['lsp-a']),
+        ),
+      ),
+    );
+    expect(throughput.read()?.tokensPerSecond, 40);
+    expect(throughputNotifications, 1);
+    expect(contextNotifications, 0);
+    expect(chromeNotifications, 0);
+
+    final chromeBeforeInvalidate = chrome.read();
+    chromeNotifications = 0;
+    container.invalidate(statusBarViewProvider('thread-main'));
+    expect(
+      chrome.read(),
+      chromeBeforeInvalidate,
+      reason: 'rebuilding statusBar without settings/chrome change is equal',
+    );
+    expect(chromeNotifications, 0);
+
+    session.applyNotification(
+      ThreadNotificationFrame(
+        threadId: 'thread-main',
+        epoch: session.state.streamEpoch ?? 1,
+        baseRevision: session.state.revision,
+        revision: session.state.revision + 1,
+        update: const ThreadActivityUpdate(
+          activity: ThreadActivityView(
+            threadId: 'thread-main',
+            identity: 'activity:turn-2:1:responding',
+            revision: 1,
+            turnId: 'turn-2',
+            kind: ThreadActivityKind.responding,
+            summary: 'streaming',
           ),
         ),
       ),
     );
-    expect(find.text('40 t/s'), findsOneWidget);
-
-    await tester.pumpWidget(
-      _harness(
-        _readout(
-          threadId: 'thread-2',
-          runtime: _runtime(turnCompletionTokens: 0, turnDecodeMillis: 0),
+    session.applyNotification(
+      ThreadNotificationFrame(
+        threadId: 'thread-main',
+        epoch: session.state.streamEpoch ?? 1,
+        baseRevision: session.state.revision,
+        revision: session.state.revision + 1,
+        update: const ThreadStorageUpdate(
+          storage: ThreadStorageStateView(acceptedSequence: 8),
         ),
       ),
     );
+    expect(throughput.read()?.tokensPerSecond, 40);
+    expect(throughputNotifications, 1);
+    expect(contextNotifications, 0);
+    expect(chromeNotifications, 0);
+
+    session.applyNotification(
+      _runtimeFrame(
+        session,
+        session.state.runtime!.copyWith(
+          activeSkills: List<String>.of(['skill-a', 'skill-b']),
+          activeMcpServers: List<String>.of(['mcp-a']),
+          activeLspServers: List<String>.of(['lsp-a']),
+        ),
+      ),
+    );
+    expect(chrome.read()?.activeSkills, ['skill-a', 'skill-b']);
+    expect(chromeNotifications, 1);
+    expect(throughput.read()?.tokensPerSecond, 40);
+    expect(throughputNotifications, 1);
+    expect(contextNotifications, 0);
+
+    expect(transport.timelines, hasLength(timelineConnections));
+    expect(graph.client.existingSession('thread-main'), same(session));
+
+    final alt = container.listen(
+      statusThroughputProjectionProvider('thread-alt'),
+      (_, _) {},
+    );
+    expect(alt.read()?.tokensPerSecond, isNull);
+    alt.close();
+
+    throughput.close();
+    context.close();
+    chrome.close();
+    await container.pump();
+    expect(graph.client.existingSession('thread-main'), same(session));
+    expect(graph.client.composer('thread-main').state.draft, 'keep this draft');
     expect(
-      find.text('- t/s'),
-      findsOneWidget,
-      reason: 'a new thread must not inherit the previous thread speed',
+      graph.client.budget.used(ResourceKind.observer),
+      lessThan(observersBefore),
     );
   });
 }
 
-Widget _harness(Widget child) {
-  return MaterialApp(
-    locale: const Locale('en'),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
-    supportedLocales: AppLocalizations.supportedLocales,
-    home: Scaffold(body: Center(child: child)),
+ThreadNotificationFrame _runtimeFrame(
+  StudioThreadSession session,
+  ThreadRuntimeView runtime,
+) {
+  return ThreadNotificationFrame(
+    threadId: 'thread-main',
+    epoch: session.state.streamEpoch ?? 1,
+    baseRevision: session.state.revision,
+    revision: session.state.revision + 1,
+    update: ThreadRuntimeUpdate(runtime: runtime, todo: null),
   );
 }
 
-Widget _readout({
-  required String threadId,
-  required ThreadRuntimeView runtime,
-}) {
-  return ThreadThroughputReadout(
-    key: StudioDriverKeys.threadThroughput,
-    threadId: threadId,
-    runtime: runtime,
-  );
-}
-
-ThreadRuntimeView _runtime({
-  int contextTokens = 0,
-  int turnCompletionTokens = 25,
-  int turnDecodeMillis = 1000,
-  ThreadRuntimeLiveUsageView? liveUsage,
-}) {
-  return ThreadRuntimeView(
-    model: 'fixture-model',
-    contextTokens: contextTokens,
-    contextWindow: 128000,
-    totalTokens: 100,
-    costLabel: '-',
-    activeSkills: const [],
-    activeMcpServers: const [],
-    activeLspServers: const [],
-    turnCompletionTokens: turnCompletionTokens,
-    turnDecodeMillis: turnDecodeMillis,
-    liveUsage: liveUsage,
-  );
-}
-
-ThreadRuntimeLiveUsageView _liveUsage({
-  required String turnId,
-  required String attemptId,
-  required int completionTokens,
-  int? decodeMillis,
-  int observationSequence = 1,
-}) {
-  return ThreadRuntimeLiveUsageView(
-    turnId: turnId,
-    attemptId: attemptId,
-    completionTokens: completionTokens,
-    decodeMillis: decodeMillis,
-    state: ThreadRuntimeUsageState.live,
-    observationSequence: observationSequence,
-  );
-}
+DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));

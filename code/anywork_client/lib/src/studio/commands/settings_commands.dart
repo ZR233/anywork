@@ -29,20 +29,20 @@ class SettingsCommands {
     );
   }
 
-  Future<SettingsStateSnapshot> saveProvider(ProviderCommand command) {
+  Future<SettingsStateSnapshot> saveAccount(AccountCommand command) {
     return _run(
-      'provider:${command.id}',
-      target: CommandTarget(providerId: command.id, label: command.name),
+      'account:${command.id}',
+      target: CommandTarget(accountId: command.id, label: command.name),
       (revision, operationId) =>
-          _api.saveProvider(revision, command, operationId: operationId),
+          _api.saveAccount(revision, command, operationId: operationId),
     );
   }
 
   /// 只持有目标模型意图；在串行 lane 内、每次 CAS 重试时都基于最新 canonical 重建。
   /// 其它模型覆盖、目录、endpoint 和凭据不会被发起输入时的旧快照覆盖。
   Future<SettingsStateSnapshot> setModelAutoCompactLimit(
-    String providerId,
-    String slug,
+    String accountId,
+    String modelId,
     int? limit,
   ) {
     if (limit != null && limit <= 0) {
@@ -51,61 +51,57 @@ class SettingsCommands {
       );
     }
     return _run(
-      'model-auto-compact:${providerId.length}:$providerId:$slug',
-      target: CommandTarget(providerId: providerId, model: slug),
+      'model-auto-compact:${accountId.length}:$accountId:$modelId',
+      target: CommandTarget(accountId: accountId, modelId: modelId),
       (revision, operationId) {
-        final provider = _client.settings.state.canonical?.providers
-            .where((provider) => provider.id == providerId)
+        final account = _client.settings.state.canonical?.accounts
+            .where((account) => account.id == accountId)
             .firstOrNull;
-        final model = provider?.models
-            .where((model) => model.slug == slug)
+        final model = account?.models
+            .where((model) => model.modelId == modelId)
             .firstOrNull;
-        if (provider == null || model == null) {
+        if (account == null || model == null) {
           throw StudioFailure(
             code: StudioFailureCode.notFound,
-            message: 'Provider model is unavailable: $providerId/$slug',
+            message: 'Account model is unavailable: $accountId/$modelId',
             retryable: false,
             correlationId: 'client-model-auto-compact',
           );
         }
-        final updated = provider.withAutoCompactLimit(
-          provider.autoCompactLimitFor(model).withOverride(limit),
+        final updated = account.withAutoCompactLimit(
+          AccountModelAutoCompactView(modelId: modelId, overrideLimit: limit),
         );
-        final command = ProviderCommandBuilder.buildProvider(
+        final command = AccountCommandBuilder.buildAccount(
           updated,
-          originalId: provider.id,
-          secret: const ProviderSecretCommand.preserve(),
+          secret: const AccountSecretCommand.preserve(),
         );
-        return _api.saveProvider(revision, command, operationId: operationId);
+        return _api.saveAccount(revision, command, operationId: operationId);
       },
     );
   }
 
-  Future<SettingsStateSnapshot> removeProviderModel(
-    String providerId,
-    String slug,
+  Future<SettingsStateSnapshot> removeAccountModel(
+    String accountId,
+    String modelId,
   ) {
     return _run(
-      'provider-model:${providerId.length}:$providerId:$slug',
-      target: CommandTarget(providerId: providerId, model: slug),
-      (revision, _) => _api.removeProviderModel(revision, providerId, slug),
+      'account-model:${accountId.length}:$accountId:$modelId',
+      target: CommandTarget(accountId: accountId, modelId: modelId),
+      (revision, _) => _api.removeAccountModel(revision, accountId, modelId),
     );
   }
 
-  Future<SettingsStateSnapshot> removeProvider(
-    String providerId, {
-    String? replacementProviderId,
+  Future<SettingsStateSnapshot> removeAccount(
+    String accountId, {
+    String? replacementAccountId,
   }) {
     return _run(
-      'provider:$providerId',
-      target: CommandTarget(
-        providerId: providerId,
-        label: replacementProviderId,
-      ),
-      (revision, operationId) => _api.removeProvider(
+      'account:$accountId',
+      target: CommandTarget(accountId: accountId, label: replacementAccountId),
+      (revision, operationId) => _api.removeAccount(
         revision,
-        providerId,
-        replacementProviderId: replacementProviderId,
+        accountId,
+        replacementAccountId: replacementAccountId,
         operationId: operationId,
       ),
     );
@@ -113,12 +109,12 @@ class SettingsCommands {
 
   Future<void> setModeModelField({
     ThreadModeId? mode,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
   }) async {
     if (mode == null) return;
     await applySettingsField(
-      ModeModelCommand(modeId: mode.id, providerId: providerId, model: model),
+      ModeModelCommand(modeId: mode.id, accountId: accountId, modelId: modelId),
       mutationKey: 'new-thread-route:model:${mode.id}',
     );
   }
@@ -136,11 +132,11 @@ class SettingsCommands {
 
   Future<void> setRoleModelField({
     required String roleKey,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
   }) {
     return applySettingsField(
-      RoleModelCommand(role: roleKey, providerId: providerId, model: model),
+      RoleModelCommand(role: roleKey, accountId: accountId, modelId: modelId),
       mutationKey: 'agent-role:model:$roleKey',
     );
   }
@@ -171,23 +167,21 @@ class SettingsCommands {
     );
   }
 
-  Future<void> setDefaultProvider(String providerId) async {
-    await _run(
-      'default-provider',
-      target: CommandTarget(providerId: providerId),
-      (revision, operationId) {
-        final providers =
-            _client.settings.state.canonical?.providers ?? const [];
-        if (!providers.any((provider) => provider.id == providerId)) {
-          throw StateError('Provider is unavailable: $providerId');
-        }
-        return _api.setDefaultProvider(
-          revision,
-          providerId,
-          operationId: operationId,
-        );
-      },
-    );
+  Future<void> setDefaultAccount(String accountId) async {
+    await _run('default-account', target: CommandTarget(accountId: accountId), (
+      revision,
+      operationId,
+    ) {
+      final accounts = _client.settings.state.canonical?.accounts ?? const [];
+      if (!accounts.any((account) => account.id == accountId)) {
+        throw StateError('Account is unavailable: $accountId');
+      }
+      return _api.setDefaultAccount(
+        revision,
+        accountId,
+        operationId: operationId,
+      );
+    });
   }
 
   Future<void> saveUserAgentProfile(AgentProfileDraft draft) async {
@@ -366,13 +360,13 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
 CommandTarget settingsFieldTarget(
   SettingsFieldCommand command,
 ) => switch (command) {
-  ModeModelCommand(:final providerId, :final model) => CommandTarget(
-    providerId: providerId,
-    model: model,
+  ModeModelCommand(:final accountId, :final modelId) => CommandTarget(
+    accountId: accountId,
+    modelId: modelId,
   ),
-  RoleModelCommand(:final providerId, :final model) => CommandTarget(
-    providerId: providerId,
-    model: model,
+  RoleModelCommand(:final accountId, :final modelId) => CommandTarget(
+    accountId: accountId,
+    modelId: modelId,
   ),
   ModeReasoningEffortCommand(:final effort) => CommandTarget(effort: effort),
   RoleReasoningEffortCommand(:final effort) => CommandTarget(effort: effort),

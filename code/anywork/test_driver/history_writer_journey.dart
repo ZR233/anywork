@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 // Public snapshot helpers shared with the realtime journey: this journey reads
 // the same Driver projection (workspace/timeline/conversationActivity) and must
 // not fork a second reading of it.
@@ -40,28 +41,61 @@ const _terminalTurnStatuses = <String>{
   'budgetLimited',
 };
 
-/// Live pointer-free progress token for the current turn.
+/// 分域真实字节：正文、工具进度、逐字段详情引用。
 ///
-/// Grows whenever assistant text is appended or a row is added, so a later
-/// observation is provably a *new* update and never a re-read of the same
-/// snapshot. Evidence only: it is never a performance measurement.
-int _streamingRevision(Map<String, dynamic> snapshot) {
-  var revision = 0;
-  final delivery = contentDelivery(snapshot);
-  if (delivery != null && delivery['enabled'] == true) {
-    final patches = delivery['patches'];
-    final changes = delivery['contentChanges'];
-    if (patches is int) revision += patches;
-    if (changes is int) revision += changes;
-  }
-  final rows = timelineRows(snapshot);
-  revision += rows.length;
-  for (final row in rows) {
-    final text = row['text'];
-    if (text is String) revision += text.length;
-  }
-  return revision;
+/// reasoning 的摘要/正文在行内 `text` 为空，只经 typed 详情引用交付，因此必须把每个
+/// 字段的 `totalBytes`/`previewBytes` 计入；这些是真实内容长度，不是 `revision`、
+/// 保存/终态、行数或运行状态。
+final class _ContentBytes {
+  const _ContentBytes({
+    required this.text,
+    required this.toolProgress,
+    required this.details,
+  });
+
+  final int text;
+  final int toolProgress;
+  final int details;
+
+  int get total => text + toolProgress + details;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'text': text,
+    'toolProgress': toolProgress,
+    'details': details,
+    'total': total,
+  };
 }
+
+_ContentBytes _contentBytes(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) {
+    return const _ContentBytes(text: 0, toolProgress: 0, details: 0);
+  }
+  var text = 0;
+  var toolProgress = 0;
+  var details = 0;
+  for (final item in timeline.items) {
+    text += item.textBytes;
+    toolProgress += item.tool?.progressBytes ?? 0;
+    for (final detail in item.details) {
+      details += detail.totalBytes + detail.previewBytes;
+    }
+  }
+  return _ContentBytes(
+    text: text,
+    toolProgress: toolProgress,
+    details: details,
+  );
+}
+
+/// Live pointer-free progress token over real typed bytes only.
+///
+/// 只累加真实内容字节（正文 UTF-8、工具进度、逐字段详情 total/preview），因此后续
+/// 观测证明的是**新内容**，不是同一快照重读、行数/状态变化或单纯 revision 抖动。
+/// Evidence only: it is never a performance measurement.
+int _streamingRevision(Map<String, dynamic> snapshot) =>
+    _contentBytes(snapshot).total;
 
 Future<void> main(List<String> args) async {
   if (args.length != 4) {
@@ -243,7 +277,8 @@ class HistoryLockJourney {
     counts['lockedTurnId'] = turn;
     timings['lockedSubmittedAt'] = lockedAt;
     final samples = <Map<String, Object?>>[];
-    var revision = _streamingRevision(running);
+    var domains = _contentBytes(running);
+    var revision = domains.total;
     var growth = 0;
     for (var step = 0; step < 8 && growth < 3; step++) {
       final next = await waitFor(
@@ -253,17 +288,22 @@ class HistoryLockJourney {
         timeout: const Duration(seconds: 45),
         abort: turnFailed,
       );
-      revision = _streamingRevision(next);
+      final after = _contentBytes(next);
       growth += 1;
       final activity = conversationActivity(next);
       samples.add(<String, Object?>{
         'step': growth,
-        'revision': revision,
+        'revision': after.total,
+        'bytesBefore': domains.toJson(),
+        'bytesAfter': after.toJson(),
+        'bytesDelta': after.total - domains.total,
         'rows': timelineRows(next).length,
         'busy': isBusy(next),
         'activityIdentity': activity?['identity'],
         'activityKind': activity?['kind'],
       });
+      domains = after;
+      revision = after.total;
     }
     checks['liveContentGrowsWhileWriterLocked'] = growth >= 3;
     counts['liveGrowthSamples'] = samples.length;
@@ -287,8 +327,9 @@ class HistoryLockJourney {
     }
     // No tool may start on the locked turn: the fault-safe boundary forbids new
     // model/tool work while persistence cannot commit.
+    // 写锁期间必须没有任何 canonical 工具条目（不再有活动组合并行）。
     checks['noToolStartedWhileWriterLocked'] = timelineRows(liveSnapshot)
-        .where((row) => row['type'] == 'activityGroup')
+        .where((row) => row['kind'] == 'toolCall')
         .isEmpty;
     await shot('locked-live');
 

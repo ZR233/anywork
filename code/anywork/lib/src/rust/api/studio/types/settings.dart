@@ -10,30 +10,411 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
-/// Provider 配置中由用户定义的模型，不复制内置 catalog 元数据。
+class AccountInput {
+  final String accountId;
+  final String? templateId;
+  final String protocol;
+  final String name;
+  final String baseUrl;
+  final AccountSecretInput secret;
+  final bool pricingEnabled;
+  final List<AccountModelInput> customModels;
+  final List<AccountModelConnectionInput> modelConnectionModes;
+  final List<AccountModelAutoCompactInput> modelAutoCompactLimits;
+
+  const AccountInput({
+    required this.accountId,
+    this.templateId,
+    required this.protocol,
+    required this.name,
+    required this.baseUrl,
+    required this.secret,
+    required this.pricingEnabled,
+    required this.customModels,
+    required this.modelConnectionModes,
+    required this.modelAutoCompactLimits,
+  });
+
+  @override
+  int get hashCode =>
+      accountId.hashCode ^
+      templateId.hashCode ^
+      protocol.hashCode ^
+      name.hashCode ^
+      baseUrl.hashCode ^
+      secret.hashCode ^
+      pricingEnabled.hashCode ^
+      customModels.hashCode ^
+      modelConnectionModes.hashCode ^
+      modelAutoCompactLimits.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountInput &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          templateId == other.templateId &&
+          protocol == other.protocol &&
+          name == other.name &&
+          baseUrl == other.baseUrl &&
+          secret == other.secret &&
+          pricingEnabled == other.pricingEnabled &&
+          customModels == other.customModels &&
+          modelConnectionModes == other.modelConnectionModes &&
+          modelAutoCompactLimits == other.modelAutoCompactLimits;
+}
+
+/// 某模型上下文压缩阈值用户覆盖的输入项；`limit` 必须为正整数 tokens。
+class AccountModelAutoCompactInput {
+  final String modelId;
+  final BigInt limit;
+
+  const AccountModelAutoCompactInput({
+    required this.modelId,
+    required this.limit,
+  });
+
+  @override
+  int get hashCode => modelId.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountModelAutoCompactInput &&
+          runtimeType == other.runtimeType &&
+          modelId == other.modelId &&
+          limit == other.limit;
+}
+
+class AccountModelConnectionInput {
+  final String modelId;
+  final String connectionMode;
+
+  const AccountModelConnectionInput({
+    required this.modelId,
+    required this.connectionMode,
+  });
+
+  @override
+  int get hashCode => modelId.hashCode ^ connectionMode.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountModelConnectionInput &&
+          runtimeType == other.runtimeType &&
+          modelId == other.modelId &&
+          connectionMode == other.connectionMode;
+}
+
+class AccountModelInput {
+  final String modelId;
+  final String displayName;
+  final String wireApi;
+  final BigInt? contextWindow;
+  final BigInt? maxOutputTokens;
+
+  const AccountModelInput({
+    required this.modelId,
+    required this.displayName,
+    required this.wireApi,
+    this.contextWindow,
+    this.maxOutputTokens,
+  });
+
+  @override
+  int get hashCode =>
+      modelId.hashCode ^
+      displayName.hashCode ^
+      wireApi.hashCode ^
+      contextWindow.hashCode ^
+      maxOutputTokens.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountModelInput &&
+          runtimeType == other.runtimeType &&
+          modelId == other.modelId &&
+          displayName == other.displayName &&
+          wireApi == other.wireApi &&
+          contextWindow == other.contextWindow &&
+          maxOutputTokens == other.maxOutputTokens;
+}
+
+@freezed
+sealed class AccountSecretInput with _$AccountSecretInput {
+  const AccountSecretInput._();
+
+  const factory AccountSecretInput.preserve() = AccountSecretInput_Preserve;
+  const factory AccountSecretInput.replace({required String value}) =
+      AccountSecretInput_Replace;
+  const factory AccountSecretInput.clear() = AccountSecretInput_Clear;
+}
+
+class AccountSettingsInput {
+  /// A single account edit.  Default account, mode routes and role routes
+  /// have their own commands and are intentionally absent from this input.
+  final AccountInput account;
+
+  const AccountSettingsInput({required this.account});
+
+  @override
+  int get hashCode => account.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountSettingsInput &&
+          runtimeType == other.runtimeType &&
+          account == other.account;
+}
+
+class BridgeAccountCatalogSnapshot {
+  final int schemaVersion;
+  final String revision;
+  final List<BridgeAccountTemplateDescriptor> templates;
+  final List<BridgeModelCatalogDescriptor> modelCatalogs;
+
+  const BridgeAccountCatalogSnapshot({
+    required this.schemaVersion,
+    required this.revision,
+    required this.templates,
+    required this.modelCatalogs,
+  });
+
+  @override
+  int get hashCode =>
+      schemaVersion.hashCode ^
+      revision.hashCode ^
+      templates.hashCode ^
+      modelCatalogs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAccountCatalogSnapshot &&
+          runtimeType == other.runtimeType &&
+          schemaVersion == other.schemaVersion &&
+          revision == other.revision &&
+          templates == other.templates &&
+          modelCatalogs == other.modelCatalogs;
+}
+
+/// 不含 secret 的 Account canonical 设置视图。
+class BridgeAccountSettingsDto {
+  final bool pricingEnabled;
+  final String accountId;
+
+  /// 可选的内置账号模板引用；完全自定义账号为 `None`。
+  final String? templateId;
+
+  /// 明确的厂商协议适配选择。
+  final String protocol;
+  final String name;
+  final String baseUrl;
+  final bool hasBearerToken;
+  final BigInt usageQueryRevision;
+  final bool credentialRequired;
+  final String capabilitySource;
+  final bool hostedWebSearch;
+  final String hostedWebSearchDialect;
+  final String? standaloneWebSearch;
+  final String promptCacheDialect;
+  final bool responsesProgrammaticToolCalling;
+
+  /// 目录或创建路由的默认模型投影；不是账号 runtime 的第二份模型选择。
+  final String defaultModelId;
+  final List<BridgeCustomModelSettingsDto> customModels;
+  final List<BridgeModelConnectionSettingsDto> modelConnectionModes;
+  final List<BridgeModelAutoCompactSettingsDto> modelAutoCompactLimits;
+  final String? catalogId;
+
+  const BridgeAccountSettingsDto({
+    required this.pricingEnabled,
+    required this.accountId,
+    this.templateId,
+    required this.protocol,
+    required this.name,
+    required this.baseUrl,
+    required this.hasBearerToken,
+    required this.usageQueryRevision,
+    required this.credentialRequired,
+    required this.capabilitySource,
+    required this.hostedWebSearch,
+    required this.hostedWebSearchDialect,
+    this.standaloneWebSearch,
+    required this.promptCacheDialect,
+    required this.responsesProgrammaticToolCalling,
+    required this.defaultModelId,
+    required this.customModels,
+    required this.modelConnectionModes,
+    required this.modelAutoCompactLimits,
+    this.catalogId,
+  });
+
+  @override
+  int get hashCode =>
+      pricingEnabled.hashCode ^
+      accountId.hashCode ^
+      templateId.hashCode ^
+      protocol.hashCode ^
+      name.hashCode ^
+      baseUrl.hashCode ^
+      hasBearerToken.hashCode ^
+      usageQueryRevision.hashCode ^
+      credentialRequired.hashCode ^
+      capabilitySource.hashCode ^
+      hostedWebSearch.hashCode ^
+      hostedWebSearchDialect.hashCode ^
+      standaloneWebSearch.hashCode ^
+      promptCacheDialect.hashCode ^
+      responsesProgrammaticToolCalling.hashCode ^
+      defaultModelId.hashCode ^
+      customModels.hashCode ^
+      modelConnectionModes.hashCode ^
+      modelAutoCompactLimits.hashCode ^
+      catalogId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAccountSettingsDto &&
+          runtimeType == other.runtimeType &&
+          pricingEnabled == other.pricingEnabled &&
+          accountId == other.accountId &&
+          templateId == other.templateId &&
+          protocol == other.protocol &&
+          name == other.name &&
+          baseUrl == other.baseUrl &&
+          hasBearerToken == other.hasBearerToken &&
+          usageQueryRevision == other.usageQueryRevision &&
+          credentialRequired == other.credentialRequired &&
+          capabilitySource == other.capabilitySource &&
+          hostedWebSearch == other.hostedWebSearch &&
+          hostedWebSearchDialect == other.hostedWebSearchDialect &&
+          standaloneWebSearch == other.standaloneWebSearch &&
+          promptCacheDialect == other.promptCacheDialect &&
+          responsesProgrammaticToolCalling ==
+              other.responsesProgrammaticToolCalling &&
+          defaultModelId == other.defaultModelId &&
+          customModels == other.customModels &&
+          modelConnectionModes == other.modelConnectionModes &&
+          modelAutoCompactLimits == other.modelAutoCompactLimits &&
+          catalogId == other.catalogId;
+}
+
+class BridgeAccountTemplateDescriptor {
+  final bool pricingEnabled;
+  final String id;
+  final String displayName;
+  final String? description;
+  final String baseUrl;
+  final String credentialLabel;
+  final String? credentialEnv;
+  final String modelCatalogId;
+
+  /// 模板默认的厂商协议；与 ProtocolKind 的 wire 值一致。
+  final String protocol;
+  final String suggestedModelId;
+  final String? iconKey;
+  final BridgeServiceCapabilitiesDescriptor serviceCapabilities;
+
+  const BridgeAccountTemplateDescriptor({
+    required this.pricingEnabled,
+    required this.id,
+    required this.displayName,
+    this.description,
+    required this.baseUrl,
+    required this.credentialLabel,
+    this.credentialEnv,
+    required this.modelCatalogId,
+    required this.protocol,
+    required this.suggestedModelId,
+    this.iconKey,
+    required this.serviceCapabilities,
+  });
+
+  @override
+  int get hashCode =>
+      pricingEnabled.hashCode ^
+      id.hashCode ^
+      displayName.hashCode ^
+      description.hashCode ^
+      baseUrl.hashCode ^
+      credentialLabel.hashCode ^
+      credentialEnv.hashCode ^
+      modelCatalogId.hashCode ^
+      protocol.hashCode ^
+      suggestedModelId.hashCode ^
+      iconKey.hashCode ^
+      serviceCapabilities.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAccountTemplateDescriptor &&
+          runtimeType == other.runtimeType &&
+          pricingEnabled == other.pricingEnabled &&
+          id == other.id &&
+          displayName == other.displayName &&
+          description == other.description &&
+          baseUrl == other.baseUrl &&
+          credentialLabel == other.credentialLabel &&
+          credentialEnv == other.credentialEnv &&
+          modelCatalogId == other.modelCatalogId &&
+          protocol == other.protocol &&
+          suggestedModelId == other.suggestedModelId &&
+          iconKey == other.iconKey &&
+          serviceCapabilities == other.serviceCapabilities;
+}
+
+class BridgeConnectionModeDescriptor {
+  final String id;
+  final String displayName;
+
+  const BridgeConnectionModeDescriptor({
+    required this.id,
+    required this.displayName,
+  });
+
+  @override
+  int get hashCode => id.hashCode ^ displayName.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeConnectionModeDescriptor &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          displayName == other.displayName;
+}
+
+/// Account 配置中由用户定义的模型，不复制内置 catalog 元数据。
 class BridgeCustomModelSettingsDto {
   final List<BridgeModelInputCapability> inputCapabilities;
-  final BigInt contextWindow;
-  final BigInt maxOutputTokens;
-  final String slug;
+  final BigInt? contextWindow;
+  final BigInt? maxOutputTokens;
+  final String modelId;
   final String displayName;
   final List<String> reasoningEfforts;
   final String baseInstructions;
-  final String wireProtocol;
+  final String wireApi;
   final List<String> supportedConnectionModes;
   final String defaultConnectionMode;
 
   const BridgeCustomModelSettingsDto({
     required this.inputCapabilities,
-    required this.contextWindow,
-    required this.maxOutputTokens,
-    required this.slug,
+    this.contextWindow,
+    this.maxOutputTokens,
+    required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
     required this.baseInstructions,
-    required this.wireProtocol,
+    required this.wireApi,
     required this.supportedConnectionModes,
     required this.defaultConnectionMode,
   });
@@ -43,11 +424,11 @@ class BridgeCustomModelSettingsDto {
       inputCapabilities.hashCode ^
       contextWindow.hashCode ^
       maxOutputTokens.hashCode ^
-      slug.hashCode ^
+      modelId.hashCode ^
       displayName.hashCode ^
       reasoningEfforts.hashCode ^
       baseInstructions.hashCode ^
-      wireProtocol.hashCode ^
+      wireApi.hashCode ^
       supportedConnectionModes.hashCode ^
       defaultConnectionMode.hashCode;
 
@@ -59,11 +440,11 @@ class BridgeCustomModelSettingsDto {
           inputCapabilities == other.inputCapabilities &&
           contextWindow == other.contextWindow &&
           maxOutputTokens == other.maxOutputTokens &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           displayName == other.displayName &&
           reasoningEfforts == other.reasoningEfforts &&
           baseInstructions == other.baseInstructions &&
-          wireProtocol == other.wireProtocol &&
+          wireApi == other.wireApi &&
           supportedConnectionModes == other.supportedConnectionModes &&
           defaultConnectionMode == other.defaultConnectionMode;
 }
@@ -75,7 +456,7 @@ class BridgeDeepSeekWebSearchSettingsDto {
   final bool configuredFetchEnabled;
   final bool effectiveFetchEnabled;
   final String availability;
-  final String? providerId;
+  final String? accountId;
 
   const BridgeDeepSeekWebSearchSettingsDto({
     required this.configuredEnabled,
@@ -83,7 +464,7 @@ class BridgeDeepSeekWebSearchSettingsDto {
     required this.configuredFetchEnabled,
     required this.effectiveFetchEnabled,
     required this.availability,
-    this.providerId,
+    this.accountId,
   });
 
   @override
@@ -93,7 +474,7 @@ class BridgeDeepSeekWebSearchSettingsDto {
       configuredFetchEnabled.hashCode ^
       effectiveFetchEnabled.hashCode ^
       availability.hashCode ^
-      providerId.hashCode;
+      accountId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -105,7 +486,7 @@ class BridgeDeepSeekWebSearchSettingsDto {
           configuredFetchEnabled == other.configuredFetchEnabled &&
           effectiveFetchEnabled == other.effectiveFetchEnabled &&
           availability == other.availability &&
-          providerId == other.providerId;
+          accountId == other.accountId;
 }
 
 /// Flutter 本地通用设置的 typed 快照。
@@ -225,23 +606,23 @@ class BridgeMcpServerSettingsDto {
           mutationPolicy == other.mutationPolicy;
 }
 
-/// Thread Mode 到默认 provider/model/effort 的 canonical 路由。
+/// Thread Mode 到默认 account/model/effort 的 canonical 路由。
 class BridgeModeModelSettingsDto {
   final String modeId;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String effort;
 
   const BridgeModeModelSettingsDto({
     required this.modeId,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
   });
 
   @override
   int get hashCode =>
-      modeId.hashCode ^ providerId.hashCode ^ model.hashCode ^ effort.hashCode;
+      modeId.hashCode ^ accountId.hashCode ^ modelId.hashCode ^ effort.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -249,45 +630,31 @@ class BridgeModeModelSettingsDto {
       other is BridgeModeModelSettingsDto &&
           runtimeType == other.runtimeType &&
           modeId == other.modeId &&
-          providerId == other.providerId &&
-          model == other.model &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
           effort == other.effort;
 }
 
-/// provider 实例中某模型上下文压缩阈值的三层 canonical 视图。
+/// account 实例中某模型上下文压缩阈值的三层 canonical 视图。
 class BridgeModelAutoCompactSettingsDto {
-  final String slug;
-  final BigInt? defaultLimit;
+  final String modelId;
   final BigInt? overrideLimit;
-  final BigInt? effectiveLimit;
-  final BigInt? safeLimit;
 
   const BridgeModelAutoCompactSettingsDto({
-    required this.slug,
-    this.defaultLimit,
+    required this.modelId,
     this.overrideLimit,
-    this.effectiveLimit,
-    this.safeLimit,
   });
 
   @override
-  int get hashCode =>
-      slug.hashCode ^
-      defaultLimit.hashCode ^
-      overrideLimit.hashCode ^
-      effectiveLimit.hashCode ^
-      safeLimit.hashCode;
+  int get hashCode => modelId.hashCode ^ overrideLimit.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeModelAutoCompactSettingsDto &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
-          defaultLimit == other.defaultLimit &&
-          overrideLimit == other.overrideLimit &&
-          effectiveLimit == other.effectiveLimit &&
-          safeLimit == other.safeLimit;
+          modelId == other.modelId &&
+          overrideLimit == other.overrideLimit;
 }
 
 class BridgeModelCapabilities {
@@ -353,6 +720,33 @@ class BridgeModelCapabilities {
           nativeContextFamily == other.nativeContextFamily;
 }
 
+/// A account's observed model directory. This belongs to the catalog clock,
+/// not to the account configuration snapshot.
+class BridgeModelCatalogAccountDto {
+  final String accountId;
+  final List<BridgeModelDescriptor> effectiveModels;
+  final BridgeModelCatalogStatusDto modelCatalog;
+
+  const BridgeModelCatalogAccountDto({
+    required this.accountId,
+    required this.effectiveModels,
+    required this.modelCatalog,
+  });
+
+  @override
+  int get hashCode =>
+      accountId.hashCode ^ effectiveModels.hashCode ^ modelCatalog.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelCatalogAccountDto &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          effectiveModels == other.effectiveModels &&
+          modelCatalog == other.modelCatalog;
+}
+
 enum BridgeModelCatalogCacheWarning { read, schema, identity, declaration }
 
 class BridgeModelCatalogDescriptor {
@@ -401,33 +795,6 @@ sealed class BridgeModelCatalogError with _$BridgeModelCatalogError {
       BridgeModelCatalogError_Closing;
 }
 
-/// A provider's observed model directory. This belongs to the catalog clock,
-/// not to the provider configuration snapshot.
-class BridgeModelCatalogProviderDto {
-  final String id;
-  final List<BridgeModelDescriptor> effectiveModels;
-  final BridgeModelCatalogStatusDto modelCatalog;
-
-  const BridgeModelCatalogProviderDto({
-    required this.id,
-    required this.effectiveModels,
-    required this.modelCatalog,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^ effectiveModels.hashCode ^ modelCatalog.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeModelCatalogProviderDto &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          effectiveModels == other.effectiveModels &&
-          modelCatalog == other.modelCatalog;
-}
-
 enum BridgeModelCatalogSource { default_, cached, online }
 
 class BridgeModelCatalogStatusDto {
@@ -473,36 +840,80 @@ class BridgeModelCatalogStatusDto {
           cacheWarning == other.cacheWarning;
 }
 
-/// Provider 实例对 canonical catalog 模型的连接方式覆盖。
+/// Account 实例对 canonical catalog 模型的连接方式覆盖。
 class BridgeModelConnectionSettingsDto {
-  final String slug;
+  final String modelId;
   final String connectionMode;
 
   const BridgeModelConnectionSettingsDto({
-    required this.slug,
+    required this.modelId,
     required this.connectionMode,
   });
 
   @override
-  int get hashCode => slug.hashCode ^ connectionMode.hashCode;
+  int get hashCode => modelId.hashCode ^ connectionMode.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeModelConnectionSettingsDto &&
           runtimeType == other.runtimeType &&
-          slug == other.slug &&
+          modelId == other.modelId &&
           connectionMode == other.connectionMode;
 }
 
+enum BridgeModelContextAdjustment { safetyLimit }
+
+class BridgeModelContextResolution {
+  final BridgeModelContextUnavailable? unavailable;
+  final BigInt? contextWindow;
+  final BigInt? inputTokenLimit;
+  final BigInt? autoCompactLimit;
+  final BridgeModelContextAdjustment? adjustment;
+
+  const BridgeModelContextResolution({
+    this.unavailable,
+    this.contextWindow,
+    this.inputTokenLimit,
+    this.autoCompactLimit,
+    this.adjustment,
+  });
+
+  @override
+  int get hashCode =>
+      unavailable.hashCode ^
+      contextWindow.hashCode ^
+      inputTokenLimit.hashCode ^
+      autoCompactLimit.hashCode ^
+      adjustment.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelContextResolution &&
+          runtimeType == other.runtimeType &&
+          unavailable == other.unavailable &&
+          contextWindow == other.contextWindow &&
+          inputTokenLimit == other.inputTokenLimit &&
+          autoCompactLimit == other.autoCompactLimit &&
+          adjustment == other.adjustment;
+}
+
+enum BridgeModelContextUnavailable {
+  windowUnknown,
+  invalidParameters,
+  inputBudgetExhausted,
+}
+
 class BridgeModelDescriptor {
-  final String id;
+  final String modelId;
+  final List<BridgeModelTypeSupport> typeSupport;
   final BridgeModelOrigin origin;
   final String displayName;
   final String? description;
   final BigInt? contextWindow;
   final BigInt? maxContextWindow;
-  final BigInt? autoCompactTokenLimit;
+  final BridgeModelContextResolution context;
   final BigInt? maxOutputTokens;
   final BridgeModelTransportDescriptor transport;
   final BridgeModelCapabilities capabilities;
@@ -510,13 +921,14 @@ class BridgeModelDescriptor {
   final BridgeModelPricing? pricing;
 
   const BridgeModelDescriptor({
-    required this.id,
+    required this.modelId,
+    required this.typeSupport,
     required this.origin,
     required this.displayName,
     this.description,
     this.contextWindow,
     this.maxContextWindow,
-    this.autoCompactTokenLimit,
+    required this.context,
     this.maxOutputTokens,
     required this.transport,
     required this.capabilities,
@@ -526,13 +938,14 @@ class BridgeModelDescriptor {
 
   @override
   int get hashCode =>
-      id.hashCode ^
+      modelId.hashCode ^
+      typeSupport.hashCode ^
       origin.hashCode ^
       displayName.hashCode ^
       description.hashCode ^
       contextWindow.hashCode ^
       maxContextWindow.hashCode ^
-      autoCompactTokenLimit.hashCode ^
+      context.hashCode ^
       maxOutputTokens.hashCode ^
       transport.hashCode ^
       capabilities.hashCode ^
@@ -544,13 +957,14 @@ class BridgeModelDescriptor {
       identical(this, other) ||
       other is BridgeModelDescriptor &&
           runtimeType == other.runtimeType &&
-          id == other.id &&
+          modelId == other.modelId &&
+          typeSupport == other.typeSupport &&
           origin == other.origin &&
           displayName == other.displayName &&
           description == other.description &&
           contextWindow == other.contextWindow &&
           maxContextWindow == other.maxContextWindow &&
-          autoCompactTokenLimit == other.autoCompactTokenLimit &&
+          context == other.context &&
           maxOutputTokens == other.maxOutputTokens &&
           transport == other.transport &&
           capabilities == other.capabilities &&
@@ -711,7 +1125,7 @@ class BridgeModelReasoningDescriptor {
 
 class BridgeModelTransportDescriptor {
   final String protocol;
-  final List<BridgeProviderConnectionModeDescriptor> connectionModes;
+  final List<BridgeConnectionModeDescriptor> connectionModes;
   final String defaultConnectionMode;
 
   const BridgeModelTransportDescriptor({
@@ -736,123 +1150,72 @@ class BridgeModelTransportDescriptor {
           defaultConnectionMode == other.defaultConnectionMode;
 }
 
-class BridgeProviderCatalogSnapshot {
-  final int schemaVersion;
-  final String revision;
-  final List<BridgeProviderPresetDescriptor> presets;
-  final List<BridgeModelCatalogDescriptor> modelCatalogs;
+enum BridgeModelType { text }
 
-  const BridgeProviderCatalogSnapshot({
-    required this.schemaVersion,
-    required this.revision,
-    required this.presets,
-    required this.modelCatalogs,
+enum BridgeModelTypeExclusion {
+  textInputUnsupported,
+  textOutputUnsupported,
+  contextWindowUnknown,
+  contextParametersInvalid,
+  inputBudgetExhausted,
+}
+
+class BridgeModelTypeSupport {
+  final BridgeModelType modelType;
+  final List<BridgeModelTypeExclusion> exclusions;
+
+  const BridgeModelTypeSupport({
+    required this.modelType,
+    required this.exclusions,
+  });
+
+  @override
+  int get hashCode => modelType.hashCode ^ exclusions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelTypeSupport &&
+          runtimeType == other.runtimeType &&
+          modelType == other.modelType &&
+          exclusions == other.exclusions;
+}
+
+/// 角色到 account/model/effort 的 canonical 路由。
+class BridgeRoleSettingsDto {
+  final String key;
+  final String accountId;
+  final String modelId;
+  final String effort;
+
+  const BridgeRoleSettingsDto({
+    required this.key,
+    required this.accountId,
+    required this.modelId,
+    required this.effort,
   });
 
   @override
   int get hashCode =>
-      schemaVersion.hashCode ^
-      revision.hashCode ^
-      presets.hashCode ^
-      modelCatalogs.hashCode;
+      key.hashCode ^ accountId.hashCode ^ modelId.hashCode ^ effort.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeProviderCatalogSnapshot &&
+      other is BridgeRoleSettingsDto &&
           runtimeType == other.runtimeType &&
-          schemaVersion == other.schemaVersion &&
-          revision == other.revision &&
-          presets == other.presets &&
-          modelCatalogs == other.modelCatalogs;
+          key == other.key &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
+          effort == other.effort;
 }
 
-class BridgeProviderConnectionModeDescriptor {
-  final String id;
-  final String displayName;
-
-  const BridgeProviderConnectionModeDescriptor({
-    required this.id,
-    required this.displayName,
-  });
-
-  @override
-  int get hashCode => id.hashCode ^ displayName.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeProviderConnectionModeDescriptor &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          displayName == other.displayName;
-}
-
-class BridgeProviderPresetDescriptor {
-  final bool pricingEnabled;
-  final String id;
-  final String displayName;
-  final String? description;
-  final String baseUrl;
-  final String credentialLabel;
-  final String? credentialEnv;
-  final String modelCatalogId;
-  final String suggestedModel;
-  final String? iconKey;
-  final BridgeProviderServiceCapabilitiesDescriptor serviceCapabilities;
-
-  const BridgeProviderPresetDescriptor({
-    required this.pricingEnabled,
-    required this.id,
-    required this.displayName,
-    this.description,
-    required this.baseUrl,
-    required this.credentialLabel,
-    this.credentialEnv,
-    required this.modelCatalogId,
-    required this.suggestedModel,
-    this.iconKey,
-    required this.serviceCapabilities,
-  });
-
-  @override
-  int get hashCode =>
-      pricingEnabled.hashCode ^
-      id.hashCode ^
-      displayName.hashCode ^
-      description.hashCode ^
-      baseUrl.hashCode ^
-      credentialLabel.hashCode ^
-      credentialEnv.hashCode ^
-      modelCatalogId.hashCode ^
-      suggestedModel.hashCode ^
-      iconKey.hashCode ^
-      serviceCapabilities.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeProviderPresetDescriptor &&
-          runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
-          id == other.id &&
-          displayName == other.displayName &&
-          description == other.description &&
-          baseUrl == other.baseUrl &&
-          credentialLabel == other.credentialLabel &&
-          credentialEnv == other.credentialEnv &&
-          modelCatalogId == other.modelCatalogId &&
-          suggestedModel == other.suggestedModel &&
-          iconKey == other.iconKey &&
-          serviceCapabilities == other.serviceCapabilities;
-}
-
-class BridgeProviderServiceCapabilitiesDescriptor {
-  final BridgeWebSearchProviderCapabilitiesDescriptor webSearch;
+class BridgeServiceCapabilitiesDescriptor {
+  final BridgeWebSearchServiceCapabilitiesDescriptor webSearch;
   final String promptCacheDialect;
   final bool responsesProgrammaticToolCalling;
 
-  const BridgeProviderServiceCapabilitiesDescriptor({
+  const BridgeServiceCapabilitiesDescriptor({
     required this.webSearch,
     required this.promptCacheDialect,
     required this.responsesProgrammaticToolCalling,
@@ -867,134 +1230,12 @@ class BridgeProviderServiceCapabilitiesDescriptor {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeProviderServiceCapabilitiesDescriptor &&
+      other is BridgeServiceCapabilitiesDescriptor &&
           runtimeType == other.runtimeType &&
           webSearch == other.webSearch &&
           promptCacheDialect == other.promptCacheDialect &&
           responsesProgrammaticToolCalling ==
               other.responsesProgrammaticToolCalling;
-}
-
-/// 不含 secret 的 Provider canonical 设置视图。
-class BridgeProviderSettingsDto {
-  final bool pricingEnabled;
-  final String id;
-  final String templateKind;
-  final String name;
-  final String baseUrl;
-  final bool hasBearerToken;
-  final BigInt usageQueryRevision;
-  final bool credentialRequired;
-  final String capabilitySource;
-  final bool hostedWebSearch;
-  final String hostedWebSearchDialect;
-  final String? standaloneWebSearch;
-  final String promptCacheDialect;
-  final bool responsesProgrammaticToolCalling;
-  final String defaultModel;
-  final List<BridgeCustomModelSettingsDto> customModels;
-  final List<BridgeModelConnectionSettingsDto> modelConnectionModes;
-  final List<BridgeModelAutoCompactSettingsDto> modelAutoCompactLimits;
-  final String? catalogId;
-
-  const BridgeProviderSettingsDto({
-    required this.pricingEnabled,
-    required this.id,
-    required this.templateKind,
-    required this.name,
-    required this.baseUrl,
-    required this.hasBearerToken,
-    required this.usageQueryRevision,
-    required this.credentialRequired,
-    required this.capabilitySource,
-    required this.hostedWebSearch,
-    required this.hostedWebSearchDialect,
-    this.standaloneWebSearch,
-    required this.promptCacheDialect,
-    required this.responsesProgrammaticToolCalling,
-    required this.defaultModel,
-    required this.customModels,
-    required this.modelConnectionModes,
-    required this.modelAutoCompactLimits,
-    this.catalogId,
-  });
-
-  @override
-  int get hashCode =>
-      pricingEnabled.hashCode ^
-      id.hashCode ^
-      templateKind.hashCode ^
-      name.hashCode ^
-      baseUrl.hashCode ^
-      hasBearerToken.hashCode ^
-      usageQueryRevision.hashCode ^
-      credentialRequired.hashCode ^
-      capabilitySource.hashCode ^
-      hostedWebSearch.hashCode ^
-      hostedWebSearchDialect.hashCode ^
-      standaloneWebSearch.hashCode ^
-      promptCacheDialect.hashCode ^
-      responsesProgrammaticToolCalling.hashCode ^
-      defaultModel.hashCode ^
-      customModels.hashCode ^
-      modelConnectionModes.hashCode ^
-      modelAutoCompactLimits.hashCode ^
-      catalogId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeProviderSettingsDto &&
-          runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
-          id == other.id &&
-          templateKind == other.templateKind &&
-          name == other.name &&
-          baseUrl == other.baseUrl &&
-          hasBearerToken == other.hasBearerToken &&
-          usageQueryRevision == other.usageQueryRevision &&
-          credentialRequired == other.credentialRequired &&
-          capabilitySource == other.capabilitySource &&
-          hostedWebSearch == other.hostedWebSearch &&
-          hostedWebSearchDialect == other.hostedWebSearchDialect &&
-          standaloneWebSearch == other.standaloneWebSearch &&
-          promptCacheDialect == other.promptCacheDialect &&
-          responsesProgrammaticToolCalling ==
-              other.responsesProgrammaticToolCalling &&
-          defaultModel == other.defaultModel &&
-          customModels == other.customModels &&
-          modelConnectionModes == other.modelConnectionModes &&
-          modelAutoCompactLimits == other.modelAutoCompactLimits &&
-          catalogId == other.catalogId;
-}
-
-/// 角色到 provider/model/effort 的 canonical 路由。
-class BridgeRoleSettingsDto {
-  final String key;
-  final String providerId;
-  final String model;
-  final String effort;
-
-  const BridgeRoleSettingsDto({
-    required this.key,
-    required this.providerId,
-    required this.model,
-    required this.effort,
-  });
-
-  @override
-  int get hashCode =>
-      key.hashCode ^ providerId.hashCode ^ model.hashCode ^ effort.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeRoleSettingsDto &&
-          runtimeType == other.runtimeType &&
-          key == other.key &&
-          providerId == other.providerId &&
-          model == other.model &&
-          effort == other.effort;
 }
 
 /// Skills 页的 canonical 设置。
@@ -1047,8 +1288,8 @@ class BridgeSkillsSettingsDto {
 
 /// Studio 配置与本地界面设置的 canonical typed 快照。
 class BridgeStudioSettingsDto {
-  final String? defaultProviderId;
-  final List<BridgeProviderSettingsDto> providers;
+  final String? defaultAccountId;
+  final List<BridgeAccountSettingsDto> accounts;
   final List<BridgeModeModelSettingsDto> modeModelRoutes;
   final List<BridgeRoleSettingsDto> roles;
   final String permissionMode;
@@ -1060,8 +1301,8 @@ class BridgeStudioSettingsDto {
   final BridgeDeepSeekWebSearchSettingsDto deepseekWebSearch;
 
   const BridgeStudioSettingsDto({
-    this.defaultProviderId,
-    required this.providers,
+    this.defaultAccountId,
+    required this.accounts,
     required this.modeModelRoutes,
     required this.roles,
     required this.permissionMode,
@@ -1075,8 +1316,8 @@ class BridgeStudioSettingsDto {
 
   @override
   int get hashCode =>
-      defaultProviderId.hashCode ^
-      providers.hashCode ^
+      defaultAccountId.hashCode ^
+      accounts.hashCode ^
       modeModelRoutes.hashCode ^
       roles.hashCode ^
       permissionMode.hashCode ^
@@ -1092,8 +1333,8 @@ class BridgeStudioSettingsDto {
       identical(this, other) ||
       other is BridgeStudioSettingsDto &&
           runtimeType == other.runtimeType &&
-          defaultProviderId == other.defaultProviderId &&
-          providers == other.providers &&
+          defaultAccountId == other.defaultAccountId &&
+          accounts == other.accounts &&
           modeModelRoutes == other.modeModelRoutes &&
           roles == other.roles &&
           permissionMode == other.permissionMode &&
@@ -1105,12 +1346,12 @@ class BridgeStudioSettingsDto {
           deepseekWebSearch == other.deepseekWebSearch;
 }
 
-class BridgeWebSearchProviderCapabilitiesDescriptor {
+class BridgeWebSearchServiceCapabilitiesDescriptor {
   final bool hostedResponses;
   final String hostedDialect;
   final String? standalone;
 
-  const BridgeWebSearchProviderCapabilitiesDescriptor({
+  const BridgeWebSearchServiceCapabilitiesDescriptor({
     required this.hostedResponses,
     required this.hostedDialect,
     this.standalone,
@@ -1123,7 +1364,7 @@ class BridgeWebSearchProviderCapabilitiesDescriptor {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeWebSearchProviderCapabilitiesDescriptor &&
+      other is BridgeWebSearchServiceCapabilitiesDescriptor &&
           runtimeType == other.runtimeType &&
           hostedResponses == other.hostedResponses &&
           hostedDialect == other.hostedDialect &&
@@ -1141,8 +1382,8 @@ class BridgeWebSearchSettingsDto {
   final String? region;
   final String? city;
   final String? timezone;
-  final String? providerId;
-  final String? model;
+  final String? accountId;
+  final String? modelId;
 
   const BridgeWebSearchSettingsDto({
     required this.configuredMode,
@@ -1154,8 +1395,8 @@ class BridgeWebSearchSettingsDto {
     this.region,
     this.city,
     this.timezone,
-    this.providerId,
-    this.model,
+    this.accountId,
+    this.modelId,
   });
 
   @override
@@ -1169,8 +1410,8 @@ class BridgeWebSearchSettingsDto {
       region.hashCode ^
       city.hashCode ^
       timezone.hashCode ^
-      providerId.hashCode ^
-      model.hashCode;
+      accountId.hashCode ^
+      modelId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1186,8 +1427,8 @@ class BridgeWebSearchSettingsDto {
           region == other.region &&
           city == other.city &&
           timezone == other.timezone &&
-          providerId == other.providerId &&
-          model == other.model;
+          accountId == other.accountId &&
+          modelId == other.modelId;
 }
 
 @freezed
@@ -1212,185 +1453,20 @@ sealed class McpResetInput with _$McpResetInput {
   const factory McpResetInput.all() = McpResetInput_All;
 }
 
-class ProviderInput {
-  final String id;
-  final String? originalId;
-  final String templateKind;
-  final String name;
-  final String baseUrl;
-  final ProviderSecretInput secret;
-  final bool pricingEnabled;
-  final String defaultModel;
-  final List<ProviderModelInput> customModels;
-  final List<ProviderModelConnectionInput> modelConnectionModes;
-  final List<ProviderModelAutoCompactInput> modelAutoCompactLimits;
+class RemoveAccountInput {
+  final String? replacementAccountId;
 
-  const ProviderInput({
-    required this.id,
-    this.originalId,
-    required this.templateKind,
-    required this.name,
-    required this.baseUrl,
-    required this.secret,
-    required this.pricingEnabled,
-    required this.defaultModel,
-    required this.customModels,
-    required this.modelConnectionModes,
-    required this.modelAutoCompactLimits,
-  });
+  const RemoveAccountInput({this.replacementAccountId});
 
   @override
-  int get hashCode =>
-      id.hashCode ^
-      originalId.hashCode ^
-      templateKind.hashCode ^
-      name.hashCode ^
-      baseUrl.hashCode ^
-      secret.hashCode ^
-      pricingEnabled.hashCode ^
-      defaultModel.hashCode ^
-      customModels.hashCode ^
-      modelConnectionModes.hashCode ^
-      modelAutoCompactLimits.hashCode;
+  int get hashCode => replacementAccountId.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ProviderInput &&
+      other is RemoveAccountInput &&
           runtimeType == other.runtimeType &&
-          id == other.id &&
-          originalId == other.originalId &&
-          templateKind == other.templateKind &&
-          name == other.name &&
-          baseUrl == other.baseUrl &&
-          secret == other.secret &&
-          pricingEnabled == other.pricingEnabled &&
-          defaultModel == other.defaultModel &&
-          customModels == other.customModels &&
-          modelConnectionModes == other.modelConnectionModes &&
-          modelAutoCompactLimits == other.modelAutoCompactLimits;
-}
-
-/// 某模型上下文压缩阈值用户覆盖的输入项；`limit` 必须为正整数 tokens。
-class ProviderModelAutoCompactInput {
-  final String slug;
-  final BigInt limit;
-
-  const ProviderModelAutoCompactInput({
-    required this.slug,
-    required this.limit,
-  });
-
-  @override
-  int get hashCode => slug.hashCode ^ limit.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProviderModelAutoCompactInput &&
-          runtimeType == other.runtimeType &&
-          slug == other.slug &&
-          limit == other.limit;
-}
-
-class ProviderModelConnectionInput {
-  final String slug;
-  final String connectionMode;
-
-  const ProviderModelConnectionInput({
-    required this.slug,
-    required this.connectionMode,
-  });
-
-  @override
-  int get hashCode => slug.hashCode ^ connectionMode.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProviderModelConnectionInput &&
-          runtimeType == other.runtimeType &&
-          slug == other.slug &&
-          connectionMode == other.connectionMode;
-}
-
-class ProviderModelInput {
-  final String slug;
-  final String displayName;
-  final String wireProtocol;
-  final BigInt contextWindow;
-  final BigInt maxOutputTokens;
-
-  const ProviderModelInput({
-    required this.slug,
-    required this.displayName,
-    required this.wireProtocol,
-    required this.contextWindow,
-    required this.maxOutputTokens,
-  });
-
-  @override
-  int get hashCode =>
-      slug.hashCode ^
-      displayName.hashCode ^
-      wireProtocol.hashCode ^
-      contextWindow.hashCode ^
-      maxOutputTokens.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProviderModelInput &&
-          runtimeType == other.runtimeType &&
-          slug == other.slug &&
-          displayName == other.displayName &&
-          wireProtocol == other.wireProtocol &&
-          contextWindow == other.contextWindow &&
-          maxOutputTokens == other.maxOutputTokens;
-}
-
-@freezed
-sealed class ProviderSecretInput with _$ProviderSecretInput {
-  const ProviderSecretInput._();
-
-  const factory ProviderSecretInput.preserve() = ProviderSecretInput_Preserve;
-  const factory ProviderSecretInput.replace({required String value}) =
-      ProviderSecretInput_Replace;
-  const factory ProviderSecretInput.clear() = ProviderSecretInput_Clear;
-}
-
-class ProviderSettingsInput {
-  /// A single provider edit.  Default provider, mode routes and role routes
-  /// have their own commands and are intentionally absent from this input.
-  final ProviderInput provider;
-
-  const ProviderSettingsInput({required this.provider});
-
-  @override
-  int get hashCode => provider.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ProviderSettingsInput &&
-          runtimeType == other.runtimeType &&
-          provider == other.provider;
-}
-
-class RemoveProviderInput {
-  final String? replacementProviderId;
-
-  const RemoveProviderInput({this.replacementProviderId});
-
-  @override
-  int get hashCode => replacementProviderId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is RemoveProviderInput &&
-          runtimeType == other.runtimeType &&
-          replacementProviderId == other.replacementProviderId;
+          replacementAccountId == other.replacementAccountId;
 }
 
 @freezed
@@ -1478,8 +1554,8 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   }) = SettingsFieldInput_DeepSeekWebFetchEnabled;
   const factory SettingsFieldInput.modeModel({
     required String modeId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
   }) = SettingsFieldInput_ModeModel;
   const factory SettingsFieldInput.modeReasoningEffort({
     required String modeId,
@@ -1487,8 +1563,8 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   }) = SettingsFieldInput_ModeReasoningEffort;
   const factory SettingsFieldInput.roleModel({
     required String role,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
   }) = SettingsFieldInput_RoleModel;
   const factory SettingsFieldInput.roleReasoningEffort({
     required String role,

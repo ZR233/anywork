@@ -1,19 +1,9 @@
 //! 拥有所有权与静态内置 Thread Mode 注册描述。
 
 use pl_protocol::{
-    ThreadModeId, WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition,
+    ThreadModeDefinition, ThreadModeId, WorkflowDefinition, WorkflowState, WorkflowStateKind,
+    WorkflowTransition,
 };
-
-/// 外部 loader 与 Studio 内置注册共同提交给 Manager 的输入。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadModeRegistration {
-    pub id: ThreadModeId,
-    pub display_name: String,
-    pub description: String,
-    pub order: u32,
-    pub prompt: String,
-    pub workflow: Option<WorkflowDefinition>,
-}
 
 /// 可在 Rust 数据段中保存的内置 Mode 描述。
 #[derive(Debug, Clone, Copy)]
@@ -32,8 +22,8 @@ impl StaticThreadModeRegistration {
     /// # Errors
     ///
     /// 内置 ID 不符合 `ThreadModeId` wire 约束时返回错误。
-    pub fn to_registration(self) -> Result<ThreadModeRegistration, pl_protocol::UnknownLabelError> {
-        Ok(ThreadModeRegistration {
+    pub fn to_registration(self) -> Result<ThreadModeDefinition, pl_protocol::UnknownLabelError> {
+        Ok(ThreadModeDefinition {
             id: ThreadModeId::new(self.id)?,
             display_name: self.display_name.to_string(),
             description: self.description.to_string(),

@@ -232,6 +232,9 @@ pub enum ModelExecutionPhase {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
+    /// Live executor retirement owned by this Thread; never part of a checkpoint.
+    #[serde(skip)]
+    pub tool_cleanup: ToolCleanupState,
     #[serde(skip)]
     pub model_progress: Option<crate::model::ActiveModelProgress>,
     /// Explicit phase of the current model execution driver; `None` when no step is between its
@@ -313,7 +316,8 @@ pub struct ThreadSnapshot {
     /// reused after its request body has left memory.
     #[serde(default)]
     pub attempt_ids: std::collections::BTreeMap<String, String>,
-    /// Usage observed for the newest attempt, so the next Turn still sees the previous request.
+    /// Newest attempt with measured input usage, retained across unmeasured failures.
+    /// Its origin is replaced together with the counters; accounting remains in attempt effects.
     #[serde(default)]
     pub last_attempt_usage: Option<crate::model::ModelUsage>,
     #[serde(default)]
@@ -457,10 +461,13 @@ pub struct UsageSummary {
     pub estimated_costs: Vec<UsageCost>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub estimated_cache_savings: Vec<UsageCost>,
-    /// Output tokens of the newest Turn, reset when a new Turn starts.
+    /// Output tokens accumulated for `turn_id`.
+    ///
+    /// A product with decode timing may retain the last sampled Turn until the next Turn's first
+    /// complete throughput sample, instead of discarding it when an untimed request starts.
     #[serde(default)]
     pub turn_completion_tokens: u64,
-    /// Decode time of the newest Turn, reset when a new Turn starts.
+    /// Decode time paired with `turn_completion_tokens`; a product without timing leaves it zero.
     #[serde(default)]
     pub turn_decode_millis: u64,
     /// Turn whose per-turn counters are currently accumulated.
@@ -499,25 +506,19 @@ impl ThreadSnapshot {
         self.context_replacements = Default::default();
         self.delivery_repairs = Default::default();
 
-        let newest_usage = self
-            .attempts
-            .last()
-            .and_then(RequestAttempt::usage)
-            .cloned();
-        if newest_usage.is_some() {
-            self.last_attempt_usage = newest_usage;
-            if let Some(attempt) = self.attempts.last()
-                && let Some(facts) = &attempt.facts
-            {
-                self.last_attempt_usage_origin =
-                    facts.usage_binding.clone().map(|binding| ModelUsageOrigin {
-                        binding,
-                        input_revision: attempt.input_revision,
-                        context_revision: self.context.revision,
-                        input_record_count: facts.input_record_count,
-                        input_hash: facts.input_hash.clone(),
-                    });
-            }
+        if let Some(attempt) = self.attempts.last()
+            && let Some(facts) = &attempt.facts
+            && let Some(usage) = attempt.usage().filter(|usage| usage.input_tokens.is_some())
+        {
+            self.last_attempt_usage = Some(usage.clone());
+            self.last_attempt_usage_origin =
+                facts.usage_binding.clone().map(|binding| ModelUsageOrigin {
+                    binding,
+                    input_revision: attempt.input_revision,
+                    context_revision: self.context.revision,
+                    input_record_count: facts.input_record_count,
+                    input_hash: facts.input_hash.clone(),
+                });
         }
 
         retain_arc_slice(&mut self.turns, |turn| turn.state == TurnState::Running);
@@ -779,6 +780,19 @@ pub enum ThreadLifecycle {
     Open,
     Closing,
     Closed,
+}
+
+/// Current resource cleanup progress; errors retain their original typed causes.
+#[derive(Debug, Clone, Default)]
+pub struct ToolCleanupState {
+    pub pending: usize,
+    pub failures: Vec<ToolCleanupFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCleanupFailure {
+    pub tool_id: String,
+    pub error: Arc<crate::tool::opaque::ToolError>,
 }
 
 /// An admitted model request and its lightweight resident status.
@@ -1123,7 +1137,14 @@ impl ContextCapacity {
         match estimate {
             None if !accepts_unknown => Err(ThreadError::UnknownCapacity),
             Some(estimate)
-                if estimate.accuracy == EstimateAccuracy::Approximate && !accepts_approximate =>
+                if estimate.accuracy == EstimateAccuracy::LowerBound
+                    && estimate.tokens <= limit
+                    && !accepts_unknown =>
+            {
+                Err(ThreadError::UnknownCapacity)
+            }
+            Some(estimate)
+                if estimate.accuracy != EstimateAccuracy::Exact && !accepts_approximate =>
             {
                 Err(ThreadError::UnknownCapacity)
             }
@@ -1159,6 +1180,8 @@ pub enum ThreadError {
     TaskAccessExpired,
     #[error("a task cannot wait for itself")]
     TaskSelfWait,
+    #[error("task wait duration cannot be represented by the monotonic clock")]
+    InvalidWaitTimeout,
     #[error("Thread owner is closed")]
     Closed,
     #[error("request cancelled")]

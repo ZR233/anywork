@@ -13,6 +13,1472 @@ part of 'response.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$BridgeAccountUsageData {
+
+ Object get field0;
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as BridgeAccountUsageData;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageData&&const DeepCollectionEquality().equals(other.field0, _this.field0));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as BridgeAccountUsageData;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
+}
+
+@override
+String toString() {
+  final _this = this as BridgeAccountUsageData;
+  return 'BridgeAccountUsageData(field0: ${_this.field0})';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAccountUsageDataCopyWith<$Res>  {
+$BridgeAccountUsageDataCopyWith(BridgeAccountUsageData _, $Res Function(BridgeAccountUsageData) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAccountUsageData].
+extension BridgeAccountUsageDataPatterns on BridgeAccountUsageData {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult Function( BridgeAccountUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
+return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
+return zhipuCodingPlan(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountUsageData_DeepSeekBalance value)  deepSeekBalance,required TResult Function( BridgeAccountUsageData_ZhipuCodingPlan value)  zhipuCodingPlan,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance():
+return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan():
+return zhipuCodingPlan(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult? Function( BridgeAccountUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
+return deepSeekBalance(_that);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
+return zhipuCodingPlan(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
+return zhipuCodingPlan(_that.field0);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DeepSeekBalanceDto field0)  deepSeekBalance,required TResult Function( ZhipuCodingPlanUsageDto field0)  zhipuCodingPlan,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance():
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan():
+return zhipuCodingPlan(_that.field0);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult? Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageData_DeepSeekBalance() when deepSeekBalance != null:
+return deepSeekBalance(_that.field0);case BridgeAccountUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
+return zhipuCodingPlan(_that.field0);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageData_DeepSeekBalance extends BridgeAccountUsageData {
+  const BridgeAccountUsageData_DeepSeekBalance(this.field0): super._();
+
+
+@override final  DeepSeekBalanceDto field0;
+
+/// Create a copy of BridgeAccountUsageData
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageData_DeepSeekBalanceCopyWith<BridgeAccountUsageData_DeepSeekBalance> get copyWith => _$BridgeAccountUsageData_DeepSeekBalanceCopyWithImpl<BridgeAccountUsageData_DeepSeekBalance>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageData_DeepSeekBalance&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageData.deepSeekBalance(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageData_DeepSeekBalanceCopyWith<$Res> implements $BridgeAccountUsageDataCopyWith<$Res> {
+  factory $BridgeAccountUsageData_DeepSeekBalanceCopyWith(BridgeAccountUsageData_DeepSeekBalance value, $Res Function(BridgeAccountUsageData_DeepSeekBalance) _then) = _$BridgeAccountUsageData_DeepSeekBalanceCopyWithImpl;
+@useResult
+$Res call({
+ DeepSeekBalanceDto field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageData_DeepSeekBalanceCopyWithImpl<$Res>
+    implements $BridgeAccountUsageData_DeepSeekBalanceCopyWith<$Res> {
+  _$BridgeAccountUsageData_DeepSeekBalanceCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageData_DeepSeekBalance _self;
+  final $Res Function(BridgeAccountUsageData_DeepSeekBalance) _then;
+
+/// Create a copy of BridgeAccountUsageData
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageData_DeepSeekBalance(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as DeepSeekBalanceDto,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageData_ZhipuCodingPlan extends BridgeAccountUsageData {
+  const BridgeAccountUsageData_ZhipuCodingPlan(this.field0): super._();
+
+
+@override final  ZhipuCodingPlanUsageDto field0;
+
+/// Create a copy of BridgeAccountUsageData
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageData_ZhipuCodingPlanCopyWith<BridgeAccountUsageData_ZhipuCodingPlan> get copyWith => _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl<BridgeAccountUsageData_ZhipuCodingPlan>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageData_ZhipuCodingPlan&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageData.zhipuCodingPlan(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageData_ZhipuCodingPlanCopyWith<$Res> implements $BridgeAccountUsageDataCopyWith<$Res> {
+  factory $BridgeAccountUsageData_ZhipuCodingPlanCopyWith(BridgeAccountUsageData_ZhipuCodingPlan value, $Res Function(BridgeAccountUsageData_ZhipuCodingPlan) _then) = _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl;
+@useResult
+$Res call({
+ ZhipuCodingPlanUsageDto field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl<$Res>
+    implements $BridgeAccountUsageData_ZhipuCodingPlanCopyWith<$Res> {
+  _$BridgeAccountUsageData_ZhipuCodingPlanCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageData_ZhipuCodingPlan _self;
+  final $Res Function(BridgeAccountUsageData_ZhipuCodingPlan) _then;
+
+/// Create a copy of BridgeAccountUsageData
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageData_ZhipuCodingPlan(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as ZhipuCodingPlanUsageDto,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeAccountUsageState {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageState);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAccountUsageState()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAccountUsageStateCopyWith<$Res>  {
+$BridgeAccountUsageStateCopyWith(BridgeAccountUsageState _, $Res Function(BridgeAccountUsageState) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAccountUsageState].
+extension BridgeAccountUsageStatePatterns on BridgeAccountUsageState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountUsageState_Unsupported value)?  unsupported,TResult Function( BridgeAccountUsageState_MissingCredential value)?  missingCredential,TResult Function( BridgeAccountUsageState_Ready value)?  ready,TResult Function( BridgeAccountUsageState_Failed value)?  failed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported() when unsupported != null:
+return unsupported(_that);case BridgeAccountUsageState_MissingCredential() when missingCredential != null:
+return missingCredential(_that);case BridgeAccountUsageState_Ready() when ready != null:
+return ready(_that);case BridgeAccountUsageState_Failed() when failed != null:
+return failed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountUsageState_Unsupported value)  unsupported,required TResult Function( BridgeAccountUsageState_MissingCredential value)  missingCredential,required TResult Function( BridgeAccountUsageState_Ready value)  ready,required TResult Function( BridgeAccountUsageState_Failed value)  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported():
+return unsupported(_that);case BridgeAccountUsageState_MissingCredential():
+return missingCredential(_that);case BridgeAccountUsageState_Ready():
+return ready(_that);case BridgeAccountUsageState_Failed():
+return failed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountUsageState_Unsupported value)?  unsupported,TResult? Function( BridgeAccountUsageState_MissingCredential value)?  missingCredential,TResult? Function( BridgeAccountUsageState_Ready value)?  ready,TResult? Function( BridgeAccountUsageState_Failed value)?  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported() when unsupported != null:
+return unsupported(_that);case BridgeAccountUsageState_MissingCredential() when missingCredential != null:
+return missingCredential(_that);case BridgeAccountUsageState_Ready() when ready != null:
+return ready(_that);case BridgeAccountUsageState_Failed() when failed != null:
+return failed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unsupported,TResult Function( String message)?  missingCredential,TResult Function( BridgeAccountUsageData data)?  ready,TResult Function( BridgeStateError error)?  failed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported() when unsupported != null:
+return unsupported();case BridgeAccountUsageState_MissingCredential() when missingCredential != null:
+return missingCredential(_that.message);case BridgeAccountUsageState_Ready() when ready != null:
+return ready(_that.data);case BridgeAccountUsageState_Failed() when failed != null:
+return failed(_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unsupported,required TResult Function( String message)  missingCredential,required TResult Function( BridgeAccountUsageData data)  ready,required TResult Function( BridgeStateError error)  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported():
+return unsupported();case BridgeAccountUsageState_MissingCredential():
+return missingCredential(_that.message);case BridgeAccountUsageState_Ready():
+return ready(_that.data);case BridgeAccountUsageState_Failed():
+return failed(_that.error);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unsupported,TResult? Function( String message)?  missingCredential,TResult? Function( BridgeAccountUsageData data)?  ready,TResult? Function( BridgeStateError error)?  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageState_Unsupported() when unsupported != null:
+return unsupported();case BridgeAccountUsageState_MissingCredential() when missingCredential != null:
+return missingCredential(_that.message);case BridgeAccountUsageState_Ready() when ready != null:
+return ready(_that.data);case BridgeAccountUsageState_Failed() when failed != null:
+return failed(_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageState_Unsupported extends BridgeAccountUsageState {
+  const BridgeAccountUsageState_Unsupported(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageState_Unsupported);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAccountUsageState.unsupported()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAccountUsageState_MissingCredential extends BridgeAccountUsageState {
+  const BridgeAccountUsageState_MissingCredential({required this.message}): super._();
+
+
+ final  String message;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageState_MissingCredentialCopyWith<BridgeAccountUsageState_MissingCredential> get copyWith => _$BridgeAccountUsageState_MissingCredentialCopyWithImpl<BridgeAccountUsageState_MissingCredential>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageState_MissingCredential&&(identical(other.message, message) || other.message == message));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,message);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageState.missingCredential(message: $message)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageState_MissingCredentialCopyWith<$Res> implements $BridgeAccountUsageStateCopyWith<$Res> {
+  factory $BridgeAccountUsageState_MissingCredentialCopyWith(BridgeAccountUsageState_MissingCredential value, $Res Function(BridgeAccountUsageState_MissingCredential) _then) = _$BridgeAccountUsageState_MissingCredentialCopyWithImpl;
+@useResult
+$Res call({
+ String message
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageState_MissingCredentialCopyWithImpl<$Res>
+    implements $BridgeAccountUsageState_MissingCredentialCopyWith<$Res> {
+  _$BridgeAccountUsageState_MissingCredentialCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageState_MissingCredential _self;
+  final $Res Function(BridgeAccountUsageState_MissingCredential) _then;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? message = null,}) {
+  return _then(BridgeAccountUsageState_MissingCredential(
+message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageState_Ready extends BridgeAccountUsageState {
+  const BridgeAccountUsageState_Ready({required this.data}): super._();
+
+
+ final  BridgeAccountUsageData data;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageState_ReadyCopyWith<BridgeAccountUsageState_Ready> get copyWith => _$BridgeAccountUsageState_ReadyCopyWithImpl<BridgeAccountUsageState_Ready>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageState_Ready&&(identical(other.data, data) || other.data == data));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,data);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageState.ready(data: $data)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageState_ReadyCopyWith<$Res> implements $BridgeAccountUsageStateCopyWith<$Res> {
+  factory $BridgeAccountUsageState_ReadyCopyWith(BridgeAccountUsageState_Ready value, $Res Function(BridgeAccountUsageState_Ready) _then) = _$BridgeAccountUsageState_ReadyCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAccountUsageData data
+});
+
+
+$BridgeAccountUsageDataCopyWith<$Res> get data;
+
+}
+/// @nodoc
+class _$BridgeAccountUsageState_ReadyCopyWithImpl<$Res>
+    implements $BridgeAccountUsageState_ReadyCopyWith<$Res> {
+  _$BridgeAccountUsageState_ReadyCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageState_Ready _self;
+  final $Res Function(BridgeAccountUsageState_Ready) _then;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? data = null,}) {
+  return _then(BridgeAccountUsageState_Ready(
+data: null == data ? _self.data : data // ignore: cast_nullable_to_non_nullable
+as BridgeAccountUsageData,
+  ));
+}
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageDataCopyWith<$Res> get data {
+
+  return $BridgeAccountUsageDataCopyWith<$Res>(_self.data, (value) {
+    return _then(_self.copyWith(data: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageState_Failed extends BridgeAccountUsageState {
+  const BridgeAccountUsageState_Failed({required this.error}): super._();
+
+
+ final  BridgeStateError error;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageState_FailedCopyWith<BridgeAccountUsageState_Failed> get copyWith => _$BridgeAccountUsageState_FailedCopyWithImpl<BridgeAccountUsageState_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageState_Failed&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageState.failed(error: $error)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageState_FailedCopyWith<$Res> implements $BridgeAccountUsageStateCopyWith<$Res> {
+  factory $BridgeAccountUsageState_FailedCopyWith(BridgeAccountUsageState_Failed value, $Res Function(BridgeAccountUsageState_Failed) _then) = _$BridgeAccountUsageState_FailedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStateError error
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageState_FailedCopyWithImpl<$Res>
+    implements $BridgeAccountUsageState_FailedCopyWith<$Res> {
+  _$BridgeAccountUsageState_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageState_Failed _self;
+  final $Res Function(BridgeAccountUsageState_Failed) _then;
+
+/// Create a copy of BridgeAccountUsageState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
+  return _then(BridgeAccountUsageState_Failed(
+error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as BridgeStateError,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeAccountUsageStateSnapshot {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAccountUsageStateSnapshotCopyWith<$Res>  {
+$BridgeAccountUsageStateSnapshotCopyWith(BridgeAccountUsageStateSnapshot _, $Res Function(BridgeAccountUsageStateSnapshot) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAccountUsageStateSnapshot].
+extension BridgeAccountUsageStateSnapshotPatterns on BridgeAccountUsageStateSnapshot {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAccountUsageStateSnapshot_Uninitialized value)?  uninitialized,TResult Function( BridgeAccountUsageStateSnapshot_Loading value)?  loading,TResult Function( BridgeAccountUsageStateSnapshot_Ready value)?  ready,TResult Function( BridgeAccountUsageStateSnapshot_Refreshing value)?  refreshing,TResult Function( BridgeAccountUsageStateSnapshot_Stale value)?  stale,TResult Function( BridgeAccountUsageStateSnapshot_Degraded value)?  degraded,TResult Function( BridgeAccountUsageStateSnapshot_Failed value)?  failed,TResult Function( BridgeAccountUsageStateSnapshot_Stopped value)?  stopped,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized() when uninitialized != null:
+return uninitialized(_that);case BridgeAccountUsageStateSnapshot_Loading() when loading != null:
+return loading(_that);case BridgeAccountUsageStateSnapshot_Ready() when ready != null:
+return ready(_that);case BridgeAccountUsageStateSnapshot_Refreshing() when refreshing != null:
+return refreshing(_that);case BridgeAccountUsageStateSnapshot_Stale() when stale != null:
+return stale(_that);case BridgeAccountUsageStateSnapshot_Degraded() when degraded != null:
+return degraded(_that);case BridgeAccountUsageStateSnapshot_Failed() when failed != null:
+return failed(_that);case BridgeAccountUsageStateSnapshot_Stopped() when stopped != null:
+return stopped(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAccountUsageStateSnapshot_Uninitialized value)  uninitialized,required TResult Function( BridgeAccountUsageStateSnapshot_Loading value)  loading,required TResult Function( BridgeAccountUsageStateSnapshot_Ready value)  ready,required TResult Function( BridgeAccountUsageStateSnapshot_Refreshing value)  refreshing,required TResult Function( BridgeAccountUsageStateSnapshot_Stale value)  stale,required TResult Function( BridgeAccountUsageStateSnapshot_Degraded value)  degraded,required TResult Function( BridgeAccountUsageStateSnapshot_Failed value)  failed,required TResult Function( BridgeAccountUsageStateSnapshot_Stopped value)  stopped,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized():
+return uninitialized(_that);case BridgeAccountUsageStateSnapshot_Loading():
+return loading(_that);case BridgeAccountUsageStateSnapshot_Ready():
+return ready(_that);case BridgeAccountUsageStateSnapshot_Refreshing():
+return refreshing(_that);case BridgeAccountUsageStateSnapshot_Stale():
+return stale(_that);case BridgeAccountUsageStateSnapshot_Degraded():
+return degraded(_that);case BridgeAccountUsageStateSnapshot_Failed():
+return failed(_that);case BridgeAccountUsageStateSnapshot_Stopped():
+return stopped(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAccountUsageStateSnapshot_Uninitialized value)?  uninitialized,TResult? Function( BridgeAccountUsageStateSnapshot_Loading value)?  loading,TResult? Function( BridgeAccountUsageStateSnapshot_Ready value)?  ready,TResult? Function( BridgeAccountUsageStateSnapshot_Refreshing value)?  refreshing,TResult? Function( BridgeAccountUsageStateSnapshot_Stale value)?  stale,TResult? Function( BridgeAccountUsageStateSnapshot_Degraded value)?  degraded,TResult? Function( BridgeAccountUsageStateSnapshot_Failed value)?  failed,TResult? Function( BridgeAccountUsageStateSnapshot_Stopped value)?  stopped,}){
+final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized() when uninitialized != null:
+return uninitialized(_that);case BridgeAccountUsageStateSnapshot_Loading() when loading != null:
+return loading(_that);case BridgeAccountUsageStateSnapshot_Ready() when ready != null:
+return ready(_that);case BridgeAccountUsageStateSnapshot_Refreshing() when refreshing != null:
+return refreshing(_that);case BridgeAccountUsageStateSnapshot_Stale() when stale != null:
+return stale(_that);case BridgeAccountUsageStateSnapshot_Degraded() when degraded != null:
+return degraded(_that);case BridgeAccountUsageStateSnapshot_Failed() when failed != null:
+return failed(_that);case BridgeAccountUsageStateSnapshot_Stopped() when stopped != null:
+return stopped(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeUninitializedResource field0)?  uninitialized,TResult Function( BridgeLoadingResource field0)?  loading,TResult Function( BridgeReadyResource resource,  BridgeAccountUsageStateData value)?  ready,TResult Function( BridgeRefreshingResource resource,  BridgeAccountUsageStateData value)?  refreshing,TResult Function( BridgeStaleResource resource,  BridgeAccountUsageStateData value)?  stale,TResult Function( BridgeDegradedResource resource,  BridgeAccountUsageStateData value)?  degraded,TResult Function( BridgeFailedResource field0)?  failed,TResult Function( BridgeStoppedResource field0)?  stopped,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized() when uninitialized != null:
+return uninitialized(_that.field0);case BridgeAccountUsageStateSnapshot_Loading() when loading != null:
+return loading(_that.field0);case BridgeAccountUsageStateSnapshot_Ready() when ready != null:
+return ready(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Refreshing() when refreshing != null:
+return refreshing(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Stale() when stale != null:
+return stale(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Degraded() when degraded != null:
+return degraded(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Failed() when failed != null:
+return failed(_that.field0);case BridgeAccountUsageStateSnapshot_Stopped() when stopped != null:
+return stopped(_that.field0);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeUninitializedResource field0)  uninitialized,required TResult Function( BridgeLoadingResource field0)  loading,required TResult Function( BridgeReadyResource resource,  BridgeAccountUsageStateData value)  ready,required TResult Function( BridgeRefreshingResource resource,  BridgeAccountUsageStateData value)  refreshing,required TResult Function( BridgeStaleResource resource,  BridgeAccountUsageStateData value)  stale,required TResult Function( BridgeDegradedResource resource,  BridgeAccountUsageStateData value)  degraded,required TResult Function( BridgeFailedResource field0)  failed,required TResult Function( BridgeStoppedResource field0)  stopped,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized():
+return uninitialized(_that.field0);case BridgeAccountUsageStateSnapshot_Loading():
+return loading(_that.field0);case BridgeAccountUsageStateSnapshot_Ready():
+return ready(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Refreshing():
+return refreshing(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Stale():
+return stale(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Degraded():
+return degraded(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Failed():
+return failed(_that.field0);case BridgeAccountUsageStateSnapshot_Stopped():
+return stopped(_that.field0);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeUninitializedResource field0)?  uninitialized,TResult? Function( BridgeLoadingResource field0)?  loading,TResult? Function( BridgeReadyResource resource,  BridgeAccountUsageStateData value)?  ready,TResult? Function( BridgeRefreshingResource resource,  BridgeAccountUsageStateData value)?  refreshing,TResult? Function( BridgeStaleResource resource,  BridgeAccountUsageStateData value)?  stale,TResult? Function( BridgeDegradedResource resource,  BridgeAccountUsageStateData value)?  degraded,TResult? Function( BridgeFailedResource field0)?  failed,TResult? Function( BridgeStoppedResource field0)?  stopped,}) {final _that = this;
+switch (_that) {
+case BridgeAccountUsageStateSnapshot_Uninitialized() when uninitialized != null:
+return uninitialized(_that.field0);case BridgeAccountUsageStateSnapshot_Loading() when loading != null:
+return loading(_that.field0);case BridgeAccountUsageStateSnapshot_Ready() when ready != null:
+return ready(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Refreshing() when refreshing != null:
+return refreshing(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Stale() when stale != null:
+return stale(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Degraded() when degraded != null:
+return degraded(_that.resource,_that.value);case BridgeAccountUsageStateSnapshot_Failed() when failed != null:
+return failed(_that.field0);case BridgeAccountUsageStateSnapshot_Stopped() when stopped != null:
+return stopped(_that.field0);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Uninitialized extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Uninitialized(this.field0): super._();
+
+
+ final  BridgeUninitializedResource field0;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_UninitializedCopyWith<BridgeAccountUsageStateSnapshot_Uninitialized> get copyWith => _$BridgeAccountUsageStateSnapshot_UninitializedCopyWithImpl<BridgeAccountUsageStateSnapshot_Uninitialized>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Uninitialized&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.uninitialized(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_UninitializedCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_UninitializedCopyWith(BridgeAccountUsageStateSnapshot_Uninitialized value, $Res Function(BridgeAccountUsageStateSnapshot_Uninitialized) _then) = _$BridgeAccountUsageStateSnapshot_UninitializedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeUninitializedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_UninitializedCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_UninitializedCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_UninitializedCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Uninitialized _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Uninitialized) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Uninitialized(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeUninitializedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Loading extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Loading(this.field0): super._();
+
+
+ final  BridgeLoadingResource field0;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_LoadingCopyWith<BridgeAccountUsageStateSnapshot_Loading> get copyWith => _$BridgeAccountUsageStateSnapshot_LoadingCopyWithImpl<BridgeAccountUsageStateSnapshot_Loading>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Loading&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.loading(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_LoadingCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_LoadingCopyWith(BridgeAccountUsageStateSnapshot_Loading value, $Res Function(BridgeAccountUsageStateSnapshot_Loading) _then) = _$BridgeAccountUsageStateSnapshot_LoadingCopyWithImpl;
+@useResult
+$Res call({
+ BridgeLoadingResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_LoadingCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_LoadingCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_LoadingCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Loading _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Loading) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Loading(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeLoadingResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Ready extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Ready({required this.resource, required this.value}): super._();
+
+
+ final  BridgeReadyResource resource;
+ final  BridgeAccountUsageStateData value;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_ReadyCopyWith<BridgeAccountUsageStateSnapshot_Ready> get copyWith => _$BridgeAccountUsageStateSnapshot_ReadyCopyWithImpl<BridgeAccountUsageStateSnapshot_Ready>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Ready&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.ready(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_ReadyCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_ReadyCopyWith(BridgeAccountUsageStateSnapshot_Ready value, $Res Function(BridgeAccountUsageStateSnapshot_Ready) _then) = _$BridgeAccountUsageStateSnapshot_ReadyCopyWithImpl;
+@useResult
+$Res call({
+ BridgeReadyResource resource, BridgeAccountUsageStateData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_ReadyCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_ReadyCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_ReadyCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Ready _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Ready) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Ready(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeReadyResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeAccountUsageStateData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Refreshing extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Refreshing({required this.resource, required this.value}): super._();
+
+
+ final  BridgeRefreshingResource resource;
+ final  BridgeAccountUsageStateData value;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_RefreshingCopyWith<BridgeAccountUsageStateSnapshot_Refreshing> get copyWith => _$BridgeAccountUsageStateSnapshot_RefreshingCopyWithImpl<BridgeAccountUsageStateSnapshot_Refreshing>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Refreshing&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.refreshing(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_RefreshingCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_RefreshingCopyWith(BridgeAccountUsageStateSnapshot_Refreshing value, $Res Function(BridgeAccountUsageStateSnapshot_Refreshing) _then) = _$BridgeAccountUsageStateSnapshot_RefreshingCopyWithImpl;
+@useResult
+$Res call({
+ BridgeRefreshingResource resource, BridgeAccountUsageStateData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_RefreshingCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_RefreshingCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_RefreshingCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Refreshing _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Refreshing) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Refreshing(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeRefreshingResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeAccountUsageStateData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Stale extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Stale({required this.resource, required this.value}): super._();
+
+
+ final  BridgeStaleResource resource;
+ final  BridgeAccountUsageStateData value;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_StaleCopyWith<BridgeAccountUsageStateSnapshot_Stale> get copyWith => _$BridgeAccountUsageStateSnapshot_StaleCopyWithImpl<BridgeAccountUsageStateSnapshot_Stale>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Stale&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.stale(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_StaleCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_StaleCopyWith(BridgeAccountUsageStateSnapshot_Stale value, $Res Function(BridgeAccountUsageStateSnapshot_Stale) _then) = _$BridgeAccountUsageStateSnapshot_StaleCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStaleResource resource, BridgeAccountUsageStateData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_StaleCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_StaleCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_StaleCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Stale _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Stale) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Stale(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeStaleResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeAccountUsageStateData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Degraded extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Degraded({required this.resource, required this.value}): super._();
+
+
+ final  BridgeDegradedResource resource;
+ final  BridgeAccountUsageStateData value;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_DegradedCopyWith<BridgeAccountUsageStateSnapshot_Degraded> get copyWith => _$BridgeAccountUsageStateSnapshot_DegradedCopyWithImpl<BridgeAccountUsageStateSnapshot_Degraded>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Degraded&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,resource,value);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.degraded(resource: $resource, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_DegradedCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_DegradedCopyWith(BridgeAccountUsageStateSnapshot_Degraded value, $Res Function(BridgeAccountUsageStateSnapshot_Degraded) _then) = _$BridgeAccountUsageStateSnapshot_DegradedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeDegradedResource resource, BridgeAccountUsageStateData value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_DegradedCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_DegradedCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_DegradedCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Degraded _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Degraded) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Degraded(
+resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
+as BridgeDegradedResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as BridgeAccountUsageStateData,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Failed extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Failed(this.field0): super._();
+
+
+ final  BridgeFailedResource field0;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_FailedCopyWith<BridgeAccountUsageStateSnapshot_Failed> get copyWith => _$BridgeAccountUsageStateSnapshot_FailedCopyWithImpl<BridgeAccountUsageStateSnapshot_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Failed&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.failed(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_FailedCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_FailedCopyWith(BridgeAccountUsageStateSnapshot_Failed value, $Res Function(BridgeAccountUsageStateSnapshot_Failed) _then) = _$BridgeAccountUsageStateSnapshot_FailedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeFailedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_FailedCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_FailedCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Failed _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Failed) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Failed(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeFailedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAccountUsageStateSnapshot_Stopped extends BridgeAccountUsageStateSnapshot {
+  const BridgeAccountUsageStateSnapshot_Stopped(this.field0): super._();
+
+
+ final  BridgeStoppedResource field0;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAccountUsageStateSnapshot_StoppedCopyWith<BridgeAccountUsageStateSnapshot_Stopped> get copyWith => _$BridgeAccountUsageStateSnapshot_StoppedCopyWithImpl<BridgeAccountUsageStateSnapshot_Stopped>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountUsageStateSnapshot_Stopped&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeAccountUsageStateSnapshot.stopped(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAccountUsageStateSnapshot_StoppedCopyWith<$Res> implements $BridgeAccountUsageStateSnapshotCopyWith<$Res> {
+  factory $BridgeAccountUsageStateSnapshot_StoppedCopyWith(BridgeAccountUsageStateSnapshot_Stopped value, $Res Function(BridgeAccountUsageStateSnapshot_Stopped) _then) = _$BridgeAccountUsageStateSnapshot_StoppedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStoppedResource field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAccountUsageStateSnapshot_StoppedCopyWithImpl<$Res>
+    implements $BridgeAccountUsageStateSnapshot_StoppedCopyWith<$Res> {
+  _$BridgeAccountUsageStateSnapshot_StoppedCopyWithImpl(this._self, this._then);
+
+  final BridgeAccountUsageStateSnapshot_Stopped _self;
+  final $Res Function(BridgeAccountUsageStateSnapshot_Stopped) _then;
+
+/// Create a copy of BridgeAccountUsageStateSnapshot
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeAccountUsageStateSnapshot_Stopped(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeStoppedResource,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeAgentDirectoryState {
 
 
@@ -5064,1472 +6530,6 @@ class _$BridgeProjectDirectoryState_StoppedCopyWithImpl<$Res>
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
   return _then(BridgeProjectDirectoryState_Stopped(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeStoppedResource,
-  ));
-}
-
-
-}
-
-/// @nodoc
-mixin _$BridgeProviderUsageData {
-
- Object get field0;
-
-
-
-@override
-bool operator ==(Object other) {
-  final _this = this as BridgeProviderUsageData;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageData&&const DeepCollectionEquality().equals(other.field0, _this.field0));
-}
-
-
-@override
-int get hashCode {
-  final _this = this as BridgeProviderUsageData;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
-}
-
-@override
-String toString() {
-  final _this = this as BridgeProviderUsageData;
-  return 'BridgeProviderUsageData(field0: ${_this.field0})';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeProviderUsageDataCopyWith<$Res>  {
-$BridgeProviderUsageDataCopyWith(BridgeProviderUsageData _, $Res Function(BridgeProviderUsageData) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeProviderUsageData].
-extension BridgeProviderUsageDataPatterns on BridgeProviderUsageData {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProviderUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult Function( BridgeProviderUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that);case BridgeProviderUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProviderUsageData_DeepSeekBalance value)  deepSeekBalance,required TResult Function( BridgeProviderUsageData_ZhipuCodingPlan value)  zhipuCodingPlan,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance():
-return deepSeekBalance(_that);case BridgeProviderUsageData_ZhipuCodingPlan():
-return zhipuCodingPlan(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProviderUsageData_DeepSeekBalance value)?  deepSeekBalance,TResult? Function( BridgeProviderUsageData_ZhipuCodingPlan value)?  zhipuCodingPlan,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that);case BridgeProviderUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that.field0);case BridgeProviderUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that.field0);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DeepSeekBalanceDto field0)  deepSeekBalance,required TResult Function( ZhipuCodingPlanUsageDto field0)  zhipuCodingPlan,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance():
-return deepSeekBalance(_that.field0);case BridgeProviderUsageData_ZhipuCodingPlan():
-return zhipuCodingPlan(_that.field0);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DeepSeekBalanceDto field0)?  deepSeekBalance,TResult? Function( ZhipuCodingPlanUsageDto field0)?  zhipuCodingPlan,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageData_DeepSeekBalance() when deepSeekBalance != null:
-return deepSeekBalance(_that.field0);case BridgeProviderUsageData_ZhipuCodingPlan() when zhipuCodingPlan != null:
-return zhipuCodingPlan(_that.field0);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageData_DeepSeekBalance extends BridgeProviderUsageData {
-  const BridgeProviderUsageData_DeepSeekBalance(this.field0): super._();
-
-
-@override final  DeepSeekBalanceDto field0;
-
-/// Create a copy of BridgeProviderUsageData
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageData_DeepSeekBalanceCopyWith<BridgeProviderUsageData_DeepSeekBalance> get copyWith => _$BridgeProviderUsageData_DeepSeekBalanceCopyWithImpl<BridgeProviderUsageData_DeepSeekBalance>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageData_DeepSeekBalance&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageData.deepSeekBalance(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageData_DeepSeekBalanceCopyWith<$Res> implements $BridgeProviderUsageDataCopyWith<$Res> {
-  factory $BridgeProviderUsageData_DeepSeekBalanceCopyWith(BridgeProviderUsageData_DeepSeekBalance value, $Res Function(BridgeProviderUsageData_DeepSeekBalance) _then) = _$BridgeProviderUsageData_DeepSeekBalanceCopyWithImpl;
-@useResult
-$Res call({
- DeepSeekBalanceDto field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageData_DeepSeekBalanceCopyWithImpl<$Res>
-    implements $BridgeProviderUsageData_DeepSeekBalanceCopyWith<$Res> {
-  _$BridgeProviderUsageData_DeepSeekBalanceCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageData_DeepSeekBalance _self;
-  final $Res Function(BridgeProviderUsageData_DeepSeekBalance) _then;
-
-/// Create a copy of BridgeProviderUsageData
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageData_DeepSeekBalance(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as DeepSeekBalanceDto,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageData_ZhipuCodingPlan extends BridgeProviderUsageData {
-  const BridgeProviderUsageData_ZhipuCodingPlan(this.field0): super._();
-
-
-@override final  ZhipuCodingPlanUsageDto field0;
-
-/// Create a copy of BridgeProviderUsageData
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageData_ZhipuCodingPlanCopyWith<BridgeProviderUsageData_ZhipuCodingPlan> get copyWith => _$BridgeProviderUsageData_ZhipuCodingPlanCopyWithImpl<BridgeProviderUsageData_ZhipuCodingPlan>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageData_ZhipuCodingPlan&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageData.zhipuCodingPlan(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageData_ZhipuCodingPlanCopyWith<$Res> implements $BridgeProviderUsageDataCopyWith<$Res> {
-  factory $BridgeProviderUsageData_ZhipuCodingPlanCopyWith(BridgeProviderUsageData_ZhipuCodingPlan value, $Res Function(BridgeProviderUsageData_ZhipuCodingPlan) _then) = _$BridgeProviderUsageData_ZhipuCodingPlanCopyWithImpl;
-@useResult
-$Res call({
- ZhipuCodingPlanUsageDto field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageData_ZhipuCodingPlanCopyWithImpl<$Res>
-    implements $BridgeProviderUsageData_ZhipuCodingPlanCopyWith<$Res> {
-  _$BridgeProviderUsageData_ZhipuCodingPlanCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageData_ZhipuCodingPlan _self;
-  final $Res Function(BridgeProviderUsageData_ZhipuCodingPlan) _then;
-
-/// Create a copy of BridgeProviderUsageData
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageData_ZhipuCodingPlan(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as ZhipuCodingPlanUsageDto,
-  ));
-}
-
-
-}
-
-/// @nodoc
-mixin _$BridgeProviderUsageState {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageState);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeProviderUsageState()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeProviderUsageStateCopyWith<$Res>  {
-$BridgeProviderUsageStateCopyWith(BridgeProviderUsageState _, $Res Function(BridgeProviderUsageState) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeProviderUsageState].
-extension BridgeProviderUsageStatePatterns on BridgeProviderUsageState {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProviderUsageState_Unsupported value)?  unsupported,TResult Function( BridgeProviderUsageState_MissingCredential value)?  missingCredential,TResult Function( BridgeProviderUsageState_Ready value)?  ready,TResult Function( BridgeProviderUsageState_Failed value)?  failed,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported() when unsupported != null:
-return unsupported(_that);case BridgeProviderUsageState_MissingCredential() when missingCredential != null:
-return missingCredential(_that);case BridgeProviderUsageState_Ready() when ready != null:
-return ready(_that);case BridgeProviderUsageState_Failed() when failed != null:
-return failed(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProviderUsageState_Unsupported value)  unsupported,required TResult Function( BridgeProviderUsageState_MissingCredential value)  missingCredential,required TResult Function( BridgeProviderUsageState_Ready value)  ready,required TResult Function( BridgeProviderUsageState_Failed value)  failed,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported():
-return unsupported(_that);case BridgeProviderUsageState_MissingCredential():
-return missingCredential(_that);case BridgeProviderUsageState_Ready():
-return ready(_that);case BridgeProviderUsageState_Failed():
-return failed(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProviderUsageState_Unsupported value)?  unsupported,TResult? Function( BridgeProviderUsageState_MissingCredential value)?  missingCredential,TResult? Function( BridgeProviderUsageState_Ready value)?  ready,TResult? Function( BridgeProviderUsageState_Failed value)?  failed,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported() when unsupported != null:
-return unsupported(_that);case BridgeProviderUsageState_MissingCredential() when missingCredential != null:
-return missingCredential(_that);case BridgeProviderUsageState_Ready() when ready != null:
-return ready(_that);case BridgeProviderUsageState_Failed() when failed != null:
-return failed(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unsupported,TResult Function( String message)?  missingCredential,TResult Function( BridgeProviderUsageData data)?  ready,TResult Function( BridgeStateError error)?  failed,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported() when unsupported != null:
-return unsupported();case BridgeProviderUsageState_MissingCredential() when missingCredential != null:
-return missingCredential(_that.message);case BridgeProviderUsageState_Ready() when ready != null:
-return ready(_that.data);case BridgeProviderUsageState_Failed() when failed != null:
-return failed(_that.error);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unsupported,required TResult Function( String message)  missingCredential,required TResult Function( BridgeProviderUsageData data)  ready,required TResult Function( BridgeStateError error)  failed,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported():
-return unsupported();case BridgeProviderUsageState_MissingCredential():
-return missingCredential(_that.message);case BridgeProviderUsageState_Ready():
-return ready(_that.data);case BridgeProviderUsageState_Failed():
-return failed(_that.error);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unsupported,TResult? Function( String message)?  missingCredential,TResult? Function( BridgeProviderUsageData data)?  ready,TResult? Function( BridgeStateError error)?  failed,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageState_Unsupported() when unsupported != null:
-return unsupported();case BridgeProviderUsageState_MissingCredential() when missingCredential != null:
-return missingCredential(_that.message);case BridgeProviderUsageState_Ready() when ready != null:
-return ready(_that.data);case BridgeProviderUsageState_Failed() when failed != null:
-return failed(_that.error);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageState_Unsupported extends BridgeProviderUsageState {
-  const BridgeProviderUsageState_Unsupported(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageState_Unsupported);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeProviderUsageState.unsupported()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeProviderUsageState_MissingCredential extends BridgeProviderUsageState {
-  const BridgeProviderUsageState_MissingCredential({required this.message}): super._();
-
-
- final  String message;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageState_MissingCredentialCopyWith<BridgeProviderUsageState_MissingCredential> get copyWith => _$BridgeProviderUsageState_MissingCredentialCopyWithImpl<BridgeProviderUsageState_MissingCredential>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageState_MissingCredential&&(identical(other.message, message) || other.message == message));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,message);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageState.missingCredential(message: $message)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageState_MissingCredentialCopyWith<$Res> implements $BridgeProviderUsageStateCopyWith<$Res> {
-  factory $BridgeProviderUsageState_MissingCredentialCopyWith(BridgeProviderUsageState_MissingCredential value, $Res Function(BridgeProviderUsageState_MissingCredential) _then) = _$BridgeProviderUsageState_MissingCredentialCopyWithImpl;
-@useResult
-$Res call({
- String message
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageState_MissingCredentialCopyWithImpl<$Res>
-    implements $BridgeProviderUsageState_MissingCredentialCopyWith<$Res> {
-  _$BridgeProviderUsageState_MissingCredentialCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageState_MissingCredential _self;
-  final $Res Function(BridgeProviderUsageState_MissingCredential) _then;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? message = null,}) {
-  return _then(BridgeProviderUsageState_MissingCredential(
-message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageState_Ready extends BridgeProviderUsageState {
-  const BridgeProviderUsageState_Ready({required this.data}): super._();
-
-
- final  BridgeProviderUsageData data;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageState_ReadyCopyWith<BridgeProviderUsageState_Ready> get copyWith => _$BridgeProviderUsageState_ReadyCopyWithImpl<BridgeProviderUsageState_Ready>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageState_Ready&&(identical(other.data, data) || other.data == data));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,data);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageState.ready(data: $data)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageState_ReadyCopyWith<$Res> implements $BridgeProviderUsageStateCopyWith<$Res> {
-  factory $BridgeProviderUsageState_ReadyCopyWith(BridgeProviderUsageState_Ready value, $Res Function(BridgeProviderUsageState_Ready) _then) = _$BridgeProviderUsageState_ReadyCopyWithImpl;
-@useResult
-$Res call({
- BridgeProviderUsageData data
-});
-
-
-$BridgeProviderUsageDataCopyWith<$Res> get data;
-
-}
-/// @nodoc
-class _$BridgeProviderUsageState_ReadyCopyWithImpl<$Res>
-    implements $BridgeProviderUsageState_ReadyCopyWith<$Res> {
-  _$BridgeProviderUsageState_ReadyCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageState_Ready _self;
-  final $Res Function(BridgeProviderUsageState_Ready) _then;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? data = null,}) {
-  return _then(BridgeProviderUsageState_Ready(
-data: null == data ? _self.data : data // ignore: cast_nullable_to_non_nullable
-as BridgeProviderUsageData,
-  ));
-}
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageDataCopyWith<$Res> get data {
-
-  return $BridgeProviderUsageDataCopyWith<$Res>(_self.data, (value) {
-    return _then(_self.copyWith(data: value));
-  });
-}
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageState_Failed extends BridgeProviderUsageState {
-  const BridgeProviderUsageState_Failed({required this.error}): super._();
-
-
- final  BridgeStateError error;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageState_FailedCopyWith<BridgeProviderUsageState_Failed> get copyWith => _$BridgeProviderUsageState_FailedCopyWithImpl<BridgeProviderUsageState_Failed>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageState_Failed&&(identical(other.error, error) || other.error == error));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,error);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageState.failed(error: $error)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageState_FailedCopyWith<$Res> implements $BridgeProviderUsageStateCopyWith<$Res> {
-  factory $BridgeProviderUsageState_FailedCopyWith(BridgeProviderUsageState_Failed value, $Res Function(BridgeProviderUsageState_Failed) _then) = _$BridgeProviderUsageState_FailedCopyWithImpl;
-@useResult
-$Res call({
- BridgeStateError error
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageState_FailedCopyWithImpl<$Res>
-    implements $BridgeProviderUsageState_FailedCopyWith<$Res> {
-  _$BridgeProviderUsageState_FailedCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageState_Failed _self;
-  final $Res Function(BridgeProviderUsageState_Failed) _then;
-
-/// Create a copy of BridgeProviderUsageState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
-  return _then(BridgeProviderUsageState_Failed(
-error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
-as BridgeStateError,
-  ));
-}
-
-
-}
-
-/// @nodoc
-mixin _$BridgeProviderUsageStateSnapshot {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeProviderUsageStateSnapshotCopyWith<$Res>  {
-$BridgeProviderUsageStateSnapshotCopyWith(BridgeProviderUsageStateSnapshot _, $Res Function(BridgeProviderUsageStateSnapshot) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeProviderUsageStateSnapshot].
-extension BridgeProviderUsageStateSnapshotPatterns on BridgeProviderUsageStateSnapshot {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeProviderUsageStateSnapshot_Uninitialized value)?  uninitialized,TResult Function( BridgeProviderUsageStateSnapshot_Loading value)?  loading,TResult Function( BridgeProviderUsageStateSnapshot_Ready value)?  ready,TResult Function( BridgeProviderUsageStateSnapshot_Refreshing value)?  refreshing,TResult Function( BridgeProviderUsageStateSnapshot_Stale value)?  stale,TResult Function( BridgeProviderUsageStateSnapshot_Degraded value)?  degraded,TResult Function( BridgeProviderUsageStateSnapshot_Failed value)?  failed,TResult Function( BridgeProviderUsageStateSnapshot_Stopped value)?  stopped,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized() when uninitialized != null:
-return uninitialized(_that);case BridgeProviderUsageStateSnapshot_Loading() when loading != null:
-return loading(_that);case BridgeProviderUsageStateSnapshot_Ready() when ready != null:
-return ready(_that);case BridgeProviderUsageStateSnapshot_Refreshing() when refreshing != null:
-return refreshing(_that);case BridgeProviderUsageStateSnapshot_Stale() when stale != null:
-return stale(_that);case BridgeProviderUsageStateSnapshot_Degraded() when degraded != null:
-return degraded(_that);case BridgeProviderUsageStateSnapshot_Failed() when failed != null:
-return failed(_that);case BridgeProviderUsageStateSnapshot_Stopped() when stopped != null:
-return stopped(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeProviderUsageStateSnapshot_Uninitialized value)  uninitialized,required TResult Function( BridgeProviderUsageStateSnapshot_Loading value)  loading,required TResult Function( BridgeProviderUsageStateSnapshot_Ready value)  ready,required TResult Function( BridgeProviderUsageStateSnapshot_Refreshing value)  refreshing,required TResult Function( BridgeProviderUsageStateSnapshot_Stale value)  stale,required TResult Function( BridgeProviderUsageStateSnapshot_Degraded value)  degraded,required TResult Function( BridgeProviderUsageStateSnapshot_Failed value)  failed,required TResult Function( BridgeProviderUsageStateSnapshot_Stopped value)  stopped,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized():
-return uninitialized(_that);case BridgeProviderUsageStateSnapshot_Loading():
-return loading(_that);case BridgeProviderUsageStateSnapshot_Ready():
-return ready(_that);case BridgeProviderUsageStateSnapshot_Refreshing():
-return refreshing(_that);case BridgeProviderUsageStateSnapshot_Stale():
-return stale(_that);case BridgeProviderUsageStateSnapshot_Degraded():
-return degraded(_that);case BridgeProviderUsageStateSnapshot_Failed():
-return failed(_that);case BridgeProviderUsageStateSnapshot_Stopped():
-return stopped(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeProviderUsageStateSnapshot_Uninitialized value)?  uninitialized,TResult? Function( BridgeProviderUsageStateSnapshot_Loading value)?  loading,TResult? Function( BridgeProviderUsageStateSnapshot_Ready value)?  ready,TResult? Function( BridgeProviderUsageStateSnapshot_Refreshing value)?  refreshing,TResult? Function( BridgeProviderUsageStateSnapshot_Stale value)?  stale,TResult? Function( BridgeProviderUsageStateSnapshot_Degraded value)?  degraded,TResult? Function( BridgeProviderUsageStateSnapshot_Failed value)?  failed,TResult? Function( BridgeProviderUsageStateSnapshot_Stopped value)?  stopped,}){
-final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized() when uninitialized != null:
-return uninitialized(_that);case BridgeProviderUsageStateSnapshot_Loading() when loading != null:
-return loading(_that);case BridgeProviderUsageStateSnapshot_Ready() when ready != null:
-return ready(_that);case BridgeProviderUsageStateSnapshot_Refreshing() when refreshing != null:
-return refreshing(_that);case BridgeProviderUsageStateSnapshot_Stale() when stale != null:
-return stale(_that);case BridgeProviderUsageStateSnapshot_Degraded() when degraded != null:
-return degraded(_that);case BridgeProviderUsageStateSnapshot_Failed() when failed != null:
-return failed(_that);case BridgeProviderUsageStateSnapshot_Stopped() when stopped != null:
-return stopped(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeUninitializedResource field0)?  uninitialized,TResult Function( BridgeLoadingResource field0)?  loading,TResult Function( BridgeReadyResource resource,  BridgeProviderUsageStateData value)?  ready,TResult Function( BridgeRefreshingResource resource,  BridgeProviderUsageStateData value)?  refreshing,TResult Function( BridgeStaleResource resource,  BridgeProviderUsageStateData value)?  stale,TResult Function( BridgeDegradedResource resource,  BridgeProviderUsageStateData value)?  degraded,TResult Function( BridgeFailedResource field0)?  failed,TResult Function( BridgeStoppedResource field0)?  stopped,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized() when uninitialized != null:
-return uninitialized(_that.field0);case BridgeProviderUsageStateSnapshot_Loading() when loading != null:
-return loading(_that.field0);case BridgeProviderUsageStateSnapshot_Ready() when ready != null:
-return ready(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Refreshing() when refreshing != null:
-return refreshing(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Stale() when stale != null:
-return stale(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Degraded() when degraded != null:
-return degraded(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Failed() when failed != null:
-return failed(_that.field0);case BridgeProviderUsageStateSnapshot_Stopped() when stopped != null:
-return stopped(_that.field0);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeUninitializedResource field0)  uninitialized,required TResult Function( BridgeLoadingResource field0)  loading,required TResult Function( BridgeReadyResource resource,  BridgeProviderUsageStateData value)  ready,required TResult Function( BridgeRefreshingResource resource,  BridgeProviderUsageStateData value)  refreshing,required TResult Function( BridgeStaleResource resource,  BridgeProviderUsageStateData value)  stale,required TResult Function( BridgeDegradedResource resource,  BridgeProviderUsageStateData value)  degraded,required TResult Function( BridgeFailedResource field0)  failed,required TResult Function( BridgeStoppedResource field0)  stopped,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized():
-return uninitialized(_that.field0);case BridgeProviderUsageStateSnapshot_Loading():
-return loading(_that.field0);case BridgeProviderUsageStateSnapshot_Ready():
-return ready(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Refreshing():
-return refreshing(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Stale():
-return stale(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Degraded():
-return degraded(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Failed():
-return failed(_that.field0);case BridgeProviderUsageStateSnapshot_Stopped():
-return stopped(_that.field0);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeUninitializedResource field0)?  uninitialized,TResult? Function( BridgeLoadingResource field0)?  loading,TResult? Function( BridgeReadyResource resource,  BridgeProviderUsageStateData value)?  ready,TResult? Function( BridgeRefreshingResource resource,  BridgeProviderUsageStateData value)?  refreshing,TResult? Function( BridgeStaleResource resource,  BridgeProviderUsageStateData value)?  stale,TResult? Function( BridgeDegradedResource resource,  BridgeProviderUsageStateData value)?  degraded,TResult? Function( BridgeFailedResource field0)?  failed,TResult? Function( BridgeStoppedResource field0)?  stopped,}) {final _that = this;
-switch (_that) {
-case BridgeProviderUsageStateSnapshot_Uninitialized() when uninitialized != null:
-return uninitialized(_that.field0);case BridgeProviderUsageStateSnapshot_Loading() when loading != null:
-return loading(_that.field0);case BridgeProviderUsageStateSnapshot_Ready() when ready != null:
-return ready(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Refreshing() when refreshing != null:
-return refreshing(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Stale() when stale != null:
-return stale(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Degraded() when degraded != null:
-return degraded(_that.resource,_that.value);case BridgeProviderUsageStateSnapshot_Failed() when failed != null:
-return failed(_that.field0);case BridgeProviderUsageStateSnapshot_Stopped() when stopped != null:
-return stopped(_that.field0);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Uninitialized extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Uninitialized(this.field0): super._();
-
-
- final  BridgeUninitializedResource field0;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_UninitializedCopyWith<BridgeProviderUsageStateSnapshot_Uninitialized> get copyWith => _$BridgeProviderUsageStateSnapshot_UninitializedCopyWithImpl<BridgeProviderUsageStateSnapshot_Uninitialized>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Uninitialized&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.uninitialized(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_UninitializedCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_UninitializedCopyWith(BridgeProviderUsageStateSnapshot_Uninitialized value, $Res Function(BridgeProviderUsageStateSnapshot_Uninitialized) _then) = _$BridgeProviderUsageStateSnapshot_UninitializedCopyWithImpl;
-@useResult
-$Res call({
- BridgeUninitializedResource field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_UninitializedCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_UninitializedCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_UninitializedCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Uninitialized _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Uninitialized) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Uninitialized(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeUninitializedResource,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Loading extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Loading(this.field0): super._();
-
-
- final  BridgeLoadingResource field0;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_LoadingCopyWith<BridgeProviderUsageStateSnapshot_Loading> get copyWith => _$BridgeProviderUsageStateSnapshot_LoadingCopyWithImpl<BridgeProviderUsageStateSnapshot_Loading>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Loading&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.loading(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_LoadingCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_LoadingCopyWith(BridgeProviderUsageStateSnapshot_Loading value, $Res Function(BridgeProviderUsageStateSnapshot_Loading) _then) = _$BridgeProviderUsageStateSnapshot_LoadingCopyWithImpl;
-@useResult
-$Res call({
- BridgeLoadingResource field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_LoadingCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_LoadingCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_LoadingCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Loading _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Loading) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Loading(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeLoadingResource,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Ready extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Ready({required this.resource, required this.value}): super._();
-
-
- final  BridgeReadyResource resource;
- final  BridgeProviderUsageStateData value;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_ReadyCopyWith<BridgeProviderUsageStateSnapshot_Ready> get copyWith => _$BridgeProviderUsageStateSnapshot_ReadyCopyWithImpl<BridgeProviderUsageStateSnapshot_Ready>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Ready&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,resource,value);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.ready(resource: $resource, value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_ReadyCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_ReadyCopyWith(BridgeProviderUsageStateSnapshot_Ready value, $Res Function(BridgeProviderUsageStateSnapshot_Ready) _then) = _$BridgeProviderUsageStateSnapshot_ReadyCopyWithImpl;
-@useResult
-$Res call({
- BridgeReadyResource resource, BridgeProviderUsageStateData value
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_ReadyCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_ReadyCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_ReadyCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Ready _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Ready) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Ready(
-resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
-as BridgeReadyResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as BridgeProviderUsageStateData,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Refreshing extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Refreshing({required this.resource, required this.value}): super._();
-
-
- final  BridgeRefreshingResource resource;
- final  BridgeProviderUsageStateData value;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_RefreshingCopyWith<BridgeProviderUsageStateSnapshot_Refreshing> get copyWith => _$BridgeProviderUsageStateSnapshot_RefreshingCopyWithImpl<BridgeProviderUsageStateSnapshot_Refreshing>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Refreshing&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,resource,value);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.refreshing(resource: $resource, value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_RefreshingCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_RefreshingCopyWith(BridgeProviderUsageStateSnapshot_Refreshing value, $Res Function(BridgeProviderUsageStateSnapshot_Refreshing) _then) = _$BridgeProviderUsageStateSnapshot_RefreshingCopyWithImpl;
-@useResult
-$Res call({
- BridgeRefreshingResource resource, BridgeProviderUsageStateData value
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_RefreshingCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_RefreshingCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_RefreshingCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Refreshing _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Refreshing) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Refreshing(
-resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
-as BridgeRefreshingResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as BridgeProviderUsageStateData,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Stale extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Stale({required this.resource, required this.value}): super._();
-
-
- final  BridgeStaleResource resource;
- final  BridgeProviderUsageStateData value;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_StaleCopyWith<BridgeProviderUsageStateSnapshot_Stale> get copyWith => _$BridgeProviderUsageStateSnapshot_StaleCopyWithImpl<BridgeProviderUsageStateSnapshot_Stale>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Stale&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,resource,value);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.stale(resource: $resource, value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_StaleCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_StaleCopyWith(BridgeProviderUsageStateSnapshot_Stale value, $Res Function(BridgeProviderUsageStateSnapshot_Stale) _then) = _$BridgeProviderUsageStateSnapshot_StaleCopyWithImpl;
-@useResult
-$Res call({
- BridgeStaleResource resource, BridgeProviderUsageStateData value
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_StaleCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_StaleCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_StaleCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Stale _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Stale) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Stale(
-resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
-as BridgeStaleResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as BridgeProviderUsageStateData,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Degraded extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Degraded({required this.resource, required this.value}): super._();
-
-
- final  BridgeDegradedResource resource;
- final  BridgeProviderUsageStateData value;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_DegradedCopyWith<BridgeProviderUsageStateSnapshot_Degraded> get copyWith => _$BridgeProviderUsageStateSnapshot_DegradedCopyWithImpl<BridgeProviderUsageStateSnapshot_Degraded>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Degraded&&(identical(other.resource, resource) || other.resource == resource)&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,resource,value);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.degraded(resource: $resource, value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_DegradedCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_DegradedCopyWith(BridgeProviderUsageStateSnapshot_Degraded value, $Res Function(BridgeProviderUsageStateSnapshot_Degraded) _then) = _$BridgeProviderUsageStateSnapshot_DegradedCopyWithImpl;
-@useResult
-$Res call({
- BridgeDegradedResource resource, BridgeProviderUsageStateData value
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_DegradedCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_DegradedCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_DegradedCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Degraded _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Degraded) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? resource = null,Object? value = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Degraded(
-resource: null == resource ? _self.resource : resource // ignore: cast_nullable_to_non_nullable
-as BridgeDegradedResource,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as BridgeProviderUsageStateData,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Failed extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Failed(this.field0): super._();
-
-
- final  BridgeFailedResource field0;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_FailedCopyWith<BridgeProviderUsageStateSnapshot_Failed> get copyWith => _$BridgeProviderUsageStateSnapshot_FailedCopyWithImpl<BridgeProviderUsageStateSnapshot_Failed>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Failed&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.failed(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_FailedCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_FailedCopyWith(BridgeProviderUsageStateSnapshot_Failed value, $Res Function(BridgeProviderUsageStateSnapshot_Failed) _then) = _$BridgeProviderUsageStateSnapshot_FailedCopyWithImpl;
-@useResult
-$Res call({
- BridgeFailedResource field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_FailedCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_FailedCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_FailedCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Failed _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Failed) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Failed(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeFailedResource,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeProviderUsageStateSnapshot_Stopped extends BridgeProviderUsageStateSnapshot {
-  const BridgeProviderUsageStateSnapshot_Stopped(this.field0): super._();
-
-
- final  BridgeStoppedResource field0;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeProviderUsageStateSnapshot_StoppedCopyWith<BridgeProviderUsageStateSnapshot_Stopped> get copyWith => _$BridgeProviderUsageStateSnapshot_StoppedCopyWithImpl<BridgeProviderUsageStateSnapshot_Stopped>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeProviderUsageStateSnapshot_Stopped&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeProviderUsageStateSnapshot.stopped(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeProviderUsageStateSnapshot_StoppedCopyWith<$Res> implements $BridgeProviderUsageStateSnapshotCopyWith<$Res> {
-  factory $BridgeProviderUsageStateSnapshot_StoppedCopyWith(BridgeProviderUsageStateSnapshot_Stopped value, $Res Function(BridgeProviderUsageStateSnapshot_Stopped) _then) = _$BridgeProviderUsageStateSnapshot_StoppedCopyWithImpl;
-@useResult
-$Res call({
- BridgeStoppedResource field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeProviderUsageStateSnapshot_StoppedCopyWithImpl<$Res>
-    implements $BridgeProviderUsageStateSnapshot_StoppedCopyWith<$Res> {
-  _$BridgeProviderUsageStateSnapshot_StoppedCopyWithImpl(this._self, this._then);
-
-  final BridgeProviderUsageStateSnapshot_Stopped _self;
-  final $Res Function(BridgeProviderUsageStateSnapshot_Stopped) _then;
-
-/// Create a copy of BridgeProviderUsageStateSnapshot
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeProviderUsageStateSnapshot_Stopped(
 null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
 as BridgeStoppedResource,
   ));

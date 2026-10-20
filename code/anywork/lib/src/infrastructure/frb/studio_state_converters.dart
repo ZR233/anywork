@@ -83,17 +83,17 @@ ObservedResource<T> _stoppedResource<T>(frb.BridgeStoppedResource resource) =>
 SettingsStateSnapshot _settingsStateFromFrb(
   frb.BridgeSettingsStateResponse response,
 ) {
-  final catalogByProvider = {
-    for (final provider in response.catalog.providers) provider.id: provider,
+  final catalogByAccount = {
+    for (final account in response.catalog.accounts) account.accountId: account,
   };
   final settings = response.config.settings;
   final data = _settingsDataFromFrb(
     settings,
-    catalogByProvider: catalogByProvider,
+    catalogByAccount: catalogByAccount,
   );
   return SettingsStateSnapshot(
-    providers: data.providers,
-    defaultProviderId: data.defaultProviderId,
+    accounts: data.accounts,
+    defaultAccountId: data.defaultAccountId,
     modeModelRoutes: data.modeModelRoutes,
     roles: data.roles,
     mcpServers: data.mcpServers,
@@ -110,18 +110,18 @@ SettingsStateSnapshot _settingsStateFromFrb(
 
 SettingsStateData _settingsDataFromFrb(
   frb.BridgeStudioSettingsDto settings, {
-  Map<String, frb.BridgeModelCatalogProviderDto> catalogByProvider = const {},
+  Map<String, frb.BridgeModelCatalogAccountDto> catalogByAccount = const {},
 }) {
   return SettingsStateData(
-    providers: settings.providers
+    accounts: settings.accounts
         .map(
-          (provider) => _providerSettingsFromFrb(
-            provider,
-            catalog: catalogByProvider[provider.id],
+          (account) => _accountSettingsFromFrb(
+            account,
+            catalog: catalogByAccount[account.accountId],
           ),
         )
         .toList(),
-    defaultProviderId: settings.defaultProviderId,
+    defaultAccountId: settings.defaultAccountId,
     modeModelRoutes: settings.modeModelRoutes
         .map(_modeModelRouteFromFrb)
         .toList(),
@@ -182,24 +182,24 @@ SettingsStateSnapshot _modelCatalogStateFromFrb(
 ) {
   SettingsStateData convert(frb.BridgeModelCatalogStateData data) {
     return SettingsStateData(
-      providers: data.providers.map(_providerCatalogSettingsFromFrb).toList(),
+      accounts: data.accounts.map(_accountCatalogSettingsFromFrb).toList(),
     );
   }
 
   return SettingsStateSnapshot(
-    providers: switch (snapshot) {
+    accounts: switch (snapshot) {
       frb.BridgeModelCatalogStateSnapshot_Ready(:final value) => convert(
         value,
-      ).providers,
+      ).accounts,
       frb.BridgeModelCatalogStateSnapshot_Refreshing(:final value) => convert(
         value,
-      ).providers,
+      ).accounts,
       frb.BridgeModelCatalogStateSnapshot_Stale(:final value) => convert(
         value,
-      ).providers,
+      ).accounts,
       frb.BridgeModelCatalogStateSnapshot_Degraded(:final value) => convert(
         value,
-      ).providers,
+      ).accounts,
       _ => const [],
     },
     modelCatalogRevision: switch (snapshot) {
@@ -223,15 +223,15 @@ SettingsStateSnapshot _modelCatalogStateFromFrb(
   );
 }
 
-ProviderSettingsView _providerCatalogSettingsFromFrb(
-  frb.BridgeModelCatalogProviderDto value,
+AccountSettingsView _accountCatalogSettingsFromFrb(
+  frb.BridgeModelCatalogAccountDto value,
 ) {
-  final models = value.effectiveModels.map(_providerModelFromCatalog).toList();
-  return ProviderSettingsView(
-    id: value.id,
-    name: value.id,
+  final models = value.effectiveModels.map(accountModelFromCatalog).toList();
+  return AccountSettingsView(
+    id: value.accountId,
+    name: value.accountId,
     baseUrl: '',
-    defaultModel: models.isEmpty ? '' : models.first.slug,
+    defaultModelId: models.isEmpty ? '' : models.first.modelId,
     models: models,
     modelCatalog: _modelCatalogStatusFromFrb(value.modelCatalog),
     status: 'catalog',
@@ -251,8 +251,8 @@ WebSearchSettingsView _webSearchFromFrb(frb.BridgeWebSearchSettingsDto value) {
     region: value.region,
     city: value.city,
     timezone: value.timezone,
-    providerId: value.providerId,
-    model: value.model,
+    accountId: value.accountId,
+    modelId: value.modelId,
   );
 }
 
@@ -265,7 +265,7 @@ DeepSeekWebSearchSettingsView _deepSeekWebSearchFromFrb(
     configuredFetchEnabled: value.configuredFetchEnabled,
     effectiveFetchEnabled: value.effectiveFetchEnabled,
     availability: value.availability,
-    providerId: value.providerId,
+    accountId: value.accountId,
   );
 }
 

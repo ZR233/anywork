@@ -173,7 +173,7 @@ impl StudioThreadFactory {
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
 
         let resources = FileResourceStore::new(self.services.store.session_resources_dir(id));
-        let prepared = self
+        let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
                 cancellation: &request.cancellation,
@@ -206,9 +206,16 @@ impl StudioThreadFactory {
                 })?,
             );
         }
+        let model = pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            route.reasoning_config(),
+        )
+        .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
+            preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
+                model.clone(),
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
@@ -220,7 +227,7 @@ impl StudioThreadFactory {
             parent_id: thread.parent_thread_id,
             route,
             model_available,
-            hosted_tools: prepared.hosted,
+            model,
             checkpoint: Some(checkpoint),
             initial_context: Vec::new(),
             initial_extensions,
@@ -391,8 +398,8 @@ fn migrate_profile(
                 description: String::new(),
                 when_to_use: String::new(),
                 system_instructions: String::new(),
-                provider_id: route.provider.as_str().into(),
-                model: route.model.clone(),
+                account_id: route.account_id.as_str().into(),
+                model_id: route.model_id.clone(),
                 effort: route
                     .effort
                     .as_ref()
@@ -407,8 +414,8 @@ fn migrate_profile(
         }
     };
     if let Some(route) = receipt_route {
-        profile.provider_id = route.provider.into_string();
-        profile.model = route.model;
+        profile.account_id = route.account_id.into_string();
+        profile.model_id = route.model_id;
         profile.effort = route.effort.map(|effort| effort.as_str().to_owned());
     }
     let mut hashable = profile.clone();

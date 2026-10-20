@@ -11,6 +11,27 @@ use pl_core::{
 use pl_protocol::ThreadModeId;
 
 impl StudioRuntime {
+    /// Explicit user reduction, serialized with prompt admission and normal context preparation.
+    pub async fn compact_thread(&self, thread_id: &str) -> Result<()> {
+        let lifecycle = self.lifecycle_lock.lock().await;
+        self.read_owned_thread(thread_id).await?;
+        anyhow::ensure!(!self.thread_is_busy(thread_id).await?, "Thread is busy");
+        let thread = self.ensure_thread_owner(thread_id).await?;
+        let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
+        let _installation = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Closed.into()),
+            guard = gate.lock_owned() => guard,
+        };
+        // The per-Thread gate now owns admission; shutdown must be able to cancel this model call.
+        drop(lifecycle);
+        thread
+            .compact_context(thread.snapshot().context.revision, cancellation)
+            .await?;
+        thread.flush().await?;
+        Ok(())
+    }
+
     pub async fn set_thread_mode(
         &self,
         operation_id: String,
@@ -34,8 +55,14 @@ impl StudioRuntime {
         let route = config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)?;
-        crate::mode::validate_thread_mode_model(Some(&mode), &route.model)?;
+
         let thread = self.ensure_thread_owner(thread_id).await?;
+        let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
+        let _installation = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Closed.into()),
+            guard = gate.lock_owned() => guard,
+        };
         let state = thread.snapshot();
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(
@@ -111,7 +138,7 @@ impl StudioRuntime {
             .is_some_and(|saved| saved.route == route_selector);
         let append = same_route
             && route.endpoint.instruction_update_strategy(&route.model)
-                == pl_model::provider::InstructionUpdateStrategy::AppendFullSnapshot;
+                == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot;
         let mut records = if append {
             state.context.records.to_vec()
         } else {
@@ -142,14 +169,14 @@ impl StudioRuntime {
             .transpose()?;
         let now = crate::studio::unix_seconds();
         let workflow =
-            crate::mode::reconcile_workflow_for_turn(previous_workflow, &mode, thread_id, now)?;
+            crate::mode::state::archive_workflow_for_mode_change(previous_workflow, &mode_id, now)?;
         let mode_record = state.extensions.get("studio.mode");
         let route_record = state
             .extensions
             .get(crate::studio::model_route::MODEL_ROUTE_EXTENSION)
             .context("Thread has no saved model route")?;
         let mode_payload =
-            OpaquePayload::new("pl.studio.mode", 1, serde_json::to_string(&mode_id)?)?;
+            crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
         let route_payload = crate::studio::model_route::encode(&route_selector)?;
         let mut mutations = vec![
             ExtensionMutation::Put {
@@ -210,13 +237,13 @@ impl StudioRuntime {
         );
         let (tools, exposure, binding) = self
             .thread_factory
-            .refresh_thread_tools(
-                thread_id,
-                &candidate,
-                tokio_util::sync::CancellationToken::new(),
-            )
+            .refresh_thread_tools(thread_id, &candidate, cancellation.clone())
             .await?;
         let mut registrations = tools.into_registrations();
+        if cancellation.is_cancelled() {
+            thread.retire_tools(registrations).await?;
+            return Err(pl_core::thread::ThreadError::Cancelled.into());
+        }
         if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
             registrations.extend(self.threads.agent_control_tools()?);
         }

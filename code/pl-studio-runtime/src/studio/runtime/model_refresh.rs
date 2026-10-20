@@ -84,12 +84,9 @@ impl StudioRuntime {
             if !is_child {
                 let mode_id =
                     crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(record.mode);
-                let mode = self
-                    .thread_modes
-                    .snapshot()
-                    .mode(&mode_id)
+                crate::mode::saved_registered_mode(&state)?
+                    .or_else(|| self.thread_modes.snapshot().mode(&mode_id))
                     .context("current Thread Mode is unavailable")?;
-                crate::mode::validate_thread_mode_model(Some(&mode), &route.model)?;
             }
             Ok((route, config))
         }
@@ -134,24 +131,24 @@ impl StudioRuntime {
         hosted.extend(crate::programmatic::hosted_tool(route));
         // Hash sorted structured inputs in memory. Credentials never enter logs, storage or model context.
         let key = crate::hash::canonical_json_hash(&serde_json::json!({
-            "provider": route.provider_id, "endpoint": route.endpoint, "model": route.model,
+            "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
             "effort": route.effort, "pricing": route.pricing_mode,
-            "autoCompactLimit": route.auto_compact_limit,
+            "contextPolicy": route.context, "modelDefinition": route.model,
             "compaction": config.runtime.openai_compaction_mode,
             "hosted": hosted.iter().map(|tool| match tool {
                 pl_model::runtime::HostedTool::WebSearch(options) => pl_protocol::ToolSpec::WebSearch { options: options.clone() },
                 pl_model::runtime::HostedTool::ProgrammaticToolCalling => pl_protocol::ToolSpec::ProgrammaticToolCalling,
             }).collect::<Vec<_>>(),
         }));
-        let factory = ModelFactory::new(
-            ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-                .with_hosted_tools(hosted),
-        );
+        let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
+            .with_hosted_tools(hosted);
+        let factory = ModelFactory::new(model.clone());
         Ok(DeferredModelUpdate::new(
             key,
             factory,
             crate::compaction::preparer(
                 route,
+                model,
                 config.runtime.openai_compaction_mode,
                 self.thread_modes.clone(),
             )?,
@@ -177,32 +174,23 @@ impl StudioRuntime {
                     change = catalogs.recv() => {
                         match change {
                             Ok(change) => {
-                                if let Err(error) = runtime.publish_model_catalog_state(change.snapshot) { tracing::error!(%error, "could not publish model catalog snapshot"); }
+                                if let Err(error) = runtime.publish_model_catalog_state() { tracing::error!(%error, "could not publish model catalog snapshot"); }
                                 Some(change.affected)
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                let Ok(snapshot) = runtime.config_runtime.read() else { continue; };
-                                let Ok(catalog) = runtime.config_runtime.read_catalog() else { continue; };
-                                let ids = snapshot.config.models.providers.keys().cloned().collect();
-                                let _ = runtime.publish_model_catalog_state(catalog);
+                                let Ok((snapshot, _)) = runtime.config_runtime.read_with_catalog() else { continue; };
+                                let ids = snapshot.config.models.accounts.keys().cloned().collect();
+                                if let Err(error) = runtime.publish_model_catalog_state() { tracing::error!(%error, "could not publish lagged model catalog snapshot"); }
                                 Some(ids)
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 };
-                let Ok(watermarks) = runtime.config_runtime.read() else {
+                let Ok((settings, catalog)) = runtime.config_runtime.read_with_catalog() else {
                     continue;
                 };
-                let revision = format!(
-                    "{}:{}",
-                    watermarks.revision,
-                    runtime
-                        .config_runtime
-                        .read_catalog()
-                        .map(|catalog| catalog.revision)
-                        .unwrap_or_default()
-                );
+                let revision = format!("{}:{}", settings.revision, catalog.revision);
                 for (id, thread) in runtime.threads.observed_threads() {
                     if let Some(affected) = &affected {
                         let state = thread.snapshot();
@@ -212,7 +200,7 @@ impl StudioRuntime {
                                 .extensions
                                 .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION),
                         );
-                        if !matches!(selector, Ok(Some((_, ref selector))) if affected.contains(&selector.provider))
+                        if !matches!(selector, Ok(Some((_, ref selector))) if affected.contains(&selector.account_id))
                         {
                             continue;
                         }

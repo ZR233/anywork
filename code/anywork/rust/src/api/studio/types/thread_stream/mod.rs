@@ -274,8 +274,8 @@ pub struct BridgeThreadRuntimeLiveUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeThreadModelRouteSnapshot {
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: Option<String>,
     pub revision: u64,
     pub available: bool,
@@ -300,6 +300,9 @@ pub struct BridgeWorkflowRun {
     pub current_state_id: String,
     pub started_at: i64,
     pub updated_at: i64,
+    pub current_state_title: String,
+    pub mode_display_name: String,
+    pub mode_deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,7 +338,7 @@ pub enum BridgePlanPhase {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadRuntimeUsage {
     pub has_incomplete_usage: bool,
-    pub model: String,
+    pub model_id: String,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
     pub auto_compact_limit: Option<u64>,
@@ -370,7 +373,7 @@ pub struct BridgeCacheUsageSummary {
 pub enum BridgePromptPrefixChangedReason {
     Initial,
     PromptScopeChanged,
-    ProviderChanged,
+    AccountChanged,
     ModelChanged,
     BaseInstructionsChanged,
     GlobalInstructionsChanged,

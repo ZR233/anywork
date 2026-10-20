@@ -410,8 +410,9 @@ fn run_gui_native_launch(
     configure_native_engine_environment(&mut command);
     let program = executable.to_string_lossy().into_owned();
     let display = process::display_command(&program, &[]);
+    let native_started = std::time::Instant::now();
     let exit = process::run_resident_reporting(&mut command, &display)?;
-    let report = NativeExitReport::from_exit(&exit);
+    let report = NativeExitReport::from_exit(&exit, native_started.elapsed());
     if let Some(path) = options.native_exit_report.as_deref() {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -438,6 +439,8 @@ struct NativeExitReport {
     exit_code: Option<i32>,
     signal: Option<i32>,
     status: String,
+    /// Native launch and process-tree wait, excluding compilation and preflight.
+    elapsed_millis: u128,
     /// Subtree present when the native host was reaped, before the natural
     /// reclamation window (the set the product's own supervisor must reclaim).
     descendants_at_root_exit: Vec<u32>,
@@ -448,7 +451,7 @@ struct NativeExitReport {
 }
 
 impl NativeExitReport {
-    fn from_exit(exit: &process::ResidentExit) -> Self {
+    fn from_exit(exit: &process::ResidentExit, elapsed: std::time::Duration) -> Self {
         #[cfg(unix)]
         let signal = {
             use std::os::unix::process::ExitStatusExt;
@@ -462,6 +465,7 @@ impl NativeExitReport {
             exit_code: exit.status.code(),
             signal,
             status: exit.status.to_string(),
+            elapsed_millis: elapsed.as_millis(),
             descendants_at_root_exit: exit.descendants_at_root_exit.clone(),
             reclaimed_descendants: exit.reclaimed_descendants.clone(),
             cancelled: exit.cancelled,

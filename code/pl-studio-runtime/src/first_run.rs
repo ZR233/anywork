@@ -4,32 +4,32 @@ use std::collections::BTreeSet;
 use crate::{PureError, Result};
 
 use crate::config::{
-    ModelRouteConfig, ProviderId, ReasoningEffort, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
+    AccountId, ModelRouteConfig, ReasoningEffort, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
     StudioRole,
 };
 use pl_model::config::{
-    AgentModelConfig, ProviderConfig, ProviderModelCatalogConfig, ProviderPresetId,
-    builtin_provider_catalog,
+    AccountConfig, AccountModelCatalogConfig, AccountTemplateId, AgentModelConfig,
+    builtin_account_catalog,
 };
 use pl_model::model::ModelInfo;
-use pl_model::provider::ProviderEndpoint;
+use pl_model::protocol::ProtocolEndpoint;
 use pl_protocol::ThreadModeId;
 
-/// Studio 使用的动态 provider preset 标识。
+/// Studio 使用的动态 account template 标识。
 ///
 /// 名称保留“Template”是为了描述 first-run 的用途；候选项完全来自 PL registry，
 /// 不再由 Studio 枚举维护。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProviderTemplateKind(ProviderPresetId);
+pub struct AccountTemplateKind(AccountTemplateId);
 
-impl ProviderTemplateKind {
+impl AccountTemplateKind {
     /// # Errors
     /// Returns an error if the bundled catalog cannot be assembled.
     pub fn all() -> Result<Vec<Self>> {
-        Ok(builtin_provider_catalog()?
-            .presets
+        Ok(builtin_account_catalog()?
+            .templates
             .into_iter()
-            .map(|preset| Self(preset.id))
+            .map(|template| Self(template.id))
             .collect())
     }
 
@@ -37,11 +37,11 @@ impl ProviderTemplateKind {
     /// Returns catalog assembly errors; an unknown key returns `Ok(None)`.
     pub fn from_key(key: &str) -> Result<Option<Self>> {
         let normalized = key.trim().replace('_', "-");
-        Ok(builtin_provider_catalog()?
-            .presets
+        Ok(builtin_account_catalog()?
+            .templates
             .into_iter()
-            .find(|preset| preset.id.as_str() == normalized)
-            .map(|preset| Self(preset.id)))
+            .find(|template| template.id.as_str() == normalized)
+            .map(|template| Self(template.id)))
     }
 
     pub fn key(&self) -> &str {
@@ -55,37 +55,37 @@ impl ProviderTemplateKind {
     /// # Errors
     /// Returns an error if the bundled catalog cannot be assembled.
     pub fn display_name(&self) -> Result<String> {
-        Ok(self.preset()?.display_name)
+        Ok(self.template()?.display_name)
     }
 
-    pub(crate) fn provider_endpoint(&self) -> Result<ProviderEndpoint> {
-        self.preset()?.provider.to_endpoint()
+    pub(crate) fn protocol_endpoint(&self) -> Result<ProtocolEndpoint> {
+        self.template()?.account.to_endpoint()
     }
 
     pub fn default_models(&self) -> Result<Vec<ModelInfo>> {
-        self.preset()?.provider.effective_models()
+        self.template()?.account.effective_models(None)
     }
 
-    pub fn default_model_slugs(&self) -> Result<Vec<String>> {
+    pub fn default_model_ids(&self) -> Result<Vec<String>> {
         Ok(self
             .default_models()?
             .into_iter()
-            .map(|model| model.slug)
+            .map(|model| model.model_id)
             .collect())
     }
 
     /// # Errors
     /// Returns an error if the bundled catalog cannot be assembled.
-    pub fn provider_config(&self) -> Result<ProviderConfig> {
-        Ok(self.preset()?.provider)
+    pub fn account_config(&self) -> Result<AccountConfig> {
+        Ok(self.template()?.account)
     }
 
-    fn preset(&self) -> Result<pl_model::config::ProviderPreset> {
-        Ok(builtin_provider_catalog()?
-            .presets
+    fn template(&self) -> Result<pl_model::config::AccountTemplate> {
+        Ok(builtin_account_catalog()?
+            .templates
             .into_iter()
-            .find(|preset| preset.id == self.0)
-            .expect("ProviderTemplateKind is created from the builtin registry"))
+            .find(|template| template.id == self.0)
+            .expect("AccountTemplateKind is created from the builtin registry"))
     }
 }
 
@@ -99,17 +99,17 @@ impl FirstRunModelDraft {
         Self { config }
     }
 
-    pub fn custom(slug: impl Into<String>) -> Self {
+    pub fn custom(model_id: impl Into<String>) -> Self {
         Self {
-            config: ModelInfo::compatible(&slug.into()),
+            config: ModelInfo::compatible(&model_id.into()),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FirstRunProviderDraft {
+pub struct FirstRunAccountDraft {
     pub key: String,
-    pub kind: ProviderTemplateKind,
+    pub kind: AccountTemplateKind,
     pub name: String,
     pub base_url: Option<String>,
     pub bearer_token: String,
@@ -117,12 +117,12 @@ pub struct FirstRunProviderDraft {
     pub models: Vec<FirstRunModelDraft>,
 }
 
-impl FirstRunProviderDraft {
+impl FirstRunAccountDraft {
     /// # Errors
-    /// Returns catalog assembly or provider endpoint validation errors.
-    pub fn from_template(key: impl Into<String>, kind: ProviderTemplateKind) -> Result<Self> {
-        let endpoint = kind.provider_endpoint()?;
-        let default_model = kind.preset()?.suggested_model;
+    /// Returns catalog assembly or account endpoint validation errors.
+    pub fn from_template(key: impl Into<String>, kind: AccountTemplateKind) -> Result<Self> {
+        let endpoint = kind.protocol_endpoint()?;
+        let default_model = kind.template()?.suggested_model_id;
         Ok(Self {
             key: key.into(),
             kind,
@@ -140,26 +140,26 @@ impl FirstRunProviderDraft {
         Ok(models)
     }
 
-    fn to_provider_config(&self) -> Result<ProviderConfig> {
-        validate_provider_key(&self.key)?;
+    fn to_account_config(&self) -> Result<AccountConfig> {
+        validate_account_key(&self.key)?;
         let bearer_token = self.bearer_token.trim();
         if bearer_token.is_empty() && self.kind.key() != "openai-compatible" {
             return Err(PureError::ConfigError(format!(
-                "provider {} api key must not be empty",
+                "account {} api key must not be empty",
                 self.key
             )));
         }
 
-        let mut provider = self.kind.provider_config()?;
-        provider.name = non_empty_trimmed(&self.name, "provider name")?;
-        provider.base_url = trim_optional(self.base_url.as_deref()).ok_or_else(|| {
+        let mut account = self.kind.account_config()?;
+        account.name = non_empty_trimmed(&self.name, "account name")?;
+        account.base_url = trim_optional(self.base_url.as_deref()).ok_or_else(|| {
             let key = &self.key;
-            PureError::ConfigError(format!("provider {key} base_url must not be empty"))
+            PureError::ConfigError(format!("account {key} base_url must not be empty"))
         })?;
-        let default_model = non_empty_trimmed(&self.default_model, "provider default_model")?;
-        provider.bearer_token = (!bearer_token.is_empty()).then(|| bearer_token.to_string());
-        match &mut provider.catalog {
-            ProviderModelCatalogConfig::Bundled {
+        let default_model = non_empty_trimmed(&self.default_model, "account default_model")?;
+        account.bearer_token = (!bearer_token.is_empty()).then(|| bearer_token.to_string());
+        match &mut account.catalog {
+            AccountModelCatalogConfig::Bundled {
                 additional_models, ..
             } => {
                 *additional_models = self
@@ -168,7 +168,7 @@ impl FirstRunProviderDraft {
                     .map(|model| model.config.clone())
                     .collect();
             }
-            ProviderModelCatalogConfig::Explicit { models, .. } => {
+            AccountModelCatalogConfig::Explicit { models, .. } => {
                 *models = self
                     .models
                     .iter()
@@ -177,116 +177,109 @@ impl FirstRunProviderDraft {
             }
         }
 
-        let models = provider.effective_models()?;
+        let models = account.effective_models(None)?;
         validate_models(&self.key, &default_model, &models)?;
 
-        Ok(provider)
+        Ok(account)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FirstRunConfigDraft {
-    pub default_provider: String,
-    pub providers: Vec<FirstRunProviderDraft>,
+    pub default_account: String,
+    pub accounts: Vec<FirstRunAccountDraft>,
 }
 
 impl FirstRunConfigDraft {
     /// # Errors
-    /// Returns catalog assembly or default provider validation errors.
+    /// Returns catalog assembly or default account validation errors.
     pub fn new_default() -> Result<Self> {
-        let kind = ProviderTemplateKind::from_key("deepseek")?
-            .expect("PL builtin registry contains deepseek preset");
-        let provider = FirstRunProviderDraft::from_template("deepseek", kind)?;
+        let kind = AccountTemplateKind::from_key("deepseek")?
+            .expect("PL builtin registry contains deepseek template");
+        let account = FirstRunAccountDraft::from_template("deepseek", kind)?;
         Ok(Self {
-            default_provider: provider.key.clone(),
-            providers: vec![provider],
+            default_account: account.key.clone(),
+            accounts: vec![account],
         })
     }
 
-    pub fn suggest_provider_key(&self, kind: &ProviderTemplateKind) -> String {
+    pub fn suggest_account_key(&self, kind: &AccountTemplateKind) -> String {
         let prefix = kind.key_prefix();
-        if !self.providers.iter().any(|provider| provider.key == prefix) {
+        if !self.accounts.iter().any(|account| account.key == prefix) {
             return prefix.to_string();
         }
 
         for index in 2.. {
             let candidate = format!("{prefix}-{index}");
-            if !self
-                .providers
-                .iter()
-                .any(|provider| provider.key == candidate)
-            {
+            if !self.accounts.iter().any(|account| account.key == candidate) {
                 return candidate;
             }
         }
 
-        unreachable!("unbounded provider key suggestion should always return")
+        unreachable!("unbounded account key suggestion should always return")
     }
 
     /// # Errors
-    /// Returns template errors without adding a partial provider draft.
-    pub fn add_provider(
-        &mut self,
-        kind: ProviderTemplateKind,
-    ) -> Result<&mut FirstRunProviderDraft> {
-        let key = self.suggest_provider_key(&kind);
-        self.providers
-            .push(FirstRunProviderDraft::from_template(key, kind)?);
-        Ok(self.providers.last_mut().expect("provider was just pushed"))
+    /// Returns template errors without adding a partial account draft.
+    pub fn add_account(&mut self, kind: AccountTemplateKind) -> Result<&mut FirstRunAccountDraft> {
+        let key = self.suggest_account_key(&kind);
+        self.accounts
+            .push(FirstRunAccountDraft::from_template(key, kind)?);
+        Ok(self.accounts.last_mut().expect("account was just pushed"))
     }
 
     pub fn to_config(&self) -> Result<StudioConfig> {
-        if self.providers.is_empty() {
+        if self.accounts.is_empty() {
             return Err(PureError::ConfigError(
-                "at least one provider is required".to_string(),
+                "at least one account is required".to_string(),
             ));
         }
 
-        let default_provider_key = non_empty_trimmed(&self.default_provider, "default_provider")?;
-        let mut provider_keys = BTreeSet::new();
-        let mut providers = BTreeMap::new();
+        let default_account_key = non_empty_trimmed(&self.default_account, "default_account")?;
+        let mut account_keys = BTreeSet::new();
+        let mut accounts = BTreeMap::new();
 
-        for provider in &self.providers {
-            if !provider_keys.insert(provider.key.clone()) {
+        for account in &self.accounts {
+            if !account_keys.insert(account.key.clone()) {
                 return Err(PureError::ConfigError(format!(
-                    "duplicate provider key: {}",
-                    provider.key
+                    "duplicate account key: {}",
+                    account.key
                 )));
             }
-            providers.insert(
-                ProviderId::new(provider.key.clone())?,
-                provider.to_provider_config()?,
+            accounts.insert(
+                AccountId::new(account.key.clone())?,
+                account.to_account_config()?,
             );
         }
 
-        let default_provider_id = ProviderId::new(default_provider_key.clone())?;
-        let default_provider = providers.get(&default_provider_id).ok_or_else(|| {
+        let default_account_id = AccountId::new(default_account_key.clone())?;
+        let default_account = accounts.get(&default_account_id).ok_or_else(|| {
             PureError::ConfigError(format!(
-                "default provider references missing provider: {default_provider_key}"
+                "default account references missing account: {default_account_key}"
             ))
         })?;
         let default_model = self
-            .providers
+            .accounts
             .iter()
-            .find(|provider| provider.key == default_provider_key)
-            .map(|provider| provider.default_model.trim().to_string())
+            .find(|account| account.key == default_account_key)
+            .map(|account| account.default_model.trim().to_string())
             .filter(|model| !model.is_empty())
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
-                    "default provider has no default model: {default_provider_key}"
+                    "default account has no default model: {default_account_key}"
                 ))
             })?;
-        let default_effort = role_effort(default_provider, &default_model)?;
+        let default_effort = role_effort(default_account, &default_model)?;
         let route = ModelRouteConfig {
-            provider: default_provider_id,
-            model: default_model,
+            account_id: default_account_id,
+            model_id: default_model,
             effort: default_effort.map(ReasoningEffort::new),
         };
 
         let config = StudioConfig {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
             models: AgentModelConfig {
-                providers,
+                accounts,
                 routes: StudioRole::child_roles()
                     .into_iter()
                     .map(|role| (role.id(), route.clone()))
@@ -326,11 +319,11 @@ fn trim_optional(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn validate_provider_key(key: &str) -> Result<()> {
+fn validate_account_key(key: &str) -> Result<()> {
     let key = key.trim();
     if key.is_empty() {
         return Err(PureError::ConfigError(
-            "provider key must not be empty".to_string(),
+            "account key must not be empty".to_string(),
         ));
     }
     if !key
@@ -338,48 +331,46 @@ fn validate_provider_key(key: &str) -> Result<()> {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
     {
         return Err(PureError::ConfigError(format!(
-            "provider key contains unsupported characters: {key}"
+            "account key contains unsupported characters: {key}"
         )));
     }
     Ok(())
 }
 
-fn validate_models(provider_key: &str, default_model: &str, models: &[ModelInfo]) -> Result<()> {
-    let mut slugs = BTreeSet::new();
+fn validate_models(account_key: &str, default_model: &str, models: &[ModelInfo]) -> Result<()> {
+    let mut model_ids = BTreeSet::new();
     for model in models {
-        if model.slug.trim().is_empty() {
+        if model.model_id.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has a model with empty slug"
+                "account {account_key} has a model with empty model_id"
             )));
         }
-        if !slugs.insert(model.slug.clone()) {
+        if !model_ids.insert(model.model_id.clone()) {
             return Err(PureError::ConfigError(format!(
-                "provider {provider_key} has duplicate model slug: {}",
-                model.slug
+                "account {account_key} has duplicate model model_id: {}",
+                model.model_id
             )));
         }
     }
 
     let _model = models
         .iter()
-        .find(|model| model.slug == default_model)
+        .find(|model| model.model_id == default_model)
         .ok_or_else(|| {
             PureError::ConfigError(format!(
-                "provider {provider_key} default_model is not in models: {default_model}"
+                "account {account_key} default_model is not in models: {default_model}"
             ))
         })?;
     Ok(())
 }
 
-fn role_effort(provider: &ProviderConfig, model_slug: &str) -> Result<Option<String>> {
-    let models = provider.effective_models()?;
+fn role_effort(account: &AccountConfig, model_id: &str) -> Result<Option<String>> {
+    let models = account.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.slug == model_slug)
+        .find(|model| model.model_id == model_id)
         .ok_or_else(|| {
-            PureError::ConfigError(format!(
-                "default model is missing from provider: {model_slug}"
-            ))
+            PureError::ConfigError(format!("default model is missing from account: {model_id}"))
         })?;
     Ok(model.default_effort())
 }

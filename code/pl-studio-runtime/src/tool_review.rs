@@ -15,8 +15,8 @@ struct ReviewBinding {
 }
 
 pub(crate) fn reviewer(route: &ResolvedModelRoute) -> crate::Result<ToolReviewCallback> {
-    let runtime = ModelRuntime::new_with_provider_id(
-        route.provider_id.as_str(),
+    let runtime = ModelRuntime::new_with_account_id(
+        route.account_id.as_str(),
         route.endpoint.clone(),
         route.model.clone(),
     )?
@@ -84,22 +84,13 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
     let billing = pl_protocol::InferenceBillingRecord {
         purpose: Some("review".into()),
         inference_id,
-        provider_instance_id: route.provider_id.as_str().into(),
-        provider: route.endpoint.name.clone(),
-        model: model_observation.as_ref().map_or_else(
-            || {
-                result
-                    .as_ref()
-                    .ok()
-                    .map(|response| response.model.clone())
-                    .filter(|model| !model.is_empty())
-                    .unwrap_or_else(|| route.model.slug.clone())
-            },
-            |observation| observation.sent_model.clone(),
-        ),
+        account_id: route.account_id.as_str().into(),
+        account_display_name: Some(route.endpoint.name.clone()),
+        // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
+        model_id: Some(route.model.model_id.clone()),
         model_observation,
-        reasoning_effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
-        context_window: route.model.resolved_context_window(),
+        effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
+        context_window: route.context.context_window,
         accounting,
         prompt_generation: None,
         prompt_cache_policy: None,
@@ -119,7 +110,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
     let saved = async {
         let payload = pl_core::context::OpaquePayload::new(
             "pl.studio.auxiliary-billing",
-            1,
+            2,
             serde_json::to_string(&receipt)?,
         )?;
         request.task.record_observation(payload).await?;

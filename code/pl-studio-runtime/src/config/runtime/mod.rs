@@ -1,4 +1,6 @@
 mod catalog;
+mod mode_definitions;
+pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -7,8 +9,10 @@ use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
 use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
-use pl_model::config::ProviderId;
-use pl_protocol::studio::StudioModelCatalogStatus;
+use crate::mode::ThreadModeManager;
+use pl_model::config::AccountId;
+use pl_protocol::ThreadModeDocument;
+use pl_protocol::{ThreadModeId, studio::StudioModelCatalogStatus};
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。
@@ -22,20 +26,23 @@ pub struct ConfigRuntime {
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
+    /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
+    modes: ThreadModeManager,
+    /// 文件定义的完整编辑文档；查询只读该缓存，不扫描目录。
+    mode_documents: Arc<RwLock<BTreeMap<ThreadModeId, ThreadModeDocument>>>,
 }
 
 struct RuntimeState {
     desired: StudioConfig,
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
-    observations: BTreeMap<ProviderId, Observation>,
+    observations: BTreeMap<AccountId, Observation>,
     closing: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct CatalogChange {
-    pub snapshot: ModelCatalogRuntimeSnapshot,
-    pub affected: Vec<ProviderId>,
+    pub affected: Vec<AccountId>,
 }
 
 /// 已校验 Studio 配置及其单调 revision。
@@ -49,7 +56,7 @@ pub struct ConfigRuntimeSnapshot {
     pub updated_at: i64,
     pub config: StudioConfig,
     canonical_config: StudioConfig,
-    usage_query_revisions: BTreeMap<ProviderId, u64>,
+    usage_query_revisions: BTreeMap<AccountId, u64>,
 }
 
 impl ConfigRuntimeSnapshot {
@@ -57,8 +64,8 @@ impl ConfigRuntimeSnapshot {
         &self.canonical_config
     }
 
-    pub(crate) fn usage_query_revision(&self, provider: &ProviderId) -> Option<u64> {
-        self.usage_query_revisions.get(provider).copied()
+    pub(crate) fn usage_query_revision(&self, account: &AccountId) -> Option<u64> {
+        self.usage_query_revisions.get(account).copied()
     }
 }
 
@@ -70,7 +77,7 @@ impl ConfigRuntimeSnapshot {
 pub struct ModelCatalogRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
-    pub catalogs: BTreeMap<ProviderId, StudioModelCatalogStatus>,
+    pub catalogs: BTreeMap<AccountId, StudioModelCatalogStatus>,
 }
 
 /// Parameters resolved from one configuration revision for a newly created product Agent.
@@ -96,6 +103,10 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error("configuration migration failed; original file preserved: {0}")]
+    Migration(#[source] PureError),
+    #[error("work mode configuration requires repair; original files preserved: {0:#}")]
+    ModeDefinitions(#[source] anyhow::Error),
     #[error("settings revision conflict: expected {expected}, actual {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error(transparent)]
@@ -107,7 +118,10 @@ type ConfigRuntimeResult<T> = std::result::Result<T, ConfigRuntimeError>;
 impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
-            ConfigRuntimeError::Core(error) => error,
+            ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
+            ConfigRuntimeError::ModeDefinitions(error) => PureError::ConfigError(format!(
+                "work mode configuration requires repair: {error:#}"
+            )),
             ConfigRuntimeError::StaleRevision { expected, actual } => PureError::ConfigError(
                 format!("settings revision conflict: expected {expected}, actual {actual}"),
             ),
@@ -125,6 +139,8 @@ impl ConfigRuntime {
         super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
+        let (modes, mode_documents) = mode_definitions::initialize(store.paths())
+            .map_err(ConfigRuntimeError::ModeDefinitions)?;
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
         Ok(Self {
             store,
@@ -139,7 +155,7 @@ impl ConfigRuntime {
                     config: config.clone(),
                     usage_query_revisions: config
                         .models
-                        .providers
+                        .accounts
                         .keys()
                         .cloned()
                         .map(|id| (id, 1))
@@ -154,6 +170,8 @@ impl ConfigRuntime {
                 observations,
             })),
             profiles,
+            modes,
+            mode_documents: Arc::new(RwLock::new(mode_documents)),
         })
     }
 
@@ -165,16 +183,24 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
+    /// Coherent configuration and directory watermarks from one owner read lock.
+    pub fn read_with_catalog(
+        &self,
+    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot)> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok((state.snapshot.clone(), state.catalog.clone()))
+    }
+
     /// Commits an in-memory observation at the same boundary as input invalidation.
     /// The callback must not await, perform IO, or re-enter this config owner.
     pub(crate) fn if_usage_query_current(
         &self,
-        provider: &ProviderId,
+        account: &AccountId,
         revision: u64,
         commit: impl FnOnce(),
     ) -> ConfigRuntimeResult<bool> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-        if state.closing || state.snapshot.usage_query_revision(provider) != Some(revision) {
+        if state.closing || state.snapshot.usage_query_revision(account) != Some(revision) {
             return Ok(false);
         }
         commit();
@@ -222,7 +248,7 @@ impl ConfigRuntime {
     /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
     ///
     /// # Errors
-    /// Returns unknown/disabled Profile, configuration or provider route errors.
+    /// Returns unknown/disabled Profile, configuration or account route errors.
     pub fn resolve_agent_profile(
         &self,
         profile_id: &str,
@@ -317,8 +343,7 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        let current_catalog = self.read_catalog()?;
+        let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
         let (desired, observations) = {
             let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
@@ -328,8 +353,8 @@ impl ConfigRuntime {
             (state.desired.clone(), state.observations.clone())
         };
         let mut next_config = edit(&desired, &current.config)?;
-        for provider in next_config.models.providers.values_mut() {
-            provider.clear_model_catalog_overlay();
+        for account in next_config.models.accounts.values_mut() {
+            account.clear_model_catalog_overlay();
         }
         let next_observations =
             model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
@@ -348,7 +373,7 @@ impl ConfigRuntime {
             usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
-            || effective.models.providers != current.config.models.providers;
+            || effective.models.accounts != current.config.models.accounts;
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: current_catalog
                 .revision
@@ -377,8 +402,7 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        let current_catalog = self.read_catalog()?;
+        let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
         let desired = self.store.load_or_default()?;
         let observations = self
@@ -420,18 +444,18 @@ impl ConfigRuntime {
 fn next_usage_query_revisions(
     previous: &ConfigRuntimeSnapshot,
     config: &StudioConfig,
-) -> BTreeMap<ProviderId, u64> {
+) -> BTreeMap<AccountId, u64> {
     config
         .models
-        .providers
+        .accounts
         .iter()
-        .map(|(id, provider)| {
-            let unchanged = previous.config.models.providers.get(id).is_some_and(|old| {
-                old.adapter == provider.adapter
-                    && old.preset_id() == provider.preset_id()
-                    && old.base_url == provider.base_url
-                    && old.http_headers == provider.http_headers
-                    && old.resolved_bearer_token() == provider.resolved_bearer_token()
+        .map(|(id, account)| {
+            let unchanged = previous.config.models.accounts.get(id).is_some_and(|old| {
+                old.protocol == account.protocol
+                    && old.template_id() == account.template_id()
+                    && old.base_url == account.base_url
+                    && old.http_headers == account.http_headers
+                    && old.resolved_bearer_token() == account.resolved_bearer_token()
             });
             let revision = if unchanged {
                 previous
@@ -448,8 +472,8 @@ fn next_usage_query_revisions(
 }
 
 fn statuses(
-    observations: &BTreeMap<ProviderId, Observation>,
-) -> BTreeMap<ProviderId, StudioModelCatalogStatus> {
+    observations: &BTreeMap<AccountId, Observation>,
+) -> BTreeMap<AccountId, StudioModelCatalogStatus> {
     observations
         .iter()
         .map(|(id, observation)| (id.clone(), observation.status.clone()))
@@ -461,7 +485,7 @@ fn statuses(
 /// 只应用目录 overlay 与产品固定策略；`canonical_config`/desired 仍是持久化事实源。
 fn effective_runtime_config(
     desired: &StudioConfig,
-    observations: &BTreeMap<ProviderId, Observation>,
+    observations: &BTreeMap<AccountId, Observation>,
 ) -> Result<StudioConfig> {
     let mut config = model_catalog::effective(desired, observations)?;
     config.runtime.enforce_fixed_permission_mode();
@@ -469,8 +493,8 @@ fn effective_runtime_config(
 }
 
 fn invalidate_observations(
-    old: &BTreeMap<ProviderId, Observation>,
-    next: &BTreeMap<ProviderId, Observation>,
+    old: &BTreeMap<AccountId, Observation>,
+    next: &BTreeMap<AccountId, Observation>,
 ) {
     for (id, observation) in old {
         if next
@@ -494,21 +518,21 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
                 .resolve_route(super::StudioRole::Planner.id(), route)?;
         }
     }
-    for (id, provider) in &next.models.providers {
-        let models = provider.effective_models()?;
-        for (slug, mode) in provider.connection_overrides() {
+    for (id, account) in &next.models.accounts {
+        let models = account.effective_models(None)?;
+        for (model_id, mode) in account.connection_overrides() {
             if old
                 .models
-                .providers
+                .accounts
                 .get(id)
-                .and_then(|old| old.connection_overrides().get(slug))
+                .and_then(|old| old.connection_overrides().get(model_id))
                 == Some(mode)
             {
                 continue;
             }
             let model = models
                 .iter()
-                .find(|model| model.slug == *slug)
+                .find(|model| model.model_id == *model_id)
                 .ok_or_else(|| {
                     PureError::ConfigError(
                         "new connection override references unavailable model".into(),

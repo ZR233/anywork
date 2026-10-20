@@ -7,25 +7,22 @@ use std::{
 
 use crate::studio::runtime::chat_item::typed_item;
 use anyhow::{Context, Result, ensure};
-use pl_core::chat::{ChatError, ChatHistory, ChatItem, ChatQuery, HistoryPage};
+use pl_core::chat::{ChatCursor, ChatError, ChatHistory, ChatHistoryPage, ChatItem};
 use pl_protocol::thread::TimelineCursor;
-use pl_protocol::thread::{TIMELINE_ITEM_PREVIEW_BYTES, preview_timeline_item};
-use pl_protocol::{
-    ThreadItem, ThreadItemKind, ThreadItemState, TimelinePage, TimelineQuery, TimelineTurn,
-};
+use pl_protocol::{ThreadItem, ThreadItemKind, ThreadItemState, TimelineTurn};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
     SqliteTransactionMode, Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 7;
+const HISTORY_SCHEMA_VERSION: i64 = 8;
 
 mod checkpoint;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
-const _: () = assert!(TIMELINE_ITEM_PREVIEW_BYTES < PAGE_BYTE_BUDGET);
+const _: () = assert!(pl_core::chat::CHAT_ITEM_PREVIEW_BYTES < PAGE_BYTE_BUDGET);
 /// 一页 Turn 最多返回的 Turn 行数（调用方 `limit` 的上限）。
 const TURN_PAGE_ROW_LIMIT: usize = 200;
 /// 一条 Turn 在一个 Turn 页里最多返回的条目行数。
@@ -999,197 +996,33 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Reads one bounded SQL page without activating or consulting a Thread owner.
-    pub(crate) async fn page(&self, query: &TimelineQuery, limit: usize) -> Result<TimelinePage> {
-        let limit = limit.clamp(1, 100);
-        // 冷读不得创建目录/数据库：还没有历史库时，空窗口才是真实答案，且这里绝不重建它。
-        let Some(connection) = self.reader().await? else {
-            return Ok(TimelinePage {
-                thread_id: self.state.thread_id.clone(),
-                database_id: String::new(),
-                watermark: 0,
-                older_cursor: None,
-                newer_cursor: None,
-                first_item_id: None,
-                last_item_id: None,
-                truncated: false,
-                previews: Vec::new(),
-                items: Vec::new(),
-                turns: Vec::new(),
-            });
-        };
-        let (mut rows, edge) = match query {
-            TimelineQuery::Latest => {
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(limit + 1)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                if rows.len() > limit {
-                    rows.remove(0);
-                }
-                // 最新的一窗从最新端保留；更旧的一端与本页相邻，可由 cursor 继续取回。
-                (rows, BudgetEdge::Newest)
-            }
-            TimelineQuery::Before { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items
-                         WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![ordinal.into(), integer(limit)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                // 向更旧滚动：返回窗口必须紧贴锚点，预算不足时丢弃更远（更旧）的一端。
-                (rows, BudgetEdge::Newest)
-            }
-            TimelineQuery::After { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                // 向更新滚动：起点紧贴锚点，预算不足时丢弃更远（更新）的一端。
-                (
-                    query_items(
-                        &connection.db,
-                        "SELECT payload FROM history_items
-                         WHERE ordinal > ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![ordinal.into(), integer(limit)?.into()],
-                    )
-                    .await?,
-                    BudgetEdge::Oldest,
-                )
-            }
-            TimelineQuery::Around { item_id } => {
-                let ordinal = self.anchor_ordinal(connection, item_id).await?;
-                let before = limit / 2;
-                let mut rows = query_items(
-                    &connection.db,
-                    "SELECT payload FROM history_items
-                         WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![ordinal.into(), integer(before)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                let remaining = limit.saturating_sub(rows.len());
-                rows.extend(
-                    query_items(
-                        &connection.db,
-                        "SELECT payload FROM history_items
-                         WHERE ordinal >= ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![ordinal.into(), integer(remaining)?.into()],
-                    )
-                    .await?,
-                );
-                // 显式跳转必须能读到锚点本身：预算不足时从更旧的一侧先收缩，绝不丢掉锚点行。
-                // 锚点 ordinal 来自 SQLite rowid（非负），预算收缩按 u64 比较。
-                (rows, BudgetEdge::Around(u64::try_from(ordinal)?))
-            }
-        };
-        // 单条预览预算先于总字节预算：超大条目压缩为同身份预览，其余页预算才可能满足。
-        let mut previews = Vec::new();
-        for item in rows.iter_mut() {
-            let (bounded, reference) = preview_timeline_item(item, TIMELINE_ITEM_PREVIEW_BYTES);
-            if let Some(reference) = reference {
-                *item = bounded;
-                previews.push(reference);
-            }
-        }
-        let truncated = apply_byte_budget(&mut rows, edge)?;
-        // 只保留真正留在本页的条目引用；被总预算淘汰的条目不再出现在引用中。
-        let kept = rows
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        previews.retain(|reference| kept.contains(reference.item_id.as_str()));
-        let watermark = connection_watermark(connection).await?;
-        let first = rows.first();
-        let last = rows.last();
-        let older_cursor = match first {
-            Some(item) if exists_before(connection, item.ordinal).await? => {
-                Some(cursor(connection, &self.state.thread_id, item, watermark))
-            }
-            _ => None,
-        };
-        let newer_cursor = match last {
-            Some(item) if exists_after(connection, item.ordinal).await? => {
-                Some(cursor(connection, &self.state.thread_id, item, watermark))
-            }
-            _ => None,
-        };
-        let turns = turns_for(connection, &rows).await?;
-        Ok(TimelinePage {
-            thread_id: self.state.thread_id.clone(),
-            database_id: connection.database_id.clone(),
-            watermark,
-            older_cursor,
-            newer_cursor,
-            first_item_id: first.map(|item| item.id.clone()),
-            last_item_id: last.map(|item| item.id.clone()),
-            truncated,
-            previews,
-            items: rows,
-            turns,
-        })
-    }
-
-    /// Reads one complete item straight from the database, bypassing the preview budget.
+    /// Reads one canonical item by identity, including its complete body.
     ///
-    /// Ordinary pagination stays pure SQL and still returns an oversized item as
-    /// [`pl_protocol::TimelineItemPreview`]; this entry point resolves such a preview by identity
-    /// and returns the untouched payload with its canonical ordinal, revision and read watermark.
-    ///
-    /// 这是按身份的**单条 on-demand 读取**，不是第二份历史：它只返回被点名的那一条正文，不带
-    /// 分页、不带邻居、也不把结果缓存进 `HistoryStore`（句柄用完即释放，正文只在调用方手里）。
-    /// 因此这条路径刻意没有字节上限——有上限就无法取回超预算条目的完整正文。需要遍历历史时必须
-    /// 走 `page`/`turn_page` 的有界窗口，不能靠反复 `read_item` 物化整段历史。
+    /// 这是按身份的**单条 on-demand 读取**，不是第二份历史：它只返回被点名的那一条正文，不带分页、
+    /// 不带邻居、也不把结果缓存进 `HistoryStore`。调用方按字段与版本分块读取正文，因此这里刻意没有
+    /// 字节上限——有上限就无法取回超预算条目的完整正文。需要遍历历史时必须走有界页，不能靠反复读取
+    /// 单条来物化整段历史。
     ///
     /// # Errors
-    /// Fails on unknown item identity or a storage read failure.
-    pub(crate) async fn read_item(&self, item_id: &str) -> Result<pl_protocol::TimelineItemRead> {
-        let connection = self
-            .reader()
-            .await?
-            .context("timeline item is not in this Thread history")?;
-        let row = connection
+    /// Fails on a storage read failure; a missing identity is `None`.
+    pub(crate) async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let Some(row) = connection
             .db
             .query_one_raw(statement(
                 "SELECT ordinal,payload FROM history_items WHERE item_id=?",
                 vec![item_id.into()],
             ))
             .await?
-            .with_context(|| format!("timeline item {item_id} is not in this Thread history"))?;
-        let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)?;
-        let payload: String = row.try_get("", "payload")?;
-        let item: ThreadItem = serde_json::from_str(&payload)?;
-        Ok(pl_protocol::TimelineItemRead {
-            thread_id: self.state.thread_id.clone(),
-            database_id: connection.database_id.clone(),
-            watermark: connection_watermark(connection).await?,
-            ordinal,
-            item,
-        })
-    }
-
-    async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
-        let Some(connection) = self.reader().await? else {
+        else {
             return Ok(None);
         };
-        // `read_item` treats a missing identity as an error; only that case is optional here.
-        let exists = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT 1 AS present FROM history_items WHERE item_id=? LIMIT 1",
-                vec![item_id.into()],
-            ))
-            .await?
-            .is_some();
-        if !exists {
-            return Ok(None);
-        }
-        let read = self.read_item(item_id).await?;
-        let mut item = read.item;
-        item.ordinal = read.ordinal;
+        let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)?;
+        let payload: String = row.try_get("", "payload")?;
+        let mut item: ThreadItem = serde_json::from_str(&payload)?;
+        item.ordinal = ordinal;
         Ok(Some(chat_item(item, true)?))
     }
 
@@ -1209,87 +1042,51 @@ impl HistoryStore {
         Ok(u64::try_from(maximum.unwrap_or(0))?)
     }
 
-    async fn chat_page(&self, query: ChatQuery, limit: usize) -> Result<HistoryPage> {
+    /// Reads up to `limit` durable rows strictly older than `before`, ascending.
+    ///
+    /// `ordinal` 是 `INTEGER PRIMARY KEY`（rowid 别名）且严格递增、永不复用，因此“严格更旧”就是一
+    /// 个 rowid range seek（`ordinal < ?`），不需要 OR 表达式或前缀扫描；identity 只用于校验游标
+    /// scope（见 [`HistoryStore::ensure_cursor_identity`]），不参与排序。`has_older` 来自真实多出的
+    /// 一行，短页本身不证明到头，并且只有本页的行会被解码。
+    async fn chat_page(
+        &self,
+        before: Option<&ChatCursor>,
+        limit: usize,
+    ) -> Result<ChatHistoryPage> {
         let Some(connection) = self.reader().await? else {
-            return Ok(HistoryPage {
-                items: Vec::new(),
-                has_older: false,
-                has_newer: false,
-            });
+            return Ok(ChatHistoryPage::default());
         };
-        let limit = limit.clamp(1, 100);
-        let rows = match query {
-            ChatQuery::Latest => {
-                let mut rows = query_chat_ids(
+        let probe = limit.saturating_add(1);
+        let mut rows = match before {
+            Some(before) => {
+                query_chat_ids(
                     &connection.db,
-                    "SELECT ordinal,item_id FROM history_items ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(limit)?.into()],
+                    "SELECT ordinal,item_id FROM history_items
+                     WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
+                    vec![integer(before.order)?.into(), integer(probe)?.into()],
                 )
-                .await?;
-                rows.reverse();
-                rows
+                .await?
             }
-            ChatQuery::Before(anchor) => {
-                let mut rows = query_chat_ids(
+            None => {
+                query_chat_ids(
                     &connection.db,
-                    "SELECT ordinal,item_id FROM history_items WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![integer(anchor)?.into(), integer(limit)?.into()],
+                    "SELECT ordinal,item_id FROM history_items
+                     ORDER BY ordinal DESC LIMIT ?",
+                    vec![integer(probe)?.into()],
                 )
-                .await?;
-                rows.reverse();
-                rows
-            }
-            ChatQuery::After(anchor) => query_chat_ids(
-                &connection.db,
-                "SELECT ordinal,item_id FROM history_items WHERE ordinal > ? ORDER BY ordinal ASC LIMIT ?",
-                vec![integer(anchor)?.into(), integer(limit)?.into()],
-            )
-            .await?,
-            ChatQuery::Around(anchor) => {
-                let anchor = integer(anchor)?;
-                let mut rows = query_chat_ids(
-                    &connection.db,
-                    "SELECT ordinal,item_id FROM history_items WHERE ordinal < ? ORDER BY ordinal DESC LIMIT ?",
-                    vec![anchor.into(), integer(limit / 2)?.into()],
-                )
-                .await?;
-                rows.reverse();
-                let remaining = limit - rows.len();
-                rows.extend(
-                    query_chat_ids(
-                        &connection.db,
-                        "SELECT ordinal,item_id FROM history_items WHERE ordinal >= ? ORDER BY ordinal ASC LIMIT ?",
-                        vec![anchor.into(), integer(remaining)?.into()],
-                    )
-                    .await?,
-                );
-                rows
+                .await?
             }
         };
-        let (has_older, has_newer) = match (rows.first(), rows.last()) {
-            (Some(first), Some(last)) => (
-                exists_before(connection, first.0).await?,
-                exists_after(connection, last.0).await?,
-            ),
-            _ => match query {
-                ChatQuery::Latest => (false, false),
-                ChatQuery::Before(anchor) | ChatQuery::Around(anchor) => (
-                    exists_before(connection, anchor).await?,
-                    exists(connection, "ordinal >= ?", anchor).await?,
-                ),
-                ChatQuery::After(anchor) => (
-                    exists(connection, "ordinal <= ?", anchor).await?,
-                    exists_after(connection, anchor).await?,
-                ),
-            },
-        };
+        let has_older = rows.len() > limit;
+        rows.truncate(limit);
+        rows.reverse();
         let mut items = Vec::with_capacity(rows.len());
         for (ordinal, item_id) in rows {
             let row = connection
                 .db
                 .query_one_raw(statement(
-                    "SELECT payload FROM history_items WHERE ordinal=? AND item_id=?",
-                    vec![integer(ordinal)?.into(), item_id.clone().into()],
+                    "SELECT payload FROM history_items WHERE ordinal=?",
+                    vec![integer(ordinal)?.into()],
                 ))
                 .await?
                 .with_context(|| format!("chat page item {item_id} disappeared during read"))?;
@@ -1299,49 +1096,9 @@ impl HistoryStore {
                 item.id == item_id && item.ordinal == ordinal,
                 "chat page item {item_id} differs from its indexed identity or order"
             );
-            items.push(chat_preview_item(item, true)?);
+            items.push(chat_item(item, true)?);
         }
-        Ok(HistoryPage {
-            items,
-            has_older,
-            has_newer,
-        })
-    }
-
-    /// 把 wire 锚点解析为 canonical ordinal。
-    ///
-    /// 接受版本化游标 token（校验 Thread/数据库身份、水位与条目身份）或原始 item
-    /// identity；两者都只读数据库。
-    async fn anchor_ordinal(&self, connection: &HistoryConnection, anchor: &str) -> Result<i64> {
-        let Some(cursor) = TimelineCursor::decode(anchor) else {
-            return ordinal(connection, anchor).await;
-        };
-        ensure!(
-            cursor.thread_id == self.state.thread_id,
-            "timeline cursor belongs to another Thread"
-        );
-        ensure!(
-            cursor.database_id == connection.database_id,
-            "timeline cursor belongs to a rebuilt history database; reload the window"
-        );
-        ensure!(
-            cursor.applied_write_sequence <= connection_watermark(connection).await?,
-            "timeline cursor was read from a newer history than this database"
-        );
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT item_id FROM history_items WHERE ordinal=?",
-                vec![integer(cursor.ordinal)?.into()],
-            ))
-            .await?
-            .context("timeline cursor item no longer exists; reload the window")?;
-        let item_id: String = row.try_get("", "item_id")?;
-        ensure!(
-            item_id == cursor.item_id,
-            "timeline cursor item identity changed; reload the window"
-        );
-        integer(cursor.ordinal)
+        Ok(ChatHistoryPage { items, has_older })
     }
 
     /// Reads the newest terminal Turn this Thread already committed, without a body read.
@@ -1621,7 +1378,7 @@ impl HistoryStore {
 
     /// Reads one committed timeline item by its durable identity.
     ///
-    /// The projection owner needs the canonical committed body of an identity whose live window already
+    /// The projection owner needs the canonical committed body of an identity whose live preview already
     /// released it (for example the tool result a reliable-output repair names) so the *same* owner can
     /// still project the repaired fact with its own content version instead of the writer inventing one.
     /// This is a read of an already-committed fact, never a read-back of the effect being written.
@@ -1645,8 +1402,14 @@ impl HistoryStore {
 }
 
 impl ChatHistory for HistoryStore {
-    // 有界预览由 core 的默认 `bounded` 提供：它按 `ContentBlock` 前缀复用裁剪，不再让宿主重新
-    // 解码/重编码整条 JSON 才能压缩一条超长条目。
+    /// 产品展示预算：正文合计 32 KiB，工具参数与结果各最多 4 KiB。
+    ///
+    /// 有界预览由这一处统一实现，因此页、订阅基线与实时出帧共用同一份裁剪规则；裁剪按
+    /// `ContentBlock` 前缀复用，不再重新解码/重编码整条 JSON。
+    fn bounded(&self, item: &ChatItem) -> std::result::Result<ChatItem, ChatError> {
+        crate::studio::runtime::timeline_content::preview::bounded(item)
+    }
+
     async fn latest_allocated_order(&self) -> std::result::Result<u64, ChatError> {
         HistoryStore::latest_allocated_order(self)
             .await
@@ -1655,10 +1418,13 @@ impl ChatHistory for HistoryStore {
 
     async fn page(
         &self,
-        query: ChatQuery,
+        before: Option<&ChatCursor>,
         limit: usize,
-    ) -> std::result::Result<HistoryPage, ChatError> {
-        self.chat_page(query, limit)
+    ) -> std::result::Result<ChatHistoryPage, ChatError> {
+        if let Some(before) = before {
+            self.ensure_cursor_identity(before).await?;
+        }
+        self.chat_page(before, limit)
             .await
             .map_err(chat_history_error)
     }
@@ -1670,17 +1436,50 @@ impl ChatHistory for HistoryStore {
     }
 }
 
-pub(crate) fn chat_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    typed_item(item, saved, 0)
+impl HistoryStore {
+    /// 校验游标身份与它命名的 durable 顺序一致。
+    ///
+    /// 顺序槽严格递增且永不复用，因此 `ordinal < ?` 恰好就是严格 `(ordinal, identity)` 边界；这里
+    /// 用一次 rowid 点查保证：如果该顺序已经有行，它的 identity 必须就是游标声明的那个，否则拒绝，
+    /// 绝不把游标当成「附近某条」的猜测位置。该顺序还没有 durable 行是合法情形——边界可以指向尚未
+    /// 落盘的权威条目。
+    async fn ensure_cursor_identity(
+        &self,
+        before: &ChatCursor,
+    ) -> std::result::Result<(), ChatError> {
+        let connection = self.reader().await.map_err(chat_history_error)?;
+        let Some(connection) = connection else {
+            return Ok(());
+        };
+        let ordinal = integer(before.order).map_err(chat_history_error)?.into();
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT item_id FROM history_items WHERE ordinal=?",
+                vec![ordinal],
+            ))
+            .await
+            .map_err(anyhow::Error::new)
+            .map_err(chat_history_error)?;
+        let Some(row) = row else {
+            return Ok(());
+        };
+        let item_id: String = row
+            .try_get("", "item_id")
+            .map_err(anyhow::Error::new)
+            .map_err(chat_history_error)?;
+        if item_id == before.item_id {
+            return Ok(());
+        }
+        Err(ChatError::InvalidArgument(format!(
+            "timeline cursor names order {} with a different identity",
+            before.order
+        )))
+    }
 }
 
-fn chat_preview_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
-    let (preview, reference) = preview_timeline_item(&item, TIMELINE_ITEM_PREVIEW_BYTES);
-    typed_item(
-        preview,
-        saved,
-        reference.map_or(0, |reference| reference.omitted_bytes),
-    )
+pub(crate) fn chat_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
+    typed_item(item, saved)
 }
 
 fn chat_history_error(error: anyhow::Error) -> ChatError {
@@ -1956,23 +1755,6 @@ async fn connection_watermark(connection: &HistoryConnection) -> Result<u64> {
         .context("negative history write sequence")
 }
 
-/// 构造绑定本数据库当前位置的版本化游标。
-fn cursor(
-    connection: &HistoryConnection,
-    thread_id: &str,
-    item: &ThreadItem,
-    watermark: u64,
-) -> String {
-    TimelineCursor::new(
-        thread_id.to_owned(),
-        connection.database_id.clone(),
-        item.ordinal,
-        item.id.clone(),
-        watermark,
-    )
-    .encode()
-}
-
 /// Turn 页的续传位置。
 ///
 /// `after_ordinal` 是本页最后返回的条目 ordinal，`end_ordinal` 是这条 Turn 的 durable 结尾；
@@ -2029,14 +1811,14 @@ async fn turn_page_resume(
     watermark: u64,
 ) -> Result<TurnPageResume> {
     let parsed = TimelineCursor::decode(cursor)
-        .context("Turn cursor is not a versioned history cursor; reload the window")?;
+        .context("Turn cursor is not a versioned history cursor; restart the page")?;
     ensure!(
         parsed.thread_id == thread_id,
         "timeline cursor belongs to another Thread"
     );
     ensure!(
         parsed.database_id == connection.database_id,
-        "timeline cursor belongs to a rebuilt history database; reload the window"
+        "timeline cursor belongs to a rebuilt history database; restart the page"
     );
     ensure!(
         parsed.applied_write_sequence <= watermark,
@@ -2049,17 +1831,17 @@ async fn turn_page_resume(
             vec![parsed.item_id.clone().into()],
         ))
         .await?
-        .context("timeline cursor Turn no longer exists; reload the window")?;
+        .context("timeline cursor Turn no longer exists; restart the page")?;
     let stored_turn: String = row.try_get("", "turn_id")?;
     ensure!(
         stored_turn == parsed.item_id,
-        "timeline cursor Turn identity changed; reload the window"
+        "timeline cursor Turn identity changed; restart the page"
     );
     let end_ordinal: i64 = row.try_get("", "last_ordinal")?;
     let after_ordinal = i64::try_from(parsed.ordinal).context("timeline cursor is out of range")?;
     ensure!(
         after_ordinal <= end_ordinal,
-        "timeline cursor is ahead of the durable Turn end; reload the window"
+        "timeline cursor is ahead of the durable Turn end; restart the page"
     );
     // 游标必须落在该 Turn 自己的条目上：位置被改写时明确失败，绝不猜一个相邻位置。
     let anchor = connection
@@ -2069,11 +1851,11 @@ async fn turn_page_resume(
             vec![after_ordinal.into()],
         ))
         .await?
-        .context("timeline cursor item no longer exists; reload the window")?;
+        .context("timeline cursor item no longer exists; restart the page")?;
     let anchor_turn: String = anchor.try_get("", "turn_id")?;
     ensure!(
         anchor_turn == parsed.item_id,
-        "timeline cursor item identity changed; reload the window"
+        "timeline cursor item identity changed; restart the page"
     );
     Ok(TurnPageResume {
         turn_id: parsed.item_id,
@@ -2176,63 +1958,6 @@ async fn query_chat_ids(
             ))
         })
         .collect()
-}
-
-async fn ordinal(connection: &HistoryConnection, item_id: &str) -> Result<i64> {
-    connection
-        .db
-        .query_one_raw(statement(
-            "SELECT ordinal FROM history_items WHERE item_id=?",
-            vec![item_id.into()],
-        ))
-        .await?
-        .context("timeline cursor does not belong to this Thread")?
-        .try_get("", "ordinal")
-        .map_err(Into::into)
-}
-
-async fn exists_before(connection: &HistoryConnection, ordinal: u64) -> Result<bool> {
-    exists(connection, "ordinal < ?", ordinal).await
-}
-
-async fn exists_after(connection: &HistoryConnection, ordinal: u64) -> Result<bool> {
-    exists(connection, "ordinal > ?", ordinal).await
-}
-
-async fn exists(connection: &HistoryConnection, predicate: &str, ordinal: u64) -> Result<bool> {
-    let row = connection
-        .db
-        .query_one_raw(statement(
-            &format!("SELECT 1 AS present FROM history_items WHERE {predicate} LIMIT 1"),
-            vec![integer(ordinal)?.into()],
-        ))
-        .await?;
-    Ok(row.is_some())
-}
-
-async fn turns_for(
-    connection: &HistoryConnection,
-    items: &[ThreadItem],
-) -> Result<Vec<TimelineTurn>> {
-    let ids = items
-        .iter()
-        .filter_map(|item| (!item.turn_id.is_empty()).then_some(item.turn_id.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut turns = Vec::new();
-    for id in ids {
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT payload FROM history_turns WHERE turn_id=?",
-                vec![id.into()],
-            ))
-            .await?;
-        if let Some(row) = row {
-            let payload: String = row.try_get("", "payload")?;
-            turns.push(serde_json::from_str(&payload)?);
-        }
-    }
-    Ok(turns)
 }
 
 /// Creates or validates the schema and returns the owning database identity.
@@ -2419,8 +2144,11 @@ async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> 
                 if version < 6 {
                     migrate_context_sources(&tx, thread_id).await?;
                 }
-                if version < 7 {
-                    backfill_tool_user_input(&tx).await?;
+                // schema 8 起，工具条目自带由 canonical 交互派生的 typed 问答历史：普通问答与
+                // plan_submit 的计划确认共用同一结构。更早的库只能从 durable 交互回执原位补齐，
+                // 同一函数覆盖两个产品格式，因此 v6 与 v7 库都在这里推进到最新结构。
+                if version < 8 {
+                    backfill_tool_user_input(&tx, thread_id).await?;
                 }
                 tx.execute_raw(statement(
                     "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
@@ -2619,7 +2347,7 @@ async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> 
             }
             let hidden = match record.request.payload.format() {
                 "pl.tool.user-input" => true,
-                "pl.studio.plan-confirmation" => {
+                crate::plan_tool::PLAN_CONFIRMATION_FORMAT => {
                     let prompt: crate::plan_tool::PlanConfirmationPrompt =
                         serde_json::from_str(record.request.payload.content())
                             .context("legacy Plan confirmation cannot be decoded")?;
@@ -2665,17 +2393,20 @@ async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> 
     Ok(())
 }
 
-/// Attaches the accepted ordinary Q&A to the tool item that asked it in already-written history.
+/// Attaches the accepted user-input history to the tool item that raised it in already-written
+/// history.
 ///
-/// A version-6 or older database stored the questions and the answer only in the interaction fact,
-/// because the timeline row was written before the tool item carried a typed Q&A projection. The
-/// receipts are the durable evidence of that one canonical fact, so the migration re-derives the
-/// projection from them and updates the calling item **in place**: the row keeps its `item_id`,
-/// ordinal, Turn binding, creation time and body, and only gains the Q&A projection plus one content
-/// revision. Nothing is replayed, no tool runs again and no model context changes, so an already
-/// resolved question cannot be answered twice or lose an answer. A repeated open re-reads a database
-/// that already carries the projection and changes nothing.
-async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
+/// A version-7 or older database stored the questions and the answer only in the interaction fact,
+/// because the timeline row was written before the tool item carried a typed projection. That covers
+/// the ordinary question tool and the Plan confirmation a `plan_submit` call raises: both are the
+/// same canonical interaction fact on the call's own item. The receipts are the durable evidence of
+/// that fact, so the migration re-derives the projection from them and updates the calling item **in
+/// place**: the row keeps its `item_id`, ordinal, Turn binding, creation time, content revision and
+/// body, and only gains the typed history. Nothing is replayed, no tool runs again, no model context
+/// changes and the private answer receipt is never rewritten, so an already resolved question or
+/// Plan decision cannot be answered twice, lose an answer or be re-derived from the current Plan. A
+/// repeated open re-reads a database that already carries the projection and changes nothing.
+async fn backfill_tool_user_input(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
     use crate::studio::thread_projection::{
         attach_tool_user_input, order, project_tool_user_input,
     };
@@ -2703,14 +2434,14 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
                 receipt == order::receipt_id("interaction", &record.request.id),
                 "legacy interaction receipt identity conflicts with its payload"
             );
-            let Some(user_input) = project_tool_user_input(&record)? else {
+            let Some(user_input) = project_tool_user_input(thread_id, &record)? else {
                 continue;
             };
             // Receipts are appended per revision, so an identity's newest row is applied last and
             // wins: the settled answer supersedes the pending projection, never the other way round.
             let call_id =
                 pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
-                    .context("ordinary user Q&A interaction names no tool call")?;
+                    .context("user-input interaction names no tool call")?;
             let tool_id = order::tool_id(call_id);
             let row = db
                 .query_one_raw(statement(
@@ -2719,7 +2450,7 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
                 ))
                 .await?
                 .with_context(|| {
-                    format!("ordinary user Q&A `{tool_id}` has no durable tool item")
+                    format!("user-input history `{tool_id}` has no durable tool item")
                 })?;
             let stored_revision: i64 = row.try_get("", "revision")?;
             let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
@@ -2751,67 +2482,6 @@ async fn backfill_tool_user_input(db: &impl ConnectionTrait) -> Result<()> {
 
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
-}
-
-/// 页字节预算必须保留的那一端。
-///
-/// 页永远是一个连续的 ordinal 窗口；被预算丢弃的条目留在本页首/尾之外并与返回的首尾相邻，
-/// 因此分页真实返回的 cursor 继续滚动时能重新取回它们，不会被跳过。
-#[derive(Debug, Clone, Copy)]
-enum BudgetEdge {
-    /// 保留升序页中最新的一端（`Latest`、`Before`）。
-    Newest,
-    /// 保留升序页中最旧的一端（`After`）。
-    Oldest,
-    /// 保留 ordinal 不小于该锚点的第一条（`Around`），并优先从更旧的一侧收缩。
-    Around(u64),
-}
-
-/// 按总 payload 字节预算收缩一个已按 ordinal 升序排好的页，并保持窗口连续；至少保留一条。
-///
-/// 请求方向决定丢弃哪一端：`Newest` 页紧贴锚点（丢弃更旧的一端），`Oldest` 页紧贴锚点（丢弃
-/// 更新的一端），显式锚点页保留锚点行并从更旧的一侧先收缩。
-fn apply_byte_budget(rows: &mut Vec<ThreadItem>, edge: BudgetEdge) -> Result<bool> {
-    let sizes = rows
-        .iter()
-        .map(|item| serde_json::to_string(item).map(|payload| payload.len()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut total = sizes
-        .iter()
-        .fold(0_usize, |total, bytes| total.saturating_add(*bytes));
-    let mut low = 0_usize;
-    let mut high = rows.len();
-    // 锚点行是升序页里第一条 ordinal 不小于锚点的条目；`Around` 的取数保证它存在，缺失时
-    // 退化为保留最新端，绝不猜测位置。
-    let anchor = match edge {
-        BudgetEdge::Newest | BudgetEdge::Oldest => None,
-        BudgetEdge::Around(ordinal) => Some(
-            rows.iter()
-                .position(|item| item.ordinal >= ordinal)
-                .unwrap_or(rows.len()),
-        ),
-    };
-    while total > PAGE_BYTE_BUDGET && high - low > 1 {
-        let trim_newer = match edge {
-            BudgetEdge::Newest => false,
-            BudgetEdge::Oldest => true,
-            // 锚点之前（更旧）的部分先收缩；收缩到锚点后改为丢弃锚点之后（更新）的一端。
-            BudgetEdge::Around(_) => anchor.is_some_and(|anchor| low >= anchor),
-        };
-        if trim_newer {
-            high -= 1;
-            total = total.saturating_sub(sizes[high]);
-        } else {
-            total = total.saturating_sub(sizes[low]);
-            low += 1;
-        }
-    }
-    if low == 0 && high == rows.len() {
-        return Ok(false);
-    }
-    rows.truncate(high);
-    rows.drain(..low);
-    Ok(true)
 }
 
 /// Writes one minimal input identity inside the transaction of the effect that produced it.
@@ -3124,60 +2794,36 @@ mod storage_fault_tests {
     async fn legacy_plan_continuation_migrates_only_proven_hidden_identity() -> Result<()> {
         use pl_core::{
             context::OpaquePayload,
-            thread::{
-                input::{InputRecord, InputState, ThreadInput},
-                interactions::{
-                    InteractionRecord, InteractionRequest, InteractionResponse, InteractionState,
-                },
-            },
+            thread::input::{InputRecord, InputState, ThreadInput},
         };
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = HistoryStore::open(&path, "legacy-plan").await?;
-        let prompt = crate::plan_tool::PlanConfirmationPrompt {
-            question: pl_protocol::UserQuestion {
-                id: "plan_confirmation".into(),
-                header: "Plan".into(),
-                question: "Approved plan".into(),
-                is_other: false,
-                is_secret: false,
-                options: None,
-            },
-            expected_plan_revision: 1,
-            plan_hash: "digest".into(),
-            created_at: 1,
-            presentation: pl_protocol::MessagePresentation::Hidden,
-        };
-        let id = "interaction:plan:continuation";
-        let interaction = InteractionRecord {
-            created_at: 1,
-            updated_at: 2,
-            continuation_id: Some(id.into()),
-            request: InteractionRequest {
-                id: "plan".into(),
-                turn_id: "first-turn".into(),
-                payload: OpaquePayload::new(
-                    "pl.studio.plan-confirmation",
-                    1,
-                    serde_json::to_string(&prompt)?,
-                )?,
-            },
-            revision: 2,
-            state: InteractionState::Resolved(InteractionResponse {
-                payload: OpaquePayload::text("approved"),
-                context: vec![],
-            }),
-            extension_mutations: vec![],
-        };
+        // 一条真实的计划确认：提问、决定与发起它的 plan_submit 条目都属于同一次工具调用。
+        let call_id = "call-plan";
+        let plan_item = plan_tool_item(call_id, "legacy-plan", 1);
+        let id = format!(
+            "interaction:{}:continuation",
+            pl_core::tool::opaque::tool_interaction_id(call_id)
+        );
+        let mut interaction =
+            plan_decision_record(call_id, &plan_fixture("Approved plan")?, &["Approve"])?;
+        interaction.created_at = 1;
+        interaction.updated_at = 2;
+        interaction.continuation_id = Some(id.clone());
         let input = InputRecord {
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
-                id: id.into(),
+                id: id.clone(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",
                     1,
-                    serde_json::json!({"interactionId":"plan","presentation":"hidden"}).to_string(),
+                    serde_json::json!({
+                        "interactionId": pl_core::tool::opaque::tool_interaction_id(call_id),
+                        "presentation": "hidden"
+                    })
+                    .to_string(),
                 )?,
                 context: vec![],
             },
@@ -3210,8 +2856,8 @@ mod storage_fault_tests {
             },
         ];
         let receipts = [FactReceiptWrite {
-            item_id: "interaction:4:plan".into(),
-            revision: 2,
+            item_id: order::receipt_id("interaction", &interaction.request.id),
+            revision: interaction.revision,
             kind: "interaction",
             payload: serde_json::to_string(&interaction)?,
         }];
@@ -3219,7 +2865,7 @@ mod storage_fault_tests {
             .commit_effect(
                 1,
                 EffectCommit {
-                    items: &[],
+                    items: std::slice::from_ref(&plan_item),
                     rolled_back_turns: &Default::default(),
                     identities: &identities,
                     messages: &[],
@@ -3255,9 +2901,9 @@ mod storage_fault_tests {
         drop(old);
         assert_eq!(
             migrated
-                .hidden_input_identities([id.into(), "unproven-input".into()])
+                .hidden_input_identities([id.clone(), "unproven-input".into()])
                 .await?,
-            [id.into()].into()
+            [id.clone()].into()
         );
         assert_eq!(
             migrated
@@ -3267,7 +2913,7 @@ mod storage_fault_tests {
                 .schema_version,
             HISTORY_SCHEMA_VERSION
         );
-        assert!(migrated.existing_items([id.into()]).await?.is_empty());
+        assert!(migrated.existing_items([id]).await?.is_empty());
         assert_eq!(migrated.watermark().await?, 1);
         Ok(())
     }
@@ -3447,7 +3093,7 @@ mod storage_fault_tests {
         missing_order.revision = 2;
         assert!(store.commit(2, &[missing_order], &[]).await.is_err());
         assert_eq!(store.watermark().await?, 1);
-        let mut changed_order = store.read_item("input-1").await?.item;
+        let mut changed_order = store.item("input-1").await?.context("committed input")?;
         changed_order.ordinal = 2;
         changed_order.revision = 2;
         assert!(store.commit(2, &[changed_order], &[]).await.is_err());
@@ -3463,7 +3109,8 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn latest_window_only_keeps_one_hundred_committed_items() -> Result<()> {
+    async fn a_bounded_page_continues_by_its_real_boundary_and_a_session_starts_from_the_latest_page()
+    -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store =
             HistoryStore::open(&directory.path().join("history.sqlite"), "paged-thread").await?;
@@ -3483,37 +3130,46 @@ mod storage_fault_tests {
             })
             .collect::<Vec<_>>();
         store.commit(1, &items, &[]).await?;
-        let page = store.page(&TimelineQuery::Latest, 100).await?;
+        let page = store.chat_page(None, 100).await?;
         assert_eq!(page.items.len(), 100);
-        assert_eq!(page.first_item_id.as_deref(), Some("message-20"));
-        assert_eq!(page.last_item_id.as_deref(), Some("message-119"));
+        assert_eq!(page.items.first().unwrap().item_id, "message-20");
+        assert_eq!(page.items.last().unwrap().item_id, "message-119");
+        assert!(page.has_older);
         let before = store
-            .page(
-                &TimelineQuery::Before {
-                    item_id: page.older_cursor.context("missing earlier history")?,
-                },
-                100,
-            )
+            .chat_page(Some(&pl_core::chat::ChatCursor::new(21, "message-20")), 100)
             .await?;
         assert_eq!(before.items.len(), 20);
+        assert!(!before.has_older);
 
+        // A fresh session starts from the latest small page and continues by the page boundary it
+        // proves, instead of pretending a short page reached the beginning of history.
         let session = pl_core::chat::Session::new(store.clone());
-        let view = session.open_chat(pl_core::chat::ChatFocus::Latest).await?;
-        let initial = view.snapshot();
-        assert_eq!(initial.items.len(), 32);
-        assert_eq!(initial.items.first().unwrap().item_id, "message-88");
-        assert_eq!(initial.items.last().unwrap().item_id, "message-119");
-        assert!(initial.has_older);
-        let receipt = view.load(pl_core::chat::Direction::Older).await?;
-        let older = view.snapshot();
-        assert_eq!(
-            receipt.disposition,
-            pl_core::chat::ChatControlDisposition::Applied
+        let mut initial = session.subscribe_tail().await?;
+        let baseline = initial.initial()?;
+        assert_eq!(baseline.items.len(), 32);
+        assert_eq!(baseline.items.first().unwrap().item_id, "message-88");
+        assert_eq!(baseline.items.last().unwrap().item_id, "message-119");
+        assert!(
+            baseline.has_older,
+            "the first frame carries its own boundary"
         );
-        assert_eq!(receipt.version, older.version);
-        assert_eq!(older.items.len(), 64);
+        assert_eq!(
+            baseline.before,
+            Some(pl_core::chat::ChatCursor::new(89, "message-88"))
+        );
+        let older = session
+            .page(
+                pl_core::chat::ChatPageRequest::before(pl_core::chat::ChatCursor::new(
+                    89,
+                    "message-88",
+                ))
+                .with_limit(32),
+            )
+            .await?;
+        assert_eq!(older.items.len(), 32);
         assert_eq!(older.items.first().unwrap().item_id, "message-56");
-        assert_eq!(older.items.last().unwrap().item_id, "message-119");
+        assert_eq!(older.items.last().unwrap().item_id, "message-87");
+        assert!(older.has_older);
 
         // Only persisted items seed the next Session; a discarded live allocation has no
         // durable reservation to inflate the next ordinal after a restart.
@@ -4374,6 +4030,113 @@ mod storage_fault_tests {
         }
     }
 
+    /// 一条真实的计划确认事实：提问正文就是计划文档，hash、问题身份与选项都由生产者格式约束。
+    fn plan_fixture(plan: &str) -> Result<crate::plan_tool::PlanConfirmationPrompt> {
+        use pl_protocol::{MessagePresentation, UserQuestion, UserQuestionOption};
+        Ok(crate::plan_tool::PlanConfirmationPrompt {
+            question: UserQuestion {
+                id: pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                header: "Plan".into(),
+                question: plan.into(),
+                is_other: true,
+                is_secret: false,
+                options: Some(vec![
+                    UserQuestionOption {
+                        label: "Approve".into(),
+                        description: "Approve this exact Plan and allow the task to proceed."
+                            .into(),
+                    },
+                    UserQuestionOption {
+                        label: "Revise".into(),
+                        description: "Request a revised Plan and optionally describe the changes."
+                            .into(),
+                    },
+                ]),
+            },
+            expected_plan_revision: 1,
+            plan_hash: pl_core::context::content_hash(plan.as_bytes()),
+            created_at: 100,
+            presentation: MessagePresentation::Hidden,
+        })
+    }
+
+    /// `plan_submit` 的工具条目：调用已发起计划确认，旧历史里还没有 typed 计划回执。
+    fn plan_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ThreadItem {
+        ThreadItem::new(
+            order::tool_id(call_id),
+            thread_id.into(),
+            "turn-plan".into(),
+            ordinal,
+            3,
+            111,
+            222,
+            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                pl_protocol::ThreadToolInvocation::new(
+                    call_id.into(),
+                    "plan_submit".into(),
+                    "{\"expectedRevision\":0,\"plan\":\"# Plan\"}".into(),
+                ),
+                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
+                    String::new(),
+                )),
+            )),
+        )
+    }
+
+    fn plan_interaction_record(
+        call_id: &str,
+        prompt: &crate::plan_tool::PlanConfirmationPrompt,
+        revision: u64,
+        state: pl_core::thread::interactions::InteractionState,
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        Ok(pl_core::thread::interactions::InteractionRecord {
+            created_at: 100,
+            updated_at: 100 + i64::try_from(revision)?,
+            continuation_id: None,
+            request: pl_core::thread::interactions::InteractionRequest {
+                id: pl_core::tool::opaque::tool_interaction_id(call_id),
+                turn_id: "turn-plan".into(),
+                payload: pl_core::context::OpaquePayload::new(
+                    crate::plan_tool::PLAN_CONFIRMATION_FORMAT,
+                    1,
+                    serde_json::to_string(prompt)?,
+                )?,
+            },
+            revision,
+            state,
+            extension_mutations: vec![],
+        })
+    }
+
+    /// 已解决的计划确认：决定标记与用户反馈都留在答案列表里，原样保留。
+    fn plan_decision_record(
+        call_id: &str,
+        prompt: &crate::plan_tool::PlanConfirmationPrompt,
+        answers: &[&str],
+    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
+        plan_interaction_record(
+            call_id,
+            prompt,
+            2,
+            pl_core::thread::interactions::InteractionState::Resolved(
+                pl_core::thread::interactions::InteractionResponse {
+                    payload: pl_core::context::OpaquePayload::new(
+                        crate::plan_tool::PLAN_ANSWER_FORMAT,
+                        1,
+                        serde_json::to_string(&serde_json::json!({
+                            "answers": {
+                                pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: {
+                                    "answers": answers
+                                }
+                            }
+                        }))?,
+                    )?,
+                    context: vec![],
+                },
+            ),
+        )
+    }
+
     /// 已回答的问答必须落在原工具条目上：ID、ordinal、创建时间与 Turn 不变，只增加问答正文。
     #[test]
     fn ordinary_user_answer_updates_the_calling_item_in_place() -> Result<()> {
@@ -4435,6 +4198,90 @@ mod storage_fault_tests {
         Ok(())
     }
 
+    /// 计划决定落在发起它的 `plan_submit` 条目上：身份、顺序与创建时间不变，状态与答案都取自
+    /// 同一份 canonical 交互事实，不因工具成功或当前计划而推演。
+    #[test]
+    fn plan_confirmation_history_lands_on_the_submitting_call_in_place() -> Result<()> {
+        use pl_protocol::ThreadToolUserInputState;
+
+        let thread = pl_protocol::Thread::placeholder("plan-thread");
+        let plan = "# Plan\n\n1. Migrate the receipts.\n";
+        let prompt = plan_fixture(plan)?;
+        let saved = plan_tool_item("call-plan", &thread.id, 5);
+        let mut existing = std::collections::BTreeMap::new();
+        existing.insert(saved.id.clone(), saved.clone());
+        let projection = |record| {
+            crate::studio::thread_projection::project_effect_items(
+                &thread,
+                &pl_core::thread::ThreadSnapshot::default(),
+                &question_effect(500, 9, vec![record]),
+                &existing,
+                &Default::default(),
+                &Default::default(),
+            )
+        };
+
+        let waiting = projection(plan_interaction_record(
+            "call-plan",
+            &prompt,
+            1,
+            pl_core::thread::interactions::InteractionState::Pending,
+        )?)?;
+        assert_eq!(waiting.items.len(), 1);
+        let item = &waiting.items[0];
+        assert_eq!(item.id, saved.id);
+        assert_eq!(item.ordinal, 5);
+        assert_eq!(item.created_at, 111);
+        assert_eq!(item.turn_id, "turn-plan");
+        let pending = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("pending Plan confirmation")?;
+        assert_eq!(
+            pending.interaction_id(),
+            pl_core::tool::opaque::tool_interaction_id("call-plan")
+        );
+        assert!(matches!(pending.state(), ThreadToolUserInputState::Pending));
+        assert_eq!(pending.questions().len(), 1);
+        assert_eq!(
+            pending.questions()[0].id,
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(pending.questions()[0].question, plan);
+        assert_eq!(
+            pending.questions()[0]
+                .options
+                .as_ref()
+                .map(|options| options.iter().map(|option| option.label.as_str()).collect()),
+            Some(vec!["Approve", "Revise"])
+        );
+
+        // 请求修改：Revise 标记与完整的用户反馈原样保留在答案列表里，不在历史投影里二次解读。
+        let revised = projection(plan_decision_record(
+            "call-plan",
+            &prompt,
+            &["Revise", "split the migration step"],
+        )?)?;
+        assert_eq!(revised.items.len(), 1);
+        let item = &revised.items[0];
+        assert_eq!(item.id, saved.id);
+        assert_eq!(item.ordinal, 5);
+        assert_eq!(item.created_at, 111);
+        let decision = item
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("resolved Plan confirmation")?;
+        let answers = decision.answers();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(
+            answers[0].question_id(),
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(answers[0].answers(), ["Revise", "split the migration step"]);
+        assert!(!answers[0].is_redacted());
+        Ok(())
+    }
+
     /// 调用正文只剩历史时，投影报告该 identity 让调用方补读，而不是丢下已回答的问答。
     #[test]
     fn pruned_call_reports_the_identity_instead_of_dropping_the_answer() -> Result<()> {
@@ -4458,7 +4305,7 @@ mod storage_fault_tests {
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
         placeholder = placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem {
             payloads: vec![],
-            notice: "This item's body is no longer resident in the live window.".into(),
+            notice: "This item's body is no longer resident in the live preview cache.".into(),
             recorded_at: 111,
         }));
         let mut resident = std::collections::BTreeMap::new();
@@ -4513,7 +4360,7 @@ mod storage_fault_tests {
         let record = answered_record("call-qa", &fixture)?;
         crate::studio::thread_projection::attach_tool_user_input(
             &mut answered,
-            crate::studio::thread_projection::project_tool_user_input(&record)?
+            crate::studio::thread_projection::project_tool_user_input(&thread.id, &record)?
                 .context("answered Q&A")?,
         )?;
         let mut existing = std::collections::BTreeMap::new();
@@ -4832,6 +4679,338 @@ mod storage_fault_tests {
         Ok(())
     }
 
+    /// schema 7 的库已有计划提问与决定回执、但条目还没有 typed 计划历史：打开时从 durable 回执
+    /// 原位补齐。批准与取消都以保存的交互事实为准，身份、顺序、时间、内容版本与私有回执不变，
+    /// 后续正常提交继续在迁移后的版本域上推进，重开幂等。
+    #[tokio::test]
+    async fn legacy_v7_history_gains_the_plan_decisions_in_place() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+        use pl_protocol::{SucceededThreadTool, ThreadToolOutput, ThreadToolState};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "plan-history";
+        let approved_plan = "# Plan\n\n1. Approve this path.\n";
+        let cancelled_plan = "# Plan\n\n1. Cancel this path.\n";
+        let approved_prompt = plan_fixture(approved_plan)?;
+        let cancelled_prompt = plan_fixture(cancelled_plan)?;
+        let approved_item = plan_tool_item("call-approve", thread_id, 3);
+        let cancelled_item = plan_tool_item("call-cancel", thread_id, 5);
+        let records = [
+            plan_interaction_record(
+                "call-approve",
+                &approved_prompt,
+                1,
+                InteractionState::Pending,
+            )?,
+            plan_decision_record("call-approve", &approved_prompt, &["Approve"])?,
+            plan_interaction_record(
+                "call-cancel",
+                &cancelled_prompt,
+                1,
+                InteractionState::Pending,
+            )?,
+            plan_interaction_record(
+                "call-cancel",
+                &cancelled_prompt,
+                2,
+                InteractionState::Cancelled,
+            )?,
+        ];
+        let receipts: Vec<FactReceiptWrite> = records
+            .iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: &[approved_item.clone(), cancelled_item.clone()],
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        // 旧库：schema 停在计划历史补齐之前，条目里没有 typed 计划回执。
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=7")
+            .await?;
+        drop(store);
+
+        let migrated = HistoryStore::open(&path, thread_id).await?;
+        migrated.prepare_activation().await?;
+        let items = migrated
+            .existing_items([approved_item.id.clone(), cancelled_item.id.clone()])
+            .await?;
+        let approved = items.get(&approved_item.id).context("approved Plan item")?;
+        assert_eq!(approved.ordinal, 3);
+        assert_eq!(approved.created_at, 111);
+        assert_eq!(approved.turn_id, "turn-plan");
+        assert_eq!(
+            approved.revision, approved_item.revision,
+            "the migration keeps the content version"
+        );
+        let decision = approved
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("approved Plan history")?;
+        assert_eq!(
+            decision.interaction_id(),
+            pl_core::tool::opaque::tool_interaction_id("call-approve")
+        );
+        assert_eq!(decision.questions().len(), 1);
+        assert_eq!(
+            decision.questions()[0].id,
+            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        );
+        assert_eq!(decision.questions()[0].question, approved_plan);
+        assert_eq!(decision.answers()[0].answers(), ["Approve"]);
+
+        // 取消保留真实取消状态，不被伪造成已批准。
+        let cancelled = items
+            .get(&cancelled_item.id)
+            .context("cancelled Plan item")?;
+        let cancelled_history = cancelled
+            .tool()
+            .and_then(|tool| tool.user_input())
+            .context("cancelled Plan history")?;
+        assert!(matches!(
+            cancelled_history.state(),
+            pl_protocol::ThreadToolUserInputState::Cancelled
+        ));
+        assert!(cancelled_history.answers().is_empty());
+
+        // 私有交互回执仍是原始载荷：派生补齐只写派生条目，不改写原始答案与上下文。
+        let receipt = migrated
+            .latest_fact_receipt(&order::receipt_id(
+                "interaction",
+                &pl_core::tool::opaque::tool_interaction_id("call-approve"),
+            ))
+            .await?
+            .context("Plan interaction receipt")?;
+        assert!(receipt.payload.contains("Approve"));
+
+        // 正常的下一次内容提交（真正的工具结果交付）继续在迁移后的版本域上推进一次。
+        let tool = approved.tool().context("tool item")?.clone();
+        let mut delivered = approved.clone();
+        delivered.revision = approved.revision.checked_add(1).context("revision")?;
+        delivered.updated_at = 700;
+        delivered = delivered.with_state(ThreadItemState::Tool(
+            pl_protocol::ThreadToolItem::new(
+                tool.invocation().clone(),
+                ThreadToolState::Succeeded(SucceededThreadTool::new(
+                    700,
+                    ThreadToolOutput::new(
+                        "waiting for the user's response.".into(),
+                        vec![],
+                        vec![],
+                        None,
+                    ),
+                )),
+            )
+            .with_user_input(tool.user_input().cloned()),
+        ));
+        migrated
+            .commit_effect(
+                2,
+                EffectCommit {
+                    items: std::slice::from_ref(&delivered),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        let reread = migrated
+            .existing_items([approved_item.id.clone()])
+            .await?
+            .remove(&approved_item.id)
+            .context("committed Plan item")?;
+        assert_eq!(reread.revision, delivered.revision);
+        assert_eq!(
+            reread
+                .tool()
+                .and_then(|tool| tool.user_input())
+                .map(|input| input.answers()[0].answers().to_vec()),
+            Some(vec!["Approve".to_string()])
+        );
+        let migrated_revision = reread.revision;
+        drop(migrated);
+
+        // 二次打开不再改变内容：幂等重开保留身份、顺序与版本。
+        let reopened = HistoryStore::open(&path, thread_id).await?;
+        reopened.prepare_activation().await?;
+        let again = reopened.existing_items([approved_item.id.clone()]).await?;
+        let item = again.get(&approved_item.id).context("reopened Plan item")?;
+        assert_eq!(item.revision, migrated_revision);
+        assert_eq!(item.ordinal, 3);
+        assert_eq!(item.created_at, 111);
+        assert!(
+            item.tool()
+                .and_then(|tool| tool.user_input())
+                .is_some_and(|input| input.state().is_resolved())
+        );
+        Ok(())
+    }
+
+    /// 计划历史补齐失败必须回滚整个升级：schema 停在原版本、条目保留迁移前载荷，修好后可重试。
+    #[tokio::test]
+    async fn failed_plan_history_migration_rolls_back_schema_and_items() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "plan-rollback";
+        let plan = "# Plan\n\n1. Rollback path.\n";
+        let prompt = plan_fixture(plan)?;
+        let saved = plan_tool_item("call-plan", thread_id, 2);
+        let records = [
+            plan_interaction_record("call-plan", &prompt, 1, InteractionState::Pending)?,
+            plan_decision_record("call-plan", &prompt, &["Approve"])?,
+        ];
+        let receipts: Vec<FactReceiptWrite> = records
+            .iter()
+            .map(|record| FactReceiptWrite {
+                item_id: order::receipt_id("interaction", &record.request.id),
+                revision: record.revision,
+                kind: "interaction",
+                payload: serde_json::to_string(record).expect("encode receipt"),
+            })
+            .collect();
+        let store = HistoryStore::open(&path, thread_id).await?;
+        store
+            .commit_effect(
+                1,
+                EffectCommit {
+                    items: std::slice::from_ref(&saved),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &receipts,
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared(
+                "UPDATE history_meta SET schema_version=7; \
+                 CREATE TRIGGER reject_plan_history BEFORE UPDATE ON history_items \
+                 BEGIN SELECT RAISE(ABORT,'injected plan history failure'); END;",
+            )
+            .await?;
+        drop(store);
+
+        let failed = HistoryStore::open(&path, thread_id).await?;
+        assert!(failed.prepare_activation().await.is_err());
+        let reader = failed.reader().await?.context("reader")?;
+        assert_eq!(reader.schema_version, 7);
+        let row = reader
+            .db
+            .query_one_raw(statement(
+                "SELECT payload FROM history_items WHERE item_id=?",
+                vec![saved.id.clone().into()],
+            ))
+            .await?
+            .context("pre-migration item")?;
+        let unchanged: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        assert!(
+            unchanged
+                .tool()
+                .is_some_and(|tool| tool.user_input().is_none()),
+            "a failed migration must not publish a Plan history"
+        );
+        assert_eq!(unchanged.revision, saved.revision);
+        drop(failed);
+
+        let recovery =
+            sea_orm::Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        recovery
+            .execute_unprepared("DROP TRIGGER reject_plan_history")
+            .await?;
+        recovery.close().await?;
+
+        let restored = HistoryStore::open(&path, thread_id).await?;
+        restored.prepare_activation().await?;
+        let migrated = restored
+            .existing_items([saved.id.clone()])
+            .await?
+            .remove(&saved.id)
+            .context("migrated Plan item")?;
+        assert_eq!(migrated.revision, saved.revision);
+        assert_eq!(
+            migrated
+                .tool()
+                .and_then(|tool| tool.user_input())
+                .map(|input| input.answers()[0].answers().to_vec()),
+            Some(vec!["Approve".to_string()])
+        );
+        Ok(())
+    }
+
+    /// 无法验证的计划事实显式失败：改过的计划正文与内核拒绝的决定都不会被当成批准。
+    #[test]
+    fn unverifiable_plan_facts_fail_instead_of_faking_an_approval() -> Result<()> {
+        let plan = "# Plan\n\n1. Verified path.\n";
+        // 正文与生产者记录的 hash 不再一致。
+        let mut tampered = plan_fixture(plan)?;
+        tampered.plan_hash = pl_core::context::content_hash(b"another plan");
+        let changed = plan_decision_record("call-plan", &tampered, &["Approve"])?;
+        let failure =
+            crate::studio::thread_projection::project_tool_user_input("plan-thread", &changed)
+                .expect_err("a changed Plan text must not be published as approved");
+        assert!(failure.to_string().contains("Plan confirmation"));
+        assert!(
+            !failure.to_string().contains("Verified path"),
+            "the diagnostic must not republish the Plan body: {failure}"
+        );
+
+        // 决定语义由 Plan 内核判定：同时选择批准与修改、以及没有任何决定的已解决事实都拒绝，
+        // 证明历史投影确实复用了 owner 的校验，而不是自己猜一个决定。
+        let prompt = plan_fixture(plan)?;
+        for answers in [vec!["Approve", "Revise"], vec![]] {
+            let rejected = plan_decision_record("call-plan", &prompt, &answers)?;
+            let failure =
+                crate::studio::thread_projection::project_tool_user_input("plan-thread", &rejected)
+                    .expect_err("a Plan decision the kernel rejects must not be published");
+            let diagnostic = failure.to_string();
+            assert!(
+                diagnostic.contains("decision is invalid"),
+                "the rejection must name the owner decision check: {diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains("Verified path"),
+                "the diagnostic must not republish the Plan body: {diagnostic}"
+            );
+        }
+        Ok(())
+    }
+
     /// 跳过的题不伪造成“已回答但隐藏”：空答案列表只是没有作答，只有真正提供的敏感答案才脱敏。
     #[test]
     fn skipped_questions_are_not_published_as_hidden_answers() -> Result<()> {
@@ -4854,7 +5033,8 @@ mod storage_fault_tests {
         );
 
         let projection =
-            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+            crate::studio::thread_projection::project_tool_user_input("qa-thread", &record)?
+                .context("Q&A")?;
         let answers = projection.answers();
         assert!(projection.state().is_resolved());
         assert_eq!(answers.len(), 1, "an empty answer list is not an answer");
@@ -4867,6 +5047,7 @@ mod storage_fault_tests {
 
         // 真正提供了值的敏感题仍然只公开“已回答/已隐藏”，原值不进入公开投影。
         let provided = crate::studio::thread_projection::project_tool_user_input(
+            "qa-thread",
             &answered_record("call-skip", &fixture)?,
         )?
         .context("provided Q&A")?;
@@ -4990,7 +5171,8 @@ mod storage_fault_tests {
             ),
         )?;
         let user_input =
-            crate::studio::thread_projection::project_tool_user_input(&record)?.context("Q&A")?;
+            crate::studio::thread_projection::project_tool_user_input(thread_id, &record)?
+                .context("Q&A")?;
         crate::studio::thread_projection::attach_tool_user_input(&mut item, user_input)?;
 
         let store = HistoryStore::open(&path, thread_id).await?;
@@ -5029,11 +5211,12 @@ mod storage_fault_tests {
         assert_eq!(restored, item);
 
         // 分页预览只交付有界正文，并把省略量交给消费者按身份补齐。
-        let page = store
-            .chat_page(pl_core::chat::ChatQuery::Latest, 10)
+        let session = pl_core::chat::Session::new(store.clone());
+        let page = session
+            .page(pl_core::chat::ChatPageRequest::latest().with_limit(10))
             .await?;
         let previewed = page.items.first().context("paged item")?;
-        assert!(previewed.omitted_bytes > 0);
+        assert!(previewed.omitted_bytes() > 0);
         assert!(
             previewed
                 .field(&answer_field)

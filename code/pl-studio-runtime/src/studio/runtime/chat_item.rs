@@ -15,22 +15,25 @@ use anyhow::Result;
 use pl_core::chat::{ChatField, ChatItem, ChatLifecycle, PresentationPart};
 use pl_core::model::ContentBlock;
 use pl_protocol::{
-    ResolvedThreadToolUserInput, ThreadItem, ThreadItemState, ThreadTextItem, ThreadThinkingItem,
-    ThreadToolInvocation, ThreadToolItem, ThreadToolState, ThreadToolUserInput,
-    ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
+    ResolvedThreadToolUserInput, ThreadItem, ThreadItemState, ThreadRawItem, ThreadRawPayload,
+    ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem, ThreadToolState,
+    ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
 };
 
-/// 工具参数与工具结果各自的宿主字段域 key（稳定身份，不是内容推断）。
+/// 工具参数、工具结果与工具开放产物各自的宿主字段域 key（稳定身份，不是内容推断）。
 pub(crate) const TOOL_ARGUMENTS_FIELD: &str = "tool.arguments";
 pub(crate) const TOOL_RESULT_FIELD: &str = "tool.result";
+pub(crate) const TOOL_OUTPUT_ARTIFACTS_FIELD: &str = "tool.output-artifacts";
 /// 普通问答投影的正文域 key 前缀（见 [`user_input_question_field`] / [`user_input_answer_field`]）。
 pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
+/// 原始记录正文域 key 前缀：一段原始 payload 的正文按它在记录里的顺序寻址。
+pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
 
-/// 把一条 canonical 条目拆成 typed 窗口条目：静态结构进 `meta`，动态正文进 `fields`。
+/// 把一条 canonical 条目拆成 typed 预览条目：静态结构进 `meta`，动态正文进 `fields`。
 ///
-/// `saved` 是 writer 已确认的保存水位，独立于执行终态 `lifecycle`；`omitted_bytes` 由调用方按有界
-/// 预览策略给出（0 表示完整）。
-pub(crate) fn typed_item(item: ThreadItem, saved: bool, omitted_bytes: u64) -> Result<ChatItem> {
+/// `saved` 是 writer 已确认的保存水位，独立于执行终态 `lifecycle`。返回的条目是**完整**条目：
+/// 有界预览只在交付边界由宿主 codec 裁剪，且裁剪不改变字段的完整字节数。
+pub(crate) fn typed_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
     let lifecycle = if item.state().is_terminal() {
         ChatLifecycle::Terminal
     } else {
@@ -38,17 +41,16 @@ pub(crate) fn typed_item(item: ThreadItem, saved: bool, omitted_bytes: u64) -> R
     };
     let fields = content_fields(item.state());
     let meta = static_meta(&item)?;
-    Ok(ChatItem {
+    Ok(ChatItem::complete(pl_core::chat::ChatItemParts {
         item_id: item.id,
         turn_id: item.turn_id,
         order: item.ordinal,
         revision: item.revision,
         fields,
         meta,
-        omitted_bytes,
         saved,
         lifecycle,
-    })
+    }))
 }
 
 /// 只含静态结构的 `meta`：身份、kind、时间戳、附件与工具身份，动态正文清空、revision 归零。
@@ -101,6 +103,25 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
                     ContentBlock::from_text(output),
                 );
             }
+            // A terminal tool result and its open artifacts are dynamic bodies too: they are user
+            // visible, can be large, and must share the same bounded preview instead of staying in
+            // the static metadata where no budget could ever reach them.
+            if let Some(output) = tool.terminal_output() {
+                fields.insert(
+                    ChatField::host(TOOL_RESULT_FIELD),
+                    ContentBlock::from_text(output.result()),
+                );
+                if !output.output_artifacts().is_empty() {
+                    // Encoding through the value's own `Display` cannot fail; the open payload is
+                    // only serialized again at the canonical/detail boundary.
+                    let encoded =
+                        serde_json::Value::Array(output.output_artifacts().to_vec()).to_string();
+                    fields.insert(
+                        ChatField::host(TOOL_OUTPUT_ARTIFACTS_FIELD),
+                        ContentBlock::from_text(&encoded),
+                    );
+                }
+            }
             // 问答正文同样进内容域：它和其它正文共享同一份有界预览、按身份回源与省略量，不能因为
             // 塞进静态 meta 而绕过预算。问题按原顺序索引，答案按所属问题的位置索引。
             if let Some(user_input) = tool.user_input() {
@@ -120,6 +141,16 @@ pub(crate) fn content_fields(state: &ThreadItemState) -> BTreeMap<ChatField, Arc
                         );
                     }
                 }
+            }
+        }
+        ThreadItemState::Raw(raw) => {
+            // Original producer payloads are shown as正文, so they are one field each instead of a
+            // static blob that bypasses every preview budget.
+            for (index, payload) in raw.payloads.iter().enumerate() {
+                fields.insert(
+                    raw_payload_field(index),
+                    ContentBlock::from_text(&payload.content),
+                );
             }
         }
         _ => {}
@@ -153,10 +184,24 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
         ThreadItemState::Tool(tool) => ThreadItemState::Tool(
             ThreadToolItem::new(
                 clear_arguments(tool.invocation()),
-                clear_streamed_output(tool.state()),
+                clear_terminal_output(&clear_streamed_output(tool.state())),
             )
-            .with_user_input(tool.user_input().map(clear_user_input)),
+            .with_user_input(tool.user_input().map(clear_user_input))
+            .with_wait(tool.wait().cloned()),
         ),
+        ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
+            payloads: raw
+                .payloads
+                .iter()
+                .map(|payload| ThreadRawPayload {
+                    format: payload.format.clone(),
+                    version: payload.version,
+                    content: String::new(),
+                })
+                .collect(),
+            notice: raw.notice.clone(),
+            recorded_at: raw.recorded_at,
+        }),
         other => other.clone(),
     }
 }
@@ -183,14 +228,30 @@ pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
         ThreadItemState::Tool(tool) => {
             let arguments = text_of(item, &ChatField::host(TOOL_ARGUMENTS_FIELD));
             let output = text_of(item, &ChatField::host(TOOL_RESULT_FIELD));
+            let state = fill_terminal_output(tool.state(), &output, artifacts_of(item)?);
             ThreadItemState::Tool(
                 ThreadToolItem::new(
                     fill_arguments(tool.invocation(), arguments),
-                    fill_streamed_output(tool.state(), &output),
+                    fill_streamed_output(&state, &output),
                 )
-                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item))),
+                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item)))
+                .with_wait(tool.wait().cloned()),
             )
         }
+        ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
+            payloads: raw
+                .payloads
+                .iter()
+                .enumerate()
+                .map(|(index, payload)| ThreadRawPayload {
+                    format: payload.format.clone(),
+                    version: payload.version,
+                    content: text_of(item, &raw_payload_field(index)),
+                })
+                .collect(),
+            notice: raw.notice.clone(),
+            recorded_at: raw.recorded_at,
+        }),
         other => other.clone(),
     };
     // `meta` 只携带静态结构（revision 归零），窗口自己的内容版本才是权威，绝不回读成提交序号。
@@ -416,7 +477,7 @@ enum ChunkKind {
 /// 重建 thinking 某类 chunk 向量：以已交付的 Part 字段索引为准，缺位补空串。
 fn chunk_vec(item: &ChatItem, kind: ChunkKind) -> Vec<String> {
     let mut indexed: Vec<(u32, String)> = Vec::new();
-    for (field, block) in &item.fields {
+    for (field, preview) in &item.fields {
         let ChatField::Part(part) = field else {
             continue;
         };
@@ -426,7 +487,7 @@ fn chunk_vec(item: &ChatItem, kind: ChunkKind) -> Vec<String> {
             _ => None,
         };
         if let Some(index) = index {
-            indexed.push((index, block.text()));
+            indexed.push((index, preview.block.text()));
         }
     }
     indexed.sort_by_key(|(index, _)| *index);
@@ -444,6 +505,94 @@ fn streamed_output(state: &ThreadToolState) -> Option<&str> {
         ThreadToolState::Cancelling(cancelling) => Some(cancelling.streamed_output()),
         _ => None,
     }
+}
+
+/// 原始记录一段正文的内容域身份。
+fn raw_payload_field(payload_index: usize) -> ChatField {
+    ChatField::host(format!("{RAW_PAYLOAD_FIELD}{payload_index}"))
+}
+
+/// 工具开放产物的完整值：只用可由 core 字段承载的 JSON 数组表达。
+///
+/// 预览被省略时不尝试解析半段 JSON；查看器按字段身份读取完整正文，绝不把一个被截断的数组当作
+/// 完整产物。
+fn artifacts_of(item: &ChatItem) -> Result<Vec<serde_json::Value>> {
+    let field = ChatField::host(TOOL_OUTPUT_ARTIFACTS_FIELD);
+    if !item.field_is_complete(&field) {
+        return Ok(Vec::new());
+    }
+    let Some(block) = item.field(&field) else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str(&block.text())?)
+}
+
+/// 只有正文被清空的终态工具输出，其余结构（附件、退出码、失败原因）保持不变。
+fn clear_terminal_output(state: &ThreadToolState) -> ThreadToolState {
+    match state {
+        ThreadToolState::Succeeded(succeeded) => {
+            ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                succeeded.completed_at(),
+                cleared_output(succeeded.output()),
+            ))
+        }
+        ThreadToolState::Failed(failed) => {
+            ThreadToolState::Failed(pl_protocol::FailedThreadTool::new(
+                failed.failed_at(),
+                failed.failure().clone(),
+                failed.output().map(cleared_output),
+            ))
+        }
+        other => other.clone(),
+    }
+}
+
+fn cleared_output(output: &pl_protocol::ThreadToolOutput) -> pl_protocol::ThreadToolOutput {
+    pl_protocol::ThreadToolOutput::new(
+        String::new(),
+        output.attachments().to_vec(),
+        Vec::new(),
+        output.exit_code(),
+    )
+}
+
+/// 用内容域正文与开放产物还原终态工具输出。
+fn fill_terminal_output(
+    state: &ThreadToolState,
+    result: &str,
+    artifacts: Vec<serde_json::Value>,
+) -> ThreadToolState {
+    match state {
+        ThreadToolState::Succeeded(succeeded) => {
+            ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                succeeded.completed_at(),
+                filled_output(succeeded.output(), result, artifacts),
+            ))
+        }
+        ThreadToolState::Failed(failed) => {
+            ThreadToolState::Failed(pl_protocol::FailedThreadTool::new(
+                failed.failed_at(),
+                failed.failure().clone(),
+                failed
+                    .output()
+                    .map(|output| filled_output(output, result, artifacts)),
+            ))
+        }
+        other => other.clone(),
+    }
+}
+
+fn filled_output(
+    output: &pl_protocol::ThreadToolOutput,
+    result: &str,
+    artifacts: Vec<serde_json::Value>,
+) -> pl_protocol::ThreadToolOutput {
+    pl_protocol::ThreadToolOutput::new(
+        result.to_owned(),
+        output.attachments().to_vec(),
+        artifacts,
+        output.exit_code(),
+    )
 }
 
 fn clear_arguments(invocation: &ThreadToolInvocation) -> ThreadToolInvocation {

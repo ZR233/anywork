@@ -9,50 +9,50 @@ part of 'timeline_session_view.dart';
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
 
-@ProviderFor(timelineSessionWindow)
-final timelineSessionWindowProvider = TimelineSessionWindowProvider._();
+@ProviderFor(timelineDisplayState)
+final timelineDisplayStateProvider = TimelineDisplayStateProvider._();
 
-final class TimelineSessionWindowProvider
+final class TimelineDisplayStateProvider
     extends
         $FunctionalProvider<
-          TimelineSessionWindow?,
-          TimelineSessionWindow?,
-          TimelineSessionWindow?
+          TimelineSessionViewState?,
+          TimelineSessionViewState?,
+          TimelineSessionViewState?
         >
-    with $Provider<TimelineSessionWindow?> {
-  TimelineSessionWindowProvider._()
+    with $Provider<TimelineSessionViewState?> {
+  TimelineDisplayStateProvider._()
     : super(
         from: null,
         argument: null,
         retry: null,
-        name: r'timelineSessionWindowProvider',
+        name: r'timelineDisplayStateProvider',
         isAutoDispose: true,
         dependencies: null,
         $allTransitiveDependencies: null,
       );
 
   @override
-  String debugGetCreateSourceHash() => _$timelineSessionWindowHash();
+  String debugGetCreateSourceHash() => _$timelineDisplayStateHash();
 
   @$internal
   @override
-  $ProviderElement<TimelineSessionWindow?> $createElement(
+  $ProviderElement<TimelineSessionViewState?> $createElement(
     $ProviderPointer pointer,
   ) => $ProviderElement(pointer);
 
   @override
-  TimelineSessionWindow? create(Ref ref) {
-    return timelineSessionWindow(ref);
+  TimelineSessionViewState? create(Ref ref) {
+    return timelineDisplayState(ref);
   }
 
   /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(TimelineSessionWindow? value) {
+  Override overrideWithValue(TimelineSessionViewState? value) {
     return $ProviderOverride(
       origin: this,
-      providerOverride: $SyncValueProvider<TimelineSessionWindow?>(value),
+      providerOverride: $SyncValueProvider<TimelineSessionViewState?>(value),
     );
   }
 }
 
-String _$timelineSessionWindowHash() =>
-    r'923a8efb8698df5dadb27f458e5046b80b328e17';
+String _$timelineDisplayStateHash() =>
+    r'a55cbbbb546ab358ba69ef2a56aa4bdd80694c9d';

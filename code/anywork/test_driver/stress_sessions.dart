@@ -3,7 +3,10 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'driver_read_commands.dart';
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
+import 'page_switch.dart';
 
 Future<Map<String, dynamic>> waitForSnapshot(
   FlutterDriverSession driver,
@@ -31,55 +34,40 @@ Future<Map<String, dynamic>> waitForSnapshot(
 String selectedThread(Map<String, dynamic> snapshot) =>
     (snapshot['navigation'] as Map)['selectedThreadId'] as String;
 
-/// Native content-window capacity, the same bound the stress probe saturates.
+/// 当前展示代次的已加载身份，并核对内部一致性。
 ///
-/// The reading window is the shared `ChatView` window in `pl-core/src/chat.rs`
-/// (`WINDOW_ITEMS = 96`): a focus paints `INITIAL_ITEMS = 32` and each page adds
-/// up to `PAGE_ITEMS = 32` until the window is trimmed back to this capacity.
-/// The Driver `timelineWindow.itemIds` mirrors that window, so the list must stay
-/// unique and within this capacity; there is no `historyCount`/`overlayCount`
-/// field to fall back on.
-const _windowCapacityItems = 96;
-
-int boundedWindow(Map<String, dynamic> snapshot) {
-  final window = snapshot['timelineWindow'] as Map;
-  final ids = (window['itemIds'] as List).cast<String>();
-  // The typed contract reports `windowItemCount` for the same window; a missing
-  // or inconsistent field is an observation failure, never a silent pass.
-  if (window['windowItemCount'] != ids.length ||
-      ids.length > _windowCapacityItems ||
-      ids.toSet().length != ids.length) {
-    throw StateError('invalid window: ${ids.length} items');
+/// 没有旧 96 条窗口容量：已加载消息随访问页增长是明示取舍，这里只要求身份唯一、
+/// `itemCount`/`itemIds`/`items` 一致，缺失字段是观测失败而不是“空窗口”。
+TimelineObservation loadedWindow(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.parse(snapshot);
+  timeline.requireConsistentIds();
+  if (timeline.itemIds.toSet().length != timeline.itemCount) {
+    throw StateError('timeline exposes duplicate identities');
   }
-  return ids.length;
+  return timeline;
 }
 
 /// Fixture session 1 replies with `Long body 1: ` + `content ` repeated 16_384
 /// times (see `gui_stress_script`), so the complete assistant body is
-/// 13 + 16_384 * 8 = 131_085 UTF-16 code units. That is below the native 256 KiB
-/// timeline budget, so the new contract must show the whole body without a
-/// manual full-body load. A truncated preview (for example 8192 code units) is
-/// not a complete body.
+/// 13 + 16_384 * 8 = 131_085 UTF-8 bytes (ASCII markers).
+///
+/// 产品展示正文预算只有 32 KiB，所以行内必须是有界预览；真实总长由详情引用给出，
+/// 完整正文只能由用户显式打开详情查看器逐块读取并复制。
 const _largeSessionPrefix = 'Long body 1: ';
+const _largeRepeats = 16384;
+
+/// 产品动态正文展示预算（`pl-studio-runtime` 的 `PRODUCT_PREVIEW_BYTES`）。
+const _productPreviewBudgetBytes = 32 * 1024;
 const _largeSessionCharacters = 131085;
 
-/// The longest row body text in the snapshot, or null when none is available.
+/// The longest canonical item preview, or null when none is available.
+///
 /// The multi-item stress fixture delivers its large reply as one message, so the
-/// longest row is that assistant body.
-Map<String, Object?>? _largestAssistantBody(Map<String, dynamic> snapshot) {
-  final workspace = snapshot['workspace'];
-  if (workspace is! Map) return null;
-  final timeline = workspace['timeline'];
-  if (timeline is! List) return null;
-  Map<String, Object?>? best;
-  for (final row in timeline) {
-    if (row is! Map) continue;
-    final id = row['id'];
-    final text = row['text'];
-    if (id is! String || text is! String) continue;
-    if (best == null || text.length > (best['text'] as String).length) {
-      best = {'id': id, 'text': text};
-    }
+/// longest item is that assistant body.
+TimelineItemObservation? _largestAssistantBody(TimelineObservation timeline) {
+  TimelineItemObservation? best;
+  for (final item in timeline.items) {
+    if (best == null || item.text.length > best.text.length) best = item;
   }
   return best;
 }
@@ -87,6 +75,7 @@ Map<String, Object?>? _largestAssistantBody(Map<String, dynamic> snapshot) {
 bool settled(Map<String, dynamic> snapshot, String threadId) {
   final workspace = snapshot['workspace'];
   final persistence = snapshot['persistence'];
+  final timeline = TimelineObservation.optional(snapshot);
   return snapshot['navigation'] is Map &&
       (snapshot['navigation'] as Map)['selectedThreadId'] == threadId &&
       workspace is Map &&
@@ -98,8 +87,10 @@ bool settled(Map<String, dynamic> snapshot, String threadId) {
       persistence is Map &&
       persistence['kind'] == 'ready' &&
       persistence['pendingCommits'] == 0 &&
-      (snapshot['timelineWindow'] as Map)['itemIds'] is List &&
-      ((snapshot['timelineWindow'] as Map)['itemIds'] as List).length >= 2;
+      timeline != null &&
+      timeline.ready &&
+      timelineViewportSettled(snapshot) &&
+      timeline.itemCount >= 2;
 }
 
 Future<void> main(List<String> args) async {
@@ -125,10 +116,10 @@ Future<void> main(List<String> args) async {
       'first session',
     );
     final originalId = selectedThread(first);
-    if (!settled(first, originalId) ||
-        boundedWindow(first) != _windowCapacityItems) {
+    if (!settled(first, originalId)) {
       throw StateError('original stress session did not settle');
     }
+    loadedWindow(first);
     final ids = <String>{originalId};
     final sessions = <Map<String, Object?>>[];
     for (var ordinal = 1; ordinal <= count; ordinal++) {
@@ -191,54 +182,76 @@ Future<void> main(List<String> args) async {
                 'Fixture Session $ordinal',
         'complete session $ordinal',
       );
-      final countInWindow = boundedWindow(finished);
+      final timeline = loadedWindow(finished);
       if ((finished['sidebarDirectory'] as Map)['count'] < ids.length) {
         throw StateError('session directory omitted $id');
       }
-      final window = finished['timelineWindow'] as Map;
-      final previewed = (window['previewedItemIds'] as List).length;
-      final pendingBodies = (window['pendingItemBodyIds'] as List).length;
-      final body = _largestAssistantBody(finished);
-      final bodyText = body?['text'] as String?;
-      final bodyId = body?['id'] as String?;
-      sessions.add({
+      final body = _largestAssistantBody(timeline);
+      final truncated = timeline.items
+          .where((item) => item.textTruncated)
+          .length;
+      final detail = body?.detail('text');
+      final record = <String, Object?>{
         'ordinal': ordinal,
         'threadId': id,
-        'windowItems': countInWindow,
-        'previewedBodies': previewed,
-        'pendingBodies': pendingBodies,
-        'assistantCharacters': bodyText?.length,
-      });
+        'loadedItems': timeline.itemCount,
+        'itemIds': timeline.itemIds,
+        'mode': timeline.mode,
+        'generation': timeline.generation,
+        'hasOlder': timeline.hasOlder,
+        'savedItems': timeline.items.where((item) => item.saved).length,
+        'terminalItems': timeline.items.where((item) => item.terminal).length,
+        'typedDetailRefs': timeline.items.fold<int>(
+          0,
+          (total, item) => total + item.details.length,
+        ),
+        'truncatedBodies': truncated,
+        'previewTextBytes': timeline.items.fold<int>(
+          0,
+          (total, item) => total + item.textBytes,
+        ),
+        'assistantCharacters': body?.text.length,
+        'assistantTextBytes': body?.textBytes,
+        'assistantPreviewBytes': detail?.previewBytes,
+        'assistantTextTotalBytes': detail?.totalBytes,
+      };
+      sessions.add(record);
       if (ordinal == 1) {
-        // The large reply must be delivered whole, without falling back to a
-        // lazy body preview or awaiting a manual full-body load. The previous
-        // assertion that a large response *must* enter lazy preview checked the
-        // removed 8 KiB Dart truncation and is deliberately not kept.
-        if (previewed != 0) {
+        // 32 KiB 产品预算：行内是有界预览，真实总长由详情引用给出；完整正文只能
+        // 通过用户显式打开的查看器逐块读取并复制。
+        final text = body?.text;
+        if (body == null || text == null) {
+          throw StateError('large response item was not observed');
+        }
+        if (!text.startsWith(_largeSessionPrefix)) {
+          throw StateError('large response preview lost its fixture prefix');
+        }
+        if (truncated < 1 || !body.textTruncated) {
           throw StateError(
-            'large response fell back to a lazy body preview: $previewed items',
+            'large response preview was not declared truncated: $truncated',
           );
         }
-        if (pendingBodies != 0) {
+        if (detail == null || detail.totalBytes != _largeSessionCharacters) {
           throw StateError(
-            'large response awaited a manual body load: $pendingBodies items',
+            'large response detail reference is wrong: '
+            '${detail?.totalBytes} of $_largeSessionCharacters bytes',
           );
         }
-        if (bodyText == null ||
-            !bodyText.startsWith(_largeSessionPrefix) ||
-            bodyText.length != _largeSessionCharacters) {
+        if (detail.previewBytes > _productPreviewBudgetBytes ||
+            body.textBytes != detail.previewBytes) {
           throw StateError(
-            'large response body incomplete: ${bodyText?.length} of '
-            '$_largeSessionCharacters characters',
+            'large response preview exceeded its budget: '
+            '${detail.previewBytes} bytes / ${body.textBytes} delivered',
           );
         }
-        // No manual full-body load affordance may be present once the body is
-        // complete; the journey never taps one.
-        if (bodyId != null) {
-          await driver.waitForAbsent(
-            find.byValueKey('timeline-item-body-load-$bodyId'),
-            timeout: const Duration(seconds: 5),
-          );
+        final copy = await _copyDetailBody(
+          driver,
+          body.id,
+          _largeSessionPrefix + 'content ' * _largeRepeats,
+        );
+        record['detailCopy'] = copy;
+        if (copy['pass'] != true) {
+          throw StateError('large response detail copy failed: $copy');
         }
       }
     }
@@ -257,11 +270,227 @@ Future<void> main(List<String> args) async {
           (snapshot['workspace'] as Map)['usage']['outputTokens'] >= 20000,
       'reopen original',
     );
+    final revisitedTimeline = loadedWindow(revisited);
+    final otherId = sessions.first['threadId']! as String;
+    final otherItems = (sessions.first['itemIds']! as List).cast<String>();
+    final originalTail = revisitedTimeline.itemIds
+        .skip(
+          revisitedTimeline.itemCount > 32
+              ? revisitedTimeline.itemCount - 32
+              : 0,
+        )
+        .toList();
+    var generation = revisitedTimeline.generation;
+    final switches = <Map<String, Object?>>[];
+    for (var round = 0; round < 3; round++) {
+      final target = sessions[round.isEven ? 0 : 1];
+      final targetId = target['threadId']! as String;
+      final targetItems = (target['itemIds']! as List).cast<String>();
+      final otherRow = find.byValueKey('thread-row-$targetId');
+      await driver.scrollUntilVisible(
+        find.byValueKey('sidebar-project-tree'),
+        otherRow,
+        dyScroll: -200,
+        timeout: const Duration(seconds: 30),
+      );
+      Map<String, dynamic>? overlap;
+      if (round == 0) {
+        overlap = await driver.sendCommand(
+          PageSwitch(
+            otherRow,
+            threadId: originalId,
+            generation: generation,
+            destinationThreadId: targetId,
+            timeout: const Duration(seconds: 60),
+          ),
+        );
+      } else {
+        await driver.tap(otherRow);
+      }
+      final other = await waitForSnapshot(
+        driver,
+        (state) => settled(state, targetId),
+        'rapid B $round',
+      );
+      final otherContent = loadedWindow(other);
+      if (otherContent.itemIds.join('\u0000') != targetItems.join('\u0000')) {
+        throw StateError('Session B contains stale or missing identities');
+      }
+      if (round == 0) {
+        await File('${report.parent.path}/session-switch-other.png')
+            .writeAsBytes(await driver.screenshot());
+      } else if (round == 1) {
+        await File('${report.parent.path}/session-switch-third.png')
+            .writeAsBytes(await driver.screenshot());
+      }
+      final originalRow = find.byValueKey('thread-row-$originalId');
+      await driver.scrollUntilVisible(
+        find.byValueKey('sidebar-project-tree'),
+        originalRow,
+        dyScroll: 200,
+        timeout: const Duration(seconds: 30),
+      );
+      await driver.tap(originalRow);
+      final returned = await waitForSnapshot(
+        driver,
+        (state) => settled(state, originalId),
+        'rapid A $round',
+      );
+      final content = loadedWindow(returned);
+      final pass =
+          content.generation > generation &&
+          content.isLive &&
+          content.olderError == null &&
+          originalTail.every(content.itemIds.contains) &&
+          !sessions.any(
+            (session) =>
+                (session['itemIds']! as List).any(content.itemIds.contains),
+          );
+      switches.add({
+        'round': round,
+        'generationBefore': generation,
+        'generationAfter': content.generation,
+        'threadId': content.threadId,
+        'destinationThreadId': targetId,
+        'overlap': overlap,
+        'pass': pass,
+      });
+      if (!pass) {
+        throw StateError(
+          'Rapid session switch leaked or lost content: ${switches.last}',
+        );
+      }
+      generation = content.generation;
+      if (round == 0) {
+        await File('${report.parent.path}/session-switch-return.png')
+            .writeAsBytes(await driver.screenshot());
+      }
+    }
+    final otherRow = find.byValueKey('thread-row-$otherId');
+    await driver.scrollUntilVisible(
+      find.byValueKey('sidebar-project-tree'),
+      otherRow,
+      dyScroll: -200,
+      timeout: const Duration(seconds: 30),
+    );
+    final openingOverlap = await driver.sendCommand(
+      PageSwitch(
+        otherRow,
+        threadId: originalId,
+        generation: generation,
+        destinationThreadId: otherId,
+        bounceBack: true,
+        timeout: const Duration(seconds: 60),
+      ),
+    );
+    final bounced = loadedWindow(
+      await waitForSnapshot(
+        driver,
+        (state) => settled(state, originalId),
+        'return while opening',
+      ),
+    );
+    if (bounced.generation <= generation ||
+        !bounced.isLive ||
+        bounced.olderError != null ||
+        !originalTail.every(bounced.itemIds.contains) ||
+        otherItems.any(bounced.itemIds.contains)) {
+      throw StateError('Opening overlap leaked or lost the original display');
+    }
     await report.writeAsString(
-      '${jsonEncode({'originalThreadId': originalId, 'originalReopened': true, 'originalWindowItems': boundedWindow(revisited), 'sessionCount': sessions.length, 'directoryCount': (revisited['sidebarDirectory'] as Map)['count'], 'sessions': sessions})}\n',
+      '${jsonEncode({'originalThreadId': originalId, 'originalReopened': true, 'originalLoadedItems': revisitedTimeline.itemCount, 'originalMode': revisitedTimeline.mode, 'originalHasOlder': revisitedTimeline.hasOlder, 'rapidSwitchOk': switches.every((entry) => entry['pass'] == true) && openingOverlap['pass'] == true, 'rapidSwitch': switches, 'openingOverlap': openingOverlap, 'sessionCount': sessions.length, 'directoryCount': (revisited['sidebarDirectory'] as Map)['count'], 'sessions': sessions})}\n',
     );
     await stage.writeAsString('complete');
   } finally {
     await driver.close();
   }
+}
+
+/// 通过用户显式打开的真实详情查看器读取完整正文并复制，再与 canonical fixture 比对。
+///
+/// 只读 Driver 观察（`timeline-detail-text` / `clipboard-text`），不写剪贴板、不等固定
+/// sleep；关闭后必须观察到查看器消失。
+Future<Map<String, Object?>> _copyDetailBody(
+  FlutterDriverSession driver,
+  String itemId,
+  String canonicalBody,
+) async {
+  final expectedHash = _fnv1a64(canonicalBody).toRadixString(16);
+  final openKey = 'timeline-detail-open-$itemId-text';
+  await driver.waitFor(
+    find.byValueKey(openKey),
+    timeout: const Duration(seconds: 30),
+  );
+  await driver.rawTap(
+    find.byValueKey(openKey),
+    timeout: const Duration(seconds: 30),
+  );
+  final deadline = DateTime.now().add(const Duration(seconds: 90));
+  DetailViewerRead? progress;
+  var sawPartial = false;
+  var viewerOpened = false;
+  while (DateTime.now().isBefore(deadline)) {
+    progress = await DetailViewerRead.read(driver.requestData);
+    if (progress.open) viewerOpened = true;
+    final characters = progress.characters;
+    if (characters > 0 && characters < canonicalBody.length) sawPartial = true;
+    if (characters >= canonicalBody.length) break;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  final loadedCharacters = progress?.characters ?? 0;
+  final loadedHash = progress?.hash;
+  await driver.waitFor(
+    find.byValueKey('timeline-detail-copy'),
+    timeout: const Duration(seconds: 15),
+  );
+  await driver.rawTap(
+    find.byValueKey('timeline-detail-copy'),
+    timeout: const Duration(seconds: 30),
+  );
+  final clipboard = await ClipboardRead.read(driver.requestData);
+  await driver.rawTap(
+    find.byValueKey('timeline-detail-close'),
+    timeout: const Duration(seconds: 30),
+  );
+  final closeDeadline = DateTime.now().add(const Duration(seconds: 15));
+  var closed = false;
+  while (DateTime.now().isBefore(closeDeadline)) {
+    final decoded = await DetailViewerRead.read(driver.requestData);
+    if (!decoded.open) {
+      closed = true;
+      break;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  return <String, Object?>{
+    'itemId': itemId,
+    'expectedCharacters': canonicalBody.length,
+    'expectedHash': expectedHash,
+    // 理论块数（ceil(bytes/64KiB)），不是实际读了几块。
+    'theoreticalChunks': (canonicalBody.length / (64 * 1024)).ceil(),
+    'loadedCharacters': loadedCharacters,
+    'loadedHash': loadedHash,
+    'sawPartialChunk': sawPartial,
+    'viewerOpened': viewerOpened,
+    'clipboardCharacters': clipboard.characters,
+    'clipboardHash': clipboard.hash,
+    'viewerClosed': closed,
+    'pass':
+        viewerOpened &&
+        loadedCharacters == canonicalBody.length &&
+        loadedHash == expectedHash &&
+        clipboard.characters == canonicalBody.length &&
+        clipboard.hash == expectedHash &&
+        closed,
+  };
+}
+
+/// FNV-1a over the code units. Must stay identical to the Driver-side helper.
+int _fnv1a64(String text) {
+  var hash = 0xcbf29ce484222325;
+  for (var index = 0; index < text.length; index += 1) {
+    hash ^= text.codeUnitAt(index);
+    hash = hash * 0x100000001b3;
+  }
+  return hash;
 }

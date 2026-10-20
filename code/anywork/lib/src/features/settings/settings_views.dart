@@ -13,7 +13,7 @@ import '../../presentation/providers/thread_session_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
-import 'settings_provider_usage_demand.dart';
+import 'settings_account_usage_demand.dart';
 
 /// 设置页是否已经有可渲染的配置 canonical。
 ///
@@ -63,78 +63,81 @@ final settingsPageReadinessProvider =
       );
     }, name: 'settingsPageReadinessProvider');
 
-class SettingsProvidersView {
-  const SettingsProvidersView({
+class SettingsAccountsView {
+  SettingsAccountsView({
     required this.canonical,
-    required this.providerCatalog,
-    required this.defaultProviderId,
+    required this.accountCatalog,
+    required this.defaultAccountId,
     required this.settingsRevision,
     required this.modelCatalogRevision,
-    required this.providerCatalogRevision,
-  });
+    required this.accountCatalogRevision,
+  }) : accounts = List<AccountSettingsView>.unmodifiable(
+         accountsWithCatalogMetadata(
+           canonical?.accounts ?? const <AccountSettingsView>[],
+           accountCatalog,
+         ),
+       );
 
   final SettingsStateSnapshot? canonical;
-  final ProviderCatalogView providerCatalog;
-  final String? defaultProviderId;
+  final AccountCatalogView accountCatalog;
+  final String? defaultAccountId;
   final int settingsRevision;
   final int modelCatalogRevision;
-  final String providerCatalogRevision;
-
-  List<ProviderSettingsView> get providers => providersWithCatalogMetadata(
-    canonical?.providers ?? const <ProviderSettingsView>[],
-    providerCatalog,
-  );
+  final String accountCatalogRevision;
+  final List<AccountSettingsView> accounts;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SettingsProvidersView &&
-          defaultProviderId == other.defaultProviderId &&
+      other is SettingsAccountsView &&
+          defaultAccountId == other.defaultAccountId &&
           settingsRevision == other.settingsRevision &&
           modelCatalogRevision == other.modelCatalogRevision &&
-          providerCatalogRevision == other.providerCatalogRevision &&
+          accountCatalogRevision == other.accountCatalogRevision &&
           identical(canonical, other.canonical) &&
-          identical(providerCatalog, other.providerCatalog);
+          identical(accountCatalog, other.accountCatalog);
 
   @override
   int get hashCode => Object.hash(
-    defaultProviderId,
+    defaultAccountId,
     settingsRevision,
     modelCatalogRevision,
-    providerCatalogRevision,
+    accountCatalogRevision,
     identityHashCode(canonical),
-    identityHashCode(providerCatalog),
+    identityHashCode(accountCatalog),
   );
 }
 
-final settingsProvidersViewProvider =
-    Provider.autoDispose<SettingsProvidersView>((ref) {
-      final store = ref.watch(settingsStoreProvider);
-      return SettingsProvidersView(
-        canonical: store.canonical,
-        providerCatalog: store.providerCatalog,
-        defaultProviderId: store.canonical?.defaultProviderId,
-        settingsRevision: store.settingsRevision,
-        modelCatalogRevision: store.modelCatalogRevision,
-        providerCatalogRevision: store.providerCatalogRevision,
-      );
-    }, name: 'settingsProvidersViewProvider');
+final settingsAccountsViewProvider = Provider.autoDispose<SettingsAccountsView>(
+  (ref) {
+    final store = ref.watch(settingsStoreProvider);
+    return SettingsAccountsView(
+      canonical: store.canonical,
+      accountCatalog: store.accountCatalog,
+      defaultAccountId: store.canonical?.defaultAccountId,
+      settingsRevision: store.settingsRevision,
+      modelCatalogRevision: store.modelCatalogRevision,
+      accountCatalogRevision: store.accountCatalogRevision,
+    );
+  },
+  name: 'settingsAccountsViewProvider',
+);
 
 /// 自动额度只消费 (id, usageQueryRevision)，不把 catalog/settings 全局水位当查询身份。
-final settingsProviderUsageQueryIdentitiesProvider =
-    Provider.autoDispose<ProviderUsageQueryIdentitySnapshot>((ref) {
+final settingsAccountUsageQueryIdentitiesProvider =
+    Provider.autoDispose<AccountUsageQueryIdentitySnapshot>((ref) {
       return ref.watch(
-        settingsProvidersViewProvider.select((view) {
-          return ProviderUsageQueryIdentitySnapshot([
-            for (final provider in view.providers)
-              ProviderUsageQueryIdentity(
-                id: provider.id,
-                usageQueryRevision: provider.usageQueryRevision,
+        settingsAccountsViewProvider.select((view) {
+          return AccountUsageQueryIdentitySnapshot([
+            for (final account in view.accounts)
+              AccountUsageQueryIdentity(
+                id: account.id,
+                usageQueryRevision: account.usageQueryRevision,
               ),
           ]);
         }),
       );
-    }, name: 'settingsProviderUsageQueryIdentitiesProvider');
+    }, name: 'settingsAccountUsageQueryIdentitiesProvider');
 
 class SettingsInstructionsView {
   const SettingsInstructionsView({
@@ -239,11 +242,11 @@ class SettingsAgentsView {
     required this.profilesRevision,
     required this.profilesSync,
     required this.canonical,
-    required this.providerCatalog,
+    required this.accountCatalog,
     required this.recovery,
     required this.recoveryRevision,
     required this.settingsRevision,
-    required this.providerCatalogRevision,
+    required this.accountCatalogRevision,
   });
 
   final AgentProfilesStateView? profiles;
@@ -251,15 +254,15 @@ class SettingsAgentsView {
   final int profilesRevision;
   final DomainSyncStatus profilesSync;
   final SettingsStateSnapshot? canonical;
-  final ProviderCatalogView providerCatalog;
+  final AccountCatalogView accountCatalog;
   final RecoveryStateSnapshot? recovery;
   final int recoveryRevision;
   final int settingsRevision;
-  final String providerCatalogRevision;
+  final String accountCatalogRevision;
 
-  List<ProviderSettingsView> get providers => providersWithCatalogMetadata(
-    canonical?.providers ?? const <ProviderSettingsView>[],
-    providerCatalog,
+  List<AccountSettingsView> get accounts => accountsWithCatalogMetadata(
+    canonical?.accounts ?? const <AccountSettingsView>[],
+    accountCatalog,
   );
 
   List<RoleSettingsView> get roles => canonical?.roles ?? const [];
@@ -280,10 +283,10 @@ class SettingsAgentsView {
           profilesSync == other.profilesSync &&
           recoveryRevision == other.recoveryRevision &&
           settingsRevision == other.settingsRevision &&
-          providerCatalogRevision == other.providerCatalogRevision &&
+          accountCatalogRevision == other.accountCatalogRevision &&
           identical(profiles, other.profiles) &&
           identical(canonical, other.canonical) &&
-          identical(providerCatalog, other.providerCatalog) &&
+          identical(accountCatalog, other.accountCatalog) &&
           identical(recovery, other.recovery);
 
   @override
@@ -293,10 +296,10 @@ class SettingsAgentsView {
     profilesSync,
     recoveryRevision,
     settingsRevision,
-    providerCatalogRevision,
+    accountCatalogRevision,
     identityHashCode(profiles),
     identityHashCode(canonical),
-    identityHashCode(providerCatalog),
+    identityHashCode(accountCatalog),
     identityHashCode(recovery),
   );
 }
@@ -312,11 +315,11 @@ final settingsAgentsViewProvider = Provider.autoDispose<SettingsAgentsView>((
     profilesRevision: settings.agentProfilesRevision,
     profilesSync: settings.agentProfilesSync,
     canonical: settings.canonical,
-    providerCatalog: settings.providerCatalog,
+    accountCatalog: settings.accountCatalog,
     recovery: recovery.value,
     recoveryRevision: recovery.revision,
     settingsRevision: settings.settingsRevision,
-    providerCatalogRevision: settings.providerCatalogRevision,
+    accountCatalogRevision: settings.accountCatalogRevision,
   );
 }, name: 'settingsAgentsViewProvider');
 
@@ -512,13 +515,13 @@ class SettingsUsageView {
     required this.sync,
   });
 
-  final ProviderUsageStateSnapshot? snapshot;
+  final AccountUsageStateSnapshot? snapshot;
   final int revision;
   final bool loaded;
   final DomainSyncStatus sync;
 
-  List<ProviderUsageView> get usages =>
-      snapshot?.usages ?? const <ProviderUsageView>[];
+  List<AccountUsageView> get usages =>
+      snapshot?.usages ?? const <AccountUsageView>[];
 
   @override
   bool operator ==(Object other) =>
@@ -537,7 +540,7 @@ class SettingsUsageView {
 final settingsUsageViewProvider = Provider.autoDispose<SettingsUsageView>((
   ref,
 ) {
-  final store = ref.watch(providerUsageStoreProvider);
+  final store = ref.watch(accountUsageStoreProvider);
   return SettingsUsageView(
     snapshot: store.value,
     revision: store.revision,
@@ -627,7 +630,7 @@ final settingsRoleCommandPendingProvider = Provider.autoDispose
         settingsStoreProvider.select(
           (state) => (
             pending:
-                state.commands['agent-role:model:$role']?.isPending == true ||
+                state.commands['agent-role:modelId:$role']?.isPending == true ||
                 state.commands['agent-role:effort:$role']?.isPending == true,
             revision: state.settingsRevision,
           ),

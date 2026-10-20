@@ -18,7 +18,7 @@ pub(in crate::studio) fn project_runtime(
     // them here is what made a hot increment, a reconnect and a cold restore disagree.
     let usage = ThreadRuntimeUsage {
         has_incomplete_usage: summary.has_incomplete_usage,
-        model: summary.model.clone(),
+        model_id: summary.model.clone(),
         context_window: summary.context_window,
         max_context_window: summary.max_context_window,
         auto_compact_limit: summary.auto_compact_limit,
@@ -82,7 +82,7 @@ pub(in crate::studio) fn project_runtime(
             pl_tool::todo::saved_snapshot(&record.payload, call_id)
         })
         .transpose()?;
-    let workflow = state
+    let mut workflow = state
         .extensions
         .get(crate::workflow_tool::WORKFLOW_EXTENSION)
         .map(|record| {
@@ -90,6 +90,25 @@ pub(in crate::studio) fn project_runtime(
                 .map(|state| pl_protocol::WorkflowRuntimeSnapshot::from(&state))
         })
         .transpose()?;
+    if let Some(run) = workflow
+        .as_mut()
+        .and_then(|workflow| workflow.current_run.as_mut())
+        && let Some(record) = state.extensions.get("studio.mode")
+    {
+        // Recovery/preparation owns compilation. Token projections only read saved metadata.
+        let mode =
+            crate::mode::decode_mode_snapshot(&record.payload).map_err(ProjectionError::from)?;
+        run.mode_display_name
+            .clone_from(&mode.definition.display_name);
+        if let Some(current) = mode.definition.workflow.as_ref().and_then(|graph| {
+            graph
+                .states
+                .iter()
+                .find(|state| state.id == run.current_state_id)
+        }) {
+            run.current_state_title.clone_from(&current.title);
+        }
+    }
     let plan = state
         .extensions
         .get(crate::plan_tool::PLAN_EXTENSION)
@@ -112,8 +131,8 @@ pub(in crate::studio) fn project_runtime(
     let model_route = crate::studio::model_route::route_record(state, child)
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?
         .map(|(record, route)| pl_protocol::ThreadModelRouteSnapshot {
-            provider_id: route.provider.into_string(),
-            model: route.model,
+            account_id: route.account_id.into_string(),
+            model_id: route.model_id,
             effort: route.effort.map(|effort| effort.as_str().to_owned()),
             revision: record.revision,
             available: state.model_available,
@@ -186,20 +205,12 @@ fn fold_effect_accounting_in_place(
     summary: &mut pl_core::thread::UsageSummary,
     effect: &pl_core::thread::ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
-    // 新的 Turn 开始时每轮计数重新累计；旧 Turn 的尝试不再改变它。
-    if let Some(turn) = &effect.turn
-        && summary.turn_id != turn.turn_id
-    {
-        summary.turn_id = turn.turn_id.clone();
-        summary.turn_completion_tokens = 0;
-        summary.turn_decode_millis = 0;
-    }
     if let Some(update) = &effect.attempt {
         // 模型身份、窗口与阈值来自 admission 时的绑定，作为一组事实在响应存在之前就已投影。
         match update.request_metadata.as_ref() {
             Some(metadata) => {
                 let request = pl_model::runtime::model_request_receipt(metadata)?;
-                summary.model = request.binding.requested_model;
+                summary.model = request.binding.model_id;
                 summary.context_window = request.binding.context_window;
                 summary.max_context_window = request.binding.max_context_window;
                 summary.auto_compact_limit = request.binding.auto_compact_limit;
@@ -230,14 +241,21 @@ fn fold_effect_accounting_in_place(
             let accounting = match output {
                 Ok(output) => match pl_model::runtime::model_response_receipt(output)? {
                     Some(receipt) => {
-                        if summary.turn_id == update.turn_id
+                        // Pending, failed and cancelled calls do not invalidate the last complete
+                        // speed sample. A new Turn takes ownership only with its first valid pair.
+                        if matches!(update.outcome, AttemptOutcome::Committed(_))
                             && let Some(timing) = receipt.response.timing
+                            && let Some(output_tokens) =
+                                timing.throughput_output_tokens(&receipt.response.accounting.usage)
                         {
+                            if summary.turn_id != update.turn_id {
+                                summary.turn_id.clone_from(&update.turn_id);
+                                summary.turn_completion_tokens = 0;
+                                summary.turn_decode_millis = 0;
+                            }
                             summary.turn_completion_tokens = summary
                                 .turn_completion_tokens
-                                .checked_add(
-                                    receipt.response.accounting.usage.output_tokens.unwrap_or(0),
-                                )
+                                .checked_add(output_tokens)
                                 .ok_or(ProjectionError::Count)?;
                             summary.turn_decode_millis = summary
                                 .turn_decode_millis
@@ -261,13 +279,11 @@ fn fold_effect_accounting_in_place(
             continue;
         };
         if record.payload.format() == "pl.studio.auxiliary-billing" {
-            if record.payload.version() != 1 {
-                return Err(ProjectionError::UnsupportedOutput(
-                    "unsupported auxiliary billing version".into(),
-                ));
-            }
-            let receipt: super::AuxiliaryBillingReceipt =
-                serde_json::from_str(record.payload.content())?;
+            let receipt = super::billing::decode_auxiliary_receipt_for_projection(
+                record.payload.version(),
+                record.payload.content(),
+            )
+            .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
             let latest = summary.latest_context_tokens;
             add_accounting(summary, &receipt.billing.accounting)?;
             summary.latest_context_tokens = latest;

@@ -26,10 +26,25 @@ impl StudioThreadFactory {
         let project = self.project_record(&thread.project_id).await?;
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
-        let checkpoint =
+        let mut checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
                 .map_err(|error| resource_error("load Thread checkpoint", error))?;
+        if let Some(checkpoint) = &mut checkpoint {
+            let history = self
+                .services
+                .store
+                .history_writer(id)
+                .await
+                .map_err(|error| resource_error("open Mode recovery writer", error))?;
+            *checkpoint = history
+                .migrate_recovery_checkpoint(checkpoint, |state| {
+                    crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| resource_error("migrate saved Mode", error))?;
+        }
         let saved = checkpoint
             .as_ref()
             .map_or_else(pl_core::thread::ThreadSnapshot::default, |checkpoint| {
@@ -39,11 +54,9 @@ impl StudioThreadFactory {
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or_else(|| thread.mode.clone());
-        let mode = self
-            .services
-            .thread_modes
-            .snapshot()
-            .mode(&selected_mode)
+        let mode = crate::mode::saved_registered_mode(&saved)
+            .map_err(|error| resource_error("restore Mode snapshot", error))?
+            .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
             .ok_or_else(|| ThreadAssemblyError::Identity(thread.mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)
             .map_err(|error| resource_error("decode saved model route", error))?;
@@ -57,17 +70,13 @@ impl StudioThreadFactory {
             .unwrap_or_else(|| default_route.clone());
         let resolved_route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)
-            .and_then(|resolved| {
-                crate::mode::validate_thread_mode_model(Some(&mode), &resolved.model)?;
-                Ok(resolved)
-            });
+            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector);
         let (route, model_available) = match resolved_route {
             Ok(route) => (route, true),
             Err(error) if has_saved_route => {
                 tracing::warn!(thread_id = id, %error, "saved Thread model route is unavailable");
                 let fallback = config.resolve_mode_model_route(&selected_mode)?;
-                crate::mode::validate_thread_mode_model(Some(&mode), &fallback.model)?;
+
                 (fallback, false)
             }
             Err(error) => return Err(error.into()),
@@ -120,9 +129,18 @@ impl StudioThreadFactory {
             .await?;
         prepared.tools = prepared
             .tools
-            .with_tools(crate::workflow_tool::workflow_registrations(mode.clone())?);
+            .with_tools(crate::workflow_tool::workflow_registrations()?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
+        if !saved.extensions.contains_key("studio.mode") {
+            initial_extensions.insert(
+                "studio.mode".into(),
+                crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(
+                    &mode, None,
+                ))
+                .map_err(|error| resource_error("freeze root Mode", error))?,
+            );
+        }
         if !has_saved_route {
             initial_extensions.insert(
                 crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
@@ -148,34 +166,6 @@ impl StudioThreadFactory {
                     crate::plan_tool::PLAN_EXTENSION.into(),
                     crate::plan_tool::encode_plan_state(&Default::default())
                         .map_err(|error| resource_error("freeze initial plan state", error))?,
-                );
-            }
-
-            if let Some(workflow) = crate::mode::reconcile_workflow_for_turn(
-                None,
-                &mode,
-                id,
-                crate::studio::unix_seconds(),
-            )? {
-                if let Some(projection) =
-                    crate::mode::workflow_model_context_section(&workflow, &mode)
-                {
-                    initial_context.push(pl_core::context::ContextRecord {
-                        id: format!("workflow:{id}:initial"),
-                        turn_id: None,
-                        source: pl_core::context::ContextSource::RuntimeFact {
-                            source_id: "studio.workflow".into(),
-                        },
-                        content: vec![pl_core::context::ContextContent::Text {
-                            text: projection.content.into(),
-                        }],
-                        tool_calls: Vec::new(),
-                    });
-                }
-                initial_extensions.insert(
-                    crate::workflow_tool::WORKFLOW_EXTENSION.into(),
-                    crate::workflow_tool::encode_workflow_state(&workflow)
-                        .map_err(|error| resource_error("freeze initial workflow", error))?,
                 );
             }
 
@@ -210,9 +200,16 @@ impl StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
+        let model = pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            route.reasoning_config(),
+        )
+        .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
+            preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
+                model.clone(),
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
@@ -224,7 +221,7 @@ impl StudioThreadFactory {
             parent_id: None,
             route,
             model_available,
-            hosted_tools: prepared.hosted,
+            model,
             checkpoint,
             initial_context,
             initial_extensions,

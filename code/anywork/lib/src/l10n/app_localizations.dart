@@ -116,6 +116,18 @@ abstract class AppLocalizations {
   /// **'anywork'**
   String get appTitle;
 
+  /// No description provided for @trayShowWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show main window'**
+  String get trayShowWindow;
+
+  /// No description provided for @trayExit.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit'**
+  String get trayExit;
+
   /// No description provided for @sidebarProjects.
   ///
   /// In en, this message translates to:
@@ -157,18 +169,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Necessary diagnostics were recorded; the app will exit automatically.'**
   String get shutdownFinalizingHint;
-
-  /// No description provided for @startupInstanceBusy.
-  ///
-  /// In en, this message translates to:
-  /// **'Another instance is already running'**
-  String get startupInstanceBusy;
-
-  /// No description provided for @startupInstanceBusyHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Close the other anywork window, then start again.'**
-  String get startupInstanceBusyHint;
 
   /// No description provided for @shutdownPhaseStoppingSubscriptions.
   ///
@@ -608,6 +608,168 @@ abstract class AppLocalizations {
   /// **'What can I help you build?'**
   String get startPageWelcome;
 
+  /// No description provided for @preparationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing your session'**
+  String get preparationTitle;
+
+  /// No description provided for @preparationSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your request will start once the workspace is ready.'**
+  String get preparationSubtitle;
+
+  /// No description provided for @preparationFailedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Environment setup incomplete'**
+  String get preparationFailedTitle;
+
+  /// No description provided for @preparationRetainedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Your prompt and attachments are saved. Adjust the settings and send again.'**
+  String get preparationRetainedBody;
+
+  /// No description provided for @preparationUnknownTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Creation outcome unconfirmed'**
+  String get preparationUnknownTitle;
+
+  /// No description provided for @preparationUnknownBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection ended before session creation was confirmed. Do not send again.'**
+  String get preparationUnknownBody;
+
+  /// No description provided for @preparationCheckProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Check project'**
+  String get preparationCheckProject;
+
+  /// No description provided for @preparationWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Prepare workspace'**
+  String get preparationWorkspace;
+
+  /// No description provided for @preparationInitializeSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Initialize session'**
+  String get preparationInitializeSession;
+
+  /// No description provided for @preparationSubmitPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit request'**
+  String get preparationSubmitPrompt;
+
+  /// No description provided for @preparationWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting to begin…'**
+  String get preparationWaiting;
+
+  /// No description provided for @preparationCheckingProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking the project and session configuration…'**
+  String get preparationCheckingProject;
+
+  /// No description provided for @preparationPreparingWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing the session workspace…'**
+  String get preparationPreparingWorkspace;
+
+  /// No description provided for @preparationResolvingRepository.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking the Git repository and base commit…'**
+  String get preparationResolvingRepository;
+
+  /// No description provided for @preparationCreatingWorktree.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating the worktree and checking out files…'**
+  String get preparationCreatingWorktree;
+
+  /// No description provided for @preparationInitializingSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Initializing the session environment…'**
+  String get preparationInitializingSession;
+
+  /// No description provided for @preparationSubmittingPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitting your first request…'**
+  String get preparationSubmittingPrompt;
+
+  /// No description provided for @preparationMoreDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'More details'**
+  String get preparationMoreDetails;
+
+  /// No description provided for @preparationProjectLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Project'**
+  String get preparationProjectLabel;
+
+  /// No description provided for @preparationRemoteLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote host'**
+  String get preparationRemoteLabel;
+
+  /// No description provided for @preparationPathLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Workspace path'**
+  String get preparationPathLabel;
+
+  /// No description provided for @preparationBranchLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree branch'**
+  String get preparationBranchLabel;
+
+  /// No description provided for @preparationDiagnosticLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic ID'**
+  String get preparationDiagnosticLabel;
+
+  /// No description provided for @preparationStepComplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete'**
+  String get preparationStepComplete;
+
+  /// No description provided for @preparationStepPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get preparationStepPending;
+
+  /// No description provided for @preparationStepRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'In progress'**
+  String get preparationStepRunning;
+
+  /// No description provided for @preparationStepFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete'**
+  String get preparationStepFailed;
+
   /// No description provided for @startPageProject.
   ///
   /// In en, this message translates to:
@@ -656,11 +818,11 @@ abstract class AppLocalizations {
   /// **'System'**
   String get settingsSystemGroup;
 
-  /// No description provided for @settingsProvidersTab.
+  /// No description provided for @settingsAccountsTab.
   ///
   /// In en, this message translates to:
-  /// **'Providers'**
-  String get settingsProvidersTab;
+  /// **'Accounts'**
+  String get settingsAccountsTab;
 
   /// No description provided for @settingsInstructionsTab.
   ///
@@ -1151,7 +1313,7 @@ abstract class AppLocalizations {
   /// No description provided for @statusModelRouteUnavailableFallback.
   ///
   /// In en, this message translates to:
-  /// **'The current model route is unavailable. Check the provider and model settings.'**
+  /// **'The current model route is unavailable. Check the account and model settings.'**
   String get statusModelRouteUnavailableFallback;
 
   /// No description provided for @statusModelSwitchWhileRunning.
@@ -1400,11 +1562,11 @@ abstract class AppLocalizations {
   /// **'The SSH alias for this project is no longer in ~/.ssh/config'**
   String get sessionOpenServerMissing;
 
-  /// No description provided for @statusCurrentAgentTokenSpeed.
+  /// No description provided for @statusLastConfirmedAgentTokenSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Current agent token speed'**
-  String get statusCurrentAgentTokenSpeed;
+  /// **'Last confirmed token speed'**
+  String get statusLastConfirmedAgentTokenSpeed;
 
   /// No description provided for @settingsStatisticsTitle.
   ///
@@ -1415,7 +1577,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStatisticsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.'**
+  /// **'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.'**
   String get settingsStatisticsSubtitle;
 
   /// No description provided for @settingsStatisticsSummaryTitle.
@@ -1505,7 +1667,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsModel.
   ///
   /// In en, this message translates to:
-  /// **'Provider / model'**
+  /// **'Account / model'**
   String get statisticsModel;
 
   /// No description provided for @statisticsHistoryModelHeader.
@@ -1886,6 +2048,36 @@ abstract class AppLocalizations {
   /// **'New'**
   String get timelineNew;
 
+  /// No description provided for @timelineLoadEarlier.
+  ///
+  /// In en, this message translates to:
+  /// **'Load earlier messages'**
+  String get timelineLoadEarlier;
+
+  /// No description provided for @timelineBackToLive.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to live'**
+  String get timelineBackToLive;
+
+  /// No description provided for @timelineDetailUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This content is no longer available'**
+  String get timelineDetailUnavailable;
+
+  /// No description provided for @timelineReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting messages… Current content is preserved.'**
+  String get timelineReconnecting;
+
+  /// No description provided for @timelineConnectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to synchronize messages. Current content is preserved.'**
+  String get timelineConnectionFailed;
+
   /// No description provided for @timelineReasoningFallback.
   ///
   /// In en, this message translates to:
@@ -1904,11 +2096,17 @@ abstract class AppLocalizations {
   /// **'Thought'**
   String get timelineReasoningCompleted;
 
-  /// No description provided for @timelineReasoningEmpty.
+  /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:
-  /// **'No reasoning text was provided.'**
-  String get timelineReasoningEmpty;
+  /// **'Summary'**
+  String get timelineReasoningSummary;
+
+  /// No description provided for @timelineReasoningContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Content'**
+  String get timelineReasoningContent;
 
   /// No description provided for @timelineReasoningBudgetLimited.
   ///
@@ -2015,6 +2213,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Failed to read image'**
   String get timelineViewImageFailed;
+
+  /// No description provided for @timelineReadFileCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get timelineReadFileCompleted;
+
+  /// No description provided for @timelineReadFileReading.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading'**
+  String get timelineReadFileReading;
+
+  /// No description provided for @timelineReadFileFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to read'**
+  String get timelineReadFileFailed;
 
   /// No description provided for @timelineToolCompleted.
   ///
@@ -2159,12 +2375,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Rolled back from active context'**
   String get timelineRolledBack;
-
-  /// No description provided for @timelinePendingSave.
-  ///
-  /// In en, this message translates to:
-  /// **'Waiting to save'**
-  String get timelinePendingSave;
 
   /// No description provided for @interactionSubmitEmptyAnswersHint.
   ///
@@ -2346,12 +2556,6 @@ abstract class AppLocalizations {
   /// **'Implementation plan'**
   String get interactionPlanDetailsTitle;
 
-  /// No description provided for @interactionPlanComposerPausedHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Normal messages are paused to keep plan feedback unambiguous.'**
-  String get interactionPlanComposerPausedHint;
-
   /// No description provided for @interactionPlanConfirmFooterHint.
   ///
   /// In en, this message translates to:
@@ -2382,17 +2586,77 @@ abstract class AppLocalizations {
   /// **'Submit changes'**
   String get interactionPlanAdjustSubmit;
 
-  /// No description provided for @settingsProvidersTitle.
+  /// No description provided for @interactionPlanFeedbackHint.
   ///
   /// In en, this message translates to:
-  /// **'Providers'**
-  String get settingsProvidersTitle;
+  /// **'Enter submits · Shift+Enter adds a line'**
+  String get interactionPlanFeedbackHint;
 
-  /// No description provided for @settingsProvidersSubtitle.
+  /// No description provided for @planExpandReading.
   ///
   /// In en, this message translates to:
-  /// **'Model providers, credentials, models, and usage'**
-  String get settingsProvidersSubtitle;
+  /// **'Read full width'**
+  String get planExpandReading;
+
+  /// No description provided for @planRestoreSplit.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore side-by-side'**
+  String get planRestoreSplit;
+
+  /// No description provided for @planReceiptApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan approved'**
+  String get planReceiptApproved;
+
+  /// No description provided for @planReceiptRevisionRequested.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan changes requested'**
+  String get planReceiptRevisionRequested;
+
+  /// No description provided for @planReceiptCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan confirmation cancelled'**
+  String get planReceiptCancelled;
+
+  /// No description provided for @planReceiptAnswered.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan confirmation answered'**
+  String get planReceiptAnswered;
+
+  /// No description provided for @planReceiptYourReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Your reply'**
+  String get planReceiptYourReply;
+
+  /// No description provided for @planReceiptYourFeedback.
+  ///
+  /// In en, this message translates to:
+  /// **'Requested changes'**
+  String get planReceiptYourFeedback;
+
+  /// No description provided for @planReceiptApproveReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved this plan for execution'**
+  String get planReceiptApproveReply;
+
+  /// No description provided for @settingsAccountsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Accounts'**
+  String get settingsAccountsTitle;
+
+  /// No description provided for @settingsAccountsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Accounts, credentials, models, and usage'**
+  String get settingsAccountsSubtitle;
 
   /// No description provided for @settingsRefreshUsage.
   ///
@@ -2400,53 +2664,53 @@ abstract class AppLocalizations {
   /// **'Refresh usage'**
   String get settingsRefreshUsage;
 
-  /// No description provided for @settingsAddProvider.
+  /// No description provided for @settingsAddAccount.
   ///
   /// In en, this message translates to:
-  /// **'Add provider'**
-  String get settingsAddProvider;
+  /// **'Add account'**
+  String get settingsAddAccount;
 
-  /// No description provided for @settingsSearchProviders.
+  /// No description provided for @settingsSearchAccounts.
   ///
   /// In en, this message translates to:
-  /// **'Search providers'**
-  String get settingsSearchProviders;
+  /// **'Search accounts'**
+  String get settingsSearchAccounts;
 
-  /// No description provided for @settingsNoProvidersMatchTitle.
+  /// No description provided for @settingsNoAccountsMatchTitle.
   ///
   /// In en, this message translates to:
-  /// **'No providers match this filter'**
-  String get settingsNoProvidersMatchTitle;
+  /// **'No accounts match this filter'**
+  String get settingsNoAccountsMatchTitle;
 
-  /// No description provided for @settingsNoProvidersMatchMessage.
+  /// No description provided for @settingsNoAccountsMatchMessage.
   ///
   /// In en, this message translates to:
-  /// **'Clear the search to see all configured providers.'**
-  String get settingsNoProvidersMatchMessage;
+  /// **'Clear the search to see all configured accounts.'**
+  String get settingsNoAccountsMatchMessage;
 
-  /// No description provided for @settingsNoProvidersTitle.
+  /// No description provided for @settingsNoAccountsTitle.
   ///
   /// In en, this message translates to:
-  /// **'No providers found'**
-  String get settingsNoProvidersTitle;
+  /// **'No accounts found'**
+  String get settingsNoAccountsTitle;
 
-  /// No description provided for @settingsNoProvidersMessage.
+  /// No description provided for @settingsNoAccountsMessage.
   ///
   /// In en, this message translates to:
-  /// **'Add a provider to configure credentials and models.'**
-  String get settingsNoProvidersMessage;
+  /// **'Add an account to configure credentials and models.'**
+  String get settingsNoAccountsMessage;
 
-  /// No description provided for @settingsDefaultProvider.
+  /// No description provided for @settingsDefaultAccount.
   ///
   /// In en, this message translates to:
-  /// **'Default provider'**
-  String get settingsDefaultProvider;
+  /// **'Default account'**
+  String get settingsDefaultAccount;
 
-  /// No description provided for @settingsSetAsDefaultProvider.
+  /// No description provided for @settingsSetAsDefaultAccount.
   ///
   /// In en, this message translates to:
   /// **'Set as default'**
-  String get settingsSetAsDefaultProvider;
+  String get settingsSetAsDefaultAccount;
 
   /// No description provided for @settingsOpenDetails.
   ///
@@ -2454,89 +2718,89 @@ abstract class AppLocalizations {
   /// **'Open details'**
   String get settingsOpenDetails;
 
-  /// No description provided for @settingsProviderActions.
+  /// No description provided for @settingsAccountActions.
   ///
   /// In en, this message translates to:
-  /// **'Provider actions'**
-  String get settingsProviderActions;
+  /// **'Account actions'**
+  String get settingsAccountActions;
 
-  /// No description provided for @settingsEditProvider.
+  /// No description provided for @settingsEditAccount.
   ///
   /// In en, this message translates to:
-  /// **'Edit provider'**
-  String get settingsEditProvider;
+  /// **'Edit account'**
+  String get settingsEditAccount;
 
-  /// No description provided for @settingsDeleteProvider.
+  /// No description provided for @settingsDeleteAccount.
   ///
   /// In en, this message translates to:
-  /// **'Delete provider'**
-  String get settingsDeleteProvider;
+  /// **'Delete account'**
+  String get settingsDeleteAccount;
 
-  /// No description provided for @settingsNoProviderSelected.
+  /// No description provided for @settingsNoAccountSelected.
   ///
   /// In en, this message translates to:
-  /// **'No provider selected'**
-  String get settingsNoProviderSelected;
+  /// **'No account selected'**
+  String get settingsNoAccountSelected;
 
-  /// No description provided for @settingsProviderTitle.
+  /// No description provided for @settingsAccountTitle.
   ///
   /// In en, this message translates to:
-  /// **'Provider'**
-  String get settingsProviderTitle;
+  /// **'Account'**
+  String get settingsAccountTitle;
 
-  /// No description provided for @settingsProviderModelsTitle.
+  /// No description provided for @settingsAccountModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Models'**
-  String get settingsProviderModelsTitle;
+  String get settingsAccountModelsTitle;
 
-  /// No description provided for @settingsProviderConnectionTitle.
+  /// No description provided for @settingsAccountConnectionTitle.
   ///
   /// In en, this message translates to:
   /// **'Connection'**
-  String get settingsProviderConnectionTitle;
+  String get settingsAccountConnectionTitle;
 
-  /// No description provided for @settingsProviderDefaultModelsTitle.
+  /// No description provided for @settingsAccountDefaultModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Default catalog (not yet synced)'**
-  String get settingsProviderDefaultModelsTitle;
+  String get settingsAccountDefaultModelsTitle;
 
-  /// No description provided for @settingsProviderCustomModelsTitle.
+  /// No description provided for @settingsAccountCustomModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Manual models'**
-  String get settingsProviderCustomModelsTitle;
+  String get settingsAccountCustomModelsTitle;
 
-  /// No description provided for @settingsProviderOnlineModelsTitle.
+  /// No description provided for @settingsAccountOnlineModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Online models'**
-  String get settingsProviderOnlineModelsTitle;
+  String get settingsAccountOnlineModelsTitle;
 
-  /// No description provided for @settingsNewProvider.
+  /// No description provided for @settingsNewAccount.
   ///
   /// In en, this message translates to:
-  /// **'New provider'**
-  String get settingsNewProvider;
+  /// **'New account'**
+  String get settingsNewAccount;
 
-  /// No description provided for @settingsProviderKey.
+  /// No description provided for @settingsAccountId.
   ///
   /// In en, this message translates to:
-  /// **'Provider key'**
-  String get settingsProviderKey;
+  /// **'Account ID'**
+  String get settingsAccountId;
 
-  /// No description provided for @settingsTemplate.
+  /// No description provided for @settingsAccountTemplate.
   ///
   /// In en, this message translates to:
-  /// **'Template'**
-  String get settingsTemplate;
+  /// **'Account template'**
+  String get settingsAccountTemplate;
 
-  /// No description provided for @settingsCustomProvider.
+  /// No description provided for @settingsCustomAccount.
   ///
   /// In en, this message translates to:
-  /// **'Custom provider'**
-  String get settingsCustomProvider;
+  /// **'Custom account'**
+  String get settingsCustomAccount;
 
   /// No description provided for @settingsDefaultModel.
   ///
@@ -2586,11 +2850,11 @@ abstract class AppLocalizations {
   /// **'Base URL'**
   String get settingsBaseUrl;
 
-  /// No description provided for @settingsModelSlug.
+  /// No description provided for @settingsModelId.
   ///
   /// In en, this message translates to:
-  /// **'Model slug'**
-  String get settingsModelSlug;
+  /// **'Model model_id'**
+  String get settingsModelId;
 
   /// No description provided for @settingsReasoningEfforts.
   ///
@@ -2664,12 +2928,6 @@ abstract class AppLocalizations {
   /// **'Manual'**
   String get settingsModelOriginManual;
 
-  /// No description provided for @settingsUnverifiedOnlineModel.
-  ///
-  /// In en, this message translates to:
-  /// **'Unverified model'**
-  String get settingsUnverifiedOnlineModel;
-
   /// No description provided for @settingsRemoveManualModelConfirmTitle.
   ///
   /// In en, this message translates to:
@@ -2694,11 +2952,11 @@ abstract class AppLocalizations {
   /// **'Could not delete this manual model.'**
   String get settingsRemoveManualModelFailed;
 
-  /// No description provided for @settingsManualModelSlugConflict.
+  /// No description provided for @settingsManualModelIdConflict.
   ///
   /// In en, this message translates to:
-  /// **'A model with this slug already exists in the online or bundled catalog.'**
-  String get settingsManualModelSlugConflict;
+  /// **'A model with this model_id already exists in the online or bundled catalog.'**
+  String get settingsManualModelIdConflict;
 
   /// No description provided for @settingsBundledModels.
   ///
@@ -2847,14 +3105,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsUsageApiKeyMissing.
   ///
   /// In en, this message translates to:
-  /// **'Provider API key is not configured'**
+  /// **'Account API key is not configured'**
   String get settingsUsageApiKeyMissing;
 
-  /// No description provided for @settingsUsageUnsupportedForProvider.
+  /// No description provided for @settingsUsageUnsupportedForAccount.
   ///
   /// In en, this message translates to:
-  /// **'Usage is not supported for {providerName}'**
-  String settingsUsageUnsupportedForProvider(String providerName);
+  /// **'Usage is not supported for {accountName}'**
+  String settingsUsageUnsupportedForAccount(String accountName);
 
   /// No description provided for @settingsUsageNotChecked.
   ///
@@ -3324,11 +3582,11 @@ abstract class AppLocalizations {
   /// **'Effective mode'**
   String get settingsWebSearchEffectiveMode;
 
-  /// No description provided for @settingsWebSearchProvider.
+  /// No description provided for @settingsWebSearchAccount.
   ///
   /// In en, this message translates to:
-  /// **'OpenAI provider'**
-  String get settingsWebSearchProvider;
+  /// **'OpenAI account'**
+  String get settingsWebSearchAccount;
 
   /// No description provided for @settingsWebSearchModel.
   ///
@@ -3450,11 +3708,11 @@ abstract class AppLocalizations {
   /// **'Missing credential'**
   String get settingsWebSearchMissingCredential;
 
-  /// No description provided for @settingsWebSearchUnsupportedProvider.
+  /// No description provided for @settingsWebSearchUnsupportedAccount.
   ///
   /// In en, this message translates to:
-  /// **'Unsupported provider'**
-  String get settingsWebSearchUnsupportedProvider;
+  /// **'Unsupported account'**
+  String get settingsWebSearchUnsupportedAccount;
 
   /// No description provided for @settingsWebSearchUnsupportedModel.
   ///
@@ -3465,14 +3723,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWebSearchMissingCredentialReason.
   ///
   /// In en, this message translates to:
-  /// **'No credentialed provider originating from the OpenAI preset is available. Remote web search is fully disabled.'**
+  /// **'No credentialed account originating from the OpenAI template is available. Remote web search is fully disabled.'**
   String get settingsWebSearchMissingCredentialReason;
 
-  /// No description provided for @settingsWebSearchUnsupportedProviderReason.
+  /// No description provided for @settingsWebSearchUnsupportedAccountReason.
   ///
   /// In en, this message translates to:
-  /// **'The current provider does not expose this web search backend.'**
-  String get settingsWebSearchUnsupportedProviderReason;
+  /// **'The current account does not expose this web search backend.'**
+  String get settingsWebSearchUnsupportedAccountReason;
 
   /// No description provided for @settingsWebSearchUnsupportedModelReason.
   ///
@@ -3510,11 +3768,11 @@ abstract class AppLocalizations {
   /// **'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.'**
   String get settingsDeepSeekWebSearchSubtitle;
 
-  /// No description provided for @settingsDeepSeekWebSearchProvider.
+  /// No description provided for @settingsDeepSeekWebSearchAccount.
   ///
   /// In en, this message translates to:
-  /// **'DeepSeek provider'**
-  String get settingsDeepSeekWebSearchProvider;
+  /// **'DeepSeek account'**
+  String get settingsDeepSeekWebSearchAccount;
 
   /// No description provided for @settingsDeepSeekWebSearchConfigured.
   ///
@@ -3900,11 +4158,11 @@ abstract class AppLocalizations {
   /// **'System instructions'**
   String get settingsAgentProfileInstructionsField;
 
-  /// No description provided for @settingsAgentProfileProviderField.
+  /// No description provided for @settingsAgentProfileAccountField.
   ///
   /// In en, this message translates to:
-  /// **'Provider'**
-  String get settingsAgentProfileProviderField;
+  /// **'Account'**
+  String get settingsAgentProfileAccountField;
 
   /// No description provided for @settingsAgentProfileEffortDefault.
   ///
@@ -3990,11 +4248,11 @@ abstract class AppLocalizations {
   /// **'Capability source'**
   String get settingsCapabilitySourceField;
 
-  /// No description provided for @settingsCapabilitySourcePreset.
+  /// No description provided for @settingsCapabilitySourceTemplate.
   ///
   /// In en, this message translates to:
-  /// **'Follow preset defaults'**
-  String get settingsCapabilitySourcePreset;
+  /// **'Follow template defaults'**
+  String get settingsCapabilitySourceTemplate;
 
   /// No description provided for @settingsCapabilitySourceExplicit.
   ///
@@ -4173,7 +4431,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactRestore.
   ///
   /// In en, this message translates to:
-  /// **'Restore default'**
+  /// **'Reset to automatic'**
   String get settingsModelAutoCompactRestore;
 
   /// No description provided for @settingsModelAutoCompactSaving.
@@ -4194,16 +4452,10 @@ abstract class AppLocalizations {
   /// **'Retry'**
   String get settingsModelAutoCompactRetry;
 
-  /// No description provided for @settingsModelAutoCompactDefaultLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Default'**
-  String get settingsModelAutoCompactDefaultLabel;
-
   /// No description provided for @settingsModelAutoCompactOverrideLabel.
   ///
   /// In en, this message translates to:
-  /// **'User'**
+  /// **'Mode'**
   String get settingsModelAutoCompactOverrideLabel;
 
   /// No description provided for @settingsModelAutoCompactEffectiveLabel.
@@ -4212,16 +4464,10 @@ abstract class AppLocalizations {
   /// **'Effective'**
   String get settingsModelAutoCompactEffectiveLabel;
 
-  /// No description provided for @settingsModelAutoCompactSafeLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Safe limit'**
-  String get settingsModelAutoCompactSafeLabel;
-
   /// No description provided for @settingsModelAutoCompactUsingDefault.
   ///
   /// In en, this message translates to:
-  /// **'Using default'**
+  /// **'Automatic'**
   String get settingsModelAutoCompactUsingDefault;
 
   /// No description provided for @settingsModelAutoCompactInputLabel.
@@ -4239,20 +4485,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactHelp.
   ///
   /// In en, this message translates to:
-  /// **'Effective value is the smaller of the selected threshold and 90% of the context window.'**
+  /// **'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.'**
   String get settingsModelAutoCompactHelp;
 
   /// No description provided for @settingsModelAutoCompactUnknownCapacity.
   ///
   /// In en, this message translates to:
-  /// **'Context capacity is unknown, so compaction stays off.'**
+  /// **'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.'**
   String get settingsModelAutoCompactUnknownCapacity;
-
-  /// No description provided for @settingsModelAutoCompactAboveSafe.
-  ///
-  /// In en, this message translates to:
-  /// **'Above the safe limit; {value} takes effect.'**
-  String settingsModelAutoCompactAboveSafe(String value);
 
   /// No description provided for @settingsPriceInput.
   ///
@@ -4788,23 +5028,23 @@ abstract class AppLocalizations {
   /// **'Cancelling'**
   String get toolStatusCancelling;
 
-  /// No description provided for @settingsProviderCatalogUnavailable.
+  /// No description provided for @settingsAccountCatalogUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Provider catalog is unavailable.'**
-  String get settingsProviderCatalogUnavailable;
+  /// **'Account catalog is unavailable.'**
+  String get settingsAccountCatalogUnavailable;
 
-  /// No description provided for @settingsProviderPresetUnavailable.
+  /// No description provided for @settingsAccountTemplateUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Provider preset is unavailable.'**
-  String get settingsProviderPresetUnavailable;
+  /// **'Account template is unavailable.'**
+  String get settingsAccountTemplateUnavailable;
 
-  /// No description provided for @settingsProviderMissingCredential.
+  /// No description provided for @settingsAccountMissingCredential.
   ///
   /// In en, this message translates to:
   /// **'Missing credential'**
-  String get settingsProviderMissingCredential;
+  String get settingsAccountMissingCredential;
 
   /// No description provided for @settingsSshStateDisconnected.
   ///
@@ -5031,7 +5271,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelCatalogOnline.
   ///
   /// In en, this message translates to:
-  /// **'Models from this provider'**
+  /// **'Models from this account'**
   String get settingsModelCatalogOnline;
 
   /// No description provided for @settingsModelCatalogChecked.
@@ -5055,7 +5295,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelCatalogEmpty.
   ///
   /// In en, this message translates to:
-  /// **'This provider has no models.'**
+  /// **'This account has no models.'**
   String get settingsModelCatalogEmpty;
 
   /// No description provided for @settingsModelCatalogRestartHint.
@@ -5073,7 +5313,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineContextCompacted.
   ///
   /// In en, this message translates to:
-  /// **'Context automatically compacted'**
+  /// **'Context compacted'**
   String get timelineContextCompacted;
 
   /// No description provided for @timelineCompactionDetail.
@@ -5123,6 +5363,1434 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Sensitive answer hidden'**
   String get timelineUserInputSecretHidden;
+
+  /// No description provided for @settingsModelParametersUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Model parameters unknown'**
+  String get settingsModelParametersUnknown;
+
+  /// No description provided for @settingsModelPriceUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Price unknown'**
+  String get settingsModelPriceUnknown;
+
+  /// No description provided for @modelTextFilterExcluded.
+  ///
+  /// In en, this message translates to:
+  /// **'{model}: excluded from text models ({reasons})'**
+  String modelTextFilterExcluded(String model, String reasons);
+
+  /// No description provided for @modelTextInputUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Text input unsupported'**
+  String get modelTextInputUnsupported;
+
+  /// No description provided for @modelTextOutputUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Text output unsupported'**
+  String get modelTextOutputUnsupported;
+
+  /// No description provided for @modelContextWindowUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Context window unknown'**
+  String get modelContextWindowUnknown;
+
+  /// No description provided for @modelTextFilterEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching text models. Check model parameters in account settings.'**
+  String get modelTextFilterEmpty;
+
+  /// No description provided for @modeEditorTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Work modes'**
+  String get modeEditorTitle;
+
+  /// No description provided for @modeEditorNewMode.
+  ///
+  /// In en, this message translates to:
+  /// **'New mode'**
+  String get modeEditorNewMode;
+
+  /// No description provided for @modeEditorImportJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Import JSON'**
+  String get modeEditorImportJson;
+
+  /// No description provided for @modeEditorSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Find name or id'**
+  String get modeEditorSearchHint;
+
+  /// No description provided for @modeEditorBuiltInGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in'**
+  String get modeEditorBuiltInGroup;
+
+  /// No description provided for @modeEditorMyModesGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'My modes'**
+  String get modeEditorMyModesGroup;
+
+  /// No description provided for @modeEditorNoMatches.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching work modes.'**
+  String get modeEditorNoMatches;
+
+  /// No description provided for @modeEditorCatalogReadOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in modes are read-only. Duplicate one to customize stages.'**
+  String get modeEditorCatalogReadOnlyHint;
+
+  /// No description provided for @modeEditorReadOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Read-only'**
+  String get modeEditorReadOnly;
+
+  /// No description provided for @modeEditorUnsaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved'**
+  String get modeEditorUnsaved;
+
+  /// No description provided for @modeEditorUndo.
+  ///
+  /// In en, this message translates to:
+  /// **'Undo'**
+  String get modeEditorUndo;
+
+  /// No description provided for @modeEditorRedo.
+  ///
+  /// In en, this message translates to:
+  /// **'Redo'**
+  String get modeEditorRedo;
+
+  /// No description provided for @modeEditorReload.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload'**
+  String get modeEditorReload;
+
+  /// No description provided for @modeEditorDuplicate.
+  ///
+  /// In en, this message translates to:
+  /// **'Duplicate'**
+  String get modeEditorDuplicate;
+
+  /// No description provided for @modeEditorDeleteMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete mode'**
+  String get modeEditorDeleteMode;
+
+  /// No description provided for @modeEditorSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get modeEditorSave;
+
+  /// No description provided for @modeEditorTabFlow.
+  ///
+  /// In en, this message translates to:
+  /// **'Flow'**
+  String get modeEditorTabFlow;
+
+  /// No description provided for @modeEditorTabJson.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON'**
+  String get modeEditorTabJson;
+
+  /// No description provided for @modeEditorTabSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings'**
+  String get modeEditorTabSettings;
+
+  /// No description provided for @modeEditorTabPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview'**
+  String get modeEditorTabPreview;
+
+  /// No description provided for @modeEditorDraftUnsaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft unsaved'**
+  String get modeEditorDraftUnsaved;
+
+  /// No description provided for @modeEditorSelectOrCreate.
+  ///
+  /// In en, this message translates to:
+  /// **'Select or create a work mode.'**
+  String get modeEditorSelectOrCreate;
+
+  /// No description provided for @modeEditorOpenNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened {id}'**
+  String modeEditorOpenNotice(String id);
+
+  /// No description provided for @modeEditorSaveValidationIssues.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation found {count} issues before save.'**
+  String modeEditorSaveValidationIssues(int count);
+
+  /// No description provided for @modeEditorPreSaveValidationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Pre-save validation failed: {error}'**
+  String modeEditorPreSaveValidationFailed(String error);
+
+  /// No description provided for @modeEditorSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode saved. Changes apply from the next turn.'**
+  String get modeEditorSaved;
+
+  /// No description provided for @modeEditorSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Save failed.'**
+  String get modeEditorSaveFailed;
+
+  /// No description provided for @modeEditorReloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode definition reloaded.'**
+  String get modeEditorReloaded;
+
+  /// No description provided for @modeEditorReloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload failed.'**
+  String get modeEditorReloadFailed;
+
+  /// No description provided for @modeEditorDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete failed.'**
+  String get modeEditorDeleteFailed;
+
+  /// No description provided for @modeEditorDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode deleted; thread history is kept.'**
+  String get modeEditorDeleted;
+
+  /// No description provided for @modeEditorCopySuffix.
+  ///
+  /// In en, this message translates to:
+  /// **'copy'**
+  String get modeEditorCopySuffix;
+
+  /// No description provided for @modeEditorCopyCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy created as a draft; save to publish it.'**
+  String get modeEditorCopyCreated;
+
+  /// No description provided for @modeEditorDraftCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft created. Save after validation.'**
+  String get modeEditorDraftCreated;
+
+  /// No description provided for @modeEditorImportReadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read mode JSON: {error}'**
+  String modeEditorImportReadFailed(String error);
+
+  /// No description provided for @modeEditorImportObjectRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON must be an object.'**
+  String get modeEditorImportObjectRequired;
+
+  /// No description provided for @modeEditorInvalidModeId.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode id must look like mode.example.'**
+  String get modeEditorInvalidModeId;
+
+  /// No description provided for @modeEditorBuiltInCannotOverwrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in modes cannot be overwritten.'**
+  String get modeEditorBuiltInCannotOverwrite;
+
+  /// No description provided for @modeEditorImportedDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration loaded as a draft; save to publish it.'**
+  String get modeEditorImportedDraft;
+
+  /// No description provided for @modeEditorJsonCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON copied.'**
+  String get modeEditorJsonCopied;
+
+  /// No description provided for @modeEditorSchemaReadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read schema: {error}'**
+  String modeEditorSchemaReadFailed(String error);
+
+  /// No description provided for @modeEditorValidationPassed.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation passed.'**
+  String get modeEditorValidationPassed;
+
+  /// No description provided for @modeEditorIssuesFound.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} issues found.'**
+  String modeEditorIssuesFound(int count);
+
+  /// No description provided for @modeEditorValidationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Validation failed: {error}'**
+  String modeEditorValidationFailed(String error);
+
+  /// No description provided for @modeEditorJsonApplied.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON applied to the draft.'**
+  String get modeEditorJsonApplied;
+
+  /// No description provided for @modeEditorJsonApplyFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON could not be applied.'**
+  String get modeEditorJsonApplyFailed;
+
+  /// No description provided for @modeEditorJsonApplyFix.
+  ///
+  /// In en, this message translates to:
+  /// **'JSON could not be applied; fix the syntax or fields.'**
+  String get modeEditorJsonApplyFix;
+
+  /// No description provided for @modeEditorPreviewReasonDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Manually confirm stage completion and guard'**
+  String get modeEditorPreviewReasonDefault;
+
+  /// No description provided for @modeEditorPreviewFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview failed: {error}'**
+  String modeEditorPreviewFailed(String error);
+
+  /// No description provided for @modeEditorMaxStates.
+  ///
+  /// In en, this message translates to:
+  /// **'At most {count} states are supported.'**
+  String modeEditorMaxStates(int count);
+
+  /// No description provided for @modeEditorNewFinalState.
+  ///
+  /// In en, this message translates to:
+  /// **'New final state'**
+  String get modeEditorNewFinalState;
+
+  /// No description provided for @modeEditorNewStage.
+  ///
+  /// In en, this message translates to:
+  /// **'New work stage'**
+  String get modeEditorNewStage;
+
+  /// No description provided for @modeEditorFinalStateAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Final state added. Add an incoming path.'**
+  String get modeEditorFinalStateAdded;
+
+  /// No description provided for @modeEditorStageAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage added. Add incoming and outgoing transitions.'**
+  String get modeEditorStageAdded;
+
+  /// No description provided for @modeEditorContinueGuardPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue when the guard is satisfied.'**
+  String get modeEditorContinueGuardPlaceholder;
+
+  /// No description provided for @modeEditorTransitionAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition added. Complete its guard.'**
+  String get modeEditorTransitionAdded;
+
+  /// No description provided for @modeEditorNeedTwoStates.
+  ///
+  /// In en, this message translates to:
+  /// **'Add at least two states before creating a transition.'**
+  String get modeEditorNeedTwoStates;
+
+  /// No description provided for @modeEditorLayoutReset.
+  ///
+  /// In en, this message translates to:
+  /// **'Layout reset. The workflow definition is unchanged.'**
+  String get modeEditorLayoutReset;
+
+  /// No description provided for @modeEditorWorkflowEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow enabled.'**
+  String get modeEditorWorkflowEnabled;
+
+  /// No description provided for @modeEditorWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow'**
+  String get modeEditorWorkflow;
+
+  /// No description provided for @modeEditorWorkflowGoalText.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete the task in stages with a reviewable path.'**
+  String get modeEditorWorkflowGoalText;
+
+  /// No description provided for @modeEditorStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Start'**
+  String get modeEditorStart;
+
+  /// No description provided for @modeEditorStageInstructionsPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe the work for this stage.'**
+  String get modeEditorStageInstructionsPlaceholder;
+
+  /// No description provided for @modeEditorStageCriterionPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'This stage goal is satisfied.'**
+  String get modeEditorStageCriterionPlaceholder;
+
+  /// No description provided for @modeEditorDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Done'**
+  String get modeEditorDone;
+
+  /// No description provided for @modeEditorTransitionGuardPlaceholder.
+  ///
+  /// In en, this message translates to:
+  /// **'The result satisfies the goal.'**
+  String get modeEditorTransitionGuardPlaceholder;
+
+  /// No description provided for @modeEditorPromptDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe this mode responsibilities, sequence, and boundaries.'**
+  String get modeEditorPromptDescription;
+
+  /// No description provided for @modeEditorPortIn.
+  ///
+  /// In en, this message translates to:
+  /// **'In'**
+  String get modeEditorPortIn;
+
+  /// No description provided for @modeEditorPortOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Out'**
+  String get modeEditorPortOut;
+
+  /// No description provided for @modeEditorGuardRequiredShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Guard required'**
+  String get modeEditorGuardRequiredShort;
+
+  /// No description provided for @modeEditorDuplicateTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'A transition between those states already exists.'**
+  String get modeEditorDuplicateTransition;
+
+  /// No description provided for @modeEditorInitialBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Start'**
+  String get modeEditorInitialBadge;
+
+  /// No description provided for @modeEditorStageAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage'**
+  String get modeEditorStageAction;
+
+  /// No description provided for @modeEditorFinalLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Final'**
+  String get modeEditorFinalLabel;
+
+  /// No description provided for @modeEditorTransitionAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition'**
+  String get modeEditorTransitionAction;
+
+  /// No description provided for @modeEditorValidate.
+  ///
+  /// In en, this message translates to:
+  /// **'Validate'**
+  String get modeEditorValidate;
+
+  /// No description provided for @modeEditorAutoLayout.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto layout'**
+  String get modeEditorAutoLayout;
+
+  /// No description provided for @modeEditorZoomOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom out'**
+  String get modeEditorZoomOut;
+
+  /// No description provided for @modeEditorZoomIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom in'**
+  String get modeEditorZoomIn;
+
+  /// No description provided for @modeEditorFitView.
+  ///
+  /// In en, this message translates to:
+  /// **'Fit view'**
+  String get modeEditorFitView;
+
+  /// No description provided for @modeEditorFlowInspector.
+  ///
+  /// In en, this message translates to:
+  /// **'Flow inspector'**
+  String get modeEditorFlowInspector;
+
+  /// No description provided for @modeEditorNoWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow'**
+  String get modeEditorNoWorkflow;
+
+  /// No description provided for @modeEditorNoWorkflowReadOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Duplicate this mode to add stages and transitions.'**
+  String get modeEditorNoWorkflowReadOnlyHint;
+
+  /// No description provided for @modeEditorNoWorkflowEnableHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabling a workflow adds a starting stage and a final state.'**
+  String get modeEditorNoWorkflowEnableHint;
+
+  /// No description provided for @modeEditorEnableWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable workflow'**
+  String get modeEditorEnableWorkflow;
+
+  /// No description provided for @modeEditorUnsavedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved draft'**
+  String get modeEditorUnsavedTitle;
+
+  /// No description provided for @modeEditorUnsavedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Save the current changes before continuing, or discard this draft.'**
+  String get modeEditorUnsavedBody;
+
+  /// No description provided for @modeEditorCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get modeEditorCancel;
+
+  /// No description provided for @modeEditorDiscard.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get modeEditorDiscard;
+
+  /// No description provided for @modeEditorSaveAndContinue.
+  ///
+  /// In en, this message translates to:
+  /// **'Save and continue'**
+  String get modeEditorSaveAndContinue;
+
+  /// No description provided for @modeEditorNewWorkMode.
+  ///
+  /// In en, this message translates to:
+  /// **'New work mode'**
+  String get modeEditorNewWorkMode;
+
+  /// No description provided for @modeEditorModeName.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode name'**
+  String get modeEditorModeName;
+
+  /// No description provided for @modeEditorModeNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For example: Research'**
+  String get modeEditorModeNameHint;
+
+  /// No description provided for @modeEditorModeNameRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a mode name.'**
+  String get modeEditorModeNameRequired;
+
+  /// No description provided for @modeEditorModeId.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode id'**
+  String get modeEditorModeId;
+
+  /// No description provided for @modeEditorModeIdFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Use the form mode.example with lowercase letters, digits, - and _.'**
+  String get modeEditorModeIdFormat;
+
+  /// No description provided for @modeEditorModeIdExists.
+  ///
+  /// In en, this message translates to:
+  /// **'That mode id already exists.'**
+  String get modeEditorModeIdExists;
+
+  /// No description provided for @modeEditorStartingPoint.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting point'**
+  String get modeEditorStartingPoint;
+
+  /// No description provided for @modeEditorMinimalWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimal workflow'**
+  String get modeEditorMinimalWorkflow;
+
+  /// No description provided for @modeEditorNoWorkflowTemplate.
+  ///
+  /// In en, this message translates to:
+  /// **'No workflow'**
+  String get modeEditorNoWorkflowTemplate;
+
+  /// No description provided for @modeEditorCreateMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Create mode'**
+  String get modeEditorCreateMode;
+
+  /// No description provided for @modeEditorImportDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Import mode JSON'**
+  String get modeEditorImportDialogTitle;
+
+  /// No description provided for @modeEditorImportDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Paste mode JSON. Built-in modes stay read-only; an existing custom id opens as an unsaved draft.'**
+  String get modeEditorImportDialogBody;
+
+  /// No description provided for @modeEditorLoadAsDraft.
+  ///
+  /// In en, this message translates to:
+  /// **'Load as draft'**
+  String get modeEditorLoadAsDraft;
+
+  /// No description provided for @modeEditorSchemaDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON schema'**
+  String get modeEditorSchemaDialogTitle;
+
+  /// No description provided for @modeEditorClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get modeEditorClose;
+
+  /// No description provided for @modeEditorDeleteDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this work mode?'**
+  String get modeEditorDeleteDialogTitle;
+
+  /// No description provided for @modeEditorDeleteDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove the \"{displayName}\" definition. Thread history is kept.'**
+  String modeEditorDeleteDialogBody(String displayName);
+
+  /// No description provided for @modeEditorConfirmDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get modeEditorConfirmDelete;
+
+  /// No description provided for @modeEditorRemoveStateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this state?'**
+  String get modeEditorRemoveStateTitle;
+
+  /// No description provided for @modeEditorRemoveStateBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete \"{title}\" and its {transitionCount} related transitions. Undo can restore it.'**
+  String modeEditorRemoveStateBody(String title, int transitionCount);
+
+  /// No description provided for @modeEditorDeleteState.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete state'**
+  String get modeEditorDeleteState;
+
+  /// No description provided for @modeEditorRemoveWorkflowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove workflow?'**
+  String get modeEditorRemoveWorkflowTitle;
+
+  /// No description provided for @modeEditorRemoveWorkflowBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The mode can still chat, but stage graph and workflow tools are removed. Undo is available before saving.'**
+  String get modeEditorRemoveWorkflowBody;
+
+  /// No description provided for @modeEditorRemoveWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove workflow'**
+  String get modeEditorRemoveWorkflow;
+
+  /// No description provided for @modeEditorStateIdInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Use lowercase letters, digits, - and _ only.'**
+  String get modeEditorStateIdInvalid;
+
+  /// No description provided for @modeEditorStateIdExists.
+  ///
+  /// In en, this message translates to:
+  /// **'That state id exists.'**
+  String get modeEditorStateIdExists;
+
+  /// No description provided for @modeEditorRenameStateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename state id'**
+  String get modeEditorRenameStateTitle;
+
+  /// No description provided for @modeEditorStateId.
+  ///
+  /// In en, this message translates to:
+  /// **'State id'**
+  String get modeEditorStateId;
+
+  /// No description provided for @modeEditorApply.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply'**
+  String get modeEditorApply;
+
+  /// No description provided for @modeEditorAddTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Add transition'**
+  String get modeEditorAddTransition;
+
+  /// No description provided for @modeEditorSourceState.
+  ///
+  /// In en, this message translates to:
+  /// **'Source state'**
+  String get modeEditorSourceState;
+
+  /// No description provided for @modeEditorChooseSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a source.'**
+  String get modeEditorChooseSource;
+
+  /// No description provided for @modeEditorTargetState.
+  ///
+  /// In en, this message translates to:
+  /// **'Target state'**
+  String get modeEditorTargetState;
+
+  /// No description provided for @modeEditorChooseTarget.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a target.'**
+  String get modeEditorChooseTarget;
+
+  /// No description provided for @modeEditorTransitionGuard.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition guard'**
+  String get modeEditorTransitionGuard;
+
+  /// No description provided for @modeEditorTransitionGuardHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For example: after the user confirms scope'**
+  String get modeEditorTransitionGuardHint;
+
+  /// No description provided for @modeEditorGuardRequiredField.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a guard.'**
+  String get modeEditorGuardRequiredField;
+
+  /// No description provided for @modeEditorCollapse.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse'**
+  String get modeEditorCollapse;
+
+  /// No description provided for @modeEditorNoWorkflowPeriod.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow.'**
+  String get modeEditorNoWorkflowPeriod;
+
+  /// No description provided for @modeEditorInspectorSelectHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Select a stage or transition on the canvas to edit its fields.'**
+  String get modeEditorInspectorSelectHint;
+
+  /// No description provided for @modeEditorRenameId.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename id'**
+  String get modeEditorRenameId;
+
+  /// No description provided for @modeEditorStageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage title'**
+  String get modeEditorStageTitle;
+
+  /// No description provided for @modeEditorStageKind.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage kind'**
+  String get modeEditorStageKind;
+
+  /// No description provided for @modeEditorAtomicStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Atomic stage'**
+  String get modeEditorAtomicStage;
+
+  /// No description provided for @modeEditorFinalState.
+  ///
+  /// In en, this message translates to:
+  /// **'Final state'**
+  String get modeEditorFinalState;
+
+  /// No description provided for @modeEditorInitialStateSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Initial state'**
+  String get modeEditorInitialStateSwitch;
+
+  /// No description provided for @modeEditorInitialStateLockedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'The workflow always keeps one initial state; enable another stage instead.'**
+  String get modeEditorInitialStateLockedHint;
+
+  /// No description provided for @modeEditorInitialStateHint.
+  ///
+  /// In en, this message translates to:
+  /// **'A run starts from this stage.'**
+  String get modeEditorInitialStateHint;
+
+  /// No description provided for @modeEditorStageInstructions.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage instructions'**
+  String get modeEditorStageInstructions;
+
+  /// No description provided for @modeEditorCompletionCriteria.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria (one per line)'**
+  String get modeEditorCompletionCriteria;
+
+  /// No description provided for @modeEditorAtomicCriteriaRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'An atomic stage needs at least one completion criterion; Rust validates on save.'**
+  String get modeEditorAtomicCriteriaRequired;
+
+  /// No description provided for @modeEditorOutgoingTransitions.
+  ///
+  /// In en, this message translates to:
+  /// **'Outgoing transitions'**
+  String get modeEditorOutgoingTransitions;
+
+  /// No description provided for @modeEditorAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add'**
+  String get modeEditorAdd;
+
+  /// No description provided for @modeEditorNoOutgoing.
+  ///
+  /// In en, this message translates to:
+  /// **'No outgoing transitions.'**
+  String get modeEditorNoOutgoing;
+
+  /// No description provided for @modeEditorDeleteTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete transition'**
+  String get modeEditorDeleteTransition;
+
+  /// No description provided for @modeEditorStateTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'State transition'**
+  String get modeEditorStateTransition;
+
+  /// No description provided for @modeEditorTransitionRuleHint.
+  ///
+  /// In en, this message translates to:
+  /// **'One transition per source/target pair; multiple successors, self loops and cycles are allowed.'**
+  String get modeEditorTransitionRuleHint;
+
+  /// No description provided for @modeEditorValidationIssuesCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} issues'**
+  String modeEditorValidationIssuesCount(int count);
+
+  /// No description provided for @modeEditorNotValidated.
+  ///
+  /// In en, this message translates to:
+  /// **'Not validated'**
+  String get modeEditorNotValidated;
+
+  /// No description provided for @modeEditorApplyJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply JSON'**
+  String get modeEditorApplyJson;
+
+  /// No description provided for @modeEditorCopyJson.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy JSON'**
+  String get modeEditorCopyJson;
+
+  /// No description provided for @modeEditorSchemaLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Schema'**
+  String get modeEditorSchemaLabel;
+
+  /// No description provided for @modeEditorReadOnlyCopyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Read-only: copy or validate'**
+  String get modeEditorReadOnlyCopyHint;
+
+  /// No description provided for @modeEditorJsonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode JSON keeps the six top-level fields plus editor layout.'**
+  String get modeEditorJsonHint;
+
+  /// No description provided for @modeEditorModeSettingsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode settings'**
+  String get modeEditorModeSettingsTitle;
+
+  /// No description provided for @modeEditorModeSettingsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution definition and editor layout are stored separately; layout never changes workflow identity.'**
+  String get modeEditorModeSettingsSubtitle;
+
+  /// No description provided for @modeEditorDisplayName.
+  ///
+  /// In en, this message translates to:
+  /// **'Display name'**
+  String get modeEditorDisplayName;
+
+  /// No description provided for @modeEditorDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get modeEditorDescription;
+
+  /// No description provided for @modeEditorOrder.
+  ///
+  /// In en, this message translates to:
+  /// **'Order'**
+  String get modeEditorOrder;
+
+  /// No description provided for @modeEditorRawPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw prompt'**
+  String get modeEditorRawPrompt;
+
+  /// No description provided for @modeEditorRawPromptHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'This is the full mode prompt injected without GUI rewriting.'**
+  String get modeEditorRawPromptHelper;
+
+  /// No description provided for @modeEditorWorkflowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow title'**
+  String get modeEditorWorkflowTitle;
+
+  /// No description provided for @modeEditorWorkflowGoal.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow goal'**
+  String get modeEditorWorkflowGoal;
+
+  /// No description provided for @modeEditorInitialStateLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Initial state'**
+  String get modeEditorInitialStateLabel;
+
+  /// No description provided for @modeEditorWorkflowSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{states} states · {transitions} transitions'**
+  String modeEditorWorkflowSummary(int states, int transitions);
+
+  /// No description provided for @modeEditorNoWorkflowToolHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Without a workflow there is no stage graph or workflow tools.'**
+  String get modeEditorNoWorkflowToolHint;
+
+  /// No description provided for @modeEditorPreviewUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode has no workflow to preview.'**
+  String get modeEditorPreviewUnavailable;
+
+  /// No description provided for @modeEditorRunPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Run preview'**
+  String get modeEditorRunPreview;
+
+  /// No description provided for @modeEditorPreviewSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Bounded replay uses the production Rust state machine; it never rewrites the configured initial state.'**
+  String get modeEditorPreviewSubtitle;
+
+  /// No description provided for @modeEditorStartPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Start preview'**
+  String get modeEditorStartPreview;
+
+  /// No description provided for @modeEditorRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Restart'**
+  String get modeEditorRestart;
+
+  /// No description provided for @modeEditorTransitionReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition reason'**
+  String get modeEditorTransitionReason;
+
+  /// No description provided for @modeEditorTransitionReasonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Manually confirm stage completion and guard'**
+  String get modeEditorTransitionReasonHint;
+
+  /// No description provided for @modeEditorTransitionReasonHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent as the reason when advancing to a successor.'**
+  String get modeEditorTransitionReasonHelper;
+
+  /// No description provided for @modeEditorAllowedNextStates.
+  ///
+  /// In en, this message translates to:
+  /// **'Allowed next states · {count}'**
+  String modeEditorAllowedNextStates(int count);
+
+  /// No description provided for @modeEditorTerminalReached.
+  ///
+  /// In en, this message translates to:
+  /// **'Reached a final state. Restarting never rewrites the saved initial state.'**
+  String get modeEditorTerminalReached;
+
+  /// No description provided for @modeEditorPreviewIntroText.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview starts from the current JSON document. Each step follows one valid transition from the current state and keeps the path in this preview.'**
+  String get modeEditorPreviewIntroText;
+
+  /// No description provided for @modeEditorPreviewAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview accepted.'**
+  String get modeEditorPreviewAccepted;
+
+  /// No description provided for @modeEditorPreviewRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview rejected.'**
+  String get modeEditorPreviewRejected;
+
+  /// No description provided for @modeEditorCurrentStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Current stage'**
+  String get modeEditorCurrentStage;
+
+  /// No description provided for @modeEditorPath.
+  ///
+  /// In en, this message translates to:
+  /// **'Path'**
+  String get modeEditorPath;
+
+  /// No description provided for @modeEditorAdvance.
+  ///
+  /// In en, this message translates to:
+  /// **'Advance'**
+  String get modeEditorAdvance;
+
+  /// No description provided for @modeEditorPreviewHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview history'**
+  String get modeEditorPreviewHistory;
+
+  /// No description provided for @modeDeletedUsingSnapshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted mode · using saved snapshot'**
+  String get modeDeletedUsingSnapshot;
+
+  /// No description provided for @modeDeletedChooseAnother.
+  ///
+  /// In en, this message translates to:
+  /// **'This mode was deleted. Choose another mode.'**
+  String get modeDeletedChooseAnother;
+
+  /// No description provided for @modeSnapshotBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Snapshot'**
+  String get modeSnapshotBadge;
+
+  /// No description provided for @modeDeletedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted'**
+  String get modeDeletedBadge;
+
+  /// No description provided for @settingsAccountProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Account protocol'**
+  String get settingsAccountProtocol;
+
+  /// No description provided for @statisticsGroupTotal.
+  ///
+  /// In en, this message translates to:
+  /// **'Group total'**
+  String get statisticsGroupTotal;
+
+  /// No description provided for @statisticsAllEfforts.
+  ///
+  /// In en, this message translates to:
+  /// **'All effort levels'**
+  String get statisticsAllEfforts;
+
+  /// No description provided for @statisticsEffortBreakdownTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Effort breakdown'**
+  String get statisticsEffortBreakdownTitle;
+
+  /// No description provided for @accountProtocolOpenAi.
+  ///
+  /// In en, this message translates to:
+  /// **'OpenAI'**
+  String get accountProtocolOpenAi;
+
+  /// No description provided for @accountProtocolDeepSeek.
+  ///
+  /// In en, this message translates to:
+  /// **'DeepSeek'**
+  String get accountProtocolDeepSeek;
+
+  /// No description provided for @accountProtocolZhipu.
+  ///
+  /// In en, this message translates to:
+  /// **'Zhipu'**
+  String get accountProtocolZhipu;
+
+  /// No description provided for @accountProtocolMiMo.
+  ///
+  /// In en, this message translates to:
+  /// **'MiMo'**
+  String get accountProtocolMiMo;
+
+  /// No description provided for @accountProtocolXai.
+  ///
+  /// In en, this message translates to:
+  /// **'xAI'**
+  String get accountProtocolXai;
+
+  /// No description provided for @accountProtocolCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom (OpenAI compatible)'**
+  String get accountProtocolCustom;
+
+  /// No description provided for @timelineWaitToolsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for tools'**
+  String get timelineWaitToolsTitle;
+
+  /// No description provided for @timelineWaitMessagesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for a subagent or new message'**
+  String get timelineWaitMessagesTitle;
+
+  /// No description provided for @timelineWaitTimerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer'**
+  String get timelineWaitTimerTitle;
+
+  /// No description provided for @timelineWaitTimerElapsed.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer elapsed'**
+  String get timelineWaitTimerElapsed;
+
+  /// No description provided for @timelineWaitReady.
+  ///
+  /// In en, this message translates to:
+  /// **'A waited source is ready'**
+  String get timelineWaitReady;
+
+  /// No description provided for @timelineWaitMessagesReady.
+  ///
+  /// In en, this message translates to:
+  /// **'A new message arrived'**
+  String get timelineWaitMessagesReady;
+
+  /// No description provided for @timelineWaitTimedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait timed out'**
+  String get timelineWaitTimedOut;
+
+  /// No description provided for @timelineWaitCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait cancelled'**
+  String get timelineWaitCancelled;
+
+  /// No description provided for @timelineWaitFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait failed'**
+  String get timelineWaitFailed;
+
+  /// No description provided for @timelineWaitInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait interrupted'**
+  String get timelineWaitInterrupted;
+
+  /// No description provided for @timelineWaitTargetCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 task} other{{count} tasks}}'**
+  String timelineWaitTargetCount(int count);
+
+  /// No description provided for @timelineWaitMessageSource.
+  ///
+  /// In en, this message translates to:
+  /// **'New messages'**
+  String get timelineWaitMessageSource;
+
+  /// No description provided for @timelineWaitMaxDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'up to {duration}'**
+  String timelineWaitMaxDuration(String duration);
+
+  /// No description provided for @timelineWaitTimerDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'{duration}'**
+  String timelineWaitTimerDuration(String duration);
+
+  /// No description provided for @timelineWaitMessagesMayWake.
+  ///
+  /// In en, this message translates to:
+  /// **'A new message can wake this wait early'**
+  String get timelineWaitMessagesMayWake;
+
+  /// No description provided for @timelineWaitAnyReadyRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Returns when any selected task or a new message is ready'**
+  String get timelineWaitAnyReadyRule;
+
+  /// No description provided for @timelineWaitDiagnostics.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostics'**
+  String get timelineWaitDiagnostics;
+
+  /// No description provided for @timelineWaitUnknownStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get timelineWaitUnknownStatus;
+
+  /// No description provided for @timelineWaitStatusRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get timelineWaitStatusRunning;
+
+  /// No description provided for @timelineWaitStatusSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Succeeded'**
+  String get timelineWaitStatusSucceeded;
+
+  /// No description provided for @timelineWaitStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get timelineWaitStatusFailed;
+
+  /// No description provided for @timelineWaitStatusCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get timelineWaitStatusCancelled;
+
+  /// No description provided for @timelineWaitStatusInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted'**
+  String get timelineWaitStatusInterrupted;
+
+  /// No description provided for @conversationActivityWaitingTools.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for tools'**
+  String get conversationActivityWaitingTools;
+
+  /// No description provided for @conversationActivityWaitingMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for a subagent or new message'**
+  String get conversationActivityWaitingMessages;
+
+  /// No description provided for @conversationActivityWaitingTimer.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer'**
+  String get conversationActivityWaitingTimer;
+
+  /// No description provided for @settingsModelAutoCompactAdjusted.
+  ///
+  /// In en, this message translates to:
+  /// **'The effective limit was adjusted for context capacity and output reserve.'**
+  String get settingsModelAutoCompactAdjusted;
+
+  /// No description provided for @modelContextParametersInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Inconsistent context parameters'**
+  String get modelContextParametersInvalid;
+
+  /// No description provided for @modelInputBudgetExhausted.
+  ///
+  /// In en, this message translates to:
+  /// **'No input capacity after reserving output'**
+  String get modelInputBudgetExhausted;
+
+  /// No description provided for @statusCompactNow.
+  ///
+  /// In en, this message translates to:
+  /// **'Compact now'**
+  String get statusCompactNow;
+
+  /// No description provided for @statusCompacting.
+  ///
+  /// In en, this message translates to:
+  /// **'Compacting…'**
+  String get statusCompacting;
+
+  /// No description provided for @statusCompactionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Compaction failed. Try again.'**
+  String get statusCompactionFailed;
+
+  /// No description provided for @settingsModelAutoCompactCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom'**
+  String get settingsModelAutoCompactCustom;
 }
 
 class _AppLocalizationsDelegate

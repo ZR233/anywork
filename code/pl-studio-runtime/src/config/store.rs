@@ -64,6 +64,11 @@ impl ConfigPaths {
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")
     }
+
+    /// 用户工作模式的独立 JSON 目录；每个文件保存一份完整编辑文档。
+    pub fn modes_dir(&self) -> PathBuf {
+        self.config_dir.join("modes")
+    }
 }
 
 impl ConfigStore {
@@ -141,16 +146,28 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；已知 18/19/20 版本走数据保全式迁移路径。
-    pub(crate) fn load_for_startup(&self) -> Result<StudioConfig> {
+    /// 也不替换为默认配置；已知 18/19/20/21 版本走数据保全式迁移路径。
+    pub(crate) fn load_for_startup(
+        &self,
+    ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
         if self.config_absent()? {
             let mut config = StudioConfig::default_config()?;
             self.hydrate_credentials(&mut config)?;
             return Ok(config);
         }
+        // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
+        if let Some(config) =
+            super::schema_migration::resume(&self.paths, self.credentials.as_ref()).map_err(
+                |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
+            )?
+        {
+            let mut config = config;
+            self.hydrate_credentials(&mut config)?;
+            return Ok(config);
+        }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so the supported 18/19/20 configs reach
+        // Version dispatch precedes the strict parse so the supported 18..=22 configs reach
         // their data-preserving migration instead of failing current-schema validation.
         #[derive(serde::Deserialize)]
         struct Version {
@@ -160,11 +177,17 @@ impl ConfigStore {
             .ok()
             .and_then(|text| toml::from_str::<Version>(text).ok())
             .map(|version| version.schema_version)
-            .filter(|version| matches!(version, 18..=20))
+            .filter(|version| {
+                (super::schema_migration::OLDEST_SUPPORTED_SCHEMA
+                    ..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA)
+                    .contains(version)
+            })
         {
             return self
                 .migrate_legacy_config_for_startup(&content, version)
-                .map_err(|error| self.config_path_error(error));
+                .map_err(|error| {
+                    super::ConfigRuntimeError::Migration(self.config_path_error(error))
+                });
         }
         // Unknown/future versions, malformed TOML and current-schema validation failures
         // all fail closed here: the original bytes stay on disk untouched.
@@ -207,12 +230,17 @@ impl ConfigStore {
         &self,
         original: &[u8],
         source_version: u32,
-        replace: impl FnOnce(&Path, &[u8]) -> Result<()>,
+        replace: impl Fn(&Path, &[u8]) -> Result<()>,
     ) -> Result<StudioConfig> {
         let text = std::str::from_utf8(original).map_err(|error| {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
         let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
+        let rewritten = migrate_model_identifiers(&rewritten)?;
+        // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate。
+        let mut inline_tokens = std::collections::BTreeMap::new();
+        let rewritten =
+            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?;
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
@@ -221,7 +249,7 @@ impl ConfigStore {
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
-            20 => {}
+            20..=22 => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -231,10 +259,18 @@ impl ConfigStore {
         config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
         config.validate_declarations()?;
         let persisted = serialize_persisted_config(&config)?;
-        // Provider identities do not change. Read credentials before committing; never rewrite them.
-        self.hydrate_credentials(&mut config)?;
         let backup = write_config_backup(self.paths.config_file(), original, "migrated")?;
-        replace(self.paths.config_file(), persisted.as_bytes())?;
+        // 主配置与用户 Profile 在同一可恢复操作内准备、校验、复制凭据并逐资源提交。
+        let mut config = super::schema_migration::migrate(
+            &self.paths,
+            self.credentials.as_ref(),
+            original,
+            source_version,
+            persisted.into_bytes(),
+            inline_tokens,
+            &replace,
+        )?;
+        self.hydrate_credentials(&mut config)?;
         tracing::info!(
             backup_path = %backup.display(),
             source_version,
@@ -255,10 +291,10 @@ impl ConfigStore {
 
     pub fn save(&self, config: &StudioConfig) -> Result<()> {
         config.validate_declarations()?;
-        let persisted_provider_ids = self.persisted_provider_ids()?;
+        let persisted_account_ids = self.persisted_account_ids()?;
         let content = serialize_persisted_config(config)?;
         fs::create_dir_all(self.paths.config_dir())?;
-        let previous = self.apply_credentials(config, persisted_provider_ids)?;
+        let previous = self.apply_credentials(config, persisted_account_ids)?;
         if let Err(error) =
             pl_tool::workspace::write_file_atomically(self.paths.config_file(), content.as_bytes())
         {
@@ -281,13 +317,13 @@ impl ConfigStore {
     }
 
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
-        for (provider_id, provider) in &mut config.models.providers {
-            provider.bearer_token = self.credentials.load(provider_id.as_str())?;
+        for (account_id, account) in &mut config.models.accounts {
+            account.bearer_token = self.credentials.load(account_id.as_str())?;
         }
         Ok(())
     }
 
-    fn persisted_provider_ids(&self) -> Result<BTreeSet<String>> {
+    fn persisted_account_ids(&self) -> Result<BTreeSet<String>> {
         if self.config_absent()? {
             return Ok(BTreeSet::new());
         }
@@ -297,46 +333,46 @@ impl ConfigStore {
             parse_current_config(&content).map_err(|error| self.config_path_error(error))?;
         Ok(persisted
             .models
-            .providers
+            .accounts
             .keys()
-            .map(|provider_id| provider_id.as_str().to_string())
+            .map(|account_id| account_id.as_str().to_string())
             .collect())
     }
 
     fn apply_credentials(
         &self,
         config: &StudioConfig,
-        mut provider_ids: BTreeSet<String>,
+        mut account_ids: BTreeSet<String>,
     ) -> Result<Vec<(String, Option<String>)>> {
         let mut previous = Vec::new();
-        provider_ids.extend(
+        account_ids.extend(
             config
                 .models
-                .providers
+                .accounts
                 .keys()
-                .map(|provider_id| provider_id.as_str().to_string()),
+                .map(|account_id| account_id.as_str().to_string()),
         );
-        for provider_id in provider_ids {
+        for account_id in account_ids {
             let desired = config
                 .models
-                .providers
+                .accounts
                 .iter()
-                .find(|(candidate, _)| candidate.as_str() == provider_id)
-                .and_then(|(_, provider)| provider.bearer_token.as_deref())
+                .find(|(candidate, _)| candidate.as_str() == account_id)
+                .and_then(|(_, account)| account.bearer_token.as_deref())
                 .filter(|secret| !secret.trim().is_empty());
-            let old = self.credentials.load(&provider_id)?;
-            previous.push((provider_id.clone(), old));
+            let old = self.credentials.load(&account_id)?;
+            previous.push((account_id.clone(), old));
             let result = match desired {
-                Some(secret) => self.credentials.save(&provider_id, secret),
-                None => self.credentials.delete(&provider_id),
+                Some(secret) => self.credentials.save(&account_id, secret),
+                None => self.credentials.delete(&account_id),
             }
             .and_then(|()| {
-                let actual = self.credentials.load(&provider_id)?;
+                let actual = self.credentials.load(&account_id)?;
                 if actual.as_deref() == desired {
                     Ok(())
                 } else {
                     Err(PureError::ConfigError(format!(
-                        "system credential verification failed for provider {provider_id}"
+                        "system credential verification failed for account {account_id}"
                     )))
                 }
             });
@@ -349,13 +385,13 @@ impl ConfigStore {
     }
 
     fn restore_credentials(&self, previous: &[(String, Option<String>)]) {
-        for (provider_id, secret) in previous.iter().rev() {
+        for (account_id, secret) in previous.iter().rev() {
             let result = match secret {
-                Some(secret) => self.credentials.save(provider_id, secret),
-                None => self.credentials.delete(provider_id),
+                Some(secret) => self.credentials.save(account_id, secret),
+                None => self.credentials.delete(account_id),
             };
             if let Err(error) = result {
-                tracing::error!(%error, provider_id, "回滚系统凭据失败");
+                tracing::error!(%error, account_id, "回滚系统凭据失败");
             }
         }
     }
@@ -368,7 +404,7 @@ fn rewrite_legacy_deepseek_standalone_dialect(text: &str) -> Result<String> {
             toml_error_location(text, &error)
         ))
     })?;
-    rewrite_legacy_deepseek_standalone_in_providers(&mut table);
+    rewrite_legacy_web_search_standalone(&mut table);
     toml::to_string(&table).map_err(|error| {
         PureError::ConfigError(format!(
             "failed to rewrite Studio config dialect token: {error}"
@@ -376,21 +412,21 @@ fn rewrite_legacy_deepseek_standalone_dialect(text: &str) -> Result<String> {
     })
 }
 
-fn rewrite_legacy_deepseek_standalone_in_providers(table: &mut toml::Table) {
+fn rewrite_legacy_web_search_standalone(table: &mut toml::Table) {
     let Some(toml::Value::Table(models)) = table.get_mut("models") else {
         return;
     };
-    let Some(toml::Value::Table(providers)) = models.get_mut("providers") else {
+    let Some(toml::Value::Table(accounts)) = models.get_mut("accounts") else {
         return;
     };
-    let provider_ids: Vec<String> = providers.keys().cloned().collect();
-    for provider_id in provider_ids {
-        let Some(toml::Value::Table(provider)) = providers.get_mut(&provider_id) else {
+    let account_ids: Vec<String> = accounts.keys().cloned().collect();
+    for account_id in account_ids {
+        let Some(toml::Value::Table(account)) = accounts.get_mut(&account_id) else {
             continue;
         };
-        // Design/token path is `service_capabilities`; persisted ProviderConfig uses `capabilities`.
+        // Design/token path is `service_capabilities`; persisted AccountConfig uses `capabilities`.
         for field in ["service_capabilities", "capabilities"] {
-            rewrite_legacy_web_search_standalone_token(provider.get_mut(field));
+            rewrite_legacy_web_search_standalone_token(account.get_mut(field));
         }
     }
 }
@@ -442,7 +478,69 @@ fn parse_config(content: &str) -> Result<StudioConfig> {
     let config = parse_typed_config(content)?;
     reject_inline_credentials(&config)?;
     config.validate_declarations()?;
+    reject_retired_model_access_keys(content)?;
     Ok(config)
+}
+
+/// 当前 schema 拒绝已退役的模型接入键：正常读写只消费账户/模板结构。
+///
+/// 这里只做键路径判定，不解释值，也不为旧键保留 serde alias 或运行期双轨解析；旧版本
+/// 配置在迁移边界转换后才可能到达该检查。
+fn reject_retired_model_access_keys(content: &str) -> Result<()> {
+    let Ok(value) = toml::from_str::<toml::Value>(content) else {
+        return Ok(());
+    };
+    let Some(models) = value.get("models").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    if models.contains_key("providers") {
+        return Err(retired_key("models.providers"));
+    }
+    if models.contains_key("presets") {
+        return Err(retired_key("models.presets"));
+    }
+    if let Some(routes) = models.get("routes").and_then(toml::Value::as_table) {
+        reject_retired_route_keys("models.routes", routes)?;
+    }
+    if let Some(mode_routes) = value
+        .get("mode_model_routes")
+        .and_then(toml::Value::as_table)
+    {
+        reject_retired_route_keys("mode_model_routes", mode_routes)?;
+    }
+    if let Some(accounts) = models.get("accounts").and_then(toml::Value::as_table) {
+        for (id, account) in accounts {
+            let Some(account) = account.as_table() else {
+                continue;
+            };
+            for retired in ["preset", "adapter"] {
+                if account.contains_key(retired) {
+                    return Err(retired_key(&format!("models.accounts.{id}.{retired}")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reject_retired_route_keys(prefix: &str, routes: &toml::Table) -> Result<()> {
+    for (role, route) in routes {
+        let Some(route) = route.as_table() else {
+            continue;
+        };
+        for retired in ["provider", "model"] {
+            if route.contains_key(retired) {
+                return Err(retired_key(&format!("{prefix}.{role}.{retired}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn retired_key(path: &str) -> PureError {
+    PureError::ConfigError(format!(
+        "Studio config uses the retired model access key `{path}`; expected accounts/account_id/model_id"
+    ))
 }
 
 fn parse_typed_config(content: &str) -> Result<StudioConfig> {
@@ -460,6 +558,17 @@ fn parse_typed_config(content: &str) -> Result<StudioConfig> {
             toml_error_location(content, &error)
         ))
     })
+}
+
+/// 迁移候选的 typed 校验：结构、禁用内联凭据与期望声明完整性。
+pub(super) fn parse_migrated_config(content: &[u8]) -> Result<StudioConfig> {
+    let text = std::str::from_utf8(content).map_err(|error| {
+        PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
+    })?;
+    let config = parse_typed_config(text)?;
+    reject_inline_credentials(&config)?;
+    config.validate_declarations()?;
+    Ok(config)
 }
 
 /// 仅按错误的字节 span 计算 1-based 行/列用于定位；刻意不回显任何原文或字段值。
@@ -481,14 +590,60 @@ fn toml_error_location(content: &str, error: &toml::de::Error) -> String {
 fn reject_inline_credentials(config: &StudioConfig) -> Result<()> {
     if config
         .models
-        .providers
+        .accounts
         .values()
-        .any(|provider| provider.bearer_token.is_some())
+        .any(|account| account.bearer_token.is_some())
     {
         return Err(PureError::ConfigError(
-            "current schema forbids inline provider bearer_token; use the Studio credential store"
+            "current schema forbids inline account bearer_token; use the Studio credential store"
                 .to_string(),
         ));
+    }
+    Ok(())
+}
+
+/// Decode legacy identifiers only at the migration boundary. Never rewrite arbitrary vendor bodies.
+fn migrate_model_identifiers(text: &str) -> Result<String> {
+    let mut value: toml::Value =
+        toml::from_str(text).map_err(|_| PureError::ConfigError("invalid legacy config".into()))?;
+    if let Some(models) = value.get_mut("models").and_then(toml::Value::as_table_mut) {
+        // 21 及更早版本把模型接入实例写在 `providers` 下；两种表名都只转换 `slug`。
+        for table in ["accounts", "providers"] {
+            if let Some(accounts) = models.get_mut(table).and_then(toml::Value::as_table_mut) {
+                migrate_account_model_identifiers(accounts)?;
+            }
+        }
+    }
+    toml::to_string(&value)
+        .map_err(|_| PureError::ConfigError("could not encode migrated config".into()))
+}
+
+fn migrate_account_model_identifiers(accounts: &mut toml::Table) -> Result<()> {
+    {
+        for (_, account) in accounts.iter_mut() {
+            if let Some(catalog) = account.get_mut("catalog") {
+                for key in ["models", "additional_models"] {
+                    if let Some(models) = catalog.get_mut(key).and_then(toml::Value::as_array_mut) {
+                        for model in models {
+                            let table = model.as_table_mut().ok_or_else(|| {
+                                PureError::ConfigError("invalid legacy model declaration".into())
+                            })?;
+                            if let Some(legacy) = table.remove("slug") {
+                                if table
+                                    .get("model_id")
+                                    .is_some_and(|current| current != &legacy)
+                                {
+                                    return Err(PureError::ConfigError(
+                                        "conflicting model identifiers in legacy config".into(),
+                                    ));
+                                }
+                                table.insert("model_id".into(), legacy);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -544,7 +699,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
     config_path.with_file_name(format!("{file_name}.{suffix}"))
 }
 
-fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
+pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
     toml::to_string_pretty(&persisted).map_err(|error| {
@@ -553,8 +708,8 @@ fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
 }
 
 fn clear_inline_credentials(config: &mut StudioConfig) {
-    for provider in config.models.providers.values_mut() {
-        provider.bearer_token = None;
+    for account in config.models.accounts.values_mut() {
+        account.bearer_token = None;
     }
 }
 
@@ -572,8 +727,8 @@ fn user_home_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_model::config::{ProviderCapabilitySelection, ProviderId};
-    use pl_model::provider::StandaloneWebSearchDialect;
+    use pl_model::config::{AccountCapabilitySelection, AccountId};
+    use pl_model::protocol::StandaloneWebSearchDialect;
     use pl_protocol::search::WebSearchMode;
 
     fn isolated_store() -> (tempfile::TempDir, ConfigStore) {
@@ -582,9 +737,369 @@ mod tests {
         (directory, store)
     }
 
+    /// 把当前 canonical 文档改写成 HEAD 的 22/21 真实结构（providers/preset/adapter/路由 provider,model）。
+    fn downgrade_to_legacy_document(table: &mut toml::Table, schema_version: i64, slug: bool) {
+        table.insert(
+            "schema_version".into(),
+            toml::Value::Integer(schema_version),
+        );
+        let route_legacy = |route: &mut toml::Value| {
+            if let Some(route) = route.as_table_mut() {
+                if let Some(account) = route.remove("account_id") {
+                    route.insert("provider".into(), account);
+                }
+                if let Some(model) = route.remove("model_id") {
+                    route.insert("model".into(), model);
+                }
+            }
+        };
+        if let Some(modes) = table
+            .get_mut("mode_model_routes")
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, route) in modes.iter_mut() {
+                route_legacy(route);
+            }
+        }
+        let models = table
+            .get_mut("models")
+            .and_then(toml::Value::as_table_mut)
+            .expect("models table");
+        if let Some(accounts) = models.remove("accounts") {
+            models.insert("providers".into(), accounts);
+        }
+        if let Some(routes) = models.get_mut("routes").and_then(toml::Value::as_table_mut) {
+            for (_, route) in routes.iter_mut() {
+                route_legacy(route);
+            }
+        }
+        let providers = models
+            .get_mut("providers")
+            .and_then(toml::Value::as_table_mut)
+            .expect("providers table");
+        for (_, account) in providers.iter_mut() {
+            let Some(account) = account.as_table_mut() else {
+                continue;
+            };
+            if let Some(template) = account.remove("template") {
+                account.insert("preset".into(), template);
+            }
+            if let Some(protocol) = account.remove("protocol") {
+                let adapter = match protocol.as_str().unwrap_or_default() {
+                    "open_ai" => "openAi",
+                    "deep_seek" => "deepSeek",
+                    "zhipu" => "zhipu",
+                    "mi_mo" => "miMo",
+                    "xai" => "xai",
+                    _ => "openAiCompatible",
+                };
+                account.insert("adapter".into(), toml::Value::String(adapter.into()));
+            }
+            if let Some(capabilities) = account
+                .get_mut("capabilities")
+                .and_then(toml::Value::as_table_mut)
+                && capabilities.get("source").and_then(toml::Value::as_str)
+                    == Some("template_defaults")
+            {
+                capabilities.insert("source".into(), "preset_defaults".into());
+            }
+            if slug
+                && let Some(catalog) = account
+                    .get_mut("catalog")
+                    .and_then(toml::Value::as_table_mut)
+            {
+                for key in ["models", "additional_models"] {
+                    if let Some(models) = catalog.get_mut(key).and_then(toml::Value::as_array_mut) {
+                        for model in models {
+                            if let Some(model) = model.as_table_mut()
+                                && let Some(identifier) = model.remove("model_id")
+                            {
+                                model.insert("slug".into(), identifier);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn write_table(path: &Path, table: &toml::Table) {
         fs::write(path, toml::to_string(table).expect("serialize test config"))
             .expect("write test config");
+    }
+
+    #[test]
+    fn schema_21_model_ids_migrate_without_losing_routes_overrides_or_credentials() {
+        use pl_model::{
+            config::AccountModelCatalogConfig, model::ModelInfo, protocol::ConnectionMode,
+        };
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        let id = AccountId::new("deepseek").unwrap();
+        let account = config.models.accounts.get_mut(&id).unwrap();
+        account.bearer_token = Some("synthetic-migration-secret".into());
+        if let AccountModelCatalogConfig::Bundled {
+            additional_models,
+            connection_overrides,
+            auto_compact_overrides,
+            ..
+        } = &mut account.catalog
+        {
+            additional_models.push(ModelInfo::compatible("exact-Unchanged-ID"));
+            connection_overrides.insert("exact-Unchanged-ID".into(), ConnectionMode::Http);
+            auto_compact_overrides.insert("exact-Unchanged-ID".into(), 1234);
+        }
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 21.into();
+        let model = table
+            .get_mut("models")
+            .unwrap()
+            .get_mut("accounts")
+            .unwrap()
+            .get_mut("deepseek")
+            .unwrap()
+            .get_mut("catalog")
+            .unwrap()
+            .get_mut("additional_models")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()[0]
+            .as_table_mut()
+            .unwrap();
+        let identifier = model.remove("model_id").unwrap();
+        model.insert("slug".into(), identifier);
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            fs::read(migrated_backups(path).pop().unwrap()).unwrap(),
+            original
+        );
+        let persisted = fs::read(path).unwrap();
+        assert_eq!(store.load_for_startup().unwrap(), config);
+        assert_eq!(fs::read(path).unwrap(), persisted);
+        assert_eq!(migrated_backups(path).len(), 1);
+    }
+
+    /// 使用真实凭据存储边界（私有构造）验证 22→23 的启动路径。
+    fn store_with_credentials(
+        directory: &tempfile::TempDir,
+        credentials: super::super::credential::MemoryCredentialStore,
+    ) -> ConfigStore {
+        ConfigStore::with_credential_store(
+            ConfigPaths::from_config_dir(directory.path()),
+            std::sync::Arc::new(credentials),
+        )
+    }
+
+    #[test]
+    fn schema_22_startup_migrates_accounts_capabilities_and_credentials() {
+        let directory = tempfile::tempdir().expect("isolated config directory");
+        let credentials = crate::config::credential::MemoryCredentialStore::default();
+        credentials.seed_legacy_provider("deepseek", "legacy-secret");
+        let mut config = StudioConfig::default_config().unwrap();
+        let second_id = AccountId::new("second").unwrap();
+        let mut second = config.models.accounts[&AccountId::new("deepseek").unwrap()].clone();
+        second.name = "Second".into();
+        second.bearer_token_env = Some("SECOND_API_KEY".into());
+        config.models.accounts.insert(second_id.clone(), second);
+        let mut route =
+            config.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].clone();
+        route.account_id = second_id.clone();
+        config
+            .models
+            .routes
+            .insert(crate::config::AgentRoleId::new("reviewer").unwrap(), route);
+        let store = store_with_credentials(&directory, credentials);
+        store.save(&config).unwrap();
+        // 原始配置文档：真实 22 结构（providers/preset/adapter/路由 provider,model）。
+        let path = store.paths.config_file();
+        let original = fs::read_to_string(path).unwrap();
+        let mut table: toml::Table = toml::from_str(&original).unwrap();
+        downgrade_to_legacy_document(&mut table, 22, false);
+        // 历史内联凭据：只在迁移边界转录到凭据库。
+        table["models"]["providers"]["second"]
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "bearer_token".into(),
+                toml::Value::String("inline-secret".into()),
+            );
+        write_table(path, &table);
+        let original_bytes = fs::read(path).unwrap();
+
+        let loaded = store
+            .load_for_startup()
+            .expect("schema 22 migrates at startup");
+        assert_eq!(loaded.schema_version, crate::STUDIO_CONFIG_SCHEMA_VERSION);
+        let deepseek = &loaded.models.accounts[&AccountId::new("deepseek").unwrap()];
+        assert_eq!(
+            deepseek.protocol,
+            pl_model::protocol::ProtocolKind::DeepSeek
+        );
+        assert_eq!(
+            deepseek.template.as_ref().map(|value| value.as_str()),
+            Some("deepseek")
+        );
+        assert_eq!(
+            deepseek.capabilities,
+            pl_model::config::AccountCapabilitySelection::TemplateDefaults
+        );
+        assert_eq!(
+            loaded.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].account_id,
+            second_id
+        );
+        // 旧凭据项保留；内联值与旧项均已转写到 `account:` 命名空间。
+        assert_eq!(
+            store.credentials.load("deepseek").unwrap().as_deref(),
+            Some("legacy-secret")
+        );
+        assert_eq!(
+            store.credentials.load("second").unwrap().as_deref(),
+            Some("inline-secret")
+        );
+        assert_eq!(
+            store.credentials.load("second").ok().flatten(),
+            Some("inline-secret".to_string())
+        );
+        // 持久化文档是当前结构：无 providers/preset/adapter/preset_defaults。
+        let persisted = fs::read_to_string(path).unwrap();
+        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("template_defaults"));
+        assert!(!persisted.contains("models.providers"));
+        assert!(!persisted.contains("preset_defaults"));
+        assert!(!persisted.contains("inline-secret"));
+        let backups = migrated_backups(path);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), original_bytes);
+        // 二次启动幂等。
+        assert_eq!(store.load_for_startup().unwrap(), loaded);
+    }
+
+    #[test]
+    fn schema_21_startup_migrates_legacy_identifiers_and_continues_to_23() {
+        let directory = tempfile::tempdir().expect("isolated config directory");
+        let credentials = crate::config::credential::MemoryCredentialStore::default();
+        credentials.seed_legacy_provider("deepseek", "legacy-secret");
+        let mut config = StudioConfig::default_config().unwrap();
+        if let pl_model::config::AccountModelCatalogConfig::Bundled {
+            additional_models, ..
+        } = &mut config
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .catalog
+        {
+            additional_models.push(pl_model::model::ModelInfo::compatible("legacy-slug"));
+        }
+        let store = store_with_credentials(&directory, credentials);
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        downgrade_to_legacy_document(&mut table, 21, true);
+        write_table(path, &table);
+
+        let loaded = store
+            .load_for_startup()
+            .expect("schema 21 continues through the account migration to 23");
+        // 迁移后 canonical 配置由凭据存储注入 token，期望值同样注入。
+        let mut expected = config.clone();
+        expected
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .bearer_token = Some("legacy-secret".into());
+        assert_eq!(loaded, expected);
+        assert_eq!(
+            store.credentials.load("deepseek").unwrap().as_deref(),
+            Some("legacy-secret")
+        );
+        let persisted = fs::read_to_string(path).unwrap();
+        assert!(persisted.contains("schema_version = 23"));
+        assert!(!persisted.contains("models.providers"));
+        assert_eq!(store.load_for_startup().unwrap(), expected);
+        assert_eq!(migrated_backups(path).len(), 1);
+    }
+
+    #[test]
+    fn current_schema_rejects_retired_capability_source_token() {
+        let (_directory, store) = isolated_store();
+        let config = StudioConfig::default_config().unwrap();
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["models"]["accounts"]["deepseek"]
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "capabilities".into(),
+                toml::Value::Table(toml::Table::from_iter([(
+                    "source".to_string(),
+                    toml::Value::String("preset_defaults".into()),
+                )])),
+            );
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        let error = store
+            .load_for_startup()
+            .expect_err("retired capability token must not parse in the current schema");
+        assert!(
+            matches!(
+                error,
+                super::super::ConfigRuntimeError::Migration(_)
+                    | super::super::ConfigRuntimeError::Core(_)
+            ),
+            "current-schema rejection is a config error: {error}"
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(migrated_backups(path).is_empty());
+    }
+
+    #[test]
+    fn conflicting_legacy_model_identifiers_leave_original_file_untouched() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        if let pl_model::config::AccountModelCatalogConfig::Bundled {
+            additional_models, ..
+        } = &mut config
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .catalog
+        {
+            additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+        }
+        store.save(&config).unwrap();
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 21.into();
+        let model = table
+            .get_mut("models")
+            .unwrap()
+            .get_mut("accounts")
+            .unwrap()
+            .get_mut("deepseek")
+            .unwrap()
+            .get_mut("catalog")
+            .unwrap()
+            .get_mut("additional_models")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()[0]
+            .as_table_mut()
+            .unwrap();
+        model.insert("slug".into(), "different-id".into());
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        assert!(store.load_for_startup().is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(migrated_backups(path).is_empty());
     }
 
     fn read_table(path: &Path) -> toml::Table {
@@ -683,16 +1198,16 @@ mod tests {
         let path = store.paths.config_file();
         let mut table = read_table(path);
         table.insert("schema_version".into(), toml::Value::Integer(20));
-        let providers = table
+        let accounts = table
             .get_mut("models")
             .and_then(toml::Value::as_table_mut)
-            .and_then(|models| models.get_mut("providers"))
+            .and_then(|models| models.get_mut("accounts"))
             .and_then(toml::Value::as_table_mut)
-            .expect("providers table");
-        let deepseek = providers
+            .expect("accounts table");
+        let deepseek = accounts
             .get_mut("deepseek")
             .and_then(toml::Value::as_table_mut)
-            .expect("deepseek provider");
+            .expect("deepseek account");
         deepseek.insert(
             "capabilities".into(),
             toml::Value::Table(explicit_legacy_deepseek_capabilities()),
@@ -710,21 +1225,21 @@ mod tests {
         let original = fs::read(path).expect("original schema 20 bytes");
 
         let loaded = store.load_for_startup().expect("schema 20 migrates");
-        let provider_id = ProviderId::new("deepseek").expect("provider id");
-        let provider = loaded
+        let account_id = AccountId::new("deepseek").expect("account id");
+        let account = loaded
             .models
-            .providers
-            .get(&provider_id)
-            .expect("deepseek provider");
-        let ProviderCapabilitySelection::Explicit(capabilities) = &provider.capabilities else {
-            panic!("migrated provider must keep explicit capabilities");
+            .accounts
+            .get(&account_id)
+            .expect("deepseek account");
+        let AccountCapabilitySelection::Explicit(capabilities) = &account.capabilities else {
+            panic!("migrated account must keep explicit capabilities");
         };
 
         assert_eq!(
             loaded.schema_version,
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
-        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(loaded.schema_version, 23);
         assert_eq!(
             capabilities.web_search.standalone,
             Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
@@ -736,22 +1251,22 @@ mod tests {
         assert!(!loaded.deepseek_web_search.enabled);
         assert!(loaded.deepseek_web_search.fetch_enabled);
         assert_eq!(loaded.instructions.user, config.instructions.user);
-        assert_eq!(provider.name, config.models.providers[&provider_id].name);
+        assert_eq!(account.name, config.models.accounts[&account_id].name);
         assert_eq!(
-            provider.base_url,
-            config.models.providers[&provider_id].base_url
+            account.base_url,
+            config.models.accounts[&account_id].base_url
         );
         assert_eq!(
-            provider.preset,
-            config.models.providers[&provider_id].preset
+            account.template,
+            config.models.accounts[&account_id].template
         );
 
         let persisted = fs::read_to_string(path).expect("read migrated config");
         let persisted_table: toml::Table =
             toml::from_str(&persisted).expect("parse migrated config");
-        assert_eq!(persisted_table["schema_version"].as_integer(), Some(21));
+        assert_eq!(persisted_table["schema_version"].as_integer(), Some(23));
         assert_eq!(
-            persisted_table["models"]["providers"]["deepseek"]["capabilities"]["web_search"]
+            persisted_table["models"]["accounts"]["deepseek"]["capabilities"]["web_search"]
                 ["standalone"]
                 .as_str(),
             Some("deep_seek_tools_api")
@@ -763,9 +1278,9 @@ mod tests {
         assert!(
             persisted_table
                 .get("models")
-                .and_then(|models| models.get("providers"))
-                .and_then(|providers| providers.get("deepseek"))
-                .and_then(|provider| provider.get("service_capabilities"))
+                .and_then(|models| models.get("accounts"))
+                .and_then(|accounts| accounts.get("deepseek"))
+                .and_then(|account| account.get("service_capabilities"))
                 .is_none(),
             "canonical persist drops the untyped service_capabilities table"
         );
@@ -788,7 +1303,7 @@ mod tests {
         let loaded = store
             .load_for_startup()
             .expect("schema 20 without dialect token migrates");
-        assert_eq!(loaded.schema_version, 21);
+        assert_eq!(loaded.schema_version, 23);
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
         assert_eq!(
@@ -796,7 +1311,7 @@ mod tests {
             4,
             "four child-agent routes remain"
         );
-        assert_eq!(loaded.models.providers, config.models.providers);
+        assert_eq!(loaded.models.accounts, config.models.accounts);
         assert_eq!(loaded.web_search, config.web_search);
         assert_eq!(loaded.deepseek_web_search, config.deepseek_web_search);
         assert!(loaded.deepseek_web_search.fetch_enabled);
@@ -809,7 +1324,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(22));
+        table.insert("schema_version".into(), toml::Value::Integer(24));
         write_table(path, &table);
         let original = fs::read(path).expect("original future-schema bytes");
 
@@ -817,7 +1332,10 @@ mod tests {
             .load_for_startup()
             .expect_err("future schema must fail closed");
         assert!(
-            matches!(error, PureError::ConfigError(_)),
+            matches!(
+                error,
+                super::super::ConfigRuntimeError::Core(PureError::ConfigError(_))
+            ),
             "future schema is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);
@@ -846,8 +1364,8 @@ mod tests {
             .and_then(toml::Value::as_table_mut)
             .expect("explorer route");
         explorer.insert(
-            "provider".into(),
-            toml::Value::String("missing-provider".into()),
+            "account_id".into(),
+            toml::Value::String("missing-account".into()),
         );
         write_table(path, &table);
         let original = fs::read(path).expect("original invalid schema 20 bytes");
@@ -856,7 +1374,10 @@ mod tests {
             .load_for_startup()
             .expect_err("invalid schema 20 must not migrate");
         assert!(
-            matches!(error, PureError::ConfigError(_)),
+            matches!(
+                error,
+                super::super::ConfigRuntimeError::Migration(PureError::ConfigError(_))
+            ),
             "migration failure is a config error: {error}"
         );
         assert_eq!(fs::read(path).expect("reread config"), original);

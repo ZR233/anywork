@@ -1,5 +1,91 @@
 part of 'studio_shell.dart';
 
+/// 会话阅读区域与输入栏的组合。
+///
+/// 阅读布局（并排 / 全宽 / 窄窗）只替换 [readingArea]；[footer] 始终是同一个子位置，
+/// 因此布局切换、窗口跨阈值与计划详情关开都不会重建反馈栏的 State（草稿、错误与
+/// 在途决定锁）。这条契约由 `test/client/plan_feedback_lifecycle_test.dart` 直接
+/// 挂上真实 `PlanConfirmationDock` 断言。
+class StudioWorkspaceBody extends StatelessWidget {
+  const StudioWorkspaceBody({
+    required this.readingArea,
+    required this.footer,
+    this.overlays = const [],
+    this.todoPanel,
+    super.key,
+  });
+
+  final Widget readingArea;
+  final Widget footer;
+
+  /// 覆盖在阅读区域上的瞬态提示（失败条、加载遮罩）；它们不参与布局分配。
+  final List<Widget> overlays;
+
+  /// 右侧 Todo 侧栏；计划详情打开时由调用方传 null 让位。
+  final Widget? todoPanel;
+
+  static const _todoPanelWidth = 304.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            children: [
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: readingArea),
+                    for (final overlay in overlays)
+                      if (_fillsReadingArea(overlay))
+                        Positioned.fill(child: overlay)
+                      else
+                        Positioned(top: 0, left: 0, right: 0, child: overlay),
+                  ],
+                ),
+              ),
+              footer,
+            ],
+          ),
+        ),
+        if (todoPanel case final panel?)
+          SizedBox(width: _todoPanelWidth, child: panel),
+      ],
+    );
+  }
+
+  /// 加载遮罩铺满阅读区域，行内失败条只贴上边缘。
+  static bool _fillsReadingArea(Widget overlay) =>
+      overlay.key == const ValueKey('agent-workspace-loading');
+}
+
+class _ReadingErrorBanner extends StatelessWidget {
+  const _ReadingErrorBanner({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: context.colors.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Expanded(child: Text(message)),
+            TextButton(
+              onPressed: onRetry,
+              child: Text(context.l10n.runtimeFatalRetry),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class AgentWorkspacePane extends ConsumerStatefulWidget {
   const AgentWorkspacePane({super.key});
 
@@ -9,11 +95,29 @@ class AgentWorkspacePane extends ConsumerStatefulWidget {
 
 class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   static const _todoPanelWidth = 304.0;
-  static const _defaultPlanPanelWidth = 560.0;
-  static const _minimumPlanPanelWidth = 320.0;
-  static const _minimumTimelineWidth = 560.0;
-  static const _minimumPlanTimelineWidth = 600.0;
+
+  /// 计划详情默认宽度（design/13-plan.md §13.5）。只作为初始值与「恢复默认」目标，
+  /// 打开后由分栏组件持有实际宽度。
+  static const _defaultPlanPanelWidth = 720.0;
+
+  /// 并排时计划至少保留的宽度，以及对话与操作至少保留的宽度。
+  static const _minimumPlanPanelWidth = 360.0;
+  static const _minimumConversationWidth = 400.0;
+
+  /// 分隔条自身占用的布局宽度；命中区域由组件的 handle buffer 扩展到两侧。
+  static const _planDividerThickness = 1.0;
+  static const _planDividerHandleBuffer = 4.0;
+
+  /// 分隔条聚焦后方向键的逐级步长。
   static const _planResizeStep = 24.0;
+
+  /// 能否并排只由实际可用宽度与分隔条尺寸决定，不依据设备类型。
+  static const _minimumSideBySideWidth =
+      _minimumPlanPanelWidth +
+      _minimumConversationWidth +
+      _planDividerThickness;
+
+  static const _minimumTimelineWidth = 560.0;
 
   /// footer 的高度上限 = 窗口高度 − 时间线**最小可视高度**。
   ///
@@ -26,16 +130,27 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final Map<String, bool> _todoExpandedByThread = {};
-  final Map<String, String> _expandedPlanByThread = {};
+
+  /// 当前打开的计划详情身份（`interaction:` 或 `approved:` 前缀）。
+  final Map<String, String> _openedPlanByThread = {};
   final Map<String, String> _autoOpenedPlanByThread = {};
-  double? _planPanelWidth;
+
+  /// 已显式切到「展开阅读」的会话；窄窗口直接全宽阅读，不写这里。
+  final Set<String> _fullWidthPlanByThread = {};
+
+  /// 计划宽度属于当前 GUI 的临时视图状态：关开面板与切换阅读布局都沿用它。
+  double _planPanelWidth = _defaultPlanPanelWidth;
+
+  /// 阅读布局之间保持同一 Element：并排、全宽与窄窗切换只改变几何，
+  /// 不重建时间线（滚动、订阅、焦点）与计划正文滚动。
+  final GlobalKey _timelineHostKey = GlobalKey(debugLabel: 'timeline-host');
+  final GlobalKey _planPanelKey = GlobalKey(debugLabel: 'plan-panel');
 
   @override
   Widget build(BuildContext context) {
     final selection = ref.watch(shellSelectionProvider);
     final threadId = selection.selectedThreadId;
     final workspace = ref.watch(shellComposerWorkspaceProvider);
-    final timeline = ref.watch(timelineSessionWindowProvider);
     // 无选中会话即起始页；新会话模式由 selection 清除 threadId 表达，不另读旧起始页。
     if (threadId == null) return const _StudioStartPage();
     if (workspace == null || workspace.threadId != threadId) {
@@ -51,33 +166,21 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             ? _WorkspacePlanPresentation.fromPending(pendingPlan)
             : approvedPlan;
         final planIdentity = presentedPlan?.identity;
-        if (_expandedPlanByThread[threadId] != planIdentity) {
-          _expandedPlanByThread.remove(threadId);
+        if (_openedPlanByThread[threadId] != planIdentity) {
+          _openedPlanByThread.remove(threadId);
         }
-        // 覆盖与否只取决于窗口能否并排放置默认宽度面板与最小对话区，
-        // 不受用户当前目标宽度影响，避免拖拽跨阈值时布局跳变打断手势。
-        final planOverlaysTimeline =
-            constraints.maxWidth <
-            _defaultPlanPanelWidth + _minimumPlanTimelineWidth;
-        final planExpanded =
+        if (planIdentity == null) _fullWidthPlanByThread.remove(threadId);
+        final planOpen =
             planIdentity != null &&
-            _expandedPlanByThread[threadId] == planIdentity;
-        // 并排上限 = min(可用宽度 − 对话区最小宽度, 可用宽度 × 0.5)；
-        // 覆盖布局占满可用宽度。像素宽度只在 LayoutBuilder 内由可用宽度推导一次。
-        final planMaximumWidth = planOverlaysTimeline
-            ? constraints.maxWidth
-            : [
-                constraints.maxWidth - _minimumPlanTimelineWidth,
-                constraints.maxWidth * 0.5,
-              ].reduce((a, b) => a < b ? a : b);
-        final planMinimumWidth = planMaximumWidth < _minimumPlanPanelWidth
-            ? planMaximumWidth
-            : _minimumPlanPanelWidth;
-        final planPanelWidth = _normalizePlanPanelWidth(
-          _planPanelWidth ?? _defaultPlanPanelWidth,
-          planMinimumWidth,
-          planMaximumWidth,
-        );
+            _openedPlanByThread[threadId] == planIdentity;
+        // 能否并排只看真实可用宽度：窄窗口直接全宽阅读，不把文档挤进狭小侧栏，
+        // 也不提供无意义的分隔条与宽度切换。判定不读当前拖动宽度，因此拖动过程中
+        // 不会跨人为阈值重建布局。
+        final sideBySideFeasible =
+            constraints.maxWidth >= _minimumSideBySideWidth;
+        final fullWidthReading =
+            planOpen &&
+            (!sideBySideFeasible || _fullWidthPlanByThread.contains(threadId));
         final todoInDrawer =
             constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
         final todoExpanded = _todoExpandedByThread[threadId] ?? false;
@@ -96,16 +199,27 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               return;
             }
             setState(
-              () => _expandedPlanByThread[threadId] =
+              () => _openedPlanByThread[threadId] =
                   'interaction:${pendingPlan.interactionId}',
             );
           });
         }
+        final splitPlan =
+            planOpen && !fullWidthReading && presentedPlan != null;
+        final timelineDisplay = ref.watch(timelineDisplayStateProvider);
+        final readingArea = _buildReadingArea(
+          threadId: threadId,
+          pendingPlan: pendingPlan,
+          planOpen: planOpen,
+          splitPlan: splitPlan,
+          presentedPlan: presentedPlan,
+          sideBySideFeasible: sideBySideFeasible,
+        );
         return Scaffold(
           key: _scaffoldKey,
           backgroundColor: context.colors.surface,
           endDrawerEnableOpenDragGesture: false,
-          endDrawer: !planExpanded && todoInDrawer && todo != null
+          endDrawer: !planOpen && todoInDrawer && todo != null
               ? Drawer(
                   width: 328,
                   backgroundColor: context.colors.surfaceContainer,
@@ -123,169 +237,120 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               // 便于用户直接开始交互或在失败后重试。
               if (selection.needsOpen) _OpenThreadBanner(threadId: threadId),
               Expanded(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              children: [
-                                Expanded(
-                                  child: Stack(
-                                    children: [
-                                      Positioned.fill(
-                                        child: _AgentTimelineHost(
-                                          threadId: threadId,
-                                          planConfirmation: pendingPlan,
-                                          planExpanded: planExpanded,
-                                          onPlanToggle: pendingPlan == null
-                                              ? null
-                                              : () => _togglePlan(
-                                                  threadId,
-                                                  'interaction:${pendingPlan.interactionId}',
-                                                ),
-                                        ),
-                                      ),
-                                      if (workspace.loadError case final error?)
-                                        Positioned(
-                                          top: 0,
-                                          left: 0,
-                                          right: 0,
-                                          child: Material(
-                                            color:
-                                                context.colors.errorContainer,
-                                            child: Padding(
-                                              padding: const EdgeInsets.all(16),
-                                              child: Row(
-                                                children: [
-                                                  Expanded(child: Text(error)),
-                                                  TextButton(
-                                                    onPressed: () =>
-                                                        _retryThreadLoad(
-                                                          threadId,
-                                                        ),
-                                                    child: Text(
-                                                      context
-                                                          .l10n
-                                                          .runtimeFatalRetry,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      if (workspace.isLoading)
-                                        Positioned.fill(
-                                          child: StudioWorkspaceLoading(
-                                            key: const ValueKey(
-                                              'agent-workspace-loading',
-                                            ),
-                                            hasContent:
-                                                (timeline != null &&
-                                                timeline.threadId == threadId &&
-                                                timeline.rows.isNotEmpty),
-                                          ),
-                                        ),
-                                      if (planOverlaysTimeline &&
-                                          presentedPlan != null &&
-                                          planExpanded)
-                                        Positioned(
-                                          top: 0,
-                                          right: 0,
-                                          bottom: 0,
-                                          width: planPanelWidth,
-                                          child: ConstrainedBox(
-                                            constraints: BoxConstraints(
-                                              minWidth: planMinimumWidth,
-                                              maxWidth: planMaximumWidth,
-                                            ),
-                                            child: _buildPlanPanel(
-                                              presentation: presentedPlan,
-                                              threadId: threadId,
-                                              minimumWidth: planMinimumWidth,
-                                              maximumWidth: planMaximumWidth,
-                                              overlay: true,
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                _AdaptiveFooter(
-                                  threadId: threadId,
-                                  maxHeight: footerMaxHeight,
-                                  showTodo: !planExpanded && todo != null,
-                                  todoExpanded: !planExpanded && todoExpanded,
-                                  onToggleTodo: planExpanded || todo == null
-                                      ? null
-                                      : () {
-                                          if (todoInDrawer) {
-                                            _scaffoldKey.currentState
-                                                ?.openEndDrawer();
-                                          } else {
-                                            setState(
-                                              () =>
-                                                  _todoExpandedByThread[threadId] =
-                                                      !todoExpanded,
-                                            );
-                                          }
-                                        },
-                                  showPlanEntry: approvedPlan != null,
-                                  onOpenPlan: approvedPlan == null
-                                      ? null
-                                      : () => _openPlan(
-                                          threadId,
-                                          approvedPlan.identity,
-                                        ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (!planOverlaysTimeline &&
-                              presentedPlan != null &&
-                              planExpanded)
-                            ConstrainedBox(
-                              constraints: BoxConstraints(
-                                minWidth: planMinimumWidth,
-                                maxWidth: planMaximumWidth,
-                              ),
-                              child: SizedBox(
-                                width: planPanelWidth,
-                                child: _buildPlanPanel(
-                                  presentation: presentedPlan,
-                                  threadId: threadId,
-                                  minimumWidth: planMinimumWidth,
-                                  maximumWidth: planMaximumWidth,
-                                  overlay: false,
-                                ),
-                              ),
-                            ),
-                          if (!planExpanded &&
-                              !todoInDrawer &&
-                              todo != null &&
-                              todoExpanded)
-                            SizedBox(
-                              width: _todoPanelWidth,
-                              child: TodoPanel(
-                                key: const ValueKey('todo-side-panel'),
-                                todo: todo,
-                                onClose: () => setState(
-                                  () => _todoExpandedByThread[threadId] = false,
-                                ),
-                              ),
-                            ),
-                        ],
+                child: StudioWorkspaceBody(
+                  readingArea: readingArea,
+                  overlays: [
+                    if (workspace.loadError case final error?)
+                      _ReadingErrorBanner(
+                        message: error,
+                        onRetry: () => _retryThreadLoad(threadId),
                       ),
-                    ),
+                    if (workspace.isLoading)
+                      StudioWorkspaceLoading(
+                        key: const ValueKey('agent-workspace-loading'),
+                        hasContent:
+                            timelineDisplay != null &&
+                            timelineDisplay.threadId == threadId &&
+                            timelineDisplay.generation > 0,
+                      ),
                   ],
+                  footer: _AdaptiveFooter(
+                    threadId: threadId,
+                    maxHeight: footerMaxHeight,
+                    showTodo: !planOpen && todo != null,
+                    todoExpanded: !planOpen && todoExpanded,
+                    onToggleTodo: planOpen || todo == null
+                        ? null
+                        : () {
+                            if (todoInDrawer) {
+                              _scaffoldKey.currentState?.openEndDrawer();
+                            } else {
+                              setState(
+                                () => _todoExpandedByThread[threadId] =
+                                    !todoExpanded,
+                              );
+                            }
+                          },
+                    showPlanEntry: approvedPlan != null,
+                    onOpenPlan: approvedPlan == null
+                        ? null
+                        : () => _openPlan(threadId, approvedPlan.identity),
+                  ),
+                  // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
+                  todoPanel:
+                      !planOpen && !todoInDrawer && todo != null && todoExpanded
+                      ? TodoPanel(
+                          key: const ValueKey('todo-side-panel'),
+                          todo: todo,
+                          onClose: () => setState(
+                            () => _todoExpandedByThread[threadId] = false,
+                          ),
+                        )
+                      : null,
                 ),
               ),
             ],
           ),
         );
       },
+    );
+  }
+
+  /// 会话阅读区域：只负责几何。所有分支共用同一时间线 Element（[KeyedSubtree]
+  /// 携带 [_timelineHostKey]），全宽阅读时计划面板以同一 [_planPanelKey] 覆盖它。
+  Widget _buildReadingArea({
+    required String threadId,
+    required PlanConfirmationView? pendingPlan,
+    required bool planOpen,
+    required bool splitPlan,
+    required _WorkspacePlanPresentation? presentedPlan,
+    required bool sideBySideFeasible,
+  }) {
+    final timeline = KeyedSubtree(
+      key: _timelineHostKey,
+      child: _AgentTimelineHost(
+        threadId: threadId,
+        planConfirmation: pendingPlan,
+        planExpanded: planOpen,
+        onPlanToggle: pendingPlan == null
+            ? null
+            : () => _togglePlan(
+                threadId,
+                'interaction:${pendingPlan.interactionId}',
+              ),
+      ),
+    );
+    final planPanel = presentedPlan == null
+        ? null
+        : KeyedSubtree(
+            key: _planPanelKey,
+            child: _buildPlanPanel(
+              presentation: presentedPlan,
+              threadId: threadId,
+              fullWidth: !splitPlan,
+              sideBySideFeasible: sideBySideFeasible,
+            ),
+          );
+    if (splitPlan && planPanel != null) {
+      return _PlanSplitView(
+        initialPlanWidth: _planPanelWidth,
+        defaultPlanWidth: _defaultPlanPanelWidth,
+        minimumPlanWidth: _minimumPlanPanelWidth,
+        minimumConversationWidth: _minimumConversationWidth,
+        dividerThickness: _planDividerThickness,
+        dividerHandleBuffer: _planDividerHandleBuffer,
+        resizeStep: _planResizeStep,
+        dividerLabel: context.l10n.planResize,
+        onPlanWidthChanged: (width) => _planPanelWidth = width,
+        conversation: timeline,
+        plan: planPanel,
+      );
+    }
+    return Stack(
+      children: [
+        Positioned.fill(child: timeline),
+        if (planOpen && planPanel != null) Positioned.fill(child: planPanel),
+      ],
     );
   }
 
@@ -298,20 +363,29 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   void _togglePlan(String threadId, String identity) {
     setState(() {
-      if (_expandedPlanByThread[threadId] == identity) {
-        _expandedPlanByThread.remove(threadId);
+      if (_openedPlanByThread[threadId] == identity) {
+        _openedPlanByThread.remove(threadId);
       } else {
-        _expandedPlanByThread[threadId] = identity;
+        _openedPlanByThread[threadId] = identity;
       }
     });
   }
 
   void _openPlan(String threadId, String identity) {
-    setState(() => _expandedPlanByThread[threadId] = identity);
+    setState(() => _openedPlanByThread[threadId] = identity);
   }
 
   void _closePlan(String threadId) {
-    setState(() => _expandedPlanByThread.remove(threadId));
+    setState(() => _openedPlanByThread.remove(threadId));
+  }
+
+  /// 并排 ↔ 全宽阅读：只切换阅读布局，不改正文、决定或阅读位置。
+  void _toggleReadingMode(String threadId) {
+    setState(() {
+      if (!_fullWidthPlanByThread.remove(threadId)) {
+        _fullWidthPlanByThread.add(threadId);
+      }
+    });
   }
 
   static _WorkspacePlanPresentation? _approvedPlanPresentation(
@@ -335,73 +409,23 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     return available > 0 ? available : 0;
   }
 
-  /// 计划详情面板：左边缘分隔条 + 内容。并排与覆盖共用，避免语义偏差。
+  /// 计划详情面板：只读文档页，并排与全宽共用同一构造，避免两套语义。
   Widget _buildPlanPanel({
     required _WorkspacePlanPresentation presentation,
     required String threadId,
-    required double minimumWidth,
-    required double maximumWidth,
-    required bool overlay,
+    required bool fullWidth,
+    required bool sideBySideFeasible,
   }) {
-    return Row(
-      children: [
-        _PlanResizeHandle(
-          key: StudioDriverKeys.planResizeHandle,
-          label: context.l10n.planResize,
-          onDelta: (delta) =>
-              _applyPlanPanelDelta(delta, minimumWidth, maximumWidth),
-          onReset: _resetPlanPanelWidth,
-          step: _planResizeStep,
-        ),
-        Expanded(
-          child: PlanDetailPanel(
-            identity: presentation.identity,
-            markdown: presentation.markdown,
-            statusLabel: presentation.pending
-                ? context.l10n.interactionPlanAwaitingConfirmation
-                : context.l10n.interactionPlanApproved,
-            overlay: overlay,
-            onClose: () => _closePlan(threadId),
-          ),
-        ),
-      ],
+    return PlanDetailPanel(
+      identity: presentation.identity,
+      markdown: presentation.markdown,
+      awaitingConfirmation: presentation.pending,
+      fullWidth: fullWidth,
+      onToggleReadingMode: sideBySideFeasible
+          ? () => _toggleReadingMode(threadId)
+          : null,
+      onClose: () => _closePlan(threadId),
     );
-  }
-
-  /// 在当前目标宽度基础上累计增量，而非从本次 build 的宽度重算：
-  /// 先把当前状态收敛到当前限制，再加 delta 并再次收敛，确保连续拖拽或连按
-  /// 方向键的增量逐步累加，不会相互覆盖。
-  void _applyPlanPanelDelta(
-    double delta,
-    double minimumWidth,
-    double maximumWidth,
-  ) {
-    setState(() {
-      final base = _normalizePlanPanelWidth(
-        _planPanelWidth ?? _defaultPlanPanelWidth,
-        minimumWidth,
-        maximumWidth,
-      );
-      _planPanelWidth = _normalizePlanPanelWidth(
-        base + delta,
-        minimumWidth,
-        maximumWidth,
-      );
-    });
-  }
-
-  void _resetPlanPanelWidth() {
-    setState(() => _planPanelWidth = _defaultPlanPanelWidth);
-  }
-
-  /// 用 LayoutBuilder 算出的同一 bounds 规范化目标宽度，避免拖拽死区。
-  static double _normalizePlanPanelWidth(
-    double desired,
-    double minimum,
-    double maximum,
-  ) {
-    if (maximum <= minimum) return maximum;
-    return desired.clamp(minimum, maximum);
   }
 }
 
@@ -433,16 +457,183 @@ class _WorkspacePlanPresentation {
   final bool pending;
 }
 
-/// 计划详情面板左边缘分隔条（design/13-plan.md §13）。
+/// 计划并排阅读区：会话列 + 计划详情的可拖动分栏。
 ///
-/// 拖拽或双击调整宽度；宽度只属于当前 GUI 的临时视图状态，不写入 Plan
-/// 状态机或持久化。
-const double _planResizeHandleWidth = 5.0;
+/// 拖动、尺寸分配与边界求解全部交给 `multi_split_view`；这里只补三件它没有的能力：
+/// 用真实可用宽度给计划区一次 `max` 边界（保证对话仍有最小宽度）、把分隔条接到键盘
+/// 与语义（薄 [FocusableActionDetector]），以及把实际宽度回报给上层视图状态。
+class _PlanSplitView extends StatefulWidget {
+  const _PlanSplitView({
+    required this.initialPlanWidth,
+    required this.defaultPlanWidth,
+    required this.minimumPlanWidth,
+    required this.minimumConversationWidth,
+    required this.dividerThickness,
+    required this.dividerHandleBuffer,
+    required this.resizeStep,
+    required this.dividerLabel,
+    required this.onPlanWidthChanged,
+    required this.conversation,
+    required this.plan,
+  });
 
-class _PlanResizeHandle extends StatefulWidget {
-  const _PlanResizeHandle({
+  final double initialPlanWidth;
+  final double defaultPlanWidth;
+  final double minimumPlanWidth;
+  final double minimumConversationWidth;
+  final double dividerThickness;
+  final double dividerHandleBuffer;
+  final double resizeStep;
+  final String dividerLabel;
+  final ValueChanged<double> onPlanWidthChanged;
+  final Widget conversation;
+  final Widget plan;
+
+  @override
+  State<_PlanSplitView> createState() => _PlanSplitViewState();
+}
+
+class _PlanSplitViewState extends State<_PlanSplitView> {
+  static const _conversationAreaId = 'conversation';
+  static const _planAreaId = 'plan';
+
+  MultiSplitViewController? _controller;
+  Area? _planArea;
+  double? _appliedContainerWidth;
+
+  @override
+  void dispose() {
+    _controller
+      ?..removeListener(_reportWidth)
+      ..dispose();
+    super.dispose();
+  }
+
+  /// 首次布局才有真实宽度：此时才按实际可用宽度创建区域与边界。
+  void _ensureAreas(double containerWidth) {
+    if (_controller != null) return;
+    final maximumPlanWidth = _maximumPlanWidth(containerWidth);
+    final initialWidth = widget.initialPlanWidth
+        .clamp(widget.minimumPlanWidth, maximumPlanWidth)
+        .toDouble();
+    final planArea = Area(
+      id: _planAreaId,
+      size: initialWidth,
+      min: widget.minimumPlanWidth,
+      max: maximumPlanWidth,
+    );
+    _planArea = planArea;
+    _appliedContainerWidth = containerWidth;
+    _controller = MultiSplitViewController(
+      areas: [
+        Area(id: _conversationAreaId, flex: 1),
+        planArea,
+      ],
+    )..addListener(_reportWidth);
+    widget.onPlanWidthChanged(initialWidth);
+  }
+
+  /// 计划最多能占的宽度：任何时刻都给对话与操作留下最小宽度。
+  double _maximumPlanWidth(double containerWidth) {
+    final available =
+        containerWidth -
+        widget.minimumConversationWidth -
+        widget.dividerThickness;
+    return available < widget.minimumPlanWidth
+        ? widget.minimumPlanWidth
+        : available;
+  }
+
+  /// 容器宽度变化只在布局后应用：`Area` 的 setter 会通知重建，不能在构建期间改几何。
+  void _applyContainerWidth(double containerWidth) {
+    if (_appliedContainerWidth == containerWidth) return;
+    _appliedContainerWidth = containerWidth;
+    final area = _planArea;
+    if (area == null) return;
+    final maximumPlanWidth = _maximumPlanWidth(containerWidth);
+    if (area.max != maximumPlanWidth) area.max = maximumPlanWidth;
+    final size = area.size;
+    if (size != null && size > maximumPlanWidth) area.size = maximumPlanWidth;
+  }
+
+  void _reportWidth() {
+    final size = _planArea?.size;
+    if (size != null) widget.onPlanWidthChanged(size);
+  }
+
+  /// 方向键逐级调整：只给组件一个目标宽度，边界收敛仍由它的 min/max 完成。
+  void _adjustPlanWidth(double delta) {
+    final area = _planArea;
+    if (area == null) return;
+    final current = area.size ?? widget.defaultPlanWidth;
+    area.size = current + delta;
+  }
+
+  void _resetPlanWidth() {
+    final area = _planArea;
+    if (area == null) return;
+    area.size = widget.defaultPlanWidth;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _ensureAreas(constraints.maxWidth);
+        if (_appliedContainerWidth != constraints.maxWidth) {
+          // 宽度变化只在布局后应用：`Area` 的 setter 会通知重建。
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _applyContainerWidth(constraints.maxWidth);
+          });
+        }
+        return MultiSplitViewTheme(
+          data: MultiSplitViewThemeData(
+            dividerThickness: widget.dividerThickness,
+            dividerHandleBuffer: widget.dividerHandleBuffer,
+          ),
+          child: MultiSplitView(
+            controller: _controller,
+            dividerBuilder: _buildDivider,
+            onDividerDoubleTap: (_) => _resetPlanWidth(),
+            builder: (context, area) =>
+                area.id == _planAreaId ? widget.plan : widget.conversation,
+          ),
+        );
+      },
+    );
+  }
+
+  /// 分隔条：组件负责拖动与双击，这里只补键盘/语义与安静的悬停高亮。
+  Widget _buildDivider(
+    Axis axis,
+    int index,
+    bool resizable,
+    bool dragging,
+    bool highlighted,
+    MultiSplitViewThemeData themeData,
+  ) {
+    return _PlanDividerHandle(
+      key: StudioDriverKeys.planResizeHandle,
+      label: widget.dividerLabel,
+      thickness: themeData.dividerThickness,
+      dragging: dragging,
+      highlighted: highlighted,
+      onAdjust: _adjustPlanWidth,
+      onReset: _resetPlanWidth,
+      step: widget.resizeStep,
+    );
+  }
+}
+
+/// 计划分隔条：只承载键盘与语义，拖动与双击属于分栏组件。
+class _PlanDividerHandle extends StatefulWidget {
+  const _PlanDividerHandle({
     required this.label,
-    required this.onDelta,
+    required this.thickness,
+    required this.dragging,
+    required this.highlighted,
+    required this.onAdjust,
     required this.onReset,
     required this.step,
     super.key,
@@ -451,8 +642,14 @@ class _PlanResizeHandle extends StatefulWidget {
   /// 无障碍语义与 tooltip 文案。
   final String label;
 
-  /// 宽度增量，正值加宽、负值收窄。
-  final ValueChanged<double> onDelta;
+  /// 分隔条本身的宽度。
+  final double thickness;
+
+  final bool dragging;
+  final bool highlighted;
+
+  /// 宽度增量，正值加宽计划、负值收窄。
+  final ValueChanged<double> onAdjust;
 
   /// 恢复到默认宽度。
   final VoidCallback onReset;
@@ -461,29 +658,29 @@ class _PlanResizeHandle extends StatefulWidget {
   final double step;
 
   @override
-  State<_PlanResizeHandle> createState() => _PlanResizeHandleState();
+  State<_PlanDividerHandle> createState() => _PlanDividerHandleState();
 }
 
-class _PlanResizeHandleState extends State<_PlanResizeHandle> {
-  bool _hovering = false;
+class _PlanDividerHandleState extends State<_PlanDividerHandle> {
+  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
-    final active = _hovering;
+    final active = widget.dragging || widget.highlighted || _focused;
     final color = active
-        ? context.colors.primary.withValues(alpha: 0.6)
-        : context.colors.outlineVariant.withValues(alpha: 0.5);
+        ? context.colors.primary.withValues(alpha: 0.65)
+        : context.colors.outlineVariant.withValues(alpha: 0.7);
     return FocusableActionDetector(
       actions: {
         _WidenPlanIntent: CallbackAction<_WidenPlanIntent>(
           onInvoke: (_) {
-            widget.onDelta(widget.step);
+            widget.onAdjust(widget.step);
             return null;
           },
         ),
         _NarrowPlanIntent: CallbackAction<_NarrowPlanIntent>(
           onInvoke: (_) {
-            widget.onDelta(-widget.step);
+            widget.onAdjust(-widget.step);
             return null;
           },
         ),
@@ -499,18 +696,16 @@ class _PlanResizeHandleState extends State<_PlanResizeHandle> {
         SingleActivator(LogicalKeyboardKey.arrowRight): _NarrowPlanIntent(),
         SingleActivator(LogicalKeyboardKey.home): _ResetPlanWidthIntent(),
       },
-      onShowHoverHighlight: (hovering) => setState(() => _hovering = hovering),
+      onShowFocusHighlight: (focused) => setState(() => _focused = focused),
       mouseCursor: SystemMouseCursors.resizeColumn,
       child: Semantics(
         label: widget.label,
-        button: true,
+        slider: true,
         child: Tooltip(
           message: widget.label,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onHorizontalDragUpdate: (event) => widget.onDelta(-event.delta.dx),
-            onDoubleTap: widget.onReset,
-            child: Container(width: _planResizeHandleWidth, color: color),
+          child: ColoredBox(
+            color: color,
+            child: SizedBox(width: widget.thickness),
           ),
         ),
       ),
@@ -657,7 +852,9 @@ class _StudioStartPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final project = ref.watch(startPageComposerViewProvider).project;
+    final projection = ref.watch(startPageComposerViewProvider);
+    final project = projection.project;
+    final preparation = projection.preparation;
     return Scaffold(
       key: StudioDriverKeys.startPage,
       backgroundColor: context.colors.surface,
@@ -679,28 +876,36 @@ class _StudioStartPage extends ConsumerWidget {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          project == null
-                              ? context.l10n.startPageOpenProjectTitle
-                              : context.l10n.startPageWelcome,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(
-                                color: context.colors.onSurface,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          project == null
-                              ? context.l10n.startPageOpenProjectBody
-                              : context.l10n.startPageProject(project.name),
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: context.colors.onSurfaceVariant,
-                              ),
-                        ),
+                        if (project != null && preparation != null)
+                          ThreadPreparationCard(
+                            key: ValueKey(preparation.inputId),
+                            project: project,
+                            preparation: preparation,
+                          )
+                        else ...[
+                          Text(
+                            project == null
+                                ? context.l10n.startPageOpenProjectTitle
+                                : context.l10n.startPageWelcome,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(
+                                  color: context.colors.onSurface,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            project == null
+                                ? context.l10n.startPageOpenProjectBody
+                                : context.l10n.startPageProject(project.name),
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
                         const SizedBox(height: 28),
                         const StartPageComposerDock(),
                       ],

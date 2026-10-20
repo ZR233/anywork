@@ -40,7 +40,7 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
   final attachments = ref.watch(attachmentDraftsProvider);
   return StartPageComposerProjection(
     project: project,
-    providers: canonical?.providers ?? const [],
+    accounts: canonical?.accounts ?? const [],
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     settingsLoaded: settings.configLoaded,
     canSubmit:
@@ -65,7 +65,6 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
   final settings = ref.watch(settingsStoreProvider);
   final directory = ref.watch(threadDirectoryStoreProvider);
   final attachments = ref.watch(attachmentDraftsProvider);
-  final catalog = ref.watch(modeCatalogStoreProvider).value;
   final thread = ModelRouteQueries.threadIdentity(
     threadId: threadId,
     directory: [...directory.window.threads, ...directory.overlayThreads],
@@ -84,18 +83,15 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     routeDisplay: ModelRouteQueries.threadRoute(
       canonical: canonicalRoute,
       command: routeCommand,
-      providers: settings.canonical?.providers ?? const [],
+      accounts: settings.canonical?.accounts ?? const [],
     ),
     routePending: routeCommand?.isPending ?? false,
     routeFailure: routeCommand?.phase == CommandPhase.failed
         ? routeCommand?.error?.message
         : null,
     workflow: session.workflow,
-    providers: settings.canonical?.providers ?? const [],
+    accounts: settings.canonical?.accounts ?? const [],
     settingsLoaded: settings.configLoaded,
-    requiresFunctionCalling: thread == null
-        ? null
-        : ModelRouteQueries.requiresFunctionCalling(catalog, thread.mode),
     targetDiagnostic: projectId == null
         ? null
         : attachments.diagnostics[attachmentTargetKey(projectId, threadId)],
@@ -106,7 +102,7 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
 class StartPageComposerProjection {
   const StartPageComposerProjection({
     required this.project,
-    required this.providers,
+    required this.accounts,
     required this.modeModelRoutes,
     required this.settingsLoaded,
     required this.canSubmit,
@@ -119,7 +115,7 @@ class StartPageComposerProjection {
   });
 
   final StudioProject? project;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final bool settingsLoaded;
   final bool canSubmit;
@@ -135,6 +131,8 @@ class StartPageComposerProjection {
       sessionDraft.forProject(project?.id).workspaceMode;
   String get draftText => sessionDraft.forProject(project?.id).text;
   bool get submitting => sessionDraft.submitting;
+  NewThreadPreparation? get preparation =>
+      sessionDraft.preparations[project?.id];
 
   ModeModelRouteView? canonicalRoute(ThreadModeId mode) =>
       _route(mode).canonical;
@@ -148,9 +146,6 @@ class StartPageComposerProjection {
   }
 
   ModeModelRouteView? laneRoute(ThreadModeId mode) => _route(mode).lane;
-
-  bool? requiresFunctionCalling(ThreadModeId mode) =>
-      ModelRouteQueries.requiresFunctionCalling(modeCatalog, mode);
 
   String? routeFailure(ThreadModeId mode) {
     return _route(mode).failure;
@@ -170,7 +165,7 @@ class StartPageComposerProjection {
           project?.id == other.project?.id &&
           settingsLoaded == other.settingsLoaded &&
           canSubmit == other.canSubmit &&
-          identical(providers, other.providers) &&
+          identical(accounts, other.accounts) &&
           identical(modeModelRoutes, other.modeModelRoutes) &&
           identical(commands, other.commands) &&
           identical(diagnostics, other.diagnostics) &&
@@ -184,7 +179,7 @@ class StartPageComposerProjection {
     project?.id,
     settingsLoaded,
     canSubmit,
-    identityHashCode(providers),
+    identityHashCode(accounts),
     identityHashCode(modeModelRoutes),
     identityHashCode(commands),
     identityHashCode(diagnostics),
@@ -208,9 +203,8 @@ class ComposerDockView {
     required this.routePending,
     required this.routeFailure,
     required this.workflow,
-    required this.providers,
+    required this.accounts,
     required this.settingsLoaded,
-    required this.requiresFunctionCalling,
     required this.targetDiagnostic,
     required this.additionalDiagnostics,
   });
@@ -226,9 +220,8 @@ class ComposerDockView {
   final bool routePending;
   final String? routeFailure;
   final WorkflowRuntimeView? workflow;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final bool settingsLoaded;
-  final bool? requiresFunctionCalling;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
 
@@ -239,7 +232,7 @@ class ComposerDockView {
       ModelRouteQueries.threadRoute(
         canonical: modelRoute,
         command: null,
-        providers: providers,
+        accounts: accounts,
       );
 
   @override
@@ -262,9 +255,8 @@ class ComposerDockView {
           routeFailure == other.routeFailure &&
           workflow == other.workflow &&
           settingsLoaded == other.settingsLoaded &&
-          requiresFunctionCalling == other.requiresFunctionCalling &&
           targetDiagnostic == other.targetDiagnostic &&
-          identical(providers, other.providers) &&
+          identical(accounts, other.accounts) &&
           identical(additionalDiagnostics, other.additionalDiagnostics);
 
   @override
@@ -284,9 +276,8 @@ class ComposerDockView {
     routeFailure,
     workflow,
     settingsLoaded,
-    requiresFunctionCalling,
     targetDiagnostic,
-    identityHashCode(providers),
+    identityHashCode(accounts),
     identityHashCode(additionalDiagnostics),
   );
 }

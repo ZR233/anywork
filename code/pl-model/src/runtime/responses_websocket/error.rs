@@ -6,7 +6,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 use super::super::provider_error::{provider_stream_failure, redact_secret_like_values};
 
-const HANDSHAKE_TIMEOUT_MESSAGE: &str = "Responses WebSocket handshake timed out after 15 seconds; check WebSocket network access or switch this provider instance to HTTP explicitly in Studio settings";
+const HANDSHAKE_TIMEOUT_MESSAGE: &str = "Responses WebSocket handshake timed out after 15 seconds; check WebSocket network access or switch this account to HTTP explicitly in Studio settings";
 
 #[derive(Debug, Deserialize)]
 struct WebSocketErrorDetail {

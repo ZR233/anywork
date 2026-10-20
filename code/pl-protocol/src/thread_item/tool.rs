@@ -2,17 +2,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::UserQuestion;
 
+use super::ThreadWaitPresentation;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadToolItem {
     invocation: ThreadToolInvocation,
     state: ThreadToolState,
-    /// Typed history of the ordinary user Q&A this call requested, when it requested one.
+    /// Typed history of the user-input interaction this call raised, when it raised one.
     ///
     /// The projection is derived from the canonical interaction fact of the same commit, so it
-    /// stays on the call's own item instead of becoming a second persisted Q&A record.
+    /// stays on the call's own item instead of becoming a second persisted Q&A record. An ordinary
+    /// question tool and the `plan_submit` call's Plan confirmation share this one structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user_input: Option<ThreadToolUserInput>,
+    /// Typed wait/sleep presentation derived from canonical parameters, tasks and results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wait: Option<Box<ThreadWaitPresentation>>,
 }
 
 impl ThreadToolItem {
@@ -21,12 +27,19 @@ impl ThreadToolItem {
             invocation,
             state,
             user_input: None,
+            wait: None,
         }
     }
 
     /// Attaches (or clears) the Q&A history projection without touching the call's own state.
     pub fn with_user_input(mut self, user_input: Option<ThreadToolUserInput>) -> Self {
         self.user_input = user_input;
+        self
+    }
+
+    /// Attaches (or clears) the wait presentation without touching the call's own state.
+    pub fn with_wait(mut self, wait: Option<ThreadWaitPresentation>) -> Self {
+        self.wait = wait.map(Box::new);
         self
     }
 
@@ -40,6 +53,10 @@ impl ThreadToolItem {
 
     pub fn user_input(&self) -> Option<&ThreadToolUserInput> {
         self.user_input.as_ref()
+    }
+
+    pub fn wait(&self) -> Option<&ThreadWaitPresentation> {
+        self.wait.as_deref()
     }
 
     pub fn terminal_output(&self) -> Option<&ThreadToolOutput> {
@@ -60,11 +77,15 @@ impl ThreadToolItem {
     }
 }
 
-/// Public read-only history projection of one ordinary `request_user_input` interaction.
+/// Public read-only history projection of one user-input interaction.
 ///
 /// It is derived from the one canonical interaction fact that owns the questions and the accepted
 /// response; it never replaces the private receipt and never carries execution authority. Questions
-/// keep the producer's original order, and a resolved answer names its question by ID.
+/// keep the producer's original order, and a resolved answer names its question by ID. A Plan
+/// confirmation carries the producer's single `plan_confirmation` question, whose accepted answer
+/// list keeps the producer's own decision marks and free-form revision feedback; consumers map those
+/// marks to localized wording and never derive the decision from the tool outcome or the current
+/// Plan.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadToolUserInput {
@@ -106,7 +127,7 @@ impl ThreadToolUserInput {
     }
 }
 
-/// Authoritative lifecycle of one ordinary question interaction.
+/// Authoritative lifecycle of one user-input interaction.
 ///
 /// Only `Resolved` may be presented as answered: the pending answer, the cancelled request and a
 /// missing record are distinct facts, never inferred from tool success.

@@ -5,9 +5,9 @@ use pl_studio_runtime::{
 };
 
 use super::runtime::{
-    bridge_agent_directory, bridge_agent_profiles, bridge_lsp_state, bridge_mcp_state,
-    bridge_model_catalog_state, bridge_model_performance, bridge_persistence_queue_state,
-    bridge_persistence_state, bridge_project_directory, bridge_provider_usage_state,
+    bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_lsp_state,
+    bridge_mcp_state, bridge_model_catalog_state, bridge_model_performance,
+    bridge_persistence_queue_state, bridge_persistence_state, bridge_project_directory,
     bridge_recovery_state, bridge_session_costs_state, bridge_settings_config_state,
     bridge_skills_state, bridge_thread_mode_catalog, bridge_update_state,
 };
@@ -67,8 +67,8 @@ pub(crate) fn bridge_product_event(
                     state,
                 ))
             }
-            StudioProductEventKind::ProviderUsageStateChanged(state) => {
-                BridgeProductEventPayload::ProviderUsageStateChanged(bridge_provider_usage_state(
+            StudioProductEventKind::AccountUsageStateChanged(state) => {
+                BridgeProductEventPayload::AccountUsageStateChanged(bridge_account_usage_state(
                     state.state,
                 ))
             }
@@ -142,8 +142,8 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::ThreadModeCatalog(state) => {
             BridgeProductBaseline::ThreadModeCatalog(bridge_thread_mode_catalog(*state))
         }
-        StudioProductBaselineState::ProviderUsage(state) => {
-            BridgeProductBaseline::ProviderUsage(bridge_provider_usage_state(state.state))
+        StudioProductBaselineState::AccountUsage(state) => {
+            BridgeProductBaseline::AccountUsage(bridge_account_usage_state(state.state))
         }
         StudioProductBaselineState::ModelPerformance(state) => {
             BridgeProductBaseline::ModelPerformance(bridge_model_performance(*state))

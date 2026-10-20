@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
 import '../../presentation/providers/client_provider.dart';
@@ -41,6 +43,7 @@ import '../timeline/timeline_connector.dart';
 import '../timeline/timeline_session_view.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
+import 'thread_preparation_card.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
@@ -79,30 +82,109 @@ class StudioShell extends ConsumerStatefulWidget {
 }
 
 class _StudioShellState extends ConsumerState<StudioShell> {
+  static const _sidebarDividerWidth = 5.0;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _sidebarKey = GlobalKey<_SidebarState>();
   final _startupClock = Stopwatch()..start();
+  final _sidebarResizeFocus = FocusNode(debugLabel: 'Sidebar resize');
 
   bool _reportedReady = false;
   double? _sidebarWidth;
   bool _sidebarHidden = false;
+  bool _sidebarResizeFocused = false;
+  bool _sidebarDragging = false;
   GeneralSettingsView _general = const GeneralSettingsView();
+  int _sidebarDraftVersion = 0;
+  // KeyUp and focus loss share this edit's save; the Client orders distinct edits.
+  (int, Future<void>)? _sidebarSave;
 
-  Future<void> _persistWidth() async {
+  Future<void> _persistWidth() {
+    final submitted = _sidebarWidth;
+    if (submitted == null) return Future.value();
+    final version = _sidebarDraftVersion;
+    final pending = _sidebarSave;
+    if (pending != null && pending.$1 == version) return pending.$2;
+    late final Future<void> completion;
+    completion = _saveSidebarWidth(submitted, version).whenComplete(() {
+      if (identical(_sidebarSave?.$2, completion)) _sidebarSave = null;
+    });
+    _sidebarSave = (version, completion);
+    return completion;
+  }
+
+  Future<void> _saveSidebarWidth(double submitted, int version) async {
     try {
       await _saveSidebarPreferences(
         ref,
         general: _general,
-        width: _sidebarWidth?.round(),
+        width: submitted.round(),
       );
-      if (mounted) setState(() => _sidebarWidth = null);
+      if (mounted && _sidebarDraftVersion == version) {
+        setState(() => _sidebarWidth = null);
+      }
     } catch (error) {
-      if (mounted) {
+      if (mounted && _sidebarDraftVersion == version) {
         setState(() => _sidebarWidth = null);
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(error.toString())));
       }
     }
+  }
+
+  void _setSidebarWidth(double? width) {
+    setState(() {
+      _sidebarDraftVersion++;
+      _sidebarWidth = width;
+    });
+  }
+
+  void _adjustSidebarWidth(double delta, double width, double maximumWidth) {
+    _setSidebarWidth(
+      ((_sidebarWidth ?? width).clamp(300.0, maximumWidth) + delta).clamp(
+        300.0,
+        maximumWidth,
+      ),
+    );
+  }
+
+  KeyEventResult _handleSidebarKey(
+    KeyEvent event,
+    double width,
+    double maximumWidth,
+  ) {
+    final keyboard = HardwareKeyboard.instance;
+    if (event is! KeyUpEvent &&
+        (keyboard.isControlPressed ||
+            keyboard.isAltPressed ||
+            keyboard.isMetaPressed)) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.arrowLeft &&
+        key != LogicalKeyboardKey.arrowRight &&
+        key != LogicalKeyboardKey.home) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyUpEvent) {
+      if (_sidebarWidth != null) unawaited(_persistWidth());
+    } else if (event is KeyDownEvent || event is KeyRepeatEvent) {
+      if (key == LogicalKeyboardKey.home) {
+        _setSidebarWidth(336);
+      } else {
+        _adjustSidebarWidth(
+          key == LogicalKeyboardKey.arrowRight ? 16 : -16,
+          width,
+          maximumWidth,
+        );
+      }
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  void dispose() {
+    _sidebarResizeFocus.dispose();
+    super.dispose();
   }
 
   @override
@@ -144,17 +226,12 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                 constraints.maxWidth < StudioLayout.compactBreakpoint ||
                 MediaQuery.textScalerOf(context).scale(14) >= 21;
             final overlay = compact || _sidebarHidden;
-            final maximumWidth = (constraints.maxWidth - 600).clamp(
-              300.0,
-              440.0,
-            );
-            final width =
-                (constraints.maxWidth < 1200 &&
-                            _sidebarWidth == null &&
-                            savedWidth == 336
-                        ? 300.0
-                        : desiredWidth)
-                    .clamp(300.0, maximumWidth);
+            final maximumWidth =
+                (constraints.maxWidth - 600 - _sidebarDividerWidth).clamp(
+                  300.0,
+                  440.0,
+                );
+            final width = desiredWidth.clamp(300.0, maximumWidth);
             return Scaffold(
               key: _scaffoldKey,
               drawer: overlay
@@ -178,25 +255,74 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                         width: width,
                         child: _Sidebar(key: _sidebarKey, state: sidebar),
                       ),
-                      Semantics(
-                        label: context.l10n.sidebarResize,
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.resizeColumn,
-                          child: GestureDetector(
-                            onHorizontalDragUpdate: (event) => setState(
-                              () => _sidebarWidth = (width + event.delta.dx)
-                                  .clamp(300, maximumWidth),
-                            ),
-                            onHorizontalDragEnd: (_) =>
-                                unawaited(_persistWidth()),
-                            onDoubleTap: () {
-                              setState(() => _sidebarWidth = 336);
-                              unawaited(_persistWidth());
-                            },
-                            child: Container(
-                              width: 5,
-                              color: context.colors.outlineVariant.withValues(
-                                alpha: .5,
+                      Focus(
+                        focusNode: _sidebarResizeFocus,
+                        onFocusChange: (focused) {
+                          setState(() => _sidebarResizeFocused = focused);
+                          if (!focused &&
+                              !_sidebarDragging &&
+                              _sidebarWidth != null) {
+                            unawaited(_persistWidth());
+                          }
+                        },
+                        onKeyEvent: (_, event) =>
+                            _handleSidebarKey(event, width, maximumWidth),
+                        child: Semantics(
+                          key: StudioDriverKeys.sidebarResize,
+                          label: context.l10n.sidebarResize,
+                          slider: true,
+                          value: '${width.round()}',
+                          increasedValue:
+                              '${(width + 16).clamp(300, maximumWidth).round()}',
+                          decreasedValue:
+                              '${(width - 16).clamp(300, maximumWidth).round()}',
+                          onIncrease: () {
+                            _adjustSidebarWidth(16, width, maximumWidth);
+                            unawaited(_persistWidth());
+                          },
+                          onDecrease: () {
+                            _adjustSidebarWidth(-16, width, maximumWidth);
+                            unawaited(_persistWidth());
+                          },
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.resizeColumn,
+                            child: Listener(
+                              // EditableText unfocuses on down; take focus afterwards.
+                              onPointerUp: (_) =>
+                                  _sidebarResizeFocus.requestFocus(),
+                              child: GestureDetector(
+                                dragStartBehavior: DragStartBehavior.down,
+                                onHorizontalDragStart: (_) {
+                                  _sidebarDragging = true;
+                                  _sidebarResizeFocus.requestFocus();
+                                },
+                                onHorizontalDragUpdate: (event) =>
+                                    _adjustSidebarWidth(
+                                      event.delta.dx,
+                                      width,
+                                      maximumWidth,
+                                    ),
+                                onHorizontalDragEnd: (_) {
+                                  _sidebarDragging = false;
+                                  unawaited(_persistWidth());
+                                },
+                                onHorizontalDragCancel: () {
+                                  if (_sidebarDragging) {
+                                    _sidebarDragging = false;
+                                    _setSidebarWidth(null);
+                                  }
+                                },
+                                onDoubleTap: () {
+                                  _setSidebarWidth(336);
+                                  unawaited(_persistWidth());
+                                },
+                                child: Container(
+                                  width: _sidebarDividerWidth,
+                                  color: _sidebarResizeFocused
+                                      ? context.colors.primary
+                                      : context.colors.outlineVariant
+                                            .withValues(alpha: .5),
+                                ),
                               ),
                             ),
                           ),

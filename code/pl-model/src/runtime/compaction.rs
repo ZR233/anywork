@@ -4,8 +4,8 @@ use crate::completion::tool_schema::CustomToolProjection;
 use crate::completion::{
     CompletionFailure, ModelCompactionRequest, ModelCompactionResponse, OpenAiCompactionMode,
 };
-use crate::provider::ProviderWireProtocol;
-use crate::runtime::openai::{OpenAiProtocol, OpenAiRequestBody};
+use crate::protocol::WireApi;
+use crate::runtime::openai::{OpenAiBase, OpenAiRequestBody};
 use pl_protocol::{ModelContextItem, PureError, Result};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ pub(super) async fn compact_context(
     context: ModelInvocationContext,
 ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
     if !provider.endpoint().service_capabilities.remote_compaction
-        || provider.model().binding.transport.protocol != ProviderWireProtocol::Responses
+        || provider.model().binding.transport.protocol != WireApi::Responses
     {
         return Err(PureError::ConfigError(
             "endpoint does not support native remote compaction".into(),
@@ -116,8 +116,9 @@ fn build_compaction_body(
         .prefix
         .clone()
         .provider_compatible(custom_tool_projection);
-    completion.validate_against(&model_info.slug, &effective_capabilities)?;
-    let OpenAiRequestBody::Responses(mut body) = OpenAiProtocol::responses().build_request(
+    completion.validate_against(&model_info.model_id, &effective_capabilities)?;
+    let OpenAiRequestBody::Responses(mut body) = OpenAiBase.build_request(
+        WireApi::Responses,
         &completion,
         &model_info,
         request.prompt_cache_key.as_deref(),

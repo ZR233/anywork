@@ -23,7 +23,7 @@ use pl_model::completion::{
     ToolSpec,
 };
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::provider::ProviderEndpoint;
+use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{
     ModelInvocationContext, ModelRuntime, ModelSession, thread_tool_declaration,
 };
@@ -32,8 +32,8 @@ use pl_protocol::trace::TraceTextChannel;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
 use serde_json::{Value, json};
 
-fn model(slug: &str, profile: ModelTransportProfile) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
+fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
+    let mut model = ModelInfo::compatible(model_id);
     model.binding.set_transport(profile);
     model
 }
@@ -79,8 +79,9 @@ async fn observed_progress(
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", profile),
     )
     .expect("fixture endpoint is valid");
@@ -245,8 +246,9 @@ async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -338,8 +340,9 @@ async fn a_held_snapshot_survives_the_growth_of_a_chunk_it_shared() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -581,8 +584,9 @@ async fn reasoning_delta_without_any_identity_fails_instead_of_inventing_an_item
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -779,8 +783,9 @@ async fn retry_metadata_failed_body_and_new_tool_arguments_share_the_reliable_qu
             ])));
         }
         let fixture = FixtureServer::start(steps).await.unwrap();
-        let runtime = ModelRuntime::new(
-            ProviderEndpoint::compatible("fixture", fixture.base_url()),
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("live-fixture", ModelTransportProfile::responses_http()),
         )
         .unwrap();
@@ -888,8 +893,9 @@ async fn fixture_stream_past_the_reliable_output_quota_cancels_with_a_partial_re
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -986,8 +992,9 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -1118,8 +1125,9 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -1202,8 +1210,9 @@ async fn a_stream_without_a_thread_progress_channel_is_still_bounded() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new(
-        ProviderEndpoint::compatible("fixture", fixture.base_url()),
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");

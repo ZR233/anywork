@@ -1,7 +1,8 @@
-use pl_protocol::Result;
-
-use crate::completion::CompletionRequest;
+use crate::completion::stream::{CompletionEventStream, OpenAiRawEventStream};
+use crate::completion::{CompletionRequest, CompletionTraceContext};
 use crate::model::info::ModelInfo;
+use crate::protocol::WireApi;
+use pl_protocol::Result;
 
 mod identity;
 mod request;
@@ -10,18 +11,29 @@ pub(crate) mod usage;
 
 use request::build_openai_request_body;
 pub(crate) use request::{OpenAiRequestBody, sent_model_from_wire_body};
-/// OpenAI API 协议端点。
+
+/// OpenAI 协议族的两种 wire API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenAiEndpoint {
     Responses,
     ChatCompletions,
 }
 
-/// OpenAI 协议编解码器。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OpenAiProtocol {
-    endpoint: OpenAiEndpoint,
+impl OpenAiEndpoint {
+    fn of(api: WireApi) -> Self {
+        match api {
+            WireApi::Responses => Self::Responses,
+            WireApi::ChatCompletions => Self::ChatCompletions,
+        }
+    }
 }
+
+/// 可复用的 OpenAI base 编解码器。
+///
+/// 各厂商协议适配组合这个 base 获得 Chat/Responses 请求准备与事件解码；厂商自己的
+/// 请求选项、目录解释和原生能力留在适配边界，不复制 SSE/HTTP/WS 实现。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OpenAiBase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisibleOutputProtocol {
@@ -29,32 +41,33 @@ pub(crate) enum VisibleOutputProtocol {
     TaggedText,
 }
 
-impl OpenAiProtocol {
-    pub(crate) fn responses() -> Self {
-        Self {
-            endpoint: OpenAiEndpoint::Responses,
+impl VisibleOutputProtocol {
+    pub(crate) fn of(api: WireApi) -> Self {
+        match api {
+            WireApi::Responses => Self::NativePhases,
+            WireApi::ChatCompletions => Self::TaggedText,
         }
     }
+}
 
-    pub(crate) fn chat() -> Self {
-        Self {
-            endpoint: OpenAiEndpoint::ChatCompletions,
-        }
-    }
-
+impl OpenAiBase {
     pub(crate) fn build_request(
         &self,
+        api: WireApi,
         request: &CompletionRequest,
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
     ) -> Result<OpenAiRequestBody> {
-        build_openai_request_body(self.endpoint, request, model, prompt_cache_key)
+        build_openai_request_body(OpenAiEndpoint::of(api), request, model, prompt_cache_key)
     }
 
-    pub(crate) fn visible_output_protocol(&self) -> VisibleOutputProtocol {
-        match self.endpoint {
-            OpenAiEndpoint::Responses => VisibleOutputProtocol::NativePhases,
-            OpenAiEndpoint::ChatCompletions => VisibleOutputProtocol::TaggedText,
-        }
+    /// 每次调用创建独立的解码状态；解码器不跨调用共享可变状态。
+    pub(crate) fn decode_stream(
+        &self,
+        api: WireApi,
+        stream: OpenAiRawEventStream,
+        trace: Option<CompletionTraceContext>,
+    ) -> CompletionEventStream {
+        crate::completion::stream::decode_raw_event_stream(stream, api, trace)
     }
 }

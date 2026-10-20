@@ -57,8 +57,8 @@ void main() {
 
   int routeRevision() => _routeRevision(container, threadId);
 
-  ProviderModelView? modelFor(String providerId, String model) =>
-      _modelFor(container, providerId, model);
+  AccountModelView? modelFor(String accountId, String model) =>
+      _modelFor(container, accountId, model);
 
   test('任务模式由目录增量交付，运行时 route 由 Thread 帧交付', () async {
     expect(
@@ -106,8 +106,8 @@ void main() {
     expect(route, isNotNull, reason: '已建会话必须有 canonical route');
     final canonicalRoute = route!;
 
-    final model = modelFor(canonicalRoute.providerId, canonicalRoute.model);
-    expect(model, isNotNull, reason: '当前 route 的模型必须在 provider 目录中');
+    final model = modelFor(canonicalRoute.accountId, canonicalRoute.modelId);
+    expect(model, isNotNull, reason: '当前 route 的模型必须在 account 目录中');
     final target = model!.reasoningEfforts
         .where((effort) => effort != canonicalRoute.effort)
         .firstOrNull;
@@ -119,8 +119,8 @@ void main() {
         .threadCommands
         .setThreadModelRoute(
           threadId: threadId,
-          providerId: canonicalRoute.providerId,
-          model: canonicalRoute.model,
+          accountId: canonicalRoute.accountId,
+          modelId: canonicalRoute.modelId,
           effort: target,
         );
 
@@ -217,17 +217,17 @@ int _routeRevision(ProviderContainer container, String threadId) =>
         ?.revision ??
     -1;
 
-ProviderModelView? _modelFor(
+AccountModelView? _modelFor(
   ProviderContainer container,
-  String providerId,
+  String accountId,
   String model,
 ) {
-  final providers =
-      container.read(settingsStoreProvider).canonical?.providers ?? const [];
-  for (final provider in providers) {
-    if (provider.id != providerId) continue;
-    for (final candidate in provider.models) {
-      if (candidate.slug == model) return candidate;
+  final accounts =
+      container.read(settingsStoreProvider).canonical?.accounts ?? const [];
+  for (final account in accounts) {
+    if (account.id != accountId) continue;
+    for (final candidate in account.models) {
+      if (candidate.modelId == model) return candidate;
     }
   }
   return null;

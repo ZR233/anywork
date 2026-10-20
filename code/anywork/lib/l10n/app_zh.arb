@@ -2,6 +2,8 @@
   "promptAccepted": "已受理",
   "composerSendAndContinue": "发送并继续",
   "appTitle": "糊来帮",
+  "trayShowWindow": "显示主窗口",
+  "trayExit": "退出",
   "sidebarProjects": "项目",
   "sidebarSessions": "会话",
   "sidebarLoadingMore": "正在加载更多会话…",
@@ -9,8 +11,6 @@
   "shutdownTitle": "正在安全退出",
   "shutdownFinalizing": "正在结束",
   "shutdownFinalizingHint": "必要诊断已记录，将自动退出。",
-  "startupInstanceBusy": "已有实例在运行",
-  "startupInstanceBusyHint": "请关闭另一个 anywork 窗口后重新启动。",
   "shutdownPhaseStoppingSubscriptions": "正在停止订阅",
   "shutdownPhaseCancellingTurns": "正在停止会话任务",
   "shutdownPhaseFlushingPersistence": "正在保存会话",
@@ -33,8 +33,12 @@
   "sidebarArchiveSessionFailedReason": "无法归档该会话：{reason}（诊断编号：{correlationId}）",
   "@sidebarArchiveSessionFailedReason": {
     "placeholders": {
-      "reason": {"type": "String"},
-      "correlationId": {"type": "String"}
+      "reason": {
+        "type": "String"
+      },
+      "correlationId": {
+        "type": "String"
+      }
     }
   },
   "sidebarArchiveSessionConfirmTitle": "归档会话",
@@ -118,6 +122,33 @@
   "sidebarOpen": "打开",
   "shellNoSession": "新会话",
   "startPageWelcome": "想从哪里开始？",
+  "preparationTitle": "正在准备会话",
+  "preparationSubtitle": "准备好工作空间后，将自动开始处理你的请求。",
+  "preparationFailedTitle": "环境准备未完成",
+  "preparationRetainedBody": "输入与附件已保留，可调整后重新发送。",
+  "preparationUnknownTitle": "尚未确认创建结果",
+  "preparationUnknownBody": "连接已中断，尚不能确认会话是否创建成功。请勿重复发送。",
+  "preparationCheckProject": "检查项目",
+  "preparationWorkspace": "准备工作区",
+  "preparationInitializeSession": "初始化会话",
+  "preparationSubmitPrompt": "提交请求",
+  "preparationWaiting": "等待开始准备…",
+  "preparationCheckingProject": "正在检查项目与会话配置…",
+  "preparationPreparingWorkspace": "正在准备会话工作区…",
+  "preparationResolvingRepository": "正在检查 Git 仓库与基线提交…",
+  "preparationCreatingWorktree": "正在创建工作树并检出文件…",
+  "preparationInitializingSession": "正在初始化会话环境…",
+  "preparationSubmittingPrompt": "正在提交你的第一条请求…",
+  "preparationMoreDetails": "更多详情",
+  "preparationProjectLabel": "项目",
+  "preparationRemoteLabel": "远程主机",
+  "preparationPathLabel": "工作区路径",
+  "preparationBranchLabel": "工作树分支",
+  "preparationDiagnosticLabel": "诊断编号",
+  "preparationStepComplete": "已完成",
+  "preparationStepPending": "待开始",
+  "preparationStepRunning": "进行中",
+  "preparationStepFailed": "未完成",
   "startPageProject": "当前项目：{project}",
   "startPageOpenProjectTitle": "请先打开项目",
   "startPageOpenProjectBody": "从侧栏打开一个项目后即可发送第一条消息。",
@@ -126,7 +157,7 @@
   "settingsBackToChat": "返回聊天",
   "settingsWorkspaceGroup": "工作区",
   "settingsSystemGroup": "系统",
-  "settingsProvidersTab": "模型服务商",
+  "settingsAccountsTab": "账号",
   "settingsInstructionsTab": "指令",
   "settingsSkillsTab": "技能",
   "settingsAgentsTab": "智能体",
@@ -230,9 +261,13 @@
   "statusModelRouteUnavailable": "当前模型不可用，查看原因",
   "statusModelRouteUnavailableDetail": "当前模型不可用：{reason}",
   "@statusModelRouteUnavailableDetail": {
-    "placeholders": {"reason": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
   },
-  "statusModelRouteUnavailableFallback": "当前模型路由不可用，请检查供应商和模型设置。",
+  "statusModelRouteUnavailableFallback": "当前模型路由不可用，请检查账号和模型设置。",
   "statusModelSwitchWhileRunning": "会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。",
   "statusModelSwitchWhileWorkflowActive": "当前工作流尚未结束，暂时无法切换模型。请等工作流结束后重试。",
   "statusModelSwitchWhileInactive": "会话正在关闭、已关闭或出现故障，无法切换模型。请恢复会话后重试。",
@@ -274,9 +309,9 @@
   "sessionZedOpenFailed": "打开 Zed 失败",
   "sessionTerminalOpenFailed": "打开终端失败",
   "sessionOpenServerMissing": "该项目的 SSH 别名已不在 ~/.ssh/config 中",
-  "statusCurrentAgentTokenSpeed": "当前智能体词元速度",
+  "statusLastConfirmedAgentTokenSpeed": "最近已确认速度",
   "settingsStatisticsTitle": "统计",
-  "settingsStatisticsSubtitle": "按模型服务商实例、实际模型与思考强度汇总最近成功调用。",
+  "settingsStatisticsSubtitle": "按账号、配置模型与组内思考强度汇总最近成功调用。",
   "settingsStatisticsSummaryTitle": "模型性能",
   "settingsStatisticsHistoryTitle": "调用历史",
   "settingsStatisticsAllModels": "全部模型",
@@ -291,7 +326,7 @@
   "settingsStatisticsReadFailedBody": "当前显示的数据可能已过期或不可用。",
   "settingsStatisticsMismatchesOnly": "仅看不一致",
   "settingsStatisticsMismatchEmpty": "当前筛选条件下没有模型不一致记录。",
-  "statisticsModel": "模型服务商 / 模型",
+  "statisticsModel": "账号 / 模型",
   "statisticsHistoryModelHeader": "模型",
   "statisticsConfiguredModel": "配置模型",
   "statisticsSentModel": "发送模型",
@@ -355,10 +390,16 @@
   "timelineRemoteImageOpen": "点击后加载并预览",
   "timelineJumpToLatest": "跳到最新",
   "timelineNew": "新内容",
+  "timelineLoadEarlier": "加载更早消息",
+  "timelineBackToLive": "回到实时",
+  "timelineDetailUnavailable": "此内容已不可用",
+  "timelineReconnecting": "正在重新连接消息，当前内容已保留。",
+  "timelineConnectionFailed": "消息同步失败，当前内容已保留。",
   "timelineReasoningFallback": "思考",
   "timelineReasoningActive": "思考中",
   "timelineReasoningCompleted": "已思考",
-  "timelineReasoningEmpty": "没有可展示的思考内容。",
+  "timelineReasoningSummary": "概要",
+  "timelineReasoningContent": "完整内容",
   "timelineReasoningBudgetLimited": "已达思考预算",
   "timelineToolFallback": "工具",
   "timelineToolGroupTitle": "工具活动",
@@ -374,14 +415,25 @@
   "timelineViewImageRead": "已读取图片",
   "timelineImagesViewed": "已查看 {count} 张图像",
   "@timelineImagesViewed": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineImagesProduced": "{count} 张图像",
   "@timelineImagesProduced": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineViewImageReading": "正在读取图片",
   "timelineViewImageFailed": "读取图片失败",
+  "timelineReadFileCompleted": "已读取",
+  "timelineReadFileReading": "正在读取",
+  "timelineReadFileFailed": "读取失败",
   "timelineToolCompleted": "{name} 已完成",
   "timelineToolFailed": "{name} 失败",
   "timelineToolDenied": "{name} 被拒绝",
@@ -427,7 +479,6 @@
   "interactionLastQuestion": "最后一题",
   "interactionContinueAfterAnswer": "回答后继续",
   "timelineRolledBack": "已从有效上下文回退",
-  "timelinePendingSave": "等待保存",
   "interactionSubmitEmptyAnswersHint": "未作答的问题将留空提交。",
   "interactionAnsweredPendingHint": "已答 {answeredCount} 题 · {pendingCount} 题待答",
   "interactionPreviousQuestion": "上一题",
@@ -458,7 +509,6 @@
   "statusPlanEntry": "计划",
   "interactionPlanViewDetails": "查看完整计划",
   "interactionPlanDetailsTitle": "实施计划",
-  "interactionPlanComposerPausedHint": "普通消息输入已暂停，避免与计划反馈混淆。",
   "interactionPlanConfirmFooterHint": "确认后将在{mode}模式进入文档编辑检查点。",
   "@interactionPlanConfirmFooterHint": {
     "placeholders": {
@@ -471,32 +521,42 @@
   "interactionPlanConfirmAction": "确认并执行",
   "interactionPlanAdjustHint": "输入要调整的要求…",
   "interactionPlanAdjustSubmit": "提交修改",
-  "settingsProvidersTitle": "模型服务商",
-  "settingsProvidersSubtitle": "模型服务、凭据、模型和用量",
+  "interactionPlanFeedbackHint": "Enter 提交修改 · Shift+Enter 换行",
+  "planExpandReading": "展开阅读",
+  "planRestoreSplit": "恢复并排",
+  "planReceiptApproved": "计划已批准",
+  "planReceiptRevisionRequested": "已请求修改计划",
+  "planReceiptCancelled": "计划确认已取消",
+  "planReceiptAnswered": "计划确认已回答",
+  "planReceiptYourReply": "你的回复",
+  "planReceiptYourFeedback": "修改意见",
+  "planReceiptApproveReply": "批准实施该计划",
+  "settingsAccountsTitle": "账号",
+  "settingsAccountsSubtitle": "账号、凭据、模型和用量",
   "settingsRefreshUsage": "刷新用量",
-  "settingsAddProvider": "添加模型服务商",
-  "settingsSearchProviders": "搜索模型服务商",
-  "settingsNoProvidersMatchTitle": "没有匹配的模型服务商",
-  "settingsNoProvidersMatchMessage": "清空搜索以查看所有已配置的模型服务商。",
-  "settingsNoProvidersTitle": "没有模型服务商",
-  "settingsNoProvidersMessage": "添加模型服务商后可配置凭据和模型。",
-  "settingsDefaultProvider": "默认模型服务商",
-  "settingsSetAsDefaultProvider": "设为默认",
+  "settingsAddAccount": "添加账号",
+  "settingsSearchAccounts": "搜索账号",
+  "settingsNoAccountsMatchTitle": "没有匹配的账号",
+  "settingsNoAccountsMatchMessage": "清空搜索以查看所有已配置的账号。",
+  "settingsNoAccountsTitle": "没有账号",
+  "settingsNoAccountsMessage": "添加账号后可配置凭据和模型。",
+  "settingsDefaultAccount": "默认账号",
+  "settingsSetAsDefaultAccount": "设为默认",
   "settingsOpenDetails": "打开详情",
-  "settingsProviderActions": "模型服务商操作",
-  "settingsEditProvider": "编辑模型服务商",
-  "settingsDeleteProvider": "删除模型服务商",
-  "settingsNoProviderSelected": "未选择模型服务商",
-  "settingsProviderTitle": "模型服务商信息",
-  "settingsProviderModelsTitle": "模型",
-  "settingsProviderConnectionTitle": "连接",
-  "settingsProviderDefaultModelsTitle": "默认目录（尚未同步）",
-  "settingsProviderCustomModelsTitle": "手动模型",
-  "settingsProviderOnlineModelsTitle": "在线模型",
-  "settingsNewProvider": "新建模型服务商",
-  "settingsProviderKey": "服务商标识",
-  "settingsTemplate": "模板",
-  "settingsCustomProvider": "自定义模型服务商",
+  "settingsAccountActions": "账号操作",
+  "settingsEditAccount": "编辑账号",
+  "settingsDeleteAccount": "删除账号",
+  "settingsNoAccountSelected": "未选择账号",
+  "settingsAccountTitle": "账号信息",
+  "settingsAccountModelsTitle": "模型",
+  "settingsAccountConnectionTitle": "连接",
+  "settingsAccountDefaultModelsTitle": "默认目录（尚未同步）",
+  "settingsAccountCustomModelsTitle": "手动模型",
+  "settingsAccountOnlineModelsTitle": "在线模型",
+  "settingsNewAccount": "新建账号",
+  "settingsAccountId": "账号 ID",
+  "settingsAccountTemplate": "账号模板",
+  "settingsCustomAccount": "自定义账号",
   "settingsDefaultModel": "默认模型",
   "settingsApiKey": "API 密钥",
   "settingsApiKeyKeepCurrent": "API 密钥（留空以保留当前值）",
@@ -505,7 +565,7 @@
   "settingsDisplayName": "显示名称",
   "settingsProtocolType": "协议类型",
   "settingsBaseUrl": "基础 URL",
-  "settingsModelSlug": "模型标识",
+  "settingsModelId": "模型标识",
   "settingsReasoningEfforts": "思考强度",
   "settingsEdit": "编辑",
   "settingsCancel": "取消",
@@ -518,12 +578,11 @@
   "settingsModelOriginOnline": "在线",
   "settingsModelOriginBundled": "内置",
   "settingsModelOriginManual": "手动",
-  "settingsUnverifiedOnlineModel": "未校验模型",
   "settingsRemoveManualModelConfirmTitle": "删除此手动模型？",
   "settingsRemoveManualModelConfirmBody": "此操作不可撤销。模型会离开有效目录，其连接方式和压缩阈值覆盖会被清除。历史调用、账单和会话费用保持不变。",
   "settingsRemoveManualModelConfirmAction": "删除",
   "settingsRemoveManualModelFailed": "无法删除此手动模型。",
-  "settingsManualModelSlugConflict": "该标识已存在于在线或内置目录中。",
+  "settingsManualModelIdConflict": "该标识已存在于在线或内置目录中。",
   "settingsBundledModels": "{count} 个内置模型",
   "settingsDefaultBadge": "默认",
   "settingsReadyBadge": "就绪",
@@ -548,8 +607,8 @@
   "settingsUsageMissingKey": "缺少密钥",
   "settingsUsageFailed": "用量查询失败",
   "settingsUsageQueryFailed": "用量查询失败",
-  "settingsUsageApiKeyMissing": "未配置模型服务商 API 密钥",
-  "settingsUsageUnsupportedForProvider": "{providerName} 不支持用量查询",
+  "settingsUsageApiKeyMissing": "未配置账号 API 密钥",
+  "settingsUsageUnsupportedForAccount": "{accountName} 不支持用量查询",
   "settingsUsageNotChecked": "未检查",
   "settingsUsageUnavailable": "用量不可用",
   "settingsUsageError": "无法加载用量",
@@ -628,7 +687,7 @@
   "settingsWebSearchSubtitle": "通过符合条件的 OpenAI 账户执行搜索；修改从下一轮次起生效。",
   "settingsWebSearchConfiguredMode": "已配置模式",
   "settingsWebSearchEffectiveMode": "有效模式",
-  "settingsWebSearchProvider": "OpenAI 模型服务商",
+  "settingsWebSearchAccount": "OpenAI 账号",
   "settingsWebSearchModel": "搜索模型",
   "settingsWebSearchMode": "模式",
   "settingsWebSearchModeDisabled": "禁用",
@@ -649,17 +708,17 @@
   "settingsWebSearchAvailable": "可用",
   "settingsWebSearchDisabled": "已禁用",
   "settingsWebSearchMissingCredential": "缺少凭证",
-  "settingsWebSearchUnsupportedProvider": "模型服务商不支持",
+  "settingsWebSearchUnsupportedAccount": "账号不支持",
   "settingsWebSearchUnsupportedModel": "模型不支持",
-  "settingsWebSearchMissingCredentialReason": "没有从 OpenAI 预设创建且凭证有效的模型服务商，远程网页搜索已完全禁用。",
-  "settingsWebSearchUnsupportedProviderReason": "当前模型服务商未提供这一路网页搜索后端。",
+  "settingsWebSearchMissingCredentialReason": "没有从 OpenAI 账号模板创建且凭证有效的账号，远程网页搜索已完全禁用。",
+  "settingsWebSearchUnsupportedAccountReason": "当前账号未提供这一路网页搜索后端。",
   "settingsWebSearchUnsupportedModelReason": "当前路由无法提供函数工具或托管网页搜索。",
   "settingsNotAvailable": "不可用",
   "settingsSaveWebSearch": "保存网页搜索",
   "settingsWebSearchUnsaved": "有未保存的搜索设置",
   "settingsDeepSeekWebSearchTitle": "DeepSeek 原生联网搜索",
   "settingsDeepSeekWebSearchSubtitle": "先由其它可用搜索优先处理；仅当其它搜索未配置、不可用或调用失败时，才由 DeepSeek 联网搜索兜底；搜索与抓取均按请求次数计费。",
-  "settingsDeepSeekWebSearchProvider": "DeepSeek 模型服务商",
+  "settingsDeepSeekWebSearchAccount": "DeepSeek 账号",
   "settingsDeepSeekWebSearchConfigured": "搜索已配置",
   "settingsDeepSeekWebSearchEffective": "搜索当前有效",
   "settingsDeepSeekWebSearchEnabled": "已启用",
@@ -814,7 +873,7 @@
   "settingsAgentProfileDescriptionField": "介绍",
   "settingsAgentProfileWhenToUseField": "适用任务",
   "settingsAgentProfileInstructionsField": "系统指令",
-  "settingsAgentProfileProviderField": "模型服务商",
+  "settingsAgentProfileAccountField": "账号",
   "settingsAgentProfileEffortDefault": "使用模型默认值",
   "settingsAgentProfileWorkspaceModeField": "工作区模式",
   "settingsAgentWorkspaceModeUnrestricted": "不受限",
@@ -829,7 +888,7 @@
   "settingsAgentProfileRequired": "必填",
   "settingsServiceCapabilitiesTitle": "服务能力",
   "settingsCapabilitySourceField": "能力来源",
-  "settingsCapabilitySourcePreset": "跟随预设默认",
+  "settingsCapabilitySourceTemplate": "跟随模板默认",
   "settingsCapabilitySourceExplicit": "显式覆盖",
   "settingsHostedWebSearchField": "托管网页搜索",
   "settingsHostedWebSearchDialectField": "托管网页搜索方言",
@@ -859,20 +918,17 @@
   "settingsContextBudget": "上下文预算（词元）",
   "settingsOutputBudget": "最大输出（词元）",
   "settingsModelAutoCompactTitle": "上下文压缩阈值",
-  "settingsModelAutoCompactRestore": "恢复默认",
+  "settingsModelAutoCompactRestore": "恢复自动",
   "settingsModelAutoCompactSaving": "正在自动应用…",
   "settingsModelAutoCompactSaveFailed": "应用失败，已保留输入。",
   "settingsModelAutoCompactRetry": "重试",
-  "settingsModelAutoCompactDefaultLabel": "默认",
-  "settingsModelAutoCompactOverrideLabel": "用户",
+  "settingsModelAutoCompactOverrideLabel": "配置方式",
   "settingsModelAutoCompactEffectiveLabel": "生效",
-  "settingsModelAutoCompactSafeLabel": "安全上限",
-  "settingsModelAutoCompactUsingDefault": "使用默认",
+  "settingsModelAutoCompactUsingDefault": "自动",
   "settingsModelAutoCompactInputLabel": "阈值（词元）",
   "settingsModelAutoCompactInvalid": "请输入正整数词元数。",
-  "settingsModelAutoCompactHelp": "实际生效取所选阈值与上下文容量 90% 中较小者。",
-  "settingsModelAutoCompactUnknownCapacity": "上下文容量未知，暂不自动压缩。",
-  "settingsModelAutoCompactAboveSafe": "超过安全上限，实际按 {value} 生效。",
+  "settingsModelAutoCompactHelp": "实际阈值不超过上下文容量的 90%，并预留最大输出预算。",
+  "settingsModelAutoCompactUnknownCapacity": "上下文容量未知，无法计算自动压缩阈值。",
   "settingsPriceInput": "输入",
   "settingsPriceOutput": "输出",
   "settingsPriceCacheRead": "缓存读取",
@@ -993,9 +1049,9 @@
   "toolStatusDenied": "已拒绝",
   "toolStatusCancelled": "已取消",
   "toolStatusCancelling": "正在取消",
-  "settingsProviderCatalogUnavailable": "无法获取模型服务商目录。",
-  "settingsProviderPresetUnavailable": "无法获取模型服务商预设。",
-  "settingsProviderMissingCredential": "缺少凭据",
+  "settingsAccountCatalogUnavailable": "无法获取账号目录。",
+  "settingsAccountTemplateUnavailable": "无法获取账号模板。",
+  "settingsAccountMissingCredential": "缺少凭据",
   "settingsSshStateDisconnected": "未连接",
   "settingsSshStateConnecting": "连接中",
   "settingsSshStateWaitingForInput": "等待输入",
@@ -1033,14 +1089,14 @@
   "startupRecoveredNotice": "已备份无法恢复的数据，并恢复初始配置。备份位置：",
   "settingsModelCatalogDefault": "内置模型列表",
   "settingsModelCatalogCached": "上次成功的模型列表",
-  "settingsModelCatalogOnline": "供应商返回的模型列表",
+  "settingsModelCatalogOnline": "该账号返回的模型列表",
   "settingsModelCatalogChecked": "上次检查",
   "settingsModelCatalogFailed": "启动时模型同步失败，继续使用当前列表。",
   "settingsModelCatalogCacheWarning": "无法加载已保存的模型列表，当前使用内置列表。",
-  "settingsModelCatalogEmpty": "当前没有可用模型。",
+  "settingsModelCatalogEmpty": "该账号没有模型。",
   "settingsModelCatalogRestartHint": "重启应用可重新同步。",
   "timelineActivityTitle": "思考与工具",
-  "timelineContextCompacted": "上下文已自动压缩",
+  "timelineContextCompacted": "上下文已压缩",
   "timelineCompactionDetail": "压缩前 {before}，压缩后 {after} 词元",
   "@timelineCompactionDetail": {
     "placeholders": {
@@ -1065,5 +1121,378 @@
   },
   "timelineUserInputYourAnswer": "你的回答",
   "timelineUserInputNoAnswer": "未提供回答",
-  "timelineUserInputSecretHidden": "敏感回答已隐藏"
+  "timelineUserInputSecretHidden": "敏感回答已隐藏",
+  "settingsModelParametersUnknown": "模型参数未知",
+  "settingsModelPriceUnknown": "价格未知",
+  "modelTextFilterExcluded": "{model}：不符合文本筛选条件（{reasons}）",
+  "@modelTextFilterExcluded": {
+    "placeholders": {
+      "model": {
+        "type": "String"
+      },
+      "reasons": {
+        "type": "String"
+      }
+    }
+  },
+  "modelTextInputUnsupported": "不支持文本输入",
+  "modelTextOutputUnsupported": "不支持文本输出",
+  "modelContextWindowUnknown": "上下文大小未知",
+  "modelTextFilterEmpty": "没有符合文本条件的模型，请在账号设置中查看参数",
+  "modeEditorTitle": "工作模式",
+  "modeEditorNewMode": "新建模式",
+  "modeEditorImportJson": "导入 JSON",
+  "modeEditorSearchHint": "查找名称或标识",
+  "modeEditorBuiltInGroup": "系统内置",
+  "modeEditorMyModesGroup": "我的模式",
+  "modeEditorNoMatches": "没有匹配的工作模式。",
+  "modeEditorCatalogReadOnlyHint": "系统模式只读。复制后可自定义阶段与路径。",
+  "modeEditorReadOnly": "只读",
+  "modeEditorUnsaved": "未保存",
+  "modeEditorUndo": "撤销",
+  "modeEditorRedo": "重做",
+  "modeEditorReload": "重新加载",
+  "modeEditorDuplicate": "复制",
+  "modeEditorDeleteMode": "删除模式",
+  "modeEditorSave": "保存",
+  "modeEditorTabFlow": "流程图",
+  "modeEditorTabJson": "JSON 配置",
+  "modeEditorTabSettings": "模式设置",
+  "modeEditorTabPreview": "运行预演",
+  "modeEditorDraftUnsaved": "草稿未保存",
+  "modeEditorSelectOrCreate": "选择或新建一个工作模式。",
+  "modeEditorOpenNotice": "已打开 {id}",
+  "@modeEditorOpenNotice": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaveValidationIssues": "保存前校验发现 {count} 个问题。",
+  "@modeEditorSaveValidationIssues": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorPreSaveValidationFailed": "保存前校验失败：{error}",
+  "@modeEditorPreSaveValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaved": "模式已保存，将从下一轮开始生效。",
+  "modeEditorSaveFailed": "保存失败。",
+  "modeEditorReloaded": "已重新读取模式定义。",
+  "modeEditorReloadFailed": "重新加载失败。",
+  "modeEditorDeleteFailed": "删除失败。",
+  "modeEditorDeleted": "模式已删除，会话历史保留。",
+  "modeEditorCopySuffix": "副本",
+  "modeEditorCopyCreated": "已创建副本草稿，保存后出现在模式目录。",
+  "modeEditorDraftCreated": "已创建草稿。编辑并通过校验后保存。",
+  "modeEditorImportReadFailed": "无法读取模式 JSON：{error}",
+  "@modeEditorImportReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorImportObjectRequired": "模式 JSON 必须是对象。",
+  "modeEditorInvalidModeId": "模式标识必须形如 mode.example。",
+  "modeEditorBuiltInCannotOverwrite": "系统模式不可覆盖。",
+  "modeEditorImportedDraft": "配置已读取为草稿，保存后发布到模式目录。",
+  "modeEditorJsonCopied": "模式 JSON 已复制。",
+  "modeEditorSchemaReadFailed": "无法读取 Schema：{error}",
+  "@modeEditorSchemaReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorValidationPassed": "校验通过。",
+  "modeEditorIssuesFound": "发现 {count} 个问题。",
+  "@modeEditorIssuesFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorValidationFailed": "校验失败：{error}",
+  "@modeEditorValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorJsonApplied": "JSON 已应用到当前草稿。",
+  "modeEditorJsonApplyFailed": "JSON 无法应用。",
+  "modeEditorJsonApplyFix": "JSON 无法应用，请先修正语法或字段。",
+  "modeEditorPreviewReasonDefault": "手动确认阶段完成和转换条件",
+  "modeEditorPreviewFailed": "预演失败：{error}",
+  "@modeEditorPreviewFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorMaxStates": "最多支持 {count} 个状态。",
+  "@modeEditorMaxStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNewFinalState": "新的结束状态",
+  "modeEditorNewStage": "新的工作阶段",
+  "modeEditorFinalStateAdded": "结束状态已添加。请添加进入路径。",
+  "modeEditorStageAdded": "阶段已添加。请添加进入和后续转换。",
+  "modeEditorContinueGuardPlaceholder": "满足条件时继续。",
+  "modeEditorTransitionAdded": "转换已添加，请补充允许转换的条件。",
+  "modeEditorNeedTwoStates": "至少需要两个状态才能添加转换。",
+  "modeEditorLayoutReset": "已重新排布。布局不改变工作流定义。",
+  "modeEditorWorkflowEnabled": "工作流已启用。",
+  "modeEditorWorkflow": "工作流",
+  "modeEditorWorkflowGoalText": "按阶段完成当前任务并保留可核对的路径。",
+  "modeEditorStart": "开始",
+  "modeEditorStageInstructionsPlaceholder": "说明本阶段需要完成的工作。",
+  "modeEditorStageCriterionPlaceholder": "本阶段目标已满足。",
+  "modeEditorDone": "完成",
+  "modeEditorTransitionGuardPlaceholder": "工作结果已经满足目标。",
+  "modeEditorPromptDescription": "描述这个工作模式的职责、工作顺序和边界。",
+  "modeEditorPortIn": "进入",
+  "modeEditorPortOut": "继续",
+  "modeEditorGuardRequiredShort": "条件待填写",
+  "modeEditorDuplicateTransition": "同一起点与目标之间已经存在转换。",
+  "modeEditorInitialBadge": "初始",
+  "modeEditorStageAction": "阶段",
+  "modeEditorFinalLabel": "终态",
+  "modeEditorTransitionAction": "转换",
+  "modeEditorValidate": "校验",
+  "modeEditorAutoLayout": "自动排布",
+  "modeEditorZoomOut": "缩小",
+  "modeEditorZoomIn": "放大",
+  "modeEditorFitView": "适应视图",
+  "modeEditorFlowInspector": "流程属性",
+  "modeEditorNoWorkflow": "此模式没有工作流",
+  "modeEditorNoWorkflowReadOnlyHint": "复制为自定义模式后可以添加阶段和转换。",
+  "modeEditorNoWorkflowEnableHint": "启用工作流后会添加初始阶段和结束状态，可继续增删。",
+  "modeEditorEnableWorkflow": "启用工作流",
+  "modeEditorUnsavedTitle": "草稿尚未保存",
+  "modeEditorUnsavedBody": "保存当前修改后继续，或放弃这次草稿修改。",
+  "modeEditorCancel": "取消",
+  "modeEditorDiscard": "放弃修改",
+  "modeEditorSaveAndContinue": "保存并继续",
+  "modeEditorNewWorkMode": "新建工作模式",
+  "modeEditorModeName": "模式名称",
+  "modeEditorModeNameHint": "例如：研究报告",
+  "modeEditorModeNameRequired": "请输入模式名称。",
+  "modeEditorModeId": "模式标识",
+  "modeEditorModeIdFormat": "标识必须形如 mode.example，仅含小写字母、数字、- 和 _。",
+  "modeEditorModeIdExists": "模式标识已存在。",
+  "modeEditorStartingPoint": "选择起点",
+  "modeEditorMinimalWorkflow": "最简工作流",
+  "modeEditorNoWorkflowTemplate": "无工作流",
+  "modeEditorCreateMode": "创建模式",
+  "modeEditorImportDialogTitle": "导入模式配置",
+  "modeEditorImportDialogBody": "粘贴模式 JSON。内置模式不可覆盖；同 ID 的自定义配置会作为待保存草稿打开。",
+  "modeEditorLoadAsDraft": "读取为草稿",
+  "modeEditorSchemaDialogTitle": "模式 JSON Schema",
+  "modeEditorClose": "关闭",
+  "modeEditorDeleteDialogTitle": "删除这个工作模式？",
+  "modeEditorDeleteDialogBody": "移除「{displayName}」的模式定义；不删除会话历史。",
+  "@modeEditorDeleteDialogBody": {
+    "placeholders": {
+      "displayName": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorConfirmDelete": "确认删除",
+  "modeEditorRemoveStateTitle": "删除这个状态？",
+  "modeEditorRemoveStateBody": "删除「{title}」及相关的 {transitionCount} 条转换。可通过撤销恢复。",
+  "@modeEditorRemoveStateBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "transitionCount": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorDeleteState": "删除状态",
+  "modeEditorRemoveWorkflowTitle": "移除工作流？",
+  "modeEditorRemoveWorkflowBody": "模式仍可聊天，但不再提供阶段图和 workflow 工具。保存前可以撤销。",
+  "modeEditorRemoveWorkflow": "移除工作流",
+  "modeEditorStateIdInvalid": "标识仅含小写字母、数字、- 和 _。",
+  "modeEditorStateIdExists": "状态标识已存在。",
+  "modeEditorRenameStateTitle": "修改状态标识",
+  "modeEditorStateId": "状态标识",
+  "modeEditorApply": "应用",
+  "modeEditorAddTransition": "添加转换",
+  "modeEditorSourceState": "起点状态",
+  "modeEditorChooseSource": "请选择起点。",
+  "modeEditorTargetState": "目标状态",
+  "modeEditorChooseTarget": "请选择目标。",
+  "modeEditorTransitionGuard": "何时允许转换",
+  "modeEditorTransitionGuardHint": "例如：用户确认范围后",
+  "modeEditorGuardRequiredField": "请填写转换条件。",
+  "modeEditorCollapse": "收起",
+  "modeEditorNoWorkflowPeriod": "当前模式没有工作流。",
+  "modeEditorInspectorSelectHint": "选择画布中的阶段或转换以编辑完整字段。",
+  "modeEditorRenameId": "修改标识",
+  "modeEditorStageTitle": "阶段名称",
+  "modeEditorStageKind": "阶段类型",
+  "modeEditorAtomicStage": "工作阶段",
+  "modeEditorFinalState": "结束状态",
+  "modeEditorInitialStateSwitch": "作为初始状态",
+  "modeEditorInitialStateLockedHint": "工作流总保留一个初始状态；请在其他阶段启用。",
+  "modeEditorInitialStateHint": "进入此模式后从该阶段开始。",
+  "modeEditorStageInstructions": "阶段说明",
+  "modeEditorCompletionCriteria": "完成标准（每行一条）",
+  "modeEditorAtomicCriteriaRequired": "工作阶段至少需要一条完成标准，保存前由 Rust 编译器校验。",
+  "modeEditorOutgoingTransitions": "后续转换",
+  "modeEditorAdd": "添加",
+  "modeEditorNoOutgoing": "没有后续转换。",
+  "modeEditorDeleteTransition": "删除转换",
+  "modeEditorStateTransition": "状态转换",
+  "modeEditorTransitionRuleHint": "同一起点与目标之间只允许一条转换；允许多个后继、自环和循环。",
+  "modeEditorValidationIssuesCount": "{count} 个问题",
+  "@modeEditorValidationIssuesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNotValidated": "尚未校验",
+  "modeEditorApplyJson": "应用 JSON",
+  "modeEditorCopyJson": "复制 JSON",
+  "modeEditorSchemaLabel": "Schema",
+  "modeEditorReadOnlyCopyHint": "只读模式可复制或校验",
+  "modeEditorJsonHint": "模式 JSON 保留六个顶层字段和 editor 布局。",
+  "modeEditorModeSettingsTitle": "模式设置",
+  "modeEditorModeSettingsSubtitle": "执行定义与编辑布局分开保存；布局不改变工作流身份。",
+  "modeEditorDisplayName": "模式名称",
+  "modeEditorDescription": "模式描述",
+  "modeEditorOrder": "排序",
+  "modeEditorRawPrompt": "原始 Prompt",
+  "modeEditorRawPromptHelper": "这是模式注入的完整提示词，不经过 GUI 改写。",
+  "modeEditorWorkflowTitle": "工作流名称",
+  "modeEditorWorkflowGoal": "工作流目标",
+  "modeEditorInitialStateLabel": "初始状态",
+  "modeEditorWorkflowSummary": "{states} 个状态 · {transitions} 条转换",
+  "@modeEditorWorkflowSummary": {
+    "placeholders": {
+      "states": {
+        "type": "int"
+      },
+      "transitions": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNoWorkflowToolHint": "没有工作流时不会生成阶段图，也不会提供 workflow 工具。",
+  "modeEditorPreviewUnavailable": "该模式没有工作流，无法运行预演。",
+  "modeEditorRunPreview": "运行预演",
+  "modeEditorPreviewSubtitle": "有界重放使用生产 Rust 状态机；预演不修改配置中的初始状态。",
+  "modeEditorStartPreview": "开始预演",
+  "modeEditorRestart": "重新开始",
+  "modeEditorTransitionReason": "转换原因",
+  "modeEditorTransitionReasonHint": "手动确认阶段完成和转换条件",
+  "modeEditorTransitionReasonHelper": "推进到后继状态时作为本次转换的原因。",
+  "modeEditorAllowedNextStates": "允许的下一状态 · {count}",
+  "@modeEditorAllowedNextStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorTerminalReached": "已到达终态。重新开始预演不会改写保存的初始状态。",
+  "modeEditorPreviewIntroText": "从当前 JSON 文档开始预演。每次推进只接受当前状态的一条合法转换，路径与转换历史会保留在本次预演中。",
+  "modeEditorPreviewAccepted": "预演已接受。",
+  "modeEditorPreviewRejected": "预演被拒绝。",
+  "modeEditorCurrentStage": "当前阶段",
+  "modeEditorPath": "路径",
+  "modeEditorAdvance": "推进",
+  "modeEditorPreviewHistory": "本次预演历史",
+  "modeDeletedUsingSnapshot": "已删除模式使用快照",
+  "modeDeletedChooseAnother": "该模式已删除，请重新选择",
+  "modeSnapshotBadge": "快照",
+  "modeDeletedBadge": "已删除",
+  "settingsAccountProtocol": "账号协议",
+  "statisticsGroupTotal": "本组汇总",
+  "statisticsAllEfforts": "全部强度",
+  "statisticsEffortBreakdownTitle": "组内思考强度",
+  "accountProtocolOpenAi": "OpenAI",
+  "accountProtocolDeepSeek": "DeepSeek",
+  "accountProtocolZhipu": "智谱",
+  "accountProtocolMiMo": "MiMo",
+  "accountProtocolXai": "xAI",
+  "accountProtocolCustom": "自定义（OpenAI 兼容）",
+  "timelineWaitToolsTitle": "等待工具完成",
+  "timelineWaitMessagesTitle": "等待子代理或新消息",
+  "timelineWaitTimerTitle": "计时器",
+  "timelineWaitTimerElapsed": "计时完成",
+  "timelineWaitReady": "已有等待来源就绪",
+  "timelineWaitMessagesReady": "已有新消息",
+  "timelineWaitTimedOut": "等待超时",
+  "timelineWaitCancelled": "等待已取消",
+  "timelineWaitFailed": "等待失败",
+  "timelineWaitInterrupted": "等待已中断",
+  "timelineWaitTargetCount": "{count} 个任务",
+  "@timelineWaitTargetCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineWaitMessageSource": "新消息",
+  "timelineWaitMaxDuration": "最多 {duration}",
+  "@timelineWaitMaxDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitTimerDuration": "{duration}",
+  "@timelineWaitTimerDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitMessagesMayWake": "新消息可以提前唤醒",
+  "timelineWaitAnyReadyRule": "任一所选任务或新消息就绪即返回",
+  "timelineWaitDiagnostics": "诊断信息",
+  "timelineWaitUnknownStatus": "未知",
+  "timelineWaitStatusRunning": "运行中",
+  "timelineWaitStatusSucceeded": "已成功",
+  "timelineWaitStatusFailed": "已失败",
+  "timelineWaitStatusCancelled": "已取消",
+  "timelineWaitStatusInterrupted": "已中断",
+  "conversationActivityWaitingTools": "等待工具完成",
+  "conversationActivityWaitingMessages": "等待子代理或新消息",
+  "conversationActivityWaitingTimer": "计时器",
+  "settingsModelAutoCompactAdjusted": "已根据模型上下文容量与输出预留调整生效阈值。",
+  "modelContextParametersInvalid": "上下文参数不一致",
+  "modelInputBudgetExhausted": "预留输出后没有可用输入容量",
+  "statusCompactNow": "立即压缩",
+  "statusCompacting": "正在压缩…",
+  "statusCompactionFailed": "压缩失败，请重试。",
+  "settingsModelAutoCompactCustom": "自定义"
 }

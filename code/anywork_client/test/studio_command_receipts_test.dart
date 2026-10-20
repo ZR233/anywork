@@ -15,13 +15,13 @@ final class _RouteCall {
   _RouteCall(
     this.operationId,
     this.threadId,
-    this.model,
+    this.modelId,
     this.expectedRouteRevision,
     this.expectedSettingsRevision,
   );
   final OperationId operationId;
   final String threadId;
-  final String model;
+  final String modelId;
   final int expectedRouteRevision;
   final int expectedSettingsRevision;
   final reply = Completer<ThreadModelRouteCommandReply>();
@@ -62,7 +62,16 @@ final class _Transport implements StudioTransport {
   final routes = StreamController<_RouteCall>.broadcast();
   final stops = StreamController<_StopCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
+  final compactions = <Completer<void>>[];
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
+
+  @override
+  Future<void> compactThread(String threadId) {
+    expect(threadId, 'thread');
+    final reply = Completer<void>();
+    compactions.add(reply);
+    return reply.future;
+  }
 
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
@@ -89,14 +98,14 @@ final class _Transport implements StudioTransport {
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) {
     final call = _RouteCall(
       operationId,
       threadId,
-      model,
+      modelId,
       expectedModelRouteRevision,
       expectedSettingsRevision,
     );
@@ -131,8 +140,7 @@ final class _Transport implements StudioTransport {
       throw UnsupportedError('Unused transport: ${invocation.memberName}');
 }
 
-final class _RouteConflictTransport extends _Transport
-    implements ChatWindowReader {
+final class _RouteConflictTransport extends _Transport {
   _RouteConflictTransport({this.onRuntimeCancel}) {
     addTearDown(() async {
       for (final binding in bindings) {
@@ -145,7 +153,7 @@ final class _RouteConflictTransport extends _Transport
   final Future<void> Function(int index)? onRuntimeCancel;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
-  final window = _RouteConflictWindow();
+  final window = _RouteConflictConnection();
   int windowOpens = 0;
 
   @override
@@ -163,7 +171,7 @@ final class _RouteConflictTransport extends _Transport
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async {
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     windowOpens++;
     return window;
   }
@@ -177,15 +185,15 @@ final class _RouteConflictTransport extends _Transport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     attempts.add(
       _RouteCall(
         operationId,
         threadId,
-        model,
+        modelId,
         expectedModelRouteRevision,
         expectedSettingsRevision,
       ),
@@ -210,25 +218,37 @@ final class _RouteConflictTransport extends _Transport
   }
 }
 
-final class _RouteConflictWindow implements StudioChatWindow {
-  Completer<StudioChatFrame?>? _pending;
+final class _RouteConflictConnection implements StudioTimelineConnection {
+  Completer<StudioTimelineUpdate?>? _pending;
   bool _closed = false;
   int requestCloseCalls = 0;
 
   @override
-  Future<StudioChatSnapshot> initial() async => const StudioChatSnapshot(
-    focusedItemId: null,
-    version: 300,
-    items: [],
-    hasOlder: false,
-    hasNewer: false,
+  Future<StudioTimelineBaseline> initial() async =>
+      const StudioTimelineBaseline(
+        subscriptionId: 'route-conflict',
+        version: 300,
+        items: [],
+        before: null,
+        hasOlder: false,
+      );
+
+  @override
+  Future<StudioTimelineUpdate?> next() {
+    if (_closed) return Future.value(null);
+    return (_pending ??= Completer<StudioTimelineUpdate?>()).future;
+  }
+
+  @override
+  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
+    const StudioTimelinePage(items: [], before: null, hasOlder: false),
   );
 
   @override
-  Future<StudioChatFrame?> next() {
-    if (_closed) return Future.value(null);
-    return (_pending ??= Completer<StudioChatFrame?>()).future;
-  }
+  Future<StudioTimelineDetailChunk> readDetail({
+    required String itemId,
+    required StudioTimelineDetailQuery query,
+  }) => Future.error(UnsupportedError('route test has no detail body'));
 
   @override
   void requestClose() {
@@ -241,11 +261,6 @@ final class _RouteConflictWindow implements StudioChatWindow {
 
   @override
   Future<void> close() async => requestClose();
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused ChatView control: ${invocation.memberName}',
-  );
 }
 
 const _epoch = 'native-runtime-one';
@@ -264,9 +279,9 @@ StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
   workspacePath: '/project',
 );
 
-ThreadRuntimeView _runtime({String model = 'alpha', int routeRevision = 1}) =>
+ThreadRuntimeView _runtime({String modelId = 'alpha', int routeRevision = 1}) =>
     ThreadRuntimeView(
-      model: model,
+      modelId: modelId,
       contextTokens: 0,
       contextWindow: 100,
       totalTokens: 0,
@@ -275,8 +290,8 @@ ThreadRuntimeView _runtime({String model = 'alpha', int routeRevision = 1}) =>
       activeMcpServers: const [],
       activeLspServers: const [],
       modelRoute: ThreadModelRouteView(
-        providerId: 'provider',
-        model: model,
+        accountId: 'account',
+        modelId: modelId,
         effort: 'medium',
         revision: routeRevision,
         available: true,
@@ -285,16 +300,15 @@ ThreadRuntimeView _runtime({String model = 'alpha', int routeRevision = 1}) =>
 
 ThreadWorkspace _workspace({
   int revision = 1,
-  String model = 'alpha',
+  String modelId = 'alpha',
   int routeRevision = 1,
   StudioTurnView? activeTurn,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
   thread: _thread(),
   revision: revision,
-  items: const [],
   interactions: interactions,
-  runtime: _runtime(model: model, routeRevision: routeRevision),
+  runtime: _runtime(modelId: modelId, routeRevision: routeRevision),
   activeTurn: activeTurn,
 );
 
@@ -361,22 +375,22 @@ StudioCommandReceipt _identityReceipt(
 SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
   revision: revision,
   modelCatalogRevision: 1,
-  providers: const [
-    ProviderSettingsView(
-      id: 'provider',
+  accounts: const [
+    AccountSettingsView(
+      id: 'account',
       name: 'Provider',
       baseUrl: 'http://local.invalid',
-      defaultModel: 'alpha',
+      defaultModelId: 'alpha',
       status: 'configured',
       usageLabel: '',
       models: [
-        ProviderModelView(
-          slug: 'alpha',
+        AccountModelView(
+          modelId: 'alpha',
           displayName: 'Alpha',
           reasoningEfforts: ['medium'],
         ),
-        ProviderModelView(
-          slug: 'beta',
+        AccountModelView(
+          modelId: 'beta',
           displayName: 'Beta',
           reasoningEfforts: ['medium'],
         ),
@@ -386,8 +400,8 @@ SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
   modeModelRoutes: const [
     ModeModelRouteView(
       modeId: ThreadModeId.simple,
-      providerId: 'provider',
-      model: 'alpha',
+      accountId: 'account',
+      modelId: 'alpha',
       effort: 'medium',
     ),
   ],
@@ -407,7 +421,7 @@ AnyworkClient _client(_Transport transport) {
       lspState: LspStateSnapshot(revision: 1),
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
-      providerUsageState: ProviderUsageStateSnapshot(revision: 1),
+      accountUsageState: AccountUsageStateSnapshot(revision: 1),
       modelPerformance: const ModelPerformanceSnapshotView(),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
@@ -446,6 +460,40 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final pending = client.threadCommands.compactThread('thread');
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      client.threadCommands.state.commands['compact:thread']?.phase,
+      CommandPhase.pending,
+    );
+    await expectLater(
+      client.threadCommands.compactThread('thread'),
+      throwsStateError,
+    );
+    expect(transport.compactions, hasLength(1));
+    final failed = expectLater(pending, throwsStateError);
+    transport.compactions.single.completeError(
+      StateError('compression failed'),
+    );
+    await failed;
+    expect(
+      client.threadCommands.state.commands['compact:thread']?.phase,
+      CommandPhase.failed,
+    );
+    final retry = client.threadCommands.compactThread('thread');
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.compactions, hasLength(2));
+    transport.compactions.last.complete();
+    await retry;
+    expect(
+      client.threadCommands.state.commands,
+      isNot(contains('compact:thread')),
+    );
+  });
+
   test('route conflict resync replaces only its runtime binding and preserves ChatView', () async {
     final transport = _RouteConflictTransport();
     final client = _client(transport);
@@ -456,7 +504,7 @@ void main() {
         workspace: _workspace(revision: 40, routeRevision: 2),
       ),
     );
-    await session.chat.ready;
+    await session.timeline.ready;
     transport.bindings.first.add(
       ThreadNotificationFrame(
         threadId: 'thread',
@@ -469,11 +517,10 @@ void main() {
         ),
       ),
     );
-    final viewId = session.state.chatViewId;
     final changing = client.threadCommands.setThreadModelRoute(
       threadId: 'thread',
-      providerId: 'provider',
-      model: 'alpha',
+      accountId: 'account',
+      modelId: 'alpha',
     );
     await transport.refreshEntered.future;
     expect(transport.bindings, hasLength(2));
@@ -501,7 +548,7 @@ void main() {
         baseRevision: 41,
         revision: 42,
         update: ThreadRuntimeUpdate(
-          runtime: _runtime(model: 'obsolete'),
+          runtime: _runtime(modelId: 'obsolete'),
           todo: null,
         ),
       ),
@@ -519,10 +566,10 @@ void main() {
       ),
     );
     expect(session.state.revision, 8);
-    expect(session.state.runtime!.model, 'alpha');
+    expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
-    expect(session.state.chatVersion, 300);
-    expect(session.state.chatViewId, viewId);
+    final delivered = session.timeline.lastDeliveredFrame;
+    expect((delivered! as StudioTimelineBaselineFrame).baseline.version, 300);
     expect(transport.windowOpens, 1);
     expect(transport.window.requestCloseCalls, 0);
   });
@@ -551,11 +598,11 @@ void main() {
             workspace: _workspace(revision: 40, routeRevision: 3),
           ),
         );
-        await session.chat.ready;
+        await session.timeline.ready;
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
-          providerId: 'provider',
-          model: 'alpha',
+          accountId: 'account',
+          modelId: 'alpha',
         );
         final rejected = expectLater(
           changing,
@@ -634,11 +681,11 @@ void main() {
           workspace: _workspace(revision: 40, routeRevision: 3),
         ),
       );
-      await session.chat.ready;
+      await session.timeline.ready;
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
-        providerId: 'provider',
-        model: 'alpha',
+        accountId: 'account',
+        modelId: 'alpha',
       );
       final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
       await cancelEntered.future;
@@ -996,18 +1043,18 @@ void main() {
       final enteredX = transport.routes.stream.first;
       final changingX = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
-        providerId: 'provider',
-        model: 'alpha',
+        accountId: 'account',
+        modelId: 'alpha',
       );
       final x = await enteredX;
       final enteredY = transport.routes.stream.first;
       final changingY = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
-        providerId: 'provider',
-        model: 'beta',
+        accountId: 'account',
+        modelId: 'beta',
       );
       expect(
-        client.settings.state.commands['thread-route:thread']?.target.model,
+        client.settings.state.commands['thread-route:thread']?.target.modelId,
         'beta',
       );
 
@@ -1035,13 +1082,13 @@ void main() {
         isTrue,
       );
       expect(
-        client.settings.state.commands['thread-route:thread']?.target.model,
+        client.settings.state.commands['thread-route:thread']?.target.modelId,
         'beta',
       );
 
       y.reply.complete(
         ThreadModelRouteCommandReply(
-          runtime: _runtime(model: 'beta', routeRevision: 3),
+          runtime: _runtime(modelId: 'beta', routeRevision: 3),
           settings: _settings(3),
           modeDefaultSaved: true,
           receipt: _receipt(y.operationId, [
@@ -1056,18 +1103,18 @@ void main() {
         OperationPhase.awaitingObservation,
       );
       expect(
-        client.settings.state.commands['thread-route:thread']?.target.model,
+        client.settings.state.commands['thread-route:thread']?.target.modelId,
         'beta',
       );
       expect(
-        client.session('thread').state.runtime?.modelRoute?.model,
+        client.session('thread').state.runtime?.modelRoute?.modelId,
         'alpha',
         reason: 'A control response does not write the Thread mirror',
       );
       client
           .session('thread')
           .applySnapshot(
-            _workspace(revision: 3, model: 'beta', routeRevision: 3),
+            _workspace(revision: 3, modelId: 'beta', routeRevision: 3),
           );
       expect(
         client.mutations.lookup(y.operationId)!.state.value.observed,

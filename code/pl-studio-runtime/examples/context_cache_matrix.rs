@@ -10,7 +10,7 @@ use pl_core::{
 };
 use pl_model::{
     completion::ReasoningConfig,
-    config::ProviderConfig,
+    config::AccountConfig,
     runtime::{ModelRuntime, ThreadCompactionOptions, ThreadCompactionStrategy, ThreadModel},
 };
 use serde_json::json;
@@ -47,21 +47,21 @@ fn instruction(revision: u64, append: bool, previous: Option<String>) -> Result<
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let provider_id = args.next().context("provider required")?;
-    let slug = args.next().context("model required")?;
+    let account_id = args.next().context("account required")?;
+    let model_id = args.next().context("model required")?;
     let output = PathBuf::from(args.next().context("new output required")?);
     tokio::fs::create_dir(&output).await?;
     let home =
         PathBuf::from(std::env::var("ANYWORK_HOME").context("isolated ANYWORK_HOME required")?);
     let config: toml::Value =
         toml::from_str(&tokio::fs::read_to_string(home.join("config.toml")).await?)?;
-    let provider: ProviderConfig = config["models"]["providers"][&provider_id]
+    let account: AccountConfig = config["models"]["accounts"][&account_id]
         .clone()
         .try_into()?;
-    let model = provider
-        .effective_models()?
+    let model = account
+        .effective_models(None)?
         .into_iter()
-        .find(|model| model.slug == slug)
+        .find(|model| model.model_id == model_id)
         .context("model missing")?;
     let effort = model
         .parameters
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
                 .or_else(|| parameter.candidates.first())
         })
         .cloned();
-    let endpoint = provider.to_endpoint()?;
+    let endpoint = account.to_endpoint()?;
     let capabilities = serde_json::to_value(&model.capabilities)?;
     let endpoint_capabilities = serde_json::to_value(&endpoint.service_capabilities)?;
     let append = capabilities["instructionSnapshotOverrides"] == true
@@ -85,8 +85,8 @@ async fn main() -> Result<()> {
         );
     let protocol = model.binding.transport.clone();
     let factory = ThreadModel::new(
-        ModelRuntime::new_with_provider_id(&provider_id, endpoint, model)?
-            .with_pricing_mode(provider.pricing_mode),
+        ModelRuntime::new_with_account_id(&account_id, endpoint, model)?
+            .with_pricing_mode(account.pricing_mode),
         Some(ReasoningConfig {
             effort: effort.clone(),
             summary: None,
@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     }.await;
     let close = thread.close().await;
-    tokio::fs::write(output.join("report.json"), serde_json::to_vec_pretty(&json!({"provider":provider_id,"model":slug,"protocol":protocol,"effort":effort,"appendInstructions":append,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
+    tokio::fs::write(output.join("report.json"), serde_json::to_vec_pretty(&json!({"account":account_id,"model":model_id,"protocol":protocol,"effort":effort,"appendInstructions":append,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
     execution?;
     close?;
     Ok(())

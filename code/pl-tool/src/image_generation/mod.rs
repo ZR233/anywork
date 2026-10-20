@@ -1,6 +1,6 @@
-//! Provider-backed image generation archived as Thread media, without workspace writes.
+//! Account-backed image generation archived as Thread media, without workspace writes.
 //!
-//! 该模块属于工具执行边界：provider 选择、凭据与目录观察由装配方完成，工具只消费一个
+//! 该模块属于工具执行边界：account 选择、凭据与目录观察由装配方完成，工具只消费一个
 //! 已冻结的 Images 客户端、模型 slug 与媒体托管端口。生成的图片只经工具媒体归档进入
 //! 资源；是否作为附件在时间线展示由 prepared 模型的图片输入能力与产品投影决定。工具不
 //! 写工作区文件，也不建立第二份媒体事实源。

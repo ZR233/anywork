@@ -1,5 +1,7 @@
 use crate::api::studio::convert::commands::command_receipt;
+use crate::frb_generated::StreamSink;
 use anyhow::Context;
+use std::sync::Arc;
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::records::thread_from_record;
@@ -8,8 +10,8 @@ use crate::api::studio::convert::{
     thread_stream::{bridge_thread, runtime_snapshot},
 };
 use crate::api::studio::types::{
-    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError,
-    BridgeRenameThreadCommandReply, BridgeStudioPromptInput, BridgeThread,
+    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError, BridgeNewThreadStartEvent,
+    BridgeRenameThreadCommandReply, BridgeStartNewThreadRequest, BridgeThread,
     BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply, StartNewThreadResponse,
     SubmitPromptResponse,
 };
@@ -19,60 +21,76 @@ fn thread_mode(mode: String) -> Result<ThreadModeId, BridgeError> {
     ThreadModeId::new(mode).map_err(|error| anyhow::anyhow!(error).into())
 }
 
-/// Creates a root Thread with the requested mode and accepts its first Turn.
+/// Streams preparation and one terminal outcome while creating a root Thread.
 ///
-/// # Errors
-///
-/// Returns an error when the Project does not exist, the prompt is empty, the requested
-/// workspace mode is unknown, the requested session worktree cannot be created (including
-/// a remote Project whose repository root or `HEAD` cannot be resolved), or the Turn is
-/// rejected.
+/// Creation errors are carried by `Failed` after the normal resource settlement;
+/// losing the sink does not cancel creation. `Succeeded` confirms acceptance of the
+/// first input, independently of its later model execution or history persistence.
 pub async fn start_new_thread(
-    project_id: String,
-    input: BridgeStudioPromptInput,
-    mode: String,
-    provider_id: String,
-    model: String,
-    effort: Option<String>,
-    workspace_mode: Option<String>,
-) -> Result<StartNewThreadResponse, BridgeError> {
-    let mode = thread_mode(mode)?;
-    let workspace_mode = match workspace_mode.as_deref().map(str::trim) {
-        None | Some("") | Some("local") => pl_protocol::ThreadWorkspaceMode::Local,
-        Some("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
-        Some(other) => {
-            return Err(anyhow::anyhow!(
-                "workspaceMode must be local or worktree, received {other:?}"
-            )
-            .into());
-        }
-    };
-    let bridge = active_bridge().await?;
-    let response = bridge
-        .studio
-        .create_thread_command(
-            project_id,
-            pl_protocol::studio::CreateThreadRequest {
-                title: None,
-                input: input.into(),
-                mode: mode.label().to_string(),
-                route: pl_protocol::studio::NewThreadModelRoute {
-                    provider_id,
-                    model,
-                    effort,
+    request: BridgeStartNewThreadRequest,
+    sink: StreamSink<BridgeNewThreadStartEvent>,
+) -> Result<(), BridgeError> {
+    let BridgeStartNewThreadRequest {
+        project_id,
+        input,
+        mode,
+        account_id,
+        model_id,
+        effort,
+        workspace_mode,
+    } = request;
+    // One invocation owns both observation and the final command outcome. A closed sink
+    // only loses observation; the existing creation owner still settles all resources.
+    let progress_sink = sink.clone();
+    let response: Result<StartNewThreadResponse, BridgeError> = async {
+        let mode = thread_mode(mode)?;
+        let workspace_mode = match workspace_mode.as_deref().map(str::trim) {
+            None | Some("") | Some("local") => pl_protocol::ThreadWorkspaceMode::Local,
+            Some("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "workspaceMode must be local or worktree, received {other:?}"
+                )
+                .into());
+            }
+        };
+        let bridge = active_bridge().await?;
+        let response = bridge
+            .studio
+            .create_thread_command(
+                project_id,
+                pl_protocol::studio::CreateThreadRequest {
+                    title: None,
+                    input: input.into(),
+                    mode: mode.label().to_string(),
+                    route: pl_protocol::studio::NewThreadModelRoute {
+                        account_id,
+                        model_id,
+                        effort,
+                    },
+                    workspace_mode,
                 },
-                workspace_mode,
+                Some(Arc::new(move |progress| {
+                    let _ = progress_sink.add(BridgeNewThreadStartEvent::Progress(progress.into()));
+                })),
+            )
+            .await?;
+        Ok(StartNewThreadResponse {
+            thread: bridge_thread(thread_from_record(response.thread)),
+            receipt: SubmitPromptResponse {
+                thread_id: response.submission.thread_id,
+                input_id: response.submission.input_id,
+                revision: response.submission.cursor,
             },
-        )
-        .await?;
-    Ok(StartNewThreadResponse {
-        thread: bridge_thread(thread_from_record(response.thread)),
-        receipt: SubmitPromptResponse {
-            thread_id: response.submission.thread_id,
-            input_id: response.submission.input_id,
-            revision: response.submission.cursor,
-        },
-    })
+        })
+    }
+    .await;
+    let event = match response {
+        Ok(response) => BridgeNewThreadStartEvent::Succeeded(Box::new(response)),
+        Err(error) => BridgeNewThreadStartEvent::Failed(error),
+    };
+    let _ = sink.add(event);
+    Ok(())
 }
 
 /// Renames a root Thread and returns its canonical directory record.
@@ -121,6 +139,16 @@ pub async fn archive_thread(
     })
 }
 
+/// Forces one idle context compaction through the canonical Thread owner.
+pub async fn compact_thread(thread_id: String) -> Result<(), BridgeError> {
+    active_bridge()
+        .await?
+        .studio
+        .compact_thread(&thread_id)
+        .await?;
+    Ok(())
+}
+
 /// Changes the selected root Thread to a registered Thread Mode ID.
 ///
 /// # Errors
@@ -145,8 +173,8 @@ pub async fn set_thread_mode(
 pub async fn set_thread_model_route(
     operation_id: String,
     thread_id: String,
-    provider_id: String,
-    model: String,
+    account_id: String,
+    model_id: String,
     effort: Option<String>,
     expected_model_route_revision: u64,
     expected_settings_revision: u64,
@@ -160,8 +188,8 @@ pub async fn set_thread_model_route(
                 operation_id,
                 expected_model_route_revision,
                 expected_settings_revision,
-                provider_id,
-                model,
+                account_id,
+                model_id,
                 effort,
             },
         )

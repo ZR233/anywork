@@ -1,12 +1,11 @@
 //! Optional discovery instances for directed native GUI observation.
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{
-    ModelCatalogDiscovery, ModelCatalogId, ProviderCatalogRegistry, ProviderId,
-    ProviderModelCatalogConfig, builtin_provider_catalog,
+    AccountCatalogRegistry, AccountId, AccountModelCatalogConfig, builtin_account_catalog,
 };
-use pl_model::provider::ProviderConnectionMode;
+use pl_model::protocol::ConnectionMode;
 use pl_provider_fixture::{
-    MIMO_DISCOVERY_EXCLUDED_SLUGS, MODEL_CATALOG_CONTROL_FILE_NAME, ModelCatalogControl,
+    MIMO_MEDIA_MODEL_IDS, MODEL_CATALOG_CONTROL_FILE_NAME, ModelCatalogControl,
 };
 use pl_studio_runtime::config::StudioConfig;
 use serde_json::Value;
@@ -26,51 +25,45 @@ pub(super) const INSTANCES: [(&str, &str, &str); 4] = [
     ("catalog-mimo", "mimo-api", "mimo"),
 ];
 
-/// Bootstrap route slug for a synthesized `models` inventory. Inventory A keeps a
-/// withdrawable slug so the restart journey can prove a vanished model stays
+/// Bootstrap route model_id for a synthesized `models` inventory. Inventory A keeps a
+/// withdrawable model_id so the restart journey can prove a vanished model stays
 /// selected but unavailable.
-const BOOTSTRAP_ROUTE_SLUG: &str = "fixture-model-old";
+const BOOTSTRAP_ROUTE_MODEL_ID: &str = "fixture-model-old";
 
-/// Preferred bootstrap route slug for payload instances: the captured list has no
-/// `fixture-model-old`, so prefer a bundled slug real responses usually contain.
+/// Preferred bootstrap route model_id for payload instances: the captured list has no
+/// `fixture-model-old`, so prefer a bundled model_id real responses usually contain.
 /// It is only used when the selected capture really lists it; see
-/// [`bootstrap_route_slug`].
-const PAYLOAD_BOOTSTRAP_ROUTE_SLUG: &str = "gpt-6-astra";
+/// [`bootstrap_route_model_id`].
+const PAYLOAD_BOOTSTRAP_ROUTE_MODEL_ID: &str = "gpt-6-astra";
 
-/// Picks the `catalog-openai` startup route slug.
+/// Picks the `catalog-openai` startup route model_id.
 ///
-/// A `models` inventory always keeps [`BOOTSTRAP_ROUTE_SLUG`] because the restart
-/// journey needs a withdrawable slug. A payload instance must instead resolve
+/// A `models` inventory always keeps [`BOOTSTRAP_ROUTE_MODEL_ID`] because the restart
+/// journey needs a withdrawable model_id. A payload instance must instead resolve
 /// against ids the capture actually contains: prefer
-/// [`PAYLOAD_BOOTSTRAP_ROUTE_SLUG`], otherwise the first id the product catalog
-/// would publish, and only when the capture has no dialogue model at all fall
-/// back to [`BOOTSTRAP_ROUTE_SLUG`] with a visible note.
-fn bootstrap_route_slug(
-    control: Option<&ModelCatalogControl>,
-    catalog: &ProviderCatalogRegistry,
-) -> Result<String> {
+/// [`PAYLOAD_BOOTSTRAP_ROUTE_MODEL_ID`], otherwise the first id the product catalog
+/// would publish, and only when the capture has no model at all fall
+/// back to [`BOOTSTRAP_ROUTE_MODEL_ID`] with a visible note.
+fn bootstrap_route_model_id(control: Option<&ModelCatalogControl>) -> Result<String> {
     let Some(control) = control else {
-        return Ok(BOOTSTRAP_ROUTE_SLUG.into());
+        return Ok(BOOTSTRAP_ROUTE_MODEL_ID.into());
     };
     let Some(captured) = control.openai.captured_model_ids()? else {
-        return Ok(BOOTSTRAP_ROUTE_SLUG.into());
+        return Ok(BOOTSTRAP_ROUTE_MODEL_ID.into());
     };
-    if captured.iter().any(|id| id == PAYLOAD_BOOTSTRAP_ROUTE_SLUG) {
-        return Ok(PAYLOAD_BOOTSTRAP_ROUTE_SLUG.into());
+    if captured
+        .iter()
+        .any(|id| id == PAYLOAD_BOOTSTRAP_ROUTE_MODEL_ID)
+    {
+        return Ok(PAYLOAD_BOOTSTRAP_ROUTE_MODEL_ID.into());
     }
-    let excluded_prefixes = &discovery(catalog, "openai")?.excluded_prefixes;
-    let dialogue = captured.iter().find(|id| {
-        !excluded_prefixes
-            .iter()
-            .any(|prefix| id.starts_with(prefix.as_str()))
-    });
-    match dialogue {
+    match captured.first() {
         Some(id) => Ok(id.clone()),
         None => {
             eprintln!(
-                "captured catalog {captured:?} has no dialogue model; keeping {BOOTSTRAP_ROUTE_SLUG} as the startup route"
+                "captured catalog {captured:?} has no model; keeping {BOOTSTRAP_ROUTE_MODEL_ID} as the startup route"
             );
-            Ok(BOOTSTRAP_ROUTE_SLUG.into())
+            Ok(BOOTSTRAP_ROUTE_MODEL_ID.into())
         }
     }
 }
@@ -91,108 +84,59 @@ pub(super) fn configure(
     );
     let file = home.join("config.toml");
     let mut config: StudioConfig = toml::from_str(&fs::read_to_string(&file)?)?;
-    let catalog = builtin_provider_catalog()?;
+    let catalog = builtin_account_catalog()?;
     ensure_catalog_discovery_declarations(&catalog)?;
-    let route_slug = bootstrap_route_slug(control, &catalog)?;
+    let route_model_id = bootstrap_route_model_id(control)?;
     for (id, preset, suffix) in INSTANCES {
         let preset = catalog
-            .presets
+            .templates
             .iter()
             .find(|candidate| candidate.id.as_str() == preset)
             .ok_or_else(|| anyhow::anyhow!("model catalog fixture preset is missing"))?;
-        let mut provider = preset.provider.clone();
-        provider.name = id.to_owned();
-        provider.base_url = format!("{}/{suffix}", base_url.trim_end_matches('/'));
-        provider.bearer_token_env = None;
-        provider.bearer_token = None;
+        let mut account = preset.account.clone();
+        account.name = id.to_owned();
+        account.base_url = format!("{}/{suffix}", base_url.trim_end_matches('/'));
+        account.bearer_token_env = None;
+        account.bearer_token = None;
         if id == "catalog-openai"
-            && let ProviderModelCatalogConfig::Bundled {
+            && let AccountModelCatalogConfig::Bundled {
                 connection_overrides,
                 auto_compact_overrides,
                 ..
-            } = &mut provider.catalog
+            } = &mut account.catalog
         {
-            connection_overrides.insert(route_slug.clone(), ProviderConnectionMode::Http);
-            auto_compact_overrides.insert(route_slug.clone(), 12_000);
+            connection_overrides.insert(route_model_id.clone(), ConnectionMode::Http);
+            auto_compact_overrides.insert(route_model_id.clone(), 12_000);
         }
-        config
-            .models
-            .providers
-            .insert(ProviderId::new(id)?, provider);
+        config.models.accounts.insert(AccountId::new(id)?, account);
     }
-    let openai = ProviderId::new("catalog-openai")?;
+    let openai = AccountId::new("catalog-openai")?;
     for route in config
         .models
         .routes
         .values_mut()
         .chain(config.mode_model_routes.values_mut())
     {
-        route.provider = openai.clone();
-        route.model = route_slug.clone();
+        route.account_id = openai.clone();
+        route.model_id = route_model_id.clone();
         route.effort = None;
     }
-    // Discovery instances keep withdrawn-slug routes and overrides before the
+    // Discovery instances keep withdrawn-model_id routes and overrides before the
     // first successful observation; strict `validate` would reject them.
     config.validate_declarations()?;
     fs::write(file, toml::to_string_pretty(&config)?)?;
     Ok(())
 }
 
-/// Non-dialogue prefix families `design/06-model.md` 6.7 requires the product
-/// OpenAI catalog to exclude from online observations.
-const OPENAI_DISCOVERY_EXCLUDED_PREFIXES: [&str; 7] = [
-    "gpt-image-",
-    "dall-e-",
-    "text-embedding-",
-    "tts-",
-    "whisper-",
-    "omni-moderation-",
-    "text-moderation-",
-];
-
-fn discovery<'a>(
-    catalog: &'a ProviderCatalogRegistry,
-    id: &str,
-) -> Result<&'a ModelCatalogDiscovery> {
-    catalog
-        .model_catalog(&ModelCatalogId::new(id)?)
-        .and_then(|catalog| catalog.discovery.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("{id} catalog declares no discovery capability"))
-}
-
-/// Acceptance guard for the discovery exclusions the runbook relies on.
-///
-/// The fixture replays captured `/models` responses unchanged, so only the
-/// product catalog decides which non-dialogue families disappear from the GUI.
-/// Pinning the declarations here makes an unintended product change fail the
-/// journey instead of silently changing what the operator is told to observe.
-fn ensure_catalog_discovery_declarations(catalog: &ProviderCatalogRegistry) -> Result<()> {
-    let mimo = discovery(catalog, "mimo")?;
-    ensure!(
-        mimo.excluded_slugs == MIMO_DISCOVERY_EXCLUDED_SLUGS,
-        "fixture MiMo excluded slugs {:?} diverge from product {:?}",
-        MIMO_DISCOVERY_EXCLUDED_SLUGS,
-        mimo.excluded_slugs
-    );
-    let openai = discovery(catalog, "openai")?;
-    ensure!(
-        openai.excluded_slugs.is_empty(),
-        "product OpenAI declares exact exclusions {:?}; only prefix families are allowed",
-        openai.excluded_slugs
-    );
-    ensure!(
-        openai.excluded_prefixes == OPENAI_DISCOVERY_EXCLUDED_PREFIXES,
-        "product OpenAI excluded prefixes {:?} diverge from design 06-model.md 6.7 {:?}",
-        openai.excluded_prefixes,
-        OPENAI_DISCOVERY_EXCLUDED_PREFIXES
-    );
-    for id in ["deepseek", "xai"] {
-        let product = discovery(catalog, id)?;
+fn ensure_catalog_discovery_declarations(catalog: &AccountCatalogRegistry) -> Result<()> {
+    for preset in catalog
+        .templates
+        .iter()
+        .filter(|preset| ["openai", "deepseek", "mimo-api"].contains(&preset.id.as_str()))
+    {
         ensure!(
-            product.excluded_slugs.is_empty() && product.excluded_prefixes.is_empty(),
-            "product {id} must exclude nothing, had slugs={:?} prefixes={:?}",
-            product.excluded_slugs,
-            product.excluded_prefixes
+            preset.account.discovery_profile()?.is_some(),
+            "fixture account must support discovery"
         );
     }
     Ok(())
@@ -259,17 +203,17 @@ pub(super) fn write_runbook(
 - 隔离 home: `{home}`（临时目录，运行结束即删；`--scenario gui` 与 catalog 重启旅程可加 `--retain-environment` 保留整个隔离环境）
 - config.toml: `{config}`（随隔离 home 删除；结束时脱敏副本写入证据目录 `{output}/config.toml`，重启旅程为 `{output}/config-phase-a.toml` / `{output}/config-phase-b.toml`）
 - 控制文件（启动时读取一次）: `{control}`；证据副本 `{output}/model-catalog.json`
-- 成功观察缓存: `{cache}`（随隔离 home 删除；协调器把 slug/`checkedAt`/`cachePath` 写进证据目录的 phase JSON）
+- 成功观察缓存: `{cache}`（随隔离 home 删除；协调器把 model_id/`checkedAt`/`cachePath` 写进证据目录的 phase JSON）
 - fixture `/v1` 前缀: `{base}`
 - 证据目录: `{output}`（截图/快照/请求/日志沿用既有产物）
 - 发现实例: `catalog-openai`（`{base}/openai/models`）、`catalog-openai-second`（`{base}/openai-second/models`）、`catalog-deepseek`（`{base}/deepseek/models`）、`catalog-mimo`（`{base}/mimo/models`，Chat 传输语义，仅需 `/models`）
-- MiMo 排除 slug（产品 decode 后过滤，不由 fixture 删除）: {excluded}
+- MiMo 媒体 model_id（完整发布）: {media_ids}
 - 当前控制文件库存:
 {inventory}
 
 命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second|real`；自定义文件用 `--model-catalog-control PATH`。每次运行都是全新隔离 home，改库存请重跑一次命令，不要热重启。
 
-JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`）:
+JSON 字段（每个 account：`openai` / `openai-second` / `deepseek` / `mimo`）:
 
 ```json
 {{
@@ -277,7 +221,7 @@ JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`
 }}
 ```
 
-- `models`: 任意 slug 列表；空名单是合法成功替换。
+- `models`: 任意 model_id 列表；空名单是合法成功替换。
 - `payload`: 可选，原样返回编译进 fixture 的真实 `/models` 响应（见第 8 项）；不能与 `models` 同时声明，否则 fixture 启动即报错。
 - 失败开关互斥，判定顺序 **`hang` > `protocolError` > `status`/`reject`**：同时给出时只生效最先匹配的一项，不会静默组合。
 - `hang: true`: 挂起直到进程停止（超时隔离）。
@@ -294,9 +238,9 @@ JSON 字段（每个 provider：`openai` / `openai-second` / `deepseek` / `mimo`
 cargo xtask manual-gui --scenario gui --model-catalog-inventory a --model-catalog-restart
 ```
 
-状态机：库存 A 启动 → 协调器断言 `catalog-openai` 缓存 slug 集合含 `fixture-model-old`、`gpt-6-astra`、`gpt-6.1-sol` → 停 GUI（保留 home）→ 停 fixture（shutdown 后复制 `<evidence>/model-catalog-requests-a.json`）→ 写库存 B（去掉 `fixture-model-old` 与内置 slug `gpt-6.1-sol`，保留 `gpt-6-astra`；`openai-second` 改为 `gpt-6-sol`）→ **同一端口**重启 fixture → 同一 home 重启 GUI → 协调器断言 old 与 `gpt-6.1-sol` 消失、`gpt-6-astra` 仍在、`checkedAt` 前进，并记录被选中的 `cachePath`。阶段 A 把 `catalog-openai` 路由设为 `fixture-model-old` 并写入连接/压缩覆盖；阶段 B 断言 `config.toml` 仍保留该路由与覆盖。
+状态机：库存 A 启动 → 协调器断言 `catalog-openai` 缓存 model_id 集合含 `fixture-model-old`、`gpt-6-astra`、`gpt-6.1-sol` → 停 GUI（保留 home）→ 停 fixture（shutdown 后复制 `<evidence>/model-catalog-requests-a.json`）→ 写库存 B（去掉 `fixture-model-old` 与内置 model_id `gpt-6.1-sol`，保留 `gpt-6-astra`；`openai-second` 改为 `gpt-6-sol`）→ **同一端口**重启 fixture → 同一 home 重启 GUI → 协调器断言 old 与 `gpt-6.1-sol` 消失、`gpt-6-astra` 仍在、`checkedAt` 前进，并记录被选中的 `cachePath`。阶段 A 把 `catalog-openai` 路由设为 `fixture-model-old` 并写入连接/压缩覆盖；阶段 B 断言 `config.toml` 仍保留该路由与覆盖。
 
-协调器断言 = 缓存 slug 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
+协调器断言 = 缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
 
 阶段 B 证据：`<evidence>/model-catalog-requests-b.json`（对应 fixture shutdown 后）、`catalog-phase-b-gui.log`、`fixture-restart.log`、`requests-restart.json`、`model-catalog-phase-a.json` / `model-catalog-phase-b.json`、脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
 
@@ -311,26 +255,26 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-all
 1. 全新隔离 home（无既有 `{cache}` 成功观察）。
 2. fixture 四实例均 `reject: true`（HTTP 401）。
 3. 启动 GUI 后打开发现实例设置页。
-4. 应观察：provider `status.source=default`（尚未同步），模型级 `origin=bundled`；bundled 默认模型重新出现。失败时 `error` 为类型化 Http/Protocol/Timeout，不是自由文本。
+4. 应观察：account `status.source=default`（尚未同步），模型级 `origin=bundled`；bundled 默认模型重新出现。失败时 `error` 为类型化 Http/Protocol/Timeout，不是自由文本。
 5. 证据：设置页截图、runtime 日志、本目录 `fixture.log`、`<evidence>/model-catalog-requests.json`（fixture 停止后复制）。
 
 也可用自定义控制文件把该实例设为 `protocolError: true` 后同样重跑一次，验证协议失败回退。
 
 ## 3. 手动模型区分与删除
 
-1. 在某一发现实例上新增手动模型（不与在线 slug 冲突）。
-2. 应观察：GUI 「手动模型」分组 + 徽标；`{config}` 的 `additional_models` 写入该 slug。
+1. 在某一发现实例上新增手动模型（不与在线 model_id 冲突）。
+2. 应观察：GUI 「手动模型」分组 + 徽标；`{config}` 的 `additional_models` 写入该 model_id。
 3. 详情卡删除该手动模型。
-4. 应观察：列表与 `additional_models` 同时消失；该 slug 的压缩阈值/连接覆盖一并清除。
-5. 证据：设置页截图；结束时证据目录的脱敏 `{output}/config.toml`（`additional_models` 与该 slug 的连接/压缩覆盖应已消失）。删除前状态请自行另存一份，或加 `--retain-environment` 复核隔离 home 里的 `{config}`。
+4. 应观察：列表与 `additional_models` 同时消失；该 model_id 的压缩阈值/连接覆盖一并清除。
+5. 证据：设置页截图；结束时证据目录的脱敏 `{output}/config.toml`（`additional_models` 与该 model_id 的连接/压缩覆盖应已消失）。删除前状态请自行另存一份，或加 `--retain-environment` 复核隔离 home 里的 `{config}`。
 
 ## 4. 计费不丢失
 
-发现实例已挂 `/{{suffix}}/responses` 与 `/{{suffix}}/chat/completions`，剥前缀后委托既有严格脚本 `handle`（不复制推理实现）。已知在线 slug（`gpt-6-astra`）应显示内置价格行；未知在线 slug（`mimo-v2.6-pro`、`fixture-model-old`）显示未计价/空行。对已知 slug 发调用应产生 `estimated_costs`；对未知 slug 发调用应 `has_unpriced_usage=true`。历史会话费用在重启前后不变。
+发现实例已挂 `/{{suffix}}/responses` 与 `/{{suffix}}/chat/completions`，剥前缀后委托既有严格脚本 `handle`（不复制推理实现）。已知在线 model_id（`gpt-6-astra`）应显示内置价格行；未知在线 model_id（`mimo-v2.6-pro`、`fixture-model-old`）显示未计价/空行。对已知 model_id 发调用应产生 `estimated_costs`；对未知 model_id 发调用应 `has_unpriced_usage=true`。历史会话费用在重启前后不变。
 
 ## 5. 路由不可用
 
-由 `--model-catalog-restart` 同一旅程完成。阶段 A 将 `catalog-openai` 全部角色/模式路由设为 `fixture-model-old`，并写入该 slug 的连接覆盖与压缩阈值。阶段 B 断言 `config.toml` 路由与覆盖未被改写；有效目录不再含该 slug，选择以 unavailable 保留。对照证据目录的脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
+由 `--model-catalog-restart` 同一旅程完成。阶段 A 将 `catalog-openai` 全部角色/模式路由设为 `fixture-model-old`，并写入该 model_id 的连接覆盖与压缩阈值。阶段 B 断言 `config.toml` 路由与覆盖未被改写；有效目录不再含该 model_id，选择以 unavailable 保留。对照证据目录的脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
 
 ## 6. MiMo 发现
 
@@ -338,10 +282,10 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-all
 cargo xtask manual-gui --scenario gui --model-catalog-inventory a
 ```
 
-1. 控制文件 MiMo 段包含 `mimo-v2.5-pro`、`mimo-v2.5`、`mimo-v2.6-pro` 以及 4 个排除 slug。
+1. 控制文件 MiMo 段包含 `mimo-v2.5-pro`、`mimo-v2.5`、`mimo-v2.6-pro` 以及 4 个媒体 model_id。
 2. 启动后打开 `catalog-mimo`。
-3. 应观察：TTS/ASR 四个 slug 不出现；其余在线 slug 出现。排除由产品 catalog decode 完成，fixture 仍原样返回它们。
-4. 证据：MiMo 列表截图、`<evidence>/model-catalog-requests.json`（path/status/provider/hits/rejected；`provider` 为实例名 `openai`/`openai-second`/`deepseek`/`mimo`）、`{cache}` 下 `model.json`、studio 日志。不要使用严格脚本的 `requests.json`。
+3. 应观察：供应商设置保留 TTS/ASR 四个 model_id 与其他在线 model_id；会话和 Agent 菜单只列出最终合并后支持文本输入、文本输出且解析上下文为正数的模型，模式切换不得改变该选择项集合。已保存的不合格选择保留并展示筛选原因。
+4. 证据：MiMo 列表截图、`<evidence>/model-catalog-requests.json`（path/status/account/hits/rejected；`account` 为实例名 `openai`/`openai-second`/`deepseek`/`mimo`）、`{cache}` 下 `model.json`、studio 日志。不要使用严格脚本的 `requests.json`。
 
 ## 7. 失败隔离
 
@@ -366,11 +310,11 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory reject-second
 cargo xtask manual-gui --scenario gui --model-catalog-inventory real
 ```
 
-1. 控制文件：`catalog-openai` 与 `catalog-openai-second` 用 `payload: "openai-aggregator"`（19 个 id），`catalog-deepseek` 用 `payload: "deepseek"`（2 个 id），`catalog-mimo` 仍是库存 A 的合成名单（含 4 个 TTS/ASR 排除 slug）。
+1. 控制文件：`catalog-openai` 与 `catalog-openai-second` 用 `payload: "openai-aggregator"`（19 个 id），`catalog-deepseek` 用 `payload: "deepseek"`（2 个 id），`catalog-mimo` 仍是库存 A 的合成名单（含 4 个 TTS/ASR 媒体 model_id）。
 2. payload 实例不做任何增删改：HTTP 200、`content-type: application/json`，正文与 `code/pl-provider-fixture/assets/model-lists/` 下的资源逐字节一致。
-3. 打开 `catalog-openai`：应观察 `gpt-5.6-sol`、`gpt-6`、`gpt-6-astra`、`gpt-5.3-codex-spark`、`codex-auto-review` 等对话 slug，以及 5 个 `gpt-image-*`（`gpt-image-1`、`gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`）**不出现**。排除发生在产品 catalog 的 `gpt-image-` 非对话前缀过滤，fixture 依然原样返回它们；对照 fixture 请求证据可确认 19 个 id 都已发出。
-4. 打开 `catalog-deepseek`：应观察 2 个 slug，且详情卡显示真实上下文/输出上限与 effort 档位（`context_window=1048576`、`max_output_tokens=393216`、`supported_levels` 为 `low/high/max`）。合成名单模式没有这些字段。
-5. payload 模式下启动路由取该报文的实际 id：优先 `gpt-6-astra`，否则取报文中第一个产品会发布的对话 id（按目录 `excluded_prefixes` 判断非对话家族），全部被排除时保持 `fixture-model-old` 并在 stderr 记录说明；不再是库存 A 的固定 `fixture-model-old`。要观察"下线模型保留但不可用"仍用第 1/5 项的 `--model-catalog-inventory a --model-catalog-restart` 旅程。
+3. 打开 `catalog-openai` 设置页：应观察全部 19 个 model_id，包括全部 gpt-image 项；会话所有模式和 Agent 菜单共用文本筛选结果。无上下文声明且不能由精确 ID 补全的模型不出现在菜单中，已有选择保留并说明原因。
+4. 打开 `catalog-deepseek`：应观察 2 个 model_id，且详情卡显示真实上下文/输出上限与 effort 档位（`context_window=1048576`、`max_output_tokens=393216`、`supported_levels` 为 `low/high/max`，模型声明默认 `high`）。合成名单模式没有这些字段。
+5. payload 模式下启动路由优先使用实际存在的 `gpt-6-astra`，否则取报文第一个精确 ID；空名单保留原选择并标记不可用。
 6. 这是离线复刻，报文内容取自资源文件而非实时探测；把控制文件的 `payload` 去掉即回到 `models` 列表模式（两种模式共用 `reject` / `protocolError` / `status` / `hang` 失败开关，优先级不变）。
 7. 证据：两个实例的设置页截图、运行目录的 `model-catalog.json`、`model-catalog-requests.json`、`gui.log`。自检可用 `pl-provider-fixture --model-catalog-inventory real --model-catalog-check`，输出每个路径的 `payload=`/`ids=`/`image=`/`non_image=`/`ids_match=true`/`body_match=true`。
 
@@ -382,7 +326,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory real
         cache = cache_dir.display(),
         base = fixture_base_url.trim_end_matches('/'),
         output = output.display(),
-        excluded = MIMO_DISCOVERY_EXCLUDED_SLUGS.join(", "),
+        media_ids = MIMO_MEDIA_MODEL_IDS.join(", "),
         inventory = inventory_summary(control),
     );
     fs::write(output.join("model-catalog-runbook.md"), runbook)
@@ -423,9 +367,9 @@ fn inventory_summary(control: &ModelCatalogControl) -> String {
     )
 }
 
-pub(super) const WITHDRAWN_SLUG: &str = "fixture-model-old";
-pub(super) const KEPT_BUNDLED_SLUG: &str = "gpt-6-astra";
-pub(super) const WITHDRAWN_BUNDLED_SLUG: &str = "gpt-6.1-sol";
+pub(super) const WITHDRAWN_MODEL_ID: &str = "fixture-model-old";
+pub(super) const KEPT_BUNDLED_MODEL_ID: &str = "gpt-6-astra";
+pub(super) const WITHDRAWN_BUNDLED_MODEL_ID: &str = "gpt-6.1-sol";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CatalogPhaseExpectation {
@@ -435,15 +379,19 @@ pub(super) struct CatalogPhaseExpectation {
 
 pub(super) fn phase_a_expectation() -> CatalogPhaseExpectation {
     CatalogPhaseExpectation {
-        present: &[WITHDRAWN_SLUG, KEPT_BUNDLED_SLUG, WITHDRAWN_BUNDLED_SLUG],
+        present: &[
+            WITHDRAWN_MODEL_ID,
+            KEPT_BUNDLED_MODEL_ID,
+            WITHDRAWN_BUNDLED_MODEL_ID,
+        ],
         absent: &[],
     }
 }
 
 pub(super) fn phase_b_expectation() -> CatalogPhaseExpectation {
     CatalogPhaseExpectation {
-        present: &[KEPT_BUNDLED_SLUG],
-        absent: &[WITHDRAWN_SLUG, WITHDRAWN_BUNDLED_SLUG],
+        present: &[KEPT_BUNDLED_MODEL_ID],
+        absent: &[WITHDRAWN_MODEL_ID, WITHDRAWN_BUNDLED_MODEL_ID],
     }
 }
 
@@ -522,9 +470,9 @@ fn collect_openai_caches(
         }
         let cache: Value = serde_json::from_slice(&fs::read(&path)?)?;
         // catalog-openai uniquely lists gpt-6-astra; openai-second uses gpt-6-sol.
-        if cache_slugs(&cache)
+        if cache_model_ids(&cache)
             .iter()
-            .any(|slug| slug == KEPT_BUNDLED_SLUG)
+            .any(|model_id| model_id == KEPT_BUNDLED_MODEL_ID)
         {
             matching.push((entry.metadata()?.modified()?, path, cache));
         }
@@ -537,17 +485,17 @@ fn assert_openai_cache(
     expected: CatalogPhaseExpectation,
     previous_checked_at: Option<i64>,
 ) -> Result<i64> {
-    let slugs = cache_slugs(cache);
-    for slug in expected.present {
+    let model_ids = cache_model_ids(cache);
+    for model_id in expected.present {
         ensure!(
-            slugs.iter().any(|value| value == slug),
-            "expected {slug} in cache, had {slugs:?}"
+            model_ids.iter().any(|value| value == model_id),
+            "expected {model_id} in cache, had {model_ids:?}"
         );
     }
-    for slug in expected.absent {
+    for model_id in expected.absent {
         ensure!(
-            !slugs.iter().any(|value| value == slug),
-            "did not expect {slug} in cache, had {slugs:?}"
+            !model_ids.iter().any(|value| value == model_id),
+            "did not expect {model_id} in cache, had {model_ids:?}"
         );
     }
     let checked = cache
@@ -563,7 +511,7 @@ fn assert_openai_cache(
     Ok(checked)
 }
 
-fn cache_slugs(cache: &Value) -> Vec<String> {
+fn cache_model_ids(cache: &Value) -> Vec<String> {
     cache
         .get("models")
         .and_then(Value::as_array)
@@ -571,8 +519,7 @@ fn cache_slugs(cache: &Value) -> Vec<String> {
         .flatten()
         .filter_map(|model| {
             model
-                .get("slug")
-                .or_else(|| model.get("id"))
+                .get("model_id")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
@@ -583,8 +530,8 @@ pub(super) fn assert_route_preserved(home: &Path) -> Result<()> {
     let config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
     let openai = config
         .models
-        .providers
-        .get(&ProviderId::new("catalog-openai")?)
+        .accounts
+        .get(&AccountId::new("catalog-openai")?)
         .context("catalog-openai missing after restart")?;
     ensure!(
         config
@@ -592,23 +539,23 @@ pub(super) fn assert_route_preserved(home: &Path) -> Result<()> {
             .routes
             .values()
             .chain(config.mode_model_routes.values())
-            .all(|route| route.provider.as_str() == "catalog-openai"
-                && route.model == WITHDRAWN_SLUG),
+            .all(|route| route.account_id.as_str() == "catalog-openai"
+                && route.model_id == WITHDRAWN_MODEL_ID),
         "routes were rewritten across catalog restart"
     );
     match &openai.catalog {
-        ProviderModelCatalogConfig::Bundled {
+        AccountModelCatalogConfig::Bundled {
             connection_overrides,
             auto_compact_overrides,
             ..
         } => {
             ensure!(
-                connection_overrides.get(WITHDRAWN_SLUG) == Some(&ProviderConnectionMode::Http),
-                "connection override for {WITHDRAWN_SLUG} was removed"
+                connection_overrides.get(WITHDRAWN_MODEL_ID) == Some(&ConnectionMode::Http),
+                "connection override for {WITHDRAWN_MODEL_ID} was removed"
             );
             ensure!(
-                auto_compact_overrides.get(WITHDRAWN_SLUG) == Some(&12_000),
-                "auto-compact override for {WITHDRAWN_SLUG} was removed"
+                auto_compact_overrides.get(WITHDRAWN_MODEL_ID) == Some(&12_000),
+                "auto-compact override for {WITHDRAWN_MODEL_ID} was removed"
             );
         }
         _ => bail!("catalog-openai is no longer a bundled catalog"),

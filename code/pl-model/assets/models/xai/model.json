@@ -152,7 +152,7 @@
         "verifiedAt": 1760227200,
         "weeklyAdjustment": null
       },
-      "slug": "grok-4.7",
+      "model_id": "grok-4.7",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -309,7 +309,7 @@
         "verifiedAt": 1760227200,
         "weeklyAdjustment": null
       },
-      "slug": "grok-4.6",
+      "model_id": "grok-4.6",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -457,7 +457,7 @@
         "verifiedAt": 1760227200,
         "weeklyAdjustment": null
       },
-      "slug": "grok-4.5",
+      "model_id": "grok-4.5",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -623,7 +623,7 @@
         "verifiedAt": 1760227200,
         "weeklyAdjustment": null
       },
-      "slug": "grok-4.3",
+      "model_id": "grok-4.3",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
@@ -736,14 +736,14 @@
         "verifiedAt": 1760227200,
         "weeklyAdjustment": null
       },
-      "slug": "grok-build-0.1",
+      "model_id": "grok-build-0.1",
       "truncation_policy": {
         "limit": 10000,
         "mode": "tokens"
       }
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "suggestedEffort": "high",
   "suggestedModel": "grok-4.7"
 }

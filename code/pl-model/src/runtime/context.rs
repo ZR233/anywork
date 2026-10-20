@@ -1,6 +1,6 @@
 //! Provider-native history compatibility belongs to the selected model adapter.
 use crate::completion::ModelContextItem;
-use crate::provider::ProviderWireProtocol;
+use crate::protocol::WireApi;
 use crate::{PureError, Result};
 
 use super::ModelRuntime;
@@ -21,17 +21,12 @@ impl ModelRuntime {
         &self,
         request: crate::completion::CompletionRequest,
     ) -> Result<crate::completion::CompletionRequest> {
-        project_request(
-            self.endpoint(),
-            self.model(),
-            self.provider_instance_id(),
-            request,
-        )
+        project_request(self.endpoint(), self.model(), self.account_id(), request)
     }
 }
 
-pub(super) fn validate(protocol: ProviderWireProtocol, items: &[ModelContextItem]) -> Result<()> {
-    if protocol == ProviderWireProtocol::Responses {
+pub(super) fn validate(protocol: WireApi, items: &[ModelContextItem]) -> Result<()> {
+    if protocol == WireApi::Responses {
         return Ok(());
     }
     for item in items {
@@ -53,13 +48,13 @@ pub(super) fn validate(protocol: ProviderWireProtocol, items: &[ModelContextItem
 }
 
 pub(super) fn project_request(
-    endpoint: &crate::provider::ProviderEndpoint,
+    endpoint: &crate::protocol::ProtocolEndpoint,
     model: &crate::model::ModelInfo,
-    provider_instance_id: &str,
+    account_id: &str,
     mut request: crate::completion::CompletionRequest,
 ) -> Result<crate::completion::CompletionRequest> {
     validate(model.binding.transport.protocol, &request.input)?;
-    if model.binding.transport.protocol == ProviderWireProtocol::ChatCompletions
+    if model.binding.transport.protocol == WireApi::ChatCompletions
         && model
             .capabilities
             .interleaved
@@ -84,7 +79,7 @@ pub(super) fn project_request(
     }
     drop_unreadable_cross_provider_reasoning(
         &mut request,
-        crate::runtime::binding_cache_namespace(provider_instance_id, endpoint).as_str(),
+        crate::runtime::binding_cache_namespace(account_id, endpoint).as_str(),
     );
     let capabilities = model
         .capabilities
@@ -133,7 +128,7 @@ pub(super) fn project_request(
         }
     }
 
-    request.validate_against(&model.slug, &capabilities)?;
+    request.validate_against(&model.model_id, &capabilities)?;
     Ok(request)
 }
 

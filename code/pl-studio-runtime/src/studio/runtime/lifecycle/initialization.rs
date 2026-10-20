@@ -12,6 +12,11 @@ use super::super::background_task::{self, BackgroundTask};
 
 type Observer = Arc<dyn Fn(StudioStartupStage) + Send + Sync>;
 
+enum StartupSource {
+    Options(crate::StudioRuntimeOptions),
+    Lease(crate::StudioInstanceLease),
+}
+
 impl StudioRuntime {
     /// Initializes all global state before returning a usable runtime.
     pub async fn initialize(
@@ -26,12 +31,29 @@ impl StudioRuntime {
         options: crate::StudioRuntimeOptions,
         observer: Observer,
     ) -> Result<Self, StudioStartupError> {
+        Self::initialize_source(StartupSource::Options(options), observer).await
+    }
+
+    /// Initializes with a lease already acquired by the native desktop host, without relocking.
+    /// The host must retain its own lease until its process ends. Observer and cancellation
+    /// semantics are the same as `initialize_with_observer`.
+    pub async fn initialize_with_lease(
+        lease: crate::StudioInstanceLease,
+        observer: Observer,
+    ) -> Result<Self, StudioStartupError> {
+        Self::initialize_source(StartupSource::Lease(lease), observer).await
+    }
+
+    async fn initialize_source(
+        source: StartupSource,
+        observer: Observer,
+    ) -> Result<Self, StudioStartupError> {
         let cancellation = CancellationToken::new();
         let guard = cancellation.clone().drop_guard();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let (accepted, acceptance) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let result = Self::initialize_owned(options, observer.clone(), cancellation).await;
+            let result = Self::initialize_owned(source, observer.clone(), cancellation).await;
             if result.is_err() {
                 observer(StudioStartupStage::Failed);
             }
@@ -57,20 +79,27 @@ impl StudioRuntime {
     }
 
     async fn initialize_owned(
-        options: crate::StudioRuntimeOptions,
+        source: StartupSource,
         observer: Observer,
         cancellation: CancellationToken,
     ) -> Result<Self, StudioStartupError> {
         let _timing = crate::startup_timing::Stage::new("initialize_studio");
-        let resolved = options
-            .resolve()
-            .map_err(|error| environment("resolve_paths", error))?;
-        let lock_path = resolved.paths.runtime_lock();
-        let host = resolved.host;
-        let lock = tokio::task::spawn_blocking(move || RuntimeLock::acquire(&lock_path, host))
-            .await
-            .map_err(|error| internal("acquire_lock", error))?
-            .map_err(|error| environment("acquire_lock", error))?;
+        let (resolved, lock) = match source {
+            StartupSource::Lease(lease) => (lease.resolved, lease.lock),
+            StartupSource::Options(options) => {
+                let resolved = options
+                    .resolve()
+                    .map_err(|error| environment("resolve_paths", error))?;
+                let lock_path = resolved.paths.runtime_lock();
+                let host = resolved.host;
+                let lock =
+                    tokio::task::spawn_blocking(move || RuntimeLock::acquire(&lock_path, host))
+                        .await
+                        .map_err(|error| internal("acquire_lock", error))?
+                        .map_err(|error| environment("acquire_lock", error))?;
+                (Arc::new(resolved), Arc::new(lock))
+            }
+        };
         let home = resolved.paths.home().to_owned();
         let mut backup = tokio::task::spawn_blocking(move || StartupBackup::resume(&home))
             .await
@@ -222,7 +251,7 @@ impl StudioRuntime {
             .map_err(|error| internal("begin_initialize", error))?;
         observer(StudioStartupStage::ReadingProjects);
         let (usage, performance, directory, leases, ssh, skills) = tokio::join!(
-            timed_step("prepare_provider_usage", self.provider_usage.load_cache()),
+            timed_step("prepare_account_usage", self.account_usage.load_cache()),
             timed_step(
                 "prepare_model_performance",
                 self.model_performance.load_cache()
@@ -243,7 +272,7 @@ impl StudioRuntime {
         );
         let mut failures = Vec::new();
         for (step, result) in [
-            ("provider_usage", usage),
+            ("account_usage", usage),
             ("model_performance", performance),
             ("directories", directory),
             ("system_skills", skills),
@@ -267,7 +296,7 @@ impl StudioRuntime {
         // 查询路径只读该投影，不再承担建立/写盘职责。
         self.model_performance.initialize_projection().await;
         check_cancelled(cancellation)?;
-        self.publish_settings_state(settings)
+        self.publish_settings_state()
             .map_err(|error| internal("publish_settings", error))?;
         observer(StudioStartupStage::StartingServices);
         // Mode catalog 只在真实注册变化时发布；内置注册是第一次装载事实。

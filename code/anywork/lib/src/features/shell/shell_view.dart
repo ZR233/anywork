@@ -20,7 +20,7 @@ part 'shell_view.g.dart';
 
 /// 视图层空 runtime。领域里的空值是 [StudioState] 私有常量，这里保持同形。
 const shellEmptyRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,
@@ -241,7 +241,6 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     loadError: session?.sync.phase == DomainSyncPhase.failed
         ? session?.sync.errorMessage
         : null,
-    timelineRows: const [],
     todo: session?.workspace?.todo,
     runtime: session?.runtime ?? shellEmptyRuntime,
     turn: session?.activeTurn,
@@ -251,9 +250,9 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     composerMode: thread.isAgent
         ? AgentComposerMode.runtimeDriven
         : AgentComposerMode.editable,
-    providers: providersWithCatalogMetadata(
-      canonical?.providers ?? const <ProviderSettingsView>[],
-      settings.providerCatalog,
+    accounts: accountsWithCatalogMetadata(
+      canonical?.accounts ?? const <AccountSettingsView>[],
+      settings.accountCatalog,
     ),
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],

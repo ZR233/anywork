@@ -2,11 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'flutter_driver_session.dart';
+import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length != 2) {
     stderr.writeln(
-      'usage: dart run test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
+      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
     );
     exitCode = 64;
     return;
@@ -58,7 +59,6 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
   final turnDetails = turn is Map ? turn : const {};
   final persistence = snapshot['persistence'];
   final persistenceDetails = persistence is Map ? persistence : const {};
-  final timeline = details['timeline'];
   final composer = details['composer'];
   final composerDetails = composer is Map ? composer : const {};
   return {
@@ -67,11 +67,11 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
     // re-checked from evidence; no message text is duplicated here.
     'timelineScroll': _timelineScroll(snapshot),
     // Activity stage identity plus expand state only; summary/error stay as
-    // lengths so no provider text or credential can leak into the snapshot.
+    // lengths so no account text or credential can leak into the snapshot.
     'conversationActivity': _conversationActivity(snapshot),
-    // Driver-only application-payload counters; `bodyUtf8Bytes` is a UTF-8
-    // measure of delivered body text and is explicitly not FRB/wire bytes.
-    'contentDelivery': _contentDelivery(snapshot),
+    // 展示代次的只读事实：身份、数量、模式、分页与预览字节。
+    'timeline': TimelineObservation.optional(snapshot)?.summary(),
+    'timelineItems': _timelineItems(snapshot),
     'persistence': {
       'kind': persistenceDetails['kind'],
       'pendingCommits': persistenceDetails['pendingCommits'],
@@ -84,7 +84,7 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
             'isBusy': details['isBusy'],
             'syncState': details['syncState'],
             'turnStatus': turnDetails['status'],
-            'timelineRows': timeline is List ? timeline.length : 0,
+            'timelineItems': TimelineObservation.optional(snapshot)?.itemCount,
             'outputTokens': usageDetails['outputTokens'],
             'hasIncompleteUsage': usageDetails['hasIncompleteUsage'],
             'submissionPending': composerDetails['submissionPending'],
@@ -92,33 +92,40 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
   };
 }
 
-Map<String, Object?>? _timelineScroll(Map<String, dynamic> snapshot) {
-  final scroll = snapshot['timelineScroll'];
-  if (scroll is! Map) return null;
-  final anchor = scroll['anchor'];
-  return {
-    'threadId': scroll['threadId'],
-    'mountedRowCount': scroll['mountedRowCount'],
-    'rowCount': scroll['rowCount'],
-    'followingBottom': scroll['followingBottom'],
-    'detachedByUser': scroll['detachedByUser'],
-    'pendingNewEvents': scroll['pendingNewEvents'],
-    'pixels': scroll['pixels'],
-    'minScrollExtent': scroll['minScrollExtent'],
-    'maxScrollExtent': scroll['maxScrollExtent'],
-    'viewportDimension': scroll['viewportDimension'],
-    'extentAfter': scroll['extentAfter'],
-    'bottomSlack': scroll['bottomSlack'],
-    'hasNewer': scroll['hasNewer'],
-    'showJumpToLatest': scroll['showJumpToLatest'],
-    'anchor': anchor is Map
-        ? {
-            'itemId': anchor['itemId'],
-            'offset': anchor['offset'],
-            'followingBottom': anchor['followingBottom'],
-          }
-        : null,
-  };
+Map<String, Object?>? _timelineScroll(Map<String, dynamic> snapshot) =>
+    TimelineScrollObservation.optional(snapshot)?.toJson();
+
+/// 有界逐条观测：身份、顺序、修订、保存/终态、省略声明与逐字段详情引用。
+///
+/// 正文预览按需截断到固定长度，完整内容只从详情查看器的证据读取。
+List<Map<String, Object?>> _timelineItems(Map<String, dynamic> snapshot) {
+  final timeline = TimelineObservation.optional(snapshot);
+  if (timeline == null) return const [];
+  return [
+    for (final item in timeline.items)
+      <String, Object?>{
+        'id': item.id,
+        'ordinal': item.ordinal,
+        'revision': item.revision,
+        'saved': item.saved,
+        'terminal': item.terminal,
+        'kind': item.kind,
+        'status': item.status,
+        'omittedBytes': item.omittedBytes,
+        'textCharacters': item.text.length,
+        'textBytes': item.textBytes,
+        'details': [for (final detail in item.details) detail.toJson()],
+        'attachmentCount': item.attachments.length,
+        if (item.tool case final tool?)
+          'tool': <String, Object?>{
+            'name': tool.name,
+            'status': tool.status,
+            'callId': tool.callId,
+            'progressBytes': tool.progressBytes,
+            'exitCode': tool.exitCode,
+          },
+      },
+  ];
 }
 
 Map<String, Object?>? _conversationActivity(Map<String, dynamic> snapshot) {
@@ -143,19 +150,5 @@ Map<String, Object?>? _conversationActivity(Map<String, dynamic> snapshot) {
         for (final detail in details)
           if (detail is Map) detail['id'],
     ],
-  };
-}
-
-Map<String, Object?>? _contentDelivery(Map<String, dynamic> snapshot) {
-  final delivery = snapshot['contentDelivery'];
-  if (delivery is! Map) return null;
-  return {
-    'enabled': delivery['enabled'],
-    'metric': delivery['metric'],
-    'resets': delivery['resets'],
-    'patches': delivery['patches'],
-    'contentChanges': delivery['contentChanges'],
-    'bodyUtf8Bytes': delivery['bodyUtf8Bytes'],
-    'maxWindowItems': delivery['maxWindowItems'],
   };
 }

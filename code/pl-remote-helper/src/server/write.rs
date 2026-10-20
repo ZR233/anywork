@@ -41,10 +41,7 @@ fn write_file(path: &Path, content: &[u8], mode: RemoteWriteMode) -> io::Result<
             file.sync_all()?;
         }
         RemoteWriteMode::Append => {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(path)?;
+            let mut file = super::regular_file::append(path)?;
             file.write_all(content)?;
             file.sync_all()?;
         }

@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
     show visibleForTesting, ValueNotifier, debugPrint;
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
+    show ExternalLibrary;
 
 import '../../domain/models/studio_models.dart';
 
@@ -11,14 +14,14 @@ import 'package:anywork_client/studio_ports.dart';
 export 'package:anywork_client/studio_ports.dart';
 
 import '../../platform/error_log.dart';
-import '../../shared/chat_view_metrics.dart';
-import '../../rust/api/studio.dart' as frb;
+import 'studio_bridge_api.dart' as frb;
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/subscription/thread.dart' as frb_thread_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
+import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/command.dart' as frb_command;
 import '../../rust/api/studio/handlers/attachment.dart' as frb_attachment;
@@ -28,16 +31,17 @@ import '../../rust/api/studio/types/ssh.dart' as frb_ssh_types;
 import '../../rust/api/studio/types/shutdown.dart' as frb_shutdown;
 import '../../rust/api/studio/types/thread_stream/item.dart' as frb_item;
 import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
+import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/frb_generated.dart';
-import '../../shared/studio_driver_state.dart';
 
 part 'studio_thread_stream.dart';
-part 'studio_chat_window.dart';
+part 'studio_thread_preparation.dart';
+part 'studio_timeline.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';
-part 'studio_provider_catalog_converters.dart';
+part 'studio_account_catalog_converters.dart';
 part 'studio_demo_api.dart';
 part 'studio_demo_settings.dart';
 
@@ -94,7 +98,7 @@ DateTime _dateFromUnix(Object seconds) {
 
 ThreadRuntimeView _emptyRuntimeView() {
   return const ThreadRuntimeView(
-    model: '',
+    modelId: '',
     contextTokens: 0,
     contextWindow: 0,
     totalTokens: 0,

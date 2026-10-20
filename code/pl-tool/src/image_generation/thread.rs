@@ -1,4 +1,4 @@
-//! One Thread-local image generation executor over a frozen provider backend and media host.
+//! One Thread-local image generation executor over a frozen account backend and media host.
 use super::{
     IMAGE_GENERATION_RECEIPT_FORMAT, IMAGE_GENERATION_RECEIPT_VERSION, TOOL_IMAGE_GENERATION,
 };
@@ -10,13 +10,13 @@ use pl_core::{
         opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
     },
 };
-use pl_model::provider::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
+use pl_model::protocol::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
 use std::sync::Arc;
 
-/// Longest prompt accepted after trimming; the provider never receives a longer request.
+/// Longest prompt accepted after trimming; the endpoint never receives a longer request.
 const MAX_PROMPT_CHARS: usize = 8_000;
 
-const DESCRIPTION: &str = "Generate one image from a text prompt with the provider's image \
+const DESCRIPTION: &str = "Generate one image from a text prompt with the account's image \
 service. The generated image is archived as a thread attachment; describe the result in text \
 instead of embedding or repeating the image inline.";
 
@@ -28,9 +28,9 @@ embed or restate the image in your reply.";
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageGenerationInput {
-    /// Image description sent to the provider verbatim after trimming surrounding whitespace.
+    /// Image description sent to the account verbatim after trimming surrounding whitespace.
     pub prompt: String,
-    /// Request a transparent background; omitted means the provider default (opaque).
+    /// Request a transparent background; omitted means the account default (opaque).
     #[serde(default)]
     pub transparent_background: bool,
 }
@@ -39,11 +39,11 @@ pub struct ImageGenerationInput {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageGenerationReceipt {
-    /// Provider instance that served the request.
-    pub provider_id: String,
+    /// Account instance that served the request.
+    pub account_id: String,
     /// Image model slug selected from the online directory observation.
     pub model: String,
-    /// Trimmed prompt actually sent to the provider.
+    /// Trimmed prompt actually sent to the account.
     pub prompt: String,
     /// Whether a transparent background was requested.
     pub transparent_background: bool,
@@ -51,7 +51,7 @@ pub struct ImageGenerationReceipt {
     pub media_type: String,
     /// Raw bytes archived under the shared resource host.
     pub original: pl_core::context::ResourceReference,
-    /// Provider-supplied rewritten prompt, when the provider returns one.
+    /// Service-supplied rewritten prompt, when the endpoint returns one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revised_prompt: Option<String>,
     /// Width of the model-visible variant, absent when the prepared model accepts no image input.
@@ -65,17 +65,17 @@ pub struct ImageGenerationReceipt {
 pub struct ThreadImageGenerationTool<H> {
     client: ImagesClient,
     model: String,
-    provider_id: String,
+    account_id: String,
     media: Arc<H>,
 }
 
 impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
-    /// Binds the frozen provider backend, its selected model and the Thread media host.
-    pub fn new(client: ImagesClient, model: String, provider_id: String, media: Arc<H>) -> Self {
+    /// Binds the frozen account backend, its selected model and the Thread media host.
+    pub fn new(client: ImagesClient, model: String, account_id: String, media: Arc<H>) -> Self {
         Self {
             client,
             model,
-            provider_id,
+            account_id,
             media,
         }
     }
@@ -91,7 +91,7 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
 
     /// Transfers an executor that runs as a Thread background task and grants no control.
     ///
-    /// A provider request outlives the batch that accepted it: the call returns a running
+    /// A service request outlives the batch that accepted it: the call returns a running
     /// receipt, its terminal output (archived media and receipt payload) is delivered through
     /// the Thread inbox later, and cancellation uses an independent task token. Background
     /// scheduling adds no control permission to the accepted call.
@@ -189,7 +189,7 @@ impl<H: ToolMediaHost> Tool for ThreadImageGenerationTool<H> {
             IMAGE_GENERATION_RECEIPT_FORMAT,
             IMAGE_GENERATION_RECEIPT_VERSION,
             serde_json::to_string(&ImageGenerationReceipt {
-                provider_id: self.provider_id.clone(),
+                account_id: self.account_id.clone(),
                 model: self.model.clone(),
                 prompt,
                 transparent_background: input.transparent_background,

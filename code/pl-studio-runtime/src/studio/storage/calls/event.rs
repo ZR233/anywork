@@ -6,7 +6,10 @@
 use super::*;
 
 /// 单条 JSONL 记录的 schema 版本；写入每行的 `version` 字段，构成“版本化 JSONL”。
-pub(super) const CALL_LOG_RECORD_VERSION: u32 = 1;
+///
+/// v2 把账号/模型接入身份改为 `accountId`/`modelId`/`effort`。v1 行只在读取边界按
+/// 已知字段转换后交给当前类型，不做全局文本替换，也不改写既有日志正文。
+pub(super) const CALL_LOG_RECORD_VERSION: u32 = 2;
 /// 单条记录的最大字节数；超过即显式 `truncated`，绝不静默截断正文。
 pub(super) const CALL_LOG_RECORD_MAX_BYTES: usize = 1024 * 1024;
 
@@ -43,7 +46,7 @@ pub(super) struct CallTimingRecord {
 }
 
 /// 一行版本化 JSONL 日志记录；也是队列事件的载荷。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CallLogRecord {
     #[serde(default = "record_version")]
@@ -66,17 +69,17 @@ pub(super) struct CallLogRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) purpose: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) provider_instance_id: Option<String>,
+    pub(super) account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) provider_display_name: Option<String>,
+    pub(super) account_display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) configured_model: Option<String>,
+    pub(super) model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) sent_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) reported_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) reasoning_effort: Option<String>,
+    pub(super) effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) usage: Option<CallUsageRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +99,32 @@ pub(super) struct CallLogRecord {
 }
 
 impl CallLogRecord {
+    /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
+    /// validation rejects them for performance statistics.
+    pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
+        if self.status != CallStatus::Committed.as_str() {
+            return None;
+        }
+        let usage = self.usage.as_ref()?;
+        let report = pl_protocol::UsageReport {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
+        };
+        let timing = self.timing?;
+        let timing = pl_protocol::InferenceTiming {
+            ttft_millis: timing.ttft_millis,
+            decode_millis: timing.decode_millis,
+            total_millis: timing.response_millis,
+        };
+        timing
+            .throughput_output_tokens(&report)
+            .map(|output_tokens| (output_tokens, timing))
+    }
+
     /// 构造一条最小身份的显式截断记录。
     pub(super) fn truncated_fallback(&self) -> Self {
         Self {
@@ -112,12 +141,12 @@ impl CallLogRecord {
             recorded_at: self.recorded_at,
             retention: self.retention.clone(),
             purpose: None,
-            provider_instance_id: None,
-            provider_display_name: None,
-            configured_model: None,
+            account_id: None,
+            account_display_name: None,
+            model_id: None,
             sent_model: None,
             reported_model: None,
-            reasoning_effort: None,
+            effort: None,
             usage: None,
             cost: None,
             has_unpriced_usage: self.has_unpriced_usage,
@@ -131,6 +160,126 @@ impl CallLogRecord {
 
 fn record_version() -> u32 {
     CALL_LOG_RECORD_VERSION
+}
+
+/// 版本化日志记录的读取边界：同时接受当前字段与 v1 的账号/模型接入字段名。
+///
+/// 转换只发生在这里，且只映射已知语义相同的三个字段；未知字段保持忽略，不改写日志正文。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCallLogRecord {
+    #[serde(default = "record_version")]
+    version: u32,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    thread_id: String,
+    #[serde(default)]
+    call_id: String,
+    #[serde(default)]
+    root_thread_id: Option<String>,
+    #[serde(default)]
+    turn_id: Option<String>,
+    #[serde(default)]
+    retry_of: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    terminal: bool,
+    #[serde(default)]
+    revision: i64,
+    #[serde(default)]
+    recorded_at: i64,
+    #[serde(default)]
+    retention: Option<String>,
+    #[serde(default)]
+    purpose: Option<String>,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    account_display_name: Option<String>,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    sent_model: Option<String>,
+    #[serde(default)]
+    reported_model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default)]
+    usage: Option<CallUsageRecord>,
+    #[serde(default)]
+    cost: Option<RuntimeCostAmount>,
+    #[serde(default)]
+    has_unpriced_usage: bool,
+    #[serde(default)]
+    timing: Option<CallTimingRecord>,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    input_revision: Option<u64>,
+    #[serde(default)]
+    diagnostic: Option<String>,
+    /// v1 的账号接入身份（真实旧字段 `providerInstanceId`）；只在读取边界并入 `account_id`。
+    #[serde(default)]
+    provider_instance_id: Option<String>,
+    /// v1 的账号展示名（真实旧字段 `providerDisplayName`）。
+    #[serde(default)]
+    provider_display_name: Option<String>,
+    /// v1 的目录配置模型（真实旧字段 `configuredModel`）；只在读取边界并入 `model_id`。
+    #[serde(default)]
+    configured_model: Option<String>,
+    /// v1 的推理强度（真实旧字段 `reasoningEffort`）；只在读取边界并入 `effort`。
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+}
+
+impl RawCallLogRecord {
+    fn into_current(self) -> CallLogRecord {
+        CallLogRecord {
+            // 已知旧版本在读取边界归一化为当前版本（身份字段已并入当前语义）；
+            // 未知的未来版本保留原值，交给版本门显式拒绝而不是静默升级。
+            version: if self.version <= CALL_LOG_RECORD_VERSION {
+                record_version()
+            } else {
+                self.version
+            },
+            kind: self.kind,
+            thread_id: self.thread_id,
+            call_id: self.call_id,
+            root_thread_id: self.root_thread_id,
+            turn_id: self.turn_id,
+            retry_of: self.retry_of,
+            status: self.status,
+            terminal: self.terminal,
+            revision: self.revision,
+            recorded_at: self.recorded_at,
+            retention: self.retention,
+            purpose: self.purpose,
+            account_id: self.account_id.or(self.provider_instance_id),
+            account_display_name: self.account_display_name.or(self.provider_display_name),
+            model_id: self.model_id.or(self.configured_model),
+            sent_model: self.sent_model,
+            reported_model: self.reported_model,
+            effort: self.effort.or(self.reasoning_effort),
+            usage: self.usage,
+            cost: self.cost,
+            has_unpriced_usage: self.has_unpriced_usage,
+            timing: self.timing,
+            truncated: self.truncated,
+            input_revision: self.input_revision,
+            diagnostic: self.diagnostic,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CallLogRecord {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(RawCallLogRecord::deserialize(deserializer)?.into_current())
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -160,12 +309,12 @@ pub(super) fn attempt_record(
         recorded_at: committed_at,
         retention: None,
         purpose: None,
-        provider_instance_id: None,
-        provider_display_name: None,
-        configured_model: None,
+        account_id: None,
+        account_display_name: None,
+        model_id: None,
         sent_model: None,
         reported_model: None,
-        reasoning_effort: None,
+        effort: None,
         usage: outcome_usage(&attempt.outcome).map(usage_record_from_model),
         cost: None,
         has_unpriced_usage: false,
@@ -184,14 +333,14 @@ pub(super) fn billing_record(
     billing: &InferenceBillingRecord,
     status: CallStatus,
 ) -> CallLogRecord {
-    let usage = billing.accounting.usage.totals();
-    let (configured_model, sent_model, reported_model) = match &billing.model_observation {
+    let usage = &billing.accounting.usage;
+    // 统计身份只取冻结的账号与目录配置模型；发送/返回模型保持独立诊断维度。
+    let (sent_model, reported_model) = match &billing.model_observation {
         Some(observation) => (
-            Some(observation.configured_model.clone()),
             Some(observation.sent_model.clone()),
             observation.reported_model.clone(),
         ),
-        None => (None, Some(billing.model.clone()), None),
+        None => (None, None),
     };
     let cost = billing.accounting.estimated_costs().into_iter().next();
     let timing = billing.timing.map(|timing| CallTimingRecord {
@@ -213,19 +362,19 @@ pub(super) fn billing_record(
         recorded_at: billing.recorded_at,
         retention: Some(retention.as_str().to_owned()),
         purpose: billing.purpose.clone(),
-        provider_instance_id: Some(billing.provider_instance_id.clone()),
-        provider_display_name: Some(billing.provider.clone()),
-        configured_model,
+        account_id: Some(billing.account_id.clone()),
+        account_display_name: billing.account_display_name.clone(),
+        model_id: billing.model_id.clone(),
         sent_model,
         reported_model,
-        reasoning_effort: billing.reasoning_effort.clone(),
+        effort: billing.effort.clone(),
         usage: Some(CallUsageRecord {
-            input_tokens: Some(usage.prompt_tokens),
-            output_tokens: Some(usage.completion_tokens),
-            cache_read_tokens: Some(usage.cached_prompt_tokens),
-            cache_write_tokens: Some(usage.cache_write_tokens),
-            reasoning_tokens: Some(usage.reasoning_tokens),
-            total_tokens: Some(usage.total_tokens),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
         }),
         cost,
         has_unpriced_usage: billing.accounting.has_unpriced_usage(),
@@ -344,5 +493,76 @@ pub(super) fn tool_record(
         diagnostic: Some(diagnostic),
         truncated,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v1_log_record_identity_fields_convert_only_at_the_read_boundary() {
+        let line = r#"{
+            "version": 1,
+            "kind": "billing",
+            "threadId": "thread",
+            "callId": "call",
+            "status": "committed",
+            "terminal": true,
+            "revision": 3,
+            "recordedAt": 11,
+            "providerInstanceId": "deepseek",
+            "providerDisplayName": "DeepSeek",
+            "configuredModel": "deepseek-flash",
+            "sentModel": "deepseek-flash",
+            "reasoningEffort": "high",
+            "usage": { "outputTokens": 12 }
+        }"#;
+        // 走真实解码门（日志读取与重建索引都经过它），而不是绕过版本检查的 serde 调用。
+        let record = decode_record(line).expect("v1 record passes the current decode gate");
+        assert_eq!(record.version, CALL_LOG_RECORD_VERSION);
+        assert_eq!(record.account_display_name.as_deref(), Some("DeepSeek"));
+        assert_eq!(record.model_id.as_deref(), Some("deepseek-flash"));
+        assert_eq!(record.sent_model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(record.effort.as_deref(), Some("high"));
+        assert_eq!(
+            record.usage.as_ref().and_then(|usage| usage.output_tokens),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn unknown_future_log_version_is_rejected_by_the_shared_gate() {
+        let line = r#"{
+            "version": 3,
+            "kind": "billing",
+            "threadId": "thread",
+            "callId": "call",
+            "status": "committed",
+            "terminal": true,
+            "recordedAt": 11
+        }"#;
+        assert!(decode_record(line).is_err());
+    }
+
+    #[test]
+    fn v1_record_without_configured_model_keeps_identity_unknown() {
+        let line = r#"{
+            "version": 1,
+            "kind": "billing",
+            "threadId": "thread",
+            "callId": "call",
+            "status": "committed",
+            "terminal": true,
+            "recordedAt": 11,
+            "providerInstanceId": "deepseek",
+            "sentModel": "deepseek-flash"
+        }"#;
+        let record: CallLogRecord = serde_json::from_str(line).expect("v1 record decodes");
+        assert!(
+            record.model_id.is_none(),
+            "sent model never becomes configured"
+        );
+        assert_eq!(record.sent_model.as_deref(), Some("deepseek-flash"));
     }
 }

@@ -5,6 +5,7 @@ mod catalog;
 mod definition;
 mod family;
 pub(crate) mod info;
+pub(crate) mod observation;
 mod parameter;
 mod pricing;
 mod profile_error;
@@ -17,8 +18,8 @@ pub use capabilities::{
 pub(crate) use catalog::zhipu_responses_models;
 pub(crate) use catalog::{MediaSendOrder, image_media_profiles};
 pub use catalog::{
-    default_models, mimo_default_model_slugs, zhipu_default_model_slugs,
-    zhipu_responses_default_model_slugs,
+    default_models, mimo_default_model_ids, zhipu_default_model_ids,
+    zhipu_responses_default_model_ids,
 };
 pub(crate) use definition::validate_inventory;
 pub use definition::{BundledModelDefinition, ModelDefinitionError, bundled_model_definition};
@@ -29,6 +30,7 @@ pub use info::{
     ModelTransportProfile, ResponsesMaxTokensField, ResponsesRequestOptions, TruncationMode,
     TruncationPolicy,
 };
+pub use observation::{ModelMetadataField, ModelObservation, ModelParameterDefaultObservation};
 pub use parameter::{
     MissingCandidatePolicy, ModelParameter, ModelParameterCandidateError,
     ModelParameterCandidateRequest, ParameterWire, WireAssignment, wire_assignments_from_value,
@@ -39,5 +41,6 @@ pub use pricing::{
 pub use profile_error::ModelProfileError;
 
 pub use pl_protocol::{
-    InferenceAccounting, ModelPriceTierDto, ModelPricingDto, PricingMode, UsageReport,
+    InferenceAccounting, ModelPriceTierDto, ModelPricingDto, ModelType, ModelTypeExclusion,
+    ModelTypeSupport, PricingMode, UsageReport,
 };

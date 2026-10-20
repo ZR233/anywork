@@ -14,12 +14,11 @@ use super::RemoteWorkspaceHost;
 use super::path::relative_workspace_path;
 
 impl LspHostBackend for RemoteWorkspaceHost {
+    fn path_style(&self) -> pl_lsp::host::LspPathStyle {
+        pl_lsp::host::LspPathStyle::Posix
+    }
     fn identity(&self) -> String {
-        format!(
-            "{}:{}",
-            self.files.canonical_path(),
-            self.files.workspace_id()
-        )
+        self.files.binding_identity()
     }
 
     fn read_file<'a>(

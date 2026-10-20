@@ -10,57 +10,56 @@ part of 'provider_usage_store.dart';
 // ignore_for_file: type=lint, type=warning
 /// Riverpod owns this display observation; the Client owns the resource.
 
-@ProviderFor(providerUsageStore)
-final providerUsageStoreProvider = ProviderUsageStoreProvider._();
+@ProviderFor(accountUsageStore)
+final accountUsageStoreProvider = AccountUsageStoreProvider._();
 
 /// Riverpod owns this display observation; the Client owns the resource.
 
-final class ProviderUsageStoreProvider
+final class AccountUsageStoreProvider
     extends
         $FunctionalProvider<
-          CanonicalClockState<ProviderUsageStateSnapshot>,
-          CanonicalClockState<ProviderUsageStateSnapshot>,
-          CanonicalClockState<ProviderUsageStateSnapshot>
+          CanonicalClockState<AccountUsageStateSnapshot>,
+          CanonicalClockState<AccountUsageStateSnapshot>,
+          CanonicalClockState<AccountUsageStateSnapshot>
         >
-    with $Provider<CanonicalClockState<ProviderUsageStateSnapshot>> {
+    with $Provider<CanonicalClockState<AccountUsageStateSnapshot>> {
   /// Riverpod owns this display observation; the Client owns the resource.
-  ProviderUsageStoreProvider._()
+  AccountUsageStoreProvider._()
     : super(
         from: null,
         argument: null,
         retry: null,
-        name: r'providerUsageStoreProvider',
+        name: r'accountUsageStoreProvider',
         isAutoDispose: true,
         dependencies: null,
         $allTransitiveDependencies: null,
       );
 
   @override
-  String debugGetCreateSourceHash() => _$providerUsageStoreHash();
+  String debugGetCreateSourceHash() => _$accountUsageStoreHash();
 
   @$internal
   @override
-  $ProviderElement<CanonicalClockState<ProviderUsageStateSnapshot>>
+  $ProviderElement<CanonicalClockState<AccountUsageStateSnapshot>>
   $createElement($ProviderPointer pointer) => $ProviderElement(pointer);
 
   @override
-  CanonicalClockState<ProviderUsageStateSnapshot> create(Ref ref) {
-    return providerUsageStore(ref);
+  CanonicalClockState<AccountUsageStateSnapshot> create(Ref ref) {
+    return accountUsageStore(ref);
   }
 
   /// {@macro riverpod.override_with_value}
   Override overrideWithValue(
-    CanonicalClockState<ProviderUsageStateSnapshot> value,
+    CanonicalClockState<AccountUsageStateSnapshot> value,
   ) {
     return $ProviderOverride(
       origin: this,
       providerOverride:
-          $SyncValueProvider<CanonicalClockState<ProviderUsageStateSnapshot>>(
+          $SyncValueProvider<CanonicalClockState<AccountUsageStateSnapshot>>(
             value,
           ),
     );
   }
 }
 
-String _$providerUsageStoreHash() =>
-    r'd8ca1b9a4d47980788f59a2d858bfab11c45c65a';
+String _$accountUsageStoreHash() => r'ec14e1baf41bc25dcfcf3eee07de9b67b12d40c8';

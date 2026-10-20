@@ -2,83 +2,22 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'flutter_driver_session.dart';
-
-/// Native content-window capacity for the stress acceptance.
-///
-/// The reading window is the shared `ChatView` window in `pl-core/src/chat.rs`:
-/// a focus paints `INITIAL_ITEMS = 32` items, each `load`/`load-older` page adds
-/// up to `PAGE_ITEMS = 32`, and the window trims its opposite edge as soon as it
-/// would exceed `WINDOW_ITEMS = 96`. The Driver `timelineWindow.itemIds` mirrors
-/// that same window, so a unique id list that never exceeds this capacity is the
-/// bounded-memory proof.
-///
-/// The removed `timelineWindow.historyCount`/`overlayCount` fields are
-/// deliberately not read back: the window is the only body owner, and silently
-/// defaulting a missing field to zero is exactly what turned their removal into
-/// a permanent "bounded" pass.
-const _windowCapacityItems = 96;
+import 'timeline_observation.dart';
 
 /// Upper bound on the `load-older` pages the probe drives.
 ///
-/// `INITIAL_ITEMS` plus this many `PAGE_ITEMS` covers the capacity several times
-/// over, so an unresponsive window fails visibly instead of polling forever.
-const _maxOlderPages = 4;
+/// 分页深度只用于证明真实页请求确实向更早方向前进；不再有 96 条窗口容量，也不再
+/// 要求“窗口被裁回容量”来证明内存正确——前端已加载数据随访问页增长是明示取舍。
+const _maxOlderPages = 8;
 
-/// Milliseconds the probe waits for one `load-older` page to reach the window.
+/// Milliseconds the probe waits for one `load-older` page to reach the display.
 const _pageMoveTimeoutMillis = 20000;
 
-/// The typed content window's item identities.
+/// 当前展示代次的身份与分页事实。
 ///
-/// Returns null when the snapshot does not carry the current contract: a
-/// `timelineWindow.itemIds` list of strings whose length equals the reported
-/// `windowItemCount`. A missing typed field is a failure to observe, never a
-/// silent zero.
-List<String>? _windowItemIds(Map<String, dynamic> snapshot) {
-  final window = snapshot['timelineWindow'];
-  if (window is! Map) return null;
-  final ids = window['itemIds'];
-  if (ids is! List) return null;
-  final windowCount = window['windowItemCount'];
-  if (windowCount is! num || windowCount != ids.length) return null;
-  final result = <String>[];
-  for (final id in ids) {
-    if (id is! String) return null;
-    result.add(id);
-  }
-  return result;
-}
-
-Object? _windowField(Map<String, dynamic> snapshot, String key) {
-  final window = snapshot['timelineWindow'];
-  return window is Map ? window[key] : null;
-}
-
-bool? _windowBool(Map<String, dynamic> snapshot, String key) {
-  final value = _windowField(snapshot, key);
-  return value is bool ? value : null;
-}
-
-/// Length of one of the window's id lists (`previewedItemIds`, ...), or null
-/// when the field is not the typed list the contract promises.
-int? _windowIdListLength(Map<String, dynamic> snapshot, String key) {
-  final value = _windowField(snapshot, key);
-  return value is List ? value.length : null;
-}
-
-String? _windowAnchorItemId(Map<String, dynamic> snapshot) {
-  final anchor = _windowField(snapshot, 'anchor');
-  final id = anchor is Map ? anchor['itemId'] : null;
-  return id is String ? id : null;
-}
-
-/// A field of the workspace's actual timeline rows (`timelineProgress`), so the
-/// paging evidence can tie the window identities back to the delivered rows
-/// instead of trusting a window count alone.
-Object? _rowsField(Map<String, dynamic> snapshot, String key) {
-  final workspace = snapshot['workspace'];
-  final progress = workspace is Map ? workspace['timelineProgress'] : null;
-  return progress is Map ? progress[key] : null;
-}
+/// 严格读取新顶层 `timeline`：缺失字段是观测失败，不是“空窗口”。
+TimelineObservation? _timeline(Map<String, dynamic> snapshot) =>
+    TimelineObservation.optional(snapshot);
 
 bool _sameIds(List<String> left, List<String> right) {
   if (left.length != right.length) return false;
@@ -88,7 +27,7 @@ bool _sameIds(List<String> left, List<String> right) {
   return true;
 }
 
-/// The probe's window evidence file, a sibling of the sample report
+/// The probe's paging evidence file, a sibling of the sample report
 /// (`probe-report.json` -> `probe-report.paging.json`).
 File _pagingEvidenceFile(String reportPath) {
   final separator = reportPath.lastIndexOf(Platform.pathSeparator);
@@ -101,90 +40,125 @@ File _pagingEvidenceFile(String reportPath) {
   return File('$reportPath.paging.json');
 }
 
-/// Polls the live window (read-only, bounded, no screenshots) until
-/// `load-older` moved it. Stops early when the window reports no older content,
+/// Polls the live display (read-only, bounded, no screenshots) until
+/// `load-older` moved it. Stops early when the display reports no older content,
 /// so a genuinely exhausted history fails fast instead of waiting out the
 /// timeout.
-Future<Map<String, dynamic>> _awaitWindowMove(
+Future<Map<String, dynamic>> _awaitPageMove(
   FlutterDriverSession driver,
-  List<String> before,
+  TimelineObservation before,
 ) async {
   final deadline = DateTime.now().add(
     const Duration(milliseconds: _pageMoveTimeoutMillis),
   );
   var snapshot = await driver.readSnapshot();
   while (DateTime.now().isBefore(deadline)) {
-    final ids = _windowItemIds(snapshot);
-    if (ids != null && !_sameIds(ids, before)) return snapshot;
-    if (_windowBool(snapshot, 'hasOlder') == false) return snapshot;
+    final current = _timeline(snapshot);
+    if (current != null &&
+        (!_sameIds(current.itemIds, before.itemIds) ||
+            current.loadingOlder != before.loadingOlder)) {
+      return snapshot;
+    }
+    if (current != null && !current.hasOlder && !current.loadingOlder) {
+      return snapshot;
+    }
     await Future<void>.delayed(const Duration(milliseconds: 120));
     snapshot = await driver.readSnapshot();
   }
   return snapshot;
 }
 
-/// Drives the real `load-older` command until the live window is saturated at
-/// its capacity, recording one evidence step per page.
+/// Drives the real `load-older` command one page at a time, recording one
+/// evidence step per page.
 ///
-/// Each step proves the window actually moved (it grew toward older content) and
-/// that identity was retained (every id present before the page is still present
-/// after it), rather than inferring a move from a version counter. The loop is
-/// bounded by [_maxOlderPages] and never polls forever.
-Future<void> _pageOlderIntoWindow(
+/// Each step proves the display really moved toward older content (identities
+/// were prepended in canonical order while nothing already displayed was
+/// trimmed) instead of inferring a move from a counter. The loop is bounded by
+/// [_maxOlderPages] and never polls forever.
+Future<Map<String, Object?>> _pageOlder(
   FlutterDriverSession driver,
   Map<String, dynamic> snapshot,
   List<Map<String, Object?>> pages,
 ) async {
   var current = snapshot;
-  var previous = _windowItemIds(snapshot);
+  var previous = _timeline(snapshot);
+  var cursorAdvanced = false;
+  var generationStable = true;
+  var modeStable = true;
+  var retryVisible = false;
   for (var page = 1; page <= _maxOlderPages; page += 1) {
-    if (previous == null || previous.length >= _windowCapacityItems) break;
-    if (_windowBool(current, 'hasOlder') != true) break;
+    if (previous == null || !previous.hasOlder) break;
     final before = previous;
-    final anchorBefore = _windowAnchorItemId(current);
-    final epochBefore = _windowField(current, 'epoch');
     await driver.requestData('load-older');
-    final next = await _awaitWindowMove(driver, before);
-    final ids = _windowItemIds(next);
-    final unique = ids != null && ids.toSet().length == ids.length;
-    final retained = ids != null && before.every(ids.contains);
-    final grew = ids != null && ids.length > before.length;
-    final anchorAfter = _windowAnchorItemId(next);
+    final next = await _awaitPageMove(driver, before);
+    final after = _timeline(next);
+    if (after == null) {
+      pages.add(<String, Object?>{'page': page, 'observed': false});
+      break;
+    }
+    final retained = before.itemIds.every(after.itemIds.contains);
+    final grew = after.itemCount > before.itemCount;
+    final movedOlder =
+        grew &&
+        retained &&
+        before.itemIds.isNotEmpty &&
+        after.itemIds.isNotEmpty &&
+        after.itemIds.first != before.itemIds.first &&
+        after.itemIds.last == before.itemIds.last;
+    final cursorMoved =
+        after.olderCursor != before.olderCursor || after.hasOlder == false;
+    if (cursorMoved) cursorAdvanced = true;
+    if (after.generation != before.generation) generationStable = false;
+    if (after.mode != before.mode) modeStable = false;
+    if (after.olderError != null) retryVisible = true;
     pages.add(<String, Object?>{
       'page': page,
-      'beforeItems': before.length,
-      'beforeFirst': before.isEmpty ? null : before.first,
-      'beforeLast': before.isEmpty ? null : before.last,
-      'afterItems': ids?.length,
-      'afterFirst': ids == null || ids.isEmpty ? null : ids.first,
-      'afterLast': ids == null || ids.isEmpty ? null : ids.last,
-      'unique': unique,
-      'withinCapacity': ids != null && ids.length <= _windowCapacityItems,
-      'grewTowardOlder': grew,
+      'beforeItems': before.itemCount,
+      'beforeFirst': before.itemIds.isEmpty ? null : before.itemIds.first,
+      'afterItems': after.itemCount,
+      'afterFirst': after.itemIds.isEmpty ? null : after.itemIds.first,
+      'afterLast': after.itemIds.isEmpty ? null : after.itemIds.last,
+      'delivered': after.itemCount - before.itemCount,
+      'unique': after.itemIds.toSet().length == after.itemIds.length,
+      'orderAscending': after.ordinalAscending,
+      'grewTowardOlder': movedOlder,
       'identityRetained': retained,
-      'movedOlder':
-          ids != null &&
-          grew &&
-          retained &&
-          before.isNotEmpty &&
-          ids.isNotEmpty &&
-          ids.first != before.first &&
-          ids.last == before.last,
-      'hasOlder': _windowBool(next, 'hasOlder'),
-      'hasNewer': _windowBool(next, 'hasNewer'),
-      'rowCount': _rowsField(next, 'rowCount'),
-      'rowLastSequence': _rowsField(next, 'lastSequence'),
-      'epochBefore': epochBefore,
-      'epochAfter': _windowField(next, 'epoch'),
-      'anchorBefore': anchorBefore,
-      'anchorAfter': anchorAfter,
-      'anchorRetained':
-          anchorAfter == null || ids == null || ids.contains(anchorAfter),
+      'olderCursorBefore': before.olderCursor,
+      'olderCursorAfter': after.olderCursor,
+      'cursorAdvanced': cursorMoved,
+      'hasOlder': after.hasOlder,
+      'loadingOlder': after.loadingOlder,
+      'olderError': after.olderError,
+      'mode': after.mode,
+      'generation': after.generation,
     });
     current = next;
-    if (ids == null || !grew) break;
-    previous = ids;
+    previous = after;
+    if (!grew) break;
   }
+  final finalTimeline = _timeline(current);
+  return <String, Object?>{
+    'paged': pages.isNotEmpty,
+    'pageCount': pages.length,
+    'movedOlder': pages.any((page) => page['grewTowardOlder'] == true),
+    'identityRetained':
+        pages.isNotEmpty &&
+        pages.every((page) => page['identityRetained'] == true),
+    'orderMonotonic':
+        pages.isNotEmpty &&
+        pages.every((page) => page['orderAscending'] == true),
+    'uniqueIds':
+        pages.isNotEmpty && pages.every((page) => page['unique'] == true),
+    'cursorAdvanced': cursorAdvanced,
+    'generationStable': generationStable,
+    'modeStable': modeStable,
+    'retryVisibleOnError': retryVisible,
+    'finalItems': finalTimeline?.itemCount,
+    'finalHasOlder': finalTimeline?.hasOlder,
+    'finalOlderCursor': finalTimeline?.olderCursor,
+    'finalMode': finalTimeline?.mode,
+    'finalGeneration': finalTimeline?.generation,
+  };
 }
 
 Future<void> main(List<String> args) async {
@@ -199,6 +173,7 @@ Future<void> main(List<String> args) async {
   final finished = File(args[5]);
   final pagingFile = _pagingEvidenceFile(args[2]);
   final pagingPages = <Map<String, Object?>>[];
+  Map<String, Object?>? pagingSummary;
   final samples = <Map<String, Object?>>[];
   var lastReport = 0;
   Map<String, Object?>? authoritative;
@@ -206,28 +181,13 @@ Future<void> main(List<String> args) async {
   var paginationStarted = false;
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
 
-  Future<void> writePagingEvidence() async {
-    final paged = pagingPages.isNotEmpty;
-    final finalItems = paged ? pagingPages.last['afterItems'] : null;
+  Future<void> writePagingEvidence({String? error}) async {
     final evidence = <String, Object?>{
-      'capacity': _windowCapacityItems,
       'maxPages': _maxOlderPages,
-      'paged': paged,
-      'pageCount': pagingPages.length,
       'pages': pagingPages,
-      'finalItems': finalItems,
-      'saturated': paged && finalItems == _windowCapacityItems,
-      'movedOlder':
-          paged && pagingPages.any((page) => page['movedOlder'] == true),
-      'identityRetained':
-          paged &&
-          pagingPages.every((page) => page['identityRetained'] == true),
-      'anchorRetained':
-          paged && pagingPages.every((page) => page['anchorRetained'] == true),
-      'allWithinCapacity':
-          paged && pagingPages.every((page) => page['withinCapacity'] == true),
-      'allUnique': paged && pagingPages.every((page) => page['unique'] == true),
+      ...?pagingSummary,
     };
+    if (error != null) evidence['error'] = error;
     await pagingFile.writeAsString('${jsonEncode(evidence)}\n');
   }
 
@@ -241,24 +201,20 @@ Future<void> main(List<String> args) async {
         final workspace = snapshot['workspace'];
         final persistence = snapshot['persistence'];
         final usage = workspace is Map ? workspace['usage'] : null;
-        final timeline = workspace is Map ? workspace['timeline'] : null;
-        final ids = _windowItemIds(snapshot);
-        final bounded =
-            ids != null &&
-            ids.length <= _windowCapacityItems &&
-            ids.toSet().length == ids.length;
-        final rowKinds = timeline is List
-            ? {
-                for (final row in timeline)
-                  if (row is Map) row['type'],
-              }
-            : <Object?>{};
-        final diverse =
-            timeline is List &&
-            timeline.length >= 60 &&
-            rowKinds.contains('finalAnswer') &&
-            rowKinds.contains('commentary') &&
-            rowKinds.contains('activityGroup');
+        final timeline = _timeline(snapshot);
+        final scroll = TimelineScrollObservation.optional(snapshot);
+        final kinds = timeline == null
+            ? <String>{}
+            : {for (final item in timeline.items) item.kind};
+        final truncated = timeline == null
+            ? 0
+            : timeline.items.where((item) => item.textTruncated).length;
+        final previewBytes = timeline == null
+            ? 0
+            : timeline.items.fold<int>(
+                0,
+                (total, item) => total + item.textBytes,
+              );
         final streamCompleted =
             workspace is Map &&
             persistence is Map &&
@@ -266,26 +222,29 @@ Future<void> main(List<String> args) async {
             (usage['outputTokens'] as num? ?? 0) >= 20000 &&
             workspace['isBusy'] == false &&
             workspace['syncState'] == 'ready' &&
-            bounded &&
+            timeline != null &&
             persistence['kind'] == 'ready' &&
             persistence['pendingCommits'] == 0;
-        if (!paginationStarted &&
-            streamCompleted &&
-            _windowBool(snapshot, 'hasOlder') == true) {
-          // The stream is durably settled and the window still reports older
-          // content: drive the real page commands and record how the window
-          // moved. The trigger is the typed `hasOlder` flag plus the bounded
-          // window, not the removed history/overlay counters.
+        if (!paginationStarted && streamCompleted && timeline.hasOlder) {
+          // 流已可靠收束且仍有更早内容：驱动真实分页动作并记录每页边界。
           paginationStarted = true;
-          await _pageOlderIntoWindow(driver, snapshot, pagingPages);
-          await writePagingEvidence();
+          try {
+            pagingSummary = await _pageOlder(driver, snapshot, pagingPages);
+            await writePagingEvidence();
+          } catch (error) {
+            await writePagingEvidence(error: error.toString());
+            rethrow;
+          }
           continue;
         }
         if (!await finished.exists() &&
             paginationStarted &&
             streamCompleted &&
-            ids.length == _windowCapacityItems &&
-            diverse) {
+            timeline.itemCount > 0 &&
+            kinds.contains('agentMessage') &&
+            // gui_stress_script emits messages and reasoning; tool execution is
+            // covered by tool-scroll. Requiring a nonexistent tool never settles.
+            kinds.contains('reasoning')) {
           await finished.writeAsString(
             '${DateTime.now().millisecondsSinceEpoch}\n',
           );
@@ -316,28 +275,32 @@ Future<void> main(List<String> args) async {
         samples.add({
           'startedUnixMillis': started,
           'elapsedMillis': DateTime.now().millisecondsSinceEpoch - started,
-          'ok': bounded,
-          'itemCount': ids?.length,
-          'windowItemCount': _windowField(snapshot, 'windowItemCount'),
-          'hasOlder': _windowBool(snapshot, 'hasOlder'),
-          'hasNewer': _windowBool(snapshot, 'hasNewer'),
-          'windowLoading': _windowBool(snapshot, 'loading'),
-          'windowDirection': _windowField(snapshot, 'direction'),
-          'windowEpoch': _windowField(snapshot, 'epoch'),
-          'windowAnchorItemId': _windowAnchorItemId(snapshot),
-          'previewedCount': _windowIdListLength(snapshot, 'previewedItemIds'),
-          'loadedCount': _windowIdListLength(snapshot, 'loadedItemIds'),
-          'pendingBodyCount': _windowIdListLength(
-            snapshot,
-            'pendingItemBodyIds',
-          ),
-          'rowCount': timeline is List ? timeline.length : null,
+          'ok': timeline != null,
+          'itemCount': timeline?.itemCount,
+          'itemIdsSample': timeline == null
+              ? null
+              : timeline.itemIds.length > 8
+              ? timeline.itemIds.sublist(timeline.itemIds.length - 8)
+              : timeline.itemIds,
+          'mode': timeline?.mode,
+          'generation': timeline?.generation,
+          'connection': timeline?.connection,
+          'appliedVersion': timeline?.appliedVersion,
+          'hasOlder': timeline?.hasOlder,
+          'olderCursor': timeline?.olderCursor,
+          'loadingOlder': timeline?.loadingOlder,
+          'olderError': timeline?.olderError,
+          'hasNewOutput': timeline?.hasNewOutput,
+          'preparingLive': timeline?.preparingLive,
+          'truncatedItems': truncated,
+          'previewTextBytes': previewBytes,
+          'kinds': kinds.toList(),
+          'scroll': scroll?.toJson(),
           'outputTokens': usage is Map ? usage['outputTokens'] : null,
           'authoritative': authoritative,
           'isBusy': workspace is Map ? workspace['isBusy'] : null,
           'syncState': workspace is Map ? workspace['syncState'] : null,
           'syncError': workspace is Map ? workspace['loadError'] : null,
-          'rowKinds': rowKinds.toList(),
           'persistenceKind': persistence is Map ? persistence['kind'] : null,
           'persistenceDiagnostics': persistenceDiagnostics,
           'persistenceErrorCode': persistence is Map
@@ -353,6 +316,7 @@ Future<void> main(List<String> args) async {
           'elapsedMillis': DateTime.now().millisecondsSinceEpoch - started,
           'ok': false,
           'errorType': error.runtimeType.toString(),
+          'error': error.toString(),
         });
       }
       // Keep only recent measurements when a manual session stays open for hours.
@@ -372,8 +336,8 @@ Future<void> main(List<String> args) async {
           .writeAsString('${jsonEncode({'error': error.toString()})}\n');
     }
     try {
-      // The window evidence must survive a Driver failure as well, so a review
-      // can still see whether the window ever moved.
+      // The paging evidence must survive a Driver failure as well, so a review
+      // can still see whether the display ever moved.
       await writePagingEvidence();
     } catch (_) {
       // A failed evidence write must not mask the journey's own result or leak

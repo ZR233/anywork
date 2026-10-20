@@ -163,12 +163,7 @@ pub(in crate::studio) fn saved_mode(
         .extensions
         .get("studio.mode")
         .map(|record| {
-            if record.payload.format() != "pl.studio.mode" || record.payload.version() != 1 {
-                return Err(ProjectionError::UnsupportedOutput(
-                    "unsupported saved Mode".into(),
-                ));
-            }
-            Ok(serde_json::from_str(record.payload.content())?)
+            crate::mode::decode_saved_mode(&record.payload).map_err(ProjectionError::from)
         })
         .transpose()
 }

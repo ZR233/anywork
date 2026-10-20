@@ -83,7 +83,7 @@ impl StudioStore {
             .install_shared_history(thread_id, &opened))
     }
 
-    /// One session per live Thread, shared by the writer and all reading windows.
+    /// One session per live Thread, shared by the writer and every content reader.
     /// Opening a cold view does not activate a Thread or create a database file.
     pub(crate) async fn chat_session(
         &self,

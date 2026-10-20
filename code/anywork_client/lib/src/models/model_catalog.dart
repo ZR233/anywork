@@ -15,7 +15,7 @@ enum ModelCatalogFailure {
 }
 
 /// Effective catalog membership origin published with each model descriptor.
-enum ProviderModelOrigin { bundled, online, manual }
+enum ModelOrigin { bundled, online, manual }
 
 enum ModelCatalogCacheWarning { read, schema, identity, declaration }
 

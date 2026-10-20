@@ -167,11 +167,8 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             ? TextSpan(children: link.labelSpans, style: link.style)
             : link.defaultSpan(),
         inlineCodeStyle: InlineCodeStyle(
-          // 包注册字体（family+package 由 InlineCodeStyle.applyTo 拼成
-          // packages/gpt_markdown/JetBrainsMono）；不传 fallback 以继承
-          // app 正文字体链，中文代码字形回落 Noto Sans SC 而非衬线。
-          fontFamily: kGptMarkdownMonoFontFamily,
-          fontFamilyPackage: kGptMarkdownFontPackage,
+          // 与其他代码表面共用包注册字体，中文缺失字形由系统回退。
+          fontFamily: studioCodeFontFamily,
           fontSizeFactor: 1.0,
           color: scheme.onSurface,
           backgroundColor: onUserSurface
@@ -233,8 +230,6 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
                   : surface == _MarkdownSurface.error
                   ? scheme.error
                   : scheme.onSurface,
-              // 包注册字体；不传 fallback，中文继承 app 正文字体链。
-              fontFamily: _monoFontFamily,
               fontSize: bodyStyle.fontSize ?? 14,
               height: 1.36,
             ),
@@ -259,11 +254,6 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
     );
   }
 }
-
-/// gpt_markdown 包注册的等宽字体在宿主中的完整 family 名
-/// （见 InlineCodeStyle.applyTo 的 `packages/<package>/<family>` 拼法）。
-const String _monoFontFamily =
-    'packages/$kGptMarkdownFontPackage/$kGptMarkdownMonoFontFamily';
 
 /// 标题的块级选择单元：内层标题文本注册到局部
 /// [StaticSelectionContainerDelegate]，外层选择区域只见 [SelectionContainer]

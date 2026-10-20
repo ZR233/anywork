@@ -67,6 +67,9 @@ pub(super) async fn initialize(
             (1..=CALLS_SCHEMA_VERSION).contains(&version),
             "unsupported calls schema {version}; existing data preserved"
         );
+        // 账号/模型接入身份改名前必须先于任何按新列名读取的语句执行；这里只做列改名，
+        // 不读写样本内容，失败时不推进 `schema_version`，下次打开可重试。
+        rename_performance_identity_columns(db).await?;
     }
     ensure_schema(db).await?;
     let row = db
@@ -193,12 +196,12 @@ async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
             thread_id TEXT NOT NULL,
             call_id TEXT NOT NULL,
             completed_at INTEGER NOT NULL,
-            provider_instance_id TEXT,
-            provider_display_name TEXT,
-            configured_model TEXT,
+            account_id TEXT,
+            account_display_name TEXT,
+            model_id TEXT,
             sent_model TEXT,
             reported_model TEXT,
-            reasoning_effort TEXT,
+            effort TEXT,
             output_tokens INTEGER,
             ttft_millis INTEGER,
             decode_millis INTEGER,
@@ -223,12 +226,12 @@ async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
         db,
         "performance_samples",
         &[
-            ("provider_instance_id", "TEXT"),
-            ("provider_display_name", "TEXT"),
-            ("configured_model", "TEXT"),
+            ("account_id", "TEXT"),
+            ("account_display_name", "TEXT"),
+            ("model_id", "TEXT"),
             ("sent_model", "TEXT"),
             ("reported_model", "TEXT"),
-            ("reasoning_effort", "TEXT"),
+            ("effort", "TEXT"),
             ("output_tokens", "INTEGER"),
             ("ttft_millis", "INTEGER"),
             ("decode_millis", "INTEGER"),
@@ -261,13 +264,13 @@ async fn detach_legacy_performance(tx: &DatabaseTransaction) -> Result<()> {
     tx.execute_unprepared(
         "CREATE TABLE performance_samples_detached (
             thread_id TEXT NOT NULL, call_id TEXT NOT NULL, completed_at INTEGER NOT NULL,
-            provider_instance_id TEXT, provider_display_name TEXT, configured_model TEXT,
-            sent_model TEXT, reported_model TEXT, reasoning_effort TEXT, output_tokens INTEGER,
+            account_id TEXT, account_display_name TEXT, model_id TEXT,
+            sent_model TEXT, reported_model TEXT, effort TEXT, output_tokens INTEGER,
             ttft_millis INTEGER, decode_millis INTEGER, response_millis INTEGER,
             PRIMARY KEY(thread_id,call_id));
          INSERT INTO performance_samples_detached
-            SELECT thread_id,call_id,completed_at,provider_instance_id,provider_display_name,
-                   configured_model,sent_model,reported_model,reasoning_effort,output_tokens,
+            SELECT thread_id,call_id,completed_at,account_id,account_display_name,
+                   model_id,sent_model,reported_model,effort,output_tokens,
                    ttft_millis,decode_millis,response_millis FROM performance_samples;
          DROP TABLE performance_samples;
          ALTER TABLE performance_samples_detached RENAME TO performance_samples;
@@ -412,7 +415,7 @@ async fn indexed(db: &impl ConnectionTrait, record: &CallLogRecord) -> Result<bo
     Ok(row.is_some())
 }
 
-fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
+pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
     let started_at: i64 = row.try_get("", "started_at")?;
     let finished_at: Option<i64> = row.try_get("", "finished_at")?;
     let admitted_at: i64 = row.try_get("", "admitted_at")?;
@@ -455,12 +458,14 @@ fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
         recorded_at,
         retention: row.try_get("", "retention")?,
         purpose: row.try_get("", "purpose")?,
-        provider_instance_id: row.try_get("", "provider_instance_id")?,
-        provider_display_name: row.try_get("", "provider_display_name")?,
-        configured_model: row.try_get("", "configured_model")?,
+        // 旧调用库的 provider 实例列即当前账号身份；缺失时保持未知。
+        account_id: row.try_get("", "provider_instance_id")?,
+        account_display_name: row.try_get("", "provider_display_name")?,
+        // 旧库的 configured_model 才是冻结的目录配置模型；不用发送模型冒充。
+        model_id: row.try_get("", "configured_model")?,
         sent_model: row.try_get("", "sent_model")?,
         reported_model: row.try_get("", "reported_model")?,
-        reasoning_effort: row.try_get("", "reasoning_effort")?,
+        effort: row.try_get("", "reasoning_effort")?,
         usage: Some(event::CallUsageRecord {
             input_tokens: opt_u64(row, "input_tokens")?,
             output_tokens: opt_u64(row, "output_tokens")?,
@@ -496,6 +501,35 @@ async fn table_exists(db: &DatabaseConnection, table: &str) -> Result<bool> {
         ))
         .await?;
     Ok(row.is_some())
+}
+
+/// 把 v6 的性能样本身份列改名为账号/配置模型/推理强度语义。
+///
+/// 改名在 `ensure_schema` 之前完成，因此不会出现"先按新列名补齐空列、再与旧列并存"的
+/// 半迁移状态；旧值与主键、完成时间、用量和时延一律保留。已改名的库上是幂等空操作。
+async fn rename_performance_identity_columns(db: &DatabaseConnection) -> Result<()> {
+    if !table_exists(db, "performance_samples").await? {
+        return Ok(());
+    }
+    let mut columns = table_columns(db, "performance_samples").await?;
+    for (old, new) in [
+        ("provider_instance_id", "account_id"),
+        ("provider_display_name", "account_display_name"),
+        ("configured_model", "model_id"),
+        ("reasoning_effort", "effort"),
+    ] {
+        if !columns.contains(old) || columns.contains(new) {
+            continue;
+        }
+        db.execute_raw(statement(
+            &format!("ALTER TABLE performance_samples RENAME COLUMN {old} TO {new}"),
+            vec![],
+        ))
+        .await?;
+        columns.remove(old);
+        columns.insert(new.to_string());
+    }
+    Ok(())
 }
 
 /// 补齐缺失的列并返回迁移后的列集合；列/表名都是编译期常量，不做动态 SQL 拼接注入面。
@@ -544,6 +578,33 @@ pub(super) async fn seed_legacy_for_test(path: &Path, seed_sql: &str) -> Result<
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
     db.execute_unprepared(LEGACY_SCHEMA_SQL).await?;
+    db.execute_unprepared(seed_sql).await?;
+    Ok(())
+}
+
+/// 测试用：建立只有 `calls_meta` 的指定版本数据库，再由调用方写入其余结构。
+#[cfg(test)]
+pub(super) async fn seed_version_for_test(
+    path: &Path,
+    schema_version: i64,
+    seed_sql: &str,
+) -> Result<()> {
+    let mut options = ConnectOptions::new(crate::studio::paths::sqlite_url(path));
+    options.sqlx_logging(false);
+    let db = Database::connect(options).await?;
+    db.execute_unprepared(
+        "CREATE TABLE calls_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            schema_version INTEGER NOT NULL,
+            database_id TEXT NOT NULL,
+            pending_cleanup INTEGER NOT NULL DEFAULT 0
+        );",
+    )
+    .await?;
+    db.execute_unprepared(&format!(
+        "INSERT INTO calls_meta(id,schema_version,database_id,pending_cleanup) VALUES(1,{schema_version},'test',0);"
+    ))
+    .await?;
     db.execute_unprepared(seed_sql).await?;
     Ok(())
 }
@@ -831,7 +892,9 @@ mod storage_fault_tests {
             status: "committed".into(),
             terminal: true,
             recorded_at: crate::studio::unix_seconds(),
-            provider_instance_id: Some("provider".into()),
+            account_id: Some("provider".into()),
+            // 冻结的目录配置模型：性能汇总的顶层身份需要它，发送模型不能替代。
+            model_id: Some("model".into()),
             sent_model: Some("model".into()),
             usage: Some(event::CallUsageRecord {
                 output_tokens: Some(41),

@@ -7,7 +7,7 @@ use pl_core::{
 };
 use pl_model::{
     completion::ReasoningConfig,
-    config::ProviderConfig,
+    config::AccountConfig,
     runtime::{ModelRuntime, ThreadModel},
 };
 use std::{path::PathBuf, sync::Arc};
@@ -16,35 +16,35 @@ use tokio_util::sync::CancellationToken;
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let id = args.next().context("provider required")?;
-    let slug = args.next().context("model required")?;
+    let id = args.next().context("account required")?;
+    let model_id = args.next().context("model required")?;
     let artifacts = PathBuf::from(args.next().context("new artifact directory required")?);
     tokio::fs::create_dir(&artifacts).await?;
     let instruction_history = args.next().as_deref() == Some("--instruction-history");
     let installed = pl_studio_runtime::ConfigStore::default_app()?;
     let raw: toml::Value =
         toml::from_str(&tokio::fs::read_to_string(installed.paths().config_file()).await?)?;
-    let mut provider: ProviderConfig = raw
+    let mut account: AccountConfig = raw
         .get("models")
-        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.get("accounts"))
         .and_then(|v| v.get(&id))
-        .context("provider missing")?
+        .context("account missing")?
         .clone()
         .try_into()?;
     let credential_id = id.clone();
     let stored = tokio::task::spawn_blocking(move || {
-        match keyring::Entry::new("anywork", &format!("provider:{credential_id}"))?.get_password() {
+        match keyring::Entry::new("anywork", &format!("account:{credential_id}"))?.get_password() {
             Ok(secret) => Ok(Some(secret)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(error),
         }
     })
     .await??;
-    provider.bearer_token = stored.or(provider.bearer_token);
-    let mut model = provider
-        .effective_models()?
+    account.bearer_token = stored.or(account.bearer_token);
+    let mut model = account
+        .effective_models(None)?
         .into_iter()
-        .find(|m| m.slug == slug)
+        .find(|m| m.model_id == model_id)
         .context("model missing")?;
     let effort = model
         .parameters
@@ -52,21 +52,21 @@ async fn main() -> Result<()> {
         .find(|p| p.name == "effort")
         .and_then(|p| p.candidates.first())
         .cloned();
-    let mut endpoint = provider.to_endpoint()?;
+    let mut endpoint = account.to_endpoint()?;
     if instruction_history {
         model.capabilities.instruction_snapshot_overrides = true;
         endpoint.service_capabilities.history_instruction_role =
             match model.binding.transport.protocol {
-                pl_model::provider::ProviderWireProtocol::Responses => {
-                    pl_model::provider::HistoryInstructionRole::Developer
+                pl_model::protocol::WireApi::Responses => {
+                    pl_model::protocol::HistoryInstructionRole::Developer
                 }
-                pl_model::provider::ProviderWireProtocol::ChatCompletions => {
-                    pl_model::provider::HistoryInstructionRole::System
+                pl_model::protocol::WireApi::ChatCompletions => {
+                    pl_model::protocol::HistoryInstructionRole::System
                 }
             };
     }
-    let runtime = ModelRuntime::new_with_provider_id(&id, endpoint, model)?
-        .with_pricing_mode(provider.pricing_mode);
+    let runtime = ModelRuntime::new_with_account_id(&id, endpoint, model)?
+        .with_pricing_mode(account.pricing_mode);
     let factory = ThreadModel::new(
         runtime,
         Some(ReasoningConfig {
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     }.await;
     let close = thread.close().await;
-    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"provider":id,"model":slug,"effort":effort,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
+    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"account":id,"model":model_id,"effort":effort,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
     execution?;
     close?;
     Ok(())

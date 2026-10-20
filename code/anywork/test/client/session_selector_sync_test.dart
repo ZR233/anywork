@@ -176,15 +176,17 @@ void main() {
     final initial = container.read(startPageComposerViewProvider);
     final route = initial.displayRoute(initial.mode);
     expect(route, isNotNull);
-    final options = modelOptions(initial.providers);
+    final options = modelOptions(initial.accounts);
     expect(options.length, greaterThan(1), reason: '模型目录需要至少两个候选');
     final current = options.firstWhere(
       (option) =>
-          option.providerId == route!.providerId && option.model == route.model,
+          option.accountId == route!.accountId &&
+          option.modelId == route.modelId,
     );
     final next = options.firstWhere(
       (option) =>
-          option.providerId != route!.providerId || option.model != route.model,
+          option.accountId != route!.accountId ||
+          option.modelId != route.modelId,
     );
 
     await tester.pumpWidget(harness(const _ModelSelectorHost()));
@@ -195,7 +197,7 @@ void main() {
     expect(find.text(before), findsOneWidget);
     await tester.tap(trigger);
     await tester.pumpAndSettle();
-    final nextKey = StudioDriverKeys.modelOption(next.providerId, next.model);
+    final nextKey = StudioDriverKeys.modelOption(next.accountId, next.modelId);
     expect(selectedRow(nextKey), findsNothing);
 
     await tester.tap(find.byKey(nextKey));
@@ -207,8 +209,8 @@ void main() {
     final after = container
         .read(startPageComposerViewProvider)
         .displayRoute(initial.mode);
-    expect(after?.providerId, next.providerId);
-    expect(after?.model, next.model);
+    expect(after?.accountId, next.accountId);
+    expect(after?.modelId, next.modelId);
     final expectedEffort = ModelRouteQueries.effortAfterModelSelection(
       next.descriptor,
       null,
@@ -305,14 +307,14 @@ void main() {
   });
 
   testWidgets(
-    'composer uses Shift+Enter for editing and Enter for submission',
+    'composer keeps Shift+Enter editing and official Enter submission',
     (tester) async {
       await tester.pumpWidget(harness(const StartPageComposerDock()));
       await tester.pumpAndSettle();
 
       final input = find.byKey(StudioDriverKeys.composerInput);
       await tester.tap(input);
-      await tester.enterText(input, '第一行\n第二行');
+      await tester.enterText(input, '第一行');
       await tester.pump();
 
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -328,12 +330,43 @@ void main() {
       );
       expect(
         tester.widget<TextField>(input).controller!.text,
-        '第一行\n第二行',
-        reason:
-            'the widget test binding does not emulate the native newline path',
+        '第一行\n',
+        reason: 'Shift+Enter inserts the line break through the local editing action',
       );
 
+      // 标准编辑语义：Shift+Enter 用换行替换当前选区，光标落到换行之后。
+      final controller = tester.widget<TextField>(input).controller!;
+      final beforeSelection = controller.text;
+      controller.selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 3,
+      );
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(
+        controller.text,
+        '\n${beforeSelection.substring(3)}',
+        reason: 'Shift+Enter 必须以换行替换选区，而不是保留选中文本再追加换行',
+      );
+      expect(
+        controller.selection,
+        const TextSelection.collapsed(offset: 1),
+        reason: '插入后光标落在新行起点',
+      );
+      expect(
+        container.read(anyworkClientProvider).startDraft.state.submitting,
+        isFalse,
+        reason: '替换选区仍是编辑动作，不是提交',
+      );
+      await tester.enterText(input, '最后一行');
+      await tester.pump();
+
+      // The engine translates Enter into the field's text input action; sending
+      // that action is the real Enter submission path shared with the button.
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await tester.pump();
       expect(
         container.read(anyworkClientProvider).startDraft.state.submitting,
         isTrue,
@@ -370,9 +403,9 @@ class _EffortSelectorHost extends ConsumerWidget {
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return ReasoningEffortSelector(
-      providers: page.providers,
-      providerId: route.providerId,
-      model: route.model,
+      accounts: page.accounts,
+      accountId: route.accountId,
+      modelId: route.modelId,
       effort: route.effort,
       onEffortSelected: (effort) {
         ref
@@ -395,21 +428,21 @@ class _ModelSelectorHost extends ConsumerWidget {
     return Wrap(
       children: [
         ModelRoleSelector(
-          providers: page.providers,
-          providerId: route.providerId,
-          model: route.model,
+          accounts: page.accounts,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
-          onModelSelected: (providerId, model) {
+          onModelSelected: (accountId, model) {
             ref
                 .read(anyworkClientProvider)
                 .startDraft
-                .setModelIntent(page.mode, providerId, model);
+                .setModelIntent(page.mode, accountId, model);
           },
         ),
         ReasoningEffortSelector(
-          providers: page.providers,
-          providerId: route.providerId,
-          model: route.model,
+          accounts: page.accounts,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
           onEffortSelected: (effort) {
             ref
@@ -433,7 +466,7 @@ String? _otherEffort(ProviderContainer container, String current) {
   final page = container.read(startPageComposerViewProvider);
   final route = page.displayRoute(page.mode);
   if (route == null) return null;
-  final model = modelForRoute(page.providers, route.providerId, route.model);
+  final model = modelForRoute(page.accounts, route.accountId, route.modelId);
   return model?.reasoningEfforts
       .where((effort) => effort != current)
       .firstOrNull;

@@ -27,8 +27,8 @@ use super::AppState;
 /// Default control-file name written by the manual-GUI coordinator.
 pub const CONTROL_FILE_NAME: &str = "model-catalog.json";
 
-/// MiMo TTS/ASR slugs the product catalog excludes after a successful decode.
-pub const MIMO_DISCOVERY_EXCLUDED_SLUGS: [&str; 4] = [
+/// MiMo TTS/ASR model IDs retained in the complete product catalog.
+pub const MIMO_MEDIA_MODEL_IDS: [&str; 4] = [
     "mimo-v2.5-asr",
     "mimo-v2.5-tts",
     "mimo-v2.5-tts-voiceclone",
@@ -41,10 +41,9 @@ pub const OPENAI_SECOND_PATH: &str = "/v1/openai-second/models";
 pub const DEEPSEEK_PATH: &str = "/v1/deepseek/models";
 pub const MIMO_PATH: &str = "/v1/mimo/models";
 
-/// Non-chat slug prefix used only when reporting payload composition in the
-/// self-check. The exclusion itself happens in the product catalog decode; the
-/// fixture always returns the captured resource unchanged.
-const IMAGE_SLUG_PREFIX: &str = "gpt-image-";
+/// Image model ID prefix used only when reporting payload composition in the
+/// self-check. The fixture returns the complete captured resource unchanged.
+const IMAGE_MODEL_ID_PREFIX: &str = "gpt-image-";
 
 /// One captured real `/models` response selectable from the control file.
 ///
@@ -150,7 +149,7 @@ impl ModelCatalogHits {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCatalogProviderControl {
-    /// Exact slugs returned in the OpenAI-compatible list. An empty list is a
+    /// Exact model_ids returned in the OpenAI-compatible list. An empty list is a
     /// successful replacement, not a transport failure.
     #[serde(default)]
     pub models: Vec<String>,
@@ -254,8 +253,8 @@ impl ModelCatalogControl {
             .with_context(|| format!("failed to write model catalog control {}", path.display()))
     }
 
-    /// Inventory A: known bundled slugs, a withdrawable `fixture-model-old`,
-    /// unknown `mimo-v2.6-pro`, and MiMo's four excluded TTS/ASR slugs.
+    /// Inventory A: known bundled model_ids, a withdrawable `fixture-model-old`,
+    /// unknown `mimo-v2.6-pro`, and MiMo's four TTS/ASR model IDs.
     pub fn inventory_a() -> Self {
         let openai = ModelCatalogProviderControl {
             models: vec![
@@ -386,10 +385,10 @@ impl ModelCatalogControl {
                     "{name} status {status} is not an HTTP status"
                 );
             }
-            for slug in &provider.models {
+            for model_id in &provider.models {
                 ensure!(
-                    !slug.trim().is_empty(),
-                    "{name} contains an empty model slug"
+                    !model_id.trim().is_empty(),
+                    "{name} contains an empty model model_id"
                 );
             }
             if let Some(payload) = provider.payload.as_deref() {
@@ -433,7 +432,7 @@ fn mimo_inventory(include_old: bool) -> Vec<String> {
     if include_old {
         models.push("fixture-model-old".into());
     }
-    models.extend(MIMO_DISCOVERY_EXCLUDED_SLUGS.map(str::to_owned));
+    models.extend(MIMO_MEDIA_MODEL_IDS.map(str::to_owned));
     models
 }
 
@@ -495,7 +494,7 @@ impl ModelCatalogProviderControl {
     /// Model ids of the selected captured payload, or `None` for a synthesized
     /// [`models`](Self::models) inventory.
     ///
-    /// The manual-GUI coordinator uses this to keep the startup route on a slug
+    /// The manual-GUI coordinator uses this to keep the startup route on a model_id
     /// the captured list really contains instead of assuming a fixed one.
     pub fn captured_model_ids(&self) -> Result<Option<Vec<String>>> {
         let Some(name) = self.payload.as_deref() else {
@@ -699,7 +698,7 @@ pub async fn self_check(address: SocketAddr, control: &ModelCatalogControl) -> R
             );
             let image = returned_ids
                 .iter()
-                .filter(|id| id.starts_with(IMAGE_SLUG_PREFIX))
+                .filter(|id| id.starts_with(IMAGE_MODEL_ID_PREFIX))
                 .count();
             println!(
                 "{} status={status} payload={name} ids={} image={} non_image={} ids_match=true body_match=true",

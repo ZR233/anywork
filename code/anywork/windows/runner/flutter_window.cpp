@@ -1,4 +1,5 @@
 #include "flutter_window.h"
+#include "desktop_instance.h"
 
 #include <windows.h>
 
@@ -265,10 +266,13 @@ std::vector<uint8_t> LoadTerminalIconPng() {
 
 }  // namespace
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project, DesktopInstanceActivation* activation)
+    : project_(project), activation_(activation) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  // Virtual teardown must run before members and the derived object disappear.
+  OnDestroy();
+}
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
@@ -340,8 +344,36 @@ bool FlutterWindow::OnCreate() {
           flutter_controller_->engine()->messenger(), kHostLifecycleChannel,
           &flutter::StandardMethodCodec::GetInstance());
   lifecycle_channel_->SetMethodCallHandler(
-      [](const flutter::MethodCall<flutter::EncodableValue>& call,
-         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        const std::string& method = call.method_name();
+        if (method == "setTrayAvailable") {
+          bool available = false;
+          if (const auto* arguments =
+                  std::get_if<flutter::EncodableMap>(call.arguments())) {
+            const auto entry = arguments->find(
+                flutter::EncodableValue(std::string("available")));
+            if (entry != arguments->end()) {
+              if (const auto* value = std::get_if<bool>(&entry->second)) {
+                available = *value;
+              }
+            }
+          }
+          tray_available_ = available;
+          LogNativeLifecycle(available ? "tray_available" : "tray_unavailable",
+                             0, 0, 0);
+          result->Success();
+          return;
+        }
+        if (method == "showMainWindow") {
+          ShowMainWindow();
+          result->Success();
+          return;
+        }
+        if (method == "finishExit") {
+          exit_requested_ = true;
+        }
         HandleHostLifecycleCall(call, std::move(result));
       });
   // The native close path asks Dart for the same coordinator; the callback stays
@@ -356,6 +388,7 @@ bool FlutterWindow::OnCreate() {
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
+    activation_->WindowReady([this]() { ShowMainWindow(); });
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -367,6 +400,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  activation_->WindowDestroyed();
   // Clear the native close callback before the channel disappears; the deadline
   // thread keeps running so engine/window teardown cannot disarm the exit bound.
   anywork::StudioHostLifecycle::Instance().ClearExitRequestCallback();
@@ -385,6 +419,11 @@ void FlutterWindow::OnDestroy() {
     host_apps_channel_.reset();
   }
   if (flutter_controller_) {
+    if (flutter_controller_->engine() && flutter_controller_->view()) {
+      // Flutter's wrapper always invokes its stored callback. Replace it with
+      // a no-op that cannot retain this window; an empty function is not a cancel API.
+      flutter_controller_->engine()->SetNextFrameCallback([]() {});
+    }
     flutter_controller_ = nullptr;
   }
 
@@ -395,12 +434,32 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  // Intercept the close request before Flutter handles it: arm the native
-  // deadline and hand the close back to the same Dart exit coordinator.
+  // Closing the window is a visibility operation while a visible tray icon
+  // exists: the Flutter view, Dart isolate and Rust runtime keep running. The
+  // deadline is deliberately not armed here; only a real application exit does
+  // that. Without a usable tray, keep the existing coordinated exit path.
   if (message == WM_CLOSE) {
-    anywork::StudioHostLifecycle::Instance().RequestExit();
+    LogNativeLifecycle("WM_CLOSE", message, wparam, lparam);
+    if (tray_available_ && !session_ending_ && !exit_requested_) {
+      LogNativeLifecycle("tray_hide", message, wparam, lparam);
+      ShowWindow(GetHandle(), SW_HIDE);
+    } else {
+      RequestCoordinatedExit();
+    }
     return 0;
   }
+
+  if (message == WM_QUERYENDSESSION) {
+    session_ending_ = true;
+  } else if (message == WM_ENDSESSION) {
+    session_ending_ = wparam != 0;
+    if (wparam != 0) {
+      tray_available_ = false;
+    }
+  } else if (message == WM_DESTROY) {
+    tray_available_ = false;
+  }
+
   // Keep the deadline armed across engine/window teardown; never disarm early.
   if (message == WM_DESTROY || message == WM_ENDSESSION ||
       message == WM_QUERYENDSESSION) {
@@ -424,4 +483,23 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+}
+
+void FlutterWindow::ShowMainWindow() {
+  HWND window = GetHandle();
+  if (window == nullptr) {
+    return;
+  }
+  ShowWindow(window, IsIconic(window) ? SW_RESTORE : SW_SHOW);
+  if (!SetForegroundWindow(window)) {
+    BringWindowToTop(window);
+    SetActiveWindow(window);
+  }
+  LogNativeLifecycle("show_main_window", 0, 0, 0);
+}
+
+void FlutterWindow::RequestCoordinatedExit() {
+  exit_requested_ = true;
+  LogNativeLifecycle("exit_requested", 0, 0, 0);
+  anywork::StudioHostLifecycle::Instance().RequestExit();
 }

@@ -49,10 +49,30 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return _lane.run(action);
   }
 
+  Future<void> compactThread(String threadId) {
+    _ensureOpen();
+    final key = 'compact:$threadId';
+    if (state.commands[key]?.phase == CommandPhase.pending) {
+      return Future<void>.error(StateError('Context compaction is pending'));
+    }
+    _begin(key, label: threadId);
+    return _lane.enqueue(() async {
+      try {
+        if (_blocksThread(threadId))
+          throw StateError('Thread access is blocked by recovery');
+        await _api.compactThread(threadId);
+        _clear(key);
+      } catch (error) {
+        _fail(key, threadId, error);
+        rethrow;
+      }
+    });
+  }
+
   Future<void> setThreadModelRoute({
     String? threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) {
     _ensureOpen();
@@ -63,7 +83,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     );
     _client.settings.beginCommand(
       'thread-route:$targetThreadId',
-      CommandTarget(providerId: providerId, model: model, effort: effort),
+      CommandTarget(accountId: accountId, modelId: modelId, effort: effort),
     );
     _watchObservation(
       operation,
@@ -74,8 +94,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         () => _applyThreadModelRoute(
           operation: operation,
           threadId: targetThreadId,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         ),
       ),
@@ -234,8 +254,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     required ThreadModeId mode,
     required ModeModelRouteView route,
     String? workspaceMode,
+    required void Function(ThreadPreparationProgress) onProgress,
   }) {
     _ensureOpen();
+    final selection = _client.selection.state;
     return _lane.enqueue(() async {
       if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
         return null;
@@ -244,23 +266,46 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       final key = 'new-thread:$projectId';
       _begin(key, label: projectId);
       try {
-        final result = await _api.startNewThread(
+        await for (final event in _api.startNewThread(
           projectId,
           input,
           mode,
           route: route,
           workspaceMode: workspaceMode,
-        );
-        if (!_client.isClosed) {
-          // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
-          // 命令成功后不重读聚合状态（design/25 §25.5）。
-          _client.selection.selectThread(
-            projectId: projectId,
-            threadId: result.thread.id,
-          );
+        )) {
+          switch (event) {
+            case NewThreadStartProgress(:final progress):
+              if (progress.projectId != projectId ||
+                  progress.inputId != input.inputId) {
+                throw StateError(
+                  'New Thread preparation identity did not match',
+                );
+              }
+              onProgress(progress);
+            case NewThreadStartFailed():
+              throw event;
+            case NewThreadStartSucceeded(:final result):
+              if (result.thread.projectId != projectId ||
+                  result.receipt.threadId != result.thread.id ||
+                  result.receipt.inputId != input.inputId) {
+                throw StateError('New Thread submission receipt did not match');
+              }
+              if (!_client.isClosed &&
+                  identical(_client.selection.state, selection)) {
+                // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
+                // 命令成功后不重读聚合状态（design/25 §25.5）。
+                _client.selection.selectThread(
+                  projectId: projectId,
+                  threadId: result.thread.id,
+                );
+              }
+              _clear(key);
+              return result;
+          }
         }
-        _clear(key);
-        return result;
+        throw StateError(
+          'New Thread creation ended without a terminal outcome',
+        );
       } catch (error) {
         _fail(key, projectId, error);
         rethrow;
@@ -387,179 +432,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     });
   }
 
-  Future<void> loadOlderHistory(String threadId) =>
-      _track(() => _loadWindow(threadId, TimelineDirection.older));
-
-  Future<void> loadNewerHistory(String threadId) =>
-      _track(() => _loadWindow(threadId, TimelineDirection.newer));
-
-  /// 跳回实时底部：清锚点后聚焦权威窗口的 Latest；Reset/Patch 仍由内容泵交付。
-  Future<void> jumpToLatest(String threadId) =>
-      _track(() => _jumpToLatest(threadId));
-
-  Future<void> _jumpToLatest(String threadId) async {
-    final store = _client.session(threadId);
-    store.jumpToLatest();
-    final request = store.requestViewFocus(null, force: true)!;
-    try {
-      final window = await store.chatView();
-      if (window == null || !store.isViewFocusCurrent(request)) {
-        store.settleViewFocus(request, succeeded: false);
-        return;
-      }
-      await window.focus(null);
-      store.settleViewFocus(request, succeeded: true);
-    } catch (error) {
-      if (store.isViewFocusCurrent(request)) {
-        store.settleViewFocus(request, succeeded: false);
-        store.setHistoryError(TimelineDirection.newer, error.toString());
-      }
-    }
-  }
-
-  /// 写入阅读锚点；只有带定位动作的锚点才允许改变后端窗口焦点。
-  ///
-  /// 普通窗口内滚动只更新锚点：后端焦点不变，窗口也不移动。此前用「上一次锚点」去重，
-  /// 于是每换一个顶行都会 focus 一次，而后端 focus 变化会让内容流发 Reset——滚动被放大成
-  /// 整窗重载。去重因此只依据已确认焦点与同一目标的在途请求；失败后同一目标仍可重试。
-  Future<void> updateTimelineAnchor(
-    String threadId,
-    TimelineAnchor anchor, {
-    TimelineViewAction? viewAction,
-  }) => _track(
-    () => _updateTimelineAnchor(threadId, anchor, viewAction: viewAction),
-  );
-
-  Future<void> _updateTimelineAnchor(
-    String threadId,
-    TimelineAnchor anchor, {
-    TimelineViewAction? viewAction,
-  }) async {
-    final store = _client.session(threadId);
-    store.setTimelineAnchor(anchor);
-    if (viewAction == null ||
-        anchor.readingIntent != TimelineReadingIntent.browseHistory) {
-      return;
-    }
-    // 已确认焦点就是同一个条目时，这一次定位动作不产生新的后端请求。
-    final request = store.requestViewFocus(anchor.itemId);
-    if (request == null) return;
-    try {
-      final window = await store.chatView();
-      if (window == null || !store.isViewFocusCurrent(request)) {
-        store.settleViewFocus(request, succeeded: false);
-        return;
-      }
-      await window.focus(anchor.itemId);
-      store.settleViewFocus(request, succeeded: true);
-    } catch (_) {
-      // 聚焦失败保留当前窗口与锚点；下一次同目标定位动作会重试。
-      store.settleViewFocus(request, succeeded: false);
-    }
-  }
-
-  /// 可见条目正文补齐：对窗口内仍是预览的身份按 identity 展开。
-  Future<void> ensureItemBodies(String threadId, Iterable<String> itemIds) {
-    final frozenIds = List<String>.of(itemIds);
-    return _track(() => _ensureItemBodies(threadId, frozenIds));
-  }
-
-  Future<void> _ensureItemBodies(
-    String threadId,
-    Iterable<String> itemIds,
-  ) async {
-    for (final itemId in itemIds) {
-      await _completeItemBody(threadId, itemId);
-    }
-  }
-
-  /// 显式重试一次按身份的正文补齐（只对窗口内仍是预览的身份生效）。
-  Future<void> loadItemBody(String threadId, String itemId) =>
-      _track(() => _completeItemBody(threadId, itemId, retry: true));
-
-  Future<void> _completeItemBody(
-    String threadId,
-    String itemId, {
-    bool retry = false,
-  }) async {
-    final session = _client.session(threadId).state;
-    final history = session.history;
-    if (!history.previewedItemIds.contains(itemId) ||
-        history.loadingItemIds.contains(itemId)) {
-      return;
-    }
-    if (!retry && history.itemBodyErrors.containsKey(itemId)) return;
-    final store = _client.session(threadId);
-    final request = store.beginItemBodyLoad(itemId);
-    if (request == null) return;
-    try {
-      final window = await store.chatView();
-      if (!store.isItemBodyRequestCurrent(request)) return;
-      if (window == null) {
-        store.failItemBodyLoad(request, 'Chat window is unavailable');
-        return;
-      }
-      final receipt = await window.expandItem(itemId);
-      if (!store.isItemBodyRequestCurrent(request)) return;
-      if (!receipt.retained) store.markItemBodyPending(request);
-      // The same content pump delivers the full body. Its reducer clears loading;
-      // a receipt never installs another body baseline.
-    } catch (error) {
-      store.failItemBodyLoad(request, error.toString());
-    }
-  }
-
-  /// 窗口内按方向翻一页：控制操作取回执并等待内容泵交付对应帧后完成。
-  Future<void> _loadWindow(String threadId, TimelineDirection direction) async {
-    final session = _client.session(threadId).state;
-    final history = session.history;
-    final older = direction == TimelineDirection.older;
-    final canPage = older ? history.hasOlder : history.hasNewer;
-    if (!session.hasSnapshot || history.isLoading || !canPage) return;
-    final store = _client.session(threadId);
-    final token = store.beginHistoryOp(direction);
-    if (token == null) return;
-    try {
-      final window = await store.chatView();
-      if (window == null || !!_client.isClosed) {
-        store.failHistoryOp(token, 'Chat window is unavailable');
-        return;
-      }
-      final latest = _client.session(threadId).state.history;
-      final stillCanPage = older ? latest.hasOlder : latest.hasNewer;
-      if (!stillCanPage) {
-        store.observeHistoryOp(
-          token,
-          StudioChatReceipt(
-            operationId: token,
-            version: _client.session(threadId).state.chatVersion ?? 0,
-            retained: true,
-            disposition: StudioChatDisposition.noChange,
-          ),
-        );
-        return;
-      }
-      final receipt = await window.load(direction);
-      if (!_client.isClosed) {
-        store.observeHistoryOp(token, receipt);
-        await store.waitForHistoryOp(token);
-      }
-    } catch (error) {
-      if (!_client.isClosed) store.failHistoryOp(token, error.toString());
-    }
-  }
-
   Future<void> _applyThreadModelRoute({
     required OperationHandle operation,
     required String threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final key = 'thread-route:$threadId';
     final target = CommandTarget(
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
     );
     final settings = _client.settings;
@@ -574,8 +457,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         () => _requestThreadModelRoute(
           operationId: operation.id,
           threadId: threadId,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         ),
         refresh: () => _refreshRouteOwners(threadId),
@@ -603,13 +486,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   Future<ThreadModelRouteCommandReply> _requestThreadModelRoute({
     required OperationId operationId,
     required String threadId,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final session = _client.session(threadId).state;
     final route = session.runtime?.modelRoute;
-    final target = _findModel(providerId, model);
+    final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
       throw StateError('Selected thread model route is unavailable.');
     }
@@ -618,8 +501,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
       expectedSettingsRevision: _client.settings.state.settingsRevision,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
     );
   }
@@ -637,12 +520,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return !_client.isClosed;
   }
 
-  ProviderModelView? _findModel(String providerId, String model) {
-    final providers = _client.settings.state.canonical?.providers ?? const [];
-    for (final provider in providers) {
-      if (provider.id != providerId) continue;
-      for (final candidate in provider.models) {
-        if (candidate.slug == model) return candidate;
+  AccountModelView? _findModel(String accountId, String modelId) {
+    final accounts = _client.settings.state.canonical?.accounts ?? const [];
+    for (final account in accounts) {
+      if (account.id != accountId) continue;
+      for (final candidate in account.models) {
+        if (candidate.modelId == modelId) return candidate;
       }
     }
     return null;

@@ -66,8 +66,7 @@ Future<StudioShutdownReport> runStudioShutdown(
   }
 
   void recordProgressError(Object error, StackTrace stackTrace, String stage) {
-    // 无 runtime（未安装 / 第二实例）：不存在可观察的进度资源，跳过而不是伪造失败，
-    // 否则会把「确无 owner」误判为 second exit 1。
+    // 无 runtime（尚未安装）：不存在可观察的进度资源，跳过而不是伪造失败。
     if (error is StudioFailure &&
         error.code == StudioFailureCode.notInitialized) {
       return;
@@ -90,7 +89,7 @@ Future<StudioShutdownReport> runStudioShutdown(
   // `Stopped` 只由协调器在可靠 Clean 之后发布。
   publish(const StoppingSubscriptionsProgress());
   // Seal the application owner at entry. It joins the same deadline before the
-  // Rust finalizer decides Clean; provider disposal has no role in cleanup.
+  // Rust finalizer decides Clean; account disposal has no role in cleanup.
   final clientClosing = closeClient?.call(
     DateTime.now().add(
       Duration(milliseconds: _remainingBudget(remainingMs, watch)),
@@ -123,13 +122,13 @@ Future<StudioShutdownReport> runStudioShutdown(
     }
   }
 
-  // 订阅创建的同步 throw 也不能阻止关窗。
+  // 订阅创建的同步 throw 也不能阻止应用退出。
   StreamSubscription<StudioShutdownProgress>? subscription;
   try {
     subscription = api.subscribeShutdownProgress().listen(
       publish,
       onError: (Object error, StackTrace stackTrace) {
-        // 进度流错误是诊断，不得取消本次关窗；累积 Object 与堆栈后继续。
+        // 进度流错误是诊断，不得取消本次应用退出；累积 Object 与堆栈后继续。
         recordProgressError(error, stackTrace, 'progress');
       },
     );

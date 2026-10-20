@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme/studio_tokens.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
@@ -62,6 +63,8 @@ class _WorktreeRecoverySectionState
                 : l10n.settingsWorktreeHead(head),
             worktree.path,
           ].join('\n'),
+          style: DefaultTextStyle.of(context).style
+              .copyWith(fontFamily: studioCodeFontFamily),
         ),
         if (worktree.changedFiles.isNotEmpty) ...[
           const SizedBox(height: 8),
@@ -69,6 +72,7 @@ class _WorktreeRecoverySectionState
             context.l10n.settingsWorktreeChangedFiles(
               worktree.changedFiles.join(', '),
             ),
+            style: const TextStyle(fontFamily: studioCodeFontFamily),
           ),
         ],
         const Divider(height: 24),

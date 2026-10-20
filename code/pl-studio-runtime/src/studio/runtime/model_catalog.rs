@@ -1,6 +1,6 @@
 //! Owns startup-once per-instance discovery tasks through shutdown.
 use super::StudioRuntime;
-use crate::config::ProviderId;
+use crate::config::AccountId;
 use anyhow::Result;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -11,7 +11,7 @@ pub(super) struct ModelCatalogTasks(Arc<Mutex<Tasks>>);
 struct Tasks {
     started: bool,
     closing: bool,
-    active: BTreeMap<ProviderId, ProbeTask>,
+    active: BTreeMap<AccountId, ProbeTask>,
 }
 struct ProbeTask {
     handle: tokio::task::JoinHandle<Result<()>>,
@@ -25,7 +25,7 @@ impl StudioRuntime {
         }
         tasks.started = true;
         let snapshot = self.config_runtime.read()?;
-        for (id, provider) in &snapshot.canonical_config().models.providers {
+        for (id, provider) in &snapshot.canonical_config().models.accounts {
             if provider.discovery_profile()?.is_some() {
                 self.spawn_catalog_probe(&mut tasks, id.clone());
             }
@@ -33,14 +33,14 @@ impl StudioRuntime {
         Ok(())
     }
 
-    fn spawn_catalog_probe(&self, tasks: &mut Tasks, id: ProviderId) {
+    fn spawn_catalog_probe(&self, tasks: &mut Tasks, id: AccountId) {
         let runtime = self.clone();
         let provider = id.clone();
         let handle = tokio::spawn(async move { runtime.run_catalog_probe(provider).await });
         tasks.active.insert(id, ProbeTask { handle });
     }
 
-    async fn run_catalog_probe(&self, provider: ProviderId) -> Result<()> {
+    async fn run_catalog_probe(&self, provider: AccountId) -> Result<()> {
         let owner = self.config_runtime.clone();
         let probe = tokio::task::spawn_blocking(move || owner.begin_model_catalog_probe(provider))
             .await??;

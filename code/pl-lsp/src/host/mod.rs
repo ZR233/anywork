@@ -5,7 +5,7 @@ mod process;
 
 pub use backend::{
     LspHostBackend, LspHostError, LspHostFileStat, LspHostProcess, LspHostProcessExit,
-    LspHostSpawnRequest,
+    LspHostSpawnRequest, LspPathStyle,
 };
 pub(crate) use backend::{LspHostReader, LspHostWriter};
 pub(crate) use process::{LspChild, spawn_background};

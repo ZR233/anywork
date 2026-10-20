@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'item.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeRawPayload {
   final String format;
@@ -279,6 +279,9 @@ sealed class BridgeThreadItemState with _$BridgeThreadItemState {
 
     /// Typed ordinary Q&A history the call asked for, when it asked one.
     BridgeThreadUserInput? userInput,
+
+    /// Typed wait/sleep presentation when this call is a wait or sleep.
+    BridgeThreadWaitPresentation? wait,
   }) = BridgeThreadItemState_Tool;
   const factory BridgeThreadItemState.agent({
     required BridgeThreadAgentIdentity identity,
@@ -577,4 +580,94 @@ sealed class BridgeThreadUserInputState with _$BridgeThreadUserInputState {
   }) = BridgeThreadUserInputState_Resolved;
   const factory BridgeThreadUserInputState.cancelled() =
       BridgeThreadUserInputState_Cancelled;
+}
+
+@freezed
+sealed class BridgeThreadWaitIntent with _$BridgeThreadWaitIntent {
+  const BridgeThreadWaitIntent._();
+
+  const factory BridgeThreadWaitIntent.events({
+    required List<BridgeThreadWaitTarget> targets,
+    required BigInt timeoutMs,
+  }) = BridgeThreadWaitIntent_Events;
+  const factory BridgeThreadWaitIntent.timer({required BigInt durationMs}) =
+      BridgeThreadWaitIntent_Timer;
+}
+
+/// Shared typed wait/sleep presentation mirrored from the protocol DTO.
+class BridgeThreadWaitPresentation {
+  final BridgeThreadWaitIntent intent;
+  final BridgeThreadWaitState state;
+  final bool? messagesReady;
+
+  const BridgeThreadWaitPresentation({
+    required this.intent,
+    required this.state,
+    this.messagesReady,
+  });
+
+  @override
+  int get hashCode => intent.hashCode ^ state.hashCode ^ messagesReady.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadWaitPresentation &&
+          runtimeType == other.runtimeType &&
+          intent == other.intent &&
+          state == other.state &&
+          messagesReady == other.messagesReady;
+}
+
+enum BridgeThreadWaitState {
+  waiting,
+  ready,
+  timedOut,
+  elapsed,
+  cancelled,
+  failed,
+  interrupted,
+}
+
+class BridgeThreadWaitTarget {
+  final String taskId;
+  final String? toolName;
+  final String? summary;
+  final bool summaryTruncated;
+  final BridgeThreadWaitTargetStatus? status;
+
+  const BridgeThreadWaitTarget({
+    required this.taskId,
+    this.toolName,
+    this.summary,
+    required this.summaryTruncated,
+    this.status,
+  });
+
+  @override
+  int get hashCode =>
+      taskId.hashCode ^
+      toolName.hashCode ^
+      summary.hashCode ^
+      summaryTruncated.hashCode ^
+      status.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeThreadWaitTarget &&
+          runtimeType == other.runtimeType &&
+          taskId == other.taskId &&
+          toolName == other.toolName &&
+          summary == other.summary &&
+          summaryTruncated == other.summaryTruncated &&
+          status == other.status;
+}
+
+enum BridgeThreadWaitTargetStatus {
+  running,
+  succeeded,
+  failed,
+  cancelled,
+  interrupted,
 }

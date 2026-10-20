@@ -7,21 +7,28 @@ use crate::studio::{ProductEventBus, StudioActiveTurn, StudioRuntimeState, Studi
 use pl_protocol::studio::StudioPromptInput;
 use pl_tool::mcp::McpRuntimeHandle;
 
+pub use pl_protocol::studio::{ThreadPreparationProgress, ThreadPreparationStage};
+
+/// Nonblocking observation of a creation command. The observer must not reenter the runtime;
+/// losing observation does not cancel creation or transfer its resource ownership.
+pub type ThreadPreparationObserver =
+    std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
+
+mod account_usage;
 mod attachment_drafts;
 mod background_task;
 pub(crate) mod chat_item;
-mod chat_window;
 mod command_receipts;
 mod history;
 mod lifecycle;
 mod lsp_state;
 mod mcp_health;
+mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;
 mod product_subscription;
 mod prompt_runner;
-mod provider_usage;
 mod rejected_tools;
 mod residency;
 mod settings_api;
@@ -33,20 +40,19 @@ mod thread_mode;
 mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
+pub(crate) mod timeline_content;
 mod tool_refresh;
-pub use chat_window::{
-    ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
-};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
+pub use timeline_content::{TimelineContentReader, TimelineTailStream};
 mod thread_observation;
 mod thread_title;
 mod updater;
 
+pub(crate) use account_usage::AccountUsageRuntime;
+pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
 pub use lifecycle::shutdown::ShutdownExternalHook;
 pub(crate) use model_performance::ModelPerformanceOwner;
-pub(crate) use provider_usage::ProviderUsageRuntime;
-pub use provider_usage::{ProviderUsageStateData, ProviderUsageStateSnapshot};
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;
 pub use skill_catalog::{SkillSearchResult, SkillsStateSnapshot};
@@ -74,6 +80,7 @@ pub struct StudioStartNewThreadRequest {
     pub route: pl_protocol::studio::NewThreadModelRoute,
     pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub options: StudioSubmitPromptOptions,
+    pub preparation_observer: Option<ThreadPreparationObserver>,
 }
 
 /// Studio UI 提交 prompt 的附加选项。
@@ -187,7 +194,7 @@ pub struct StudioRuntime {
     recovery_task: background_task::BackgroundTaskSlot,
     skills: SkillCatalogRuntime,
     thread_modes: crate::mode::ThreadModeManager,
-    provider_usage: ProviderUsageRuntime,
+    account_usage: AccountUsageRuntime,
     model_performance: ModelPerformanceOwner,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,
@@ -276,7 +283,7 @@ impl StudioRuntime {
             profile_id,
             profile,
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
             &state,
@@ -310,7 +317,7 @@ impl StudioRuntime {
                 }
                 Ok(config)
             })?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
             &state,

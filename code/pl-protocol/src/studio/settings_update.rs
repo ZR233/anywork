@@ -110,8 +110,8 @@ pub enum SettingsFieldUpdate {
     },
     ModeModel {
         mode_id: String,
-        provider_id: String,
-        model: String,
+        account_id: String,
+        model_id: String,
     },
     ModeReasoningEffort {
         mode_id: String,
@@ -119,8 +119,8 @@ pub enum SettingsFieldUpdate {
     },
     RoleModel {
         role: String,
-        provider_id: String,
-        model: String,
+        account_id: String,
+        model_id: String,
     },
     RoleReasoningEffort {
         role: String,
@@ -153,8 +153,8 @@ pub struct SetThreadModelRouteRequest {
     pub operation_id: String,
     pub expected_model_route_revision: u64,
     pub expected_settings_revision: u64,
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: Option<String>,
 }
 
@@ -170,86 +170,89 @@ pub struct ThreadModelRouteCommandReply {
     pub warning: Option<String>,
 }
 
-/// 更新一个 provider 的配置。
+/// 更新一个 account 的配置。
 ///
-/// Provider、默认 provider、模式路由和角色路由是四个独立的配置意图。
-/// 这个请求只允许改变一个 provider 资源；provider 内部的 endpoint、凭据和
-/// 模型声明需要一起校验并原子提交，避免保存半个不可用 provider。它不会携带
-/// 默认 provider、模式路由或角色路由，设置页也不能把其它集合的旧快照一起写回。
+/// Account、默认 account、模式路由和角色路由是四个独立的配置意图。
+/// 这个请求只允许改变一个 account 资源；account 内部的 endpoint、凭据和
+/// 模型声明需要一起校验并原子提交，避免保存半个不可用 account。它不会携带
+/// 默认 account、模式路由或角色路由，设置页也不能把其它集合的旧快照一起写回。
+/// 账号 ID 创建后稳定，不提供 `originalId` 重命名路径。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateProviderRequest {
+pub struct UpdateAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
-    pub provider: ProviderSettingsUpdate,
+    pub account: AccountSettingsUpdate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemoveProviderRequest {
+pub struct RemoveAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
-    pub provider_id: String,
-    /// 删除仍被模式或角色路由引用的 provider 时，必须显式指定替换 provider。
+    pub account_id: String,
+    /// 删除仍被模式或角色路由引用的 account 时，必须显式指定替换 account。
     /// 未被引用时可以省略；删除逻辑不会因为界面旧快照而静默改写路由。
     #[serde(default)]
-    pub replacement_provider_id: Option<String>,
+    pub replacement_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetDefaultProviderRequest {
+pub struct SetDefaultAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
-    pub provider_id: String,
+    pub account_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderSettingsUpdate {
-    pub id: String,
-    pub original_id: Option<String>,
-    pub template_kind: String,
+pub struct AccountSettingsUpdate {
+    pub account_id: String,
+    /// 可选的内置账号模板引用；完全自定义账号为 `None`。
+    pub template_id: Option<String>,
+    /// 明确的厂商协议适配选择；不从地址或名称推断。
+    pub protocol: String,
     pub name: String,
     pub base_url: String,
-    pub secret: ProviderSecretUpdate,
+    pub secret: AccountSecretUpdate,
     pub pricing_enabled: bool,
-    pub default_model: String,
-    pub custom_models: Vec<ProviderModelUpdate>,
-    pub model_connection_modes: Vec<ProviderModelConnectionUpdate>,
-    pub model_auto_compact_limits: Vec<ProviderModelAutoCompactUpdate>,
+    // 账号不保存第二份默认模型：模型选择只由 Mode/角色/Thread route 决定。
+    pub custom_models: Vec<AccountModelUpdate>,
+    pub model_connection_modes: Vec<AccountModelConnectionUpdate>,
+    pub model_auto_compact_limits: Vec<AccountModelAutoCompactUpdate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderModelUpdate {
-    pub slug: String,
+pub struct AccountModelUpdate {
+    pub model_id: String,
     pub display_name: String,
-    pub wire_protocol: String,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    pub wire_api: String,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderModelConnectionUpdate {
-    pub slug: String,
+pub struct AccountModelConnectionUpdate {
+    pub model_id: String,
     pub connection_mode: String,
 }
 
 /// 某模型上下文压缩阈值用户覆盖的完整集合项；`limit` 必须为正整数 tokens。
 ///
-/// 该列表是该 provider 实例的完整覆盖集合；未列出的模型使用模型默认值。
+/// 该列表是该 account 实例的完整覆盖集合；未列出的模型使用模型默认值。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderModelAutoCompactUpdate {
-    pub slug: String,
+pub struct AccountModelAutoCompactUpdate {
+    pub model_id: String,
     pub limit: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "action", deny_unknown_fields)]
-pub enum ProviderSecretUpdate {
+pub enum AccountSecretUpdate {
     Preserve,
     Replace { value: String },
     Clear,

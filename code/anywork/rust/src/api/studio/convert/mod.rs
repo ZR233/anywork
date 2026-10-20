@@ -1,7 +1,8 @@
-pub(crate) mod chat_window;
 pub(crate) mod commands;
 pub(crate) mod event;
+pub(crate) mod mode_editor;
 pub(crate) mod records;
 pub(crate) mod runtime;
 pub(crate) mod settings;
 pub(crate) mod thread_stream;
+pub(crate) mod timeline_content;

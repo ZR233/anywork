@@ -2,12 +2,10 @@
 //! catalog、provider usage、model performance、updater 与 persistence 状态的
 //! 读取、维护与事件发射。
 
-use std::sync::atomic::Ordering;
-
 use tokio::sync::watch;
 
 use crate::{
-    PersistenceStateSnapshot, ProviderUsageStateSnapshot, SkillsStateSnapshot,
+    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
@@ -90,20 +88,22 @@ impl ProductEventBus {
         &self,
         state: pl_protocol::ThreadModeCatalogSnapshot,
     ) -> Option<StudioProductEventEnvelope> {
-        let published = self.mode_catalog_revision.load(Ordering::Acquire);
-        if state.revision == 0 || state.revision == published {
+        let mut published = self
+            .mode_catalog_revision
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision == 0 || state.revision <= *published {
             return None;
         }
-        self.mode_catalog_revision
-            .store(state.revision, Ordering::Release);
+        *published = state.revision;
         Some(self.emit(StudioProductEventKind::ThreadModeCatalogChanged(state)))
     }
 
-    pub fn emit_provider_usage_state(
+    pub fn emit_account_usage_state(
         &self,
-        state: ProviderUsageStateSnapshot,
+        state: AccountUsageStateSnapshot,
     ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ProviderUsageStateChanged(state))
+        self.emit(StudioProductEventKind::AccountUsageStateChanged(state))
     }
 
     pub fn emit_model_performance_state(

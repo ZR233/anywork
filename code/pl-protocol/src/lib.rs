@@ -1,10 +1,10 @@
+mod account_catalog;
 mod accounting;
 mod activity;
 mod agent;
 mod agent_profile;
 pub mod agent_session;
 mod billing;
-mod chat_window;
 mod error;
 mod event;
 mod id;
@@ -16,17 +16,26 @@ mod model_context;
 mod observed_state;
 mod permission;
 pub mod process_worker;
-mod provider_catalog;
 pub mod remote;
 pub mod session_runtime;
 pub mod studio;
 pub mod thread;
 mod thread_item;
+pub mod timeline_content;
 mod tool;
 mod turn;
 mod turn_failure;
 mod workflow;
 
+pub use account_catalog::{
+    ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
+    AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
+    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelContextAdjustment, ModelContextResolution,
+    ModelContextUnavailable, ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
+    ModelModalityDto, ModelOriginDto, ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor,
+    ModelTransportDescriptor, ModelType, ModelTypeExclusion, ModelTypeSupport,
+    WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
+};
 pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport, UsageStatus,
 };
@@ -52,11 +61,6 @@ pub use billing::{
     InferenceBillingAppend, InferenceBillingRecord, InferenceModelObservation,
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
     ModelPricingSnapshot, TurnBillingRecord,
-};
-pub use chat_window::{
-    ChatWindowChange, ChatWindowDirection, ChatWindowFocus, ChatWindowItem, ChatWindowLifecycle,
-    ChatWindowPriority, ChatWindowQuery, ChatWindowSnapshot, ChatWindowUpdate, ThreadContentField,
-    ThreadFieldChange, ThreadFieldUpdate, ThreadUserInputFieldPart,
 };
 pub use error::{PureError, Result};
 pub use event::{
@@ -90,27 +94,25 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
-pub use provider_catalog::{
-    CredentialDescriptorDto, ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor,
-    ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto, ModelOriginDto,
-    ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor, ModelTransportDescriptor,
-    PROVIDER_CATALOG_SCHEMA_VERSION, ProviderCatalogSnapshot, ProviderConnectionModeDescriptor,
-    ProviderPresetDescriptor, ProviderServiceCapabilitiesDescriptor,
-    WebSearchProviderCapabilitiesDescriptor, WebSearchResolutionDescriptor,
+pub use timeline_content::{
+    ThreadContentField, ThreadUserInputFieldPart, TimelineChange, TimelineDetailChunk,
+    TimelineDetailCursor, TimelineDetailQuery, TimelineDetailRef, TimelineFieldChange,
+    TimelineFieldUpdate, TimelineItem, TimelineItemSource, TimelineLifecycle, TimelinePage,
+    TimelinePageCursor, TimelinePageQuery, TimelinePriority, TimelineRecoveryNotice,
+    TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
 };
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。
 pub use studio::{
     PersistenceQueueSnapshot, ThreadPersistenceSnapshot, ThreadStorageExecution, ThreadStorageState,
 };
-pub use thread::mode::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
+pub use thread::mode::*;
 pub use thread::{
     CacheUsageSummary, THREAD_SCHEMA_VERSION, Thread, ThreadContextDisposition,
     ThreadModelRouteSnapshot, ThreadNotification, ThreadNotificationEnvelope,
     ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage, ThreadRuntimeUsageState,
     ThreadSnapshot, ThreadStatus, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
-    ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineItemQuery, TimelineItemRead,
-    TimelinePage, TimelineQuery, TimelineTurn,
+    ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineTurn,
 };
 mod session_entry;
 pub use session_entry::SessionEntry;

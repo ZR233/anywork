@@ -55,7 +55,7 @@ List<ProductTopic> bridgeSettingsScopeTopics(
           ? const []
           : [SkillsTopic(projectId: projectId)];
     case BridgeSettingsScopeKind.usage:
-      return const [ProviderUsageTopic()];
+      return const [AccountUsageTopic()];
   }
 }
 
@@ -565,7 +565,7 @@ String describeBridgeProductTopic(ProductTopic topic) {
     LspTopic() => 'lsp',
     SkillsTopic(:final projectId) => 'skills:$projectId',
     ThreadModeCatalogTopic() => 'threadModeCatalog',
-    ProviderUsageTopic() => 'providerUsage',
+    AccountUsageTopic() => 'accountUsage',
     ModelPerformanceTopic() => 'modelPerformance',
     SessionCostsTopic(:final rootThreadId) => 'sessionCosts:$rootThreadId',
     UpdaterTopic() => 'updater',

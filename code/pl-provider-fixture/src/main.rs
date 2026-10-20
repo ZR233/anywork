@@ -1,13 +1,19 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_provider_fixture::{
     FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS, ReadyFile, WebSearchFault,
-    WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_plan_recovery_script,
-    gui_question_history_script, gui_realtime_script, gui_script, gui_shutdown_script,
-    gui_statistics_script, gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
-    gui_tool_scroll_script, gui_web_search_script, gui_websocket_recovery_script,
+    WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
+    gui_plan_recovery_script, gui_question_history_script, gui_realtime_script, gui_script,
+    gui_shutdown_script, gui_single_instance_script, gui_statistics_script,
+    gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
+    gui_timeline_history_script, gui_tool_scroll_script, gui_wait_events_script,
+    gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -15,6 +21,12 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     #[arg(long)]
     scenario: Option<String>,
+    /// Generate POSIX commands for the tool-scroll workspace on remote Linux.
+    #[arg(long)]
+    posix_exec: bool,
+    /// Observe idle Mode changes and a subsequent real root input.
+    #[arg(long)]
+    resource_lifecycle: bool,
     #[arg(long)]
     ready_file: Option<PathBuf>,
     #[arg(long)]
@@ -158,18 +170,46 @@ async fn main() -> Result<()> {
         GUI_SCENARIOS.contains(&scenario),
         "unknown fixture scenario: {scenario}"
     );
+    ensure!(
+        !(args.posix_exec || args.resource_lifecycle) || scenario == "tool-scroll",
+        "--posix-exec and --resource-lifecycle require --scenario tool-scroll"
+    );
+    // The realtime host-cwd command runs in a directory the fixture owns for the
+    // whole run: it is created inside the scenario isolation environment, next to
+    // the coordination files, so it is never the repository root, the session
+    // project workspace or a shared global temporary directory.
+    let mut realtime_host_cwd: Option<tempfile::TempDir> = None;
     let steps = match scenario {
         "gui" => gui_script(),
         "storage-compaction" => pl_provider_fixture::gui_storage_compaction_script(),
-        "tool-scroll" => gui_tool_scroll_script(),
+        "tool-scroll" => {
+            gui_tool_scroll_script(cfg!(windows) && !args.posix_exec, args.resource_lifecycle)
+        }
+        "single-instance" => gui_single_instance_script(),
         "stress" => gui_stress_script(),
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),
+        "timeline-history" => gui_timeline_history_script(),
         "statistics" => gui_statistics_script(),
-        "realtime" => gui_realtime_script(),
+        "realtime" => {
+            let directory = realtime_host_cwd_directory(args.ready_file.as_deref())?;
+            let path = directory
+                .path()
+                .to_str()
+                .with_context(|| {
+                    format!(
+                        "realtime host cwd directory is not valid UTF-8: {}",
+                        directory.path().display()
+                    )
+                })?
+                .to_owned();
+            realtime_host_cwd = Some(directory);
+            gui_realtime_script(&path)
+        }
         "history-lock" => gui_history_lock_script(),
         "history-fault" => gui_history_fault_script(),
         "plan-recovery" => gui_plan_recovery_script(),
+        "mode-editor" => gui_mode_editor_script(),
         "context-replay-recovery" => pl_provider_fixture::gui_context_replay_recovery_script(),
         "websocket-recovery" => gui_websocket_recovery_script(),
         "call-lifecycle-recovery" => pl_provider_fixture::gui_call_lifecycle_recovery_script(),
@@ -177,6 +217,7 @@ async fn main() -> Result<()> {
         "web-search" => gui_web_search_script(),
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
+        "wait-events" => gui_wait_events_script(),
         value => bail!("unknown fixture scenario: {value}"),
     };
     let fault = match args.fault.as_deref() {
@@ -191,6 +232,7 @@ async fn main() -> Result<()> {
         provider_usage: scenario == "provider-usage",
         model_catalog,
         bind_port: args.bind_port,
+        wait_events: scenario == "wait-events",
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict
@@ -248,6 +290,10 @@ async fn main() -> Result<()> {
             return Err(error).context("fixture shutdown failed");
         }
     };
+    // The realtime host-cwd directory belongs to this run, so it is released only
+    // after the server has shut down: a delivered command result can never
+    // outlive the directory the real command ran in.
+    drop(realtime_host_cwd);
     if let Some(path) = args.requests_file.as_ref() {
         write_json(path, &report.requests)?;
     }
@@ -267,6 +313,33 @@ async fn main() -> Result<()> {
     // outermost reason the coordinator records.
     report.verify()?;
     Ok(())
+}
+
+/// The existing host directory the realtime host-cwd command runs in.
+///
+/// It is created inside the scenario isolation environment that already holds
+/// the coordination files, which keeps it outside the session's project
+/// workspace and away from shared global temporary directories. A coordination
+/// path that cannot host it, an unresolvable location or a failed creation is an
+/// error naming the attempted directory; the returned guard owns the directory
+/// until the fixture has shut down.
+fn realtime_host_cwd_directory(ready_file: Option<&Path>) -> Result<tempfile::TempDir> {
+    let coordination = ready_file
+        .and_then(Path::parent)
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context(
+            "--ready-file must name a file inside the scenario isolation directory \
+             that hosts the realtime cwd directory",
+        )?;
+    tempfile::Builder::new()
+        .prefix("realtime-host-cwd-")
+        .tempdir_in(coordination)
+        .with_context(|| {
+            format!(
+                "failed to create the realtime host cwd directory in {}",
+                coordination.display()
+            )
+        })
 }
 
 async fn wait_for_hang_hits(

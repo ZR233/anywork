@@ -108,10 +108,14 @@ async fn main() -> anyhow::Result<()> {
         ),
         ("stream", "head -c 20000000 /dev/zero", RemoteCapture::None),
     ] {
-        let transport = client.spawn_process(request(id, command, capture)).await?;
-        drop(transport.stdin);
-        let mut stdout = transport.stdout;
-        let mut stderr = transport.stderr;
+        let mut transport = client.spawn_process(request(id, command, capture)).await?;
+        drop(transport.take_stdin());
+        let mut stdout = transport
+            .take_stdout()
+            .ok_or_else(|| anyhow::anyhow!("missing stdout"))?;
+        let mut stderr = transport
+            .take_stderr()
+            .ok_or_else(|| anyhow::anyhow!("missing stderr"))?;
         let (out, err, exit) = tokio::join!(
             async {
                 let mut sink = tokio::io::sink();
@@ -121,9 +125,9 @@ async fn main() -> anyhow::Result<()> {
                 let mut sink = tokio::io::sink();
                 tokio::io::copy(&mut stderr, &mut sink).await
             },
-            transport.exit,
+            transport.wait(),
         );
-        let (out, err, exit) = (out?, err?, exit??);
+        let (out, err, exit) = (out?, err?, exit.map_err(anyhow::Error::msg)?);
         if id == "stream" {
             anyhow::ensure!(
                 out == 20_000_000

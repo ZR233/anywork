@@ -3,40 +3,38 @@
 use anyhow::{Context, Result, bail};
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
-    CommandEffectPoint, RemoveProviderModelRequest, RemoveProviderRequest,
-    SetDefaultProviderRequest, SetThreadModelRouteRequest, SettingsCommandReply,
-    SettingsFieldUpdate, SettingsStateResponse, ThreadModelRouteCommandReply,
-    UpdatePermissionSettingsRequest, UpdateProviderRequest, UpdateSettingsFieldRequest,
+    CommandEffectPoint, RemoveAccountModelRequest, RemoveAccountRequest, SetDefaultAccountRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
+    ThreadModelRouteCommandReply, UpdateAccountRequest, UpdatePermissionSettingsRequest,
+    UpdateSettingsFieldRequest,
 };
 
-use crate::config::{ModelRouteConfig, ProviderId, ReasoningEffort};
+use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
 use crate::{PermissionMode, StudioRole};
 
 use super::StudioRuntime;
 
-mod provider_edit;
+mod account_edit;
 mod view;
 
-use provider_edit::invalid_settings_argument;
+use account_edit::invalid_settings_argument;
 pub(crate) use view::{model_catalog_snapshot, settings_config_snapshot, settings_state_response};
 use view::{normalized_optional, normalized_string_list};
 
 impl StudioRuntime {
-    pub(super) fn read_settings_response(
-        &self,
-        state: &crate::ConfigRuntimeSnapshot,
-    ) -> Result<SettingsStateResponse> {
-        settings_state_response(state, &self.config_runtime.read_catalog()?)
+    pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
+        let (state, catalog) = self.config_runtime.read_with_catalog()?;
+        settings_state_response(&state, &catalog)
     }
 
-    /// Reads the canonical built-in provider and model catalog.
-    pub fn load_provider_catalog(&self) -> Result<pl_protocol::ProviderCatalogSnapshot> {
-        Ok(pl_model::config::builtin_provider_catalog()?.snapshot()?)
+    /// Reads the canonical built-in account and model catalog.
+    pub fn load_account_catalog(&self) -> Result<pl_protocol::AccountCatalogSnapshot> {
+        Ok(pl_model::config::builtin_account_catalog()?.snapshot()?)
     }
 
     /// Reads the secret-free canonical Settings snapshot from the in-memory owner.
     pub fn read_settings(&self) -> Result<SettingsStateResponse> {
-        self.read_settings_response(&self.config_runtime.read()?)
+        self.read_settings_response()
     }
 
     /// Applies one typed settings field/resource mutation.
@@ -205,8 +203,8 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::ModeModel {
                         mode_id,
-                        provider_id,
-                        model,
+                        account_id,
+                        model_id,
                     } => {
                         let mode =
                             ThreadModeId::new(mode_id.trim().to_string()).map_err(|error| {
@@ -216,15 +214,15 @@ impl StudioRuntime {
                             .mode_model_routes
                             .get(&mode)
                             .filter(|route| {
-                                route.provider.as_str() == provider_id.trim()
-                                    && route.model == model.trim()
+                                route.account_id.as_str() == account_id.trim()
+                                    && route.model_id == model_id.trim()
                             })
                             .and_then(|route| route.effort.as_ref().map(|value| value.as_str()));
                         let route = validated_route(
                             route_validation_config,
                             &format!("Thread Mode {mode}"),
-                            &provider_id,
-                            &model,
+                            &account_id,
+                            &model_id,
                             effort,
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
@@ -248,8 +246,8 @@ impl StudioRuntime {
                         let route = validated_route(
                             route_validation_config,
                             &format!("Thread Mode {mode}"),
-                            current.provider.as_str(),
-                            &current.model,
+                            current.account_id.as_str(),
+                            &current.model_id,
                             effort.as_deref(),
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
@@ -257,8 +255,8 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::RoleModel {
                         role,
-                        provider_id,
-                        model,
+                        account_id,
+                        model_id,
                     } => {
                         let role = StudioRole::from_key(role.trim()).ok_or_else(|| {
                             pl_protocol::PureError::ConfigError(
@@ -276,15 +274,15 @@ impl StudioRuntime {
                             .routes
                             .get(&role.id())
                             .filter(|route| {
-                                route.provider.as_str() == provider_id.trim()
-                                    && route.model == model.trim()
+                                route.account_id.as_str() == account_id.trim()
+                                    && route.model_id == model_id.trim()
                             })
                             .and_then(|route| route.effort.as_ref().map(|value| value.as_str()));
                         let route = validated_route(
                             route_validation_config,
                             &format!("role {}", role.key()),
-                            &provider_id,
-                            &model,
+                            &account_id,
+                            &model_id,
                             effort,
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
@@ -317,8 +315,8 @@ impl StudioRuntime {
                         let route = validated_route(
                             route_validation_config,
                             &format!("role {}", role.key()),
-                            current.provider.as_str(),
-                            &current.model,
+                            current.account_id.as_str(),
+                            &current.model_id,
                             effort.as_deref(),
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
@@ -330,7 +328,7 @@ impl StudioRuntime {
                 Ok(config)
             },
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         if mark_skills_stale {
             self.skills.mark_all_stale().await;
         }
@@ -353,7 +351,7 @@ impl StudioRuntime {
                 config.runtime.permission_mode = mode;
                 Ok(config)
             })?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -363,26 +361,26 @@ impl StudioRuntime {
     }
 
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
-        let state = self.config_runtime.reload_from_disk(expected_revision)?;
-        self.publish_settings_state(state.clone())?;
+        self.config_runtime.reload_from_disk(expected_revision)?;
+        self.publish_settings_state()?;
         self.skills.mark_all_stale().await;
-        let _ = self.apply_provider_config().await?;
-        self.read_settings_response(&state)
+        let _ = self.apply_account_config().await?;
+        self.read_settings_response()
     }
 
-    pub async fn save_provider(
+    pub async fn save_account(
         &self,
-        request: UpdateProviderRequest,
+        request: UpdateAccountRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
-        let provider = provider_edit::provider_edit(request.provider, &current.config)?;
-        let next = provider.to_single_config(&current.config)?;
+        let account = account_edit::account_edit(request.account, &current.config)?;
+        let next = account.to_single_config(&current.config)?;
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
-        let _ = self.apply_provider_config().await?;
+        self.publish_settings_state()?;
+        let _ = self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -391,48 +389,48 @@ impl StudioRuntime {
         )
     }
 
-    pub fn set_default_provider(
+    pub fn set_default_account(
         &self,
-        request: SetDefaultProviderRequest,
+        request: SetDefaultAccountRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
-        let provider_id = ProviderId::new(request.provider_id.trim())?;
-        let provider = current
+        let account_id = AccountId::new(request.account_id.trim())?;
+        let account = current
             .config
             .models
-            .providers
-            .get(&provider_id)
-            .ok_or_else(|| invalid_settings_argument("Default provider does not exist"))?;
-        let models = provider.effective_models()?;
+            .accounts
+            .get(&account_id)
+            .ok_or_else(|| invalid_settings_argument("Default account does not exist"))?;
+        let models = account.effective_models(None)?;
         let current_route = current
             .config
             .mode_model_routes
             .get(&ThreadModeId::simple())
-            .filter(|route| route.provider == provider_id);
+            .filter(|route| route.account_id == account_id);
         let model = current_route
-            .and_then(|route| models.iter().find(|model| model.slug == route.model))
+            .and_then(|route| models.iter().find(|model| model.model_id == route.model_id))
             .or_else(|| {
                 current
                     .config
                     .models
                     .routes
                     .values()
-                    .find(|route| route.provider == provider_id)
-                    .and_then(|route| models.iter().find(|model| model.slug == route.model))
+                    .find(|route| route.account_id == account_id)
+                    .and_then(|route| models.iter().find(|model| model.model_id == route.model_id))
             })
             .or_else(|| models.first())
-            .ok_or_else(|| invalid_settings_argument("Default provider has no usable models"))?;
+            .ok_or_else(|| invalid_settings_argument("Default account has no usable models"))?;
         let effort = current_route
-            .and_then(|route| (route.model == model.slug).then_some(route.effort.as_ref()))
+            .and_then(|route| (route.model_id == model.model_id).then_some(route.effort.as_ref()))
             .flatten()
             .map(|effort| effort.as_str().to_string())
             .or_else(|| model.default_effort());
         let route = validated_route(
             &current.config,
-            "Default provider",
-            provider_id.as_str(),
-            &model.slug,
+            "Default account",
+            account_id.as_str(),
+            &model.model_id,
             effort.as_deref(),
         )?;
         let mut next = current.config.clone();
@@ -440,7 +438,7 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -449,56 +447,58 @@ impl StudioRuntime {
         )
     }
 
-    pub fn remove_provider_model(
+    pub fn remove_account_model(
         &self,
-        request: RemoveProviderModelRequest,
+        request: RemoveAccountModelRequest,
     ) -> Result<SettingsCommandReply> {
-        let provider_id = ProviderId::new(request.provider_id.trim())?;
-        let slug = request.slug.trim();
-        if slug.is_empty() {
-            return Err(invalid_settings_argument("Model slug must not be empty"));
+        let account_id = AccountId::new(request.account_id.trim())?;
+        let model_id = request.model_id.trim();
+        if model_id.is_empty() {
+            return Err(invalid_settings_argument(
+                "Model model_id must not be empty",
+            ));
         }
         let mut changed = false;
         let state = self.config_runtime.update_with_effective(
             request.expected_revision,
             |desired, _effective| {
                 let mut next = desired.clone();
-                let provider = next.models.providers.get_mut(&provider_id).ok_or_else(|| {
+                let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
                     pl_protocol::PureError::ConfigError(format!(
-                        "provider does not exist: {provider_id}"
+                        "account does not exist: {account_id}"
                     ))
                 })?;
-                provider.remove_manual_model(slug)?;
+                account.remove_manual_model(model_id)?;
                 next.validate_declarations()?;
                 changed = desired != &next;
                 Ok(next)
             },
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
-            format!("remove-provider-model:{provider_id}:{slug}"),
+            format!("remove-account-model:{account_id}:{model_id}"),
             &state,
             changed,
             CommandEffectPoint::FutureSession,
         )
     }
 
-    pub async fn remove_provider(
+    pub async fn remove_account(
         &self,
-        request: RemoveProviderRequest,
+        request: RemoveAccountRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
-        let next = crate::config_editor::remove_provider(
+        let next = crate::config_editor::remove_account(
             &current.config,
-            &request.provider_id,
-            request.replacement_provider_id.as_deref(),
+            &request.account_id,
+            request.replacement_account_id.as_deref(),
         )?;
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
-        self.apply_provider_config().await?;
+        self.publish_settings_state()?;
+        self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -543,23 +543,21 @@ impl StudioRuntime {
         }
         let mode = crate::studio::thread_projection::saved_mode(&state)?
             .unwrap_or_else(|| record.mode.clone());
-        let mode_definition = self
-            .thread_modes
-            .snapshot()
-            .mode(&mode)
+        crate::mode::saved_registered_mode(&state)?
+            .or_else(|| self.thread_modes.snapshot().mode(&mode))
             .context("current Thread Mode is unavailable")?;
         let selector = validated_route(
             &settings.config,
             &format!("Thread {thread_id}"),
-            &request.provider_id,
-            &request.model,
+            &request.account_id,
+            &request.model_id,
             request.effort.as_deref(),
         )?;
         let route = settings
             .config
             .models
             .resolve_route(StudioRole::Planner.id(), &selector)?;
-        crate::mode::validate_thread_mode_model(Some(&mode_definition), &route.model)?;
+
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
@@ -613,8 +611,8 @@ impl StudioRuntime {
             let candidate = match validated_route(
                 &latest.config,
                 &format!("Thread Mode {mode}"),
-                &request.provider_id,
-                &request.model,
+                &request.account_id,
+                &request.model_id,
                 request.effort.as_deref(),
             ) {
                 Ok(candidate) => candidate,
@@ -630,7 +628,7 @@ impl StudioRuntime {
                 Ok(updated) => {
                     default_changed = latest.canonical_config() != updated.canonical_config();
                     confirmed_settings = updated.clone();
-                    if let Err(error) = self.publish_settings_state(updated) {
+                    if let Err(error) = self.publish_settings_state() {
                         warning = Some(format!(
                             "current Thread and Mode default were saved, but the Settings event was not published: {error}"
                         ));
@@ -670,7 +668,7 @@ impl StudioRuntime {
                 CommandEffectPoint::NextTurn,
                 false,
             ),
-            settings: self.read_settings_response(&confirmed_settings)?,
+            settings: self.read_settings_response()?,
             mode_default_saved,
             warning,
         })
@@ -806,25 +804,23 @@ fn apply_mcp_server_endpoint(
 pub(super) fn validated_route(
     config: &crate::StudioConfig,
     subject: &str,
-    provider_id: &str,
-    model_slug: &str,
+    account_id: &str,
+    model_id: &str,
     effort: Option<&str>,
 ) -> Result<ModelRouteConfig> {
-    let provider_id = provider_id.trim();
-    let model_slug = model_slug.trim();
-    let provider_key = ProviderId::new(provider_id)?;
-    let provider = config
+    let account_id = account_id.trim();
+    let model_id = model_id.trim();
+    let account_key = AccountId::new(account_id)?;
+    let account = config
         .models
-        .providers
-        .get(&provider_key)
-        .with_context(|| format!("{subject} references missing provider: {provider_id}"))?;
-    let models = provider.effective_models()?;
+        .accounts
+        .get(&account_key)
+        .with_context(|| format!("{subject} references missing account: {account_id}"))?;
+    let models = account.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.slug == model_slug)
-        .with_context(|| {
-            format!("{subject} references missing model: {provider_id}.{model_slug}")
-        })?;
+        .find(|model| model.model_id == model_id)
+        .with_context(|| format!("{subject} references missing model: {account_id}.{model_id}"))?;
     let resolved_effort = match effort.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => {
             if !model
@@ -833,7 +829,7 @@ pub(super) fn validated_route(
                 .any(|candidate| candidate == value)
             {
                 bail!(
-                    "{subject} uses unsupported effort '{value}' for model {provider_id}.{model_slug}"
+                    "{subject} uses unsupported effort '{value}' for model {account_id}.{model_id}"
                 );
             }
             Some(value.to_string())
@@ -841,8 +837,8 @@ pub(super) fn validated_route(
         None => model.default_effort(),
     };
     Ok(ModelRouteConfig {
-        provider: provider_key,
-        model: model_slug.to_string(),
+        account_id: account_key,
+        model_id: model_id.to_string(),
         effort: resolved_effort.map(ReasoningEffort::new),
     })
 }

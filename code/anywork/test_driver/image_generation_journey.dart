@@ -109,11 +109,15 @@ Future<void> main(List<String> args) async {
             .requestData('shutdown', timeout: const Duration(seconds: 90))
             .timeout(const Duration(seconds: 95)),
       );
-      if (shutdown is! Map || shutdown['shutdown'] != 'completed') {
+      final status = shutdown is Map ? shutdown['shutdown'] : null;
+      // `completed` is a clean exit; `degraded` still exits while reporting a
+      // cleanup degradation, which the run must record rather than hide.
+      if (status == 'completed' || status == 'degraded') {
+        await stage('shutdown_$status');
+      } else {
         await stage('shutdown_rejected');
         throw StateError('native GUI shutdown did not complete');
       }
-      await stage('shutdown_completed');
     }
     stdout.writeln('Image generation and card evidence captured.');
   } finally {
@@ -279,49 +283,68 @@ bool _workspaceIdle(Map<String, dynamic> snapshot) {
 }
 
 _GeneratedImage? _generatedFromSnapshot(Map<String, dynamic> snapshot) {
-  final workspace = snapshot['workspace'];
-  if (workspace is! Map) return null;
-  final rows = workspace['timeline'];
-  if (rows is! List) return null;
-  for (final row in rows) {
-    if (row is! Map || row['type'] != 'activityGroup') continue;
-    final tools = row['tools'];
-    if (tools is! List) continue;
-    for (final tool in tools) {
-      if (tool is! Map || tool['name'] != 'generate_image') continue;
-      final attachments = tool['attachments'];
-      if (tool['status'] != 'succeeded' ||
-          attachments is! List ||
-          attachments.isEmpty) {
-        continue;
-      }
-      return _GeneratedImage(groupId: '${row['id']}', tool: tool);
+  for (final item in _timelineItems(snapshot)) {
+    final tool = item['tool'];
+    if (tool is! Map || tool['name'] != 'generate_image') continue;
+    final attachments = item['attachments'];
+    if (tool['status'] != 'succeeded' ||
+        attachments is! List ||
+        attachments.isEmpty) {
+      continue;
     }
+    return _GeneratedImage(
+      itemId: '${item['id']}',
+      tool: tool,
+      attachments: attachments,
+    );
   }
   return null;
 }
 
 _ImageCard? _cardFromSnapshot(Map<String, dynamic> snapshot) {
-  final workspace = snapshot['workspace'];
-  if (workspace is! Map) return null;
-  final rows = workspace['timeline'];
-  if (rows is! List) return null;
-  for (final row in rows) {
-    if (row is! Map || row['type'] != 'imageCard') continue;
-    final tools = row['tools'];
-    if (tools is! List) continue;
-    for (final tool in tools) {
+  final timeline = snapshot['timeline'];
+  if (timeline is! Map) return null;
+  final presentations = timeline['presentationItems'];
+  if (presentations is! List) return null;
+  final items = {
+    for (final item in _timelineItems(snapshot)) '${item['id']}': item,
+  };
+  for (final presentation in presentations) {
+    if (presentation is! Map || presentation['kind'] != 'imageCard') continue;
+    final members = presentation['memberIds'];
+    if (members is! List) continue;
+    for (final member in members) {
+      final item = items['$member'];
+      if (item == null) continue;
+      final tool = item['tool'];
       if (tool is! Map || tool['name'] != 'show_image') continue;
-      final attachments = tool['attachments'];
+      final attachments = item['attachments'];
       if (tool['status'] != 'succeeded' ||
           attachments is! List ||
           attachments.isEmpty) {
         continue;
       }
-      return _ImageCard(rowId: '${row['id']}', tool: tool);
+      return _ImageCard(
+        presentationId: '${presentation['id']}',
+        tool: tool,
+        attachments: attachments,
+      );
     }
   }
   return null;
+}
+
+/// Canonical preview items of the current display generation.
+Iterable<Map<dynamic, dynamic>> _timelineItems(
+  Map<String, dynamic> snapshot,
+) sync* {
+  final timeline = snapshot['timeline'];
+  if (timeline is! Map) return;
+  final items = timeline['items'];
+  if (items is! List) return;
+  for (final item in items) {
+    if (item is Map) yield item;
+  }
 }
 
 Future<void> _captureCard(
@@ -330,7 +353,7 @@ Future<void> _captureCard(
   _GeneratedImage generated,
   _ImageCard card,
 ) async {
-  final attachments = card.tool['attachments'] as List;
+  final attachments = card.attachments;
   final first = attachments.first as Map;
   final callId = card.tool['callId'] ?? card.tool['toolCallId'];
   final attachmentId = '${first['id']}';
@@ -383,9 +406,10 @@ Future<void> _captureCard(
   await _writeJson('${output.path}/evidence.json', {
     'generateTool': '${generated.tool['name']}',
     'generateCallId': generated.tool['callId'],
+    'generateItemId': generated.itemId,
     'cardTool': '${card.tool['name']}',
     'cardCallId': callId,
-    'cardRowId': card.rowId,
+    'cardPresentationId': card.presentationId,
     'status': card.tool['status'],
     'attachments': attachments,
     'caption': _arguments(card.tool['arguments'])?['caption'],
@@ -448,15 +472,25 @@ Future<void> _writeJson(String path, Object value) => File(path)
     .writeAsString('${const JsonEncoder.withIndent('  ').convert(value)}\n');
 
 class _GeneratedImage {
-  const _GeneratedImage({required this.groupId, required this.tool});
+  const _GeneratedImage({
+    required this.itemId,
+    required this.tool,
+    required this.attachments,
+  });
 
-  final String groupId;
+  final String itemId;
   final Map<dynamic, dynamic> tool;
+  final List<dynamic> attachments;
 }
 
 class _ImageCard {
-  const _ImageCard({required this.rowId, required this.tool});
+  const _ImageCard({
+    required this.presentationId,
+    required this.tool,
+    required this.attachments,
+  });
 
-  final String rowId;
+  final String presentationId;
   final Map<dynamic, dynamic> tool;
+  final List<dynamic> attachments;
 }

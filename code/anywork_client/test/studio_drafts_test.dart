@@ -6,9 +6,10 @@ import 'package:test/test.dart';
 
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
-final class _DraftTransport implements StudioTransport, ChatWindowReader {
+final class _DraftTransport implements StudioTransport {
   _DraftTransport() {
     addTearDown(() => frames.close());
+    addTearDown(() => startEvents.close());
   }
   final StreamController<ThreadStreamFrame> frames =
       StreamController<ThreadStreamFrame>.broadcast();
@@ -24,6 +25,9 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   >
   startEntered = Completer();
   final Completer<StartNewThreadResult> startReply = Completer();
+  final StreamController<NewThreadStartEvent> startEvents =
+      StreamController.broadcast();
+  int startCalls = 0;
   final List<String> removed = [];
   int promptCalls = 0;
   int? promptRouteRevision;
@@ -32,13 +36,14 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   int admissionCalls = 0;
   int settingsWrites = 0;
   bool removeSucceeds = true;
-  final window = _DraftWindow();
+  final window = _DraftConnection();
 
   @override
   Stream<ThreadStreamFrame> subscribeThread(String threadId) => frames.stream;
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async => window;
+  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
+      window;
 
   @override
   Future<SubmitPromptReceipt> submitPrompt(
@@ -65,20 +70,33 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   }
 
   @override
-  Future<StartNewThreadResult> startNewThread(
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
     String? workspaceMode,
   }) {
+    startCalls += 1;
     startEntered.complete((
       input: input,
       route: route,
       mode: mode,
       workspaceMode: workspaceMode,
     ));
-    return startReply.future;
+    unawaited(
+      startReply.future.then(
+        (result) {
+          startEvents.add(NewThreadStartSucceeded(result));
+          unawaited(startEvents.close());
+        },
+        onError: (Object error, StackTrace stack) {
+          startEvents.addError(error, stack);
+          unawaited(startEvents.close());
+        },
+      ),
+    );
+    return startEvents.stream;
   }
 
   @override
@@ -121,38 +139,60 @@ final class _DraftTransport implements StudioTransport, ChatWindowReader {
   );
 }
 
-/// A controlled content source, with the production Session/ChatChannel reducer.
-final class _DraftWindow implements StudioChatWindow {
-  Completer<StudioChatFrame?>? _next;
-  Completer<void> _nextReady = Completer();
+/// A controlled content source driven through the production timeline channel.
+final class _DraftConnection implements StudioTimelineConnection {
+  _DraftConnection();
+
+  Completer<StudioTimelineUpdate?>? _next;
+  int _version = 1;
   bool _closed = false;
 
   @override
-  Future<StudioChatSnapshot> initial() async => const StudioChatSnapshot(
-    focusedItemId: null,
-    version: 1,
-    items: [],
+  Future<StudioTimelineBaseline> initial() async => StudioTimelineBaseline(
+    subscriptionId: 'draft',
+    version: _version,
+    items: const [],
+    before: null,
     hasOlder: false,
-    hasNewer: false,
   );
 
   @override
-  Future<StudioChatFrame?> next() {
+  Future<StudioTimelineUpdate?> next() {
     if (_closed) return Future.value(null);
     if (_next != null) throw StateError('Two outstanding next calls');
-    final pending = Completer<StudioChatFrame?>();
+    final pending = Completer<StudioTimelineUpdate?>();
     _next = pending;
-    _nextReady.complete();
     return pending.future.whenComplete(() {
       _next = null;
-      _nextReady = Completer();
     });
   }
 
-  Future<void> emit(StudioChatFrame frame) async {
-    await _nextReady.future;
-    _next!.complete(frame);
+  Future<void> emit(StudioTimelineChange change) async {
+    final pending = _next;
+    if (pending == null) throw StateError('No pending content read');
+    final from = _version;
+    _version = from + 1;
+    pending.complete(
+      StudioTimelinePatch(
+        subscriptionId: 'draft',
+        from: from,
+        to: _version,
+        changes: [change],
+        priority: StudioTimelinePriority.immediate,
+      ),
+    );
   }
+
+  @override
+  Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
+    const StudioTimelinePage(items: [], before: null, hasOlder: false),
+  );
+
+  @override
+  Future<StudioTimelineDetailChunk> readDetail({
+    required String itemId,
+    required StudioTimelineDetailQuery query,
+  }) => Future.error(UnsupportedError('draft test has no detail body'));
 
   @override
   void requestClose() {
@@ -165,11 +205,6 @@ final class _DraftWindow implements StudioChatWindow {
   Future<void> close() async {
     requestClose();
   }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused content control: ${invocation.memberName}',
-  );
 }
 
 const _project = StudioProject(
@@ -191,12 +226,11 @@ ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
     ThreadWorkspace(
       thread: _thread(),
       revision: revision,
-      items: const [],
       interactions: const [],
       activeTurn: turn,
       latestTurn: turn,
       runtime: const ThreadRuntimeView(
-        model: 'alpha',
+        modelId: 'alpha',
         contextTokens: 0,
         contextWindow: 100,
         totalTokens: 0,
@@ -205,8 +239,8 @@ ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
         activeMcpServers: [],
         activeLspServers: [],
         modelRoute: ThreadModelRouteView(
-          providerId: 'provider',
-          model: 'alpha',
+          accountId: 'account',
+          modelId: 'alpha',
           effort: 'medium',
           revision: 1,
           available: true,
@@ -235,23 +269,23 @@ AnyworkClient _client(
     SettingsStateSnapshot(
       revision: 1,
       modelCatalogRevision: 1,
-      providers: const [
-        ProviderSettingsView(
-          id: 'provider',
+      accounts: const [
+        AccountSettingsView(
+          id: 'account',
           name: 'Provider',
           baseUrl: 'http://local.invalid',
-          defaultModel: 'alpha',
+          defaultModelId: 'alpha',
           status: 'configured',
           usageLabel: '',
           models: [
-            ProviderModelView(
-              slug: 'alpha',
+            AccountModelView(
+              modelId: 'alpha',
               displayName: 'Alpha',
               reasoningEfforts: ['medium'],
               defaultReasoningEffort: 'medium',
             ),
-            ProviderModelView(
-              slug: 'beta',
+            AccountModelView(
+              modelId: 'beta',
               displayName: 'Beta',
               reasoningEfforts: ['high'],
               defaultReasoningEffort: 'high',
@@ -262,8 +296,8 @@ AnyworkClient _client(
       modeModelRoutes: const [
         ModeModelRouteView(
           modeId: ThreadModeId.simple,
-          providerId: 'provider',
-          model: 'alpha',
+          accountId: 'account',
+          modelId: 'alpha',
           effort: 'medium',
         ),
       ],
@@ -369,6 +403,7 @@ void main() {
     final client = _client(transport);
     final owner = client.startDraft;
     owner.updateDraft(_project.id, 'first request');
+    owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree);
     await client.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
@@ -376,9 +411,41 @@ void main() {
     );
     final submission = owner.submit(_project.id);
     final request = await transport.startEntered.future;
+    final revision = owner.state.revision;
+    final progressObserved = owner.source.waitFor(
+      (value) =>
+          value.preparations[_project.id]?.progress?.stage ==
+          ThreadPreparationStage.creatingWorktree,
+    );
+    transport.startEvents.add(
+      NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: _project.id,
+          inputId: request.input.inputId,
+          stage: ThreadPreparationStage.creatingWorktree,
+          workspacePath: '/isolated/worktree',
+          branch: 'pure/session',
+        ),
+      ),
+    );
+    await progressObserved;
+    expect(
+      owner.state.revision,
+      revision,
+      reason: 'progress is not a draft edit',
+    );
+    expect(
+      owner.state.preparations[_project.id]?.progress?.workspacePath,
+      '/isolated/worktree',
+    );
     owner.updateDraft(_project.id, 'second request');
-    owner.setModelIntent(ThreadModeId.simple, 'provider', 'beta');
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
     owner.setEffortIntent(ThreadModeId.simple, 'high');
+    owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.local);
+    expect(
+      owner.state.preparations[_project.id]?.workspaceMode,
+      ThreadWorkspaceMode.worktree,
+    );
     await client.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
@@ -396,16 +463,17 @@ void main() {
       ),
     );
     expect(await submission, isTrue);
+    expect(owner.state.preparations, isEmpty);
 
     expect(request.input.text, 'first request');
     expect(request.input.attachmentDraftIds, ['attachment-1-0']);
     expect(
-      (request.route.providerId, request.route.model, request.route.effort),
-      ('provider', 'alpha', 'medium'),
+      (request.route.accountId, request.route.modelId, request.route.effort),
+      ('account', 'alpha', 'medium'),
     );
     expect(transport.settingsWrites, 0);
     expect(owner.state.forProject(_project.id).text, 'second request');
-    expect(owner.state.modelIntentFor(ThreadModeId.simple)?.model, 'beta');
+    expect(owner.state.modelIntentFor(ThreadModeId.simple)?.modelId, 'beta');
     expect(owner.state.effortIntentFor(ThreadModeId.simple), 'high');
     expect(
       client.attachments.state
@@ -423,13 +491,219 @@ void main() {
     await _close(client, transport);
   });
 
+  test('new Thread completion does not replace a newer A to B to A navigation intent', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    const other = StudioProject(id: 'other', name: 'Other', path: '/other');
+    client.project.applyProjectDirectory(
+      ProjectDirectoryState(values: [_project, other], revision: 2),
+    );
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'prepare a session');
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    client.selection.selectProject(other.id);
+    client.selection.selectProject(_project.id);
+    final thread = _thread('new-thread');
+    transport.startReply.complete(
+      StartNewThreadResult(
+        thread: thread,
+        receipt: SubmitPromptReceipt(
+          threadId: thread.id,
+          inputId: request.input.inputId,
+          cursor: 1,
+        ),
+      ),
+    );
+    expect(await submitted, isTrue);
+    expect(client.selection.state.selectedProjectId, _project.id);
+    expect(client.selection.state.selectedThreadId, isNull);
+    await _close(client, transport);
+  });
+
+  test('definite preparation failure retains the failed stage, newer draft and attachments', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'first request');
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/one.bin')],
+    );
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    final observed = owner.source.waitFor(
+      (value) =>
+          value.preparations[_project.id]?.progress?.stage ==
+          ThreadPreparationStage.creatingWorktree,
+    );
+    transport.startEvents.add(
+      NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: _project.id,
+          inputId: request.input.inputId,
+          stage: ThreadPreparationStage.creatingWorktree,
+          workspacePath: '/isolated/worktree',
+        ),
+      ),
+    );
+    await observed;
+    owner.updateDraft(_project.id, 'newer request');
+    const failure = StudioFailure(
+      code: StudioFailureCode.internal,
+      message: 'checkout failed',
+      retryable: false,
+      correlationId: 'preparation-failure',
+    );
+    transport.startEvents.add(const NewThreadStartFailed(failure));
+    expect(await submitted, isFalse);
+    final preparation = owner.state.preparations[_project.id]!;
+    expect(preparation.phase, NewThreadPreparationPhase.failed);
+    expect(
+      preparation.progress?.stage,
+      ThreadPreparationStage.creatingWorktree,
+    );
+    expect(preparation.failure, same(failure));
+    expect(owner.state.forProject(_project.id).text, 'newer request');
+    expect(
+      client.attachments.state.newThread(_project.id).attachments.single.id,
+      'attachment-1-0',
+    );
+    expect(
+      client.mutations.latest('start:${_project.id}')?.state.value.phase,
+      OperationPhase.rejected,
+    );
+    transport.startEvents.add(
+      NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: _project.id,
+          inputId: request.input.inputId,
+          stage: ThreadPreparationStage.submittingPrompt,
+        ),
+      ),
+    );
+    await transport.startEvents.close();
+    expect(
+      owner.state.preparations[_project.id],
+      same(preparation),
+      reason: 'late progress cannot revive a terminal operation',
+    );
+    await owner.discardProject(_project.id);
+    expect(transport.removed, [
+      'attachment-1-0',
+    ], reason: 'definite rejection released the frozen attachment owner');
+    await _close(client, transport);
+  });
+
+  test('EOF without a creation outcome remains unknown and never automatically resubmits', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'do not duplicate this request');
+    final submitted = owner.submit(_project.id);
+    await transport.startEntered.future;
+    await transport.startEvents.close();
+    expect(await submitted, isFalse);
+    expect(
+      owner.state.preparations[_project.id]?.phase,
+      NewThreadPreparationPhase.unknownOutcome,
+    );
+    expect(
+      client.mutations.latest('start:${_project.id}')?.state.value.phase,
+      OperationPhase.unknownOutcome,
+    );
+    expect(await owner.submit(_project.id), isFalse);
+    expect(transport.startCalls, 1);
+    expect(
+      owner.state.forProject(_project.id).text,
+      'do not duplicate this request',
+    );
+    await _close(client, transport);
+  });
+
+  test(
+    'stream errors cannot replace the missing typed creation outcome',
+    () async {
+      final transport = _DraftTransport();
+      final client = _client(transport);
+      addTearDown(() => _close(client, transport));
+      final owner = client.startDraft;
+      owner.updateDraft(_project.id, 'keep an uncertain request');
+      final submitted = owner.submit(_project.id);
+      await transport.startEntered.future;
+      transport.startEvents.addError(
+        const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'the creation stream was interrupted',
+          retryable: true,
+          correlationId: 'interrupted-start-stream',
+        ),
+      );
+      expect(await submitted, isFalse);
+      expect(
+        owner.state.preparations[_project.id]?.phase,
+        NewThreadPreparationPhase.unknownOutcome,
+      );
+      expect(
+        client.mutations.latest('start:${_project.id}')?.state.value.phase,
+        OperationPhase.unknownOutcome,
+      );
+      expect(await owner.submit(_project.id), isFalse);
+      expect(transport.startCalls, 1);
+      expect(
+        owner.state.forProject(_project.id).text,
+        'keep an uncertain request',
+      );
+      await transport.startEvents.close();
+    },
+  );
+
+  test('closing the start owner joins its creation while ignoring later display updates', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'prepare before close');
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    var closed = false;
+    final closing = owner.close().then((_) => closed = true);
+    expect(closed, isFalse);
+    final before = owner.state;
+    final thread = _thread('new-thread');
+    transport.startEvents.add(
+      NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: _project.id,
+          inputId: request.input.inputId,
+          stage: ThreadPreparationStage.initializingSession,
+        ),
+      ),
+    );
+    transport.startReply.complete(
+      StartNewThreadResult(
+        thread: thread,
+        receipt: SubmitPromptReceipt(
+          threadId: thread.id,
+          inputId: request.input.inputId,
+          cursor: 1,
+        ),
+      ),
+    );
+    expect(await submitted, isTrue);
+    await closing;
+    expect(closed, isTrue);
+    expect(owner.state, same(before));
+    await _close(client, transport);
+  });
+
   test('actual accepted input waits for its Chat Turn saved flag after execution completes', () async {
     final transport = _DraftTransport();
     final client = _client(transport);
     final session = client.session('thread');
     session.applySnapshot(_workspace());
     session.start();
-    await session.source.waitFor((state) => state.chatVersion == 1);
+    await session.timeline.ready;
     final baselineObservers = client.budget.used(ResourceKind.observer);
     final owner = client.composer('thread');
     owner.updateDraft('durable input');
@@ -485,26 +759,19 @@ void main() {
       ),
     );
     await transport.window.emit(
-      StudioChatPatch(
-        from: 1,
-        to: 2,
-        changes: [
-          StudioViewSplice(
-            index: 0,
-            remove: 0,
-            items: [
-              StudioChatItem(
-                terminal,
-                saved: false,
-                lifecycle: StudioChatLifecycle.terminal,
-              ),
-            ],
-          ),
-        ],
-        hasNewer: false,
+      StudioTimelineAdd(
+        StudioTimelineItem(
+          item: terminal,
+          saved: false,
+          lifecycle: StudioTimelineLifecycle.terminal,
+          omittedBytes: 0,
+          details: const [],
+        ),
       ),
     );
-    await session.source.waitFor((state) => state.chatVersion == 2);
+    await session.timeline.state.waitFor(
+      (state) => state.snapshot is StudioTimelinePatchFrame,
+    );
     expect(
       operation.state.value.durable,
       isFalse,
@@ -512,24 +779,21 @@ void main() {
     );
     expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
     await transport.window.emit(
-      const StudioChatPatch(
-        from: 2,
-        to: 3,
-        changes: [
-          StudioViewItemUpdate(
-            itemId: 'turn-item',
-            expectedRevision: 2,
-            revision: 2,
-            omittedUnits: 0,
-            saved: true,
-            lifecycle: StudioChatLifecycle.terminal,
-            fields: [],
-          ),
-        ],
-        hasNewer: false,
+      const StudioTimelineUpdateItem(
+        itemId: 'turn-item',
+        expectedRevision: 2,
+        revision: 2,
+        omittedBytes: 0,
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        fields: [],
       ),
     );
-    await session.source.waitFor((state) => state.chatVersion == 3);
+    await session.timeline.state.waitFor(
+      (state) =>
+          state.snapshot is StudioTimelinePatchFrame &&
+          (state.snapshot! as StudioTimelinePatchFrame).patch.to == 3,
+    );
     expect(operation.state.value.durable, isTrue);
     expect(client.budget.used(ResourceKind.observer), baselineObservers);
     await _close(client, transport);
@@ -600,8 +864,8 @@ void main() {
       changed.copyWith(
         runtime: changed.runtime.copyWith(
           modelRoute: const ThreadModelRouteView(
-            providerId: 'provider',
-            model: 'beta',
+            accountId: 'account',
+            modelId: 'beta',
             effort: 'high',
             revision: 2,
             available: true,
@@ -629,6 +893,86 @@ void main() {
     expect(owner.state.attachments.single.id, 'attachment-1-0');
     expect(transport.removed, isEmpty);
     await owner.discard();
+    await _close(client, transport);
+  });
+
+  test(
+    'the preparation hook runs after freezing and before the backend submit',
+    () async {
+      final transport = _DraftTransport();
+      final client = _client(transport);
+      client.session('thread').applySnapshot(_workspace());
+      final owner = client.composer('thread');
+      owner.updateDraft('prepare before sending');
+      await owner.addLocalAttachments(['/payload.bin']);
+
+      var hookCalls = 0;
+      String? frozenTarget;
+      final submission = owner.submit(
+        beforeSubmit: () async {
+          hookCalls += 1;
+          // 冻结目标与冻结附件在钩子运行前已经成立，后端此刻还没有收到提交。
+          frozenTarget = client.mutations.operations.single.target;
+          expect(transport.promptCalls, 0);
+          expect(owner.state, isA<SubmittingComposerThreadState>());
+        },
+      );
+      final input = await transport.promptEntered.future;
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: input.inputId,
+          cursor: 3,
+        ),
+      );
+      await submission;
+      expect(hookCalls, 1);
+      expect(frozenTarget, 'submit:thread');
+      expect(transport.promptCalls, 1);
+      await _close(client, transport);
+    },
+  );
+
+  test('a failing preparation is a known non-submission and keeps the draft usable', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('send after display preparation');
+    await owner.addLocalAttachments(['/payload.bin']);
+    const failure = StudioFailure(
+      code: StudioFailureCode.storage,
+      message: 'display preparation failed',
+      retryable: true,
+      correlationId: 'prepare-failure',
+    );
+
+    await owner.submit(beforeSubmit: () => Future.error(failure));
+    // 展示准备发生在 backend 提交之前：这是已知未提交，不是未知结果。
+    expect(transport.promptCalls, 0);
+    expect(
+      client.mutations.operations.single.phase,
+      isNot(OperationPhase.unknownOutcome),
+    );
+    expect(owner.state, isA<FailedComposerThreadState>());
+    expect(owner.state.draft, 'send after display preparation');
+    expect(owner.state.attachments.single.id, 'attachment-1-0');
+    expect(client.budget.used(ResourceKind.attachment), 1);
+
+    // 草稿没有被永久封住：再次提交可以真正进入后端。
+    final submission = owner.submit();
+    final input = await transport.promptEntered.future;
+    expect(transport.promptCalls, 1);
+    expect(input.attachmentDraftIds, ['attachment-1-0']);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 4,
+      ),
+    );
+    await submission;
+    expect(owner.state.draft, isEmpty);
     await _close(client, transport);
   });
 

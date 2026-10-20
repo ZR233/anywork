@@ -184,6 +184,7 @@ class _ProjectTile extends ConsumerWidget {
             color: context.colors.onSurfaceVariant,
           ),
           value: project.path,
+          monospace: true,
         ),
       ],
     );
@@ -410,6 +411,7 @@ class _ThreadTile extends ConsumerWidget {
             color: context.colors.onSurfaceVariant,
           ),
           value: thread.workspacePath,
+          monospace: true,
         ),
         _SidebarDetailRow(
           leading: DecoratedBox(

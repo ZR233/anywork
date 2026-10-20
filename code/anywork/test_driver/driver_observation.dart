@@ -222,306 +222,523 @@ DriverComposerAttachmentObservation driverComposerAttachments(
   );
 }
 
-List<Map<String, dynamic>> driverProviderListObservation(
+List<Map<String, dynamic>> driverAccountListObservation(
   Map<String, dynamic> snapshot,
 ) {
-  final providers = _providerObservation(snapshot)?['list'];
-  if (providers is! List) return const [];
+  final accounts = _accountObservation(snapshot)?['list'];
+  if (accounts is! List) return const [];
   return [
-    for (final provider in providers)
-      if (provider is Map) provider.cast<String, dynamic>(),
+    for (final account in accounts)
+      if (account is Map) account.cast<String, dynamic>(),
   ];
 }
 
-List<Map<String, dynamic>> driverProviderDetailsObservation(
+List<Map<String, dynamic>> driverAccountDetailsObservation(
   Map<String, dynamic> snapshot,
 ) {
-  final providers = _providerObservation(snapshot)?['details'];
-  if (providers is! List) return const [];
+  final accounts = _accountObservation(snapshot)?['details'];
+  if (accounts is! List) return const [];
   return [
-    for (final provider in providers)
-      if (provider is Map) provider.cast<String, dynamic>(),
+    for (final account in accounts)
+      if (account is Map) account.cast<String, dynamic>(),
   ];
 }
 
-Map<String, dynamic>? _providerObservation(Map<String, dynamic> snapshot) {
+Map<String, dynamic>? _accountObservation(Map<String, dynamic> snapshot) {
   final diagnostics = snapshot['driverDiagnostics'];
-  final providers = diagnostics is Map ? diagnostics['providers'] : null;
-  return providers is Map ? providers.cast<String, dynamic>() : null;
+  final accounts = diagnostics is Map ? diagnostics['accounts'] : null;
+  return accounts is Map ? accounts.cast<String, dynamic>() : null;
 }
 
-/// Verifies the list/detail split without treating a detail model slug as a
-/// list label. The list projection is deliberately metadata-only; model slugs
+/// Verifies the list/detail split without treating a detail model modelId as a
+/// list label. The list projection is deliberately metadata-only; model model_ids
 /// remain observable only in the detail projection.
-void verifyProviderListRedacted(
+void verifyAccountListRedacted(
   Map<String, dynamic> snapshot, {
-  required String fixtureModelSlug,
-  String? providerId,
+  required String fixtureModelId,
+  String? accountId,
 }) {
-  final list = driverProviderListObservation(snapshot);
+  final list = driverAccountListObservation(snapshot);
   if (list.isEmpty) {
-    throw StateError('provider list observation is unavailable');
+    throw StateError('account list observation is unavailable');
   }
   final encodedList = jsonEncode(list);
-  if (encodedList.contains(fixtureModelSlug)) {
+  if (encodedList.contains(fixtureModelId)) {
     throw StateError(
-      'provider list observation leaked fixture model slug $fixtureModelSlug',
+      'account list observation leaked fixture model modelId $fixtureModelId',
     );
   }
   if (RegExp(r'\+\d+').hasMatch(encodedList)) {
-    throw StateError('provider list observation leaked a +N model label');
+    throw StateError('account list observation leaked a +N model label');
   }
 
-  final details = driverProviderDetailsObservation(snapshot);
-  final matchingProvider = providerId == null
+  final details = driverAccountDetailsObservation(snapshot);
+  final matchingAccount = accountId == null
       ? details
-      : details.where((provider) => provider['id'] == providerId).toList();
-  final hasModelDetail = matchingProvider.any((provider) {
-    final models = provider['models'];
+      : details.where((account) => account['id'] == accountId).toList();
+  final hasModelDetail = matchingAccount.any((account) {
+    final models = account['models'];
     return models is List &&
         models.any(
-          (model) => model is Map && model['slug'] == fixtureModelSlug,
+          (model) => model is Map && model['modelId'] == fixtureModelId,
         );
   });
   if (!hasModelDetail) {
     throw StateError(
-      'provider detail observation omitted fixture model $fixtureModelSlug',
+      'account detail observation omitted fixture model $fixtureModelId',
     );
   }
 }
 
-class DriverPacedRuntimeEvidence {
-  factory DriverPacedRuntimeEvidence({
-    required Iterable<DriverRuntimeObservation> samples,
-    String? targetTurnId,
-    String? targetAttemptId,
-  }) {
-    final allSamples = List<DriverRuntimeObservation>.unmodifiable(samples);
-    final selection = _selectRuntimeGroup(
-      allSamples,
-      targetTurnId: targetTurnId,
-      targetAttemptId: targetAttemptId,
-    );
-    return DriverPacedRuntimeEvidence._(
-      samples: selection.samples,
-      targetTurnId: selection.turnId,
-      targetAttemptId: selection.attemptId,
-      targetSelection: selection.kind,
+/// 快照轮询的就绪事实。
+///
+/// 快照端点不是 runtime 事件流：它只说明当前展示投影「当时」看到什么，因此这里保留的
+/// 计数**仅用于就绪**，永不作发布顺序判定输入。真实发布证据只来自
+/// [DriverRuntimePublishEvidence]（Driver-only 记录器的实际 Client 发布回调）。
+final class DriverRuntimeReadiness {
+  factory DriverRuntimeReadiness(Iterable<DriverRuntimeObservation> samples) {
+    final all = List<DriverRuntimeObservation>.unmodifiable(samples);
+    final identities = <String, List<DriverRuntimeObservation>>{};
+    for (final sample in all) {
+      final turnId = sample.turnId;
+      final attemptId = sample.attemptId;
+      if (turnId == null || attemptId == null) continue;
+      identities.putIfAbsent('$turnId\u0000$attemptId', () => []).add(sample);
+    }
+    return DriverRuntimeReadiness._(
+      sampleCount: all.length,
+      liveSampleCount: all.where((sample) => sample.isLive).length,
+      foreignSampleCount: all
+          .where(
+            (sample) => sample.usageState == DriverRuntimeUsageState.unknown,
+          )
+          .length,
+      identitySampleCounts: <Map<String, Object?>>[
+        for (final entry in identities.entries.take(_readinessIdentityLimit))
+          <String, Object?>{
+            'turnId': entry.key.substring(0, entry.key.indexOf('\u0000')),
+            'attemptId': entry.key.substring(entry.key.indexOf('\u0000') + 1),
+            'samples': entry.value.length,
+            'liveSamples': entry.value.where((sample) => sample.isLive).length,
+          },
+      ],
     );
   }
 
-  const DriverPacedRuntimeEvidence._({
-    required this.samples,
-    required this.targetTurnId,
-    required this.targetAttemptId,
-    required this.targetSelection,
+  const DriverRuntimeReadiness._({
+    required this.sampleCount,
+    required this.liveSampleCount,
+    required this.foreignSampleCount,
+    required this.identitySampleCounts,
   });
 
-  /// Samples are filtered to exactly one identity, never a largest-live group
-  /// combined with a terminal sample from another turn/attempt.
-  final List<DriverRuntimeObservation> samples;
-  final String? targetTurnId;
-  final String? targetAttemptId;
-  final String targetSelection;
+  final int sampleCount;
+  final int liveSampleCount;
+  final int foreignSampleCount;
+  final List<Map<String, Object?>> identitySampleCounts;
 
-  List<DriverRuntimeObservation> get liveSamples => [
-    for (final sample in samples)
-      if (sample.isLive) sample,
+  Map<String, Object?> toJson() => <String, Object?>{
+    'source': 'snapshotPoll',
+    // 轮询样本只是就绪观察：它不能证明发布顺序、新鲜度或终态清除。
+    'readinessOnly': true,
+    'sampleCount': sampleCount,
+    'liveSampleCount': liveSampleCount,
+    'foreignSampleCount': foreignSampleCount,
+    'identitySampleCounts': identitySampleCounts,
+  };
+}
+
+/// 就绪事实里最多列出的身份组数：只读诊断，不值得为它保留无界分组。
+const int _readinessIdentityLimit = 8;
+
+/// 一条真实 Client runtime 发布事实的种类。
+enum DriverRuntimePublishKind { baseline, live, cleared }
+
+/// `cleared` 事实里被清除对象的引用。
+///
+/// 清除本身没有身份与 sequence：这里只是对被清除的那次 live 发布的引用。
+final class DriverRuntimeClearedReference {
+  const DriverRuntimeClearedReference({
+    required this.turnId,
+    required this.attemptId,
+    required this.lastObservationSequence,
+  });
+
+  final String turnId;
+  final String attemptId;
+  final int lastObservationSequence;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'turnId': turnId,
+    'attemptId': attemptId,
+    'lastObservationSequence': lastObservationSequence,
+  };
+}
+
+/// 一条真实发布事实（严格 typed 读取，缺字段即报错，不填默认假值）。
+final class DriverRuntimePublishFact {
+  const DriverRuntimePublishFact._({
+    required this.kind,
+    required this.threadId,
+    required this.turnId,
+    required this.streamEpoch,
+    required this.publicationRevision,
+    required this.atUnixMillis,
+    required this.attemptId,
+    required this.observationSequence,
+    required this.completionTokens,
+    required this.decodeMillis,
+    required this.latestContextTokens,
+    required this.clearedPreviousLive,
+  });
+
+  factory DriverRuntimePublishFact.parse(Object? value, int index) {
+    final map = _requireMap(value, 'facts[$index]');
+    final kind = switch (_requireString(map, 'kind', 'facts[$index]')) {
+      'baseline' => DriverRuntimePublishKind.baseline,
+      'live' => DriverRuntimePublishKind.live,
+      'cleared' => DriverRuntimePublishKind.cleared,
+      final other => throw StateError('facts[$index].kind is unknown: $other'),
+    };
+    final cleared = map['clearedPreviousLive'];
+    final liveUsage = map['liveUsage'];
+    final usageMap = liveUsage == null
+        ? null
+        : _requireMap(liveUsage, 'facts[$index].liveUsage');
+    return DriverRuntimePublishFact._(
+      kind: kind,
+      threadId: _requireString(map, 'threadId', 'facts[$index]'),
+      turnId: _requireString(map, 'turnId', 'facts[$index]'),
+      streamEpoch: _requireInt(map, 'streamEpoch', 'facts[$index]'),
+      publicationRevision: _requireInt(
+        map,
+        'publicationRevision',
+        'facts[$index]',
+      ),
+      atUnixMillis: _requireInt(map, 'atUnixMillis', 'facts[$index]'),
+      attemptId: _optionalString(map, 'attemptId', 'facts[$index]'),
+      observationSequence: _optionalInt(
+        map,
+        'observationSequence',
+        'facts[$index]',
+      ),
+      completionTokens: usageMap == null
+          ? null
+          : _optionalInt(
+              usageMap,
+              'completionTokens',
+              'facts[$index].liveUsage',
+            ),
+      decodeMillis: usageMap == null
+          ? null
+          : _optionalInt(usageMap, 'decodeMillis', 'facts[$index].liveUsage'),
+      latestContextTokens: usageMap == null
+          ? null
+          : _optionalInt(
+              usageMap,
+              'latestContextTokens',
+              'facts[$index].liveUsage',
+            ),
+      clearedPreviousLive: cleared == null
+          ? null
+          : DriverRuntimeClearedReference(
+              turnId: _requireString(
+                _requireMap(cleared, 'facts[$index].clearedPreviousLive'),
+                'turnId',
+                'facts[$index].clearedPreviousLive',
+              ),
+              attemptId: _requireString(
+                _requireMap(cleared, 'facts[$index].clearedPreviousLive'),
+                'attemptId',
+                'facts[$index].clearedPreviousLive',
+              ),
+              lastObservationSequence: _requireInt(
+                _requireMap(cleared, 'facts[$index].clearedPreviousLive'),
+                'lastObservationSequence',
+                'facts[$index].clearedPreviousLive',
+              ),
+            ),
+    );
+  }
+
+  final DriverRuntimePublishKind kind;
+  final String threadId;
+  final String turnId;
+  final int streamEpoch;
+  final int publicationRevision;
+  final int atUnixMillis;
+  final String? attemptId;
+  final int? observationSequence;
+  final int? completionTokens;
+  final int? decodeMillis;
+  final int? latestContextTokens;
+  final DriverRuntimeClearedReference? clearedPreviousLive;
+
+  bool get isLive => kind == DriverRuntimePublishKind.live;
+  bool get isBaseline => kind == DriverRuntimePublishKind.baseline;
+  bool get isCleared => kind == DriverRuntimePublishKind.cleared;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'kind': kind.name,
+    'threadId': threadId,
+    'turnId': turnId,
+    'attemptId': attemptId,
+    'streamEpoch': streamEpoch,
+    'publicationRevision': publicationRevision,
+    'atUnixMillis': atUnixMillis,
+    'observationSequence': observationSequence,
+    'liveUsage': observationSequence == null
+        ? null
+        : <String, Object?>{
+            'completionTokens': completionTokens,
+            'decodeMillis': decodeMillis,
+            'latestContextTokens': latestContextTokens,
+          },
+    'clearedPreviousLive': clearedPreviousLive?.toJson(),
+  };
+}
+
+/// Driver-only 记录器的一次实际 Client 发布取证。
+///
+/// 只消费真实发布回调记录的事实：不做轮询采样判定，不把 baseline 计作发布回调，
+/// 也不把缺字段/缺清除的样本说成通过。
+final class DriverRuntimePublishEvidence {
+  const DriverRuntimePublishEvidence._({
+    required this.targetThreadId,
+    required this.targetTurnId,
+    required this.attemptId,
+    required this.streamEpoch,
+    required this.phase,
+    required this.observerCancelled,
+    required this.overflowed,
+    required this.error,
+    required this.factLimit,
+    required this.payloadOk,
+    required this.facts,
+  });
+
+  /// 严格解析记录器的 `runtime-evidence-stop` 响应。
+  ///
+  /// 形状不符、身份不是被请求的 Thread／Turn、事实种类未知都直接抛错；
+  /// 缺失字段不会被默认值填补。
+  factory DriverRuntimePublishEvidence.parse(
+    Object? decoded, {
+    required String expectedThreadId,
+    required String expectedTurnId,
+  }) {
+    final map = _requireMap(decoded, 'runtime-evidence-stop');
+    final source = _requireString(map, 'source', 'runtime-evidence-stop');
+    if (source != 'clientRuntimePublish') {
+      throw StateError(
+        'runtime-evidence-stop source is not clientRuntimePublish: $source',
+      );
+    }
+    final threadId = _requireString(map, 'threadId', 'runtime-evidence-stop');
+    final turnId = _requireString(map, 'turnId', 'runtime-evidence-stop');
+    if (threadId != expectedThreadId || turnId != expectedTurnId) {
+      throw StateError(
+        'runtime-evidence-stop reported another target: '
+        '$threadId/$turnId != $expectedThreadId/$expectedTurnId',
+      );
+    }
+    final rawFacts = map['facts'];
+    if (rawFacts is! List) {
+      throw StateError('runtime-evidence-stop has no facts list');
+    }
+    final facts = <DriverRuntimePublishFact>[
+      for (var index = 0; index < rawFacts.length; index += 1)
+        DriverRuntimePublishFact.parse(rawFacts[index], index),
+    ];
+    return DriverRuntimePublishEvidence._(
+      targetThreadId: threadId,
+      targetTurnId: turnId,
+      attemptId: _optionalString(map, 'attemptId', 'runtime-evidence-stop'),
+      streamEpoch: _optionalInt(map, 'streamEpoch', 'runtime-evidence-stop'),
+      phase: _requireString(map, 'phase', 'runtime-evidence-stop'),
+      observerCancelled: _requireBool(
+        map,
+        'observerCancelled',
+        'runtime-evidence-stop',
+      ),
+      overflowed: _requireBool(map, 'overflowed', 'runtime-evidence-stop'),
+      error: _optionalString(map, 'error', 'runtime-evidence-stop'),
+      factLimit: _requireInt(map, 'factLimit', 'runtime-evidence-stop'),
+      payloadOk: _requireBool(map, 'ok', 'runtime-evidence-stop'),
+      facts: List<DriverRuntimePublishFact>.unmodifiable(facts),
+    );
+  }
+
+  final String targetThreadId;
+  final String targetTurnId;
+  final String? attemptId;
+  final int? streamEpoch;
+  final String phase;
+  final bool observerCancelled;
+  final bool overflowed;
+  final String? error;
+  final int factLimit;
+  final bool payloadOk;
+  final List<DriverRuntimePublishFact> facts;
+
+  List<DriverRuntimePublishFact> get baselineFacts =>
+      <DriverRuntimePublishFact>[
+        for (final fact in facts)
+          if (fact.isBaseline) fact,
+      ];
+
+  List<DriverRuntimePublishFact> get liveFacts => <DriverRuntimePublishFact>[
+    for (final fact in facts)
+      if (fact.isLive) fact,
   ];
 
-  List<DriverRuntimeObservation> get authoritativeSamples => [
-    for (final sample in samples)
-      if (sample.isAuthoritative) sample,
-  ];
+  DriverRuntimePublishFact? get clearedFact {
+    for (final fact in facts) {
+      if (fact.isCleared) return fact;
+    }
+    return null;
+  }
 
-  List<DriverRuntimeObservation> get unknownSamples => [
-    for (final sample in samples)
-      if (sample.usageState == DriverRuntimeUsageState.unknown) sample,
-  ];
+  /// 记录器确实关闭了自己的观察，且没有溢出/录制错误。
+  bool get boundedAndClosed =>
+      payloadOk &&
+      phase == 'stopped' &&
+      observerCancelled &&
+      !overflowed &&
+      error == null &&
+      facts.length <= factLimit;
 
-  List<DriverRuntimeObservation> get terminalSamples => [
-    for (final sample in samples)
-      if (sample.isAuthoritative ||
-          sample.usageState == DriverRuntimeUsageState.unknown)
-        sample,
-  ];
-
-  /// Every live sample in the selected identity must advance the sequence.
-  /// One later value is not sufficient: a duplicate or out-of-order sample
-  /// invalidates the paced evidence.
-  bool get liveSequenceStrictlyIncreasing {
-    final live = liveSamples;
-    if (live.length < 2 ||
-        live.any((sample) => sample.observationSequence == null)) {
+  /// 事实全部属于被请求的同一 Thread／Turn／epoch，且 live 事实只属于一个 attempt。
+  bool get identityStable {
+    if (facts.isEmpty || streamEpoch == null) return false;
+    final liveAttempt = liveFacts.isEmpty ? null : liveFacts.first.attemptId;
+    if (liveFacts.isNotEmpty && (liveAttempt == null || liveAttempt.isEmpty)) {
       return false;
     }
+    return facts.every(
+          (fact) =>
+              fact.threadId == targetThreadId &&
+              fact.turnId == targetTurnId &&
+              fact.streamEpoch == streamEpoch,
+        ) &&
+        liveFacts.every((fact) => fact.attemptId == liveAttempt);
+  }
+
+  /// 至少两次真实 live 发布，且观察 sequence 严格递增（允许中间帧被合并跳过）。
+  bool get liveSequenceIncreasing {
+    final live = liveFacts;
+    if (live.length < 2) return false;
+    if (live.any((fact) => fact.observationSequence == null)) return false;
     for (var index = 1; index < live.length; index += 1) {
-      if (live[index].observationSequence! <=
-          live[index - 1].observationSequence!) {
+      final previous = live[index - 1].observationSequence!;
+      if (live[index].observationSequence! <= previous) return false;
+    }
+    return true;
+  }
+
+  /// 每次真实发布的 workspace revision 也严格递增。
+  bool get livePublicationRevisionsIncreasing {
+    final live = liveFacts;
+    if (live.length < 2) return false;
+    for (var index = 1; index < live.length; index += 1) {
+      if (live[index].publicationRevision <=
+          live[index - 1].publicationRevision) {
         return false;
       }
     }
     return true;
   }
 
-  /// Backward-compatible name retained for existing journey JSON consumers;
-  /// it now means the full strict ordering proof above, not merely one `>`.
-  bool get liveSequenceAdvanced => liveSequenceStrictlyIncreasing;
-
-  bool _terminalAfterLive({bool authoritativeOnly = false}) {
-    final live = liveSamples;
-    if (live.isEmpty) return false;
-    final terminalIndexes = <int>[];
-    for (var index = 0; index < samples.length; index += 1) {
-      final sample = samples[index];
-      final isTerminal = authoritativeOnly
-          ? sample.isAuthoritative
-          : sample.isAuthoritative ||
-                sample.usageState == DriverRuntimeUsageState.unknown;
-      if (isTerminal) terminalIndexes.add(index);
-    }
-    if (terminalIndexes.isEmpty) return false;
-    final lastLiveIndex = samples.lastIndexWhere((sample) => sample.isLive);
-    if (lastLiveIndex < 0 ||
-        terminalIndexes.any((index) => index <= lastLiveIndex)) {
+  /// 末次 live 之后出现一次显式清除，且清除的发布 revision 真实推进。
+  bool get clearedAfterLive {
+    final cleared = clearedFact;
+    final live = liveFacts;
+    if (cleared == null || live.isEmpty) return false;
+    final reference = cleared.clearedPreviousLive;
+    if (reference == null) return false;
+    final lastLive = live.last;
+    if (reference.turnId != targetTurnId ||
+        reference.attemptId != lastLive.attemptId ||
+        reference.lastObservationSequence != lastLive.observationSequence) {
       return false;
     }
-    final lastLiveSequence = live.last.observationSequence;
-    if (lastLiveSequence == null) return false;
-    return terminalIndexes.every((index) {
-      final sequence = samples[index].observationSequence;
-      return sequence != null && sequence > lastLiveSequence;
-    });
+    if (cleared.publicationRevision <= lastLive.publicationRevision) {
+      return false;
+    }
+    final lastLiveIndex = facts.lastIndexWhere((fact) => fact.isLive);
+    final clearedIndex = facts.indexWhere((fact) => fact.isCleared);
+    return clearedIndex > lastLiveIndex;
   }
 
-  /// All selected authoritative/unknown samples must follow all selected live
-  /// samples and advance the same identity's observation sequence.
-  bool get terminalAfterLive => _terminalAfterLive();
-
-  bool get authoritativeAfterLive =>
-      _terminalAfterLive(authoritativeOnly: true);
-
-  Map<String, Object?> toJson() => {
+  Map<String, Object?> toJson() => <String, Object?>{
+    'source': 'clientRuntimePublish',
+    'targetThreadId': targetThreadId,
     'targetTurnId': targetTurnId,
-    'targetAttemptId': targetAttemptId,
-    'targetSelection': targetSelection,
-    'sampleCount': samples.length,
-    'liveSampleCount': liveSamples.length,
-    'authoritativeSampleCount': authoritativeSamples.length,
-    'unknownSampleCount': unknownSamples.length,
-    'terminalSampleCount': terminalSamples.length,
-    'liveSequenceStrictlyIncreasing': liveSequenceStrictlyIncreasing,
-    'liveSequenceAdvanced': liveSequenceAdvanced,
-    'terminalAfterLive': terminalAfterLive,
-    'authoritativeAfterLive': authoritativeAfterLive,
-    // This endpoint is not a runtime event stream. Snapshot polling can
-    // describe ordering, but cannot prove event delivery freshness.
-    'pacedEventVerdict': 'pending',
-    'eventEndpoint': 'unsupported',
-    'pollingSamplesAreReadinessOnly': true,
-    'samples': [for (final sample in samples) sample.toJson()],
+    'attemptId': attemptId,
+    'streamEpoch': streamEpoch,
+    'phase': phase,
+    'observerCancelled': observerCancelled,
+    'overflowed': overflowed,
+    'error': error,
+    'factLimit': factLimit,
+    'factCount': facts.length,
+    'baselineFactCount': baselineFacts.length,
+    'liveFactCount': liveFacts.length,
+    'clearedFactCount': clearedFact == null ? 0 : 1,
+    'boundedAndClosed': boundedAndClosed,
+    'identityStable': identityStable,
+    'liveSequenceIncreasing': liveSequenceIncreasing,
+    'livePublicationRevisionsIncreasing': livePublicationRevisionsIncreasing,
+    'clearedAfterLive': clearedAfterLive,
+    'facts': <Object?>[for (final fact in facts) fact.toJson()],
   };
 }
 
-class _RuntimeGroupSelection {
-  const _RuntimeGroupSelection({
-    required this.samples,
-    required this.turnId,
-    required this.attemptId,
-    required this.kind,
-  });
-
-  final List<DriverRuntimeObservation> samples;
-  final String? turnId;
-  final String? attemptId;
-  final String kind;
+Map<String, dynamic> _requireMap(Object? value, String label) {
+  if (value is! Map) {
+    throw StateError('$label is not a JSON object: $value');
+  }
+  return value.cast<String, dynamic>();
 }
 
-_RuntimeGroupSelection _selectRuntimeGroup(
-  List<DriverRuntimeObservation> samples, {
-  String? targetTurnId,
-  String? targetAttemptId,
-}) {
-  List<DriverRuntimeObservation> forIdentity(String turnId, String attemptId) =>
-      samples
-          .where(
-            (sample) =>
-                sample.turnId == turnId && sample.attemptId == attemptId,
-          )
-          .toList(growable: false);
-
-  if (targetTurnId != null && targetAttemptId != null) {
-    final selected = forIdentity(targetTurnId, targetAttemptId);
-    return _RuntimeGroupSelection(
-      samples: List.unmodifiable(selected),
-      turnId: targetTurnId,
-      attemptId: targetAttemptId,
-      kind: selected.isEmpty ? 'requested-empty' : 'requested',
-    );
+String _requireString(Map<String, dynamic> map, String field, String label) {
+  final value = map[field];
+  if (value is! String || value.isEmpty) {
+    throw StateError('$label.$field is not a non-empty string: $value');
   }
-
-  final groups = <String, List<DriverRuntimeObservation>>{};
-  for (final sample in samples) {
-    final turnId = sample.turnId;
-    final attemptId = sample.attemptId;
-    if (turnId == null || attemptId == null) continue;
-    groups.putIfAbsent('$turnId\u0000$attemptId', () => []).add(sample);
-  }
-
-  List<DriverRuntimeObservation>? selected;
-  String? selectedKey;
-  // Prefer the first complete identity (live plus authoritative/unknown),
-  // otherwise use the first identity with live samples. Map insertion order is
-  // the Driver observation order, so this is deterministic and never picks a
-  // synthetic "largest" group.
-  for (final entry in groups.entries) {
-    final group = entry.value;
-    final hasLive = group.any((sample) => sample.isLive);
-    final hasTerminal = group.any(
-      (sample) =>
-          sample.isAuthoritative ||
-          sample.usageState == DriverRuntimeUsageState.unknown,
-    );
-    if (hasLive && hasTerminal) {
-      selected = group;
-      selectedKey = entry.key;
-      break;
-    }
-  }
-  if (selected == null) {
-    for (final entry in groups.entries) {
-      if (entry.value.any((sample) => sample.isLive)) {
-        selected = entry.value;
-        selectedKey = entry.key;
-        break;
-      }
-    }
-  }
-  selected ??= groups.values.firstOrNull;
-  selectedKey ??= groups.keys.firstOrNull;
-  if (selected == null || selectedKey == null) {
-    return const _RuntimeGroupSelection(
-      samples: [],
-      turnId: null,
-      attemptId: null,
-      kind: 'none',
-    );
-  }
-  final separator = selectedKey.indexOf('\u0000');
-  return _RuntimeGroupSelection(
-    samples: List.unmodifiable(selected),
-    turnId: selectedKey.substring(0, separator),
-    attemptId: selectedKey.substring(separator + 1),
-    kind: 'first-complete-or-live-group',
-  );
+  return value;
 }
 
-DriverPacedRuntimeEvidence evaluatePacedRuntime(
-  Iterable<DriverRuntimeObservation> samples, {
-  String? targetTurnId,
-  String? targetAttemptId,
-}) => DriverPacedRuntimeEvidence(
-  samples: samples,
-  targetTurnId: targetTurnId,
-  targetAttemptId: targetAttemptId,
-);
+String? _optionalString(Map<String, dynamic> map, String field, String label) {
+  final value = map[field];
+  if (value == null) return null;
+  if (value is! String) {
+    throw StateError('$label.$field is not a string: $value');
+  }
+  return value.isEmpty ? null : value;
+}
+
+int _requireInt(Map<String, dynamic> map, String field, String label) {
+  final value = map[field];
+  // JSON 整数就是 Dart `int`：浮点与数字字符串都不接受，不做静默截断。
+  if (value is! int) {
+    throw StateError('$label.$field is not an integer: $value');
+  }
+  return value;
+}
+
+int? _optionalInt(Map<String, dynamic> map, String field, String label) {
+  final value = map[field];
+  if (value == null) return null;
+  if (value is! int) {
+    throw StateError('$label.$field is not an integer: $value');
+  }
+  return value;
+}
+
+bool _requireBool(Map<String, dynamic> map, String field, String label) {
+  final value = map[field];
+  if (value is! bool) {
+    throw StateError('$label.$field is not a boolean: $value');
+  }
+  return value;
+}

@@ -2,7 +2,8 @@
 //
 // The handler resolves the target's global center, waits until that center stops
 // moving across consecutive frames and is hit-testable through the current
-// overlays, then dispatches exactly one tap. A stationary underlying target can
+// overlays, then dispatches a tap. An optional second stable target proves rapid
+// session switching without inserting an artificial backend delay. A target can
 // still be blocked by a departing dialog's modal barrier.
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -13,6 +14,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'raw_tap.dart';
 
 class RawTapCommandExtension extends CommandExtension {
+  RawTapCommandExtension({
+    this.onBeforeTap,
+    this.followingTap,
+    this.onBeforeFollowingTap,
+  });
+  final void Function()? onBeforeTap;
+  final SerializableFinder? followingTap;
+  final void Function()? onBeforeFollowingTap;
   @override
   String get commandKind => 'RawTap';
 
@@ -33,7 +42,13 @@ class RawTapCommandExtension extends CommandExtension {
     final finder = finderFactory.createFinder(
       (command as CommandWithTarget).finder,
     );
+    final following = followingTap == null
+        ? null
+        : finderFactory.createFinder(followingTap!);
     var center = _targetOf(finder)?.center;
+    var followingCenter = following == null
+        ? null
+        : _targetOf(following)?.center;
     final deadline = DateTime.now().add(
       command.timeout ?? const Duration(seconds: 30),
     );
@@ -46,26 +61,45 @@ class RawTapCommandExtension extends CommandExtension {
       }
       final next = _targetOf(finder);
       if (next == null) continue;
-      final hit = HitTestResult();
-      // Use the target's actual render view. The stock finder dispatches through
-      // the test binding's view registry, which is empty on the Linux embedder.
-      next.view.hitTest(hit, position: next.center);
-      final hittable = hit.path.any(
-        (entry) => isRenderObjectAncestorOfTarget(next.object, entry.target),
-      );
-      if (next.center == center && hittable) {
+      final nextFollowing = following == null ? null : _targetOf(following);
+      if (next.center == center &&
+          _isHittable(next) &&
+          (following == null ||
+              (nextFollowing != null &&
+                  nextFollowing.center == followingCenter &&
+                  _isHittable(nextFollowing)))) {
+        onBeforeTap?.call();
         await prober.tapAt(next.center, view: next.view.flutterView);
+        if (nextFollowing != null) {
+          onBeforeFollowingTap?.call();
+          await prober.tapAt(
+            nextFollowing.center,
+            view: nextFollowing.view.flutterView,
+          );
+        }
         // Focus changes are deferred; complete their frame before enterText can
         // address the previously focused dialog's text-input connection.
         await _nextFrame();
         return Result.empty;
       }
       center = next.center;
+      followingCenter = nextFollowing?.center;
     }
   }
 }
 
-({Offset center, RenderView view, RenderBox object})? _targetOf(Finder finder) {
+typedef _TapTarget = ({Offset center, RenderView view, RenderBox object});
+
+bool _isHittable(_TapTarget target) {
+  final hit = HitTestResult();
+  // The test binding's view registry is empty on the Linux embedder.
+  target.view.hitTest(hit, position: target.center);
+  return hit.path.any(
+    (entry) => isRenderObjectAncestorOfTarget(target.object, entry.target),
+  );
+}
+
+_TapTarget? _targetOf(Finder finder) {
   final elements = finder.evaluate().toList();
   if (elements.length != 1) return null;
   final object = elements.single.renderObject;

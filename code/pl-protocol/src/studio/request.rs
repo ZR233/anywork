@@ -19,8 +19,8 @@ pub struct SearchSkillsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NewThreadModelRoute {
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: Option<String>,
 }
 

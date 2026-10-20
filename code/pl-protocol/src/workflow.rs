@@ -1,20 +1,21 @@
 //! Thread Mode 使用的扁平确定性状态图协议。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ThreadModeId;
 
 /// 一个 state 在状态机中的语义种类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum WorkflowStateKind {
     Atomic,
     Final,
 }
 
 /// 状态图中的一个 state。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowState {
     pub id: String,
     pub title: String,
@@ -27,8 +28,8 @@ pub struct WorkflowState {
 /// 一条有向 state transition。
 ///
 /// `guard` 是由 Agent 判断的声明性自然语言条件；Runtime 不执行表达式。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowTransition {
     pub source_state_id: String,
     pub target_state_id: String,
@@ -36,8 +37,8 @@ pub struct WorkflowTransition {
 }
 
 /// 注册进 Thread Mode Manager 的完整状态图定义。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowDefinition {
     pub title: String,
     pub goal: String,
@@ -145,6 +146,12 @@ pub struct WorkflowRuntimeRunSnapshot {
     pub graph_revision: u64,
     pub graph_hash: String,
     pub lifecycle: WorkflowRunLifecycle,
+    #[serde(default)]
+    pub current_state_title: String,
+    #[serde(default)]
+    pub mode_display_name: String,
+    #[serde(default)]
+    pub mode_deleted: bool,
     pub current_state_id: String,
     pub started_at: i64,
     pub updated_at: i64,
@@ -174,6 +181,9 @@ impl From<&WorkflowSessionState> for WorkflowRuntimeSnapshot {
                     graph_hash: run.graph_hash.clone(),
                     lifecycle: run.lifecycle,
                     current_state_id: run.current_state_id.clone(),
+                    current_state_title: String::new(),
+                    mode_display_name: String::new(),
+                    mode_deleted: false,
                     started_at: run.started_at,
                     updated_at: run.updated_at,
                 }),

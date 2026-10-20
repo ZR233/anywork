@@ -1,6 +1,6 @@
 //! 当前执行活动的 typed 实时投影契约。
 //!
-//! 活动与 ChatView 历史窗口是两条正交的事实：窗口决定展示哪些条目，活动只描述“当前在做什么”。
+//! 活动与 Timeline 内容是两条正交的事实：内容只决定有哪些条目，活动只描述“当前在做什么”。
 //! 活动快照与活动帧只携带小型 typed 摘要与身份，**不重复传正文**；完整 reasoning、输出正文、
 //! 工具参数与流式输出按活动身份通过 [`ThreadActivityDetailQuery`] 按需读取 canonical 事实。
 
@@ -119,6 +119,9 @@ pub struct ThreadActivityToolEntry {
     /// 该调用 canonical 接纳时间；内存投影不可读时为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
+    /// Typed wait/sleep presentation when this call is a wait or sleep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::ThreadWaitPresentation>,
 }
 
 /// 当前并行执行的工具集合。
@@ -237,6 +240,9 @@ pub struct ThreadActivityToolDetail {
     pub ordinal: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
+    /// Typed wait/sleep presentation when this call is a wait or sleep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::ThreadWaitPresentation>,
 }
 
 /// 活动详情的生命周期结果。

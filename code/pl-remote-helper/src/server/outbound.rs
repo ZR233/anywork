@@ -1,9 +1,11 @@
 use std::io;
 use std::sync::Arc;
 
-use pl_protocol::remote::{RemoteEvent, RemoteMessage};
+use pl_protocol::remote::{
+    REMOTE_OUTPUT_CHUNK_BYTES, REMOTE_OUTPUT_WINDOW, RemoteEvent, RemoteMessage,
+};
 use tokio::io::AsyncWrite;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::codec::write_frame;
@@ -14,7 +16,7 @@ struct WriteRequest {
     request_id: Option<u64>,
     message: RemoteMessage,
     body: Vec<u8>,
-    receipt: oneshot::Sender<WriteResult>,
+    receipt: Option<oneshot::Sender<WriteResult>>,
 }
 
 /// Clones enqueue frames; only OutboundTask owns and writes the byte stream.
@@ -31,6 +33,10 @@ pub(super) struct OutboundTask {
 
 impl Outbound {
     pub(super) fn new(writer: Box<dyn AsyncWrite + Send + Unpin>) -> (Self, OutboundTask) {
+        let writer = Box::new(tokio::io::BufWriter::with_capacity(
+            REMOTE_OUTPUT_CHUNK_BYTES * REMOTE_OUTPUT_WINDOW,
+            writer,
+        ));
         let (queue, receiver) = mpsc::channel(32);
         let (stop, stopped) = watch::channel(false);
         let (report, failure) = watch::channel(None);
@@ -70,7 +76,7 @@ impl Outbound {
             request_id,
             message,
             body: body.to_vec(),
-            receipt,
+            receipt: Some(receipt),
         });
         response
             .await
@@ -80,6 +86,31 @@ impl Outbound {
 
     pub(super) fn close(&self) {
         self.stop.send_replace(true);
+    }
+
+    /// Transfers a completed ordinary response to the bounded writer. Release admission
+    /// before publishing the response, so a peer may immediately submit its next request.
+    pub(super) async fn respond(
+        &self,
+        request_id: Option<u64>,
+        response: pl_protocol::remote::RemoteResponse,
+        body: Vec<u8>,
+        admission: OwnedSemaphorePermit,
+    ) -> io::Result<()> {
+        let position = self
+            .queue
+            .reserve()
+            .await
+            .map_err(|_| self.closed_error())?;
+        let response = WriteRequest {
+            request_id,
+            message: RemoteMessage::Response(response),
+            body,
+            receipt: None,
+        };
+        drop(admission);
+        position.send(response);
+        Ok(())
     }
 
     pub(super) async fn failed(&self) -> io::Error {
@@ -142,11 +173,15 @@ async fn write_loop(
         };
         match result {
             Ok(()) => {
-                let _ = request.receipt.send(Ok(()));
+                if let Some(receipt) = request.receipt {
+                    let _ = receipt.send(Ok(()));
+                }
             }
             Err(error) => {
                 let error = Arc::new(error);
-                let _ = request.receipt.send(Err(error.clone()));
+                if let Some(receipt) = request.receipt {
+                    let _ = receipt.send(Err(error.clone()));
+                }
                 return Err(shared_error(error));
             }
         }

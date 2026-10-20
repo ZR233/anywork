@@ -26,55 +26,120 @@ use pl_core::thread::{
     },
     extensions::ExtensionMutation,
 };
-use pl_model::{
-    config::ResolvedModelRoute,
-    runtime::{ModelRuntime, ThreadModel},
-};
+use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
 
 /// Binds the policy to the same frozen route as the main model session.
 pub(crate) fn preparer(
     route: &ResolvedModelRoute,
+    model: ThreadModel,
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
-    let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config());
     let instruction_binding = InstructionBinding {
         route_identity: model.route_identity(),
         append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
-            == pl_model::provider::InstructionUpdateStrategy::AppendFullSnapshot,
+            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
     };
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
-        limit: route.auto_compact_limit,
         modes,
         reasoning_effort: route
             .effort
             .as_ref()
             .map(|effort| effort.as_str().to_owned()),
-        context_window: route.model.resolved_context_window(),
+        context_window: route.context.context_window,
         options: policy(mode),
         base_instructions: route.model.base_instructions.clone(),
         instruction_binding,
+        supports_workflow: route.model.capabilities.supports_function_calling(),
     })))
 }
 
 #[derive(Debug)]
 struct StudioCompaction {
     model: ThreadModel,
-    limit: Option<u64>,
     modes: crate::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
     options: ThreadCompactionOptions,
     base_instructions: String,
     instruction_binding: InstructionBinding,
+    supports_workflow: bool,
 }
 impl ContextPreparationHook for StudioCompaction {
     async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
+        let ModePreparation {
+            mode,
+            mutations: mode_mutations,
+            new_turn,
+        } = match freeze_mode_for_turn(&mut request, &self.modes) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                return ContextPreparation::Failed {
+                    error,
+                    mutations: vec![],
+                };
+            }
+        };
+        if mode.as_ref().is_some_and(|mode| mode.workflow().is_some()) && !self.supports_workflow {
+            return ContextPreparation::Failed {
+                error: receipt_error(std::io::Error::other(
+                    "workflow Mode requires a model supporting function calling",
+                )),
+                mutations: vec![],
+            };
+        }
+        let excluded_tool_ids = if mode.as_ref().is_some_and(|mode| mode.workflow().is_none()) {
+            crate::workflow_tool::workflow_tool_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if !excluded_tool_ids.is_empty() {
+            // The capacity preview must describe exactly the tool plan the real step will use.
+            // `pl_core::tool::opaque::ToolPlan` derives declarations, solo identities and the
+            // scheduling mode from one map, and applies `excluded_tool_ids` to that map before a
+            // real call. Excluding a tool here therefore has to drop its exclusive-call identity
+            // too, and keep the mode consistent with the retained set; otherwise the preview
+            // advertises a solo identity whose declaration was excluded.
+            request.model.tools = request
+                .model
+                .tools
+                .iter()
+                .filter(|tool| !excluded_tool_ids.contains(&tool.tool_id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into();
+            request.model.solo_tool_ids = request
+                .model
+                .solo_tool_ids
+                .iter()
+                .filter(|tool_id| !excluded_tool_ids.contains(tool_id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into();
+            // Same rule as the frozen plan: non-empty and every retained tool solo means strictly
+            // sequential calls; otherwise only the retained solo tools keep their constraint.
+            let every_retained_tool_is_solo = !request.model.tools.is_empty()
+                && request
+                    .model
+                    .tools
+                    .iter()
+                    .all(|tool| request.model.solo_tool_ids.contains(&tool.tool_id));
+            request.model.tool_call_mode = if every_retained_tool_is_solo {
+                pl_core::model::ToolCallMode::Sequential
+            } else {
+                pl_core::model::ToolCallMode::Parallel
+            };
+        }
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,
             &self.instruction_binding,
+            mode.as_deref(),
+            mode_mutations,
         ) {
             Ok(repair) => repair,
             Err(error) => {
@@ -84,7 +149,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         };
-        match repair_workflow_graph(&mut request, &self.modes) {
+        match prepare_workflow(&mut request, new_turn) {
             Ok(Some(mutation)) => instruction_repair.mutations.push(mutation),
             Ok(None) => {}
             Err(error) => {
@@ -94,7 +159,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         }
-        let facts = match current_facts(&request, &self.modes) {
+        let facts = match current_facts(&request) {
             Ok(facts) => facts,
             Err(error) => {
                 return ContextPreparation::Failed {
@@ -104,6 +169,7 @@ impl ContextPreparationHook for StudioCompaction {
             }
         };
         let unchanged = || ContextPreparation::Prepared {
+            excluded_tool_ids: excluded_tool_ids.clone(),
             expected_extension_sequence: request.extension_sequence,
             rejected_mutations: Vec::new(),
             replacement: instruction_repair.replacement.as_ref().map(|repair| {
@@ -115,11 +181,6 @@ impl ContextPreparationHook for StudioCompaction {
             }),
             facts: facts.clone(),
             mutations: instruction_repair.mutations.clone(),
-        };
-        let limit = match self.limit {
-            Some(limit) => limit,
-            None if request.force_compaction => u64::MAX,
-            None => return unchanged(),
         };
         let mut preview = request.model.clone();
         let mut records = preview.context.records.to_vec();
@@ -146,10 +207,14 @@ impl ContextPreparationHook for StudioCompaction {
         preview.context.records = records.into();
         let estimate = match self
             .model
-            .estimate_input(&preview, request.previous_usage.as_ref())
+            .compaction_decision(
+                &preview,
+                request.previous_usage.as_ref(),
+                request.force_compaction,
+            )
             .await
         {
-            Ok(estimate) => estimate.map(|estimate| estimate.tokens),
+            Ok(decision) => decision,
             Err(error) => {
                 return ContextPreparation::Failed {
                     error,
@@ -162,7 +227,7 @@ impl ContextPreparationHook for StudioCompaction {
             .records
             .iter()
             .all(|record| record.source == pl_core::context::ContextSource::Instruction)
-            || (!request.force_compaction && !estimate.is_some_and(|tokens| tokens >= limit))
+            || estimate == pl_model::runtime::ThreadCompactionDecision::Keep
         {
             return unchanged();
         }
@@ -215,6 +280,7 @@ impl ContextPreparationHook for StudioCompaction {
                 };
                 match receipt_mutation(previous, receipt) {
                     Ok(mutation) => ContextPreparation::Prepared {
+                        excluded_tool_ids: excluded_tool_ids.clone(),
                         expected_extension_sequence: request.extension_sequence,
                         rejected_mutations,
                         replacement: Some(result.replacement),
@@ -274,6 +340,8 @@ fn restore_current_instructions(
     request: &mut ContextPreparationRequest,
     base_instructions: &str,
     binding: &InstructionBinding,
+    mode: Option<&crate::mode::RegisteredThreadMode>,
+    mut mutations: Vec<ExtensionMutation>,
 ) -> Result<InstructionRepair, pl_core::model::ModelError> {
     use pl_core::context::{ContextContent, ContextRecord, ContextSource};
     let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
@@ -289,7 +357,29 @@ fn restore_current_instructions(
     }
     let mut snapshot: crate::instruction::InstructionSnapshot =
         serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-    let mut mutations = Vec::new();
+    let profile_changed = if let Some(mode) = mode {
+        let profile = snapshot
+            .developer
+            .iter_mut()
+            .find(|block| {
+                block.source.kind == crate::instruction::InstructionSourceKind::ExecutionProfile
+            })
+            .ok_or_else(|| {
+                receipt_error(std::io::Error::other(
+                    "saved instructions contain no Mode profile",
+                ))
+            })?;
+        let changed = profile.content != mode.prompt()
+            || profile.source.label != mode.descriptor().display_name;
+        profile.content = mode.prompt().to_owned();
+        profile
+            .source
+            .label
+            .clone_from(&mode.descriptor().display_name);
+        changed
+    } else {
+        false
+    };
     let previous_binding = request.extensions.get("studio.instructions.binding");
     let binding_changed = match previous_binding {
         Some(record) => {
@@ -324,7 +414,7 @@ fn restore_current_instructions(
             .map_err(receipt_error)?,
         });
     }
-    if snapshot.rebind_model_base(base_instructions) {
+    if snapshot.rebind_model_base(base_instructions) | profile_changed {
         let expected_revision = record.revision;
         record.revision = request
             .extension_sequence
@@ -426,6 +516,11 @@ fn restore_current_instructions(
         tool_calls: Vec::new(),
     };
     let normalize = |records: &[ContextRecord]| {
+        if binding.append_snapshots && !binding_changed {
+            let mut next = records.to_vec();
+            next.push(canonical.clone());
+            return next;
+        }
         std::iter::once(canonical.clone())
             .chain(
                 records
@@ -441,8 +536,8 @@ fn restore_current_instructions(
             .collect::<Vec<_>>()
     };
     request.model.context.records = normalize(&request.model.context.records).into();
-    // Core validated usage against the frozen pre-repair prefix. Rebuilding it invalidates
-    // that proof even if the record count happens to remain equal.
+    // Rebuilding the observed prefix invalidates its measurement even when the record count
+    // happens to remain equal. The model validates any remaining candidate against final input.
     request.previous_usage = None;
     let records = normalize(&request.committed_context.records);
     request.committed_context.records = records.clone().into();
@@ -456,54 +551,162 @@ fn restore_current_instructions(
     })
 }
 
-/// Reconcile a saved graph at execution time, without mutating an idle restored checkpoint.
-/// The local preview feeds projection; core commits its mutation and facts together by CAS.
-fn repair_workflow_graph(
+/// Capture once at initiating root input admission. Repeated preparation, retries and all tools
+/// consume the same self-contained snapshot even when the catalog changes during the Turn.
+struct ModePreparation {
+    mode: Option<std::sync::Arc<crate::mode::RegisteredThreadMode>>,
+    mutations: Vec<ExtensionMutation>,
+    new_turn: bool,
+}
+
+fn freeze_mode_for_turn(
     request: &mut ContextPreparationRequest,
     modes: &crate::mode::ThreadModeManager,
-) -> Result<Option<ExtensionMutation>, pl_core::model::ModelError> {
-    let Some(record) = request
+) -> Result<ModePreparation, pl_core::model::ModelError> {
+    if request
         .extensions
-        .get(crate::workflow_tool::WORKFLOW_EXTENSION)
-    else {
-        return Ok(None);
-    };
-    let state =
-        crate::workflow_tool::decode_workflow_state(&record.payload).map_err(receipt_error)?;
-    let Some(run) = &state.current_run else {
-        return Ok(None);
-    };
-    let mode = modes.snapshot().mode(&run.mode_id).ok_or_else(|| {
+        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
+    {
+        return Ok(ModePreparation {
+            mode: None,
+            mutations: Vec::new(),
+            new_turn: false,
+        });
+    }
+    let record = request.extensions.get("studio.mode").ok_or_else(|| {
         receipt_error(std::io::Error::other(
-            "current workflow mode is unavailable",
+            "root Thread has no saved Mode snapshot",
         ))
     })?;
-    if mode
-        .workflow()
-        .is_some_and(|graph| run.graph_hash == graph.graph_hash())
+    let previous = crate::mode::decode_mode_snapshot(&record.payload).map_err(receipt_error)?;
+    let root_prompt = request
+        .turn_input
+        .as_ref()
+        .filter(|input| input.payload.format() == "pl.studio.prompt");
+    if root_prompt.is_some_and(|input| input.payload.version() != 1) {
+        return Err(receipt_error(std::io::Error::other(
+            "unsupported root prompt payload",
+        )));
+    }
+    let new_turn = root_prompt.is_some()
+        && previous.frozen_turn_id.as_deref() != Some(request.model.turn_id.as_str());
+    let next = if new_turn {
+        let mode = modes
+            .snapshot()
+            .mode(&previous.definition.id)
+            .unwrap_or(previous.registered().map_err(receipt_error)?);
+        previous
+            .updated_for_turn(&mode, request.model.turn_id.clone())
+            .map_err(receipt_error)?
+    } else {
+        previous
+    };
+    let mode = next.registered().map_err(receipt_error)?;
+    let payload = crate::mode::encode_mode_snapshot(&next).map_err(receipt_error)?;
+    if record.payload == payload {
+        return Ok(ModePreparation {
+            mode: Some(mode),
+            mutations: Vec::new(),
+            new_turn,
+        });
+    }
+    let expected_revision = record.revision;
+    std::sync::Arc::make_mut(&mut request.extensions).insert(
+        "studio.mode".into(),
+        pl_core::thread::extensions::ExtensionRecord {
+            revision: request.extension_sequence.saturating_add(1),
+            payload: payload.clone(),
+        },
+    );
+    Ok(ModePreparation {
+        mode: Some(mode),
+        mutations: vec![ExtensionMutation::Put {
+            id: "studio.mode".into(),
+            expected_revision: Some(expected_revision),
+            payload,
+        }],
+        new_turn,
+    })
+}
+
+/// Start only from a pending root prompt, or repair an already active graph during execution.
+/// The local preview feeds projection; core commits its mutation and facts together by CAS.
+fn prepare_workflow(
+    request: &mut ContextPreparationRequest,
+    new_turn: bool,
+) -> Result<Option<ExtensionMutation>, pl_core::model::ModelError> {
+    if !new_turn {
+        return Ok(None);
+    }
+    if request
+        .extensions
+        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
     {
         return Ok(None);
     }
-    let expected_revision = record.revision;
-    let state = crate::mode::reconcile_workflow_for_turn(
-        Some(state),
+    let mode_record = request
+        .extensions
+        .get("studio.mode")
+        .ok_or_else(|| receipt_error(std::io::Error::other("root Thread has no saved Mode")))?;
+    let saved = crate::mode::decode_mode_snapshot(&mode_record.payload).map_err(receipt_error)?;
+    let mode_id = saved.definition.id.clone();
+    let mode = saved.registered().map_err(receipt_error)?;
+    let root_prompt = request
+        .turn_input
+        .as_ref()
+        .filter(|input| input.payload.format() == "pl.studio.prompt");
+    if root_prompt.is_some_and(|input| input.payload.version() != 1) {
+        return Err(receipt_error(std::io::Error::other(
+            "unsupported root prompt payload",
+        )));
+    }
+    let record = request
+        .extensions
+        .get(crate::workflow_tool::WORKFLOW_EXTENSION);
+    let state = record
+        .map(|record| crate::workflow_tool::decode_workflow_state(&record.payload))
+        .transpose()
+        .map_err(receipt_error)?;
+    let run = state.as_ref().and_then(|state| state.current_run.as_ref());
+    if root_prompt.is_none()
+        && run.is_none_or(|run| run.lifecycle == pl_protocol::WorkflowRunLifecycle::Terminal)
+    {
+        return Ok(None);
+    }
+    if run.is_some_and(|run| {
+        run.mode_id == mode_id
+            && run.lifecycle == pl_protocol::WorkflowRunLifecycle::Active
+            && mode
+                .workflow()
+                .is_some_and(|graph| run.graph_hash == graph.graph_hash())
+    }) {
+        return Ok(None);
+    }
+    let expected_revision = record.map(|record| record.revision);
+    let Some(state) = crate::mode::reconcile_workflow_for_turn(
+        state,
         &mode,
         &request.model.thread_id,
         crate::studio::unix_seconds(),
     )
     .map_err(receipt_error)?
-    .ok_or_else(|| receipt_error(std::io::Error::other("workflow upgrade lost saved history")))?;
+    else {
+        return Ok(None);
+    };
     let payload = crate::workflow_tool::encode_workflow_state(&state).map_err(receipt_error)?;
+    if record.is_some_and(|record| record.payload == payload) {
+        return Ok(None);
+    }
     std::sync::Arc::make_mut(&mut request.extensions).insert(
         crate::workflow_tool::WORKFLOW_EXTENSION.into(),
         pl_core::thread::extensions::ExtensionRecord {
-            revision: expected_revision,
+            revision: expected_revision.unwrap_or(0),
             payload: payload.clone(),
         },
     );
     Ok(Some(ExtensionMutation::Put {
         id: crate::workflow_tool::WORKFLOW_EXTENSION.into(),
-        expected_revision: Some(expected_revision),
+        expected_revision,
         payload,
     }))
 }
@@ -511,7 +714,6 @@ fn repair_workflow_graph(
 /// Each projection consumes only this Thread's frozen extensions, never a parent's state.
 fn current_facts(
     request: &ContextPreparationRequest,
-    modes: &crate::mode::ThreadModeManager,
 ) -> Result<Vec<pl_core::thread::RuntimeFact>, pl_core::model::ModelError> {
     use pl_core::{context::ContextContent, thread::RuntimeFact};
     let mut facts = request
@@ -568,12 +770,15 @@ fn current_facts(
     {
         let state =
             crate::workflow_tool::decode_workflow_state(&record.payload).map_err(receipt_error)?;
-        if let Some(run) = &state.current_run {
-            let mode = modes.snapshot().mode(&run.mode_id).ok_or_else(|| {
+        if state.current_run.is_some() {
+            let saved = request.extensions.get("studio.mode").ok_or_else(|| {
                 receipt_error(std::io::Error::other(
-                    "current workflow mode is unavailable",
+                    "current workflow Mode snapshot is unavailable",
                 ))
             })?;
+            let mode = crate::mode::decode_mode_snapshot(&saved.payload)
+                .and_then(|mode| mode.registered())
+                .map_err(receipt_error)?;
             let section =
                 crate::mode::workflow_model_context_section(&state, &mode).ok_or_else(|| {
                     receipt_error(std::io::Error::other(
@@ -627,7 +832,7 @@ fn receipt_mutation(
     receipt: CompactionReceipt,
 ) -> Result<ExtensionMutation, pl_core::model::ModelError> {
     let payload = serde_json::to_string(&receipt).map_err(receipt_error)?;
-    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 1, payload)
+    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 2, payload)
         .map_err(receipt_error)?;
     Ok(ExtensionMutation::Put {
         id: LATEST_RECEIPT.into(),
@@ -644,6 +849,48 @@ fn receipt_error(
         usage: Default::default(),
         source: Some(Box::new(source)),
     }
+}
+
+/// 版本化压缩回执的唯一边界解码。
+///
+/// v1 载荷的 `binding` 是 Provider/Preset 时代的 camelCase 接入身份
+/// （`providerInstanceId`/`requestedModel`/`adapter`/`protocol`）。迁移与产品投影都必须共用这一
+/// 处转换，才能在不猜账号/模型的前提下把旧冻结事实并入当前账号、配置模型与厂商协议语义。
+/// 只改本 crate 自己写入的已知键；`accounting`、`inferenceId`、`purpose`、`isolation`、观察与
+/// 用量等冻结事实原样保留，不改写 opaque 正文。
+pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<CompactionReceipt> {
+    anyhow::ensure!(
+        (1..=2).contains(&version),
+        "unsupported auxiliary accounting receipt"
+    );
+    let mut value: serde_json::Value = serde_json::from_str(content)?;
+    if version < 2 {
+        let receipt = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("compaction receipt is not an object"))?;
+        if let Some(binding) = receipt
+            .get_mut("binding")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            // 真实 v1 binding 是 camelCase：providerInstanceId/requestedModel/adapter/protocol。
+            crate::studio::payload_alias::rename_key(binding, "providerInstanceId", "accountId")?;
+            crate::studio::payload_alias::rename_key(binding, "requestedModel", "modelId")?;
+            // 旧 `protocol` 是 wire API；旧 `adapter` 才是当前厂商协议选择。
+            crate::studio::payload_alias::rename_key(binding, "protocol", "wireApi")?;
+            if let Some(adapter) = binding.remove("adapter") {
+                let adapter = adapter.as_str().unwrap_or_default();
+                let protocol = crate::studio::payload_alias::protocol_from_legacy_adapter(adapter)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("unsupported legacy account adapter in compaction receipt")
+                    })?;
+                binding.insert(
+                    "protocol".into(),
+                    serde_json::Value::String(protocol.into()),
+                );
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(anyhow::Error::from)
 }
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.
@@ -669,7 +916,7 @@ pub(crate) fn migrate_checkpoint_sources(
     if record.payload.format() != "pl.studio.compaction" || record.payload.version() != 1 {
         return Ok(());
     }
-    let receipt: CompactionReceipt = serde_json::from_str(record.payload.content())?;
+    let receipt = decode_receipt(record.payload.version(), record.payload.content())?;
     if receipt.error.is_some() || receipt.implementation.as_deref() != Some("native") {
         return Ok(());
     }

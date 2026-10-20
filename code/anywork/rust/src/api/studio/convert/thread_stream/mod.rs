@@ -254,7 +254,7 @@ fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
     }
 }
 
-/// ChatView splice indexes include hidden metadata items; preserve their positions
+/// Timeline previews include hidden metadata items in their ordinals; preserve their positions
 /// across the FFI boundary and let the widget projection choose what to render.
 pub(crate) fn bridge_chat_thread_item(value: ThreadItem) -> Result<BridgeThreadItem> {
     let state = item_state(value.state())?;
@@ -300,6 +300,7 @@ fn item_state(value: &ThreadItemState) -> Result<BridgeThreadItemState> {
             },
             state: tool_state(value.state())?,
             user_input: value.user_input().map(user_input),
+            wait: value.wait().cloned().map(wait_presentation).map(Box::new),
         },
         ThreadItemState::Agent(value) => {
             let identity = value.identity();
@@ -496,6 +497,57 @@ fn tool_state(value: &ThreadToolState) -> Result<BridgeThreadToolState> {
     })
 }
 
+pub(super) fn wait_presentation(
+    value: pl_protocol::ThreadWaitPresentation,
+) -> BridgeThreadWaitPresentation {
+    BridgeThreadWaitPresentation {
+        intent: match value.intent() {
+            pl_protocol::ThreadWaitIntent::Events {
+                targets,
+                timeout_ms,
+            } => BridgeThreadWaitIntent::Events {
+                targets: targets.iter().map(wait_target).collect(),
+                timeout_ms: *timeout_ms,
+            },
+            pl_protocol::ThreadWaitIntent::Timer { duration_ms } => BridgeThreadWaitIntent::Timer {
+                duration_ms: *duration_ms,
+            },
+        },
+        state: match value.state() {
+            pl_protocol::ThreadWaitState::Waiting => BridgeThreadWaitState::Waiting,
+            pl_protocol::ThreadWaitState::Ready => BridgeThreadWaitState::Ready,
+            pl_protocol::ThreadWaitState::TimedOut => BridgeThreadWaitState::TimedOut,
+            pl_protocol::ThreadWaitState::Elapsed => BridgeThreadWaitState::Elapsed,
+            pl_protocol::ThreadWaitState::Cancelled => BridgeThreadWaitState::Cancelled,
+            pl_protocol::ThreadWaitState::Failed => BridgeThreadWaitState::Failed,
+            pl_protocol::ThreadWaitState::Interrupted => BridgeThreadWaitState::Interrupted,
+        },
+        messages_ready: value.messages_ready(),
+    }
+}
+
+fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget {
+    BridgeThreadWaitTarget {
+        task_id: value.task_id().to_owned(),
+        tool_name: value.tool_name().map(str::to_owned),
+        summary: value.summary().map(str::to_owned),
+        summary_truncated: value.summary_truncated(),
+        status: value.status().map(|status| match status {
+            pl_protocol::ThreadWaitTargetStatus::Running => BridgeThreadWaitTargetStatus::Running,
+            pl_protocol::ThreadWaitTargetStatus::Succeeded => {
+                BridgeThreadWaitTargetStatus::Succeeded
+            }
+            pl_protocol::ThreadWaitTargetStatus::Failed => BridgeThreadWaitTargetStatus::Failed,
+            pl_protocol::ThreadWaitTargetStatus::Cancelled => {
+                BridgeThreadWaitTargetStatus::Cancelled
+            }
+            pl_protocol::ThreadWaitTargetStatus::Interrupted => {
+                BridgeThreadWaitTargetStatus::Interrupted
+            }
+        }),
+    }
+}
+
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
 fn user_input(value: &pl_protocol::ThreadToolUserInput) -> BridgeThreadUserInput {
     BridgeThreadUserInput {
@@ -561,8 +613,8 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         model_route: value
             .model_route
             .map(|route| BridgeThreadModelRouteSnapshot {
-                provider_id: route.provider_id,
-                model: route.model,
+                account_id: route.account_id,
+                model_id: route.model_id,
                 effort: route.effort,
                 revision: route.revision,
                 available: route.available,
@@ -646,13 +698,16 @@ fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
         current_state_id: value.current_state_id,
         started_at: value.started_at,
         updated_at: value.updated_at,
+        current_state_title: value.current_state_title,
+        mode_display_name: value.mode_display_name,
+        mode_deleted: value.mode_deleted,
     }
 }
 
 fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     BridgeThreadRuntimeUsage {
         has_incomplete_usage: value.has_incomplete_usage,
-        model: value.model,
+        model_id: value.model_id,
         context_window: value.context_window,
         max_context_window: value.max_context_window,
         auto_compact_limit: value.auto_compact_limit,
@@ -702,8 +757,8 @@ fn prompt_prefix_changed_reason(
         PromptPrefixChangedReason::PromptScopeChanged => {
             BridgePromptPrefixChangedReason::PromptScopeChanged
         }
-        PromptPrefixChangedReason::ProviderChanged => {
-            BridgePromptPrefixChangedReason::ProviderChanged
+        PromptPrefixChangedReason::AccountChanged => {
+            BridgePromptPrefixChangedReason::AccountChanged
         }
         PromptPrefixChangedReason::ModelChanged => BridgePromptPrefixChangedReason::ModelChanged,
         PromptPrefixChangedReason::BaseInstructionsChanged => {

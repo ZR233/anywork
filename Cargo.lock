@@ -1127,6 +1127,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2725,6 +2737,7 @@ dependencies = [
  "futures",
  "lsp-server",
  "lsp-types",
+ "percent-encoding",
  "process-wrap",
  "schemars",
  "serde",
@@ -2742,6 +2755,7 @@ name = "pl-model"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "enum_dispatch",
  "eventsource-stream",
  "futures",
  "hex",
@@ -2813,6 +2827,7 @@ dependencies = [
  "libc",
  "pl-protocol",
  "process-wrap",
+ "procfs",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -2905,6 +2920,7 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "windows-sys 0.61.2",
  "zstd 0.14.3",
 ]
 
@@ -3132,6 +3148,27 @@ dependencies = [
  "tokio",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "procfs"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25485360a54d6861439d60facef26de713b1e126bf015ec8f98239467a2b82f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "procfs-core",
+ "rustix",
+]
+
+[[package]]
+name = "procfs-core"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
+dependencies = [
+ "bitflags 2.13.2",
+ "hex",
 ]
 
 [[package]]

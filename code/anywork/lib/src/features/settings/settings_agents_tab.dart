@@ -38,8 +38,12 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
   Future<void> _editProfile([AgentProfileView? profile]) async {
     final draft = await showDialog<AgentProfileDraft>(
       context: context,
-      builder: (context) =>
-          AgentProfileDialog(profile: profile, providers: _routeProviders()),
+      builder: (context) => Consumer(
+        builder: (context, ref, child) => AgentProfileDialog(
+          profile: profile,
+          accounts: ref.watch(settingsAgentsViewProvider).accounts,
+        ),
+      ),
     );
     if (draft == null || !mounted) return;
     await ref
@@ -47,9 +51,6 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
         .settingsCommands
         .saveUserAgentProfile(draft);
   }
-
-  List<ProviderSettingsView> _routeProviders() =>
-      ref.read(settingsAgentsViewProvider).providers;
 
   @override
   Widget build(BuildContext context) {

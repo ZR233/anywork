@@ -1,5 +1,5 @@
 //! Model-owned context reduction; the host commits replacements using the frozen revision.
-use super::{AdapterError, ThreadModel, codec, failure, receipt};
+use super::{AdapterError, ThreadModel, failure, receipt};
 use crate::{
     completion::{InferenceAccounting, ModelContextItem},
     runtime::{ModelInvocationContext, ModelSession, TextSummaryRequest},
@@ -11,6 +11,9 @@ use pl_core::{
 };
 
 const FORMAT: &str = "pl.model.compaction";
+const NATIVE_CHECKPOINT_VERSION: u32 = 3;
+const LEGACY_NATIVE_CHECKPOINT_VERSION: u32 = 2;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeCheckpoint {
@@ -18,6 +21,49 @@ struct NativeCheckpoint {
     #[serde(default)]
     compatibility_family: Option<String>,
     item: ModelContextItem,
+}
+
+/// 原生 checkpoint 迁移前的形状：绑定字段仍是 provider/requestedModel/adapter/protocol。
+///
+/// 只在 `pl.model.compaction` version 2 的显式解码边界使用；当前类型不保留旧字段别名。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyNativeCheckpoint {
+    binding: super::receipt::LegacyModelCallBinding,
+    #[serde(default)]
+    compatibility_family: Option<String>,
+    item: ModelContextItem,
+}
+
+impl LegacyNativeCheckpoint {
+    fn migrate(self) -> NativeCheckpoint {
+        NativeCheckpoint {
+            binding: self.binding.migrate(),
+            compatibility_family: self.compatibility_family,
+            item: self.item,
+        }
+    }
+}
+
+/// Decode the current checkpoint shape at its explicit producer version boundary.
+///
+/// version 3 is current; version 2 is the same frozen binding conversion used by the other
+/// producer payloads (stable ID from the binding, not any display name). The item and its
+/// encrypted content are moved verbatim, and no catalog or display name is consulted.
+fn decode_checkpoint(payload: &OpaquePayload) -> Result<NativeCheckpoint, ModelError> {
+    match payload.version() {
+        NATIVE_CHECKPOINT_VERSION => serde_json::from_str(payload.content())
+            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error)),
+        LEGACY_NATIVE_CHECKPOINT_VERSION => {
+            let legacy: LegacyNativeCheckpoint = serde_json::from_str(payload.content())
+                .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+            Ok(legacy.migrate())
+        }
+        _ => Err(failure(
+            ModelFailureKind::IncompatibleContext,
+            AdapterError::Content("unsupported native checkpoint version"),
+        )),
+    }
 }
 
 /// Host-selected reduction behavior. Native support is queried from the selected adapter.
@@ -37,6 +83,13 @@ pub struct ThreadCompactionOptions {
     pub max_output_tokens: Option<u64>,
 }
 
+/// Model-owned reduction decision; hosts only orchestrate committing the replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadCompactionDecision {
+    Keep,
+    Compact,
+}
+
 /// Successful reduction before the host's compare-and-swap commit.
 #[derive(Debug)]
 pub struct ThreadCompaction {
@@ -49,8 +102,9 @@ pub struct ThreadCompaction {
 
 impl ThreadModel {
     /// Estimates a frozen model-owned encoding without opening or advancing a physical session.
-    /// `previous` must be a usage origin whose retained prefix and tool plan core has validated.
-    /// Native history adds observed output and new text; unmeasurable additions stay unknown.
+    /// `previous` is accepted only when its origin matches the final prefix, tool plan and route.
+    /// Native history retains measured input/output as a lower bound. Unmeasurable additions
+    /// contribute no guessed tokens, so this is only evidence to trigger reduction.
     /// # Errors
     /// Rejects invalid history, unsupported declarations and unavailable retained media.
     pub async fn estimate_input(
@@ -58,60 +112,56 @@ impl ThreadModel {
         request: &ModelRequest,
         previous: Option<&pl_core::thread::context_preparation::PreviousContextUsage>,
     ) -> Result<Option<pl_core::model::TokenEstimate>, ModelError> {
-        self.validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(request, &self.runtime)?;
-        self.runtime
-            .validate_context(&encoded.input)
-            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-        encoded.reasoning = self.reasoning.clone();
-        encoded.parallel_tool_calls = request.tool_call_mode
-            == pl_core::model::ToolCallMode::Parallel
-            && self.runtime.model().capabilities.tools.parallel_tool_calls;
-        encoded.tools = codec::declarations(&request.tools)?
-            .into_iter()
-            .map(|(_, spec)| spec)
-            .collect();
-        encoded.tools.extend(
-            self.hosted_tools
-                .iter()
-                .map(crate::runtime::HostedTool::declaration),
-        );
-        super::media::prepare(request, &mut encoded, self.runtime.model()).await?;
-        let encoded = self
-            .runtime
-            .prepare_request(encoded)
-            .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-        let tokens = crate::completion::estimate_text_input_tokens(&encoded).or_else(|| {
-            // Core verifies the immutable input prefix and tool plan before supplying this
-            // observation. Native assistant output is counted by its reported output usage.
+        let encoded = self.encode_request(request).await?;
+        let observed = (|| {
+            // Host exclusions have already produced the final plan. Validate against that plan,
+            // rather than the complete registry that existed before context preparation.
             let previous = previous.filter(|previous| {
-                previous.origin.binding.route_identity.as_deref()
-                    == Some(self.route_identity().as_str())
+                previous.matches_input(request)
+                    && previous.origin.binding.route_identity.as_deref()
+                        == Some(self.route_identity().as_str())
             })?;
-            let tail = request
-                .context
-                .records
-                .get(previous.origin.input_record_count..)?;
-            let characters = tail
-                .iter()
-                .filter(|record| record.source != ContextSource::Assistant)
-                .flat_map(|record| &record.content)
-                .try_fold(0_u64, |total, content| match content {
-                    ContextContent::Text { text } => {
-                        total.checked_add(u64::try_from(text.chars().count()).ok()?)
-                    }
-                    ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
-                })?;
             previous
                 .usage
                 .input_tokens?
-                .checked_add(previous.usage.output_tokens?)?
-                .checked_add(characters.div_ceil(4))
-        });
-        Ok(tokens.map(|tokens| pl_core::model::TokenEstimate {
-            tokens,
-            accuracy: pl_core::model::EstimateAccuracy::Approximate,
-        }))
+                .checked_add(previous.usage.output_tokens.unwrap_or(0))
+        })();
+        use pl_core::model::{EstimateAccuracy, TokenEstimate};
+        Ok(
+            match crate::completion::estimate_text_input_tokens(&encoded) {
+                Some(text) => Some(TokenEstimate {
+                    tokens: text.max(observed.unwrap_or(0)),
+                    accuracy: EstimateAccuracy::Approximate,
+                }),
+                None => observed.map(|tokens| TokenEstimate {
+                    tokens,
+                    accuracy: EstimateAccuracy::LowerBound,
+                }),
+            },
+        )
+    }
+
+    /// Makes the automatic/forced decision against the same frozen execution policy.
+    pub async fn compaction_decision(
+        &self,
+        request: &ModelRequest,
+        previous: Option<&pl_core::thread::context_preparation::PreviousContextUsage>,
+        force: bool,
+    ) -> Result<ThreadCompactionDecision, ModelError> {
+        if force {
+            return Ok(ThreadCompactionDecision::Compact);
+        }
+        let Some(limit) = self.runtime.context().auto_compact_limit else {
+            return Ok(ThreadCompactionDecision::Keep);
+        };
+        let estimate = self.estimate_input(request, previous).await?;
+        Ok(
+            if estimate.is_some_and(|estimate| estimate.tokens >= limit) {
+                ThreadCompactionDecision::Compact
+            } else {
+                ThreadCompactionDecision::Keep
+            },
+        )
     }
 
     /// Reduces frozen history using an independent physical model session.
@@ -124,20 +174,9 @@ impl ThreadModel {
         request: ModelRequest,
         options: ThreadCompactionOptions,
     ) -> Result<ThreadCompaction, ModelError> {
-        self.validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(&request, &self.runtime)?;
-        self.runtime
-            .validate_context(&encoded.input)
-            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-        encoded.reasoning = self.reasoning.clone();
-        encoded.parallel_tool_calls = request.tool_call_mode
-            == pl_core::model::ToolCallMode::Parallel
-            && self.runtime.model().capabilities.tools.parallel_tool_calls;
-        encoded.tools = codec::declarations(&request.tools)?
-            .into_iter()
-            .map(|(_, spec)| spec)
-            .collect();
-        super::media::prepare(&request, &mut encoded, self.runtime.model()).await?;
+        let mut encoded = self.encode_request(&request).await?;
+        // Reduction has its own output policy; ordinary request capacity is resolved separately.
+        encoded.max_tokens = None;
         let binding = receipt::ModelCallBinding::capture(&self.runtime, "compaction");
         let session = ModelSession::default();
         let invocation = ModelInvocationContext::new(session.clone())
@@ -241,15 +280,17 @@ impl ThreadModel {
                 )
             })?;
             vec![ContextContent::Opaque {
-                payload: OpaquePayload::new(FORMAT, 2, content).map_err(|error| {
-                    receipt::postprocess_failure_error(
-                        binding.clone(),
-                        accounting.clone(),
-                        model_observation.clone(),
-                        None,
-                        failure(ModelFailureKind::InvalidResponse, error),
-                    )
-                })?,
+                payload: OpaquePayload::new(FORMAT, NATIVE_CHECKPOINT_VERSION, content).map_err(
+                    |error| {
+                        receipt::postprocess_failure_error(
+                            binding.clone(),
+                            accounting.clone(),
+                            model_observation.clone(),
+                            None,
+                            failure(ModelFailureKind::InvalidResponse, error),
+                        )
+                    },
+                )?,
             }]
         } else {
             vec![ContextContent::Text {
@@ -345,11 +386,10 @@ pub(super) fn decode(
             AdapterError::Content("compaction record must contain one checkpoint"),
         ));
     };
-    if payload.version() != 2
-        || record.source
-            != (ContextSource::Runtime {
-                source_id: "model.compaction".into(),
-            })
+    if record.source
+        != (ContextSource::Runtime {
+            source_id: "model.compaction".into(),
+        })
         || !record.tool_calls.is_empty()
     {
         return Err(failure(
@@ -357,8 +397,7 @@ pub(super) fn decode(
             AdapterError::Content("invalid compaction record authority or version"),
         ));
     }
-    let checkpoint: NativeCheckpoint = serde_json::from_str(payload.content())
-        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+    let checkpoint = decode_checkpoint(payload)?;
     let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
     if !checkpoint.binding.native_context_compatible(
         &target,
@@ -423,7 +462,7 @@ pub fn migrate_legacy_compaction(
     })
     .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
     record.content = vec![ContextContent::Opaque {
-        payload: OpaquePayload::new(FORMAT, 2, bytes)
+        payload: OpaquePayload::new(FORMAT, NATIVE_CHECKPOINT_VERSION, bytes)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?,
     }];
     Ok(true)

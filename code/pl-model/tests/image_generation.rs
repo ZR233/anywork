@@ -4,13 +4,13 @@
 use pl_model::{
     PureError,
     config::{
-        AgentModelConfig, ImageGenerationBackend, ModelCatalogId, ProviderCapabilitySelection,
-        ProviderConfig, ProviderId, ProviderPresetId,
+        AccountCapabilitySelection, AccountConfig, AccountId, AccountTemplateId, AgentModelConfig,
+        ImageGenerationBackend, ImageGenerationService, ModelCatalogId,
     },
-    model::{ModelInfo, ModelTransportProfile},
-    provider::{
-        ImageGenerationCapabilities, ImageGenerationDialect, ProviderEndpoint,
-        ProviderServiceCapabilities,
+    model::{ModelInfo, ModelModality, ModelTransportProfile, ModelType},
+    protocol::{
+        ImageGenerationCapabilities, ImageGenerationDialect, ProtocolEndpoint,
+        ProtocolServiceCapabilities,
         images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient, ImagesError},
     },
 };
@@ -109,8 +109,8 @@ fn http(status: u16, headers: &str, body: &str) -> String {
     )
 }
 
-fn endpoint(url: &str, token: Option<&str>) -> ProviderEndpoint {
-    let mut endpoint = ProviderEndpoint::openai(Some(url.to_string()));
+fn endpoint(url: &str, token: Option<&str>) -> ProtocolEndpoint {
+    let mut endpoint = ProtocolEndpoint::openai(Some(url.to_string()));
     endpoint.bearer_token = token.map(str::to_owned);
     endpoint
 }
@@ -127,6 +127,10 @@ fn request(prompt: &str, background: ImageGenerationBackground) -> ImageGenerati
     }
 }
 
+fn account_id(id: &str) -> AccountId {
+    AccountId::new(id).unwrap()
+}
+
 /// 一个通过在线观察校验、且符合 OpenAI 目录 transport 的在线模型。
 fn observed(slug: &str) -> ModelInfo {
     let mut model = ModelInfo::compatible(slug);
@@ -138,52 +142,63 @@ fn observed(slug: &str) -> ModelInfo {
     model
 }
 
-fn openai_provider(url: &str) -> ProviderConfig {
-    ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::openai(Some(url.into())),
+/// 只输出图像的模型：进入生图库存，但不得留在 text 类型目录。
+fn image_output(slug: &str) -> ModelInfo {
+    let mut model = observed(slug);
+    model.capabilities.output = vec![ModelModality::Image];
+    model
+}
+
+fn openai_account(url: &str) -> AccountConfig {
+    AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::openai(Some(url.into())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
 }
 
-fn provider_id(id: &str) -> ProviderId {
-    ProviderId::new(id).unwrap()
+fn observing_account(url: &str, token: Option<&str>, models: Vec<ModelInfo>) -> AccountConfig {
+    let mut account = openai_account(url);
+    account.bearer_token = token.map(str::to_owned);
+    account.set_model_catalog_overlay(models).unwrap();
+    account
 }
 
-fn observed_provider(url: &str, token: Option<&str>, slugs: &[&str]) -> ProviderConfig {
-    let mut provider = openai_provider(url);
-    provider.bearer_token = token.map(str::to_owned);
-    provider
-        .set_model_catalog_overlay(slugs.iter().map(|slug| observed(slug)).collect())
-        .unwrap();
-    provider
-}
-
-fn config(providers: Vec<(&str, ProviderConfig)>) -> AgentModelConfig {
+fn config(accounts: Vec<(&str, AccountConfig)>) -> AgentModelConfig {
     AgentModelConfig {
-        providers: providers
+        accounts: accounts
             .into_iter()
-            .map(|(id, provider)| (provider_id(id), provider))
+            .map(|(id, account)| (account_id(id), account))
             .collect(),
         routes: Default::default(),
     }
 }
 
-fn declared(model_prefixes: &[&str], preferred_models: &[&str]) -> ProviderServiceCapabilities {
-    ProviderServiceCapabilities {
+fn declared(prefixes: &[&str], preferred: &[&str]) -> ProtocolServiceCapabilities {
+    ProtocolServiceCapabilities {
         image_generation: Some(ImageGenerationCapabilities {
             dialect: ImageGenerationDialect::OpenAiImages,
-            model_prefixes: model_prefixes
-                .iter()
-                .map(|value| value.to_string())
-                .collect(),
-            preferred_models: preferred_models
-                .iter()
-                .map(|value| value.to_string())
-                .collect(),
+            model_prefixes: prefixes.iter().map(|value| value.to_string()).collect(),
+            preferred_models: preferred.iter().map(|value| value.to_string()).collect(),
         }),
-        ..ProviderServiceCapabilities::default()
+        ..ProtocolServiceCapabilities::default()
     }
+}
+
+fn selected(config: &AgentModelConfig) -> ImageGenerationBackend {
+    config
+        .image_generation_backend()
+        .unwrap()
+        .backend
+        .expect("configured accounts expose one image generation backend")
+}
+
+fn selected_model(config: &AgentModelConfig) -> String {
+    selected(config).model
+}
+
+fn observed_models(slugs: &[&str]) -> Vec<ModelInfo> {
+    slugs.iter().map(|slug| observed(slug)).collect()
 }
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDRsynthetic";
@@ -197,14 +212,12 @@ fn base64(bytes: &[u8]) -> String {
 
 #[test]
 fn openai_canonical_declaration_is_usable() {
-    let capabilities = ProviderEndpoint::openai(None).service_capabilities;
+    let capabilities = ProtocolEndpoint::openai(None).service_capabilities;
     let declaration = capabilities.image_generation.unwrap();
     assert_eq!(declaration.dialect, ImageGenerationDialect::OpenAiImages);
     assert_eq!(declaration.model_prefixes, vec!["gpt-image-".to_string()]);
-    assert_eq!(
-        declaration.preferred_models,
-        vec!["gpt-image-1".to_string()]
-    );
+    // 首选序有意留空：版本择优决定具体 slug，不把某个模型固化成默认。
+    assert_eq!(declaration.preferred_models, Vec::<String>::new());
     // 方言同时声明身份字符串与追加到 base_url 的路径。
     assert_eq!(declaration.dialect.as_str(), "open_ai_images");
     assert_eq!(declaration.dialect.path(), "/images/generations");
@@ -218,15 +231,15 @@ fn openai_canonical_declaration_is_usable() {
         "\"open_ai_images\""
     );
 
-    // 其它目录不声明该能力。
+    // 其它 endpoint 不声明该能力。
     assert!(
-        ProviderEndpoint::deepseek(None)
+        ProtocolEndpoint::deepseek(None)
             .service_capabilities
             .image_generation
             .is_none()
     );
     assert!(
-        ProviderEndpoint::compatible("Custom", "http://127.0.0.1:1")
+        ProtocolEndpoint::compatible("Custom", "http://127.0.0.1:1")
             .service_capabilities
             .image_generation
             .is_none()
@@ -234,14 +247,14 @@ fn openai_canonical_declaration_is_usable() {
 }
 
 #[test]
-fn preset_keeps_image_generation_when_base_url_is_overridden() {
-    let config = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::openai(Some("https://proxy.example.com".into())),
+fn template_keeps_image_generation_when_base_url_is_overridden() {
+    let account = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::openai(Some("https://proxy.example.com".into())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
-    .with_preset(ProviderPresetId::new("openai").unwrap());
-    let capabilities = config.service_capabilities().unwrap();
+    .with_template(AccountTemplateId::new("openai").unwrap());
+    let capabilities = account.service_capabilities().unwrap();
     // 覆盖 base_url 撤销 hosted 能力，但保留 Images 继承：路径追加在该前缀之后。
     assert!(!capabilities.remote_compaction);
     assert!(!capabilities.web_search.hosted_responses);
@@ -249,9 +262,9 @@ fn preset_keeps_image_generation_when_base_url_is_overridden() {
         capabilities.image_generation,
         Some(ImageGenerationCapabilities::openai_images())
     );
-    // 端点点携带同一份声明，客户端才能按方言组装路径。
+    // endpoint 携带同一份声明，客户端才能按方言组装路径。
     assert_eq!(
-        config
+        account
             .to_endpoint()
             .unwrap()
             .service_capabilities
@@ -262,108 +275,114 @@ fn preset_keeps_image_generation_when_base_url_is_overridden() {
 
 #[test]
 fn declaration_requires_a_non_empty_model_prefix() {
-    let mut config = openai_provider("http://127.0.0.1:1");
-    config.capabilities = ProviderCapabilitySelection::Explicit(declared(&[], &[]));
+    let mut account = openai_account("http://127.0.0.1:1");
+    account.capabilities = AccountCapabilitySelection::Explicit(declared(&[], &[]));
     assert!(matches!(
-        config.service_capabilities(),
-        Err(PureError::ConfigError(message))
-            if message.contains("at least one model prefix")
+        account.service_capabilities(),
+        Err(PureError::ConfigError(_))
     ));
     // 既有公开校验入口必须触发同一份定义错误。
     assert!(matches!(
-        config.validate_declarations(&provider_id("openai")),
+        account.validate_declarations(&account_id("openai")),
         Err(PureError::ConfigError(message)) if message.contains("at least one model prefix")
     ));
     assert!(matches!(
-        config.to_endpoint(),
+        account.to_endpoint(),
         Err(PureError::ConfigError(_))
     ));
+
+    // 空串前缀同样无效，不能被当作「匹配所有模型」。
+    account.capabilities =
+        AccountCapabilitySelection::Explicit(declared(&["gpt-image-", "  "], &[]));
+    assert!(matches!(
+        account.validate_declarations(&account_id("openai")),
+        Err(PureError::ConfigError(message)) if message.contains("empty model prefix")
+    ));
+
+    // 合法声明通过校验。
+    account.capabilities = AccountCapabilitySelection::Explicit(declared(&["gpt-image-"], &[]));
+    account
+        .validate_declarations(&account_id("openai"))
+        .unwrap();
 }
 
 #[test]
-fn declared_prefix_must_be_excluded_by_its_catalog() {
-    let mut config = openai_provider("http://127.0.0.1:1");
-    config.capabilities = ProviderCapabilitySelection::Explicit(declared(
+fn declaration_does_not_require_a_catalog_exclusion_rule() {
+    // 声明的可用性由目录候选与凭据决定，不由「非对话排除规则」覆盖；前缀不命中任何模型
+    // 仍然是合法声明，只是当前没有可用模型。
+    let mut account = openai_account("http://127.0.0.1:1");
+    account.capabilities = AccountCapabilitySelection::Explicit(declared(
         &["text-completion-"],
         &["text-completion-1"],
     ));
-    assert!(matches!(
-        config.service_capabilities(),
-        Err(PureError::ConfigError(message))
-            if message.contains("not excluded by its model catalog: text-completion-")
-    ));
-    // 命中目录前缀家族（大小写敏感）的声明可用。
-    config.capabilities =
-        ProviderCapabilitySelection::Explicit(declared(&["gpt-image-"], &["gpt-image-1"]));
-    assert!(
-        config
-            .service_capabilities()
-            .unwrap()
-            .image_generation
-            .is_some()
+    account
+        .validate_declarations(&account_id("openai"))
+        .unwrap();
+    assert_eq!(
+        account.image_generation_service().unwrap(),
+        Some(ImageGenerationService {
+            capabilities: ImageGenerationCapabilities {
+                dialect: ImageGenerationDialect::OpenAiImages,
+                model_prefixes: vec!["text-completion-".to_string()],
+                preferred_models: vec!["text-completion-1".to_string()],
+            },
+            models: Vec::new(),
+        })
     );
-    // 没有在线目录声明的目录无法覆盖任何前缀。
-    let mut zhipu = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::zhipu(None),
-        ModelCatalogId::new("zhipu").unwrap(),
-        Vec::new(),
-    );
-    zhipu.capabilities = ProviderCapabilitySelection::Explicit(declared(&["gemini-image-"], &[]));
-    assert!(matches!(
-        zhipu.service_capabilities(),
-        Err(PureError::ConfigError(_))
-    ));
 }
 
 #[test]
 fn preferred_model_must_match_a_declared_prefix() {
-    let mut config = openai_provider("http://127.0.0.1:1");
-    config.capabilities =
-        ProviderCapabilitySelection::Explicit(declared(&["gpt-image-"], &["dall-e-3"]));
+    let mut account = openai_account("http://127.0.0.1:1");
+    account.capabilities =
+        AccountCapabilitySelection::Explicit(declared(&["gpt-image-"], &["dall-e-3"]));
     assert!(matches!(
-        config.service_capabilities(),
+        account.validate_declarations(&account_id("openai")),
         Err(PureError::ConfigError(message))
             if message.contains("does not match a declared prefix: dall-e-3")
     ));
 }
 
 #[test]
-fn image_generation_models_come_from_the_online_observation_only() {
-    let mut config = openai_provider("http://127.0.0.1:1");
+fn image_generation_models_come_from_the_effective_catalog() {
+    let account = openai_account("http://127.0.0.1:1");
     // 尚无成功观察：声明存在，可用模型为空，不能由默认定义补齐。
     assert_eq!(
-        config.image_generation_service().unwrap(),
-        Some(pl_model::config::ImageGenerationService {
+        account.image_generation_service().unwrap(),
+        Some(ImageGenerationService {
             capabilities: ImageGenerationCapabilities::openai_images(),
             models: Vec::new(),
         })
     );
-    config
+
+    // 手工模型与在线观察都算目录成员：命中前缀即进入库存，按字典序去重。
+    let manual = ModelInfo::compatible("gpt-image-1");
+    let mut account = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::openai(Some("http://127.0.0.1:1".into())),
+        ModelCatalogId::new("openai").unwrap(),
+        vec![manual],
+    );
+    account
         .set_model_catalog_overlay(vec![
             observed("gpt-image-2"),
+            observed("gpt-image-1"),
             observed("text-embedding-3"),
             observed("gpt-6-astra"),
         ])
         .unwrap();
-    let service = config.image_generation_service().unwrap().unwrap();
-    assert_eq!(service.models, vec!["gpt-image-2".to_string()]);
+    let service = account.image_generation_service().unwrap().unwrap();
+    assert_eq!(
+        service.models,
+        vec!["gpt-image-1".to_string(), "gpt-image-2".to_string()]
+    );
     assert_eq!(
         service.capabilities,
         ImageGenerationCapabilities::openai_images()
     );
-    // 回归保护：生图模型不进入有效对话目录。
-    assert_eq!(
-        config
-            .effective_models()
-            .unwrap()
-            .iter()
-            .map(|model| model.slug.as_str())
-            .collect::<Vec<_>>(),
-        vec!["gpt-6-astra"]
-    );
-    // 未声明能力的 provider 返回 None。
-    let zhipu = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::zhipu(None),
+
+    // 未声明能力的 account 返回 None。
+    let zhipu = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::zhipu(None),
         ModelCatalogId::new("zhipu").unwrap(),
         Vec::new(),
     );
@@ -371,35 +390,59 @@ fn image_generation_models_come_from_the_online_observation_only() {
 }
 
 #[test]
-fn backend_selection_is_deterministic_across_providers() {
+fn image_output_models_stay_out_of_the_text_catalog() {
+    let account = observing_account(
+        "http://127.0.0.1:1",
+        Some("token"),
+        vec![image_output("gpt-image-2"), observed("gpt-6-astra")],
+    );
+    // 生图库存来自完整目录成员。
+    assert_eq!(
+        account.image_generation_service().unwrap().unwrap().models,
+        vec!["gpt-image-2".to_string()]
+    );
+    // 图像输出模型不属于对话目录，因此不参与路由、压缩与附件能力校验。
+    assert_eq!(
+        account
+            .effective_models(Some(ModelType::Text))
+            .unwrap()
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-6-astra"]
+    );
+}
+
+#[test]
+fn backend_selection_is_deterministic_across_accounts() {
     let models = config(vec![
         (
             "zeta",
-            observed_provider(
-                "http://127.0.0.1:2/v1",
+            observing_account(
+                "http://127.0.0.1:1/v1",
                 Some("zeta-token"),
-                &["gpt-image-2"],
+                observed_models(&["gpt-image-2"]),
             ),
         ),
         (
             "alpha",
-            observed_provider(
+            observing_account(
                 "http://127.0.0.1:1/v1",
                 Some("alpha-token"),
-                &["gpt-image-2"],
+                observed_models(&["gpt-image-2"]),
             ),
         ),
     ]);
     let selection = models.image_generation_backend().unwrap();
-    let backend = selection.backend.unwrap();
     assert!(selection.any_declared);
     let ImageGenerationBackend {
-        provider_id,
+        account_id,
         endpoint,
         model,
         dialect,
-    } = backend;
-    assert_eq!(provider_id, "alpha");
+    } = selection.backend.unwrap();
+    // account 按标识字典序稳定遍历，不依赖插入顺序。
+    assert_eq!(account_id, AccountId::new("alpha").unwrap());
     assert_eq!(endpoint.base_url, "http://127.0.0.1:1/v1");
     assert_eq!(endpoint.bearer_token.as_deref(), Some("alpha-token"));
     assert_eq!(model, "gpt-image-2");
@@ -407,26 +450,30 @@ fn backend_selection_is_deterministic_across_providers() {
 }
 
 #[test]
-fn providers_without_credentials_are_skipped() {
+fn accounts_without_credentials_are_skipped() {
     let models = config(vec![
         (
             "alpha",
-            observed_provider("http://127.0.0.1:1/v1", None, &["gpt-image-2"]),
+            observing_account(
+                "http://127.0.0.1:1/v1",
+                None,
+                observed_models(&["gpt-image-2"]),
+            ),
         ),
         (
             "beta",
-            observed_provider(
-                "http://127.0.0.1:2/v1",
+            observing_account(
+                "http://127.0.0.1:1/v1",
                 Some("beta-token"),
-                &["gpt-image-2"],
+                observed_models(&["gpt-image-2"]),
             ),
         ),
     ]);
     let selection = models.image_generation_backend().unwrap();
     assert!(selection.any_declared);
     assert_eq!(
-        selection.backend.map(|backend| backend.provider_id),
-        Some("beta".to_string())
+        selection.backend.map(|backend| backend.account_id),
+        Some(account_id("beta"))
     );
 }
 
@@ -435,8 +482,8 @@ fn declared_but_unavailable_capability_is_reported_without_a_backend() {
     // 完全没有声明该能力的配置：两者都是 false/None。
     let undeclared = config(vec![(
         "zhipu",
-        ProviderConfig::from_bundled_catalog(
-            ProviderEndpoint::zhipu(None),
+        AccountConfig::from_bundled_catalog(
+            ProtocolEndpoint::zhipu(None),
             ModelCatalogId::new("zhipu").unwrap(),
             Vec::new(),
         ),
@@ -445,13 +492,13 @@ fn declared_but_unavailable_capability_is_reported_without_a_backend() {
     assert!(!selection.any_declared);
     assert!(selection.backend.is_none());
 
-    // 已声明但当前无在线生图模型：any_declared 仍为真。
+    // 已声明但当前无生图模型：any_declared 仍为真。
     let empty = config(vec![(
         "alpha",
-        observed_provider(
+        observing_account(
             "http://127.0.0.1:1/v1",
             Some("alpha-token"),
-            &["gpt-6-astra"],
+            observed_models(&["gpt-6-astra"]),
         ),
     )]);
     let selection = empty.image_generation_backend().unwrap();
@@ -460,42 +507,70 @@ fn declared_but_unavailable_capability_is_reported_without_a_backend() {
 }
 
 #[test]
-fn preferred_models_win_and_absent_preferences_fall_back_to_dictionary_order() {
-    let preferred = config(vec![(
-        "alpha",
-        observed_provider(
-            "http://127.0.0.1:1/v1",
-            Some("alpha-token"),
-            &["gpt-image-2", "gpt-image-1"],
-        ),
-    )]);
+fn explicitly_pinned_models_win_over_version_preference() {
+    let mut account = observing_account(
+        "http://127.0.0.1:1/v1",
+        Some("token"),
+        observed_models(&["gpt-image-2", "gpt-image-1"]),
+    );
+    account.capabilities =
+        AccountCapabilitySelection::Explicit(declared(&["gpt-image-"], &["gpt-image-1"]));
     assert_eq!(
-        preferred
-            .image_generation_backend()
-            .unwrap()
-            .backend
-            .unwrap()
-            .model,
+        selected_model(&config(vec![("alpha", account)])),
         "gpt-image-1"
     );
+}
 
-    let fallback = config(vec![(
+#[test]
+fn version_preference_selects_the_highest_parseable_model() {
+    // 版本高者优先：1.5 > 1。
+    let newest = config(vec![(
         "alpha",
-        observed_provider(
+        observing_account(
             "http://127.0.0.1:1/v1",
-            Some("alpha-token"),
-            &["gpt-image-3", "gpt-image-2"],
+            Some("token"),
+            observed_models(&["gpt-image-1", "gpt-image-1.5"]),
         ),
     )]);
-    assert_eq!(
-        fallback
-            .image_generation_backend()
-            .unwrap()
-            .backend
-            .unwrap()
-            .model,
-        "gpt-image-2"
+    assert_eq!(selected_model(&newest), "gpt-image-1.5");
+
+    // 同版本无变体后缀者优先，即使字典序相反。
+    let mut prefixed = observing_account(
+        "http://127.0.0.1:1/v1",
+        Some("token"),
+        observed_models(&["gpt-image-3-alpha", "images-3"]),
     );
+    prefixed.capabilities =
+        AccountCapabilitySelection::Explicit(declared(&["gpt-image-", "images-"], &[]));
+    assert_eq!(
+        selected_model(&config(vec![("alpha", prefixed)])),
+        "images-3"
+    );
+
+    // 同版本同形态按 slug 字典序。
+    let variants = config(vec![(
+        "alpha",
+        observing_account(
+            "http://127.0.0.1:1/v1",
+            Some("token"),
+            observed_models(&["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]),
+        ),
+    )]);
+    assert_eq!(selected_model(&variants), "gpt-image-2.5-flare");
+
+    // 无法解析版本的候选排在最后，即使字典序最靠前。
+    let unparsed = config(vec![(
+        "alpha",
+        observing_account(
+            "http://127.0.0.1:1/v1",
+            Some("token"),
+            observed_models(&["gpt-image-", "gpt-image-1"]),
+        ),
+    )]);
+    assert_eq!(selected_model(&unparsed), "gpt-image-1");
+
+    // 选择只由候选与声明决定：重复调用结果一致。
+    assert_eq!(selected_model(&newest), selected_model(&newest));
 }
 
 #[tokio::test]

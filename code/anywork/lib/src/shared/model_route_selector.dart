@@ -6,31 +6,32 @@ import 'package:flutter/material.dart';
 
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
-import 'provider_brand.dart';
+import 'account_brand.dart';
 import 'studio_driver_keys.dart';
 import 'studio_menu_label.dart';
 
-/// A catalog model paired with its provider-instance identity for selection.
+/// A catalog model paired with its account-instance identity for selection.
 ///
 /// Display names are presentation only. Equality deliberately follows the
-/// canonical route identity: provider ID plus model slug.
+/// canonical route identity: account ID plus configured modelId.
 class ModelSelectionOption {
   const ModelSelectionOption({
-    required this.providerId,
-    required this.providerName,
+    required this.accountId,
+    required this.accountName,
     required this.descriptor,
-    this.providerIconKey,
+    this.accountIconKey,
   });
 
-  final String providerId;
-  final String providerName;
-  final String? providerIconKey;
-  final ProviderModelView descriptor;
+  final String accountId;
+  final String accountName;
+  final String? accountIconKey;
+  final AccountModelView descriptor;
 
-  String get model => descriptor.slug;
+  String get modelId => descriptor.modelId;
 
-  String get displayName =>
-      descriptor.displayName.isEmpty ? descriptor.slug : descriptor.displayName;
+  String get displayName => descriptor.displayName.isEmpty
+      ? descriptor.modelId
+      : descriptor.displayName;
 
   List<String> get reasoningEfforts => descriptor.reasoningEfforts;
 
@@ -42,30 +43,57 @@ class ModelSelectionOption {
   @override
   bool operator ==(Object other) =>
       other is ModelSelectionOption &&
-      other.providerId == providerId &&
-      other.model == model;
+      other.accountId == accountId &&
+      other.modelId == modelId;
 
   @override
-  int get hashCode => Object.hash(providerId, model);
+  int get hashCode => Object.hash(accountId, modelId);
 }
 
-/// Builds presentation options while leaving each caller in charge of which
-/// catalog models (including any existing fallback) are selectable.
+/// Localize backend-owned exclusions without evaluating capabilities or budgets again.
+String? modelTextFilterMessage(BuildContext context, AccountModelView? model) {
+  if (model == null || model.matchesType(ModelType.text)) return null;
+  final exclusions = model.supportFor(ModelType.text)?.exclusions;
+  final reasons = exclusions == null
+      ? context.l10n.settingsModelParametersUnknown
+      : exclusions
+            .map(
+              (reason) => switch (reason) {
+                ModelTypeExclusion.textInputUnsupported =>
+                  context.l10n.modelTextInputUnsupported,
+                ModelTypeExclusion.textOutputUnsupported =>
+                  context.l10n.modelTextOutputUnsupported,
+                ModelTypeExclusion.contextParametersInvalid =>
+                  context.l10n.modelContextParametersInvalid,
+                ModelTypeExclusion.inputBudgetExhausted =>
+                  context.l10n.modelInputBudgetExhausted,
+                ModelTypeExclusion.contextWindowUnknown =>
+                  context.l10n.modelContextWindowUnknown,
+              },
+            )
+            .join(' / ');
+  return context.l10n.modelTextFilterExcluded(
+    model.displayName.isEmpty ? model.modelId : model.displayName,
+    reasons,
+  );
+}
+
+/// Queries the canonical type classification; presentation only deduplicates routes.
 List<ModelSelectionOption> buildModelSelectionOptions(
-  List<ProviderSettingsView> providers, {
-  required List<ProviderModelView> Function(ProviderSettingsView provider)
-  modelsForProvider,
+  List<AccountSettingsView> accounts, {
+  ModelType? type,
 }) {
-  return [
-    for (final provider in providers)
-      for (final model in modelsForProvider(provider))
-        ModelSelectionOption(
-          providerId: provider.id,
-          providerName: provider.name,
-          providerIconKey: provider.iconKey,
-          descriptor: model,
-        ),
-  ];
+  return {
+    for (final account in accounts)
+      for (final model in account.modelsFor(type: type))
+        if (model.modelId.isNotEmpty)
+          (account.id, model.modelId): ModelSelectionOption(
+            accountId: account.id,
+            accountName: account.name,
+            accountIconKey: account.iconKey,
+            descriptor: model,
+          ),
+  }.values.toList(growable: false);
 }
 
 typedef ModelSelectionOptionKeyBuilder = Key Function(
@@ -77,20 +105,19 @@ typedef ModelSelectionOptionKeyBuilder = Key Function(
 /// The menu is a plain Material [MenuAnchor] with [MenuItemButton] rows:
 /// anchoring, window clamping, keyboard navigation, Escape and outside-tap
 /// closes, and focus handling are framework behavior. This widget only owns
-/// presentation (provider-grouped rows, capability cards, selected hints) and
+/// presentation (account-grouped rows, capability cards, selected hints) and
 /// reports a selection; it never chooses a fallback route or persists the
 /// result. Callers own the surrounding field description and validation hints
 /// because the trigger itself carries no form decoration.
 class ModelRouteSelector extends StatefulWidget {
   const ModelRouteSelector({
     required this.options,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.onSelected,
     required this.fieldLabel,
     required this.selectorKey,
     this.unresolvedLabel,
-    this.showUnresolvedOption = false,
     this.enabled = true,
     this.tooltip,
     this.onBlockedTap,
@@ -100,13 +127,12 @@ class ModelRouteSelector extends StatefulWidget {
   });
 
   final List<ModelSelectionOption> options;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final FutureOr<void> Function(ModelSelectionOption option) onSelected;
   final String fieldLabel;
   final Key selectorKey;
   final String? unresolvedLabel;
-  final bool showUnresolvedOption;
   final bool enabled;
   final String? tooltip;
   final VoidCallback? onBlockedTap;
@@ -139,11 +165,15 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   Widget build(BuildContext context) {
     final selected = _findOption(
       widget.options,
-      widget.providerId,
-      widget.model,
+      widget.accountId,
+      widget.modelId,
     );
     final selectedLabel =
-        selected?.displayName ?? widget.unresolvedLabel ?? widget.model;
+        selected?.displayName ??
+        widget.unresolvedLabel ??
+        (widget.modelId.isEmpty && widget.options.isEmpty
+            ? context.l10n.modelTextFilterEmpty
+            : widget.modelId);
     final canSelect = widget.enabled && widget.options.isNotEmpty;
     final menuSize = _menuSize(context);
     final contentWidth = math.max(0.0, menuSize.width - 32);
@@ -165,7 +195,8 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     bool canSelect,
     String selectedLabel,
   ) {
-    final tooltip = widget.tooltip ?? widget.fieldLabel;
+    final tooltip =
+        widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel;
     return Tooltip(
       message: tooltip,
       child: Semantics(
@@ -208,15 +239,8 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     ModelSelectionOption? selected,
   ) {
     final children = <Widget>[];
-    if (widget.showUnresolvedOption &&
-        selected == null &&
-        widget.unresolvedLabel != null) {
-      children.add(
-        _unresolvedEntry(context, contentWidth, widget.unresolvedLabel!),
-      );
-    }
     for (final group in _groups()) {
-      children.add(_providerHeading(context, contentWidth, group));
+      children.add(_accountHeading(context, contentWidth, group));
       for (final option in group.options) {
         final isSelected = option == selected;
         final row = MenuItemButton(
@@ -294,11 +318,11 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     });
   }
 
-  List<_ProviderModelGroup> _groups() {
-    final groups = <String, _ProviderModelGroup>{};
+  List<_AccountModelGroup> _groups() {
+    final groups = <String, _AccountModelGroup>{};
     for (final option in widget.options) {
       groups
-          .putIfAbsent(option.providerId, () => _ProviderModelGroup(option))
+          .putIfAbsent(option.accountId, () => _AccountModelGroup(option))
           .options
           .add(option);
     }
@@ -307,16 +331,17 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
 
   Key _optionKey(ModelSelectionOption option) =>
       widget.optionKeyBuilder?.call(option) ??
-      StudioDriverKeys.modelOption(option.providerId, option.model);
+      StudioDriverKeys.modelOption(option.accountId, option.modelId);
 
   static ModelSelectionOption? _findOption(
     List<ModelSelectionOption> options,
-    String providerId,
-    String model,
+    String accountId,
+    String modelId,
   ) {
     return options
         .where(
-          (option) => option.providerId == providerId && option.model == model,
+          (option) =>
+              option.accountId == accountId && option.modelId == modelId,
         )
         .firstOrNull;
   }
@@ -329,10 +354,10 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     );
   }
 
-  static Widget _providerHeading(
+  static Widget _accountHeading(
     BuildContext context,
     double contentWidth,
-    _ProviderModelGroup group,
+    _AccountModelGroup group,
   ) {
     return SizedBox(
       width: contentWidth,
@@ -342,7 +367,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
           header: true,
           child: Row(
             children: [
-              ProviderBrandMark(
+              AccountBrandMark(
                 iconKey: group.iconKey,
                 fallbackName: group.name,
                 size: 14,
@@ -361,26 +386,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  static Widget _unresolvedEntry(
-    BuildContext context,
-    double contentWidth,
-    String label,
-  ) {
-    return SizedBox(
-      width: contentWidth,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Text(
-          label,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       ),
     );
@@ -422,8 +427,8 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
                 const SizedBox(height: 4),
                 Wrap(
                   key: StudioDriverKeys.modelCapabilityTags(
-                    option.providerId,
-                    option.model,
+                    option.accountId,
+                    option.modelId,
                   ),
                   spacing: 5,
                   runSpacing: 4,
@@ -441,10 +446,10 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   }
 }
 
-class _ProviderModelGroup {
-  _ProviderModelGroup(ModelSelectionOption option)
-    : name = option.providerName,
-      iconKey = option.providerIconKey;
+class _AccountModelGroup {
+  _AccountModelGroup(ModelSelectionOption option)
+    : name = option.accountName,
+      iconKey = option.accountIconKey;
 
   final String name;
   final String? iconKey;

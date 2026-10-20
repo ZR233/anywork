@@ -12,7 +12,7 @@ use super::super::lsp_state::LspStateRuntime;
 use super::super::mcp_health::McpStateRuntime;
 use super::super::residency::ThreadResidency;
 use super::super::{
-    ModelPerformanceOwner, ProviderUsageRuntime, ShutdownProgressBus, SkillCatalogRuntime,
+    AccountUsageRuntime, ModelPerformanceOwner, ShutdownProgressBus, SkillCatalogRuntime,
     StudioAgentFacility, StudioExternalRuntimes, StudioUpdateRuntime,
 };
 
@@ -49,7 +49,7 @@ impl StudioRuntime {
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
-        let provider_usage = ProviderUsageRuntime::new(
+        let account_usage = AccountUsageRuntime::new(
             store.clone(),
             config_runtime.clone(),
             product_events.clone(),
@@ -58,8 +58,8 @@ impl StudioRuntime {
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
-        let thread_modes = crate::mode::ThreadModeManager::default();
-        crate::studio::thread::register_builtins(&thread_modes)?;
+        // The configuration owner established and loaded the one canonical Mode manager.
+        let thread_modes = config_runtime.thread_mode_manager();
         // Linux stdio MCP servers have no unsupervised fallback: when the host resolved the same
         // supervised worker resource used by local tool exec, inject it; otherwise the connector
         // fails loud for any local stdio server (and empty MCP hosts still boot).
@@ -100,6 +100,7 @@ impl StudioRuntime {
             config_runtime.clone(),
             thread_factory.clone(),
         ))?;
+        let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 store: store.clone(),
@@ -107,9 +108,11 @@ impl StudioRuntime {
                 performance: model_performance.clone(),
                 threads: threads.clone(),
                 writer: persistence.clone(),
+                recovery: recovery.clone(),
             },
         );
-        thread_observations.install(thread_factory.clone())?;
+        let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
+        thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         Ok(Self {
             owner_epoch: crate::studio::ids::new_id("runtime"),
@@ -120,7 +123,7 @@ impl StudioRuntime {
             settings_refresh: Default::default(),
             model_catalog_tasks: Default::default(),
             tool_refresh: Default::default(),
-            rejected_tools: Default::default(),
+            rejected_tools,
             tool_catalog_updates: Default::default(),
             threads,
             thread_factory,
@@ -144,11 +147,11 @@ impl StudioRuntime {
                 product_events: product_events.clone(),
             },
             runtime_state: StudioRuntimeState::new(),
-            recovery: crate::studio::StudioRecoveryRegistry::new(),
+            recovery,
             recovery_task: Default::default(),
             skills,
             thread_modes,
-            provider_usage,
+            account_usage,
             model_performance,
             updater,
             activation: Default::default(),

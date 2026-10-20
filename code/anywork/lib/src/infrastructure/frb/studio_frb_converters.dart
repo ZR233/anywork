@@ -28,8 +28,8 @@ ProductTopicEventPayload _productPayloadFromFrb(
       SkillsStateChangedPayload(_skillsStateFromFrb(field0)),
     frb.BridgeProductEventPayload_ThreadModeCatalogChanged(:final field0) =>
       ThreadModeCatalogChangedPayload(_threadModeCatalogFromFrb(field0)),
-    frb.BridgeProductEventPayload_ProviderUsageStateChanged(:final field0) =>
-      ProviderUsageStateChangedPayload(_providerUsageStateFromFrb(field0)),
+    frb.BridgeProductEventPayload_AccountUsageStateChanged(:final field0) =>
+      AccountUsageStateChangedPayload(_accountUsageStateFromFrb(field0)),
     frb.BridgeProductEventPayload_ModelPerformanceStateChanged(:final field0) =>
       ModelPerformanceStateChangedPayload(_modelPerformanceFromFrb(field0)),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
@@ -113,8 +113,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
     ),
     frb_topic_types.BridgeProductTopic_ThreadModeCatalog() =>
       const ThreadModeCatalogTopic(),
-    frb_topic_types.BridgeProductTopic_ProviderUsage() =>
-      const ProviderUsageTopic(),
+    frb_topic_types.BridgeProductTopic_AccountUsage() =>
+      const AccountUsageTopic(),
     frb_topic_types.BridgeProductTopic_ModelPerformance() =>
       const ModelPerformanceTopic(),
     frb_topic_types.BridgeProductTopic_SessionCosts(:final rootThreadId) =>
@@ -151,8 +151,8 @@ ProductTopic _productPayloadTopicFromBridge(
       SkillsTopic(projectId: field0.projectId),
     frb.BridgeProductEventPayload_ThreadModeCatalogChanged() =>
       const ThreadModeCatalogTopic(),
-    frb.BridgeProductEventPayload_ProviderUsageStateChanged() =>
-      const ProviderUsageTopic(),
+    frb.BridgeProductEventPayload_AccountUsageStateChanged() =>
+      const AccountUsageTopic(),
     frb.BridgeProductEventPayload_ModelPerformanceStateChanged() =>
       const ModelPerformanceTopic(),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
@@ -187,8 +187,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     ),
     ThreadModeCatalogTopic() =>
       const frb_topic_types.BridgeProductTopic.threadModeCatalog(),
-    ProviderUsageTopic() =>
-      const frb_topic_types.BridgeProductTopic.providerUsage(),
+    AccountUsageTopic() =>
+      const frb_topic_types.BridgeProductTopic.accountUsage(),
     ModelPerformanceTopic() =>
       const frb_topic_types.BridgeProductTopic.modelPerformance(),
     SessionCostsTopic(:final rootThreadId) =>
@@ -231,8 +231,8 @@ ProductTopicBaselineState _productBaselineFromFrb(
       SkillsBaseline(_skillsStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_ThreadModeCatalog(:final field0) =>
       ThreadModeCatalogBaseline(_threadModeCatalogFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_ProviderUsage(:final field0) =>
-      ProviderUsageBaseline(_providerUsageStateFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_AccountUsage(:final field0) =>
+      AccountUsageBaseline(_accountUsageStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_ModelPerformance(:final field0) =>
       ModelPerformanceBaseline(_modelPerformanceFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_SessionCosts(:final field0) =>
@@ -397,7 +397,7 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
         snapshot.projectId: _skillsStateFromFrb(snapshot),
     },
     threadModeCatalog: _threadModeCatalogFromFrb(value.threadModeCatalog),
-    providerUsageState: _providerUsageStateFromFrb(value.providerUsage),
+    accountUsageState: _accountUsageStateFromFrb(value.accountUsage),
     modelPerformance: _modelPerformanceFromFrb(value.modelPerformance),
     updaterState: updaterStateFromFrb(value.updater),
     persistenceState: _persistenceStateFromFrb(value.persistence),
@@ -562,8 +562,8 @@ AgentProfileView _agentProfileFromFrb(frb.BridgeAgentProfileDto profile) {
     description: profile.description,
     whenToUse: profile.whenToUse,
     systemInstructions: profile.systemInstructions,
-    providerId: profile.providerId,
-    model: profile.model,
+    accountId: profile.accountId,
+    modelId: profile.modelId,
     effort: profile.effort,
     source: profile.source,
     revision: profile.revision,
@@ -909,8 +909,182 @@ ThreadModeCatalogView _threadModeCatalogFromFrb(
         description: mode.description,
         order: mode.order.toInt(),
         hasWorkflow: mode.hasWorkflow,
+        readOnly: mode.readOnly,
       ),
   ],
+);
+
+ModeDefinitionSnapshot _modeDefinitionSnapshotFromFrb(
+  frb_mode_types.BridgeThreadModeDefinitionSnapshot value,
+) => ModeDefinitionSnapshot(
+  revision: value.revision.toInt(),
+  document: _modeDocumentFromFrb(value.document),
+  readOnly: value.readOnly,
+);
+
+ModeDocument _modeDocumentFromFrb(
+  frb_mode_types.BridgeThreadModeDocument value,
+) => ModeDocument(
+  definition: _modeDefinitionFromFrb(value.definition),
+  editor: _modeEditorLayoutFromFrb(value.editor),
+);
+
+ModeDefinition _modeDefinitionFromFrb(
+  frb_mode_types.BridgeThreadModeDefinition value,
+) => ModeDefinition(
+  id: value.id,
+  displayName: value.displayName,
+  description: value.description,
+  order: value.order,
+  prompt: value.prompt,
+  workflow: value.workflow == null
+      ? null
+      : _workflowDefinitionFromFrb(value.workflow!),
+);
+
+ModeEditorLayout _modeEditorLayoutFromFrb(
+  frb_mode_types.BridgeThreadModeEditorLayout value,
+) => ModeEditorLayout(
+  nodes: [
+    for (final node in value.nodes)
+      WorkflowNodePosition(stateId: node.stateId, x: node.x, y: node.y),
+  ],
+);
+
+WorkflowDefinition _workflowDefinitionFromFrb(
+  frb_mode_types.BridgeWorkflowDefinition value,
+) => WorkflowDefinition(
+  title: value.title,
+  goal: value.goal,
+  initialStateId: value.initialStateId,
+  states: [for (final state in value.states) _workflowStateFromFrb(state)],
+  transitions: [
+    for (final transition in value.transitions)
+      _workflowTransitionFromFrb(transition),
+  ],
+);
+
+WorkflowState _workflowStateFromFrb(frb_mode_types.BridgeWorkflowState value) =>
+    WorkflowState(
+      id: value.id,
+      title: value.title,
+      instructions: value.instructions,
+      completionCriteria: value.completionCriteria,
+      kind: value.kind == frb_mode_types.BridgeWorkflowStateKind.finalState
+          ? WorkflowStateKind.finalState
+          : WorkflowStateKind.atomic,
+    );
+
+WorkflowTransition _workflowTransitionFromFrb(
+  frb_mode_types.BridgeWorkflowTransition value,
+) => WorkflowTransition(
+  sourceStateId: value.sourceStateId,
+  targetStateId: value.targetStateId,
+  guard: value.guard,
+);
+
+ModeDefinitionCommandReply _modeDefinitionCommandReplyFromFrb(
+  frb_mode_types.BridgeThreadModeDefinitionCommandReply value,
+) => ModeDefinitionCommandReply(
+  catalog: _threadModeCatalogFromFrb(value.catalog),
+  definition: value.definition == null
+      ? null
+      : _modeDefinitionSnapshotFromFrb(value.definition!),
+  receipt: _commandReceiptFromFrb(value.receipt),
+);
+
+ModeValidationResult _modeValidationResultFromFrb(
+  frb_mode_types.BridgeThreadModeValidationResult value,
+) => ModeValidationResult(
+  document: value.document == null
+      ? null
+      : _modeDocumentFromFrb(value.document!),
+  issues: [
+    for (final issue in value.issues)
+      ModeValidationIssue(
+        code: issue.code,
+        path: issue.path,
+        message: issue.message,
+      ),
+  ],
+);
+
+WorkflowPreviewSnapshot _workflowPreviewSnapshotFromFrb(
+  frb_mode_types.BridgeWorkflowPreviewSnapshot value,
+) => WorkflowPreviewSnapshot(
+  accepted: value.accepted,
+  message: value.message,
+  currentState: value.currentState == null
+      ? null
+      : _workflowStateFromFrb(value.currentState!),
+  transitions: [
+    for (final transition in value.transitions)
+      _workflowTransitionFromFrb(transition),
+  ],
+  path: value.path,
+  terminal: value.terminal,
+);
+
+frb_mode_types.BridgeThreadModeDocument _bridgeModeDocument(
+  ModeDocument value,
+) => frb_mode_types.BridgeThreadModeDocument(
+  definition: frb_mode_types.BridgeThreadModeDefinition(
+    id: value.definition.id,
+    displayName: value.definition.displayName,
+    description: value.definition.description,
+    order: value.definition.order,
+    prompt: value.definition.prompt,
+    workflow: value.definition.workflow == null
+        ? null
+        : _bridgeWorkflowDefinition(value.definition.workflow!),
+  ),
+  editor: frb_mode_types.BridgeThreadModeEditorLayout(
+    nodes: [
+      for (final node in value.editor.nodes)
+        frb_mode_types.BridgeWorkflowNodePosition(
+          stateId: node.stateId,
+          x: node.x,
+          y: node.y,
+        ),
+    ],
+  ),
+);
+
+frb_mode_types.BridgeWorkflowDefinition _bridgeWorkflowDefinition(
+  WorkflowDefinition value,
+) => frb_mode_types.BridgeWorkflowDefinition(
+  title: value.title,
+  goal: value.goal,
+  initialStateId: value.initialStateId,
+  states: [
+    for (final state in value.states)
+      frb_mode_types.BridgeWorkflowState(
+        id: state.id,
+        title: state.title,
+        instructions: state.instructions,
+        completionCriteria: state.completionCriteria,
+        kind: state.kind == WorkflowStateKind.finalState
+            ? frb_mode_types.BridgeWorkflowStateKind.finalState
+            : frb_mode_types.BridgeWorkflowStateKind.atomic,
+      ),
+  ],
+  transitions: [
+    for (final transition in value.transitions)
+      frb_mode_types.BridgeWorkflowTransition(
+        sourceStateId: transition.sourceStateId,
+        targetStateId: transition.targetStateId,
+        guard: transition.guard,
+      ),
+  ],
+);
+
+frb_mode_types.BridgeWorkflowPreviewRequest _bridgeWorkflowPreviewRequest(
+  WorkflowPreviewRequest value,
+) => frb_mode_types.BridgeWorkflowPreviewRequest(
+  document: _bridgeModeDocument(value.document),
+  path: value.path,
+  targetStateId: value.targetStateId,
+  reason: value.reason,
 );
 
 SkillSearchResultView _skillSearchResultFromFrb(
@@ -944,43 +1118,43 @@ SkillSummaryView _skillSummaryFromFrb(frb.SkillSummaryDto skill) {
   );
 }
 
-ProviderUsageStateSnapshot _providerUsageStateFromFrb(
-  frb.BridgeProviderUsageStateSnapshot snapshot,
+AccountUsageStateSnapshot _accountUsageStateFromFrb(
+  frb.BridgeAccountUsageStateSnapshot snapshot,
 ) {
-  ProviderUsageStateData convert(frb.BridgeProviderUsageStateData data) =>
-      ProviderUsageStateData(
+  AccountUsageStateData convert(frb.BridgeAccountUsageStateData data) =>
+      AccountUsageStateData(
         configFingerprint: data.configFingerprint,
-        usages: data.usages.map(_providerUsageFromFrb).toList(),
+        usages: data.usages.map(_accountUsageFromFrb).toList(),
       );
-  return ProviderUsageStateSnapshot.fromState(
+  return AccountUsageStateSnapshot.fromState(
     state: switch (snapshot) {
-      frb.BridgeProviderUsageStateSnapshot_Uninitialized(:final field0) =>
+      frb.BridgeAccountUsageStateSnapshot_Uninitialized(:final field0) =>
         _uninitializedResource(field0),
-      frb.BridgeProviderUsageStateSnapshot_Loading(:final field0) =>
+      frb.BridgeAccountUsageStateSnapshot_Loading(:final field0) =>
         _loadingResource(field0),
-      frb.BridgeProviderUsageStateSnapshot_Ready(
+      frb.BridgeAccountUsageStateSnapshot_Ready(
         :final resource,
         :final value,
       ) =>
         _readyResource(resource, convert(value)),
-      frb.BridgeProviderUsageStateSnapshot_Refreshing(
+      frb.BridgeAccountUsageStateSnapshot_Refreshing(
         :final resource,
         :final value,
       ) =>
         _refreshingResource(resource, convert(value)),
-      frb.BridgeProviderUsageStateSnapshot_Stale(
+      frb.BridgeAccountUsageStateSnapshot_Stale(
         :final resource,
         :final value,
       ) =>
         _staleResource(resource, convert(value)),
-      frb.BridgeProviderUsageStateSnapshot_Degraded(
+      frb.BridgeAccountUsageStateSnapshot_Degraded(
         :final resource,
         :final value,
       ) =>
         _degradedResource(resource, convert(value)),
-      frb.BridgeProviderUsageStateSnapshot_Failed(:final field0) =>
+      frb.BridgeAccountUsageStateSnapshot_Failed(:final field0) =>
         _failedResource(field0),
-      frb.BridgeProviderUsageStateSnapshot_Stopped(:final field0) =>
+      frb.BridgeAccountUsageStateSnapshot_Stopped(:final field0) =>
         _stoppedResource(field0),
     },
   );
@@ -999,10 +1173,9 @@ ModelPerformanceSnapshotView _modelPerformanceFromFrb(
     summaries: [
       for (final summary in value.summaries)
         ModelPerformanceSummaryView(
-          providerInstanceId: summary.providerInstanceId,
-          providerDisplayName: summary.providerDisplayName,
-          model: summary.model,
-          reasoningEffort: summary.reasoningEffort,
+          accountId: summary.accountId,
+          accountDisplayName: summary.accountDisplayName,
+          modelId: summary.modelId,
           sampleCount: summary.sampleCount.toInt(),
           completionTokens: summary.completionTokens.toInt(),
           totalTtftMillis: summary.totalTtftMillis.toInt(),
@@ -1011,16 +1184,29 @@ ModelPerformanceSnapshotView _modelPerformanceFromFrb(
           tokensPerSecond: summary.tokensPerSecond,
           averageTtftMillis: summary.averageTtftMillis,
           averageResponseMillis: summary.averageResponseMillis,
+          effortBreakdowns: [
+            for (final effort in summary.effortBreakdowns)
+              ModelPerformanceEffortSummaryView(
+                effort: effort.effort,
+                sampleCount: effort.sampleCount.toInt(),
+                completionTokens: effort.completionTokens.toInt(),
+                totalTtftMillis: effort.totalTtftMillis.toInt(),
+                totalDecodeMillis: effort.totalDecodeMillis.toInt(),
+                totalResponseMillis: effort.totalResponseMillis.toInt(),
+                tokensPerSecond: effort.tokensPerSecond,
+                averageTtftMillis: effort.averageTtftMillis,
+                averageResponseMillis: effort.averageResponseMillis,
+              ),
+          ],
         ),
     ],
     history: [
       for (final sample in value.history)
         ModelPerformanceSampleView(
           completedAt: _dateFromUnix(sample.completedAt),
-          providerInstanceId: sample.providerInstanceId,
-          providerDisplayName: sample.providerDisplayName,
-          model: sample.model,
-          configuredModel: sample.configuredModel,
+          accountId: sample.accountId,
+          accountDisplayName: sample.accountDisplayName,
+          modelId: sample.modelId,
           sentModel: sample.sentModel,
           reportedModel: sample.reportedModel,
           modelMatchState: switch (sample.modelMatchState) {
@@ -1030,7 +1216,7 @@ ModelPerformanceSnapshotView _modelPerformanceFromFrb(
             frb.BridgeModelMatchState.legacyUnknown =>
               ModelMatchState.legacyUnknown,
           },
-          reasoningEffort: sample.reasoningEffort,
+          effort: sample.effort,
           completionTokens: sample.completionTokens.toInt(),
           ttftMillis: sample.ttftMillis?.toInt(),
           decodeMillis: sample.decodeMillis?.toInt(),
@@ -1185,26 +1371,26 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
   );
 }
 
-ProviderUsageView _providerUsageFromFrb(frb.ProviderUsageDto usage) {
-  return ProviderUsageView(
-    providerId: usage.providerId,
+AccountUsageView _accountUsageFromFrb(frb.AccountUsageDto usage) {
+  return AccountUsageView(
+    accountId: usage.accountId,
     revision: usage.revision.toInt(),
     updatedAt: _frbInt(usage.updatedAt),
     state: switch (usage.state) {
-      frb.BridgeProviderUsageState_Unsupported() =>
-        const UnsupportedProviderUsageView(),
-      frb.BridgeProviderUsageState_MissingCredential(:final message) =>
-        MissingCredentialProviderUsageView(message: message),
-      frb.BridgeProviderUsageState_Failed(:final error) =>
-        FailedProviderUsageView(
+      frb.BridgeAccountUsageState_Unsupported() =>
+        const UnsupportedAccountUsageView(),
+      frb.BridgeAccountUsageState_MissingCredential(:final message) =>
+        MissingCredentialAccountUsageView(message: message),
+      frb.BridgeAccountUsageState_Failed(:final error) =>
+        FailedAccountUsageView(
           code: error.code,
           message: error.message,
           retryable: error.retryable,
         ),
-      frb.BridgeProviderUsageState_Ready(:final data) => ReadyProviderUsageView(
+      frb.BridgeAccountUsageState_Ready(:final data) => ReadyAccountUsageView(
         data: switch (data) {
-          frb.BridgeProviderUsageData_DeepSeekBalance(:final field0) =>
-            DeepSeekBalanceProviderUsageView(
+          frb.BridgeAccountUsageData_DeepSeekBalance(:final field0) =>
+            DeepSeekBalanceAccountUsageView(
               balance: DeepSeekBalanceUsageView(
                 isAvailable: field0.isAvailable,
                 balances: field0.balances
@@ -1220,8 +1406,8 @@ ProviderUsageView _providerUsageFromFrb(frb.ProviderUsageDto usage) {
                     .toList(),
               ),
             ),
-          frb.BridgeProviderUsageData_ZhipuCodingPlan(:final field0) =>
-            ZhipuCodingPlanProviderUsageView(
+          frb.BridgeAccountUsageData_ZhipuCodingPlan(:final field0) =>
+            ZhipuCodingPlanAccountUsageView(
               codingPlan: ZhipuCodingPlanUsageView(
                 level: field0.level,
                 limits: field0.limits

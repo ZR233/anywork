@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
+import '../../app/app_graph.dart';
 import '../../app/theme/studio_tokens.dart';
 
 import '../../l10n/studio_l10n.dart';
@@ -19,6 +20,7 @@ import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
 import 'composer_view.dart';
 import 'interaction_payload.dart';
+import 'multiline_enter_shortcuts.dart';
 import '../../presentation/providers/start_session_controller.dart';
 import 'plan_confirmation_dock.dart';
 import 'tool_approval_dock.dart';
@@ -148,16 +150,12 @@ class _StartPageComposerBodyState
     final projection = ref.watch(startPageComposerViewProvider);
     final projectId = projection.project?.id;
     final mode = projection.mode;
-    final requiresFunctionCalling = projection.requiresFunctionCalling(mode);
-    final selectorsEnabled =
-        projection.canSubmit &&
-        projection.settingsLoaded &&
-        requiresFunctionCalling != null;
+    final selectorsEnabled = projection.canSubmit && projection.settingsLoaded;
     final route = projection.displayRoute(mode);
     final pending = projection.routePending(mode);
     final model = route == null
         ? null
-        : modelForRoute(projection.providers, route.providerId, route.model);
+        : modelForRoute(projection.accounts, route.accountId, route.modelId);
     final composer = projectId == widget.projectId
         ? projection.composer
         : const ComposerThreadState.idle();
@@ -206,21 +204,20 @@ class _StartPageComposerBodyState
                     onSelected: _setWorkspaceMode,
                   ),
                   ..._modelRouteSelectorChildren(
-                    providers: projection.providers,
-                    providerId: route?.providerId,
-                    model: route?.model,
+                    accounts: projection.accounts,
+                    accountId: route?.accountId,
+                    modelId: route?.modelId,
                     effort: route?.effort,
                     // Unknown capabilities keep selectors disabled until the
                     // Client catalog arrives; no model is admitted by fallback.
-                    requiresFunctionCalling: requiresFunctionCalling ?? false,
                     pending: pending,
                     enabled: selectorsEnabled,
                     unavailableReason: unavailableReason,
-                    onModelSelected: (providerId, model) {
+                    onModelSelected: (accountId, modelId) {
                       ref
                           .read(anyworkClientProvider)
                           .startDraft
-                          .setModelIntent(mode, providerId, model);
+                          .setModelIntent(mode, accountId, modelId);
                     },
                     onEffortSelected: (effort) {
                       ref
@@ -232,6 +229,8 @@ class _StartPageComposerBodyState
                 ],
               ),
               submissionLocked: projection.submitting,
+              showSubmissionError:
+                  projection.preparation?.failure?.toString() != composer.error,
               onChanged: _updateDraft,
               onSubmit: () => unawaited(_submit()),
               inputCapabilities: model?.inputCapabilities ?? const [],
@@ -424,7 +423,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     final route = view.displayRoute;
     final model = route == null
         ? null
-        : modelForRoute(view.providers, route.providerId, route.model);
+        : modelForRoute(view.accounts, route.accountId, route.modelId);
     final blockedReason = switch (thread.status) {
       ThreadStatusView.idle =>
         view.hasActiveWorkflow
@@ -506,6 +505,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                   children: [
                     SessionModeSelector(
                       mode: thread.mode,
+                      usesSnapshot: true,
+                      snapshotDisplayName:
+                          view.workflow?.currentRun?.modeDisplayName,
                       enabled:
                           !view.hasActiveWorkflow &&
                           thread.status == ThreadStatusView.idle &&
@@ -518,13 +520,11 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       ),
                     ),
                     ..._modelRouteSelectorChildren(
-                      providers: view.providers,
-                      providerId: route?.providerId,
-                      model: route?.model,
+                      accounts: view.accounts,
+                      accountId: route?.accountId,
+                      modelId: route?.modelId,
                       effort: route?.effort,
-                      requiresFunctionCalling:
-                          view.requiresFunctionCalling ?? false,
-                      enabled: view.requiresFunctionCalling != null,
+                      enabled: view.settingsLoaded,
                       pending: view.routePending,
                       available: route?.available ?? false,
                       routeUnavailableReason: route?.unavailableReason,
@@ -532,21 +532,21 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                       blockedReason: blockedReason,
                       onExplain: (message) =>
                           setState(() => _modelNotice = message),
-                      onModelSelected: (providerId, model) {
+                      onModelSelected: (accountId, modelId) {
                         unawaited(
                           ref
                               .read(anyworkClientProvider)
                               .threadCommands
                               .setThreadModelRoute(
                                 threadId: thread.id,
-                                providerId: providerId,
-                                model: model,
+                                accountId: accountId,
+                                modelId: modelId,
                                 effort:
                                     ModelRouteQueries.effortAfterModelSelection(
                                       ModelRouteQueries.model(
-                                        view.providers,
-                                        providerId,
-                                        model,
+                                        view.accounts,
+                                        accountId,
+                                        modelId,
                                       ),
                                       route?.effort,
                                     ),
@@ -561,8 +561,8 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                               .threadCommands
                               .setThreadModelRoute(
                                 threadId: thread.id,
-                                providerId: route.providerId,
-                                model: route.model,
+                                accountId: route.accountId,
+                                modelId: route.modelId,
                                 effort: effort,
                               ),
                         );
@@ -572,7 +572,17 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                 )
               : null,
           onChanged: draftController.updateDraft,
-          onSubmit: () => unawaited(draftController.submit()),
+          onSubmit: () {
+            // 草案 owner 先同步冻结目标、payload、route 与 operation，再等待展示准备；
+            // 这里只捕当前 Thread 身份，不改动已冻结的目标（design/26 §26.8）。
+            final target = thread.id;
+            unawaited(
+              draftController.submit(
+                beforeSubmit: () =>
+                    ref.read(appGraphProvider).timeline.prepareSend(target),
+              ),
+            );
+          },
           onStop: () => unawaited(
             ref.read(anyworkClientProvider).threadCommands.stop(thread.id),
           ),
@@ -609,6 +619,7 @@ class _PromptComposerPanel extends StatefulWidget {
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
+    this.showSubmissionError = true,
   });
 
   final ComposerThreadState composer;
@@ -636,6 +647,7 @@ class _PromptComposerPanel extends StatefulWidget {
 
   /// 起始页在设置 lane 排空前就置位的提交哨兵。线程路径保持 false。
   final bool submissionLocked;
+  final bool showSubmissionError;
 
   @override
   State<_PromptComposerPanel> createState() => _PromptComposerPanelState();
@@ -754,14 +766,13 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
 
   bool get _canSubmit => widget.enabled && _hasContent && !_submissionPending;
 
-  /// Let an active IME composition consume Enter before the composer submits.
+  /// 提交的唯一入口：主按钮与 Enter 提交共用同一准入判定。
   ///
-  /// The composing range is empty when normal text editing is active. When an
-  /// IME owns a non-empty range, leaving the Enter shortcut disabled lets the
-  /// platform commit that composition through the native text input path.
-  bool get _hasActiveComposition {
-    final composing = _controller.value.composing;
-    return composing.isValid && composing.start != composing.end;
+  /// 组词中的回车先由输入法确认候选，根本不会走到这里；因此这里不再需要
+  /// 额外的组合状态检查，也不会因组合文本而误提交。
+  void _submit() {
+    if (!_canSubmit) return;
+    widget.onSubmit();
   }
 
   bool get _supportsPastedImages => widget.inputCapabilities.any(
@@ -852,12 +863,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
             ),
           Shortcuts(
             shortcuts: const {
-              SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false):
-                  _SubmitComposerIntent(),
-              SingleActivator(
-                LogicalKeyboardKey.numpadEnter,
-                includeRepeats: false,
-              ): _SubmitComposerIntent(),
               SingleActivator(LogicalKeyboardKey.paste): _PasteComposerIntent(),
               SingleActivator(LogicalKeyboardKey.keyV, control: true):
                   _PasteComposerIntent(),
@@ -869,10 +874,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
             },
             child: Actions(
               actions: {
-                _SubmitComposerIntent: _SubmitComposerAction(
-                  enabled: _canSubmit && !_hasActiveComposition,
-                  onSubmit: widget.onSubmit,
-                ),
                 _PasteComposerIntent: CallbackAction<_PasteComposerIntent>(
                   onInvoke: (_) {
                     if (widget.enabled && !_pasteInFlight) {
@@ -892,34 +893,42 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                   },
                 ),
               },
-              child: TextField(
-                key: StudioDriverKeys.composerInput,
+              // Enter 提交由文本框的 `TextInputAction.send` 交给平台文本输入完成，
+              // 与主按钮共用 [_submit] 的准入判定；Shift+Enter 是唯一的局部换行动作。
+              child: MultilineEnterShortcuts(
                 controller: _controller,
-                enabled: widget.enabled,
-                minLines: widget.compact ? 2 : 3,
-                maxLines: 8,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintText: context.l10n.composerHint,
-                  hintStyle: TextStyle(color: colors.onSurfaceVariant),
-                  isDense: true,
-                  filled: false,
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                child: TextField(
+                  key: StudioDriverKeys.composerInput,
+                  controller: _controller,
+                  enabled: widget.enabled,
+                  minLines: widget.compact ? 2 : 3,
+                  maxLines: 8,
+                  textInputAction: TextInputAction.send,
+                  // 提交后保留焦点：排队中的下一次输入不必重新点击输入区。
+                  onEditingComplete: () {},
+                  onSubmitted: (_) => _submit(),
+                  decoration: InputDecoration(
+                    hintText: context.l10n.composerHint,
+                    hintStyle: TextStyle(color: colors.onSurfaceVariant),
+                    isDense: true,
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  onChanged: widget.onChanged,
                 ),
-                onChanged: widget.onChanged,
               ),
             ),
           ),
-          if (composer.error case final error?)
+          if (widget.showSubmissionError && composer.error != null)
             Align(
               alignment: Alignment.centerLeft,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 2, 8, 6),
                 child: Text(
-                  error,
+                  composer.error!,
                   key: StudioDriverKeys.composerError,
                   style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: colors.error),
@@ -989,7 +998,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                 onPressed: showStop
                     ? widget.onStop
                     : _canSubmit
-                    ? widget.onSubmit
+                    ? _submit
                     : null,
               ),
             ],
@@ -1099,26 +1108,6 @@ class _PasteComposerIntent extends Intent {
   const _PasteComposerIntent();
 }
 
-class _SubmitComposerIntent extends Intent {
-  const _SubmitComposerIntent();
-}
-
-class _SubmitComposerAction extends Action<_SubmitComposerIntent> {
-  _SubmitComposerAction({required this.enabled, required this.onSubmit});
-
-  final bool enabled;
-  final VoidCallback onSubmit;
-
-  @override
-  bool isEnabled(_SubmitComposerIntent intent) => enabled;
-
-  @override
-  Object? invoke(_SubmitComposerIntent intent) {
-    onSubmit();
-    return null;
-  }
-}
-
 class _StopComposerIntent extends Intent {
   const _StopComposerIntent();
 }
@@ -1187,13 +1176,12 @@ class _StopButton extends ConsumerWidget {
 
 /// route 为空时仍保留模型选择器，并显示不可用原因，避免静默隐藏。
 List<Widget> _modelRouteSelectorChildren({
-  required List<ProviderSettingsView> providers,
-  required bool requiresFunctionCalling,
+  required List<AccountSettingsView> accounts,
   required bool pending,
   bool enabled = true,
   required String unavailableReason,
-  String? providerId,
-  String? model,
+  String? accountId,
+  String? modelId,
   String? effort,
   bool available = true,
   String? routeUnavailableReason,
@@ -1203,19 +1191,18 @@ List<Widget> _modelRouteSelectorChildren({
   EffortSelectionChanged? onEffortSelected,
 }) {
   final hasRoute =
-      providerId != null &&
-      model != null &&
-      providerId.isNotEmpty &&
-      model.isNotEmpty;
+      accountId != null &&
+      modelId != null &&
+      accountId.isNotEmpty &&
+      modelId.isNotEmpty;
   if (!hasRoute) {
     return [
       _RouteUnavailableNotice(reason: unavailableReason),
       ModelRoleSelector(
-        providers: providers,
-        providerId: providerId ?? '',
-        model: model ?? '',
+        accounts: accounts,
+        accountId: accountId ?? '',
+        modelId: modelId ?? '',
         effort: effort,
-        requiresFunctionCalling: requiresFunctionCalling,
         enabled: enabled,
         pending: pending,
         available: false,
@@ -1229,11 +1216,10 @@ List<Widget> _modelRouteSelectorChildren({
   }
   return [
     ModelRoleSelector(
-      providers: providers,
-      providerId: providerId,
-      model: model,
+      accounts: accounts,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
-      requiresFunctionCalling: requiresFunctionCalling,
       enabled: enabled,
       pending: pending,
       available: available,
@@ -1243,9 +1229,9 @@ List<Widget> _modelRouteSelectorChildren({
       onModelSelected: onModelSelected,
     ),
     ReasoningEffortSelector(
-      providers: providers,
-      providerId: providerId,
-      model: model,
+      accounts: accounts,
+      accountId: accountId,
+      modelId: modelId,
       effort: effort,
       enabled: enabled,
       pending: pending,

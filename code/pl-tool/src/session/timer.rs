@@ -21,14 +21,14 @@ pub struct SleepTool;
 pub struct SleepInput {
     /// Delay in milliseconds before publishing task completion.
     #[schemars(range(min = 1, max = 86400000))]
-    duration_ms: u64,
+    pub duration_ms: u64,
 }
 
 impl SleepTool {
     pub fn declaration() -> pl_protocol::ToolSpec {
         pl_protocol::ToolSpec::function(
             "sleep",
-            "Wait for a timer using the Thread task lifecycle.",
+            "Start a cancellable timer using the Thread task lifecycle. If it exceeds the one-second delivery window, use the returned taskId with wait alongside other tasks; any selected task or Thread message can wake wait first.",
             schemars::schema_for!(SleepInput).to_value(),
         )
     }
@@ -46,7 +46,13 @@ impl Tool for SleepTool {
                 "durationMs must be between 1 and 86400000",
             )));
         }
-        tokio::select! { _ = tokio::time::sleep(Duration::from_millis(input.duration_ms)) => {}, _ = context.cancellation.cancelled() => return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled)) }
+        tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => {
+                return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
+            }
+            _ = tokio::time::sleep(Duration::from_millis(input.duration_ms)) => {},
+        }
         Ok(ToolOutput::new(
             OpaquePayload::text("Timer elapsed."),
             vec![ContextContent::Text {

@@ -10,9 +10,11 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "local_file_dialogs.cpp"
   "main.cpp"
+  "desktop_instance.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${CMAKE_SOURCE_DIR}/../runner_common/studio_host_lifecycle.cc"
+  "${CMAKE_SOURCE_DIR}/../runner_common/studio_instance.cc"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
   "runner.exe.manifest"
@@ -21,6 +23,9 @@ add_executable(${BINARY_NAME} WIN32
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
+if("$ENV{ANYWORK_DEMO}" STREQUAL "true")
+  target_compile_definitions(${BINARY_NAME} PRIVATE ANYWORK_DEMO)
+endif()
 
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")

@@ -13,589 +13,6 @@ part of 'chat.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
-mixin _$BridgeChatFocus {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatFocus);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeChatFocus()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeChatFocusCopyWith<$Res>  {
-$BridgeChatFocusCopyWith(BridgeChatFocus _, $Res Function(BridgeChatFocus) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeChatFocus].
-extension BridgeChatFocusPatterns on BridgeChatFocus {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatFocus_Latest value)?  latest,TResult Function( BridgeChatFocus_Around value)?  around,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest() when latest != null:
-return latest(_that);case BridgeChatFocus_Around() when around != null:
-return around(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatFocus_Latest value)  latest,required TResult Function( BridgeChatFocus_Around value)  around,}){
-final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest():
-return latest(_that);case BridgeChatFocus_Around():
-return around(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatFocus_Latest value)?  latest,TResult? Function( BridgeChatFocus_Around value)?  around,}){
-final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest() when latest != null:
-return latest(_that);case BridgeChatFocus_Around() when around != null:
-return around(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  latest,TResult Function( String itemId)?  around,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest() when latest != null:
-return latest();case BridgeChatFocus_Around() when around != null:
-return around(_that.itemId);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  latest,required TResult Function( String itemId)  around,}) {final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest():
-return latest();case BridgeChatFocus_Around():
-return around(_that.itemId);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  latest,TResult? Function( String itemId)?  around,}) {final _that = this;
-switch (_that) {
-case BridgeChatFocus_Latest() when latest != null:
-return latest();case BridgeChatFocus_Around() when around != null:
-return around(_that.itemId);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeChatFocus_Latest extends BridgeChatFocus {
-  const BridgeChatFocus_Latest(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatFocus_Latest);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeChatFocus.latest()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeChatFocus_Around extends BridgeChatFocus {
-  const BridgeChatFocus_Around({required this.itemId}): super._();
-
-
- final  String itemId;
-
-/// Create a copy of BridgeChatFocus
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatFocus_AroundCopyWith<BridgeChatFocus_Around> get copyWith => _$BridgeChatFocus_AroundCopyWithImpl<BridgeChatFocus_Around>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatFocus_Around&&(identical(other.itemId, itemId) || other.itemId == itemId));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,itemId);
-}
-
-@override
-String toString() {
-    return 'BridgeChatFocus.around(itemId: $itemId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatFocus_AroundCopyWith<$Res> implements $BridgeChatFocusCopyWith<$Res> {
-  factory $BridgeChatFocus_AroundCopyWith(BridgeChatFocus_Around value, $Res Function(BridgeChatFocus_Around) _then) = _$BridgeChatFocus_AroundCopyWithImpl;
-@useResult
-$Res call({
- String itemId
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatFocus_AroundCopyWithImpl<$Res>
-    implements $BridgeChatFocus_AroundCopyWith<$Res> {
-  _$BridgeChatFocus_AroundCopyWithImpl(this._self, this._then);
-
-  final BridgeChatFocus_Around _self;
-  final $Res Function(BridgeChatFocus_Around) _then;
-
-/// Create a copy of BridgeChatFocus
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? itemId = null,}) {
-  return _then(BridgeChatFocus_Around(
-itemId: null == itemId ? _self.itemId : itemId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-mixin _$BridgeChatUpdate {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatUpdate);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeChatUpdate()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeChatUpdateCopyWith<$Res>  {
-$BridgeChatUpdateCopyWith(BridgeChatUpdate _, $Res Function(BridgeChatUpdate) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeChatUpdate].
-extension BridgeChatUpdatePatterns on BridgeChatUpdate {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatUpdate_Reset value)?  reset,TResult Function( BridgeChatUpdate_Patch value)?  patch,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset() when reset != null:
-return reset(_that);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatUpdate_Reset value)  reset,required TResult Function( BridgeChatUpdate_Patch value)  patch,}){
-final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset():
-return reset(_that);case BridgeChatUpdate_Patch():
-return patch(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatUpdate_Reset value)?  reset,TResult? Function( BridgeChatUpdate_Patch value)?  patch,}){
-final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset() when reset != null:
-return reset(_that);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeChatSnapshot snapshot)?  reset,TResult Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset() when reset != null:
-return reset(_that.snapshot);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeChatSnapshot snapshot)  reset,required TResult Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)  patch,}) {final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset():
-return reset(_that.snapshot);case BridgeChatUpdate_Patch():
-return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeChatSnapshot snapshot)?  reset,TResult? Function( BigInt from,  BigInt to,  BridgeChatFocus focus,  List<BridgeViewChange> changes,  bool hasOlder,  bool hasNewer,  BridgeUpdatePriority priority)?  patch,}) {final _that = this;
-switch (_that) {
-case BridgeChatUpdate_Reset() when reset != null:
-return reset(_that.snapshot);case BridgeChatUpdate_Patch() when patch != null:
-return patch(_that.from,_that.to,_that.focus,_that.changes,_that.hasOlder,_that.hasNewer,_that.priority);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeChatUpdate_Reset extends BridgeChatUpdate {
-  const BridgeChatUpdate_Reset({required this.snapshot}): super._();
-
-
- final  BridgeChatSnapshot snapshot;
-
-/// Create a copy of BridgeChatUpdate
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatUpdate_ResetCopyWith<BridgeChatUpdate_Reset> get copyWith => _$BridgeChatUpdate_ResetCopyWithImpl<BridgeChatUpdate_Reset>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatUpdate_Reset&&(identical(other.snapshot, snapshot) || other.snapshot == snapshot));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,snapshot);
-}
-
-@override
-String toString() {
-    return 'BridgeChatUpdate.reset(snapshot: $snapshot)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatUpdate_ResetCopyWith<$Res> implements $BridgeChatUpdateCopyWith<$Res> {
-  factory $BridgeChatUpdate_ResetCopyWith(BridgeChatUpdate_Reset value, $Res Function(BridgeChatUpdate_Reset) _then) = _$BridgeChatUpdate_ResetCopyWithImpl;
-@useResult
-$Res call({
- BridgeChatSnapshot snapshot
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatUpdate_ResetCopyWithImpl<$Res>
-    implements $BridgeChatUpdate_ResetCopyWith<$Res> {
-  _$BridgeChatUpdate_ResetCopyWithImpl(this._self, this._then);
-
-  final BridgeChatUpdate_Reset _self;
-  final $Res Function(BridgeChatUpdate_Reset) _then;
-
-/// Create a copy of BridgeChatUpdate
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? snapshot = null,}) {
-  return _then(BridgeChatUpdate_Reset(
-snapshot: null == snapshot ? _self.snapshot : snapshot // ignore: cast_nullable_to_non_nullable
-as BridgeChatSnapshot,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeChatUpdate_Patch extends BridgeChatUpdate {
-  const BridgeChatUpdate_Patch({required this.from, required this.to, required this.focus, required  List<BridgeViewChange> changes, required this.hasOlder, required this.hasNewer, required this.priority}): _changes = changes,super._();
-
-
- final  BigInt from;
- final  BigInt to;
- final  BridgeChatFocus focus;
- final  List<BridgeViewChange> _changes;
- List<BridgeViewChange> get changes {
-  if (_changes is EqualUnmodifiableListView) return _changes;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_changes);
-}
-
- final  bool hasOlder;
- final  bool hasNewer;
- final  BridgeUpdatePriority priority;
-
-/// Create a copy of BridgeChatUpdate
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatUpdate_PatchCopyWith<BridgeChatUpdate_Patch> get copyWith => _$BridgeChatUpdate_PatchCopyWithImpl<BridgeChatUpdate_Patch>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatUpdate_Patch&&(identical(other.from, from) || other.from == from)&&(identical(other.to, to) || other.to == to)&&(identical(other.focus, focus) || other.focus == focus)&&const DeepCollectionEquality().equals(other.changes, _changes)&&(identical(other.hasOlder, hasOlder) || other.hasOlder == hasOlder)&&(identical(other.hasNewer, hasNewer) || other.hasNewer == hasNewer)&&(identical(other.priority, priority) || other.priority == priority));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,from,to,focus,const DeepCollectionEquality().hash(_changes),hasOlder,hasNewer,priority);
-}
-
-@override
-String toString() {
-    return 'BridgeChatUpdate.patch(from: $from, to: $to, focus: $focus, changes: $changes, hasOlder: $hasOlder, hasNewer: $hasNewer, priority: $priority)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatUpdate_PatchCopyWith<$Res> implements $BridgeChatUpdateCopyWith<$Res> {
-  factory $BridgeChatUpdate_PatchCopyWith(BridgeChatUpdate_Patch value, $Res Function(BridgeChatUpdate_Patch) _then) = _$BridgeChatUpdate_PatchCopyWithImpl;
-@useResult
-$Res call({
- BigInt from, BigInt to, BridgeChatFocus focus, List<BridgeViewChange> changes, bool hasOlder, bool hasNewer, BridgeUpdatePriority priority
-});
-
-
-$BridgeChatFocusCopyWith<$Res> get focus;
-
-}
-/// @nodoc
-class _$BridgeChatUpdate_PatchCopyWithImpl<$Res>
-    implements $BridgeChatUpdate_PatchCopyWith<$Res> {
-  _$BridgeChatUpdate_PatchCopyWithImpl(this._self, this._then);
-
-  final BridgeChatUpdate_Patch _self;
-  final $Res Function(BridgeChatUpdate_Patch) _then;
-
-/// Create a copy of BridgeChatUpdate
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? from = null,Object? to = null,Object? focus = null,Object? changes = null,Object? hasOlder = null,Object? hasNewer = null,Object? priority = null,}) {
-  return _then(BridgeChatUpdate_Patch(
-from: null == from ? _self.from : from // ignore: cast_nullable_to_non_nullable
-as BigInt,to: null == to ? _self.to : to // ignore: cast_nullable_to_non_nullable
-as BigInt,focus: null == focus ? _self.focus : focus // ignore: cast_nullable_to_non_nullable
-as BridgeChatFocus,changes: null == changes ? _self._changes : changes // ignore: cast_nullable_to_non_nullable
-as List<BridgeViewChange>,hasOlder: null == hasOlder ? _self.hasOlder : hasOlder // ignore: cast_nullable_to_non_nullable
-as bool,hasNewer: null == hasNewer ? _self.hasNewer : hasNewer // ignore: cast_nullable_to_non_nullable
-as bool,priority: null == priority ? _self.priority : priority // ignore: cast_nullable_to_non_nullable
-as BridgeUpdatePriority,
-  ));
-}
-
-/// Create a copy of BridgeChatUpdate
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$BridgeChatFocusCopyWith<$Res> get focus {
-
-  return $BridgeChatFocusCopyWith<$Res>(_self.focus, (value) {
-    return _then(_self.copyWith(focus: value));
-  });
-}
-}
-
-/// @nodoc
 mixin _$BridgeContentField {
 
 
@@ -639,7 +56,7 @@ extension BridgeContentFieldPatterns on BridgeContentField {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContentField_Text value)?  text,TResult Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult Function( BridgeContentField_ToolResult value)?  toolResult,TResult Function( BridgeContentField_ToolUserInput value)?  toolUserInput,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContentField_Text value)?  text,TResult Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult Function( BridgeContentField_ToolResult value)?  toolResult,TResult Function( BridgeContentField_ToolOutputArtifacts value)?  toolOutputArtifacts,TResult Function( BridgeContentField_ToolUserInput value)?  toolUserInput,TResult Function( BridgeContentField_RawPayload value)?  rawPayload,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
@@ -647,8 +64,10 @@ return text(_that);case BridgeContentField_ThinkingSummary() when thinkingSummar
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments(_that);case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
-return toolUserInput(_that);case _:
+return toolResult(_that);case BridgeContentField_ToolOutputArtifacts() when toolOutputArtifacts != null:
+return toolOutputArtifacts(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that);case BridgeContentField_RawPayload() when rawPayload != null:
+return rawPayload(_that);case _:
   return orElse();
 
 }
@@ -666,7 +85,7 @@ return toolUserInput(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContentField_Text value)  text,required TResult Function( BridgeContentField_ThinkingSummary value)  thinkingSummary,required TResult Function( BridgeContentField_ThinkingContent value)  thinkingContent,required TResult Function( BridgeContentField_ToolArguments value)  toolArguments,required TResult Function( BridgeContentField_ToolResult value)  toolResult,required TResult Function( BridgeContentField_ToolUserInput value)  toolUserInput,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContentField_Text value)  text,required TResult Function( BridgeContentField_ThinkingSummary value)  thinkingSummary,required TResult Function( BridgeContentField_ThinkingContent value)  thinkingContent,required TResult Function( BridgeContentField_ToolArguments value)  toolArguments,required TResult Function( BridgeContentField_ToolResult value)  toolResult,required TResult Function( BridgeContentField_ToolOutputArtifacts value)  toolOutputArtifacts,required TResult Function( BridgeContentField_ToolUserInput value)  toolUserInput,required TResult Function( BridgeContentField_RawPayload value)  rawPayload,}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text():
@@ -674,8 +93,10 @@ return text(_that);case BridgeContentField_ThinkingSummary():
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent():
 return thinkingContent(_that);case BridgeContentField_ToolArguments():
 return toolArguments(_that);case BridgeContentField_ToolResult():
-return toolResult(_that);case BridgeContentField_ToolUserInput():
-return toolUserInput(_that);}
+return toolResult(_that);case BridgeContentField_ToolOutputArtifacts():
+return toolOutputArtifacts(_that);case BridgeContentField_ToolUserInput():
+return toolUserInput(_that);case BridgeContentField_RawPayload():
+return rawPayload(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -689,7 +110,7 @@ return toolUserInput(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContentField_Text value)?  text,TResult? Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult? Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult? Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult? Function( BridgeContentField_ToolResult value)?  toolResult,TResult? Function( BridgeContentField_ToolUserInput value)?  toolUserInput,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContentField_Text value)?  text,TResult? Function( BridgeContentField_ThinkingSummary value)?  thinkingSummary,TResult? Function( BridgeContentField_ThinkingContent value)?  thinkingContent,TResult? Function( BridgeContentField_ToolArguments value)?  toolArguments,TResult? Function( BridgeContentField_ToolResult value)?  toolResult,TResult? Function( BridgeContentField_ToolOutputArtifacts value)?  toolOutputArtifacts,TResult? Function( BridgeContentField_ToolUserInput value)?  toolUserInput,TResult? Function( BridgeContentField_RawPayload value)?  rawPayload,}){
 final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
@@ -697,8 +118,10 @@ return text(_that);case BridgeContentField_ThinkingSummary() when thinkingSummar
 return thinkingSummary(_that);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments(_that);case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
-return toolUserInput(_that);case _:
+return toolResult(_that);case BridgeContentField_ToolOutputArtifacts() when toolOutputArtifacts != null:
+return toolOutputArtifacts(_that);case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that);case BridgeContentField_RawPayload() when rawPayload != null:
+return rawPayload(_that);case _:
   return null;
 
 }
@@ -715,15 +138,17 @@ return toolUserInput(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  text,TResult Function( int chunkIndex)?  thinkingSummary,TResult Function( int chunkIndex)?  thinkingContent,TResult Function()?  toolArguments,TResult Function()?  toolResult,TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  text,TResult Function( int chunkIndex)?  thinkingSummary,TResult Function( int chunkIndex)?  thinkingContent,TResult Function()?  toolArguments,TResult Function()?  toolResult,TResult Function()?  toolOutputArtifacts,TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,TResult Function( int payloadIndex)?  rawPayload,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
 return text();case BridgeContentField_ThinkingSummary() when thinkingSummary != null:
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments();case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult();case BridgeContentField_ToolUserInput() when toolUserInput != null:
-return toolUserInput(_that.questionIndex,_that.part_);case _:
+return toolResult();case BridgeContentField_ToolOutputArtifacts() when toolOutputArtifacts != null:
+return toolOutputArtifacts();case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that.questionIndex,_that.part_);case BridgeContentField_RawPayload() when rawPayload != null:
+return rawPayload(_that.payloadIndex);case _:
   return orElse();
 
 }
@@ -741,15 +166,17 @@ return toolUserInput(_that.questionIndex,_that.part_);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  text,required TResult Function( int chunkIndex)  thinkingSummary,required TResult Function( int chunkIndex)  thinkingContent,required TResult Function()  toolArguments,required TResult Function()  toolResult,required TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)  toolUserInput,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  text,required TResult Function( int chunkIndex)  thinkingSummary,required TResult Function( int chunkIndex)  thinkingContent,required TResult Function()  toolArguments,required TResult Function()  toolResult,required TResult Function()  toolOutputArtifacts,required TResult Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)  toolUserInput,required TResult Function( int payloadIndex)  rawPayload,}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text():
 return text();case BridgeContentField_ThinkingSummary():
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent():
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments():
 return toolArguments();case BridgeContentField_ToolResult():
-return toolResult();case BridgeContentField_ToolUserInput():
-return toolUserInput(_that.questionIndex,_that.part_);}
+return toolResult();case BridgeContentField_ToolOutputArtifacts():
+return toolOutputArtifacts();case BridgeContentField_ToolUserInput():
+return toolUserInput(_that.questionIndex,_that.part_);case BridgeContentField_RawPayload():
+return rawPayload(_that.payloadIndex);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -763,15 +190,17 @@ return toolUserInput(_that.questionIndex,_that.part_);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  text,TResult? Function( int chunkIndex)?  thinkingSummary,TResult? Function( int chunkIndex)?  thinkingContent,TResult? Function()?  toolArguments,TResult? Function()?  toolResult,TResult? Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  text,TResult? Function( int chunkIndex)?  thinkingSummary,TResult? Function( int chunkIndex)?  thinkingContent,TResult? Function()?  toolArguments,TResult? Function()?  toolResult,TResult? Function()?  toolOutputArtifacts,TResult? Function( int questionIndex,  BridgeThreadUserInputFieldPart part_)?  toolUserInput,TResult? Function( int payloadIndex)?  rawPayload,}) {final _that = this;
 switch (_that) {
 case BridgeContentField_Text() when text != null:
 return text();case BridgeContentField_ThinkingSummary() when thinkingSummary != null:
 return thinkingSummary(_that.chunkIndex);case BridgeContentField_ThinkingContent() when thinkingContent != null:
 return thinkingContent(_that.chunkIndex);case BridgeContentField_ToolArguments() when toolArguments != null:
 return toolArguments();case BridgeContentField_ToolResult() when toolResult != null:
-return toolResult();case BridgeContentField_ToolUserInput() when toolUserInput != null:
-return toolUserInput(_that.questionIndex,_that.part_);case _:
+return toolResult();case BridgeContentField_ToolOutputArtifacts() when toolOutputArtifacts != null:
+return toolOutputArtifacts();case BridgeContentField_ToolUserInput() when toolUserInput != null:
+return toolUserInput(_that.questionIndex,_that.part_);case BridgeContentField_RawPayload() when rawPayload != null:
+return rawPayload(_that.payloadIndex);case _:
   return null;
 
 }
@@ -1014,6 +443,38 @@ String toString() {
 /// @nodoc
 
 
+class BridgeContentField_ToolOutputArtifacts extends BridgeContentField {
+  const BridgeContentField_ToolOutputArtifacts(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContentField_ToolOutputArtifacts);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeContentField.toolOutputArtifacts()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
 class BridgeContentField_ToolUserInput extends BridgeContentField {
   const BridgeContentField_ToolUserInput({required this.questionIndex, required this.part_}): super._();
 
@@ -1091,251 +552,47 @@ $BridgeThreadUserInputFieldPartCopyWith<$Res> get part_ {
 }
 
 /// @nodoc
-mixin _$BridgeFieldChange {
 
 
+class BridgeContentField_RawPayload extends BridgeContentField {
+  const BridgeContentField_RawPayload({required this.payloadIndex}): super._();
 
 
+ final  int payloadIndex;
 
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFieldChange);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeFieldChange()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeFieldChangeCopyWith<$Res>  {
-$BridgeFieldChangeCopyWith(BridgeFieldChange _, $Res Function(BridgeFieldChange) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeFieldChange].
-extension BridgeFieldChangePatterns on BridgeFieldChange {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeFieldChange_Unchanged value)?  unchanged,TResult Function( BridgeFieldChange_Append value)?  append,TResult Function( BridgeFieldChange_Replace value)?  replace,TResult Function( BridgeFieldChange_Remove value)?  remove,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged() when unchanged != null:
-return unchanged(_that);case BridgeFieldChange_Append() when append != null:
-return append(_that);case BridgeFieldChange_Replace() when replace != null:
-return replace(_that);case BridgeFieldChange_Remove() when remove != null:
-return remove(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeFieldChange_Unchanged value)  unchanged,required TResult Function( BridgeFieldChange_Append value)  append,required TResult Function( BridgeFieldChange_Replace value)  replace,required TResult Function( BridgeFieldChange_Remove value)  remove,}){
-final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged():
-return unchanged(_that);case BridgeFieldChange_Append():
-return append(_that);case BridgeFieldChange_Replace():
-return replace(_that);case BridgeFieldChange_Remove():
-return remove(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeFieldChange_Unchanged value)?  unchanged,TResult? Function( BridgeFieldChange_Append value)?  append,TResult? Function( BridgeFieldChange_Replace value)?  replace,TResult? Function( BridgeFieldChange_Remove value)?  remove,}){
-final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged() when unchanged != null:
-return unchanged(_that);case BridgeFieldChange_Append() when append != null:
-return append(_that);case BridgeFieldChange_Replace() when replace != null:
-return replace(_that);case BridgeFieldChange_Remove() when remove != null:
-return remove(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchanged,TResult Function( String text)?  append,TResult Function( String text)?  replace,TResult Function()?  remove,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged() when unchanged != null:
-return unchanged();case BridgeFieldChange_Append() when append != null:
-return append(_that.text);case BridgeFieldChange_Replace() when replace != null:
-return replace(_that.text);case BridgeFieldChange_Remove() when remove != null:
-return remove();case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchanged,required TResult Function( String text)  append,required TResult Function( String text)  replace,required TResult Function()  remove,}) {final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged():
-return unchanged();case BridgeFieldChange_Append():
-return append(_that.text);case BridgeFieldChange_Replace():
-return replace(_that.text);case BridgeFieldChange_Remove():
-return remove();}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchanged,TResult? Function( String text)?  append,TResult? Function( String text)?  replace,TResult? Function()?  remove,}) {final _that = this;
-switch (_that) {
-case BridgeFieldChange_Unchanged() when unchanged != null:
-return unchanged();case BridgeFieldChange_Append() when append != null:
-return append(_that.text);case BridgeFieldChange_Replace() when replace != null:
-return replace(_that.text);case BridgeFieldChange_Remove() when remove != null:
-return remove();case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeFieldChange_Unchanged extends BridgeFieldChange {
-  const BridgeFieldChange_Unchanged(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFieldChange_Unchanged);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeFieldChange.unchanged()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeFieldChange_Append extends BridgeFieldChange {
-  const BridgeFieldChange_Append({required this.text}): super._();
-
-
- final  String text;
-
-/// Create a copy of BridgeFieldChange
+/// Create a copy of BridgeContentField
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeFieldChange_AppendCopyWith<BridgeFieldChange_Append> get copyWith => _$BridgeFieldChange_AppendCopyWithImpl<BridgeFieldChange_Append>(this, _$identity);
+$BridgeContentField_RawPayloadCopyWith<BridgeContentField_RawPayload> get copyWith => _$BridgeContentField_RawPayloadCopyWithImpl<BridgeContentField_RawPayload>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFieldChange_Append&&(identical(other.text, text) || other.text == text));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContentField_RawPayload&&(identical(other.payloadIndex, payloadIndex) || other.payloadIndex == payloadIndex));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,text);
+    return Object.hash(runtimeType,payloadIndex);
 }
 
 @override
 String toString() {
-    return 'BridgeFieldChange.append(text: $text)';
+    return 'BridgeContentField.rawPayload(payloadIndex: $payloadIndex)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeFieldChange_AppendCopyWith<$Res> implements $BridgeFieldChangeCopyWith<$Res> {
-  factory $BridgeFieldChange_AppendCopyWith(BridgeFieldChange_Append value, $Res Function(BridgeFieldChange_Append) _then) = _$BridgeFieldChange_AppendCopyWithImpl;
+abstract mixin class $BridgeContentField_RawPayloadCopyWith<$Res> implements $BridgeContentFieldCopyWith<$Res> {
+  factory $BridgeContentField_RawPayloadCopyWith(BridgeContentField_RawPayload value, $Res Function(BridgeContentField_RawPayload) _then) = _$BridgeContentField_RawPayloadCopyWithImpl;
 @useResult
 $Res call({
- String text
+ int payloadIndex
 });
 
 
@@ -1343,124 +600,24 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeFieldChange_AppendCopyWithImpl<$Res>
-    implements $BridgeFieldChange_AppendCopyWith<$Res> {
-  _$BridgeFieldChange_AppendCopyWithImpl(this._self, this._then);
+class _$BridgeContentField_RawPayloadCopyWithImpl<$Res>
+    implements $BridgeContentField_RawPayloadCopyWith<$Res> {
+  _$BridgeContentField_RawPayloadCopyWithImpl(this._self, this._then);
 
-  final BridgeFieldChange_Append _self;
-  final $Res Function(BridgeFieldChange_Append) _then;
+  final BridgeContentField_RawPayload _self;
+  final $Res Function(BridgeContentField_RawPayload) _then;
 
-/// Create a copy of BridgeFieldChange
+/// Create a copy of BridgeContentField
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? text = null,}) {
-  return _then(BridgeFieldChange_Append(
-text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
-as String,
+@pragma('vm:prefer-inline') $Res call({Object? payloadIndex = null,}) {
+  return _then(BridgeContentField_RawPayload(
+payloadIndex: null == payloadIndex ? _self.payloadIndex : payloadIndex // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 
 
 }
-
-/// @nodoc
-
-
-class BridgeFieldChange_Replace extends BridgeFieldChange {
-  const BridgeFieldChange_Replace({required this.text}): super._();
-
-
- final  String text;
-
-/// Create a copy of BridgeFieldChange
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeFieldChange_ReplaceCopyWith<BridgeFieldChange_Replace> get copyWith => _$BridgeFieldChange_ReplaceCopyWithImpl<BridgeFieldChange_Replace>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFieldChange_Replace&&(identical(other.text, text) || other.text == text));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,text);
-}
-
-@override
-String toString() {
-    return 'BridgeFieldChange.replace(text: $text)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeFieldChange_ReplaceCopyWith<$Res> implements $BridgeFieldChangeCopyWith<$Res> {
-  factory $BridgeFieldChange_ReplaceCopyWith(BridgeFieldChange_Replace value, $Res Function(BridgeFieldChange_Replace) _then) = _$BridgeFieldChange_ReplaceCopyWithImpl;
-@useResult
-$Res call({
- String text
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeFieldChange_ReplaceCopyWithImpl<$Res>
-    implements $BridgeFieldChange_ReplaceCopyWith<$Res> {
-  _$BridgeFieldChange_ReplaceCopyWithImpl(this._self, this._then);
-
-  final BridgeFieldChange_Replace _self;
-  final $Res Function(BridgeFieldChange_Replace) _then;
-
-/// Create a copy of BridgeFieldChange
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? text = null,}) {
-  return _then(BridgeFieldChange_Replace(
-text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeFieldChange_Remove extends BridgeFieldChange {
-  const BridgeFieldChange_Remove(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFieldChange_Remove);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeFieldChange.remove()';
-}
-
-
-}
-
-
-
 
 /// @nodoc
 mixin _$BridgeThreadUserInputFieldPart {
@@ -1909,7 +1066,7 @@ as int,
 }
 
 /// @nodoc
-mixin _$BridgeViewChange {
+mixin _$BridgeTimelineChange {
 
 
 
@@ -1917,7 +1074,7 @@ mixin _$BridgeViewChange {
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeViewChange);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineChange);
 }
 
 
@@ -1926,20 +1083,20 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-    return 'BridgeViewChange()';
+    return 'BridgeTimelineChange()';
 }
 
 
 }
 
 /// @nodoc
-class $BridgeViewChangeCopyWith<$Res>  {
-$BridgeViewChangeCopyWith(BridgeViewChange _, $Res Function(BridgeViewChange) __);
+class $BridgeTimelineChangeCopyWith<$Res>  {
+$BridgeTimelineChangeCopyWith(BridgeTimelineChange _, $Res Function(BridgeTimelineChange) __);
 }
 
 
-/// Adds pattern-matching-related methods to [BridgeViewChange].
-extension BridgeViewChangePatterns on BridgeViewChange {
+/// Adds pattern-matching-related methods to [BridgeTimelineChange].
+extension BridgeTimelineChangePatterns on BridgeTimelineChange {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -1952,12 +1109,13 @@ extension BridgeViewChangePatterns on BridgeViewChange {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeViewChange_Splice value)?  splice,TResult Function( BridgeViewChange_UpdateItem value)?  updateItem,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineChange_Add value)?  add,TResult Function( BridgeTimelineChange_UpdateItem value)?  updateItem,TResult Function( BridgeTimelineChange_Remove value)?  remove,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice() when splice != null:
-return splice(_that);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that);case _:
+case BridgeTimelineChange_Add() when add != null:
+return add(_that);case BridgeTimelineChange_UpdateItem() when updateItem != null:
+return updateItem(_that);case BridgeTimelineChange_Remove() when remove != null:
+return remove(_that);case _:
   return orElse();
 
 }
@@ -1975,12 +1133,13 @@ return updateItem(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeViewChange_Splice value)  splice,required TResult Function( BridgeViewChange_UpdateItem value)  updateItem,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineChange_Add value)  add,required TResult Function( BridgeTimelineChange_UpdateItem value)  updateItem,required TResult Function( BridgeTimelineChange_Remove value)  remove,}){
 final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice():
-return splice(_that);case BridgeViewChange_UpdateItem():
-return updateItem(_that);}
+case BridgeTimelineChange_Add():
+return add(_that);case BridgeTimelineChange_UpdateItem():
+return updateItem(_that);case BridgeTimelineChange_Remove():
+return remove(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -1994,12 +1153,13 @@ return updateItem(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeViewChange_Splice value)?  splice,TResult? Function( BridgeViewChange_UpdateItem value)?  updateItem,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineChange_Add value)?  add,TResult? Function( BridgeTimelineChange_UpdateItem value)?  updateItem,TResult? Function( BridgeTimelineChange_Remove value)?  remove,}){
 final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice() when splice != null:
-return splice(_that);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that);case _:
+case BridgeTimelineChange_Add() when add != null:
+return add(_that);case BridgeTimelineChange_UpdateItem() when updateItem != null:
+return updateItem(_that);case BridgeTimelineChange_Remove() when remove != null:
+return remove(_that);case _:
   return null;
 
 }
@@ -2016,11 +1176,12 @@ return updateItem(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)?  updateItem,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeTimelineItem item)?  add,TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeTimelineLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeTimelineFieldUpdate> fields)?  updateItem,TResult Function( String itemId)?  remove,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice() when splice != null:
-return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case _:
+case BridgeTimelineChange_Add() when add != null:
+return add(_that.item);case BridgeTimelineChange_UpdateItem() when updateItem != null:
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case BridgeTimelineChange_Remove() when remove != null:
+return remove(_that.itemId);case _:
   return orElse();
 
 }
@@ -2038,11 +1199,12 @@ return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omitt
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)  splice,required TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)  updateItem,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeTimelineItem item)  add,required TResult Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeTimelineLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeTimelineFieldUpdate> fields)  updateItem,required TResult Function( String itemId)  remove,}) {final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice():
-return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem():
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);}
+case BridgeTimelineChange_Add():
+return add(_that.item);case BridgeTimelineChange_UpdateItem():
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case BridgeTimelineChange_Remove():
+return remove(_that.itemId);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -2056,11 +1218,12 @@ return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omitt
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BigInt index,  BigInt remove,  List<BridgeChatItem> items)?  splice,TResult? Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeChatLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeFieldUpdate> fields)?  updateItem,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineItem item)?  add,TResult? Function( String itemId,  BigInt expectedRevision,  BigInt revision,  BigInt omittedBytes,  bool saved,  BridgeTimelineLifecycle lifecycle,  BridgeThreadItem? itemShell,  List<BridgeTimelineFieldUpdate> fields)?  updateItem,TResult? Function( String itemId)?  remove,}) {final _that = this;
 switch (_that) {
-case BridgeViewChange_Splice() when splice != null:
-return splice(_that.index,_that.remove,_that.items);case BridgeViewChange_UpdateItem() when updateItem != null:
-return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case _:
+case BridgeTimelineChange_Add() when add != null:
+return add(_that.item);case BridgeTimelineChange_UpdateItem() when updateItem != null:
+return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omittedBytes,_that.saved,_that.lifecycle,_that.itemShell,_that.fields);case BridgeTimelineChange_Remove() when remove != null:
+return remove(_that.itemId);case _:
   return null;
 
 }
@@ -2071,53 +1234,45 @@ return updateItem(_that.itemId,_that.expectedRevision,_that.revision,_that.omitt
 /// @nodoc
 
 
-class BridgeViewChange_Splice extends BridgeViewChange {
-  const BridgeViewChange_Splice({required this.index, required this.remove, required  List<BridgeChatItem> items}): _items = items,super._();
+class BridgeTimelineChange_Add extends BridgeTimelineChange {
+  const BridgeTimelineChange_Add({required this.item}): super._();
 
 
- final  BigInt index;
- final  BigInt remove;
- final  List<BridgeChatItem> _items;
- List<BridgeChatItem> get items {
-  if (_items is EqualUnmodifiableListView) return _items;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_items);
-}
+ final  BridgeTimelineItem item;
 
-
-/// Create a copy of BridgeViewChange
+/// Create a copy of BridgeTimelineChange
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeViewChange_SpliceCopyWith<BridgeViewChange_Splice> get copyWith => _$BridgeViewChange_SpliceCopyWithImpl<BridgeViewChange_Splice>(this, _$identity);
+$BridgeTimelineChange_AddCopyWith<BridgeTimelineChange_Add> get copyWith => _$BridgeTimelineChange_AddCopyWithImpl<BridgeTimelineChange_Add>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeViewChange_Splice&&(identical(other.index, index) || other.index == index)&&(identical(other.remove, remove) || other.remove == remove)&&const DeepCollectionEquality().equals(other.items, _items));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineChange_Add&&(identical(other.item, item) || other.item == item));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,index,remove,const DeepCollectionEquality().hash(_items));
+    return Object.hash(runtimeType,item);
 }
 
 @override
 String toString() {
-    return 'BridgeViewChange.splice(index: $index, remove: $remove, items: $items)';
+    return 'BridgeTimelineChange.add(item: $item)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeViewChange_SpliceCopyWith<$Res> implements $BridgeViewChangeCopyWith<$Res> {
-  factory $BridgeViewChange_SpliceCopyWith(BridgeViewChange_Splice value, $Res Function(BridgeViewChange_Splice) _then) = _$BridgeViewChange_SpliceCopyWithImpl;
+abstract mixin class $BridgeTimelineChange_AddCopyWith<$Res> implements $BridgeTimelineChangeCopyWith<$Res> {
+  factory $BridgeTimelineChange_AddCopyWith(BridgeTimelineChange_Add value, $Res Function(BridgeTimelineChange_Add) _then) = _$BridgeTimelineChange_AddCopyWithImpl;
 @useResult
 $Res call({
- BigInt index, BigInt remove, List<BridgeChatItem> items
+ BridgeTimelineItem item
 });
 
 
@@ -2125,21 +1280,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeViewChange_SpliceCopyWithImpl<$Res>
-    implements $BridgeViewChange_SpliceCopyWith<$Res> {
-  _$BridgeViewChange_SpliceCopyWithImpl(this._self, this._then);
+class _$BridgeTimelineChange_AddCopyWithImpl<$Res>
+    implements $BridgeTimelineChange_AddCopyWith<$Res> {
+  _$BridgeTimelineChange_AddCopyWithImpl(this._self, this._then);
 
-  final BridgeViewChange_Splice _self;
-  final $Res Function(BridgeViewChange_Splice) _then;
+  final BridgeTimelineChange_Add _self;
+  final $Res Function(BridgeTimelineChange_Add) _then;
 
-/// Create a copy of BridgeViewChange
+/// Create a copy of BridgeTimelineChange
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? index = null,Object? remove = null,Object? items = null,}) {
-  return _then(BridgeViewChange_Splice(
-index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
-as BigInt,remove: null == remove ? _self.remove : remove // ignore: cast_nullable_to_non_nullable
-as BigInt,items: null == items ? _self._items : items // ignore: cast_nullable_to_non_nullable
-as List<BridgeChatItem>,
+@pragma('vm:prefer-inline') $Res call({Object? item = null,}) {
+  return _then(BridgeTimelineChange_Add(
+item: null == item ? _self.item : item // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineItem,
   ));
 }
 
@@ -2149,36 +1302,37 @@ as List<BridgeChatItem>,
 /// @nodoc
 
 
-class BridgeViewChange_UpdateItem extends BridgeViewChange {
-  const BridgeViewChange_UpdateItem({required this.itemId, required this.expectedRevision, required this.revision, required this.omittedBytes, required this.saved, required this.lifecycle, this.itemShell, required  List<BridgeFieldUpdate> fields}): _fields = fields,super._();
+class BridgeTimelineChange_UpdateItem extends BridgeTimelineChange {
+  const BridgeTimelineChange_UpdateItem({required this.itemId, required this.expectedRevision, required this.revision, required this.omittedBytes, required this.saved, required this.lifecycle, this.itemShell, required  List<BridgeTimelineFieldUpdate> fields}): _fields = fields,super._();
 
 
  final  String itemId;
  final  BigInt expectedRevision;
  final  BigInt revision;
+/// 条目级省略量：全部字段完整长度与本次预览字节数之差的合计。
  final  BigInt omittedBytes;
  final  bool saved;
- final  BridgeChatLifecycle lifecycle;
+ final  BridgeTimelineLifecycle lifecycle;
  final  BridgeThreadItem? itemShell;
- final  List<BridgeFieldUpdate> _fields;
- List<BridgeFieldUpdate> get fields {
+ final  List<BridgeTimelineFieldUpdate> _fields;
+ List<BridgeTimelineFieldUpdate> get fields {
   if (_fields is EqualUnmodifiableListView) return _fields;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_fields);
 }
 
 
-/// Create a copy of BridgeViewChange
+/// Create a copy of BridgeTimelineChange
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeViewChange_UpdateItemCopyWith<BridgeViewChange_UpdateItem> get copyWith => _$BridgeViewChange_UpdateItemCopyWithImpl<BridgeViewChange_UpdateItem>(this, _$identity);
+$BridgeTimelineChange_UpdateItemCopyWith<BridgeTimelineChange_UpdateItem> get copyWith => _$BridgeTimelineChange_UpdateItemCopyWithImpl<BridgeTimelineChange_UpdateItem>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeViewChange_UpdateItem&&(identical(other.itemId, itemId) || other.itemId == itemId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.omittedBytes, omittedBytes) || other.omittedBytes == omittedBytes)&&(identical(other.saved, saved) || other.saved == saved)&&(identical(other.lifecycle, lifecycle) || other.lifecycle == lifecycle)&&(identical(other.itemShell, itemShell) || other.itemShell == itemShell)&&const DeepCollectionEquality().equals(other.fields, _fields));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineChange_UpdateItem&&(identical(other.itemId, itemId) || other.itemId == itemId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.omittedBytes, omittedBytes) || other.omittedBytes == omittedBytes)&&(identical(other.saved, saved) || other.saved == saved)&&(identical(other.lifecycle, lifecycle) || other.lifecycle == lifecycle)&&(identical(other.itemShell, itemShell) || other.itemShell == itemShell)&&const DeepCollectionEquality().equals(other.fields, _fields));
 }
 
 
@@ -2189,18 +1343,18 @@ int get hashCode {
 
 @override
 String toString() {
-    return 'BridgeViewChange.updateItem(itemId: $itemId, expectedRevision: $expectedRevision, revision: $revision, omittedBytes: $omittedBytes, saved: $saved, lifecycle: $lifecycle, itemShell: $itemShell, fields: $fields)';
+    return 'BridgeTimelineChange.updateItem(itemId: $itemId, expectedRevision: $expectedRevision, revision: $revision, omittedBytes: $omittedBytes, saved: $saved, lifecycle: $lifecycle, itemShell: $itemShell, fields: $fields)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeViewChange_UpdateItemCopyWith<$Res> implements $BridgeViewChangeCopyWith<$Res> {
-  factory $BridgeViewChange_UpdateItemCopyWith(BridgeViewChange_UpdateItem value, $Res Function(BridgeViewChange_UpdateItem) _then) = _$BridgeViewChange_UpdateItemCopyWithImpl;
+abstract mixin class $BridgeTimelineChange_UpdateItemCopyWith<$Res> implements $BridgeTimelineChangeCopyWith<$Res> {
+  factory $BridgeTimelineChange_UpdateItemCopyWith(BridgeTimelineChange_UpdateItem value, $Res Function(BridgeTimelineChange_UpdateItem) _then) = _$BridgeTimelineChange_UpdateItemCopyWithImpl;
 @useResult
 $Res call({
- String itemId, BigInt expectedRevision, BigInt revision, BigInt omittedBytes, bool saved, BridgeChatLifecycle lifecycle, BridgeThreadItem? itemShell, List<BridgeFieldUpdate> fields
+ String itemId, BigInt expectedRevision, BigInt revision, BigInt omittedBytes, bool saved, BridgeTimelineLifecycle lifecycle, BridgeThreadItem? itemShell, List<BridgeTimelineFieldUpdate> fields
 });
 
 
@@ -2208,26 +1362,1078 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeViewChange_UpdateItemCopyWithImpl<$Res>
-    implements $BridgeViewChange_UpdateItemCopyWith<$Res> {
-  _$BridgeViewChange_UpdateItemCopyWithImpl(this._self, this._then);
+class _$BridgeTimelineChange_UpdateItemCopyWithImpl<$Res>
+    implements $BridgeTimelineChange_UpdateItemCopyWith<$Res> {
+  _$BridgeTimelineChange_UpdateItemCopyWithImpl(this._self, this._then);
 
-  final BridgeViewChange_UpdateItem _self;
-  final $Res Function(BridgeViewChange_UpdateItem) _then;
+  final BridgeTimelineChange_UpdateItem _self;
+  final $Res Function(BridgeTimelineChange_UpdateItem) _then;
 
-/// Create a copy of BridgeViewChange
+/// Create a copy of BridgeTimelineChange
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? itemId = null,Object? expectedRevision = null,Object? revision = null,Object? omittedBytes = null,Object? saved = null,Object? lifecycle = null,Object? itemShell = freezed,Object? fields = null,}) {
-  return _then(BridgeViewChange_UpdateItem(
+  return _then(BridgeTimelineChange_UpdateItem(
 itemId: null == itemId ? _self.itemId : itemId // ignore: cast_nullable_to_non_nullable
 as String,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
 as BigInt,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
 as BigInt,omittedBytes: null == omittedBytes ? _self.omittedBytes : omittedBytes // ignore: cast_nullable_to_non_nullable
 as BigInt,saved: null == saved ? _self.saved : saved // ignore: cast_nullable_to_non_nullable
 as bool,lifecycle: null == lifecycle ? _self.lifecycle : lifecycle // ignore: cast_nullable_to_non_nullable
-as BridgeChatLifecycle,itemShell: freezed == itemShell ? _self.itemShell : itemShell // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineLifecycle,itemShell: freezed == itemShell ? _self.itemShell : itemShell // ignore: cast_nullable_to_non_nullable
 as BridgeThreadItem?,fields: null == fields ? _self._fields : fields // ignore: cast_nullable_to_non_nullable
-as List<BridgeFieldUpdate>,
+as List<BridgeTimelineFieldUpdate>,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineChange_Remove extends BridgeTimelineChange {
+  const BridgeTimelineChange_Remove({required this.itemId}): super._();
+
+
+ final  String itemId;
+
+/// Create a copy of BridgeTimelineChange
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineChange_RemoveCopyWith<BridgeTimelineChange_Remove> get copyWith => _$BridgeTimelineChange_RemoveCopyWithImpl<BridgeTimelineChange_Remove>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineChange_Remove&&(identical(other.itemId, itemId) || other.itemId == itemId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,itemId);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineChange.remove(itemId: $itemId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineChange_RemoveCopyWith<$Res> implements $BridgeTimelineChangeCopyWith<$Res> {
+  factory $BridgeTimelineChange_RemoveCopyWith(BridgeTimelineChange_Remove value, $Res Function(BridgeTimelineChange_Remove) _then) = _$BridgeTimelineChange_RemoveCopyWithImpl;
+@useResult
+$Res call({
+ String itemId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineChange_RemoveCopyWithImpl<$Res>
+    implements $BridgeTimelineChange_RemoveCopyWith<$Res> {
+  _$BridgeTimelineChange_RemoveCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineChange_Remove _self;
+  final $Res Function(BridgeTimelineChange_Remove) _then;
+
+/// Create a copy of BridgeTimelineChange
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? itemId = null,}) {
+  return _then(BridgeTimelineChange_Remove(
+itemId: null == itemId ? _self.itemId : itemId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeTimelineFieldChange {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFieldChange);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineFieldChange()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTimelineFieldChangeCopyWith<$Res>  {
+$BridgeTimelineFieldChangeCopyWith(BridgeTimelineFieldChange _, $Res Function(BridgeTimelineFieldChange) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineFieldChange].
+extension BridgeTimelineFieldChangePatterns on BridgeTimelineFieldChange {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineFieldChange_Unchanged value)?  unchanged,TResult Function( BridgeTimelineFieldChange_Append value)?  append,TResult Function( BridgeTimelineFieldChange_Replace value)?  replace,TResult Function( BridgeTimelineFieldChange_Remove value)?  remove,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged() when unchanged != null:
+return unchanged(_that);case BridgeTimelineFieldChange_Append() when append != null:
+return append(_that);case BridgeTimelineFieldChange_Replace() when replace != null:
+return replace(_that);case BridgeTimelineFieldChange_Remove() when remove != null:
+return remove(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineFieldChange_Unchanged value)  unchanged,required TResult Function( BridgeTimelineFieldChange_Append value)  append,required TResult Function( BridgeTimelineFieldChange_Replace value)  replace,required TResult Function( BridgeTimelineFieldChange_Remove value)  remove,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged():
+return unchanged(_that);case BridgeTimelineFieldChange_Append():
+return append(_that);case BridgeTimelineFieldChange_Replace():
+return replace(_that);case BridgeTimelineFieldChange_Remove():
+return remove(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineFieldChange_Unchanged value)?  unchanged,TResult? Function( BridgeTimelineFieldChange_Append value)?  append,TResult? Function( BridgeTimelineFieldChange_Replace value)?  replace,TResult? Function( BridgeTimelineFieldChange_Remove value)?  remove,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged() when unchanged != null:
+return unchanged(_that);case BridgeTimelineFieldChange_Append() when append != null:
+return append(_that);case BridgeTimelineFieldChange_Replace() when replace != null:
+return replace(_that);case BridgeTimelineFieldChange_Remove() when remove != null:
+return remove(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unchanged,TResult Function( String text)?  append,TResult Function( String text)?  replace,TResult Function()?  remove,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged() when unchanged != null:
+return unchanged();case BridgeTimelineFieldChange_Append() when append != null:
+return append(_that.text);case BridgeTimelineFieldChange_Replace() when replace != null:
+return replace(_that.text);case BridgeTimelineFieldChange_Remove() when remove != null:
+return remove();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unchanged,required TResult Function( String text)  append,required TResult Function( String text)  replace,required TResult Function()  remove,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged():
+return unchanged();case BridgeTimelineFieldChange_Append():
+return append(_that.text);case BridgeTimelineFieldChange_Replace():
+return replace(_that.text);case BridgeTimelineFieldChange_Remove():
+return remove();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unchanged,TResult? Function( String text)?  append,TResult? Function( String text)?  replace,TResult? Function()?  remove,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFieldChange_Unchanged() when unchanged != null:
+return unchanged();case BridgeTimelineFieldChange_Append() when append != null:
+return append(_that.text);case BridgeTimelineFieldChange_Replace() when replace != null:
+return replace(_that.text);case BridgeTimelineFieldChange_Remove() when remove != null:
+return remove();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFieldChange_Unchanged extends BridgeTimelineFieldChange {
+  const BridgeTimelineFieldChange_Unchanged(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFieldChange_Unchanged);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineFieldChange.unchanged()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeTimelineFieldChange_Append extends BridgeTimelineFieldChange {
+  const BridgeTimelineFieldChange_Append({required this.text}): super._();
+
+
+ final  String text;
+
+/// Create a copy of BridgeTimelineFieldChange
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineFieldChange_AppendCopyWith<BridgeTimelineFieldChange_Append> get copyWith => _$BridgeTimelineFieldChange_AppendCopyWithImpl<BridgeTimelineFieldChange_Append>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFieldChange_Append&&(identical(other.text, text) || other.text == text));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,text);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineFieldChange.append(text: $text)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineFieldChange_AppendCopyWith<$Res> implements $BridgeTimelineFieldChangeCopyWith<$Res> {
+  factory $BridgeTimelineFieldChange_AppendCopyWith(BridgeTimelineFieldChange_Append value, $Res Function(BridgeTimelineFieldChange_Append) _then) = _$BridgeTimelineFieldChange_AppendCopyWithImpl;
+@useResult
+$Res call({
+ String text
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineFieldChange_AppendCopyWithImpl<$Res>
+    implements $BridgeTimelineFieldChange_AppendCopyWith<$Res> {
+  _$BridgeTimelineFieldChange_AppendCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineFieldChange_Append _self;
+  final $Res Function(BridgeTimelineFieldChange_Append) _then;
+
+/// Create a copy of BridgeTimelineFieldChange
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? text = null,}) {
+  return _then(BridgeTimelineFieldChange_Append(
+text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFieldChange_Replace extends BridgeTimelineFieldChange {
+  const BridgeTimelineFieldChange_Replace({required this.text}): super._();
+
+
+ final  String text;
+
+/// Create a copy of BridgeTimelineFieldChange
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineFieldChange_ReplaceCopyWith<BridgeTimelineFieldChange_Replace> get copyWith => _$BridgeTimelineFieldChange_ReplaceCopyWithImpl<BridgeTimelineFieldChange_Replace>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFieldChange_Replace&&(identical(other.text, text) || other.text == text));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,text);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineFieldChange.replace(text: $text)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineFieldChange_ReplaceCopyWith<$Res> implements $BridgeTimelineFieldChangeCopyWith<$Res> {
+  factory $BridgeTimelineFieldChange_ReplaceCopyWith(BridgeTimelineFieldChange_Replace value, $Res Function(BridgeTimelineFieldChange_Replace) _then) = _$BridgeTimelineFieldChange_ReplaceCopyWithImpl;
+@useResult
+$Res call({
+ String text
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineFieldChange_ReplaceCopyWithImpl<$Res>
+    implements $BridgeTimelineFieldChange_ReplaceCopyWith<$Res> {
+  _$BridgeTimelineFieldChange_ReplaceCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineFieldChange_Replace _self;
+  final $Res Function(BridgeTimelineFieldChange_Replace) _then;
+
+/// Create a copy of BridgeTimelineFieldChange
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? text = null,}) {
+  return _then(BridgeTimelineFieldChange_Replace(
+text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFieldChange_Remove extends BridgeTimelineFieldChange {
+  const BridgeTimelineFieldChange_Remove(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFieldChange_Remove);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineFieldChange.remove()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+mixin _$BridgeTimelineItemSource {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTimelineItemSourceCopyWith<$Res>  {
+$BridgeTimelineItemSourceCopyWith(BridgeTimelineItemSource _, $Res Function(BridgeTimelineItemSource) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineItemSource].
+extension BridgeTimelineItemSourcePatterns on BridgeTimelineItemSource {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineItemSource_Content value)?  content,TResult Function( BridgeTimelineItemSource_ModelRecovery value)?  modelRecovery,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content(_that);case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineItemSource_Content value)  content,required TResult Function( BridgeTimelineItemSource_ModelRecovery value)  modelRecovery,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content():
+return content(_that);case BridgeTimelineItemSource_ModelRecovery():
+return modelRecovery(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineItemSource_Content value)?  content,TResult? Function( BridgeTimelineItemSource_ModelRecovery value)?  modelRecovery,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content(_that);case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  content,TResult Function( String attemptId,  BridgeTimelineRecoveryNotice notice)?  modelRecovery,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content();case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that.attemptId,_that.notice);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  content,required TResult Function( String attemptId,  BridgeTimelineRecoveryNotice notice)  modelRecovery,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content():
+return content();case BridgeTimelineItemSource_ModelRecovery():
+return modelRecovery(_that.attemptId,_that.notice);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  content,TResult? Function( String attemptId,  BridgeTimelineRecoveryNotice notice)?  modelRecovery,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineItemSource_Content() when content != null:
+return content();case BridgeTimelineItemSource_ModelRecovery() when modelRecovery != null:
+return modelRecovery(_that.attemptId,_that.notice);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineItemSource_Content extends BridgeTimelineItemSource {
+  const BridgeTimelineItemSource_Content(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource_Content);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource.content()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeTimelineItemSource_ModelRecovery extends BridgeTimelineItemSource {
+  const BridgeTimelineItemSource_ModelRecovery({required this.attemptId, required this.notice}): super._();
+
+
+ final  String attemptId;
+ final  BridgeTimelineRecoveryNotice notice;
+
+/// Create a copy of BridgeTimelineItemSource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineItemSource_ModelRecoveryCopyWith<BridgeTimelineItemSource_ModelRecovery> get copyWith => _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl<BridgeTimelineItemSource_ModelRecovery>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineItemSource_ModelRecovery&&(identical(other.attemptId, attemptId) || other.attemptId == attemptId)&&(identical(other.notice, notice) || other.notice == notice));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,attemptId,notice);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineItemSource.modelRecovery(attemptId: $attemptId, notice: $notice)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineItemSource_ModelRecoveryCopyWith<$Res> implements $BridgeTimelineItemSourceCopyWith<$Res> {
+  factory $BridgeTimelineItemSource_ModelRecoveryCopyWith(BridgeTimelineItemSource_ModelRecovery value, $Res Function(BridgeTimelineItemSource_ModelRecovery) _then) = _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl;
+@useResult
+$Res call({
+ String attemptId, BridgeTimelineRecoveryNotice notice
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl<$Res>
+    implements $BridgeTimelineItemSource_ModelRecoveryCopyWith<$Res> {
+  _$BridgeTimelineItemSource_ModelRecoveryCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineItemSource_ModelRecovery _self;
+  final $Res Function(BridgeTimelineItemSource_ModelRecovery) _then;
+
+/// Create a copy of BridgeTimelineItemSource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? attemptId = null,Object? notice = null,}) {
+  return _then(BridgeTimelineItemSource_ModelRecovery(
+attemptId: null == attemptId ? _self.attemptId : attemptId // ignore: cast_nullable_to_non_nullable
+as String,notice: null == notice ? _self.notice : notice // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineRecoveryNotice,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeTimelineUpdate {
+
+ String get subscriptionId;
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineUpdateCopyWith<BridgeTimelineUpdate> get copyWith => _$BridgeTimelineUpdateCopyWithImpl<BridgeTimelineUpdate>(this as BridgeTimelineUpdate, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as BridgeTimelineUpdate;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineUpdate&&(identical(other.subscriptionId, _this.subscriptionId) || other.subscriptionId == _this.subscriptionId));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as BridgeTimelineUpdate;
+  return Object.hash(runtimeType,_this.subscriptionId);
+}
+
+@override
+String toString() {
+  final _this = this as BridgeTimelineUpdate;
+  return 'BridgeTimelineUpdate(subscriptionId: ${_this.subscriptionId})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineUpdateCopyWith<$Res>  {
+  factory $BridgeTimelineUpdateCopyWith(BridgeTimelineUpdate value, $Res Function(BridgeTimelineUpdate) _then) = _$BridgeTimelineUpdateCopyWithImpl;
+@useResult
+$Res call({
+ String subscriptionId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineUpdateCopyWithImpl<$Res>
+    implements $BridgeTimelineUpdateCopyWith<$Res> {
+  _$BridgeTimelineUpdateCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineUpdate _self;
+  final $Res Function(BridgeTimelineUpdate) _then;
+
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? subscriptionId = null,}) {
+  return _then(_self.copyWith(
+subscriptionId: null == subscriptionId ? _self.subscriptionId : subscriptionId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineUpdate].
+extension BridgeTimelineUpdatePatterns on BridgeTimelineUpdate {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineUpdate_Patch value)?  patch,TResult Function( BridgeTimelineUpdate_Resync value)?  resync,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch() when patch != null:
+return patch(_that);case BridgeTimelineUpdate_Resync() when resync != null:
+return resync(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineUpdate_Patch value)  patch,required TResult Function( BridgeTimelineUpdate_Resync value)  resync,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch():
+return patch(_that);case BridgeTimelineUpdate_Resync():
+return resync(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineUpdate_Patch value)?  patch,TResult? Function( BridgeTimelineUpdate_Resync value)?  resync,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch() when patch != null:
+return patch(_that);case BridgeTimelineUpdate_Resync() when resync != null:
+return resync(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String subscriptionId,  BigInt from,  BigInt to,  List<BridgeTimelineChange> changes,  BridgeTimelinePriority priority)?  patch,TResult Function( String subscriptionId,  BridgeTimelineResyncReason reason,  BridgeTimelineBaseline baseline)?  resync,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch() when patch != null:
+return patch(_that.subscriptionId,_that.from,_that.to,_that.changes,_that.priority);case BridgeTimelineUpdate_Resync() when resync != null:
+return resync(_that.subscriptionId,_that.reason,_that.baseline);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String subscriptionId,  BigInt from,  BigInt to,  List<BridgeTimelineChange> changes,  BridgeTimelinePriority priority)  patch,required TResult Function( String subscriptionId,  BridgeTimelineResyncReason reason,  BridgeTimelineBaseline baseline)  resync,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch():
+return patch(_that.subscriptionId,_that.from,_that.to,_that.changes,_that.priority);case BridgeTimelineUpdate_Resync():
+return resync(_that.subscriptionId,_that.reason,_that.baseline);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String subscriptionId,  BigInt from,  BigInt to,  List<BridgeTimelineChange> changes,  BridgeTimelinePriority priority)?  patch,TResult? Function( String subscriptionId,  BridgeTimelineResyncReason reason,  BridgeTimelineBaseline baseline)?  resync,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineUpdate_Patch() when patch != null:
+return patch(_that.subscriptionId,_that.from,_that.to,_that.changes,_that.priority);case BridgeTimelineUpdate_Resync() when resync != null:
+return resync(_that.subscriptionId,_that.reason,_that.baseline);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineUpdate_Patch extends BridgeTimelineUpdate {
+  const BridgeTimelineUpdate_Patch({required this.subscriptionId, required this.from, required this.to, required  List<BridgeTimelineChange> changes, required this.priority}): _changes = changes,super._();
+
+
+@override final  String subscriptionId;
+ final  BigInt from;
+ final  BigInt to;
+ final  List<BridgeTimelineChange> _changes;
+ List<BridgeTimelineChange> get changes {
+  if (_changes is EqualUnmodifiableListView) return _changes;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_changes);
+}
+
+ final  BridgeTimelinePriority priority;
+
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineUpdate_PatchCopyWith<BridgeTimelineUpdate_Patch> get copyWith => _$BridgeTimelineUpdate_PatchCopyWithImpl<BridgeTimelineUpdate_Patch>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineUpdate_Patch&&(identical(other.subscriptionId, subscriptionId) || other.subscriptionId == subscriptionId)&&(identical(other.from, from) || other.from == from)&&(identical(other.to, to) || other.to == to)&&const DeepCollectionEquality().equals(other.changes, _changes)&&(identical(other.priority, priority) || other.priority == priority));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,subscriptionId,from,to,const DeepCollectionEquality().hash(_changes),priority);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineUpdate.patch(subscriptionId: $subscriptionId, from: $from, to: $to, changes: $changes, priority: $priority)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineUpdate_PatchCopyWith<$Res> implements $BridgeTimelineUpdateCopyWith<$Res> {
+  factory $BridgeTimelineUpdate_PatchCopyWith(BridgeTimelineUpdate_Patch value, $Res Function(BridgeTimelineUpdate_Patch) _then) = _$BridgeTimelineUpdate_PatchCopyWithImpl;
+@override @useResult
+$Res call({
+ String subscriptionId, BigInt from, BigInt to, List<BridgeTimelineChange> changes, BridgeTimelinePriority priority
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineUpdate_PatchCopyWithImpl<$Res>
+    implements $BridgeTimelineUpdate_PatchCopyWith<$Res> {
+  _$BridgeTimelineUpdate_PatchCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineUpdate_Patch _self;
+  final $Res Function(BridgeTimelineUpdate_Patch) _then;
+
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? subscriptionId = null,Object? from = null,Object? to = null,Object? changes = null,Object? priority = null,}) {
+  return _then(BridgeTimelineUpdate_Patch(
+subscriptionId: null == subscriptionId ? _self.subscriptionId : subscriptionId // ignore: cast_nullable_to_non_nullable
+as String,from: null == from ? _self.from : from // ignore: cast_nullable_to_non_nullable
+as BigInt,to: null == to ? _self.to : to // ignore: cast_nullable_to_non_nullable
+as BigInt,changes: null == changes ? _self._changes : changes // ignore: cast_nullable_to_non_nullable
+as List<BridgeTimelineChange>,priority: null == priority ? _self.priority : priority // ignore: cast_nullable_to_non_nullable
+as BridgeTimelinePriority,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineUpdate_Resync extends BridgeTimelineUpdate {
+  const BridgeTimelineUpdate_Resync({required this.subscriptionId, required this.reason, required this.baseline}): super._();
+
+
+@override final  String subscriptionId;
+ final  BridgeTimelineResyncReason reason;
+ final  BridgeTimelineBaseline baseline;
+
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineUpdate_ResyncCopyWith<BridgeTimelineUpdate_Resync> get copyWith => _$BridgeTimelineUpdate_ResyncCopyWithImpl<BridgeTimelineUpdate_Resync>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineUpdate_Resync&&(identical(other.subscriptionId, subscriptionId) || other.subscriptionId == subscriptionId)&&(identical(other.reason, reason) || other.reason == reason)&&(identical(other.baseline, baseline) || other.baseline == baseline));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,subscriptionId,reason,baseline);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineUpdate.resync(subscriptionId: $subscriptionId, reason: $reason, baseline: $baseline)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineUpdate_ResyncCopyWith<$Res> implements $BridgeTimelineUpdateCopyWith<$Res> {
+  factory $BridgeTimelineUpdate_ResyncCopyWith(BridgeTimelineUpdate_Resync value, $Res Function(BridgeTimelineUpdate_Resync) _then) = _$BridgeTimelineUpdate_ResyncCopyWithImpl;
+@override @useResult
+$Res call({
+ String subscriptionId, BridgeTimelineResyncReason reason, BridgeTimelineBaseline baseline
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineUpdate_ResyncCopyWithImpl<$Res>
+    implements $BridgeTimelineUpdate_ResyncCopyWith<$Res> {
+  _$BridgeTimelineUpdate_ResyncCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineUpdate_Resync _self;
+  final $Res Function(BridgeTimelineUpdate_Resync) _then;
+
+/// Create a copy of BridgeTimelineUpdate
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? subscriptionId = null,Object? reason = null,Object? baseline = null,}) {
+  return _then(BridgeTimelineUpdate_Resync(
+subscriptionId: null == subscriptionId ? _self.subscriptionId : subscriptionId // ignore: cast_nullable_to_non_nullable
+as String,reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineResyncReason,baseline: null == baseline ? _self.baseline : baseline // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineBaseline,
   ));
 }
 

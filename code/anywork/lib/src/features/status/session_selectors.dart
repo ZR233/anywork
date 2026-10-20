@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
@@ -164,12 +165,16 @@ class SessionModeSelector extends ConsumerWidget {
     required this.mode,
     required this.onSelected,
     this.enabled = true,
+    this.snapshotDisplayName,
+    this.usesSnapshot = false,
     super.key,
   });
 
   final ThreadModeId mode;
   final ValueChanged<ThreadModeId> onSelected;
   final bool enabled;
+  final String? snapshotDisplayName;
+  final bool usesSnapshot;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -183,9 +188,15 @@ class SessionModeSelector extends ConsumerWidget {
         .where((descriptor) => descriptor.id == mode.id)
         .firstOrNull
         ?.displayName;
+    final deleted =
+        discovered.isNotEmpty && !discovered.any((item) => item.id == mode.id);
     return _QuietSelectorMenu<ThreadModeId>(
       key: StudioDriverKeys.sessionMode,
-      tooltip: enabled
+      tooltip: deleted
+          ? (usesSnapshot
+                ? context.l10n.modeDeletedUsingSnapshot
+                : context.l10n.modeDeletedChooseAnother)
+          : enabled
           ? context.l10n.statusSessionMode
           : context.l10n.statusSessionModeLocked,
       enabled: enabled,
@@ -194,6 +205,9 @@ class SessionModeSelector extends ConsumerWidget {
         for (final option in options)
           _QuietMenuItem<ThreadModeId>(
             value: option,
+            enabled:
+                discovered.any((item) => item.id == option.id) ||
+                discovered.isEmpty,
             selected: option == mode,
             itemKey: StudioDriverKeys.sessionModeOption(option.name),
             child: Row(
@@ -213,7 +227,11 @@ class SessionModeSelector extends ConsumerWidget {
       ],
       child: StudioMenuLabel(
         key: StudioDriverKeys.sessionModeLabel,
-        label: selectedLabel ?? context.compileModeLabel(mode),
+        label:
+            selectedLabel ??
+            (deleted
+                ? '${snapshotDisplayName ?? context.compileModeLabel(mode)} · ${usesSnapshot ? context.l10n.modeSnapshotBadge : context.l10n.modeDeletedBadge}'
+                : context.compileModeLabel(mode)),
         enabled: enabled,
         maxWidth: 96,
       ),
@@ -311,7 +329,7 @@ class _WorkspaceModeItem extends StatelessWidget {
 }
 
 typedef ModelSelectionChanged = FutureOr<void> Function(
-  String providerId,
+  String accountId,
   String model,
 );
 
@@ -320,9 +338,9 @@ typedef EffortSelectionChanged = FutureOr<void> Function(String effort);
 /// 根会话或新建会话草稿的模型选择器。
 class ModelRoleSelector extends StatelessWidget {
   const ModelRoleSelector({
-    required this.providers,
-    required this.providerId,
-    required this.model,
+    required this.accounts,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     this.onModelSelected,
     this.enabled = true,
@@ -331,13 +349,12 @@ class ModelRoleSelector extends StatelessWidget {
     this.unavailableReason,
     this.blockedReason,
     this.onExplain,
-    this.requiresFunctionCalling = false,
     super.key,
   });
 
-  final List<ProviderSettingsView> providers;
-  final String providerId;
-  final String model;
+  final List<AccountSettingsView> accounts;
+  final String accountId;
+  final String modelId;
   final String? effort;
 
   final ModelSelectionChanged? onModelSelected;
@@ -351,25 +368,15 @@ class ModelRoleSelector extends StatelessWidget {
   final String? blockedReason;
   final ValueChanged<String>? onExplain;
 
-  /// Workflow modes are admitted only to models whose catalog declares
-  /// function calling.  The runtime enforces the same invariant; filtering
-  /// the projection prevents a selectable catalog item from producing a
-  /// predictable Bridge rejection.
-  final bool requiresFunctionCalling;
-
   @override
   Widget build(BuildContext context) {
-    final options = modelOptions(
-      providers,
-      requiresFunctionCalling: requiresFunctionCalling,
-    );
-    final current = modelForRoute(providers, providerId, model);
-    final warning = !available || current == null;
+    final options = modelOptions(accounts);
+    final current = modelForRoute(accounts, accountId, modelId);
+    final filterMessage = modelTextFilterMessage(context, current?.descriptor);
+    final warning = !available || current == null || filterMessage != null;
     final selectionBlockedReason =
         blockedReason ??
-        (options.isEmpty
-            ? context.l10n.statusModelRouteUnavailableFallback
-            : null);
+        (options.isEmpty ? context.l10n.modelTextFilterEmpty : null);
     void explain(String message) {
       if (onExplain case final callback?) {
         callback(message);
@@ -391,13 +398,15 @@ class ModelRoleSelector extends StatelessWidget {
             child: IconButton(
               key: const ValueKey('model-route-warning'),
               padding: EdgeInsets.zero,
-              tooltip: context.l10n.statusModelRouteUnavailable,
+              tooltip:
+                  filterMessage ?? context.l10n.statusModelRouteUnavailable,
               onPressed: () => explain(
-                unavailableReason?.isNotEmpty == true
-                    ? context.l10n.statusModelRouteUnavailableDetail(
-                        unavailableReason!,
-                      )
-                    : context.l10n.statusModelRouteUnavailableFallback,
+                filterMessage ??
+                    (unavailableReason?.isNotEmpty == true
+                        ? context.l10n.statusModelRouteUnavailableDetail(
+                            unavailableReason!,
+                          )
+                        : context.l10n.statusModelRouteUnavailableFallback),
               ),
               icon: Icon(
                 Icons.warning_amber_outlined,
@@ -417,10 +426,14 @@ class ModelRoleSelector extends StatelessWidget {
         ModelRouteSelector(
           selectorKey: StudioDriverKeys.model,
           options: options,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           fieldLabel: context.l10n.statusPlannerModel,
-          tooltip: selectionBlockedReason ?? context.l10n.statusPlannerModel,
+          tooltip:
+              selectionBlockedReason ??
+              filterMessage ??
+              context.l10n.statusPlannerModel,
+          unresolvedLabel: filterMessage,
           labelMaxWidth: 140,
           // Pending is an optimistic projection, not a lock.  The controller
           // supersedes older route intents by stable target identity, so users
@@ -430,10 +443,10 @@ class ModelRoleSelector extends StatelessWidget {
               ? null
               : () => explain(selectionBlockedReason),
           onSelected: (option) async {
-            await onModelSelected?.call(option.providerId, option.model);
+            await onModelSelected?.call(option.accountId, option.modelId);
           },
           optionKeyBuilder: (option) =>
-              StudioDriverKeys.modelOption(option.providerId, option.model),
+              StudioDriverKeys.modelOption(option.accountId, option.modelId),
         ),
       ],
     );
@@ -443,9 +456,9 @@ class ModelRoleSelector extends StatelessWidget {
 /// 根会话或 Mode 默认路由的思考强度选择器。
 class ReasoningEffortSelector extends StatelessWidget {
   const ReasoningEffortSelector({
-    required this.providers,
-    required this.providerId,
-    required this.model,
+    required this.accounts,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     this.onEffortSelected,
     this.enabled = true,
@@ -455,9 +468,9 @@ class ReasoningEffortSelector extends StatelessWidget {
     super.key,
   });
 
-  final List<ProviderSettingsView> providers;
-  final String providerId;
-  final String model;
+  final List<AccountSettingsView> accounts;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final EffortSelectionChanged? onEffortSelected;
   final bool enabled;
@@ -467,9 +480,14 @@ class ReasoningEffortSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final currentModel = modelForRoute(providers, providerId, model);
+    final currentModel = modelForRoute(accounts, accountId, modelId);
     final efforts = currentModel?.reasoningEfforts ?? const [];
-    final selectedEffort = effort?.isNotEmpty == true ? effort : null;
+    final selectedEffort = effort?.isNotEmpty == true
+        ? effort
+        : ModelRouteQueries.effortAfterModelSelection(
+            currentModel?.descriptor,
+            null,
+          );
     if (selectedEffort == null && efforts.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -537,34 +555,17 @@ IconData sessionModeIcon(ThreadModeId mode) {
 }
 
 ModelSelectionOption? modelForRoute(
-  List<ProviderSettingsView> providers,
-  String providerId,
-  String model,
+  List<AccountSettingsView> accounts,
+  String accountId,
+  String modelId,
 ) {
-  final options = modelOptions(providers);
+  final options = buildModelSelectionOptions(accounts);
   return options
       .where(
-        (option) => option.providerId == providerId && option.model == model,
+        (option) => option.accountId == accountId && option.modelId == modelId,
       )
       .firstOrNull;
 }
 
-List<ModelSelectionOption> modelOptions(
-  List<ProviderSettingsView> providers, {
-  bool requiresFunctionCalling = false,
-}) {
-  return buildModelSelectionOptions(
-    providers,
-    modelsForProvider: (provider) {
-      final models = provider.models;
-      return models
-          .where(
-            (model) =>
-                model.slug.isNotEmpty &&
-                (!requiresFunctionCalling ||
-                    model.capabilities.contains('tools')),
-          )
-          .toList();
-    },
-  );
-}
+List<ModelSelectionOption> modelOptions(List<AccountSettingsView> accounts) =>
+    buildModelSelectionOptions(accounts, type: ModelType.text);

@@ -6,14 +6,14 @@ part of 'timeline_view.dart';
 /// 局部展示意图，由 Timeline 的展开作用域按行身份持有；行内容更新（待回答 → 已回答）
 /// 只替换载荷，不改变身份，也不重置用户主动展开。
 class _UserInputReceipt extends StatelessWidget {
-  const _UserInputReceipt({required this.row});
+  const _UserInputReceipt({required this.itemId, required this.history});
 
-  final TimelineUserInputRow row;
+  /// 承载这条问答历史的 canonical 工具条目身份。
+  final String itemId;
+  final ThreadToolUserInputView history;
 
   @override
   Widget build(BuildContext context) {
-    final history = row.history;
-    final controller = _TimelineExpansionScope.controllerOf(context, row.id);
     final status = switch (history.state) {
       ResolvedThreadToolUserInputView() => (
         icon: Icons.check_rounded,
@@ -36,8 +36,6 @@ class _UserInputReceipt extends StatelessWidget {
       backgroundColor: context.colors.surfaceContainerLowest,
       radius: StudioRadii.md,
       child: ExpansionTile(
-        controller: controller,
-        initiallyExpanded: controller.isExpanded,
         maintainState: false,
         dense: true,
         minTileHeight: 44,
@@ -45,14 +43,8 @@ class _UserInputReceipt extends StatelessWidget {
         childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
         shape: const Border(),
         collapsedShape: const Border(),
-        onExpansionChanged: (expanded) => _TimelineItemLayoutScope.report(
-          context,
-          expanded
-              ? _TimelineLayoutChangeKind.expand
-              : _TimelineLayoutChangeKind.collapse,
-        ),
         title: KeyedSubtree(
-          key: StudioDriverKeys.timelineUserInput(row.id),
+          key: StudioDriverKeys.timelineUserInput(itemId),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
@@ -97,13 +89,13 @@ class _UserInputReceipt extends StatelessWidget {
               ),
         children: [
           Column(
-            key: StudioDriverKeys.timelineUserInputDetails(row.id),
+            key: StudioDriverKeys.timelineUserInputDetails(itemId),
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               for (final (index, question) in history.questions.indexed) ...[
                 if (index > 0) const _UserInputQuestionRule(),
                 _UserInputQuestionBlock(
-                  row: row,
+                  itemId: itemId,
                   index: index,
                   question: question,
                   answer: _userInputAnswer(history, question.id),
@@ -154,13 +146,13 @@ class _UserInputQuestionRule extends StatelessWidget {
 /// 一题的层级：序号与题目标题 → 完整问题 → 「你的回答」 → 答案正文。
 class _UserInputQuestionBlock extends StatelessWidget {
   const _UserInputQuestionBlock({
-    required this.row,
+    required this.itemId,
     required this.index,
     required this.question,
     required this.answer,
   });
 
-  final TimelineUserInputRow row;
+  final String itemId;
   final int index;
   final UserQuestionView question;
   final ThreadUserInputAnswerView? answer;
@@ -169,7 +161,7 @@ class _UserInputQuestionBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final body = question.question.trim();
     return Column(
-      key: StudioDriverKeys.timelineUserInputQuestion(row.id, index),
+      key: StudioDriverKeys.timelineUserInputQuestion(itemId, index),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
@@ -213,7 +205,7 @@ class _UserInputQuestionBlock extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.only(left: 26, top: 5),
           child: KeyedSubtree(
-            key: StudioDriverKeys.timelineUserInputAnswer(row.id, index),
+            key: StudioDriverKeys.timelineUserInputAnswer(itemId, index),
             child: _UserInputAnswerBody(question: question, answer: answer),
           ),
         ),

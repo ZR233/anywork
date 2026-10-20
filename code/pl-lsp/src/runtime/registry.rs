@@ -125,6 +125,13 @@ impl LspRuntimeRegistry {
                         server.client = None;
                     }
                 }
+                if workspace
+                    .servers
+                    .values()
+                    .all(|server| server.client.is_none())
+                {
+                    workspace.host = None;
+                }
             }
         }
         self.emit_update();

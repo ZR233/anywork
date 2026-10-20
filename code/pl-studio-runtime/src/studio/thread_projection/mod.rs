@@ -34,6 +34,7 @@ mod responses;
 mod tools;
 mod turns;
 mod user_input;
+mod wait;
 pub(in crate::studio) use turns::project_active_turn;
 pub(in crate::studio) use user_input::{
     attach as attach_tool_user_input, project_user_input as project_tool_user_input,
@@ -89,7 +90,7 @@ pub(crate) enum ProjectionError {
     Encoding(#[from] serde_json::Error),
     #[error("duplicate or contradictory saved tool call {0}")]
     DuplicateCall(String),
-    #[error("saved ordinary user Q&A fact is invalid: {0}")]
+    #[error("saved user-input history fact is invalid: {0}")]
     UserInput(String),
     #[error("terminal tool call {0} has no saved result")]
     MissingToolResult(String),

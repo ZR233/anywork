@@ -11,10 +11,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// 订阅一个 Thread 的**状态流**：Turn、活动、交互、运行时与 lagged 帧。
 ///
-/// 内容不在状态流里：条目与流式正文只由 ChatView 窗口交付。内容帧的过滤发生在生产端
+/// 内容不在状态流里：条目与流式正文只由 Timeline 内容源交付。内容帧的过滤发生在生产端
 /// （runtime 的状态流不再转发 `Item*`/`Delta`），所以这里没有“末端丢弃内容帧”的开关，客户端
 /// 也不会再因为过滤内容帧而看到 revision 空洞。状态流的 envelope `revision` 只按状态帧递增，
-/// 与 ChatView 窗口的内容 revision 相互独立。
+/// 与 Timeline 内容的内容 revision 相互独立。
 Future<BridgeEventSubscription> subscribeThread({required String threadId}) =>
     RustLib.instance.api.crateApiStudioSubscriptionThreadSubscribeThread(
       threadId: threadId,

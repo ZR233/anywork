@@ -4,8 +4,8 @@
 //! OpenAI 与 DeepSeek 两条规划彼此独立，任一可用都只追加自己的工具，不排斥其他工具。
 
 use pl_core::tool::opaque::Registration;
-use pl_model::provider::StandaloneWebSearchDialect;
-use pl_model::provider::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
+use pl_model::protocol::StandaloneWebSearchDialect;
+use pl_model::protocol::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_model::runtime::{HostedTool, thread_tool_declaration};
 use pl_protocol::HostedWebSearchDialect;
 use pl_protocol::search::WebSearchConfig;

@@ -7,16 +7,16 @@ use std::time::Duration;
 
 use base64::Engine;
 use pl_model::config::{
-    ModelCatalogId, ProviderCapabilitySelection, ProviderConfig, ProviderPresetId,
-    builtin_provider_catalog,
+    AccountCapabilitySelection, AccountConfig, AccountTemplateId, ModelCatalogId,
+    builtin_account_catalog,
 };
-use pl_model::provider::deepseek::tools::{
+use pl_model::protocol::deepseek::tools::{
     CancellationToken, FetchRequest, FetchResponse, Observed, SearchRequest, SearchResponse,
     ToolsClient, ToolsError, ToolsOptions,
 };
-use pl_model::provider::{
-    ProviderEndpoint, ProviderServiceCapabilities, StandaloneWebSearchDialect,
-    WebSearchProviderCapabilities,
+use pl_model::protocol::{
+    ProtocolEndpoint, ProtocolServiceCapabilities, StandaloneWebSearchDialect,
+    WebSearchServiceCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -206,8 +206,8 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-fn endpoint(base_url: impl Into<String>, credential: Option<&str>) -> ProviderEndpoint {
-    let mut endpoint = ProviderEndpoint::deepseek(Some(base_url.into()));
+fn endpoint(base_url: impl Into<String>, credential: Option<&str>) -> ProtocolEndpoint {
+    let mut endpoint = ProtocolEndpoint::deepseek(Some(base_url.into()));
     endpoint.bearer_token = credential.map(str::to_string);
     endpoint
 }
@@ -320,7 +320,7 @@ fn deepseek_tools_derives_endpoints_from_provider_base_url() {
         "https://api.deepseek.com/v1",
         "https://api.deepseek.com/v1/",
     ] {
-        let mut endpoint = ProviderEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
         assert_eq!(client.search_endpoint(), expected_search, "base url {base}");
@@ -328,7 +328,7 @@ fn deepseek_tools_derives_endpoints_from_provider_base_url() {
     }
 
     let mut endpoint =
-        ProviderEndpoint::deepseek(Some("https://proxy.example.com/proxy".to_string()));
+        ProtocolEndpoint::deepseek(Some("https://proxy.example.com/proxy".to_string()));
     endpoint.bearer_token = Some("k".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     assert_eq!(
@@ -341,7 +341,7 @@ fn deepseek_tools_derives_endpoints_from_provider_base_url() {
     );
 
     let mut endpoint =
-        ProviderEndpoint::deepseek(Some("http://127.0.0.1:8080/proxy/v1".to_string()));
+        ProtocolEndpoint::deepseek(Some("http://127.0.0.1:8080/proxy/v1".to_string()));
     endpoint.bearer_token = Some("k".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     assert_eq!(
@@ -364,7 +364,7 @@ fn deepseek_tools_rejects_anthropic_compatible_base_urls() {
         "https://proxy.example.com/proxy/anthropic",
         "http://127.0.0.1:8080/proxy/anthropic/v1",
     ] {
-        let mut endpoint = ProviderEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let result = ToolsClient::new(&endpoint, ToolsOptions::default());
         match result {
@@ -391,7 +391,7 @@ fn deepseek_tools_rejects_invalid_base_urls() {
         "not a url",
         "https://",
     ] {
-        let mut endpoint = ProviderEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let result = ToolsClient::new(&endpoint, ToolsOptions::default());
         assert!(
@@ -413,7 +413,7 @@ fn deepseek_tools_default_count_is_ten() {
 /// `Debug` 输出不泄漏凭据，只展示解析出的端点。
 #[test]
 fn deepseek_tools_debug_does_not_leak_the_credential() {
-    let mut endpoint = ProviderEndpoint::deepseek(Some("https://api.deepseek.com".to_string()));
+    let mut endpoint = ProtocolEndpoint::deepseek(Some("https://api.deepseek.com".to_string()));
     endpoint.bearer_token = Some("super-secret-token".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     let rendered = format!("{client:?}");
@@ -1001,11 +1001,11 @@ async fn deepseek_tools_rejects_illegal_fetch_urls_without_dispatching() {
 }
 
 /// 公开配置解析的搜索能力门控：canonical preset 继承 DeepSeek 官方工具方言，非 canonical
-/// DeepSeek PresetDefaults 仅撤销该 DeepSeek 方言，Explicit 声明仍可 opt-in。该撤销只针对
+/// DeepSeek TemplateDefaults 仅撤销该 DeepSeek 方言，Explicit 声明仍可 opt-in。该撤销只针对
 /// DeepSeek 原生方言，OpenAI 自定义 endpoint 的 `/alpha/search` standalone 继承语义保持不变。
 #[test]
 fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in() {
-    let canonical = ProviderConfig::deepseek_preset();
+    let canonical = AccountConfig::deepseek_template();
     let capabilities = canonical.service_capabilities().unwrap();
     assert_eq!(
         capabilities.web_search.standalone,
@@ -1034,18 +1034,18 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
     );
     assert!(!capabilities.web_search.hosted_responses);
 
-    let mut custom = ProviderConfig::deepseek_preset();
+    let mut custom = AccountConfig::deepseek_template();
     custom.base_url = "https://proxy.example.com".to_string();
     let capabilities = custom.service_capabilities().unwrap();
     assert_eq!(capabilities.web_search.standalone, None);
     assert!(!capabilities.web_search.hosted_responses);
 
-    custom.capabilities = ProviderCapabilitySelection::Explicit(ProviderServiceCapabilities {
-        web_search: WebSearchProviderCapabilities {
+    custom.capabilities = AccountCapabilitySelection::Explicit(ProtocolServiceCapabilities {
+        web_search: WebSearchServiceCapabilities {
             standalone: Some(StandaloneWebSearchDialect::DeepSeekToolsApi),
-            ..WebSearchProviderCapabilities::default()
+            ..WebSearchServiceCapabilities::default()
         },
-        ..ProviderServiceCapabilities::default()
+        ..ProtocolServiceCapabilities::default()
     });
     let capabilities = custom.service_capabilities().unwrap();
     assert_eq!(
@@ -1053,12 +1053,12 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
         Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
     );
 
-    let openai_custom = ProviderConfig::from_bundled_catalog(
-        ProviderEndpoint::openai(Some("https://ai.muxai.net".to_string())),
+    let openai_custom = AccountConfig::from_bundled_catalog(
+        ProtocolEndpoint::openai(Some("https://ai.muxai.net".to_string())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
-    .with_preset(ProviderPresetId::new("openai").unwrap());
+    .with_template(AccountTemplateId::new("openai").unwrap());
     let capabilities = openai_custom.service_capabilities().unwrap();
     assert_eq!(
         capabilities.web_search.standalone,
@@ -1066,16 +1066,16 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
     );
     assert_eq!(
         capabilities.prompt_cache.dialect,
-        pl_model::provider::PromptCacheDialect::None
+        pl_model::protocol::PromptCacheDialect::None
     );
 }
 
 /// canonical DeepSeek preset 必须声明官方工具方言，并在临时 HTTP 环境上完成 search 与 fetch。
 #[tokio::test]
 async fn deepseek_tools_uses_canonical_provider_for_search_and_fetch() {
-    let registry = builtin_provider_catalog().unwrap();
+    let registry = builtin_account_catalog().unwrap();
     let preset = registry
-        .presets
+        .templates
         .iter()
         .find(|preset| preset.id.as_str() == "deepseek")
         .expect("canonical deepseek preset");
@@ -1095,7 +1095,7 @@ async fn deepseek_tools_uses_canonical_provider_for_search_and_fetch() {
         },
     ])
     .await;
-    let mut endpoint = ProviderEndpoint::deepseek(Some(server.base_url()));
+    let mut endpoint = ProtocolEndpoint::deepseek(Some(server.base_url()));
     endpoint.service_capabilities = preset.service_capabilities.clone();
     endpoint.bearer_token = Some("canonical-key".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();

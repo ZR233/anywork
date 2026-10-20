@@ -14,6 +14,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
+percent-encoding = { workspace = true }
 process-wrap = { workspace = true }
 lsp-server = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util", "rt"] }

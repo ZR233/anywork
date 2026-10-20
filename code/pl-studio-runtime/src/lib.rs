@@ -5,19 +5,16 @@
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
-// Public Studio chat signatures use the core timeline types; adapters need no direct
+// Public Studio timeline signatures use the core content types; adapters need no direct
 // dependency on the execution kernel to name them.
-pub use pl_core::chat::Direction as ChatDirection;
-pub use pl_core::chat::{
-    ChatError, ChatField, ChatFocus, ChatItem, ChatLifecycle, ChatSnapshot, ChatUpdate,
-    ChatUpdates, ChatView, ViewChange,
-};
+pub use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
 pub use pl_core::model::ContentBlock;
 mod hash;
 
 pub mod agent;
 pub mod approval;
 pub use approval::PermissionMode;
+mod account_usage;
 mod compaction;
 pub mod config;
 mod config_editor;
@@ -25,7 +22,6 @@ mod error_mapping;
 mod first_run;
 pub mod instruction;
 mod protocol;
-mod provider_usage;
 pub mod resource_store;
 mod studio;
 pub mod thread_assembler;
@@ -40,15 +36,15 @@ pub use pl_tool::remote::{
 pub use pl_tool::skill::{SkillCatalog, SkillMetadata, SkillResourceBase, SkillSourceKind};
 
 pub use config::{
-    ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore, DeepSeekWebSearchConfig,
-    ModelCatalogRuntimeSnapshot, ProviderId, ReasoningEffort, STUDIO_CONFIG_SCHEMA_VERSION,
-    StudioConfig, StudioMcpConfig, StudioRole, StudioUiConfig, UserAgentProfile,
-    WebSearchContextSize, WebSearchLocation, WebSearchMode,
+    AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
+    DeepSeekWebSearchConfig, ModelCatalogRuntimeSnapshot, ReasoningEffort,
+    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioRole, StudioUiConfig,
+    UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
-pub use config_editor::{ProviderEdit, ProviderModelEdit, provider_template_kind};
+pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
 pub use error_mapping::studio_error_from_anyhow;
 pub use first_run::{
-    FirstRunConfigDraft, FirstRunModelDraft, FirstRunProviderDraft, ProviderTemplateKind,
+    AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
 };
 pub use protocol::{
     FlushingPersistenceProgress, LspAvailable, LspAvailableActivity, LspBusy, LspChecking,
@@ -57,39 +53,42 @@ pub use protocol::{
     StudioAgentDirectoryState, StudioLspHealth, StudioLspServer, StudioLspServerState,
     StudioLspStateSnapshot, StudioMcpHealth, StudioMcpServer, StudioMcpServerState,
     StudioMcpStateData, StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot,
-    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
-    StudioPendingPersistence, StudioProductBaseline, StudioProductBaselineState,
-    StudioProductEventEnvelope, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
-    StudioProductTopicScopeError, StudioProjectDirectoryData, StudioProjectDirectoryState,
-    StudioPurposeCostSnapshot, StudioRecoveryStateSnapshot, StudioSessionCostSnapshot,
-    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioShutdownIssue,
-    StudioShutdownOutcome, StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot,
-    StudioStartupStage, StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
+    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
+    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioPendingPersistence,
+    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
+    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
+    StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
+    StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
+    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
+    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
+    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 
+pub use account_usage::{
+    AccountUsageCommand, AccountUsageData, AccountUsageRecord, AccountUsageState,
+    AccountUsageTransitionDecision, AccountUsageTransitionError, DeepSeekBalanceInfo,
+    DeepSeekBalanceUsage, FailedAccountUsage, MissingCredentialAccountUsage, ReadyAccountUsage,
+    UnsupportedAccountUsage, ZhipuCodingPlanUsage, ZhipuQuotaLimit, ZhipuQuotaWindow,
+    ZhipuToolUsageDetail, zhipu_limit_by_window,
+};
 pub use protocol::{
     StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
     StudioPersistenceQueueStateSnapshot,
 };
-pub use provider_usage::{
-    DeepSeekBalanceInfo, DeepSeekBalanceUsage, FailedProviderUsage, MissingCredentialProviderUsage,
-    ProviderUsageCommand, ProviderUsageData, ProviderUsageRecord, ProviderUsageState,
-    ProviderUsageTransitionDecision, ProviderUsageTransitionError, ReadyProviderUsage,
-    UnsupportedProviderUsage, ZhipuCodingPlanUsage, ZhipuQuotaLimit, ZhipuQuotaWindow,
-    ZhipuToolUsageDetail, zhipu_limit_by_window,
-};
 pub use studio::{
-    AttachmentRecord, ChatWindowDisposition, ChatWindowHandle, ChatWindowReceipt, ChatWindowStream,
-    PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProjectRecord,
-    ProviderUsageStateData, ProviderUsageStateSnapshot, ShutdownExternalHook, SkillSearchResult,
-    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
-    StudioHostKind, StudioProductTopicSubscription, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, PersistenceState,
+    PersistenceStateSnapshot, ProductEventBus, ProjectRecord, ShutdownExternalHook,
+    SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry,
+    StudioDatabaseError, StudioHostKind, StudioInstance, StudioInstanceLease,
+    StudioProductTopicSubscription, StudioRecoveryIssue, StudioRecoveryIssueAction,
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
-    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadRecord,
+    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadPreparationObserver,
+    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, TimelineContentReader,
+    TimelineTailStream,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

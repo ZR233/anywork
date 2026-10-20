@@ -19,6 +19,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appTitle => 'anywork';
 
   @override
+  String get trayShowWindow => 'Show main window';
+
+  @override
+  String get trayExit => 'Exit';
+
+  @override
   String get sidebarProjects => 'Projects';
 
   @override
@@ -39,13 +45,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get shutdownFinalizingHint =>
       'Necessary diagnostics were recorded; the app will exit automatically.';
-
-  @override
-  String get startupInstanceBusy => 'Another instance is already running';
-
-  @override
-  String get startupInstanceBusyHint =>
-      'Close the other anywork window, then start again.';
 
   @override
   String get shutdownPhaseStoppingSubscriptions => 'Stopping subscriptions';
@@ -310,6 +309,95 @@ class AppLocalizationsEn extends AppLocalizations {
   String get startPageWelcome => 'What can I help you build?';
 
   @override
+  String get preparationTitle => 'Preparing your session';
+
+  @override
+  String get preparationSubtitle =>
+      'Your request will start once the workspace is ready.';
+
+  @override
+  String get preparationFailedTitle => 'Environment setup incomplete';
+
+  @override
+  String get preparationRetainedBody =>
+      'Your prompt and attachments are saved. Adjust the settings and send again.';
+
+  @override
+  String get preparationUnknownTitle => 'Creation outcome unconfirmed';
+
+  @override
+  String get preparationUnknownBody =>
+      'The connection ended before session creation was confirmed. Do not send again.';
+
+  @override
+  String get preparationCheckProject => 'Check project';
+
+  @override
+  String get preparationWorkspace => 'Prepare workspace';
+
+  @override
+  String get preparationInitializeSession => 'Initialize session';
+
+  @override
+  String get preparationSubmitPrompt => 'Submit request';
+
+  @override
+  String get preparationWaiting => 'Waiting to begin…';
+
+  @override
+  String get preparationCheckingProject =>
+      'Checking the project and session configuration…';
+
+  @override
+  String get preparationPreparingWorkspace =>
+      'Preparing the session workspace…';
+
+  @override
+  String get preparationResolvingRepository =>
+      'Checking the Git repository and base commit…';
+
+  @override
+  String get preparationCreatingWorktree =>
+      'Creating the worktree and checking out files…';
+
+  @override
+  String get preparationInitializingSession =>
+      'Initializing the session environment…';
+
+  @override
+  String get preparationSubmittingPrompt => 'Submitting your first request…';
+
+  @override
+  String get preparationMoreDetails => 'More details';
+
+  @override
+  String get preparationProjectLabel => 'Project';
+
+  @override
+  String get preparationRemoteLabel => 'Remote host';
+
+  @override
+  String get preparationPathLabel => 'Workspace path';
+
+  @override
+  String get preparationBranchLabel => 'Worktree branch';
+
+  @override
+  String get preparationDiagnosticLabel => 'Diagnostic ID';
+
+  @override
+  String get preparationStepComplete => 'Complete';
+
+  @override
+  String get preparationStepPending => 'Pending';
+
+  @override
+  String get preparationStepRunning => 'In progress';
+
+  @override
+  String get preparationStepFailed => 'Incomplete';
+
+  @override
   String startPageProject(String project) {
     return 'Working in $project';
   }
@@ -339,7 +427,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSystemGroup => 'System';
 
   @override
-  String get settingsProvidersTab => 'Providers';
+  String get settingsAccountsTab => 'Accounts';
 
   @override
   String get settingsInstructionsTab => 'Instructions';
@@ -610,7 +698,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get statusModelRouteUnavailableFallback =>
-      'The current model route is unavailable. Check the provider and model settings.';
+      'The current model route is unavailable. Check the account and model settings.';
 
   @override
   String get statusModelSwitchWhileRunning =>
@@ -747,14 +835,14 @@ class AppLocalizationsEn extends AppLocalizations {
       'The SSH alias for this project is no longer in ~/.ssh/config';
 
   @override
-  String get statusCurrentAgentTokenSpeed => 'Current agent token speed';
+  String get statusLastConfirmedAgentTokenSpeed => 'Last confirmed token speed';
 
   @override
   String get settingsStatisticsTitle => 'Statistics';
 
   @override
   String get settingsStatisticsSubtitle =>
-      'Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.';
+      'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.';
 
   @override
   String get settingsStatisticsSummaryTitle => 'Model performance';
@@ -804,7 +892,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'No model mismatches match these filters.';
 
   @override
-  String get statisticsModel => 'Provider / model';
+  String get statisticsModel => 'Account / model';
 
   @override
   String get statisticsHistoryModelHeader => 'Model';
@@ -1023,6 +1111,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineNew => 'New';
 
   @override
+  String get timelineLoadEarlier => 'Load earlier messages';
+
+  @override
+  String get timelineBackToLive => 'Back to live';
+
+  @override
+  String get timelineDetailUnavailable => 'This content is no longer available';
+
+  @override
+  String get timelineReconnecting =>
+      'Reconnecting messages… Current content is preserved.';
+
+  @override
+  String get timelineConnectionFailed =>
+      'Unable to synchronize messages. Current content is preserved.';
+
+  @override
   String get timelineReasoningFallback => 'Thinking';
 
   @override
@@ -1032,7 +1137,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningCompleted => 'Thought';
 
   @override
-  String get timelineReasoningEmpty => 'No reasoning text was provided.';
+  String get timelineReasoningSummary => 'Summary';
+
+  @override
+  String get timelineReasoningContent => 'Content';
 
   @override
   String get timelineReasoningBudgetLimited => 'Reasoning budget reached';
@@ -1118,6 +1226,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineViewImageFailed => 'Failed to read image';
+
+  @override
+  String get timelineReadFileCompleted => 'Read';
+
+  @override
+  String get timelineReadFileReading => 'Reading';
+
+  @override
+  String get timelineReadFileFailed => 'Unable to read';
 
   @override
   String timelineToolCompleted(String name) {
@@ -1210,9 +1327,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineRolledBack => 'Rolled back from active context';
-
-  @override
-  String get timelinePendingSave => 'Waiting to save';
 
   @override
   String get interactionSubmitEmptyAnswersHint =>
@@ -1318,10 +1432,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanDetailsTitle => 'Implementation plan';
 
   @override
-  String get interactionPlanComposerPausedHint =>
-      'Normal messages are paused to keep plan feedback unambiguous.';
-
-  @override
   String interactionPlanConfirmFooterHint(String mode) {
     return 'Confirming starts the document-editing checkpoint in $mode mode.';
   }
@@ -1339,86 +1449,117 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanAdjustSubmit => 'Submit changes';
 
   @override
-  String get settingsProvidersTitle => 'Providers';
+  String get interactionPlanFeedbackHint =>
+      'Enter submits · Shift+Enter adds a line';
 
   @override
-  String get settingsProvidersSubtitle =>
-      'Model providers, credentials, models, and usage';
+  String get planExpandReading => 'Read full width';
+
+  @override
+  String get planRestoreSplit => 'Restore side-by-side';
+
+  @override
+  String get planReceiptApproved => 'Plan approved';
+
+  @override
+  String get planReceiptRevisionRequested => 'Plan changes requested';
+
+  @override
+  String get planReceiptCancelled => 'Plan confirmation cancelled';
+
+  @override
+  String get planReceiptAnswered => 'Plan confirmation answered';
+
+  @override
+  String get planReceiptYourReply => 'Your reply';
+
+  @override
+  String get planReceiptYourFeedback => 'Requested changes';
+
+  @override
+  String get planReceiptApproveReply => 'Approved this plan for execution';
+
+  @override
+  String get settingsAccountsTitle => 'Accounts';
+
+  @override
+  String get settingsAccountsSubtitle =>
+      'Accounts, credentials, models, and usage';
 
   @override
   String get settingsRefreshUsage => 'Refresh usage';
 
   @override
-  String get settingsAddProvider => 'Add provider';
+  String get settingsAddAccount => 'Add account';
 
   @override
-  String get settingsSearchProviders => 'Search providers';
+  String get settingsSearchAccounts => 'Search accounts';
 
   @override
-  String get settingsNoProvidersMatchTitle => 'No providers match this filter';
+  String get settingsNoAccountsMatchTitle => 'No accounts match this filter';
 
   @override
-  String get settingsNoProvidersMatchMessage =>
-      'Clear the search to see all configured providers.';
+  String get settingsNoAccountsMatchMessage =>
+      'Clear the search to see all configured accounts.';
 
   @override
-  String get settingsNoProvidersTitle => 'No providers found';
+  String get settingsNoAccountsTitle => 'No accounts found';
 
   @override
-  String get settingsNoProvidersMessage =>
-      'Add a provider to configure credentials and models.';
+  String get settingsNoAccountsMessage =>
+      'Add an account to configure credentials and models.';
 
   @override
-  String get settingsDefaultProvider => 'Default provider';
+  String get settingsDefaultAccount => 'Default account';
 
   @override
-  String get settingsSetAsDefaultProvider => 'Set as default';
+  String get settingsSetAsDefaultAccount => 'Set as default';
 
   @override
   String get settingsOpenDetails => 'Open details';
 
   @override
-  String get settingsProviderActions => 'Provider actions';
+  String get settingsAccountActions => 'Account actions';
 
   @override
-  String get settingsEditProvider => 'Edit provider';
+  String get settingsEditAccount => 'Edit account';
 
   @override
-  String get settingsDeleteProvider => 'Delete provider';
+  String get settingsDeleteAccount => 'Delete account';
 
   @override
-  String get settingsNoProviderSelected => 'No provider selected';
+  String get settingsNoAccountSelected => 'No account selected';
 
   @override
-  String get settingsProviderTitle => 'Provider';
+  String get settingsAccountTitle => 'Account';
 
   @override
-  String get settingsProviderModelsTitle => 'Models';
+  String get settingsAccountModelsTitle => 'Models';
 
   @override
-  String get settingsProviderConnectionTitle => 'Connection';
+  String get settingsAccountConnectionTitle => 'Connection';
 
   @override
-  String get settingsProviderDefaultModelsTitle =>
+  String get settingsAccountDefaultModelsTitle =>
       'Default catalog (not yet synced)';
 
   @override
-  String get settingsProviderCustomModelsTitle => 'Manual models';
+  String get settingsAccountCustomModelsTitle => 'Manual models';
 
   @override
-  String get settingsProviderOnlineModelsTitle => 'Online models';
+  String get settingsAccountOnlineModelsTitle => 'Online models';
 
   @override
-  String get settingsNewProvider => 'New provider';
+  String get settingsNewAccount => 'New account';
 
   @override
-  String get settingsProviderKey => 'Provider key';
+  String get settingsAccountId => 'Account ID';
 
   @override
-  String get settingsTemplate => 'Template';
+  String get settingsAccountTemplate => 'Account template';
 
   @override
-  String get settingsCustomProvider => 'Custom provider';
+  String get settingsCustomAccount => 'Custom account';
 
   @override
   String get settingsDefaultModel => 'Default model';
@@ -1446,7 +1587,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBaseUrl => 'Base URL';
 
   @override
-  String get settingsModelSlug => 'Model slug';
+  String get settingsModelId => 'Model model_id';
 
   @override
   String get settingsReasoningEfforts => 'Reasoning efforts';
@@ -1485,9 +1626,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelOriginManual => 'Manual';
 
   @override
-  String get settingsUnverifiedOnlineModel => 'Unverified model';
-
-  @override
   String get settingsRemoveManualModelConfirmTitle =>
       'Delete this manual model?';
 
@@ -1503,8 +1641,8 @@ class AppLocalizationsEn extends AppLocalizations {
       'Could not delete this manual model.';
 
   @override
-  String get settingsManualModelSlugConflict =>
-      'A model with this slug already exists in the online or bundled catalog.';
+  String get settingsManualModelIdConflict =>
+      'A model with this model_id already exists in the online or bundled catalog.';
 
   @override
   String settingsBundledModels(int count) {
@@ -1587,11 +1725,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsUsageQueryFailed => 'Usage query failed';
 
   @override
-  String get settingsUsageApiKeyMissing => 'Provider API key is not configured';
+  String get settingsUsageApiKeyMissing => 'Account API key is not configured';
 
   @override
-  String settingsUsageUnsupportedForProvider(String providerName) {
-    return 'Usage is not supported for $providerName';
+  String settingsUsageUnsupportedForAccount(String accountName) {
+    return 'Usage is not supported for $accountName';
   }
 
   @override
@@ -1861,7 +1999,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWebSearchEffectiveMode => 'Effective mode';
 
   @override
-  String get settingsWebSearchProvider => 'OpenAI provider';
+  String get settingsWebSearchAccount => 'OpenAI account';
 
   @override
   String get settingsWebSearchModel => 'Search model';
@@ -1924,18 +2062,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWebSearchMissingCredential => 'Missing credential';
 
   @override
-  String get settingsWebSearchUnsupportedProvider => 'Unsupported provider';
+  String get settingsWebSearchUnsupportedAccount => 'Unsupported account';
 
   @override
   String get settingsWebSearchUnsupportedModel => 'Unsupported model';
 
   @override
   String get settingsWebSearchMissingCredentialReason =>
-      'No credentialed provider originating from the OpenAI preset is available. Remote web search is fully disabled.';
+      'No credentialed account originating from the OpenAI template is available. Remote web search is fully disabled.';
 
   @override
-  String get settingsWebSearchUnsupportedProviderReason =>
-      'The current provider does not expose this web search backend.';
+  String get settingsWebSearchUnsupportedAccountReason =>
+      'The current account does not expose this web search backend.';
 
   @override
   String get settingsWebSearchUnsupportedModelReason =>
@@ -1958,7 +2096,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.';
 
   @override
-  String get settingsDeepSeekWebSearchProvider => 'DeepSeek provider';
+  String get settingsDeepSeekWebSearchAccount => 'DeepSeek account';
 
   @override
   String get settingsDeepSeekWebSearchConfigured => 'Search configured';
@@ -2188,7 +2326,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAgentProfileInstructionsField => 'System instructions';
 
   @override
-  String get settingsAgentProfileProviderField => 'Provider';
+  String get settingsAgentProfileAccountField => 'Account';
 
   @override
   String get settingsAgentProfileEffortDefault => 'Use model default';
@@ -2236,7 +2374,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsCapabilitySourceField => 'Capability source';
 
   @override
-  String get settingsCapabilitySourcePreset => 'Follow preset defaults';
+  String get settingsCapabilitySourceTemplate => 'Follow template defaults';
 
   @override
   String get settingsCapabilitySourceExplicit => 'Explicit override';
@@ -2328,7 +2466,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactTitle => 'Context compaction threshold';
 
   @override
-  String get settingsModelAutoCompactRestore => 'Restore default';
+  String get settingsModelAutoCompactRestore => 'Reset to automatic';
 
   @override
   String get settingsModelAutoCompactSaving => 'Applying automatically…';
@@ -2341,19 +2479,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactRetry => 'Retry';
 
   @override
-  String get settingsModelAutoCompactDefaultLabel => 'Default';
-
-  @override
-  String get settingsModelAutoCompactOverrideLabel => 'User';
+  String get settingsModelAutoCompactOverrideLabel => 'Mode';
 
   @override
   String get settingsModelAutoCompactEffectiveLabel => 'Effective';
 
   @override
-  String get settingsModelAutoCompactSafeLabel => 'Safe limit';
-
-  @override
-  String get settingsModelAutoCompactUsingDefault => 'Using default';
+  String get settingsModelAutoCompactUsingDefault => 'Automatic';
 
   @override
   String get settingsModelAutoCompactInputLabel => 'Threshold (tokens)';
@@ -2364,16 +2496,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactHelp =>
-      'Effective value is the smaller of the selected threshold and 90% of the context window.';
+      'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity =>
-      'Context capacity is unknown, so compaction stays off.';
-
-  @override
-  String settingsModelAutoCompactAboveSafe(String value) {
-    return 'Above the safe limit; $value takes effect.';
-  }
+      'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.';
 
   @override
   String get settingsPriceInput => 'Input';
@@ -2677,15 +2804,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get toolStatusCancelling => 'Cancelling';
 
   @override
-  String get settingsProviderCatalogUnavailable =>
-      'Provider catalog is unavailable.';
+  String get settingsAccountCatalogUnavailable =>
+      'Account catalog is unavailable.';
 
   @override
-  String get settingsProviderPresetUnavailable =>
-      'Provider preset is unavailable.';
+  String get settingsAccountTemplateUnavailable =>
+      'Account template is unavailable.';
 
   @override
-  String get settingsProviderMissingCredential => 'Missing credential';
+  String get settingsAccountMissingCredential => 'Missing credential';
 
   @override
   String get settingsSshStateDisconnected => 'Disconnected';
@@ -2803,7 +2930,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelCatalogCached => 'Last successful model list';
 
   @override
-  String get settingsModelCatalogOnline => 'Models from this provider';
+  String get settingsModelCatalogOnline => 'Models from this account';
 
   @override
   String get settingsModelCatalogChecked => 'Last checked';
@@ -2817,7 +2944,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'The saved model list could not be loaded. Showing bundled models.';
 
   @override
-  String get settingsModelCatalogEmpty => 'This provider has no models.';
+  String get settingsModelCatalogEmpty => 'This account has no models.';
 
   @override
   String get settingsModelCatalogRestartHint =>
@@ -2827,7 +2954,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineActivityTitle => 'Thinking and tools';
 
   @override
-  String get timelineContextCompacted => 'Context automatically compacted';
+  String get timelineContextCompacted => 'Context compacted';
 
   @override
   String timelineCompactionDetail(int before, int after) {
@@ -2862,4 +2989,809 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineUserInputSecretHidden => 'Sensitive answer hidden';
+
+  @override
+  String get settingsModelParametersUnknown => 'Model parameters unknown';
+
+  @override
+  String get settingsModelPriceUnknown => 'Price unknown';
+
+  @override
+  String modelTextFilterExcluded(String model, String reasons) {
+    return '$model: excluded from text models ($reasons)';
+  }
+
+  @override
+  String get modelTextInputUnsupported => 'Text input unsupported';
+
+  @override
+  String get modelTextOutputUnsupported => 'Text output unsupported';
+
+  @override
+  String get modelContextWindowUnknown => 'Context window unknown';
+
+  @override
+  String get modelTextFilterEmpty =>
+      'No matching text models. Check model parameters in account settings.';
+
+  @override
+  String get modeEditorTitle => 'Work modes';
+
+  @override
+  String get modeEditorNewMode => 'New mode';
+
+  @override
+  String get modeEditorImportJson => 'Import JSON';
+
+  @override
+  String get modeEditorSearchHint => 'Find name or id';
+
+  @override
+  String get modeEditorBuiltInGroup => 'Built-in';
+
+  @override
+  String get modeEditorMyModesGroup => 'My modes';
+
+  @override
+  String get modeEditorNoMatches => 'No matching work modes.';
+
+  @override
+  String get modeEditorCatalogReadOnlyHint =>
+      'Built-in modes are read-only. Duplicate one to customize stages.';
+
+  @override
+  String get modeEditorReadOnly => 'Read-only';
+
+  @override
+  String get modeEditorUnsaved => 'Unsaved';
+
+  @override
+  String get modeEditorUndo => 'Undo';
+
+  @override
+  String get modeEditorRedo => 'Redo';
+
+  @override
+  String get modeEditorReload => 'Reload';
+
+  @override
+  String get modeEditorDuplicate => 'Duplicate';
+
+  @override
+  String get modeEditorDeleteMode => 'Delete mode';
+
+  @override
+  String get modeEditorSave => 'Save';
+
+  @override
+  String get modeEditorTabFlow => 'Flow';
+
+  @override
+  String get modeEditorTabJson => 'JSON';
+
+  @override
+  String get modeEditorTabSettings => 'Settings';
+
+  @override
+  String get modeEditorTabPreview => 'Preview';
+
+  @override
+  String get modeEditorDraftUnsaved => 'Draft unsaved';
+
+  @override
+  String get modeEditorSelectOrCreate => 'Select or create a work mode.';
+
+  @override
+  String modeEditorOpenNotice(String id) {
+    return 'Opened $id';
+  }
+
+  @override
+  String modeEditorSaveValidationIssues(int count) {
+    return 'Validation found $count issues before save.';
+  }
+
+  @override
+  String modeEditorPreSaveValidationFailed(String error) {
+    return 'Pre-save validation failed: $error';
+  }
+
+  @override
+  String get modeEditorSaved => 'Mode saved. Changes apply from the next turn.';
+
+  @override
+  String get modeEditorSaveFailed => 'Save failed.';
+
+  @override
+  String get modeEditorReloaded => 'Mode definition reloaded.';
+
+  @override
+  String get modeEditorReloadFailed => 'Reload failed.';
+
+  @override
+  String get modeEditorDeleteFailed => 'Delete failed.';
+
+  @override
+  String get modeEditorDeleted => 'Mode deleted; thread history is kept.';
+
+  @override
+  String get modeEditorCopySuffix => 'copy';
+
+  @override
+  String get modeEditorCopyCreated =>
+      'Copy created as a draft; save to publish it.';
+
+  @override
+  String get modeEditorDraftCreated => 'Draft created. Save after validation.';
+
+  @override
+  String modeEditorImportReadFailed(String error) {
+    return 'Could not read mode JSON: $error';
+  }
+
+  @override
+  String get modeEditorImportObjectRequired => 'Mode JSON must be an object.';
+
+  @override
+  String get modeEditorInvalidModeId => 'Mode id must look like mode.example.';
+
+  @override
+  String get modeEditorBuiltInCannotOverwrite =>
+      'Built-in modes cannot be overwritten.';
+
+  @override
+  String get modeEditorImportedDraft =>
+      'Configuration loaded as a draft; save to publish it.';
+
+  @override
+  String get modeEditorJsonCopied => 'Mode JSON copied.';
+
+  @override
+  String modeEditorSchemaReadFailed(String error) {
+    return 'Could not read schema: $error';
+  }
+
+  @override
+  String get modeEditorValidationPassed => 'Validation passed.';
+
+  @override
+  String modeEditorIssuesFound(int count) {
+    return '$count issues found.';
+  }
+
+  @override
+  String modeEditorValidationFailed(String error) {
+    return 'Validation failed: $error';
+  }
+
+  @override
+  String get modeEditorJsonApplied => 'JSON applied to the draft.';
+
+  @override
+  String get modeEditorJsonApplyFailed => 'JSON could not be applied.';
+
+  @override
+  String get modeEditorJsonApplyFix =>
+      'JSON could not be applied; fix the syntax or fields.';
+
+  @override
+  String get modeEditorPreviewReasonDefault =>
+      'Manually confirm stage completion and guard';
+
+  @override
+  String modeEditorPreviewFailed(String error) {
+    return 'Preview failed: $error';
+  }
+
+  @override
+  String modeEditorMaxStates(int count) {
+    return 'At most $count states are supported.';
+  }
+
+  @override
+  String get modeEditorNewFinalState => 'New final state';
+
+  @override
+  String get modeEditorNewStage => 'New work stage';
+
+  @override
+  String get modeEditorFinalStateAdded =>
+      'Final state added. Add an incoming path.';
+
+  @override
+  String get modeEditorStageAdded =>
+      'Stage added. Add incoming and outgoing transitions.';
+
+  @override
+  String get modeEditorContinueGuardPlaceholder =>
+      'Continue when the guard is satisfied.';
+
+  @override
+  String get modeEditorTransitionAdded =>
+      'Transition added. Complete its guard.';
+
+  @override
+  String get modeEditorNeedTwoStates =>
+      'Add at least two states before creating a transition.';
+
+  @override
+  String get modeEditorLayoutReset =>
+      'Layout reset. The workflow definition is unchanged.';
+
+  @override
+  String get modeEditorWorkflowEnabled => 'Workflow enabled.';
+
+  @override
+  String get modeEditorWorkflow => 'Workflow';
+
+  @override
+  String get modeEditorWorkflowGoalText =>
+      'Complete the task in stages with a reviewable path.';
+
+  @override
+  String get modeEditorStart => 'Start';
+
+  @override
+  String get modeEditorStageInstructionsPlaceholder =>
+      'Describe the work for this stage.';
+
+  @override
+  String get modeEditorStageCriterionPlaceholder =>
+      'This stage goal is satisfied.';
+
+  @override
+  String get modeEditorDone => 'Done';
+
+  @override
+  String get modeEditorTransitionGuardPlaceholder =>
+      'The result satisfies the goal.';
+
+  @override
+  String get modeEditorPromptDescription =>
+      'Describe this mode responsibilities, sequence, and boundaries.';
+
+  @override
+  String get modeEditorPortIn => 'In';
+
+  @override
+  String get modeEditorPortOut => 'Out';
+
+  @override
+  String get modeEditorGuardRequiredShort => 'Guard required';
+
+  @override
+  String get modeEditorDuplicateTransition =>
+      'A transition between those states already exists.';
+
+  @override
+  String get modeEditorInitialBadge => 'Start';
+
+  @override
+  String get modeEditorStageAction => 'Stage';
+
+  @override
+  String get modeEditorFinalLabel => 'Final';
+
+  @override
+  String get modeEditorTransitionAction => 'Transition';
+
+  @override
+  String get modeEditorValidate => 'Validate';
+
+  @override
+  String get modeEditorAutoLayout => 'Auto layout';
+
+  @override
+  String get modeEditorZoomOut => 'Zoom out';
+
+  @override
+  String get modeEditorZoomIn => 'Zoom in';
+
+  @override
+  String get modeEditorFitView => 'Fit view';
+
+  @override
+  String get modeEditorFlowInspector => 'Flow inspector';
+
+  @override
+  String get modeEditorNoWorkflow => 'This mode has no workflow';
+
+  @override
+  String get modeEditorNoWorkflowReadOnlyHint =>
+      'Duplicate this mode to add stages and transitions.';
+
+  @override
+  String get modeEditorNoWorkflowEnableHint =>
+      'Enabling a workflow adds a starting stage and a final state.';
+
+  @override
+  String get modeEditorEnableWorkflow => 'Enable workflow';
+
+  @override
+  String get modeEditorUnsavedTitle => 'Unsaved draft';
+
+  @override
+  String get modeEditorUnsavedBody =>
+      'Save the current changes before continuing, or discard this draft.';
+
+  @override
+  String get modeEditorCancel => 'Cancel';
+
+  @override
+  String get modeEditorDiscard => 'Discard';
+
+  @override
+  String get modeEditorSaveAndContinue => 'Save and continue';
+
+  @override
+  String get modeEditorNewWorkMode => 'New work mode';
+
+  @override
+  String get modeEditorModeName => 'Mode name';
+
+  @override
+  String get modeEditorModeNameHint => 'For example: Research';
+
+  @override
+  String get modeEditorModeNameRequired => 'Enter a mode name.';
+
+  @override
+  String get modeEditorModeId => 'Mode id';
+
+  @override
+  String get modeEditorModeIdFormat =>
+      'Use the form mode.example with lowercase letters, digits, - and _.';
+
+  @override
+  String get modeEditorModeIdExists => 'That mode id already exists.';
+
+  @override
+  String get modeEditorStartingPoint => 'Starting point';
+
+  @override
+  String get modeEditorMinimalWorkflow => 'Minimal workflow';
+
+  @override
+  String get modeEditorNoWorkflowTemplate => 'No workflow';
+
+  @override
+  String get modeEditorCreateMode => 'Create mode';
+
+  @override
+  String get modeEditorImportDialogTitle => 'Import mode JSON';
+
+  @override
+  String get modeEditorImportDialogBody =>
+      'Paste mode JSON. Built-in modes stay read-only; an existing custom id opens as an unsaved draft.';
+
+  @override
+  String get modeEditorLoadAsDraft => 'Load as draft';
+
+  @override
+  String get modeEditorSchemaDialogTitle => 'Mode JSON schema';
+
+  @override
+  String get modeEditorClose => 'Close';
+
+  @override
+  String get modeEditorDeleteDialogTitle => 'Delete this work mode?';
+
+  @override
+  String modeEditorDeleteDialogBody(String displayName) {
+    return 'Remove the \"$displayName\" definition. Thread history is kept.';
+  }
+
+  @override
+  String get modeEditorConfirmDelete => 'Delete';
+
+  @override
+  String get modeEditorRemoveStateTitle => 'Delete this state?';
+
+  @override
+  String modeEditorRemoveStateBody(String title, int transitionCount) {
+    return 'Delete \"$title\" and its $transitionCount related transitions. Undo can restore it.';
+  }
+
+  @override
+  String get modeEditorDeleteState => 'Delete state';
+
+  @override
+  String get modeEditorRemoveWorkflowTitle => 'Remove workflow?';
+
+  @override
+  String get modeEditorRemoveWorkflowBody =>
+      'The mode can still chat, but stage graph and workflow tools are removed. Undo is available before saving.';
+
+  @override
+  String get modeEditorRemoveWorkflow => 'Remove workflow';
+
+  @override
+  String get modeEditorStateIdInvalid =>
+      'Use lowercase letters, digits, - and _ only.';
+
+  @override
+  String get modeEditorStateIdExists => 'That state id exists.';
+
+  @override
+  String get modeEditorRenameStateTitle => 'Rename state id';
+
+  @override
+  String get modeEditorStateId => 'State id';
+
+  @override
+  String get modeEditorApply => 'Apply';
+
+  @override
+  String get modeEditorAddTransition => 'Add transition';
+
+  @override
+  String get modeEditorSourceState => 'Source state';
+
+  @override
+  String get modeEditorChooseSource => 'Choose a source.';
+
+  @override
+  String get modeEditorTargetState => 'Target state';
+
+  @override
+  String get modeEditorChooseTarget => 'Choose a target.';
+
+  @override
+  String get modeEditorTransitionGuard => 'Transition guard';
+
+  @override
+  String get modeEditorTransitionGuardHint =>
+      'For example: after the user confirms scope';
+
+  @override
+  String get modeEditorGuardRequiredField => 'Enter a guard.';
+
+  @override
+  String get modeEditorCollapse => 'Collapse';
+
+  @override
+  String get modeEditorNoWorkflowPeriod => 'This mode has no workflow.';
+
+  @override
+  String get modeEditorInspectorSelectHint =>
+      'Select a stage or transition on the canvas to edit its fields.';
+
+  @override
+  String get modeEditorRenameId => 'Rename id';
+
+  @override
+  String get modeEditorStageTitle => 'Stage title';
+
+  @override
+  String get modeEditorStageKind => 'Stage kind';
+
+  @override
+  String get modeEditorAtomicStage => 'Atomic stage';
+
+  @override
+  String get modeEditorFinalState => 'Final state';
+
+  @override
+  String get modeEditorInitialStateSwitch => 'Initial state';
+
+  @override
+  String get modeEditorInitialStateLockedHint =>
+      'The workflow always keeps one initial state; enable another stage instead.';
+
+  @override
+  String get modeEditorInitialStateHint => 'A run starts from this stage.';
+
+  @override
+  String get modeEditorStageInstructions => 'Stage instructions';
+
+  @override
+  String get modeEditorCompletionCriteria =>
+      'Completion criteria (one per line)';
+
+  @override
+  String get modeEditorAtomicCriteriaRequired =>
+      'An atomic stage needs at least one completion criterion; Rust validates on save.';
+
+  @override
+  String get modeEditorOutgoingTransitions => 'Outgoing transitions';
+
+  @override
+  String get modeEditorAdd => 'Add';
+
+  @override
+  String get modeEditorNoOutgoing => 'No outgoing transitions.';
+
+  @override
+  String get modeEditorDeleteTransition => 'Delete transition';
+
+  @override
+  String get modeEditorStateTransition => 'State transition';
+
+  @override
+  String get modeEditorTransitionRuleHint =>
+      'One transition per source/target pair; multiple successors, self loops and cycles are allowed.';
+
+  @override
+  String modeEditorValidationIssuesCount(int count) {
+    return '$count issues';
+  }
+
+  @override
+  String get modeEditorNotValidated => 'Not validated';
+
+  @override
+  String get modeEditorApplyJson => 'Apply JSON';
+
+  @override
+  String get modeEditorCopyJson => 'Copy JSON';
+
+  @override
+  String get modeEditorSchemaLabel => 'Schema';
+
+  @override
+  String get modeEditorReadOnlyCopyHint => 'Read-only: copy or validate';
+
+  @override
+  String get modeEditorJsonHint =>
+      'Mode JSON keeps the six top-level fields plus editor layout.';
+
+  @override
+  String get modeEditorModeSettingsTitle => 'Mode settings';
+
+  @override
+  String get modeEditorModeSettingsSubtitle =>
+      'Execution definition and editor layout are stored separately; layout never changes workflow identity.';
+
+  @override
+  String get modeEditorDisplayName => 'Display name';
+
+  @override
+  String get modeEditorDescription => 'Description';
+
+  @override
+  String get modeEditorOrder => 'Order';
+
+  @override
+  String get modeEditorRawPrompt => 'Raw prompt';
+
+  @override
+  String get modeEditorRawPromptHelper =>
+      'This is the full mode prompt injected without GUI rewriting.';
+
+  @override
+  String get modeEditorWorkflowTitle => 'Workflow title';
+
+  @override
+  String get modeEditorWorkflowGoal => 'Workflow goal';
+
+  @override
+  String get modeEditorInitialStateLabel => 'Initial state';
+
+  @override
+  String modeEditorWorkflowSummary(int states, int transitions) {
+    return '$states states · $transitions transitions';
+  }
+
+  @override
+  String get modeEditorNoWorkflowToolHint =>
+      'Without a workflow there is no stage graph or workflow tools.';
+
+  @override
+  String get modeEditorPreviewUnavailable =>
+      'This mode has no workflow to preview.';
+
+  @override
+  String get modeEditorRunPreview => 'Run preview';
+
+  @override
+  String get modeEditorPreviewSubtitle =>
+      'Bounded replay uses the production Rust state machine; it never rewrites the configured initial state.';
+
+  @override
+  String get modeEditorStartPreview => 'Start preview';
+
+  @override
+  String get modeEditorRestart => 'Restart';
+
+  @override
+  String get modeEditorTransitionReason => 'Transition reason';
+
+  @override
+  String get modeEditorTransitionReasonHint =>
+      'Manually confirm stage completion and guard';
+
+  @override
+  String get modeEditorTransitionReasonHelper =>
+      'Sent as the reason when advancing to a successor.';
+
+  @override
+  String modeEditorAllowedNextStates(int count) {
+    return 'Allowed next states · $count';
+  }
+
+  @override
+  String get modeEditorTerminalReached =>
+      'Reached a final state. Restarting never rewrites the saved initial state.';
+
+  @override
+  String get modeEditorPreviewIntroText =>
+      'Preview starts from the current JSON document. Each step follows one valid transition from the current state and keeps the path in this preview.';
+
+  @override
+  String get modeEditorPreviewAccepted => 'Preview accepted.';
+
+  @override
+  String get modeEditorPreviewRejected => 'Preview rejected.';
+
+  @override
+  String get modeEditorCurrentStage => 'Current stage';
+
+  @override
+  String get modeEditorPath => 'Path';
+
+  @override
+  String get modeEditorAdvance => 'Advance';
+
+  @override
+  String get modeEditorPreviewHistory => 'Preview history';
+
+  @override
+  String get modeDeletedUsingSnapshot => 'Deleted mode · using saved snapshot';
+
+  @override
+  String get modeDeletedChooseAnother =>
+      'This mode was deleted. Choose another mode.';
+
+  @override
+  String get modeSnapshotBadge => 'Snapshot';
+
+  @override
+  String get modeDeletedBadge => 'Deleted';
+
+  @override
+  String get settingsAccountProtocol => 'Account protocol';
+
+  @override
+  String get statisticsGroupTotal => 'Group total';
+
+  @override
+  String get statisticsAllEfforts => 'All effort levels';
+
+  @override
+  String get statisticsEffortBreakdownTitle => 'Effort breakdown';
+
+  @override
+  String get accountProtocolOpenAi => 'OpenAI';
+
+  @override
+  String get accountProtocolDeepSeek => 'DeepSeek';
+
+  @override
+  String get accountProtocolZhipu => 'Zhipu';
+
+  @override
+  String get accountProtocolMiMo => 'MiMo';
+
+  @override
+  String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolCustom => 'Custom (OpenAI compatible)';
+
+  @override
+  String get timelineWaitToolsTitle => 'Waiting for tools';
+
+  @override
+  String get timelineWaitMessagesTitle =>
+      'Waiting for a subagent or new message';
+
+  @override
+  String get timelineWaitTimerTitle => 'Timer';
+
+  @override
+  String get timelineWaitTimerElapsed => 'Timer elapsed';
+
+  @override
+  String get timelineWaitReady => 'A waited source is ready';
+
+  @override
+  String get timelineWaitMessagesReady => 'A new message arrived';
+
+  @override
+  String get timelineWaitTimedOut => 'Wait timed out';
+
+  @override
+  String get timelineWaitCancelled => 'Wait cancelled';
+
+  @override
+  String get timelineWaitFailed => 'Wait failed';
+
+  @override
+  String get timelineWaitInterrupted => 'Wait interrupted';
+
+  @override
+  String timelineWaitTargetCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count tasks',
+      one: '1 task',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get timelineWaitMessageSource => 'New messages';
+
+  @override
+  String timelineWaitMaxDuration(String duration) {
+    return 'up to $duration';
+  }
+
+  @override
+  String timelineWaitTimerDuration(String duration) {
+    return '$duration';
+  }
+
+  @override
+  String get timelineWaitMessagesMayWake =>
+      'A new message can wake this wait early';
+
+  @override
+  String get timelineWaitAnyReadyRule =>
+      'Returns when any selected task or a new message is ready';
+
+  @override
+  String get timelineWaitDiagnostics => 'Diagnostics';
+
+  @override
+  String get timelineWaitUnknownStatus => 'Unknown';
+
+  @override
+  String get timelineWaitStatusRunning => 'Running';
+
+  @override
+  String get timelineWaitStatusSucceeded => 'Succeeded';
+
+  @override
+  String get timelineWaitStatusFailed => 'Failed';
+
+  @override
+  String get timelineWaitStatusCancelled => 'Cancelled';
+
+  @override
+  String get timelineWaitStatusInterrupted => 'Interrupted';
+
+  @override
+  String get conversationActivityWaitingTools => 'Waiting for tools';
+
+  @override
+  String get conversationActivityWaitingMessages =>
+      'Waiting for a subagent or new message';
+
+  @override
+  String get conversationActivityWaitingTimer => 'Timer';
+
+  @override
+  String get settingsModelAutoCompactAdjusted =>
+      'The effective limit was adjusted for context capacity and output reserve.';
+
+  @override
+  String get modelContextParametersInvalid => 'Inconsistent context parameters';
+
+  @override
+  String get modelInputBudgetExhausted =>
+      'No input capacity after reserving output';
+
+  @override
+  String get statusCompactNow => 'Compact now';
+
+  @override
+  String get statusCompacting => 'Compacting…';
+
+  @override
+  String get statusCompactionFailed => 'Compaction failed. Try again.';
+
+  @override
+  String get settingsModelAutoCompactCustom => 'Custom';
 }

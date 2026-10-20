@@ -12,10 +12,15 @@ pub fn reconcile_workflow_for_turn(
     let mut state = existing.unwrap_or_default();
     let Some(graph) = mode.workflow() else {
         if let Some(run) = state.current_run.take() {
+            let outcome = if run.mode_id == mode.descriptor().id {
+                "modeUpdated"
+            } else {
+                "modeChanged"
+            };
             archive_run(
                 &mut state,
                 run,
-                "modeChanged",
+                outcome,
                 "Selected Mode has no workflow",
                 now,
             )?;
@@ -31,12 +36,12 @@ pub fn reconcile_workflow_for_turn(
 
     let replacement = match state.current_run.as_ref() {
         None => Some((None, "started")),
-        Some(run) if run.lifecycle == WorkflowRunLifecycle::Terminal => {
-            Some((None, "terminalRestart"))
-        }
         Some(run) if run.mode_id != mode.descriptor().id => Some((None, "modeChanged")),
         Some(run) if run.graph_hash != graph.graph_hash() => {
             Some((Some(run.lineage_id.clone()), "modeUpdated"))
+        }
+        Some(run) if run.lifecycle == WorkflowRunLifecycle::Terminal => {
+            Some((None, "terminalRestart"))
         }
         Some(_) => None,
     };

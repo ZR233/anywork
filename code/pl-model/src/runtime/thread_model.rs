@@ -18,7 +18,8 @@ use crate::completion::{ReasoningConfig, ToolSpec};
 mod cache;
 mod compaction;
 pub use compaction::{
-    ThreadCompaction, ThreadCompactionOptions, ThreadCompactionStrategy, migrate_legacy_compaction,
+    ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
+    migrate_legacy_compaction,
 };
 mod codec;
 mod media;
@@ -67,6 +68,57 @@ impl ThreadModel {
         self.purpose = purpose.into();
         self
     }
+    /// One encoding path for execution, previews and reduction, including every tool and media.
+    async fn encode_request(
+        &self,
+        request: &ModelRequest,
+    ) -> Result<crate::completion::CompletionRequest, ModelError> {
+        self.validate_context_origin(&request.context)?;
+        let mut encoded = codec::request(request, &self.runtime)?;
+        encoded.reasoning = self.reasoning.clone();
+        encoded.max_tokens = self.runtime.model().max_output_tokens;
+        encoded.parallel_tool_calls = request.tool_call_mode
+            == pl_core::model::ToolCallMode::Parallel
+            && self.runtime.model().capabilities.tools.parallel_tool_calls;
+        self.runtime
+            .validate_context(&encoded.input)
+            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+        let mut declarations = codec::declarations(&request.tools)?;
+        for (id, declaration) in &mut declarations {
+            if request.solo_tool_ids.contains(id) {
+                match declaration {
+                    ToolSpec::Function { description, .. }
+                    | ToolSpec::Custom { description, .. } => {
+                        description.push_str(" This tool must be the only tool call in its model response; never batch it with queries or other tools.");
+                    }
+                    ToolSpec::ProgrammaticToolCalling | ToolSpec::WebSearch { .. } => {}
+                }
+            }
+        }
+        encoded.tools = declarations.into_iter().map(|(_, spec)| spec).collect();
+        for tool in self.hosted_tools.iter() {
+            let declaration = tool.declaration();
+            if encoded
+                .tools
+                .iter()
+                .any(|existing| existing.name() == declaration.name())
+            {
+                return Err(failure(
+                    ModelFailureKind::UnsupportedContent,
+                    AdapterError::Content(
+                        "hosted and local tool declarations have conflicting identities",
+                    ),
+                ));
+            }
+            encoded.tools.push(declaration);
+        }
+        media::prepare(request, &mut encoded, self.runtime.model()).await?;
+        encoded = self
+            .runtime
+            .prepare_request(encoded)
+            .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
+        Ok(encoded)
+    }
 }
 
 impl Model for ThreadModel {
@@ -100,17 +152,13 @@ struct ThreadModelSession {
 
 impl CoreModelSession for ThreadModelSession {
     async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
-        ThreadModel::new(self.runtime.clone(), self.reasoning.clone())
-            .validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(&request, &self.runtime)?;
-        encoded.reasoning = self.reasoning.clone();
-        encoded.max_tokens = self.runtime.model().max_output_tokens;
-        encoded.parallel_tool_calls = request.tool_call_mode
-            == pl_core::model::ToolCallMode::Parallel
-            && self.runtime.model().capabilities.tools.parallel_tool_calls;
-        self.runtime
-            .validate_context(&encoded.input)
-            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+        let configuration = ThreadModel {
+            runtime: self.runtime.clone(),
+            reasoning: self.reasoning.clone(),
+            purpose: self.purpose.clone(),
+            hosted_tools: self.hosted_tools.clone(),
+        };
+        let encoded = configuration.encode_request(&request).await?;
         let observed = self
             .observed
             .lock()
@@ -127,18 +175,7 @@ impl CoreModelSession for ThreadModelSession {
                 .map_err(|_| failure(ModelFailureKind::Unavailable, AdapterError::Poisoned))? =
                 None;
         }
-        let mut declarations = codec::declarations(&request.tools)?;
-        for (id, declaration) in &mut declarations {
-            if request.solo_tool_ids.contains(id) {
-                match declaration {
-                    ToolSpec::Function { description, .. }
-                    | ToolSpec::Custom { description, .. } => {
-                        description.push_str(" This tool must be the only tool call in its model response; never batch it with queries or other tools.");
-                    }
-                    ToolSpec::ProgrammaticToolCalling | ToolSpec::WebSearch { .. } => {}
-                }
-            }
-        }
+        let declarations = codec::declarations(&request.tools)?;
         let names = declarations
             .iter()
             .map(|(id, spec)| {
@@ -148,31 +185,9 @@ impl CoreModelSession for ThreadModelSession {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        encoded.tools = declarations.into_iter().map(|(_, spec)| spec).collect();
-        for tool in self.hosted_tools.iter() {
-            let declaration = tool.declaration();
-            if encoded
-                .tools
-                .iter()
-                .any(|existing| existing.name() == declaration.name())
-            {
-                return Err(failure(
-                    ModelFailureKind::UnsupportedContent,
-                    AdapterError::Content(
-                        "hosted and local tool declarations have conflicting identities",
-                    ),
-                ));
-            }
-            encoded.tools.push(declaration);
-        }
-        media::prepare(&request, &mut encoded, self.runtime.model()).await?;
-        encoded = self
-            .runtime
-            .prepare_request(encoded)
-            .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
         if estimate
-            .zip(self.runtime.model().resolved_context_window())
+            .zip(self.runtime.context().input_token_limit)
             .is_some_and(|(tokens, window)| tokens >= window)
         {
             return Err(failure(
@@ -206,8 +221,9 @@ impl CoreModelSession for ThreadModelSession {
             &self.prompt,
             super::PromptCacheInput {
                 scope: &self.purpose,
-                provider: runtime.endpoint(),
-                model: &runtime.model().slug,
+                account_id: runtime.account_id(),
+                account: runtime.endpoint(),
+                model: &runtime.model().model_id,
                 instructions: encoded.instructions.as_deref().unwrap_or_default(),
                 prelude_messages: &[],
                 context_hash: &context_hash,
@@ -241,7 +257,7 @@ impl CoreModelSession for ThreadModelSession {
         self.last_compaction_id = compaction_id;
         let usage_binding = pl_core::model::ModelUsageBinding {
             route_identity: Some(binding.route_identity()),
-            model: binding.requested_model.clone(),
+            model: binding.model_id.clone(),
             context_window: binding.context_window,
             max_context_window: binding.max_context_window,
             auto_compact_limit: binding.auto_compact_limit,

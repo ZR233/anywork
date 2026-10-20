@@ -74,7 +74,7 @@ impl StudioChildResources for StudioThreadFactory {
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
                 .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
         let store = FileResourceStore::new(self.services.store.session_resources_dir(&request.id));
-        let prepared_tools = self
+        let mut prepared_tools = self
             .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
                 thread_id: &request.id,
                 cancellation: &request.cancellation,
@@ -172,9 +172,16 @@ impl StudioChildResources for StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open child chat session", error))?;
+        let model = pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::ModelRuntime::from_route(&profile.route)?,
+            profile.route.reasoning_config(),
+        )
+        .with_hosted_tools(prepared_tools.hosted);
         let spec = StudioThreadSpec {
+            preparation_guard: prepared_tools.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &profile.route,
+                model.clone(),
                 profile.config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
@@ -186,7 +193,7 @@ impl StudioChildResources for StudioThreadFactory {
             parent_id: Some(request.caller.clone()),
             route: profile.route.clone(),
             model_available: true,
-            hosted_tools: prepared_tools.hosted,
+            model,
             checkpoint: None,
             tools: Vec::new(),
             initial_context,

@@ -11,8 +11,8 @@ import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<BridgeProviderCatalogSnapshot> loadProviderCatalog() =>
-    RustLib.instance.api.crateApiStudioHandlersSettingsLoadProviderCatalog();
+Future<BridgeAccountCatalogSnapshot> loadAccountCatalog() =>
+    RustLib.instance.api.crateApiStudioHandlersSettingsLoadAccountCatalog();
 
 Future<BridgeWebSearchSettingsDto> readWebSearchSettings() =>
     RustLib.instance.api.crateApiStudioHandlersSettingsReadWebSearchSettings();
@@ -36,14 +36,14 @@ Future<BridgeSettingsCommandReply> applySettingsField({
 Future<BridgeSettingsStateResponse> readSettingsState() =>
     RustLib.instance.api.crateApiStudioHandlersSettingsReadSettingsState();
 
-Future<BridgeSettingsCommandReply> removeProviderModel({
+Future<BridgeSettingsCommandReply> removeAccountModel({
   required BigInt expectedSettingsRevision,
-  required String providerId,
-  required String slug,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveProviderModel(
+  required String accountId,
+  required String modelId,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveAccountModel(
   expectedSettingsRevision: expectedSettingsRevision,
-  providerId: providerId,
-  slug: slug,
+  accountId: accountId,
+  modelId: modelId,
 );
 
 Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({
@@ -63,34 +63,34 @@ Future<BridgeSettingsCommandReply> saveRuntimePermissionMode({
       mode: mode,
     );
 
-Future<BridgeSettingsCommandReply> saveProvider({
+Future<BridgeSettingsCommandReply> saveAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
-  required ProviderSettingsInput input,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsSaveProvider(
+  required AccountSettingsInput input,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsSaveAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   input: input,
 );
 
-Future<BridgeSettingsCommandReply> setDefaultProvider({
+Future<BridgeSettingsCommandReply> setDefaultAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
-  required String providerId,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsSetDefaultProvider(
+  required String accountId,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsSetDefaultAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
-  providerId: providerId,
+  accountId: accountId,
 );
 
-Future<BridgeSettingsCommandReply> removeProvider({
+Future<BridgeSettingsCommandReply> removeAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
-  required String providerId,
-  required RemoveProviderInput input,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveProvider(
+  required String accountId,
+  required RemoveAccountInput input,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
-  providerId: providerId,
+  accountId: accountId,
   input: input,
 );

@@ -8,11 +8,14 @@ use serde_json::Value;
 use crate::model::capabilities::{ModelCapabilities, ModelModality};
 use crate::model::parameter::ModelParameter;
 use crate::model::profile_error::ModelProfileError;
-use crate::provider::{ProviderConnectionMode, ProviderWireProtocol};
+use crate::protocol::{ConnectionMode, WireApi};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelInfo {
-    pub slug: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<super::ModelObservation>,
     pub display_name: String,
     pub description: Option<String>,
 
@@ -52,20 +55,16 @@ impl ModelBinding {
     pub fn set_transport(&mut self, transport: ModelTransportProfile) {
         let matches = matches!(
             (&self.request.protocol, transport.protocol),
-            (
-                ModelProtocolOptions::Responses(_),
-                ProviderWireProtocol::Responses
-            ) | (
-                ModelProtocolOptions::ChatCompletions(_),
-                ProviderWireProtocol::ChatCompletions
-            )
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
         );
         if !matches {
             self.request.protocol = match transport.protocol {
-                ProviderWireProtocol::Responses => {
-                    ModelProtocolOptions::Responses(Default::default())
-                }
-                ProviderWireProtocol::ChatCompletions => {
+                WireApi::Responses => ModelProtocolOptions::Responses(Default::default()),
+                WireApi::ChatCompletions => {
                     ModelProtocolOptions::ChatCompletions(Default::default())
                 }
             };
@@ -77,36 +76,33 @@ impl ModelBinding {
 /// 模型拥有的 API wire 与连接策略。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelTransportProfile {
-    pub protocol: ProviderWireProtocol,
-    pub supported_connection_modes: Vec<ProviderConnectionMode>,
-    pub default_connection_mode: ProviderConnectionMode,
+    pub protocol: WireApi,
+    pub supported_connection_modes: Vec<ConnectionMode>,
+    pub default_connection_mode: ConnectionMode,
 }
 
 impl ModelTransportProfile {
     pub fn responses_websocket() -> Self {
         Self {
-            protocol: ProviderWireProtocol::Responses,
-            supported_connection_modes: vec![
-                ProviderConnectionMode::WebSocket,
-                ProviderConnectionMode::Http,
-            ],
-            default_connection_mode: ProviderConnectionMode::WebSocket,
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::WebSocket, ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::WebSocket,
         }
     }
 
     pub fn responses_http() -> Self {
         Self {
-            protocol: ProviderWireProtocol::Responses,
-            supported_connection_modes: vec![ProviderConnectionMode::Http],
-            default_connection_mode: ProviderConnectionMode::Http,
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
         }
     }
 
     pub fn chat_completions_http() -> Self {
         Self {
-            protocol: ProviderWireProtocol::ChatCompletions,
-            supported_connection_modes: vec![ProviderConnectionMode::Http],
-            default_connection_mode: ProviderConnectionMode::Http,
+            protocol: WireApi::ChatCompletions,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
         }
     }
 }
@@ -216,12 +212,10 @@ impl MediaWireFormat {
         }
     }
 
-    fn protocol(self) -> ProviderWireProtocol {
+    fn protocol(self) -> WireApi {
         match self {
-            Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => {
-                ProviderWireProtocol::ChatCompletions
-            }
-            Self::ResponsesInputImage => ProviderWireProtocol::Responses,
+            Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => WireApi::ChatCompletions,
+            Self::ResponsesInputImage => WireApi::Responses,
         }
     }
 }
@@ -307,7 +301,7 @@ impl ModelInfo {
         for capability in &self.capabilities.input {
             if modalities.contains(&capability.modality) {
                 return Err(ModelProfileError::DuplicateInputModality {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -315,7 +309,7 @@ impl ModelInfo {
             if capability.modality == ModelModality::Text {
                 if !capability.sources.is_empty() {
                     return Err(ModelProfileError::TextInputDeclaresMediaSources {
-                        model: self.slug.clone(),
+                        model: self.model_id.clone(),
                     });
                 }
                 continue;
@@ -325,44 +319,44 @@ impl ModelInfo {
                 .request
                 .media_profile(capability.modality)
                 .ok_or_else(|| ModelProfileError::ModalityWithoutMediaProfile {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 })?;
             if capability.sources.is_empty() {
                 return Err(ModelProfileError::ModalityWithoutAdmittedSources {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.first_send.is_empty() || profile.replay.is_empty() {
                 return Err(ModelProfileError::MissingSendOrReplayRepresentations {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.wire.modality() != profile.modality {
                 return Err(ModelProfileError::WireModalityMismatch {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                     wire: profile.wire,
                 });
             }
             if profile.wire.protocol() != self.binding.transport.protocol {
                 return Err(ModelProfileError::WireProtocolMismatch {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     wire: profile.wire,
                     protocol: self.binding.transport.protocol,
                 });
             }
             if has_duplicates(&profile.first_send) || has_duplicates(&profile.replay) {
                 return Err(ModelProfileError::RepeatedMediaRepresentation {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.replay.contains(&MediaRepresentation::RemoteUrl) {
                 return Err(ModelProfileError::ReplayUsesRemoteUrl {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -377,7 +371,7 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::LocalSourceWithoutDurableRepresentation {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -387,7 +381,7 @@ impl ModelInfo {
                     .contains(&crate::model::ModelInputSource::RemoteUrl)
             {
                 return Err(ModelProfileError::RemoteUrlStrategyWithoutAdmission {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -397,7 +391,7 @@ impl ModelInfo {
                 .all(|representation| *representation == MediaRepresentation::RemoteUrl)
             {
                 return Err(ModelProfileError::ReplayNotDurable {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: capability.modality,
                 });
             }
@@ -406,14 +400,14 @@ impl ModelInfo {
         for profile in &self.binding.request.media {
             if profile_modalities.contains(&profile.modality) {
                 return Err(ModelProfileError::DuplicateMediaProfile {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: profile.modality,
                 });
             }
             profile_modalities.push(profile.modality);
             if !self.capabilities.supports_input_modality(profile.modality) {
                 return Err(ModelProfileError::MediaProfileForUndeclaredModality {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                     modality: profile.modality,
                 });
             }
@@ -426,19 +420,19 @@ impl ModelInfo {
     /// Returns the inconsistent transport, media or tariff contract, or a
     /// non-positive default auto-compact token limit.
     pub fn validate(&self) -> Result<(), ModelProfileError> {
-        if [
-            self.context_window,
-            self.max_context_window,
-            self.max_output_tokens,
-        ]
-        .contains(&Some(0))
-            || matches!((self.context_window, self.max_context_window), (Some(current), Some(max)) if current > max)
+        if self.auto_compact_token_limit == Some(0) {
+            return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
+                model: self.model_id.clone(),
+            });
+        }
+        if self.resolve_context(None).unavailable
+            == Some(pl_protocol::ModelContextUnavailable::InvalidParameters)
             || self
                 .default_temperature
                 .is_some_and(|t| !t.is_finite() || t < 0.0)
         {
             return Err(ModelProfileError::InvalidBudget {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
             });
         }
         let mut names = std::collections::BTreeSet::new();
@@ -447,6 +441,10 @@ impl ModelInfo {
             if parameter.name.trim().is_empty()
                 || !names.insert(&parameter.name)
                 || parameter.candidates.is_empty()
+                || parameter
+                    .default
+                    .as_ref()
+                    .is_some_and(|value| !parameter.candidates.contains(value))
                 || parameter
                     .candidates
                     .iter()
@@ -464,81 +462,93 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::InvalidParameter {
-                    model: self.slug.clone(),
+                    model: self.model_id.clone(),
                 });
             }
         }
-        self.binding.transport.validate(&self.slug)?;
+        self.binding.transport.validate(&self.model_id)?;
         if !matches!(
             (
                 &self.binding.request.protocol,
                 self.binding.transport.protocol
             ),
-            (
-                ModelProtocolOptions::Responses(_),
-                ProviderWireProtocol::Responses
-            ) | (
-                ModelProtocolOptions::ChatCompletions(_),
-                ProviderWireProtocol::ChatCompletions
-            )
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
         ) {
             return Err(ModelProfileError::ProtocolOptionsMismatch {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
                 protocol: self.binding.transport.protocol,
-            });
-        }
-        if self.auto_compact_token_limit == Some(0) {
-            return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
-                model: self.slug.clone(),
             });
         }
         self.pricing
             .validate()
             .map_err(|source| ModelProfileError::InvalidPricing {
-                model: self.slug.clone(),
+                model: self.model_id.clone(),
                 source,
             })?;
         self.validate_media_contract()
     }
 
-    pub fn resolved_context_window(&self) -> Option<u64> {
-        self.context_window.or(self.max_context_window)
-    }
-
-    /// 模型预设优先，否则使用当前上下文容量的 90%；两者都未知时保持未知。
-    pub fn default_auto_compact_token_limit(&self) -> Option<u64> {
-        self.auto_compact_token_limit
-            .or_else(|| self.safe_auto_compact_token_limit())
-    }
-
-    /// 上下文容量 90% 的安全上限；上下文未知时返回 `None`，保持不自动压缩。
-    pub fn safe_auto_compact_token_limit(&self) -> Option<u64> {
-        let context = self.resolved_context_window()?;
-        // 用 u128 精确计算 floor(context * 90 / 100)，避免大 u64 相乘溢出。
-        let limit = ((u128::from(context) * 90) / 100) as u64;
-        (limit > 0).then_some(limit)
-    }
-
-    /// 在给定用户覆盖值下解析实际生效的压缩阈值。
-    ///
-    /// 生效值取「用户覆盖值或模型默认值」与上下文 90% 安全上限的较小值；
-    /// 上下文未知时返回 `None`。用户覆盖不能绕过安全上限。
-    pub fn resolved_auto_compact_limit_with(&self, override_limit: Option<u64>) -> Option<u64> {
-        let safe = self.safe_auto_compact_token_limit()?;
-        let selected = override_limit.or_else(|| self.default_auto_compact_token_limit())?;
-        Some(selected.min(safe))
-    }
-
-    /// 使用模型默认值（无用户覆盖）解析实际生效的压缩阈值。
-    pub fn resolved_auto_compact_limit(&self) -> Option<u64> {
-        self.resolved_auto_compact_limit_with(None)
+    /// Resolves the complete context policy. Consumers must reuse the catalog's frozen result.
+    pub fn resolve_context(
+        &self,
+        override_limit: Option<u64>,
+    ) -> pl_protocol::ModelContextResolution {
+        use pl_protocol::{
+            ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
+        };
+        let window = self.context_window.or(self.max_context_window);
+        let invalid = [
+            self.context_window,
+            self.max_context_window,
+            self.max_output_tokens,
+            self.auto_compact_token_limit,
+            override_limit,
+        ]
+        .contains(&Some(0))
+            || self
+                .context_window
+                .zip(self.max_context_window)
+                .is_some_and(|(current, maximum)| current > maximum);
+        let input = window.map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or(0)));
+        let unavailable = if invalid {
+            Some(ModelContextUnavailable::InvalidParameters)
+        } else if window.is_none() {
+            Some(ModelContextUnavailable::WindowUnknown)
+        } else if input == Some(0) {
+            Some(ModelContextUnavailable::InputBudgetExhausted)
+        } else {
+            None
+        };
+        let safe = window
+            .zip(input)
+            .filter(|_| unavailable.is_none())
+            .map(|(window, input)| (((u128::from(window) * 90) / 100) as u64).min(input))
+            .filter(|limit| *limit > 0);
+        let selected = override_limit.or(self.auto_compact_token_limit).or(safe);
+        ModelContextResolution {
+            unavailable,
+            context_window: window,
+            input_token_limit: input.filter(|_| !invalid),
+            auto_compact_limit: selected
+                .zip(safe)
+                .map(|(selected, safe)| selected.min(safe)),
+            adjustment: selected
+                .zip(safe)
+                .filter(|(selected, safe)| selected > safe)
+                .map(|_| ModelContextAdjustment::SafetyLimit),
+        }
     }
 
     /// Basic compatible model with configurable local 32K/4K budgets.
-    pub fn compatible(slug: &str) -> Self {
+    pub fn compatible(model_id: &str) -> Self {
         Self {
-            slug: slug.to_string(),
-            display_name: slug.to_string(),
+            observation: None,
+            model_id: model_id.to_string(),
+            display_name: model_id.to_string(),
             description: None,
             context_window: Some(32_000),
             max_context_window: Some(32_000),
@@ -581,10 +591,10 @@ impl ModelInfo {
             .unwrap_or_default()
     }
 
-    /// 返回 effort 的默认值（模型声明的候选值首项，且该首项是最弱强度），若模型未声明 effort 返回 None。
+    /// 返回模型声明的默认 effort；未声明默认时使用候选首项。
     pub fn default_effort(&self) -> Option<String> {
         self.effort_parameter()
-            .and_then(|parameter| parameter.candidates.first().cloned())
+            .and_then(|parameter| parameter.default_candidate(None))
     }
 }
 

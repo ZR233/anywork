@@ -1,17 +1,33 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'siamese_scheme.dart';
 import 'studio_tokens.dart';
 
-/// The single, system-independent Studio theme, including third-party content.
-ThemeData pureStudioTheme() => _studioTheme;
+/// The single Studio theme, with platform typography and third-party content.
+ThemeData pureStudioTheme({Locale? locale}) =>
+    defaultTargetPlatform == TargetPlatform.windows &&
+        locale?.languageCode == 'zh'
+    ? _windowsChineseTheme
+    : _studioTheme;
 
 // Stable identity avoids spurious AnimatedTheme transitions on unrelated rebuilds.
-final ThemeData _studioTheme = _createStudioTheme();
+final ThemeData _studioTheme = _createStudioTheme(
+  fontFamily: defaultTargetPlatform == TargetPlatform.windows
+      ? 'Segoe UI'
+      : null,
+);
+final ThemeData _windowsChineseTheme = _createStudioTheme(
+  fontFamily: 'Microsoft YaHei UI',
+);
 
-ThemeData _createStudioTheme() {
+ThemeData _createStudioTheme({String? fontFamily}) {
   final scheme = siameseColorScheme();
+  final fontFamilyFallback = defaultTargetPlatform == TargetPlatform.windows
+      ? const ['Microsoft YaHei UI']
+      : null;
   final shape = RoundedRectangleBorder(
     borderRadius: BorderRadius.circular(StudioRadii.sm),
   );
@@ -19,10 +35,16 @@ ThemeData _createStudioTheme() {
     borderRadius: BorderRadius.circular(StudioRadii.sm),
     borderSide: BorderSide(color: scheme.outline),
   );
-  final text = Typography.material2021().black.apply(
-    bodyColor: scheme.onSurface,
-    displayColor: scheme.onSurface,
-  );
+  final text =
+      Typography.material2021(
+        platform: defaultTargetPlatform,
+        colorScheme: scheme,
+      ).black.apply(
+        fontFamily: fontFamily,
+        fontFamilyFallback: fontFamilyFallback,
+        bodyColor: scheme.onSurface,
+        displayColor: scheme.onSurface,
+      );
   Color? stateOverlay(Set<WidgetState> states) {
     if (states.contains(WidgetState.disabled)) return Colors.transparent;
     if (states.contains(WidgetState.pressed)) {
@@ -57,7 +79,8 @@ ThemeData _createStudioTheme() {
     visualDensity: VisualDensity.compact,
     scaffoldBackgroundColor: scheme.surface,
     canvasColor: scheme.surface,
-    fontFamilyFallback: const ['Inter', 'Noto Sans SC', 'Segoe UI'],
+    fontFamily: fontFamily,
+    fontFamilyFallback: fontFamilyFallback,
     textTheme: text,
     iconTheme: IconThemeData(color: scheme.onSurfaceVariant),
     hoverColor: scheme.primary.withValues(alpha: 0.06),

@@ -10,12 +10,9 @@ pub(super) fn key(runtime: &ModelRuntime, thread_id: &str) -> Option<String> {
         return None;
     }
     Some(crate::runtime::derive_prompt_cache_key(
-        &crate::runtime::binding_cache_namespace(
-            runtime.provider_instance_id(),
-            runtime.endpoint(),
-        ),
+        &crate::runtime::binding_cache_namespace(runtime.account_id(), runtime.endpoint()),
         thread_id,
-        &runtime.model().slug,
+        &runtime.model().model_id,
         runtime.model().binding.transport.protocol,
     ))
 }

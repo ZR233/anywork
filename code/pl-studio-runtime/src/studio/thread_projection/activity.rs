@@ -1,6 +1,6 @@
 //! 当前执行活动的 typed 投影。
 //!
-//! 活动是独立于 ChatView 历史窗口的投影：窗口决定展示哪些条目，活动只描述“当前在做什么”。
+//! 活动是独立于 Timeline 内容的投影：内容只决定有哪些条目，活动只描述“当前在做什么”。
 //! 它是 canonical 事实的**纯函数**：只读 owner 已发布的 `ThreadSnapshot`（turns/attempts/
 //! tasks/permissions/interactions/input_execution/model_progress/model_execution/tool_progress）与
 //! “上一条已发布活动”，不读会话、不读历史、不等待也不发送任何东西，因此订阅、快照与冷读得到同一
@@ -387,7 +387,31 @@ fn tool_entry(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolEn
         // on older v2 records that predate the field.
         ordinal: task.started_sequence,
         started_at: None,
+        wait: wait_presentation(state, task),
     }
+}
+
+fn wait_presentation(
+    state: &ThreadSnapshot,
+    task: &TaskRecord,
+) -> Option<pl_protocol::ThreadWaitPresentation> {
+    if !matches!(task.tool_id.as_str(), "wait" | "sleep") {
+        return None;
+    }
+    let arguments = call_arguments(state, &task.call_id)?;
+    let activity_state = tool_state(state, task);
+    let tool_lifecycle = match activity_state {
+        ThreadActivityToolState::Cancelling => pl_protocol::ThreadToolState::Cancelling(
+            pl_protocol::CancellingThreadTool::new(String::new()),
+        ),
+        ThreadActivityToolState::Finished => return None,
+        ThreadActivityToolState::Running | ThreadActivityToolState::AwaitingApproval => {
+            pl_protocol::ThreadToolState::Running(
+                pl_protocol::RunningThreadTool::new(String::new()),
+            )
+        }
+    };
+    super::wait::project_wait(Some(state), &task.tool_id, &arguments, &tool_lifecycle)
 }
 
 /// 工具条目的参数事实：完整性判断与摘要。
@@ -915,13 +939,14 @@ impl ToolDetailSource {
             output,
             ordinal: self.entry.ordinal,
             started_at: self.entry.started_at,
+            wait: self.entry.wait.clone(),
         }
     }
 }
 
 /// 运行中工具输出的共享正文；没有可读文本时如实为 `None`。
 ///
-/// 正文只在读取详情时物化一次，热路径只共享内容块；因此这里物化的是**当前**有界窗口，而不是每个
+/// 正文只在读取详情时物化一次，热路径只共享内容块；因此这里物化的是**当前**有界预览，而不是每个
 /// chunk 复制一次的累计全文。
 fn progress_output(progress: &pl_core::model::ToolProgress) -> Option<String> {
     let text = progress.content().text();

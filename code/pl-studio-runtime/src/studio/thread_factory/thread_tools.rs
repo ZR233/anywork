@@ -23,6 +23,7 @@ pub(super) struct ThreadToolAssembly<'a> {
 }
 
 pub(super) struct PreparedThreadTools {
+    pub binding_guard: Option<crate::thread_assembler::ThreadPreparationGuard>,
     pub catalog: Option<Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub tools: StudioThreadTools,
     pub hosted: Vec<pl_model::runtime::HostedTool>,
@@ -49,6 +50,7 @@ impl StudioThreadFactory {
         assembly: ThreadToolAssembly<'_>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let binding = super::tool_bindings::ToolBinding {
+            lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
             target_invalidated: false,
             permission_mode: assembly.config.runtime.permission_mode,
@@ -73,7 +75,7 @@ impl StudioThreadFactory {
             },
         };
         let id = assembly.thread_id.to_owned();
-        let tools = self
+        let mut tools = self
             .prepare_thread_tools_with(assembly, CatalogPreparation::Initial)
             .await?;
         let binding = super::tool_bindings::ToolBinding {
@@ -92,6 +94,14 @@ impl StudioThreadFactory {
                 .map(|commands| commands.downgrade()),
             ..binding
         };
+        let factory = self.clone();
+        let identity = binding.lifetime.clone();
+        let guard_id = id.clone();
+        tools.binding_guard = Some(crate::thread_assembler::ThreadPreparationGuard::new(
+            move || {
+                factory.forget_tool_binding_if_current(&guard_id, &identity);
+            },
+        ));
         self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -129,7 +139,7 @@ impl StudioThreadFactory {
         search
             .hosted
             .extend(crate::programmatic::hosted_tool(route));
-        // Image generation is a provider service capability: absence of the declaration, an
+        // Image generation is an account service capability: absence of the declaration, an
         // online image model or a resolvable credential leaves the tool unregistered.
         let image_generation = config
             .models
@@ -330,6 +340,7 @@ impl StudioThreadFactory {
             tools = tools.with_image_generation(backend, media)?;
         }
         Ok(PreparedThreadTools {
+            binding_guard: None,
             catalog: skill_catalog,
             tools: tools.with_approval(approval, &policies),
             hosted: search.hosted,
@@ -345,6 +356,6 @@ pub(super) fn approval_policy_key(
 ) -> String {
     crate::hash::canonical_json_hash(&serde_json::json!({
         "mode": config.runtime.permission_mode,
-        "reviewer": (config.runtime.permission_mode == crate::approval::PermissionMode::AutoReview).then(|| serde_json::json!({"provider": route.provider_id, "endpoint": route.endpoint, "model": route.model, "effort": route.effort, "pricing": route.pricing_mode})),
+        "reviewer": (config.runtime.permission_mode == crate::approval::PermissionMode::AutoReview).then(|| serde_json::json!({"provider": route.account_id, "endpoint": route.endpoint, "model": route.model, "effort": route.effort, "pricing": route.pricing_mode})),
     }))
 }

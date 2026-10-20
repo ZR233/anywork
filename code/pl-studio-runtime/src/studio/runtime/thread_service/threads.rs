@@ -48,6 +48,20 @@ impl StudioRuntime {
         &self,
         request: StudioStartNewThreadRequest,
     ) -> Result<StudioStartNewThreadResponse> {
+        let project_id = request.project_id.clone();
+        let input_id = request.input.input_id.clone();
+        let report = |stage, workspace_path: Option<&str>, branch: Option<&str>| {
+            if let Some(observer) = &request.preparation_observer {
+                observer(super::super::ThreadPreparationProgress {
+                    project_id: project_id.clone(),
+                    input_id: input_id.clone(),
+                    stage,
+                    workspace_path: workspace_path.map(str::to_owned),
+                    branch: branch.map(str::to_owned),
+                });
+            }
+        };
+        use super::super::ThreadPreparationStage;
         super::super::prompt_runner::validate_prompt_content(&request.input)?;
         let auto_title = request.title.is_none() && !request.input.text.trim().is_empty();
         let provisional = request
@@ -56,6 +70,7 @@ impl StudioRuntime {
             .unwrap_or_else(|| provisional_title(&request.input.text));
         let title_prompt = request.input.text.clone();
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
+        report(ThreadPreparationStage::CheckingProject, None, None);
         self.ensure_prompt_runtime_ready().await?;
         let drafts = self
             .attachment_drafts
@@ -65,20 +80,19 @@ impl StudioRuntime {
         let selector = super::super::settings_api::validated_route(
             &config.config,
             "new Thread",
-            &request.route.provider_id,
-            &request.route.model,
+            &request.route.account_id,
+            &request.route.model_id,
             request.route.effort.as_deref(),
         )?;
         let route = config
             .config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
-        let mode_definition = self
-            .thread_modes
+        self.thread_modes
             .snapshot()
             .mode(&request.mode)
             .context("requested Thread Mode is unavailable")?;
-        crate::mode::validate_thread_mode_model(Some(&mode_definition), &route.model)?;
+
         self.attachment_drafts
             .validate_for_model(&route.model, &drafts)?;
         // 校验走内存目录 owner：open_project 的落库是异步跟随的。
@@ -94,6 +108,12 @@ impl StudioRuntime {
         // 再记录 `active` lease；任一阶段失败都让命令失败且不留下已发布 Thread。
         let thread_id = crate::studio::ids::new_id("thread");
         let mut session_lease = None;
+        report(
+            ThreadPreparationStage::PreparingWorkspace,
+            (request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local)
+                .then_some(project.path.as_str()),
+            None,
+        );
         if request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
             // 创建窗口内的 lease 由进程内「创建中」标记保护：在记录 `prepared` 之前设置，
             // 直到 owner Thread 目录事实提交（或失败 settle 并发布）之后才清除。
@@ -104,6 +124,7 @@ impl StudioRuntime {
                     &self.ssh_manager,
                     &project,
                     &thread_id,
+                    &report,
                 )
                 .await;
             let mut lease = match created {
@@ -114,7 +135,7 @@ impl StudioRuntime {
                         Some("the session worktree could not be created"),
                     )
                     .await;
-                    return Err(error.into());
+                    return Err(error);
                 }
             };
             lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
@@ -136,6 +157,12 @@ impl StudioRuntime {
             Some(lease) => lease.path.clone(),
             None => project.path.clone(),
         };
+        let workspace_branch = session_lease.as_ref().map(|lease| lease.branch.clone());
+        report(
+            ThreadPreparationStage::InitializingSession,
+            Some(&workspace_path),
+            workspace_branch.as_deref(),
+        );
         let (delta, thread) = DirectoryDelta::register_root_thread(
             thread_id,
             &request.project_id,
@@ -186,6 +213,11 @@ impl StudioRuntime {
             return Err(error);
         }
         self.thread_factory.clear_initial_route(&thread.id);
+        report(
+            ThreadPreparationStage::SubmittingPrompt,
+            Some(&thread.workspace_path),
+            workspace_branch.as_deref(),
+        );
         let submission = self
             .submit_prompt_for_owned_thread_with_lifecycle_lock(
                 StudioSubmitPromptRequest {
@@ -443,6 +475,7 @@ impl StudioRuntime {
                         &self.ssh_manager,
                         &project,
                         &thread_id,
+                        &|_, _, _| {},
                     )
                     .await;
                 let mut lease = match created {
@@ -453,7 +486,7 @@ impl StudioRuntime {
                             Some("the restored session worktree could not be recreated"),
                         )
                         .await;
-                        return Err(error.into());
+                        return Err(error);
                     }
                 };
                 // 创建落定后立即激活，后续冷激活按 `Active` lease 解析同一路径。

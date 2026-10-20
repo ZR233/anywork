@@ -14,26 +14,14 @@ pub struct IdleReconfiguration {
 }
 
 impl Owner {
-    pub(super) fn reconfigure(
-        &mut self,
-        update: IdleReconfiguration,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        self.tools.retain_candidates(&update.tools);
-        if self.interrupt.is_closing() || self.state.lifecycle != ThreadLifecycle::Open {
-            return Err(ThreadError::Closed);
-        }
-        if self.state.commit_sequence != update.expected_sequence {
-            return Err(ThreadError::ContextConflict {
-                expected: update.expected_sequence,
-                actual: self.state.commit_sequence,
-            });
-        }
+    pub(super) fn ensure_idle(&self, allow_admission_boundary: bool) -> Result<(), ThreadError> {
         // A closed admission boundary has no executing Turn. Its queued input identities
         // remain owned by this Thread while the host replaces generation-bound services.
-        let admission_boundary = self
-            .turn_admission
-            .as_ref()
-            .is_some_and(|gate| !gate.is_open() && gate.admitted_turns() == 0);
+        let admission_boundary = allow_admission_boundary
+            && self
+                .turn_admission
+                .as_ref()
+                .is_some_and(|gate| !gate.is_open() && gate.admitted_turns() == 0);
         if (!self.active_inputs.is_empty() && !(admission_boundary && self.turn_admission_waiting))
             || self
                 .state
@@ -69,6 +57,24 @@ impl Owner {
         {
             return Err(ThreadError::PendingInteraction);
         }
+        Ok(())
+    }
+
+    pub(super) fn reconfigure(
+        &mut self,
+        update: IdleReconfiguration,
+    ) -> Result<ThreadSnapshot, ThreadError> {
+        self.tools.retain_candidates(&update.tools);
+        if self.interrupt.is_closing() || self.state.lifecycle != ThreadLifecycle::Open {
+            return Err(ThreadError::Closed);
+        }
+        if self.state.commit_sequence != update.expected_sequence {
+            return Err(ThreadError::ContextConflict {
+                expected: update.expected_sequence,
+                actual: self.state.commit_sequence,
+            });
+        }
+        self.ensure_idle(true)?;
         let mut candidate = self.state.clone();
         let pending_model_update = update
             .model_update

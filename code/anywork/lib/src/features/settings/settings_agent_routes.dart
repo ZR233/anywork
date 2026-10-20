@@ -22,30 +22,30 @@ class AgentRouteConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsAgentsViewProvider);
-    final providers = settings.providers;
+    final accounts = settings.accounts;
     final route = ModelRouteQueries.roleRoute(
-      providers: providers,
+      accounts: accounts,
       roles: settings.roles,
       role: role,
     );
-    final options = buildModelSelectionOptions(
-      providers,
-      modelsForProvider: (provider) =>
-          provider.models.where((model) => model.slug.isNotEmpty).toList(),
-    );
+    final options = buildModelSelectionOptions(accounts, type: ModelType.text);
     final pending = ref.watch(
       settingsRoleCommandPendingProvider(role).select((state) => state.pending),
     );
-    final unresolvedLabel = route.unavailable
-        ? context.l10n.settingsAgentRouteUnavailable(
-            [
-              route.providerId,
-              route.model,
-            ].where((part) => part.isNotEmpty).join(' / '),
-          )
-        : route.descriptor == null
-        ? context.l10n.settingsDefaultModel
-        : null;
+    final unresolvedLabel =
+        modelTextFilterMessage(context, route.descriptor) ??
+        (route.unavailable
+            ? context.l10n.settingsAgentRouteUnavailable(
+                [
+                  route.accountId,
+                  route.modelId,
+                ].where((part) => part.isNotEmpty).join(' / '),
+              )
+            : route.descriptor == null
+            ? (options.isEmpty
+                  ? context.l10n.modelTextFilterEmpty
+                  : context.l10n.settingsDefaultModel)
+            : null);
     final commands = ref.read(anyworkClientProvider).settingsCommands;
 
     Future<void> report(Future<void> Function() action) async {
@@ -61,24 +61,23 @@ class AgentRouteConnector extends ConsumerWidget {
 
     return AgentRouteView(
       role: role,
-      selectedProviderId: route.providerId,
-      selectedModel: route.model,
+      selectedAccountId: route.accountId,
+      selectedModel: route.modelId,
       selectedEffort: route.effort,
       options: options,
       efforts: route.descriptor?.reasoningEfforts ?? const [],
       unresolvedLabel: unresolvedLabel,
-      showUnresolvedOption: route.unavailable,
       pending: pending,
       onModelChanged: (option) {
-        if (option.providerId == route.providerId &&
-            option.model == route.model) {
+        if (option.accountId == route.accountId &&
+            option.modelId == route.modelId) {
           return Future<void>.value();
         }
         return report(
           () => commands.setRoleModelField(
             roleKey: role,
-            providerId: option.providerId,
-            model: option.model,
+            accountId: option.accountId,
+            modelId: option.modelId,
           ),
         );
       },
@@ -95,26 +94,24 @@ class AgentRouteView extends StatelessWidget {
   const AgentRouteView({
     super.key,
     required this.role,
-    required this.selectedProviderId,
+    required this.selectedAccountId,
     required this.selectedModel,
     required this.selectedEffort,
     required this.options,
     required this.efforts,
     required this.unresolvedLabel,
-    required this.showUnresolvedOption,
     this.pending = false,
     required this.onModelChanged,
     required this.onEffortChanged,
   });
 
   final String role;
-  final String selectedProviderId;
+  final String selectedAccountId;
   final String selectedModel;
   final String? selectedEffort;
   final List<ModelSelectionOption> options;
   final List<String> efforts;
   final String? unresolvedLabel;
-  final bool showUnresolvedOption;
   final bool pending;
   final FutureOr<void> Function(ModelSelectionOption option) onModelChanged;
   final FutureOr<void> Function(String effort) onEffortChanged;
@@ -132,17 +129,16 @@ class AgentRouteView extends StatelessWidget {
             selectorKey: StudioDriverKeys.settingsRoleModel(role),
             fieldLabel: context.l10n.settingsModelField,
             options: options,
-            providerId: selectedProviderId,
-            model: selectedModel,
+            accountId: selectedAccountId,
+            modelId: selectedModel,
             unresolvedLabel: unresolvedLabel,
-            showUnresolvedOption: showUnresolvedOption,
             enabled: options.isNotEmpty,
             onSelected: onModelChanged,
             optionKeyBuilder: (option) =>
                 StudioDriverKeys.settingsRoleModelOption(
                   role,
-                  option.providerId,
-                  option.model,
+                  option.accountId,
+                  option.modelId,
                 ),
           ),
         ),

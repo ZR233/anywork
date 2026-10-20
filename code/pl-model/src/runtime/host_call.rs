@@ -131,9 +131,9 @@ impl ModelTurnClient {
         })
     }
 
-    /// Explicit access to the bound native client; ordinary completion remains provider-neutral.
-    pub fn provider(&self) -> crate::provider::ProviderClient<'_> {
-        self.runtime.provider()
+    /// Explicit access to the bound native client; ordinary completion stays protocol-neutral.
+    pub fn protocol_client(&self) -> crate::protocol::ProtocolClient<'_> {
+        self.runtime.protocol_client()
     }
 
     /// 执行一次模型调用，并返回不暴露 provider/wire 类型的宿主快照。

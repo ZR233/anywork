@@ -37,7 +37,7 @@ void main() {
 
   ThreadToolUserInputView userInput({
     required ThreadToolUserInputStateView state,
-    String firstQuestion = 'Which provider should the release use?',
+    String firstQuestion = 'Which account should the release use?',
     String secretQuestion = '',
     String firstHeader = 'Provider',
   }) {
@@ -45,7 +45,7 @@ void main() {
       interactionId: 'tool-interaction:call-1',
       questions: [
         UserQuestionView(
-          id: 'provider',
+          id: 'account',
           header: firstHeader,
           question: firstQuestion,
           isOther: true,
@@ -74,7 +74,7 @@ void main() {
     final part = toolItem(
       userInput: userInput(
         state: const PendingThreadToolUserInputView(),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
         secretQuestion: 'Paste the token',
       ),
     ).tool;
@@ -84,10 +84,10 @@ void main() {
     expect(projected!.isResolved, isFalse);
     expect(projected.answers, isEmpty);
     expect(projected.questions.map((question) => question.id), [
-      'provider',
+      'account',
       'token',
     ]);
-    expect(projected.questions.first.question, 'Which provider?');
+    expect(projected.questions.first.question, 'Which account?');
     expect(projected.questions.last.isSecret, isTrue);
   });
 
@@ -106,7 +106,7 @@ void main() {
     final shell = toolItem(
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(questionId: 'provider', answers: ['']),
+          ThreadUserInputAnswerView(questionId: 'account', answers: ['']),
         ]),
         firstQuestion: '',
         secretQuestion: '',
@@ -117,7 +117,7 @@ void main() {
     final current = toolItem(
       userInput: userInput(
         state: const PendingThreadToolUserInputView(),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
         secretQuestion: 'Paste the token',
       ),
       terminal: false,
@@ -137,7 +137,7 @@ void main() {
             questionIndex: 0,
             part: ThreadUserInputQuestionFieldPartView(),
           ),
-          change: ReplaceThreadFieldChangeView('Which provider?'),
+          change: ReplaceThreadFieldChangeView('Which account?'),
         ),
         ThreadFieldUpdateView(
           field: ThreadToolUserInputFieldView(
@@ -173,7 +173,7 @@ void main() {
     expect(projected, isNotNull);
     expect(projected!.isResolved, isTrue);
     expect(projected.headerText(0), 'Provider');
-    expect(projected.questionText(0), 'Which provider?');
+    expect(projected.questionText(0), 'Which account?');
     expect(projected.answerText(0, 0), 'anthropic');
     expect(projected.optionLabel(0, 0), 'anthropic');
     expect(projected.optionDescription(0, 0), 'Verify the Claude route');
@@ -186,11 +186,11 @@ void main() {
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
-            questionId: 'provider',
+            questionId: 'account',
             answers: ['anthropic'],
           ),
         ]),
-        firstQuestion: 'Which provider?',
+        firstQuestion: 'Which account?',
       ),
       revision: 3,
     );
@@ -215,11 +215,11 @@ void main() {
     final projected = updated?.tool?.userInput;
     expect(projected?.answerText(0, 0), 'openai\nand a second line');
     // 未被这次更新点名的正文保持原样，问答结构也不因字段变化重建。
-    expect(projected?.questionText(0), 'Which provider?');
+    expect(projected?.questionText(0), 'Which account?');
     expect(projected?.headerText(0), 'Provider');
     expect(projected?.optionLabel(0, 0), 'anthropic');
     expect(projected?.questions.map((question) => question.id), [
-      'provider',
+      'account',
       'token',
     ]);
   });
@@ -230,7 +230,7 @@ void main() {
       const CancelledThreadToolUserInputView(),
     ]) {
       final item = toolItem(
-        userInput: userInput(state: pending, firstQuestion: 'Which provider?'),
+        userInput: userInput(state: pending, firstQuestion: 'Which account?'),
       );
       final updated = item.applyFieldUpdates(
         fields: const [
@@ -263,7 +263,7 @@ void main() {
       userInput: userInput(
         state: const ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
-            questionId: 'provider',
+            questionId: 'account',
             answers: ['anthropic'],
           ),
           ThreadUserInputAnswerView(questionId: 'token', redacted: true),
@@ -283,7 +283,7 @@ void main() {
     final item = toolItem(
       userInput: userInput(
         state: ResolvedThreadToolUserInputView([
-          ThreadUserInputAnswerView(questionId: 'provider', answers: ['a']),
+          ThreadUserInputAnswerView(questionId: 'account', answers: ['a']),
         ]),
       ),
       omittedUnits: 2048,
@@ -291,5 +291,128 @@ void main() {
 
     expect(item.bodyPreviewed, isTrue);
     expect(item.tool?.userInput?.isResolved, isTrue);
+  });
+
+  /// 计划确认复用同一条 typed 问答通道：唯一 `plan_confirmation` 问题标识计划语义，
+  /// 回执的决定只来自该交互自己的答案，普通问答与它互不影响。
+  group('计划确认历史回执', () {
+    UserQuestionView planQuestion(String markdown) => UserQuestionView(
+      id: agentSessionPlanConfirmationQuestionId,
+      header: 'Plan',
+      question: markdown,
+      isOther: false,
+      isSecret: false,
+      options: const [],
+    );
+
+    ThreadToolUserInputView planInput({
+      required ThreadToolUserInputStateView state,
+    }) {
+      return ThreadToolUserInputView(
+        interactionId: 'tool-interaction:call-1',
+        questions: [
+          planQuestion(
+            '# Delivery Blueprint\n\n## Steps\n\n1. Ship the split view.',
+          ),
+        ],
+        state: state,
+      );
+    }
+
+    test('待确认只表达等待，批准后同一条目投影为已批准且不产生反馈', () {
+      final pending = toolItem(
+        userInput: planInput(state: const PendingThreadToolUserInputView()),
+      ).tool!.userInput!;
+
+      final waiting = pending.planReceipt;
+      expect(waiting, isNotNull);
+      expect(waiting!.decision, PlanConfirmationDecisionView.pending);
+      expect(waiting.title, 'Delivery Blueprint');
+      expect(waiting.isResolved, isFalse);
+
+      // 同一条目身份刷新为权威 resolved：身份不变，决定随答案改变。
+      final resolved = planInput(
+        state: const ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: 'plan_confirmation',
+            answers: [agentSessionPlanApproveAnswer],
+          ),
+        ]),
+      );
+      final approved = resolved.planReceipt;
+      expect(resolved.interactionId, pending.interactionId);
+      expect(approved!.decision, PlanConfirmationDecisionView.approved);
+      expect(approved.feedback, isEmpty);
+      expect(approved.isResolved, isTrue);
+    });
+
+    test('请求修改保留原始完整反馈，内部决定标记不进入正文', () {
+      final receipt = planInput(
+        state: const ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: 'plan_confirmation',
+            answers: [
+              agentSessionPlanReviseAnswer,
+              'Tighten step 2.\nKeep the delivery scope unchanged.',
+            ],
+          ),
+        ]),
+      ).planReceipt;
+
+      expect(receipt!.decision, PlanConfirmationDecisionView.revisionRequested);
+      expect(receipt.feedback, [
+        'Tighten step 2.\nKeep the delivery scope unchanged.',
+      ]);
+    });
+
+    test('取消与未知决定标记都不伪造批准或修改', () {
+      final cancelled = planInput(
+        state: const CancelledThreadToolUserInputView(),
+      ).planReceipt;
+      expect(cancelled!.decision, PlanConfirmationDecisionView.cancelled);
+      expect(cancelled.feedback, isEmpty);
+
+      final unknown = planInput(
+        state: const ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: 'plan_confirmation',
+            answers: ['Unrecognized'],
+          ),
+        ]),
+      ).planReceipt;
+      expect(unknown!.decision, PlanConfirmationDecisionView.resolved);
+      expect(unknown.feedback, isEmpty);
+    });
+
+    test('普通问答与不完整问题结构不构成计划回执', () {
+      expect(
+        toolItem(
+          userInput: userInput(
+            state: const ResolvedThreadToolUserInputView([
+              ThreadUserInputAnswerView(questionId: 'account', answers: ['a']),
+            ]),
+          ),
+        ).tool!.userInput!.planReceipt,
+        isNull,
+      );
+      expect(
+        ThreadToolUserInputView(
+          interactionId: 'tool-interaction:call-1',
+          questions: [
+            planQuestion('# Only Plan'),
+            const UserQuestionView(
+              id: 'extra',
+              header: 'Extra',
+              question: 'An extra question',
+              isOther: false,
+              isSecret: false,
+              options: [],
+            ),
+          ],
+          state: const PendingThreadToolUserInputView(),
+        ).planReceipt,
+        isNull,
+      );
+    });
   });
 }

@@ -11,19 +11,22 @@ void main() {
   test('late A1 retirement cannot erase A2 unresolved close ownership', () async {
     final transport = RecordingDemoTransport();
     final releaseFirst = Completer<void>();
-    final firstCreated = Completer<RecordingChatWindow>();
-    final secondCreated = Completer<_FailingCloseWindow>();
+    final firstCreated = Completer<RecordingTimelineConnection>();
+    final secondCreated = Completer<_FailingCloseConnection>();
     var mainOpens = 0;
-    transport.chatWindowFactory = (threadId, inner) async {
+    transport.timelineFactory = (threadId, inner) async {
       if (threadId != 'thread-main') return inner;
       mainOpens++;
       if (mainOpens == 1) {
-        final first = RecordingChatWindow(threadId: threadId, inner: inner);
+        final first = RecordingTimelineConnection(
+          threadId: threadId,
+          inner: inner,
+        );
         firstCreated.complete(first);
         await releaseFirst.future;
         return first;
       }
-      final second = _FailingCloseWindow(threadId: threadId, inner: inner)
+      final second = _FailingCloseConnection(threadId: threadId, inner: inner)
         ..failure = StateError('A2 close acknowledgement failed');
       secondCreated.complete(second);
       return second;
@@ -55,16 +58,17 @@ void main() {
     await client.directoryCommands.selectThread('thread-main');
     final first = await firstCreated.future;
     final owner = client.existingSession('thread-main')!;
-    final firstAttempt = owner.chat.currentAttemptId!;
+    final firstAttempt = owner.timeline.currentAttemptId!;
     await client.directoryCommands.selectThread('thread-alt');
     await client
         .existingSession('thread-alt')!
-        .source
-        .waitFor((s) => s.hasChatWindow);
+        .timeline
+        .state
+        .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame);
     await client.directoryCommands.selectThread('thread-main');
     final second = await secondCreated.future;
     await second.nextEntered.future;
-    final secondAttempt = owner.chat.currentAttemptId!;
+    final secondAttempt = owner.timeline.currentAttemptId!;
     expect(secondAttempt, isNot(firstAttempt));
 
     // An expired deadline reports both the blocked A1 open and A2's real close
@@ -101,12 +105,12 @@ void main() {
     second.failure = null;
     expect((await client.retryCleanup(deadline: _deadline())).complete, isTrue);
     expect(client.budget.used(ResourceKind.chatHandle), 0);
-    expect(mainOpens, 2, reason: 'cleanup never reopens a ChatView');
+    expect(mainOpens, 2, reason: 'cleanup never reopens a timeline connection');
     // These are Client ownership contracts over Demo, not native FRB evidence.
   });
 
   test(
-    'cleanup retry leaves a healthy active ChatView out of unresolved',
+    'cleanup retry leaves a healthy active timeline out of unresolved',
     () async {
       final transport = RecordingDemoTransport();
       final client = AnyworkClient(
@@ -117,22 +121,28 @@ void main() {
       await client.bootstrap();
       await client.directoryCommands.selectThread('thread-main');
       final owner = client.existingSession('thread-main')!;
-      await owner.source.waitFor((s) => s.hasChatWindow);
-      final window = transport.windows.single;
-      await window.nextEntered.future;
-      final attempt = owner.chat.currentAttemptId;
-      final viewId = owner.state.chatViewId;
+      await owner.timeline.state.waitFor(
+        (state) => state.snapshot is StudioTimelineBaselineFrame,
+      );
+      final connection = transport.timelines.single;
+      await connection.nextEntered.future;
+      final attempt = owner.timeline.currentAttemptId;
+      final delivered = owner.timeline.lastDeliveredFrame;
 
       final report = await client.retryCleanup(deadline: _deadline());
 
       expect(report.complete, isTrue);
       expect(client.unresolvedResources, isEmpty);
-      expect(owner.chat.currentAttemptId, attempt);
-      expect(owner.state.chatViewId, viewId);
-      expect(owner.state.hasChatWindow, isTrue);
-      expect(window.requestCloseCalls, 0);
-      expect(window.closeCalls, 0);
-      expect(transport.windows, hasLength(1));
+      expect(owner.timeline.currentAttemptId, attempt);
+      // demo 在会话打开后仍会推进真实内容：cleanup 重试不得替换连接，
+      // 因此比较订阅身份而不是某一帧对象。
+      expect(
+        _subscriptionOf(owner.timeline.lastDeliveredFrame!),
+        _subscriptionOf(delivered!),
+      );
+      expect(connection.requestCloseCalls, 0);
+      expect(connection.closeCalls, 0);
+      expect(transport.timelines, hasLength(1));
       expect(
         client.budget.used(ResourceKind.chatHandle),
         1,
@@ -142,8 +152,8 @@ void main() {
   );
 }
 
-final class _FailingCloseWindow extends RecordingChatWindow {
-  _FailingCloseWindow({required super.threadId, required super.inner});
+final class _FailingCloseConnection extends RecordingTimelineConnection {
+  _FailingCloseConnection({required super.threadId, required super.inner});
 
   Object? failure;
   final closeFailed = Completer<void>();
@@ -158,5 +168,10 @@ final class _FailingCloseWindow extends RecordingChatWindow {
     throw error;
   }
 }
+
+String _subscriptionOf(StudioTimelineFrame frame) => switch (frame) {
+  StudioTimelineBaselineFrame(:final baseline) => baseline.subscriptionId,
+  StudioTimelinePatchFrame(:final patch) => patch.subscriptionId,
+};
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));

@@ -1,19 +1,48 @@
 part of 'studio_api.dart';
 
+const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
+  title: '任务流程',
+  goal: '完成任务并交付可验证结果',
+  initialStateId: 'implement',
+  states: [
+    WorkflowState(
+      id: 'implement',
+      title: '实现',
+      instructions: '完成用户请求并验证结果。',
+      completionCriteria: ['实现完成', '验证通过'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'done',
+      title: '完成',
+      instructions: '汇总结果并结束任务。',
+      completionCriteria: ['结果已交付'],
+      kind: WorkflowStateKind.finalState,
+    ),
+  ],
+  transitions: [
+    WorkflowTransition(
+      sourceStateId: 'implement',
+      targetStateId: 'done',
+      guard: '实现完成且验证通过',
+    ),
+  ],
+);
+
 class DemoStudioTransport extends StudioTransport
-    implements PersistenceQueueReader, ChatWindowReader {
+    implements PersistenceQueueReader {
   @override
   Future<RecoveryStateSnapshot> retryRecovery() async => _demoRecoveryState();
 
   DemoStudioTransport({
     this.lspActivityLoop = false,
-    this._providerCatalog = demoProviderCatalogFixture,
+    this._accountCatalog = demoAccountCatalogFixture,
   });
 
   /// 目录分页窗口的页大小；Driver 模式填充大量历史会话以验收触底加载。
   static const int directoryPageSize = 20;
 
-  final ProviderCatalogView _providerCatalog;
+  final AccountCatalogView _accountCatalog;
 
   /// 是否周期推进 demo LSP 索引活动；GUI demo 构建开启，测试默认关闭保持确定性。
   final bool lspActivityLoop;
@@ -29,13 +58,42 @@ class DemoStudioTransport extends StudioTransport
   final _threadEvents = StreamController<ThreadStreamFrame>.broadcast();
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
 
-  /// 内容窗口的变更信号：条目变化时唤醒在途的 `next()`，正文只经窗口交付。
+  /// 内容变更信号：条目变化时唤醒在途的 `next()`，正文只经内容连接交付。
   final Map<String, int> _chatChangeSeq = {};
   final Map<String, List<Completer<void>>> _chatWaiters = {};
+
+  /// 每个 Thread 的内存条目：正文不属于 Thread 状态，只由内容连接按页/尾部交付。
+  final Map<String, List<ThreadItemView>> _threadItems = {};
+
+  /// 每个 Thread 自己的内容版本；与 Thread 状态 revision、持久化水位无关。
+  final Map<String, int> _contentVersions = {};
   Timer? _lspActivityTimer;
   final Map<String, ThreadWorkspace> _workspaces = {};
   final Map<String, int> _promptGenerations = {};
   final Map<String, ThreadModeId> _threadModes = {};
+  int _threadModeCatalogRevision = 1;
+  final Set<String> _readOnlyModeIds = {'mode.simple', 'mode.task'};
+  final Map<String, ModeDocument> _modeDocuments = {
+    'mode.simple': const ModeDocument(
+      definition: ModeDefinition(
+        id: 'mode.simple',
+        displayName: '简洁',
+        description: '直接对话',
+        order: 0,
+        prompt: '直接回答用户请求。',
+      ),
+    ),
+    'mode.task': const ModeDocument(
+      definition: ModeDefinition(
+        id: 'mode.task',
+        displayName: '任务',
+        description: '通过工作流完成任务',
+        order: 1,
+        prompt: '按工作流推进任务并确认阶段完成。',
+        workflow: _demoTaskWorkflow,
+      ),
+    ),
+  };
   final Map<String, AttachmentDraftView> _attachmentDrafts = {};
   final Set<String> _archivedProjectIds = {};
   final Map<String, String> _projectNames = {};
@@ -64,8 +122,8 @@ class DemoStudioTransport extends StudioTransport
   /// Driver 模式注入的历史会话数量；普通 demo 为 0。
   int get directoryPageFillCount => 0;
 
-  List<ProviderSettingsView>? _providers;
-  String? _defaultProviderId;
+  List<AccountSettingsView>? _accounts;
+  String? _defaultAccountId;
   List<ModeModelRouteView>? _modeRoutes;
   List<RoleSettingsView>? _roles;
   InstructionsSettingsView _instructions = const InstructionsSettingsView();
@@ -74,8 +132,8 @@ class DemoStudioTransport extends StudioTransport
   WebSearchSettingsView _webSearch = const WebSearchSettingsView(
     effectiveMode: 'disabled',
     availability: 'available',
-    providerId: 'openai',
-    model: 'gpt-5',
+    accountId: 'openai',
+    modelId: 'gpt-5',
   );
   DeepSeekWebSearchSettingsView _deepSeekWebSearch =
       const DeepSeekWebSearchSettingsView(
@@ -83,7 +141,7 @@ class DemoStudioTransport extends StudioTransport
         configuredFetchEnabled: true,
         effectiveFetchEnabled: true,
         availability: 'available',
-        providerId: 'deepseek-primary',
+        accountId: 'deepseek-primary',
       );
   PermissionMode _permissionMode = PermissionMode.requestApproval;
   int _turnSequence = 0;
@@ -91,8 +149,8 @@ class DemoStudioTransport extends StudioTransport
   int _settingsRevision = 1;
   int _attachmentSequence = 0;
   int _skillsRevision = 1;
-  int _providerUsageRevision = 1;
-  final Map<String, ProviderUsageView> _providerUsages = {};
+  int _accountUsageRevision = 1;
+  final Map<String, AccountUsageView> _accountUsages = {};
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -170,7 +228,6 @@ class DemoStudioTransport extends StudioTransport
 
   void _emitShutdownProgress(StudioShutdownProgress progress) {
     _shutdownEvents.add(progress);
-    StudioDriverState.publishShutdownProgress(progress);
   }
 
   StudioShutdownProgress _demoShutdownProgress(StudioShutdownPhase phase) {
@@ -221,7 +278,7 @@ class DemoStudioTransport extends StudioTransport
           project.id: _demoSkillsState(project.id, _skillsRevision),
       },
       threadModeCatalog: _demoThreadModeCatalog(),
-      providerUsageState: _demoProviderUsageState(),
+      accountUsageState: _demoAccountUsageState(),
       modelPerformance: _demoModelPerformance(_fixtureTime),
       updaterState: _demoUpdaterState(),
       persistenceState: _demoPersistenceState(),
@@ -240,25 +297,29 @@ class DemoStudioTransport extends StudioTransport
 
   DateTime get _fixtureTime => _fixtureNow ??= DateTime.now();
 
-  ThreadModeCatalogView _demoThreadModeCatalog() => const ThreadModeCatalogView(
-    revision: 1,
-    modes: [
-      ThreadModeDescriptorView(
-        id: 'mode.simple',
-        displayName: '简洁',
-        description: '直接对话',
-        order: 0,
-        hasWorkflow: false,
-      ),
-      ThreadModeDescriptorView(
-        id: 'mode.task',
-        displayName: '任务',
-        description: '通过工作流完成任务',
-        order: 1,
-        hasWorkflow: true,
-      ),
-    ],
-  );
+  ThreadModeCatalogView _demoThreadModeCatalog() {
+    final documents = _modeDocuments.values.toList()
+      ..sort((left, right) {
+        final byOrder = left.definition.order.compareTo(right.definition.order);
+        return byOrder != 0
+            ? byOrder
+            : left.definition.id.compareTo(right.definition.id);
+      });
+    return ThreadModeCatalogView(
+      revision: _threadModeCatalogRevision,
+      modes: [
+        for (final document in documents)
+          ThreadModeDescriptorView(
+            id: document.definition.id,
+            displayName: document.definition.displayName,
+            description: document.definition.description,
+            order: document.definition.order,
+            hasWorkflow: document.definition.workflow != null,
+            readOnly: _readOnlyModeIds.contains(document.definition.id),
+          ),
+      ],
+    );
+  }
 
   ProjectDirectoryState _demoProjectDirectory() {
     final fixture = _ensureWorkspaceFixture();
@@ -305,35 +366,35 @@ class DemoStudioTransport extends StudioTransport
   RecoveryStateSnapshot _demoRecoveryState() =>
       RecoveryStateSnapshot.fromState(state: _demoInitialResource());
 
-  ProviderSettingsView _demoDefaultProvider() {
-    final preset = _providerCatalog.presets.first;
-    return preset
-        .createProvider(
-          preset.id,
-          _providerCatalog.modelsFor(preset.modelCatalogId),
+  AccountSettingsView _demoDefaultAccount() {
+    final template = _accountCatalog.templates.first;
+    return template
+        .createAccount(
+          template.id,
+          _accountCatalog.modelsFor(template.modelCatalogId),
         )
         .copyWith(hasBearerToken: true, status: 'ready', updatedAt: 'Loaded');
   }
 
   SettingsStateSnapshot _demoSettingsState() {
-    final defaultProvider = _demoDefaultProvider();
-    final defaultModel = defaultProvider.models
-        .where((model) => model.slug == defaultProvider.defaultModel)
+    final defaultAccount = _demoDefaultAccount();
+    final defaultModel = defaultAccount.models
+        .where((model) => model.modelId == defaultAccount.defaultModelId)
         .firstOrNull;
     final effort = defaultModel?.defaultReasoningEffort;
     final resolvedEffort = effort?.isNotEmpty == true
         ? effort!
         : defaultModel?.reasoningEfforts.firstOrNull ?? '';
     return _settingsSnapshot(
-      providers: _providers ?? [defaultProvider],
+      accounts: _accounts ?? [defaultAccount],
       modeRoutes:
           _modeRoutes ??
           [
             for (final mode in [ThreadModeId.simple, ThreadModeId.task])
               ModeModelRouteView(
                 modeId: mode,
-                providerId: defaultProvider.id,
-                model: defaultProvider.defaultModel,
+                accountId: defaultAccount.id,
+                modelId: defaultAccount.defaultModelId,
                 effort: resolvedEffort,
               ),
           ],
@@ -348,24 +409,24 @@ class DemoStudioTransport extends StudioTransport
             ])
               RoleSettingsView(
                 key: role,
-                providerId: defaultProvider.id,
-                model: defaultProvider.defaultModel,
+                accountId: defaultAccount.id,
+                modelId: defaultAccount.defaultModelId,
                 effort: resolvedEffort,
               ),
           ],
     );
   }
 
-  ProviderUsageStateSnapshot _demoProviderUsageState() {
-    final providers = _providers ?? [_demoDefaultProvider()];
+  AccountUsageStateSnapshot _demoAccountUsageState() {
+    final accounts = _accounts ?? [_demoDefaultAccount()];
     final usages = [
-      for (final provider in providers)
-        _providerUsages[provider.id] ?? _demoProviderUsage(provider),
+      for (final account in accounts)
+        _accountUsages[account.id] ?? _demoAccountUsage(account),
     ];
-    return ProviderUsageStateSnapshot.fromState(
+    return AccountUsageStateSnapshot.fromState(
       state: _demoReadyResource(
-        _providerUsageRevision,
-        ProviderUsageStateData(configFingerprint: 'demo', usages: usages),
+        _accountUsageRevision,
+        AccountUsageStateData(configFingerprint: 'demo', usages: usages),
       ),
     );
   }
@@ -417,7 +478,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   SettingsStateSnapshot _settingsSnapshot({
-    required List<ProviderSettingsView> providers,
+    required List<AccountSettingsView> accounts,
     required List<ModeModelRouteView> modeRoutes,
     required List<RoleSettingsView> roles,
   }) {
@@ -425,8 +486,8 @@ class DemoStudioTransport extends StudioTransport
       state: _demoReadyResource(
         _settingsRevision,
         SettingsStateData(
-          providers: providers,
-          defaultProviderId: _defaultProviderId ?? providers.firstOrNull?.id,
+          accounts: accounts,
+          defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
           modeModelRoutes: modeRoutes,
           roles: roles,
           instructions: _instructions,
@@ -447,17 +508,19 @@ class DemoStudioTransport extends StudioTransport
             ?.where((route) => route.modeId == ThreadModeId.simple)
             .firstOrNull;
     if (saved != null) return saved;
-    final preset = _providerCatalog.presets.first;
-    final models = _providerCatalog.modelsFor(preset.modelCatalogId);
+    final template = _accountCatalog.templates.first;
+    final models = _accountCatalog.modelsFor(template.modelCatalogId);
     final model =
         models
-            .where((candidate) => candidate.slug == preset.suggestedModel)
+            .where(
+              (candidate) => candidate.modelId == template.suggestedModelId,
+            )
             .firstOrNull ??
         models.first;
     return ModeModelRouteView(
       modeId: mode,
-      providerId: preset.id,
-      model: model.slug,
+      accountId: template.id,
+      modelId: model.modelId,
       effort: model.defaultReasoningEffort.isNotEmpty
           ? model.defaultReasoningEffort
           : model.reasoningEfforts.firstOrNull ?? '',
@@ -465,38 +528,48 @@ class DemoStudioTransport extends StudioTransport
   }
 
   ModelPerformanceSnapshotView _demoModelPerformance(DateTime now) {
-    const deepseekHigh = ModelPerformanceSummaryView(
-      providerInstanceId: 'deepseek-primary',
-      providerDisplayName: 'DeepSeek',
-      model: 'deepseek-flash',
-      reasoningEffort: 'high',
-      sampleCount: 1,
-      completionTokens: 150,
-      totalTtftMillis: 410,
-      totalDecodeMillis: 1000,
-      totalResponseMillis: 1410,
+    // 顶层身份是 (accountId, 配置 modelId)；同一账号模型的强度细分留在组内。
+    const deepseek = ModelPerformanceSummaryView(
+      accountId: 'deepseek-primary',
+      accountDisplayName: 'DeepSeek',
+      modelId: 'deepseek-flash',
+      sampleCount: 2,
+      completionTokens: 300,
+      totalTtftMillis: 760,
+      totalDecodeMillis: 2000,
+      totalResponseMillis: 2760,
       tokensPerSecond: 150,
-      averageTtftMillis: 410,
-      averageResponseMillis: 1410,
-    );
-    const deepseekNone = ModelPerformanceSummaryView(
-      providerInstanceId: 'deepseek-primary',
-      providerDisplayName: 'DeepSeek',
-      model: 'deepseek-flash',
-      reasoningEffort: 'none',
-      sampleCount: 1,
-      completionTokens: 150,
-      totalTtftMillis: 350,
-      totalDecodeMillis: 1000,
-      totalResponseMillis: 1350,
-      tokensPerSecond: 150,
-      averageTtftMillis: 350,
-      averageResponseMillis: 1350,
+      averageTtftMillis: 380,
+      averageResponseMillis: 1380,
+      effortBreakdowns: [
+        ModelPerformanceEffortSummaryView(
+          effort: 'high',
+          sampleCount: 1,
+          completionTokens: 150,
+          totalTtftMillis: 410,
+          totalDecodeMillis: 1000,
+          totalResponseMillis: 1410,
+          tokensPerSecond: 150,
+          averageTtftMillis: 410,
+          averageResponseMillis: 1410,
+        ),
+        ModelPerformanceEffortSummaryView(
+          effort: 'none',
+          sampleCount: 1,
+          completionTokens: 150,
+          totalTtftMillis: 350,
+          totalDecodeMillis: 1000,
+          totalResponseMillis: 1350,
+          tokensPerSecond: 150,
+          averageTtftMillis: 350,
+          averageResponseMillis: 1350,
+        ),
+      ],
     );
     const openai = ModelPerformanceSummaryView(
-      providerInstanceId: 'openai-work',
-      providerDisplayName: 'OpenAI Work',
-      model: 'gpt-5.6-codex',
+      accountId: 'openai-work',
+      accountDisplayName: 'OpenAI Work',
+      modelId: 'gpt-5.6-codex',
       sampleCount: 1,
       completionTokens: 216,
       totalTtftMillis: 620,
@@ -505,17 +578,33 @@ class DemoStudioTransport extends StudioTransport
       tokensPerSecond: 86.4,
       averageTtftMillis: 620,
       averageResponseMillis: 3120,
+      effortBreakdowns: [
+        ModelPerformanceEffortSummaryView(
+          effort: null,
+          sampleCount: 1,
+          completionTokens: 216,
+          totalTtftMillis: 620,
+          totalDecodeMillis: 2500,
+          totalResponseMillis: 3120,
+          tokensPerSecond: 86.4,
+          averageTtftMillis: 620,
+          averageResponseMillis: 3120,
+        ),
+      ],
     );
     return ModelPerformanceSnapshotView(
       revision: 3,
       updatedAt: now,
-      summaries: const [deepseekHigh, deepseekNone, openai],
+      summaries: const [deepseek, openai],
       history: [
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(seconds: 12)),
-          providerInstanceId: openai.providerInstanceId,
-          providerDisplayName: openai.providerDisplayName,
-          model: openai.model,
+          accountId: openai.accountId,
+          accountDisplayName: openai.accountDisplayName,
+          modelId: openai.modelId,
+          sentModel: openai.modelId,
+          reportedModel: openai.modelId,
+          modelMatchState: ModelMatchState.matched,
           completionTokens: 216,
           ttftMillis: 620,
           decodeMillis: 2500,
@@ -524,10 +613,13 @@ class DemoStudioTransport extends StudioTransport
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(seconds: 34)),
-          providerInstanceId: deepseekHigh.providerInstanceId,
-          providerDisplayName: deepseekHigh.providerDisplayName,
-          model: deepseekHigh.model,
-          reasoningEffort: deepseekHigh.reasoningEffort,
+          accountId: deepseek.accountId,
+          accountDisplayName: deepseek.accountDisplayName,
+          modelId: deepseek.modelId,
+          sentModel: 'deepseek-flash-0724',
+          reportedModel: 'deepseek-flash',
+          modelMatchState: ModelMatchState.mismatched,
+          effort: 'high',
           completionTokens: 150,
           ttftMillis: 410,
           decodeMillis: 1000,
@@ -536,15 +628,30 @@ class DemoStudioTransport extends StudioTransport
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(minutes: 2)),
-          providerInstanceId: deepseekNone.providerInstanceId,
-          providerDisplayName: deepseekNone.providerDisplayName,
-          model: deepseekNone.model,
-          reasoningEffort: deepseekNone.reasoningEffort,
+          accountId: deepseek.accountId,
+          accountDisplayName: deepseek.accountDisplayName,
+          modelId: deepseek.modelId,
+          sentModel: deepseek.modelId,
+          modelMatchState: ModelMatchState.unreported,
+          effort: 'none',
           completionTokens: 150,
           ttftMillis: 350,
           decodeMillis: 1000,
           totalResponseMillis: 1350,
           tokensPerSecond: 150,
+        ),
+        // 旧记录没有配置模型证据：保持历史身份未知，不从当前目录补写。
+        ModelPerformanceSampleView(
+          completedAt: now.subtract(const Duration(minutes: 8)),
+          accountId: 'legacy-account',
+          accountDisplayName: 'Legacy account',
+          sentModel: 'legacy-alias-model',
+          modelMatchState: ModelMatchState.legacyUnknown,
+          completionTokens: 90,
+          ttftMillis: 500,
+          decodeMillis: 900,
+          totalResponseMillis: 1400,
+          tokensPerSecond: 100,
         ),
       ],
     );
@@ -637,7 +744,6 @@ class DemoStudioTransport extends StudioTransport
         () => ThreadWorkspace(
           thread: thread,
           revision: 0,
-          items: const [],
           interactions: const [],
           runtime: _emptyRuntimeView(),
         ),
@@ -675,7 +781,6 @@ class DemoStudioTransport extends StudioTransport
         () => ThreadWorkspace(
           thread: thread,
           revision: 0,
-          items: const [],
           interactions: const [],
           runtime: _emptyRuntimeView(),
         ),
@@ -767,79 +872,79 @@ class DemoStudioTransport extends StudioTransport
     final route = _demoModeRoute(thread.mode);
     final userCreatedAt = now.subtract(const Duration(minutes: 9));
     final agentCreatedAt = now.subtract(const Duration(minutes: 8));
+    _threadItems[thread.id] = List.unmodifiable([
+      _messageItem(
+        id: 'turn-demo:user',
+        threadId: thread.id,
+        turnId: 'turn-demo',
+        ordinal: 0,
+        kind: ThreadItemKind.userMessage,
+        text:
+            '用 Flutter 重构 anywork。\n\n'
+            '- timeline 要像 Web 版一样即时渲染 Markdown\n'
+            '- streaming 中的代码块和表格不要抖动',
+        createdAt: userCreatedAt,
+      ),
+      ThreadItemView(
+        id: 'turn-demo:reasoning',
+        threadId: thread.id,
+        turnId: 'turn-demo',
+        ordinal: 1,
+        revision: 0,
+        createdAt: agentCreatedAt,
+        updatedAt: agentCreatedAt,
+        state: ThreadThinkingItemStateView(
+          summary: const ['## 判断\n\nUI 只消费当前 Thread 的高频通知。'],
+          content: const [],
+          lifecycle: CompletedThreadContentView(agentCreatedAt),
+        ),
+      ),
+      ThreadItemView(
+        id: 'turn-demo:tool',
+        threadId: thread.id,
+        turnId: 'turn-demo',
+        ordinal: 2,
+        revision: 0,
+        createdAt: agentCreatedAt,
+        updatedAt: agentCreatedAt,
+        state: ThreadToolItemStateView(
+          invocation: const ThreadToolInvocationView(
+            toolCallId: 'turn-demo:tool-call',
+            name: 'cargo test -p pl-studio-bridge',
+            arguments: '',
+          ),
+          lifecycle: SucceededThreadToolView(
+            agentCreatedAt,
+            const ThreadToolOutputView(
+              result: '1 passed; bridge envelope uses typed payload.',
+              attachments: [],
+              outputArtifacts: [],
+            ),
+          ),
+        ),
+      ),
+      _messageItem(
+        id: 'turn-demo:final',
+        threadId: thread.id,
+        turnId: 'turn-demo',
+        ordinal: 4,
+        kind: ThreadItemKind.agentMessage,
+        channel: AgentMessageChannel.finalAnswer,
+        text:
+            '### Streaming Markdown preview\n\n'
+            '正文、**加粗**、`inline code` 和链接都按 GFM 渲染。',
+        createdAt: agentCreatedAt,
+      ),
+    ]);
     return ThreadWorkspace(
       thread: thread,
       revision: 1,
-      items: [
-        _messageItem(
-          id: 'turn-demo:user',
-          threadId: thread.id,
-          turnId: 'turn-demo',
-          ordinal: 0,
-          kind: ThreadItemKind.userMessage,
-          text:
-              '用 Flutter 重构 anywork。\n\n'
-              '- timeline 要像 Web 版一样即时渲染 Markdown\n'
-              '- streaming 中的代码块和表格不要抖动',
-          createdAt: userCreatedAt,
-        ),
-        ThreadItemView(
-          id: 'turn-demo:reasoning',
-          threadId: thread.id,
-          turnId: 'turn-demo',
-          ordinal: 1,
-          revision: 0,
-          createdAt: agentCreatedAt,
-          updatedAt: agentCreatedAt,
-          state: ThreadThinkingItemStateView(
-            summary: const ['## 判断\n\nUI 只消费当前 Thread 的高频通知。'],
-            content: const [],
-            lifecycle: CompletedThreadContentView(agentCreatedAt),
-          ),
-        ),
-        ThreadItemView(
-          id: 'turn-demo:tool',
-          threadId: thread.id,
-          turnId: 'turn-demo',
-          ordinal: 2,
-          revision: 0,
-          createdAt: agentCreatedAt,
-          updatedAt: agentCreatedAt,
-          state: ThreadToolItemStateView(
-            invocation: const ThreadToolInvocationView(
-              toolCallId: 'turn-demo:tool-call',
-              name: 'cargo test -p pl-studio-bridge',
-              arguments: '',
-            ),
-            lifecycle: SucceededThreadToolView(
-              agentCreatedAt,
-              const ThreadToolOutputView(
-                result: '1 passed; bridge envelope uses typed payload.',
-                attachments: [],
-                outputArtifacts: [],
-              ),
-            ),
-          ),
-        ),
-        _messageItem(
-          id: 'turn-demo:final',
-          threadId: thread.id,
-          turnId: 'turn-demo',
-          ordinal: 4,
-          kind: ThreadItemKind.agentMessage,
-          channel: AgentMessageChannel.finalAnswer,
-          text:
-              '### Streaming Markdown preview\n\n'
-              '正文、**加粗**、`inline code` 和链接都按 GFM 渲染。',
-          createdAt: agentCreatedAt,
-        ),
-      ],
       interactions: const [],
       runtime: ThreadRuntimeView(
-        model: 'planner/local-responses',
+        modelId: 'planner/local-responses',
         modelRoute: ThreadModelRouteView(
-          providerId: route.providerId,
-          model: route.model,
+          accountId: route.accountId,
+          modelId: route.modelId,
           effort: route.effort,
           revision: 1,
           available: true,
@@ -878,30 +983,30 @@ class DemoStudioTransport extends StudioTransport
   ThreadWorkspace _singleMessageWorkspace(
     StudioThread thread,
     String text,
-    String model,
+    String modelId,
     DateTime createdAt,
   ) {
+    _threadItems[thread.id] = List.unmodifiable([
+      _messageItem(
+        id: '${thread.id}:final',
+        threadId: thread.id,
+        turnId: '${thread.id}:turn',
+        ordinal: 0,
+        kind: ThreadItemKind.agentMessage,
+        channel: AgentMessageChannel.finalAnswer,
+        text: text,
+        createdAt: createdAt,
+      ),
+    ]);
     return ThreadWorkspace(
       thread: thread,
       revision: 1,
-      items: [
-        _messageItem(
-          id: '${thread.id}:final',
-          threadId: thread.id,
-          turnId: '${thread.id}:turn',
-          ordinal: 0,
-          kind: ThreadItemKind.agentMessage,
-          channel: AgentMessageChannel.finalAnswer,
-          text: text,
-          createdAt: createdAt,
-        ),
-      ],
       interactions: const [],
       runtime: ThreadRuntimeView(
-        model: model,
+        modelId: modelId,
         modelRoute: ThreadModelRouteView(
-          providerId: _demoModeRoute(thread.mode).providerId,
-          model: model,
+          accountId: _demoModeRoute(thread.mode).accountId,
+          modelId: modelId,
           effort: null,
           revision: 1,
           available: true,
@@ -922,7 +1027,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<ProviderCatalogView> loadProviderCatalog() async => _providerCatalog;
+  Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
 
   @override
   Future<AgentProfilesStateView> readAgentProfilesState() async =>
@@ -988,8 +1093,8 @@ class DemoStudioTransport extends StudioTransport
       description: draft.description,
       whenToUse: draft.whenToUse,
       systemInstructions: draft.systemInstructions,
-      providerId: draft.providerId,
-      model: draft.model,
+      accountId: draft.accountId,
+      modelId: draft.modelId,
       effort: draft.effort,
       source: '~/.anywork/agents/${draft.id}.toml',
       revision: 'demo-user-${draft.id}',
@@ -1174,69 +1279,114 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<StartNewThreadResult> startNewThread(
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
     String? workspaceMode,
-  }) async {
-    final projects = _demoProjectDirectory().values;
-    if (!projects.any((project) => project.id == projectId)) {
-      throw StateError('unknown demo project $projectId');
-    }
-    if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
-      throw ArgumentError.value(input.text, 'text', 'empty');
-    }
-    final requestedWorkspaceMode = switch (workspaceMode?.trim()) {
-      null || '' || 'local' => ThreadWorkspaceMode.local,
-      'worktree' => ThreadWorkspaceMode.worktree,
-      final other => throw ArgumentError.value(
-        other,
-        'workspaceMode',
-        'must be local or worktree',
-      ),
-    };
-    final now = DateTime.now();
-    final provisionalTitle = _demoProvisionalThreadTitle(input.text);
-    final threadId = 'thread-created-${++_threadSequence}';
-    final projectPath = projects
-        .firstWhere((project) => project.id == projectId)
-        .path;
-    final thread = StudioThread(
-      id: threadId,
-      projectId: projectId,
-      title: provisionalTitle,
-      mode: mode,
-      role: 'planner',
-      createdAt: now,
-      updatedAt: now,
-      workspaceMode: requestedWorkspaceMode,
-      workspacePath: requestedWorkspaceMode == ThreadWorkspaceMode.worktree
-          ? _demoWorktreePath(projectPath, threadId)
-          : projectPath,
-    );
-    _createdRootThreads.add(thread);
-    _ensureWorkspaceFixture();
-    _selectedThreadId = thread.id;
-    final workspace = _workspaces[thread.id]!;
-    _workspaces[thread.id] = workspace.copyWith(
-      runtime: workspace.runtime.copyWith(
-        model: route.model,
-        modelRoute: ThreadModelRouteView(
-          providerId: route.providerId,
-          model: route.model,
-          effort: route.effort,
-          revision: 1,
-          available: true,
+  }) async* {
+    try {
+      final projects = _demoProjectDirectory().values;
+      if (!projects.any((project) => project.id == projectId)) {
+        throw StateError('unknown demo project $projectId');
+      }
+      if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
+        throw ArgumentError.value(input.text, 'text', 'empty');
+      }
+      final requestedWorkspaceMode = switch (workspaceMode?.trim()) {
+        null || '' || 'local' => ThreadWorkspaceMode.local,
+        'worktree' => ThreadWorkspaceMode.worktree,
+        final other => throw ArgumentError.value(
+          other,
+          'workspaceMode',
+          'must be local or worktree',
         ),
-      ),
-    );
-    final receipt = await _submitPrompt(thread.id, input);
-    if (input.text.trim().isNotEmpty) {
-      unawaited(_completeDemoThreadTitle(thread.id, provisionalTitle));
+      };
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.checkingProject,
+        ),
+      );
+      final now = DateTime.now();
+      final provisionalTitle = _demoProvisionalThreadTitle(input.text);
+      final threadId = 'thread-created-${++_threadSequence}';
+      final projectPath = projects
+          .firstWhere((project) => project.id == projectId)
+          .path;
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.preparingWorkspace,
+        ),
+      );
+      final thread = StudioThread(
+        id: threadId,
+        projectId: projectId,
+        title: provisionalTitle,
+        mode: mode,
+        role: 'planner',
+        createdAt: now,
+        updatedAt: now,
+        workspaceMode: requestedWorkspaceMode,
+        workspacePath: requestedWorkspaceMode == ThreadWorkspaceMode.worktree
+            ? _demoWorktreePath(projectPath, threadId)
+            : projectPath,
+      );
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.initializingSession,
+          workspacePath: thread.workspacePath,
+        ),
+      );
+      _createdRootThreads.add(thread);
+      _ensureWorkspaceFixture();
+      _selectedThreadId = thread.id;
+      final workspace = _workspaces[thread.id]!;
+      _workspaces[thread.id] = workspace.copyWith(
+        runtime: workspace.runtime.copyWith(
+          modelId: route.modelId,
+          modelRoute: ThreadModelRouteView(
+            accountId: route.accountId,
+            modelId: route.modelId,
+            effort: route.effort,
+            revision: 1,
+            available: true,
+          ),
+        ),
+      );
+      yield NewThreadStartProgress(
+        ThreadPreparationProgress(
+          projectId: projectId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.submittingPrompt,
+          workspacePath: thread.workspacePath,
+        ),
+      );
+      final receipt = await _submitPrompt(thread.id, input);
+      if (input.text.trim().isNotEmpty) {
+        unawaited(_completeDemoThreadTitle(thread.id, provisionalTitle));
+      }
+      yield NewThreadStartSucceeded(
+        StartNewThreadResult(thread: thread, receipt: receipt),
+      );
+    } catch (error) {
+      yield NewThreadStartFailed(
+        StudioFailure(
+          code: error is ArgumentError
+              ? StudioFailureCode.invalidArgument
+              : StudioFailureCode.internal,
+          message: error.toString(),
+          retryable: false,
+          correlationId: newStudioCorrelationId(),
+        ),
+      );
     }
-    return StartNewThreadResult(thread: thread, receipt: receipt);
   }
 
   @override
@@ -1401,24 +1551,25 @@ class DemoStudioTransport extends StudioTransport
   // Compare canonical business values, excluding resource clocks and diagnostics.
   // This is a value comparison of the one demo owner, not a second state store.
   List<Object?> _demoSettingsFacts(SettingsStateSnapshot s) => [
-    s.defaultProviderId,
+    s.defaultAccountId,
     s.permissionMode,
     {
-      for (final p in s.providers)
+      for (final p in s.accounts)
         p.id: [
           p.name,
-          p.templateKind,
+          p.templateId,
+          p.protocol,
           p.baseUrl,
           p.bearerToken,
           p.hasBearerToken,
-          p.defaultModel,
+          p.defaultModelId,
           p.pricingEnabled,
           [
             for (final m in p.customModels)
               [
-                m.slug,
+                m.modelId,
                 m.displayName,
-                m.wireProtocol,
+                m.wireApi,
                 m.contextWindow,
                 m.maxOutputTokens,
               ],
@@ -1432,11 +1583,11 @@ class DemoStudioTransport extends StudioTransport
     },
     {
       for (final route in s.modeModelRoutes)
-        route.modeId.id: [route.providerId, route.model, route.effort],
+        route.modeId.id: [route.accountId, route.modelId, route.effort],
     },
     {
       for (final role in s.roles)
-        role.key: [role.providerId, role.model, role.effort],
+        role.key: [role.accountId, role.modelId, role.effort],
     },
     {
       for (final server in s.mcpServers)
@@ -1541,8 +1692,8 @@ class DemoStudioTransport extends StudioTransport
         description: '只读探索代码、文档和现场事实。',
         whenToUse: '需要定位边界、依赖或验证事实时。',
         systemInstructions: '优先收集事实并引用文件与命令。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v1',
@@ -1557,8 +1708,8 @@ class DemoStudioTransport extends StudioTransport
         description: '在项目目录内实施边界明确的修改。',
         whenToUse: '需要限制 糊来帮内置文件写工具的修改目录时。',
         systemInstructions: '遵守冻结的 writablePaths。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1573,8 +1724,8 @@ class DemoStudioTransport extends StudioTransport
         description: '在独立 Git worktree 内实施修改。',
         whenToUse: '需要物理隔离并显式整合 commit 时。',
         systemInstructions: '只修改分配的 worktree，不自动整合。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1589,8 +1740,8 @@ class DemoStudioTransport extends StudioTransport
         description: '独立审查实现和验证证据。',
         whenToUse: '需要复核实现质量时。',
         systemInstructions: '只读审查并报告具体证据。',
-        providerId: 'demo',
-        model: 'demo',
+        accountId: 'demo',
+        modelId: 'demo',
         effort: 'medium',
         source: 'studio-builtin',
         revision: 'studio-system-agent-v2',
@@ -1846,16 +1997,16 @@ class DemoStudioTransport extends StudioTransport
         _deepSeekWebSearch = _deepSeekWebSearch.withConfiguredFetchEnabled(
           value,
         );
-      case ModeModelCommand(:final modeId, :final providerId, :final model):
+      case ModeModelCommand(:final modeId, :final accountId, :final modelId):
         final mode = ThreadModeId.fromId(modeId);
-        final selected = _findDemoModel(settings.providers, providerId, model);
+        final selected = _findDemoModel(settings.accounts, accountId, modelId);
         final previous = settings.modeModelRoutes
             .where((route) => route.modeId == mode)
             .firstOrNull;
         final effort =
             previous != null &&
-                previous.providerId == providerId &&
-                previous.model == model
+                previous.accountId == accountId &&
+                previous.modelId == modelId
             ? previous.effort
             : selected.defaultReasoningEffort.isNotEmpty
             ? selected.defaultReasoningEffort
@@ -1865,8 +2016,8 @@ class DemoStudioTransport extends StudioTransport
             if (route.modeId != mode) route,
           ModeModelRouteView(
             modeId: mode,
-            providerId: providerId,
-            model: model,
+            accountId: accountId,
+            modelId: modelId,
             effort: effort,
           ),
         ];
@@ -1877,9 +2028,9 @@ class DemoStudioTransport extends StudioTransport
             .firstOrNull;
         final route = previous ?? _demoModeRoute(mode);
         final selected = _findDemoModel(
-          settings.providers,
-          route.providerId,
-          route.model,
+          settings.accounts,
+          route.accountId,
+          route.modelId,
         );
         final resolvedEffort =
             effort != null && selected.reasoningEfforts.contains(effort)
@@ -1892,28 +2043,28 @@ class DemoStudioTransport extends StudioTransport
             if (candidate.modeId != mode) candidate,
           ModeModelRouteView(
             modeId: mode,
-            providerId: route.providerId,
-            model: route.model,
+            accountId: route.accountId,
+            modelId: route.modelId,
             effort: resolvedEffort,
           ),
         ];
-      case RoleModelCommand(:final role, :final providerId, :final model):
-        final selected = _findDemoModel(settings.providers, providerId, model);
+      case RoleModelCommand(:final role, :final accountId, :final modelId):
+        final selected = _findDemoModel(settings.accounts, accountId, modelId);
         final previous = settings.roles
             .where((candidate) => candidate.key == role)
             .firstOrNull;
         final effort =
             previous != null &&
-                previous.providerId == providerId &&
-                previous.model == model
+                previous.accountId == accountId &&
+                previous.modelId == modelId
             ? previous.effort
             : selected.defaultReasoningEffort.isNotEmpty
             ? selected.defaultReasoningEffort
             : selected.reasoningEfforts.firstOrNull ?? '';
         final next = RoleSettingsView(
           key: role,
-          providerId: providerId,
-          model: model,
+          accountId: accountId,
+          modelId: modelId,
           effort: effort,
         );
         _roles = [
@@ -1929,9 +2080,9 @@ class DemoStudioTransport extends StudioTransport
           throw StateError('unknown demo Agent role: $role');
         }
         final selected = _findDemoModel(
-          settings.providers,
-          previous.providerId,
-          previous.model,
+          settings.accounts,
+          previous.accountId,
+          previous.modelId,
         );
         final resolvedEffort =
             effort != null && selected.reasoningEfforts.contains(effort)
@@ -1944,8 +2095,8 @@ class DemoStudioTransport extends StudioTransport
             candidate.key == role
                 ? RoleSettingsView(
                     key: candidate.key,
-                    providerId: candidate.providerId,
-                    model: candidate.model,
+                    accountId: candidate.accountId,
+                    modelId: candidate.modelId,
                     effort: resolvedEffort,
                   )
                 : candidate,
@@ -1965,8 +2116,8 @@ class DemoStudioTransport extends StudioTransport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     final current = _demoSettingsState();
@@ -1985,10 +2136,10 @@ class DemoStudioTransport extends StudioTransport
     if (previousRoute.revision != expectedModelRouteRevision) {
       throw StateError('model route revision conflict');
     }
-    final selected = current.providers
-        .firstWhere((provider) => provider.id == providerId)
+    final selected = current.accounts
+        .firstWhere((account) => account.id == accountId)
         .models
-        .firstWhere((candidate) => candidate.slug == model);
+        .firstWhere((candidate) => candidate.modelId == modelId);
     final selectedEffort = selected.reasoningEfforts.contains(effort)
         ? effort
         : selected.reasoningEfforts.firstOrNull ?? '';
@@ -1997,16 +2148,16 @@ class DemoStudioTransport extends StudioTransport
         if (route.modeId != thread.mode) route,
       ModeModelRouteView(
         modeId: thread.mode,
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: selectedEffort ?? '',
       ),
     ];
     _settingsRevision += 1;
     final runtime = workspace.runtime.copyWith(
       modelRoute: ThreadModelRouteView(
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: selectedEffort,
         revision: previousRoute.revision + 1,
         available: true,
@@ -2024,8 +2175,8 @@ class DemoStudioTransport extends StudioTransport
       receipt: _demoReceipt(
         operationId,
         changed:
-            previousRoute.providerId != providerId ||
-            previousRoute.model != model ||
+            previousRoute.accountId != accountId ||
+            previousRoute.modelId != modelId ||
             previousRoute.effort != selectedEffort ||
             !_sameDemoFacts(
               _demoSettingsFacts(current),
@@ -2042,6 +2193,11 @@ class DemoStudioTransport extends StudioTransport
       modeDefaultSaved: true,
       warning: null,
     );
+  }
+
+  @override
+  Future<void> compactThread(String threadId) async {
+    throw UnsupportedError('Manual compaction requires the native runtime');
   }
 
   @override
@@ -2096,8 +2252,8 @@ class DemoStudioTransport extends StudioTransport
               ? workspace.runtime
               : workspace.runtime.copyWith(
                   modelRoute: ThreadModelRouteView(
-                    providerId: route.providerId,
-                    model: route.model,
+                    accountId: route.accountId,
+                    modelId: route.modelId,
                     effort: route.effort,
                     revision: (workspace.runtime.modelRoute?.revision ?? 0) + 1,
                     available: true,
@@ -2124,6 +2280,333 @@ class DemoStudioTransport extends StudioTransport
         effect: EffectPoint.immediate,
       ),
     );
+  }
+
+  @override
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId) async {
+    final document = _modeDocuments[modeId];
+    if (document == null) {
+      throw _demoModeFailure(
+        StudioFailureCode.notFound,
+        'Unknown demo mode $modeId',
+        retryable: false,
+      );
+    }
+    return ModeDefinitionSnapshot(
+      revision: _threadModeCatalogRevision,
+      document: document,
+      readOnly: _readOnlyModeIds.contains(modeId),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    final modeId = document.definition.id;
+    if (_readOnlyModeIds.contains(modeId)) {
+      throw _demoModeFailure(
+        StudioFailureCode.permissionDenied,
+        'Built-in mode $modeId is read-only',
+        retryable: false,
+      );
+    }
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    _modeDocuments[modeId] = document;
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(
+      operationId,
+      definition: ModeDefinitionSnapshot(
+        revision: _threadModeCatalogRevision,
+        document: document,
+        readOnly: false,
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    if (_readOnlyModeIds.contains(modeId)) {
+      throw _demoModeFailure(
+        StudioFailureCode.permissionDenied,
+        'Built-in mode $modeId is read-only',
+        retryable: false,
+      );
+    }
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    if (_modeDocuments.remove(modeId) == null) {
+      throw _demoModeFailure(
+        StudioFailureCode.notFound,
+        'Unknown demo mode $modeId',
+        retryable: false,
+      );
+    }
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(operationId);
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    if (expectedRevision != _threadModeCatalogRevision) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Mode catalog revision changed',
+        retryable: true,
+      );
+    }
+    _emitModeCatalogUpdate();
+    return _demoModeCommandReply(operationId);
+  }
+
+  @override
+  Future<ModeValidationResult> validateThreadModeDefinition(String json) async {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(json);
+    } on FormatException catch (error) {
+      return ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: error.message,
+          ),
+        ],
+      );
+    }
+    if (decoded is! Map<Object?, Object?>) {
+      return const ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: 'The Mode document must be a JSON object',
+          ),
+        ],
+      );
+    }
+    final ModeDocument document;
+    try {
+      document = ModeDocument.fromJson(Map<String, dynamic>.from(decoded));
+    } catch (error) {
+      return ModeValidationResult(
+        issues: [
+          ModeValidationIssue(
+            code: 'json.invalid',
+            path: r'$',
+            message: error.toString(),
+          ),
+        ],
+      );
+    }
+    final issues = <ModeValidationIssue>[];
+    final workflow = document.definition.workflow;
+    if (workflow != null) {
+      final ids = <String>{};
+      for (final state in workflow.states) {
+        if (!ids.add(state.id)) {
+          issues.add(
+            ModeValidationIssue(
+              code: 'workflow.duplicateState',
+              path: 'workflow.states.${state.id}',
+              message: 'Workflow state ${state.id} is duplicated',
+            ),
+          );
+        }
+      }
+      if (!ids.contains(workflow.initialStateId)) {
+        issues.add(
+          ModeValidationIssue(
+            code: 'workflow.unknownInitialState',
+            path: 'workflow.initialStateId',
+            message: 'Initial state ${workflow.initialStateId} does not exist',
+          ),
+        );
+      }
+      for (final transition in workflow.transitions) {
+        if (!ids.contains(transition.sourceStateId) ||
+            !ids.contains(transition.targetStateId)) {
+          issues.add(
+            ModeValidationIssue(
+              code: 'workflow.unknownTransitionState',
+              path: 'workflow.transitions',
+              message:
+                  'Transition ${transition.sourceStateId} -> '
+                  '${transition.targetStateId} references an unknown state',
+            ),
+          );
+        }
+      }
+    }
+    return ModeValidationResult(
+      document: issues.isEmpty ? document : null,
+      issues: issues,
+    );
+  }
+
+  @override
+  Future<String> threadModeDefinitionSchema() async => jsonEncode({
+    r'$schema': 'https://json-schema.org/draft/2020-12/schema',
+    'title': 'Anywork Thread Mode',
+    'type': 'object',
+    'required': ['id', 'displayName', 'description', 'order', 'prompt'],
+    'properties': {
+      'id': {'type': 'string', 'pattern': r'^mode\.[a-z0-9_-]+$'},
+      'displayName': {'type': 'string'},
+      'description': {'type': 'string'},
+      'order': {'type': 'integer', 'minimum': 0},
+      'prompt': {'type': 'string'},
+      'workflow': {
+        'type': ['object', 'null'],
+      },
+      'editor': {'type': 'object'},
+    },
+  });
+
+  @override
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  ) async => _demoWorkflowPreview(request);
+
+  void _emitModeCatalogUpdate() {
+    _threadModeCatalogRevision += 1;
+    _publishProductPayload(
+      ThreadModeCatalogChangedPayload(_demoThreadModeCatalog()),
+    );
+  }
+
+  ModeDefinitionCommandReply _demoModeCommandReply(
+    OperationId operationId, {
+    ModeDefinitionSnapshot? definition,
+  }) => ModeDefinitionCommandReply(
+    catalog: _demoThreadModeCatalog(),
+    definition: definition,
+    receipt: _demoReceipt(
+      operationId,
+      changed: true,
+      targets: [_demoStamp('thread-mode-catalog', _threadModeCatalogRevision)],
+      effect: EffectPoint.nextTurn,
+    ),
+  );
+
+  StudioFailure _demoModeFailure(
+    StudioFailureCode code,
+    String message, {
+    required bool retryable,
+  }) => StudioFailure(
+    code: code,
+    message: message,
+    retryable: retryable,
+    correlationId: 'demo-mode-${newStudioCorrelationId()}',
+  );
+
+  WorkflowPreviewSnapshot _demoWorkflowPreview(WorkflowPreviewRequest request) {
+    final workflow = request.document.definition.workflow;
+    if (workflow == null) {
+      return WorkflowPreviewSnapshot(
+        accepted: false,
+        message: 'This Mode has no workflow',
+        path: request.path,
+        terminal: false,
+      );
+    }
+    final states = {for (final state in workflow.states) state.id: state};
+    if (!states.containsKey(workflow.initialStateId)) {
+      return WorkflowPreviewSnapshot(
+        accepted: false,
+        message: 'Initial state ${workflow.initialStateId} does not exist',
+        path: request.path,
+        terminal: false,
+      );
+    }
+    final path = request.path.isEmpty
+        ? <String>[workflow.initialStateId]
+        : List<String>.of(request.path);
+    for (final stateId in path) {
+      if (!states.containsKey(stateId)) {
+        return WorkflowPreviewSnapshot(
+          accepted: false,
+          message: 'Unknown state $stateId',
+          path: path,
+          terminal: false,
+        );
+      }
+    }
+    final target = request.targetStateId;
+    if (target != null && target != path.last) {
+      final planned = _demoTransitionPath(
+        workflow,
+        from: path.last,
+        to: target,
+      );
+      if (planned == null) {
+        return WorkflowPreviewSnapshot(
+          accepted: false,
+          message: 'No transition path reaches $target',
+          currentState: states[path.last],
+          path: path,
+          terminal: states[path.last]!.kind == WorkflowStateKind.finalState,
+        );
+      }
+      path.addAll(planned);
+    }
+    final current = states[path.last]!;
+    return WorkflowPreviewSnapshot(
+      accepted: true,
+      message: 'Workflow preview reached ${current.title}',
+      currentState: current,
+      transitions: [
+        for (final transition in workflow.transitions)
+          if (transition.sourceStateId == current.id) transition,
+      ],
+      path: path,
+      terminal: current.kind == WorkflowStateKind.finalState,
+    );
+  }
+
+  List<String>? _demoTransitionPath(
+    WorkflowDefinition workflow, {
+    required String from,
+    required String to,
+  }) {
+    final queue = <List<String>>[
+      [from],
+    ];
+    final visited = <String>{from};
+    while (queue.isNotEmpty) {
+      final path = queue.removeAt(0);
+      final current = path.last;
+      for (final transition in workflow.transitions) {
+        if (transition.sourceStateId != current) continue;
+        final next = transition.targetStateId;
+        if (!visited.add(next)) continue;
+        final candidate = [...path, next];
+        if (next == to) return candidate.skip(1).toList();
+        queue.add(candidate);
+      }
+    }
+    return null;
   }
 
   @override
@@ -2236,7 +2719,7 @@ class DemoStudioTransport extends StudioTransport
       ThreadModeCatalogTopic() => ThreadModeCatalogBaseline(
         _demoThreadModeCatalog(),
       ),
-      ProviderUsageTopic() => ProviderUsageBaseline(_demoProviderUsageState()),
+      AccountUsageTopic() => AccountUsageBaseline(_demoAccountUsageState()),
       ModelPerformanceTopic() => ModelPerformanceBaseline(
         _demoModelPerformance(_fixtureTime),
       ),
@@ -2263,7 +2746,7 @@ class DemoStudioTransport extends StudioTransport
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
-      ProviderUsageBaseline(:final state) => state.revision,
+      AccountUsageBaseline(:final state) => state.revision,
       ModelPerformanceBaseline(:final state) => state.revision,
       SessionCostsBaseline(:final state) => state.revision,
       UpdaterBaseline(:final state) => state.revision,
@@ -2326,38 +2809,79 @@ class DemoStudioTransport extends StudioTransport
     return controller.stream;
   }
 
-  /// Thread 首帧只暴露当前状态：已完成条目由分页历史提供，
-  /// 未终态条目由内容窗口提供。
+  /// Thread 首帧只暴露当前状态：正文由内容连接的分页/尾部交付。
   ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {
-    return workspace.copyWith(items: const [], latestTurn: null);
+    return workspace.copyWith(latestTurn: null);
   }
 
-  /// 内容窗口：正文（含流式）只经它交给 UI，与状态流相互独立。
+  /// 内容连接：正文（含流式）只经它交给 UI，与状态流相互独立。
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async {
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     if (!_workspaces.containsKey(threadId)) {
       throw StateError('unknown demo thread $threadId');
     }
-    final window = _DemoChatWindow(this, threadId);
-    final factory = _chatWindowFactory;
-    // 工厂拿到的是真实窗口：注入者只包装故障点，不会再次回到 openChatWindow。
-    return factory == null ? window : factory(threadId, window);
+    final connection = _DemoTimelineConnection(this, threadId);
+    final factory = _timelineFactory;
+    // 工厂拿到的是真实连接：注入者只包装故障点，不会再次回到 openTimeline。
+    return factory == null ? connection : factory(threadId, connection);
   }
 
-  /// 测试专用：包装内容窗口，用于故障注入（首帧失败、增量失败、EOF、慢打开）。
+  /// 测试专用：包装内容连接，用于故障注入（首帧失败、增量失败、EOF、慢打开）。
   ///
-  /// 收到的是 demo 的真实窗口，只替换故障点；状态流、目录与正文事实仍是 demo 的实现，
+  /// 收到的是 demo 的真实连接，只替换故障点；状态流、目录与正文事实仍是 demo 的实现，
   /// 因此注入的是生命周期交错而不是另一套业务状态。
-  Future<StudioChatWindow> Function(String threadId, StudioChatWindow window)?
-  _chatWindowFactory;
+  Future<StudioTimelineConnection> Function(
+    String threadId,
+    StudioTimelineConnection connection,
+  )?
+  _timelineFactory;
 
   @visibleForTesting
-  set chatWindowFactory(
-    Future<StudioChatWindow> Function(String threadId, StudioChatWindow window)?
+  set timelineFactory(
+    Future<StudioTimelineConnection> Function(
+      String threadId,
+      StudioTimelineConnection connection,
+    )?
     factory,
   ) {
-    _chatWindowFactory = factory;
+    _timelineFactory = factory;
   }
+
+  /// 测试夹具：把 demo 的 canonical 内存条目写成给定内容。
+  ///
+  /// 真实运行时这些条目由脚本化的 prompt 流程写入；这里只准备内存条目，内容仍然只经
+  /// [openTimeline] 的连接（有界尾部 + 页 + 详情）交付，不绕过内容契约。
+  @visibleForTesting
+  void seedTimelineItems(String threadId, Iterable<ThreadItemView> items) {
+    for (final item in items) {
+      _upsertChatItem(threadId, item);
+    }
+  }
+
+  /// 测试夹具：撤下一条 demo canonical 条目（真实 `Remove` 的环境准备）。
+  ///
+  /// 与 [seedTimelineItems] 同一环境准备 seam：只改 demo 的 canonical 内存条目与通知，
+  /// 发布仍只经 [openTimeline] 的连接，不新增业务删除 API。
+  @visibleForTesting
+  void retractTimelineItem(String threadId, String itemId) {
+    final items = [...?_threadItems[threadId]];
+    final index = items.indexWhere((item) => item.id == itemId);
+    if (index < 0) return;
+    items.removeAt(index);
+    _threadItems[threadId] = items;
+    _notifyItemsChanged(threadId);
+    _lastItemChange[threadId] = _DemoItemChange(
+      version: _contentVersionOf(threadId),
+      itemId: itemId,
+      removed: true,
+    );
+  }
+
+  /// 最近一次内容变更的 typed 事实：身份 + 该条目的预览值（或删除）。
+  _DemoItemChange? _lastItemChangeOf(String threadId) =>
+      _lastItemChange[threadId];
+
+  final Map<String, _DemoItemChange> _lastItemChange = {};
 
   /// 按活动身份读取完整详情。demo 没有独立的正文投影，活动本身即为可用事实。
   @override
@@ -2466,7 +2990,7 @@ class DemoStudioTransport extends StudioTransport
     _emitThreadUpdate(
       threadId,
       ThreadRuntimeUpdate(
-        runtime: workspace.runtime.copyWith(model: route.model),
+        runtime: workspace.runtime.copyWith(modelId: route.modelId),
         todo: null,
       ),
     );
@@ -2557,7 +3081,7 @@ class DemoStudioTransport extends StudioTransport
     const reasoningSummary =
         '## Inspecting the request\n\nChecking the live ThreadItem projection.';
     const reasoningContent =
-        'The provider is folding summary and raw reasoning independently.';
+        'The account is folding summary and raw reasoning independently.';
     _upsertChatItem(
       threadId,
       ThreadItemView(
@@ -2608,9 +3132,8 @@ class DemoStudioTransport extends StudioTransport
       kind: ThreadActivityKind.thinking,
       summary: 'Checking the live ThreadItem projection.',
     );
-    final liveReasoning = _workspaces[threadId]!.items.firstWhere(
-      (item) => item.id == reasoningId,
-    );
+    final liveReasoning = _itemsOf(threadId)
+        .firstWhere((item) => item.id == reasoningId);
     final reasoningCompletedAt = DateTime.now();
     _upsertChatItem(
       threadId,
@@ -2660,9 +3183,8 @@ class DemoStudioTransport extends StudioTransport
       text: ' 的 typed delta。',
     );
     final commentaryCompletedAt = DateTime.now();
-    final liveCommentary = _workspaces[threadId]!.items.firstWhere(
-      (item) => item.id == commentaryId,
-    );
+    final liveCommentary = _itemsOf(threadId)
+        .firstWhere((item) => item.id == commentaryId);
     _upsertChatItem(
       threadId,
       liveCommentary.copyWith(
@@ -2736,9 +3258,8 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadToolArgumentsFieldView(),
       text: '--test provider_wire"}',
     );
-    final streamedTool = _workspaces[threadId]!.items.firstWhere(
-      (item) => item.id == toolId,
-    );
+    final streamedTool = _itemsOf(threadId)
+        .firstWhere((item) => item.id == toolId);
     final streamedToolState = streamedTool.state as ThreadToolItemStateView;
     _upsertChatItem(
       threadId,
@@ -2767,9 +3288,8 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadToolResultFieldView(),
       text: '[stderr] analyzer warnings: 0\n',
     );
-    final runningTool = _workspaces[threadId]!.items.firstWhere(
-      (item) => item.id == toolId,
-    );
+    final runningTool = _itemsOf(threadId)
+        .firstWhere((item) => item.id == toolId);
     final runningToolState = runningTool.state as ThreadToolItemStateView;
     final toolCompletedAt = DateTime.now();
     _upsertChatItem(
@@ -2830,9 +3350,8 @@ class DemoStudioTransport extends StudioTransport
       text: finalSuffix,
     );
     final finalCompletedAt = DateTime.now();
-    final liveFinal = _workspaces[threadId]!.items.firstWhere(
-      (item) => item.id == finalId,
-    );
+    final liveFinal = _itemsOf(threadId)
+        .firstWhere((item) => item.id == finalId);
     _upsertChatItem(
       threadId,
       liveFinal.copyWith(
@@ -3017,9 +3536,9 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
@@ -3027,13 +3546,12 @@ class DemoStudioTransport extends StudioTransport
     final current = before;
     final converted = _providersFromCommands(
       [command],
-      previous: current.providers,
-      catalog: _providerCatalog,
+      previous: current.accounts,
+      catalog: _accountCatalog,
     );
-    final originalId = command.originalId ?? command.id;
-    _providers = [
-      for (final provider in current.providers)
-        if (provider.id != originalId && provider.id != command.id) provider,
+    _accounts = [
+      for (final account in current.accounts)
+        if (account.id != command.id) account,
       ...converted,
     ];
     _settingsRevision += 1;
@@ -3041,78 +3559,76 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
-    if (!before.providers.any((provider) => provider.id == providerId)) {
-      throw StateError('Provider is unavailable: $providerId');
+    if (!before.accounts.any((account) => account.id == accountId)) {
+      throw StateError('Account is unavailable: $accountId');
     }
-    _defaultProviderId = providerId;
+    _defaultAccountId = accountId;
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
   }
 
   @override
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
-    String slug,
+    String accountId,
+    String modelId,
   ) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
-    if (slug.trim().isEmpty) {
-      throw StateError('Model slug must not be empty');
+    if (modelId.trim().isEmpty) {
+      throw StateError('Account modelId must not be empty');
     }
-    final providers = [
-      for (final provider in before.providers)
-        if (provider.id == providerId)
-          _demoRemoveManualModel(provider, slug)
+    final accounts = [
+      for (final account in before.accounts)
+        if (account.id == accountId)
+          _demoRemoveManualModel(account, modelId)
         else
-          provider,
+          account,
     ];
-    if (!providers.any((provider) => provider.id == providerId)) {
-      throw StateError('unknown demo provider: $providerId');
+    if (!accounts.any((account) => account.id == accountId)) {
+      throw StateError('unknown demo account: $accountId');
     }
-    _providers = providers;
+    _accounts = accounts;
     _settingsRevision += 1;
     return _demoSettingsReply(
-      OperationId('remove-provider-model:$providerId:$slug'),
+      OperationId('remove-account-modelId:$accountId:$modelId'),
       before,
     );
   }
 
   @override
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     final current = before;
-    if (current.providers.length <= 1) {
-      throw StateError('At least one provider is required');
+    if (current.accounts.length <= 1) {
+      throw StateError('At least one account is required');
     }
     final replacement =
-        replacementProviderId ??
-        current.providers
-            .firstWhere((provider) => provider.id != providerId)
-            .id;
-    if (!current.providers.any((provider) => provider.id == replacement)) {
-      throw StateError('Replacement provider is unavailable: $replacement');
+        replacementAccountId ??
+        current.accounts.firstWhere((account) => account.id != accountId).id;
+    if (!current.accounts.any((account) => account.id == replacement)) {
+      throw StateError('Replacement account is unavailable: $replacement');
     }
-    _providers = [
-      for (final provider in current.providers)
-        if (provider.id != providerId) provider,
+    _accounts = [
+      for (final account in current.accounts)
+        if (account.id != accountId) account,
     ];
-    _defaultProviderId = _defaultProviderId == providerId
+    _defaultAccountId = _defaultAccountId == accountId
         ? replacement
-        : _defaultProviderId;
+        : _defaultAccountId;
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
   }
@@ -3122,21 +3638,17 @@ class DemoStudioTransport extends StudioTransport
       _demoSettingsState();
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(
-    String providerId,
-  ) async {
-    final providers = _providers ?? [_demoDefaultProvider()];
-    final provider = providers
-        .where((item) => item.id == providerId)
-        .firstOrNull;
-    if (provider != null) {
-      _providerUsages[providerId] = _demoProviderUsage(provider);
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
+    final accounts = _accounts ?? [_demoDefaultAccount()];
+    final account = accounts.where((item) => item.id == accountId).firstOrNull;
+    if (account != null) {
+      _accountUsages[accountId] = _demoAccountUsage(account);
     } else {
-      _providerUsages.remove(providerId);
+      _accountUsages.remove(accountId);
     }
-    _providerUsageRevision += 1;
-    final state = _demoProviderUsageState();
-    _publishProductPayload(ProviderUsageStateChangedPayload(state));
+    _accountUsageRevision += 1;
+    final state = _demoAccountUsageState();
+    _publishProductPayload(AccountUsageStateChangedPayload(state));
     return state;
   }
 
@@ -3285,55 +3797,55 @@ class DemoStudioTransport extends StudioTransport
     }
   }
 
-  ProviderSettingsView _demoRemoveManualModel(
-    ProviderSettingsView provider,
-    String slug,
+  AccountSettingsView _demoRemoveManualModel(
+    AccountSettingsView account,
+    String modelId,
   ) {
-    final target = provider.models
-        .where((model) => model.slug == slug)
+    final target = account.models
+        .where((model) => model.modelId == modelId)
         .firstOrNull;
-    if (target == null || target.origin != ProviderModelOrigin.manual) {
-      throw StateError('unknown demo manual model: ${provider.id} / $slug');
+    if (target == null || target.origin != ModelOrigin.manual) {
+      throw StateError('unknown demo manual modelId: ${account.id} / $modelId');
     }
     final models = [
-      for (final model in provider.models)
-        if (model.slug != slug) model,
+      for (final model in account.models)
+        if (model.modelId != modelId) model,
     ];
-    final connections = {...provider.modelConnectionModes}..remove(slug);
-    final limits = {...provider.autoCompactLimits}..remove(slug);
-    return provider.copyWith(
+    final connections = {...account.modelConnectionModes}..remove(modelId);
+    final limits = {...account.autoCompactLimits}..remove(modelId);
+    return account.copyWith(
       models: models,
       modelConnectionModes: connections,
       autoCompactLimits: limits,
       modelCount: '${models.length}',
       usageLabel: models.isEmpty
-          ? provider.defaultModel
+          ? account.defaultModelId
           : '${models.length} models',
     );
   }
 
-  ProviderModelView _findDemoModel(
-    List<ProviderSettingsView> providers,
-    String providerId,
-    String model,
+  AccountModelView _findDemoModel(
+    List<AccountSettingsView> accounts,
+    String accountId,
+    String modelId,
   ) {
-    final provider = providers
-        .where((item) => item.id == providerId)
-        .firstOrNull;
-    if (provider == null) {
-      throw StateError('unknown demo provider: $providerId');
+    final account = accounts.where((item) => item.id == accountId).firstOrNull;
+    if (account == null) {
+      throw StateError('unknown demo account: $accountId');
     }
-    final selected = provider.models
-        .where((candidate) => candidate.slug == model)
+    final selected = account.models
+        .where((candidate) => candidate.modelId == modelId)
         .firstOrNull;
     if (selected == null) {
-      throw StateError('unknown demo model: $providerId / $model');
+      throw StateError('unknown demo modelId: $accountId / $modelId');
     }
     return selected;
   }
 
-  /// 通知某 Thread 的内容窗口：条目发生真实变化（正文只由窗口交给 UI）。
+  /// 通知某 Thread 的内容连接：条目发生真实变化（正文只由内容尾部交给消费方）。
   void _notifyItemsChanged(String threadId) {
+    // 每次内容变化推进该 Thread 自己的内容版本；Thread 状态 revision 不受影响。
+    _contentVersions[threadId] = _contentVersionOf(threadId) + 1;
     _chatChangeSeq[threadId] = (_chatChangeSeq[threadId] ?? 0) + 1;
     final waiters = _chatWaiters.remove(threadId);
     if (waiters == null) return;
@@ -3353,7 +3865,8 @@ class DemoStudioTransport extends StudioTransport
   /// demo 模拟一次 Thread 状态更新。
   ///
   /// 状态流只承载 Turn / 活动 / 交互 / 运行时——与生产投影同一契约；**条目与正文不在
-  /// 这里**，它们写进内存条目并由内容窗口（[openChatWindow]）按同一窗口契约交付。
+  /// 这里**，它们写进内存条目，并由 Timeline 内容连接（`openTimeline` →
+  /// `_DemoTimelineConnection`）按同一有界尾部契约交付。
   void _emitThreadUpdate(String threadId, ThreadWorkspaceUpdate update) {
     final workspace = _workspaces[threadId];
     if (workspace == null) return;
@@ -3404,8 +3917,8 @@ class DemoStudioTransport extends StudioTransport
     );
     if (update case ThreadTurnUpdate(:final turn)) {
       final id = 'turn:${turn.turnId.length}:${turn.turnId}';
-      final previous = workspace.items
-          .where((item) => item.id == id)
+      final previous = _threadItems[threadId]
+          ?.where((item) => item.id == id)
           .firstOrNull;
       _upsertChatItem(
         threadId,
@@ -3423,15 +3936,14 @@ class DemoStudioTransport extends StudioTransport
     }
   }
 
-  /// 把一条条目写入内存窗口：条目只属于内容窗口，不推进线程状态水位。
+  /// 把一条条目写入内存内容：条目只属于内容连接，不推进线程状态水位。
   void _upsertChatItem(String threadId, ThreadItemView item) {
-    final workspace = _workspaces[threadId];
-    if (workspace == null) return;
-    // demo 的内存条目没有独立的执行终态事件：状态进入终态即视为窗口终态。
+    if (!_workspaces.containsKey(threadId)) return;
+    // demo 的内存条目没有独立的执行终态事件：状态进入终态即视为内容终态。
     final entry = item.executionTerminal
         ? item
         : item.copyWith(executionTerminal: item.isTerminal);
-    final items = [...workspace.items];
+    final items = [...?_threadItems[threadId]];
     final index = items.indexWhere((existing) => existing.id == entry.id);
     if (index < 0) {
       items.add(entry);
@@ -3439,9 +3951,20 @@ class DemoStudioTransport extends StudioTransport
       items[index] = entry;
     }
     items.sort(_compareThreadItems);
-    _workspaces[threadId] = workspace.copyWith(items: items);
+    _threadItems[threadId] = items;
     _notifyItemsChanged(threadId);
+    // 通知携带本次 typed 变更的身份与预览值：内容连接无需扫描全历史就能表达差量。
+    _lastItemChange[threadId] = _DemoItemChange(
+      version: _contentVersionOf(threadId),
+      itemId: entry.id,
+      item: entry,
+    );
   }
+
+  List<ThreadItemView> _itemsOf(String threadId) =>
+      _threadItems[threadId] ?? const <ThreadItemView>[];
+
+  int _contentVersionOf(String threadId) => _contentVersions[threadId] ?? 0;
 
   /// 应用一帧 typed `UpdateItem` 字段变化，与 `BridgeViewChange::UpdateItem` 同形状：
   /// 按字段身份落到条目的 domain 字段，本地基线必须等于当前 revision；条目缺失、
@@ -3452,9 +3975,8 @@ class DemoStudioTransport extends StudioTransport
     required int revision,
     required List<ThreadFieldUpdateView> fields,
   }) {
-    final workspace = _workspaces[threadId];
-    if (workspace == null) return;
-    final items = [...workspace.items];
+    if (!_workspaces.containsKey(threadId)) return;
+    final items = [...?_threadItems[threadId]];
     final index = items.indexWhere((item) => item.id == itemId);
     if (index < 0) return;
     final current = items[index];
@@ -3468,8 +3990,13 @@ class DemoStudioTransport extends StudioTransport
     );
     if (next == null) return;
     items[index] = next;
-    _workspaces[threadId] = workspace.copyWith(items: items);
+    _threadItems[threadId] = items;
     _notifyItemsChanged(threadId);
+    _lastItemChange[threadId] = _DemoItemChange(
+      version: _contentVersionOf(threadId),
+      itemId: next.id,
+      item: next,
+    );
   }
 
   /// 单字段 append 的便捷入口（demo 脚本只追加正文）。
@@ -3523,7 +4050,7 @@ class DemoStudioTransport extends StudioTransport
   }
 
   int _nextOrdinal(String threadId) {
-    final items = _workspaces[threadId]?.items ?? const <ThreadItemView>[];
+    final items = _itemsOf(threadId);
     return items.isEmpty
         ? 0
         : items
@@ -3533,233 +4060,1008 @@ class DemoStudioTransport extends StudioTransport
   }
 }
 
-/// 内容窗口的内存实现：快照直接来自 demo 的工作区条目，变化由 [_DemoChatWindow.next]
-/// 唤醒；不参与状态流，也没有第二份业务状态。
+/// 一次内容变更的 typed 事实：推送它的身份、新预览值或“已删除”。
 ///
-/// 交付形状与原生窗口一致：首帧与控制操作后的窗口移动是权威 `Reset`，条目**原地变化**按
-/// typed 差量交付 `Patch`（`UpdateItem` 的字段身份、`expected_revision`、`omitted`/`saved`
-/// 与 splice 索引都按同一契约）。只交付 `Reset` 会让 Dart 的差量 reducer 在 demo 预览与
-/// 人工验收中完全不被走到——`from/to` 防线、字段原子提交和终态拒绝都只在单元测试里成立。
-/// demo 仍然没有真实字节预览预算，也不证明原生差量的性能表现。
-class _DemoChatWindow implements StudioChatWindow {
-  _DemoChatWindow(this._api, this._threadId);
+/// 这就是 demo 的“producer 通知”：内容连接不需要为每次交付重建全历史版本表。
+final class _DemoItemChange {
+  const _DemoItemChange({
+    required this.version,
+    required this.itemId,
+    this.item,
+    this.removed = false,
+  });
+
+  final int version;
+  final String itemId;
+  final ThreadItemView? item;
+  final bool removed;
+}
+
+/// 一条已封顶预览：预览条目、逐字段账目、合成后的省略字节数与本次保守计量总量
+/// （不可缩结构 + 实际保留正文）。
+typedef _DemoPreview = ({
+  ThreadItemView item,
+  List<StudioTimelineDetailRef> details,
+  int omitted,
+  int accountedBytes,
+});
+
+/// 一条**已成功计量**的分页条目：完整 canonical 条目与它的有界预览。
+final class _DemoStagedItem {
+  const _DemoStagedItem(this.full, this.preview);
+
+  final ThreadItemView full;
+  final _DemoPreview preview;
+}
+
+/// 一次页/基线查询的暂存结果。
+///
+/// 预览与计量全部成功后才由连接提交到自己的连续性副本：中途 `Overloaded` 不会留下
+/// 半清空的副本，也不会推进已交付水位（design/26 §预算计量边界）。
+final class _DemoPageStage {
+  const _DemoPageStage({
+    required this.items,
+    required this.before,
+    required this.hasOlder,
+  });
+
+  /// 按 canonical 顺序升序排列，最早一条是 `before` 指向的边界。
+  final List<_DemoStagedItem> items;
+  final String? before;
+  final bool hasOlder;
+}
+
+/// 单条预览无法容纳不可省略事实时的 typed 失败。
+///
+/// 结构、稳定身份与权威判别标记都不允许截断或删除，因此只能明确报告资源限制；
+/// 这不是 EOF，也不是可重试的瞬时压力（design/26 §预算计量边界）。
+StudioFailure _timelineBudgetExceeded() => const StudioFailure(
+  code: StudioFailureCode.overloaded,
+  message: 'The timeline item cannot fit the preview budget',
+  retryable: false,
+  correlationId: 'demo-timeline-item-overloaded',
+);
+
+/// 单条条目的预览字节额度：正文（含问答、推理、原始记录）共享一份，工具参数/结果从中
+/// 各取至多 4 KiB。额度耗尽只会让对应预览变空，不会让字段消失。
+final class _PreviewBudget {
+  _PreviewBudget(this.remaining);
+  int remaining;
+
+  /// 申请 [max] 字节额度并返回实际交付的预览：**只按实际保留的 UTF-8 字节计费**，
+  /// 短字段用不完的额度留给后续字段（design/26 §26.5）。
+  String cap(String text, int max) {
+    if (remaining <= 0 || max <= 0) return '';
+    final granted = max < remaining ? max : remaining;
+    final bytes = utf8.encode(text);
+    if (bytes.length <= granted) {
+      remaining -= bytes.length;
+      return text;
+    }
+    var end = granted;
+    while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
+      end -= 1;
+    }
+    if (end == 0) return '';
+    remaining -= end;
+    return utf8.decode(bytes.sublist(0, end));
+  }
+
+  /// 为小的固定判别标记预留字节：判别事实优先于自由正文。
+  ///
+  /// 预留是硬约束：额度不足时直接报告资源限制，绝不静默回落到 0 之后又把标记原样
+  /// 交付成超预算内容（design/26 §预算计量边界）。
+  void reserve(int bytes) {
+    if (bytes <= 0) return;
+    if (bytes > remaining) throw _timelineBudgetExceeded();
+    remaining -= bytes;
+  }
+}
+
+/// demo 的内容连接：正文完全来自内存条目，变化由 [_DemoTimelineConnection.next] 唤醒。
+///
+/// 交付形状与原生连接一致：首帧是**一致基线**，之后按身份交付 `Add`/`UpdateItem`/`Remove`
+/// 差量；无法用差量表达的条目变化退回显式 `Resync`，绝不在客户端的基线之外伪造窗口。
+/// 页与详情是自包含查询：预览按产品预算封顶（正文 32 KiB，工具参数/结果各 4 KiB，
+/// 判别标记优先），详情按 UTF-8 边界切块并给出绑定 Thread/item/field/revision 的不透明
+/// continuation，让客户端走真实的多块路径。
+class _DemoTimelineConnection implements StudioTimelineConnection {
+  _DemoTimelineConnection(this._api, this._threadId)
+    : _subscriptionId = 'demo-${newStudioCorrelationId()}';
+
+  static const int _pageSize = 32;
+  static const int _continuityLimit = 100;
+
+  /// 单条预览总量上限（不可缩结构 + 实际保留正文）。
+  static const int _itemPreviewLimitBytes = 256 * 1024;
+
+  /// 一次页/基线查询的总量上限；按最新端累计，提前截页时保留真实更早游标。
+  static const int _pageLimitBytes = 2 * 1024 * 1024;
+
+  /// 连续性副本的总量上限；与条数上限同时生效。
+  static const int _continuityLimitBytes = 8 * 1024 * 1024;
+
+  /// 详情块的默认大小与硬上界：默认 64 KiB，显式允许 4..262144 字节（design/26 §26.2）。
+  static const int _defaultDetailBytes = 64 * 1024;
+  static const int _maxDetailBytes = 256 * 1024;
 
   final DemoStudioTransport _api;
   final String _threadId;
-  String? _focusId;
-  int _operations = 0;
+  final String _subscriptionId;
+
+  /// 已交付给消费者的**预览**条目（≤ [_continuityLimit] 条）：本连接自己的连续性副本。
+  final Map<String, ThreadItemView> _delivered = {};
+
+  /// 已交付条目的逐字段预览账目（只有长度数字，不含正文）。
+  final Map<String, List<StudioTimelineDetailRef>> _deliveredDetails = {};
+
+  /// 已交付预览的保守计量（结构 + 保留正文）：连续性副本只用这份数字账目，
+  /// 不额外保存整页正文或第二份正文模型。
+  final Map<String, int> _deliveredBytes = {};
+
+  /// 因有界副本滑出而不再持有的身份（有界）：它们的后续事实变化无法用差量表达。
+  final Set<String> _evicted = {};
+  bool _evictedOverflow = false;
+
+  /// 已交付范围的最早/最新 canonical 键；范围只随交付单调外扩。
+  (int, String)? _floor;
+  (int, String)? _ceiling;
+
+  int? _deliveredVersion;
+  bool _firstFrameConsumed = false;
   bool _closed = false;
 
-  /// 上一次交付给消费者的基线：Reset 或 Patch 之后的窗口文本与版本。
-  ///
-  /// `Patch.from` 必须等于它，与原生窗口「对外交付的 Reset 版本等于之后差量的 from」同一条
-  /// 规则。
-  int? _baselineVersion;
-  List<ThreadItemView> _baselineItems = const [];
+  List<ThreadItemView> get _items => _api._itemsOf(_threadId);
+  int get _version => _api._contentVersionOf(_threadId);
 
-  /// 每个推理条目已经交付过的块数，用于把追加块映射回**逻辑** chunk 下标。
-  ///
-  /// 只在有界窗口内的条目上增长；条目离开窗口时随基线一起清理。
-  final Map<String, int> _deliveredChunks = {};
+  static (int, String) _keyOf(ThreadItemView item) => (item.ordinal, item.id);
 
-  List<ThreadItemView> get _items =>
-      _api._workspaces[_threadId]?.items ?? const <ThreadItemView>[];
+  static int _compareKeys((int, String) left, (int, String) right) {
+    final byOrdinal = left.$1.compareTo(right.$1);
+    return byOrdinal != 0 ? byOrdinal : left.$2.compareTo(right.$2);
+  }
 
-  StudioChatSnapshot _snapshot() {
-    return StudioChatSnapshot(
-      focusedItemId: _focusId,
-      version: _api._workspaces[_threadId]?.revision ?? 0,
+  @override
+  Future<StudioTimelineBaseline> initial() async {
+    // 关闭优先于首帧状态：关闭后的调用一律是 typed Cancelled，不是裸 StateError。
+    if (_closed) throw _cancelled();
+    if (_firstFrameConsumed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The timeline first frame was already delivered',
+        retryable: false,
+        correlationId: 'demo-timeline-initial-consumed',
+      );
+    }
+    _firstFrameConsumed = true;
+    return _baseline();
+  }
+
+  StudioTimelineBaseline _baseline() {
+    final version = _version;
+    // 先完整计量再提交：候选失败（例如中途 Overloaded）不半发布连接副本。
+    final stage = _stagePage(_items, _pageSize);
+    _commit(stage, version);
+    return StudioTimelineBaseline(
+      subscriptionId: _subscriptionId,
+      version: version,
       items: List.unmodifiable([
-        for (final item in _items)
-          StudioChatItem(
-            item,
-            saved: item.saved,
-            lifecycle: item.executionTerminal
-                ? StudioChatLifecycle.terminal
-                : StudioChatLifecycle.streaming,
-          ),
+        for (final entry in stage.items)
+          _timelineItem(entry.full, entry.preview),
       ]),
-      hasOlder: false,
-      hasNewer: false,
+      before: stage.before,
+      hasOlder: stage.hasOlder,
     );
   }
 
-  StudioChatReceipt _receipt({
-    StudioChatDisposition disposition = StudioChatDisposition.noChange,
-  }) {
-    return StudioChatReceipt(
-      operationId: ++_operations,
-      disposition: disposition,
-      version: _api._workspaces[_threadId]?.revision ?? 0,
-      retained: true,
-    );
-  }
-
-  /// 采纳一次已经交给消费者的窗口基线。
-  void _adopt(int version, List<ThreadItemView> items) {
-    _baselineVersion = version;
-    _baselineItems = List.unmodifiable(items);
-    // 离开窗口的条目不再需要块计数：不能让它随会话增长。
-    final live = {for (final item in items) item.id};
-    _deliveredChunks.removeWhere(
-      (key, _) => !live.contains(key.split('|').first),
-    );
+  /// 用一次已成功计量的页替换本连接的连续性副本。
+  ///
+  /// 页预算（2 MiB）不超过副本预算（8 MiB），因此提交后无需立即淘汰。
+  void _commit(_DemoPageStage stage, int version) {
+    _delivered.clear();
+    _deliveredDetails.clear();
+    _deliveredBytes.clear();
+    for (final entry in stage.items) {
+      _delivered[entry.full.id] = entry.preview.item;
+      _deliveredDetails[entry.full.id] = entry.preview.details;
+      _deliveredBytes[entry.full.id] = entry.preview.accountedBytes;
+    }
+    _deliveredVersion = version;
+    _evicted.clear();
+    _evictedOverflow = false;
+    _floor = stage.items.isEmpty ? null : _keyOf(stage.items.first.full);
+    _ceiling = stage.items.isEmpty ? null : _keyOf(stage.items.last.full);
   }
 
   @override
-  Future<StudioChatSnapshot> initial() async {
-    final snapshot = _snapshot();
-    _adopt(snapshot.version, _items);
-    return snapshot;
+  Future<StudioTimelineUpdate?> next() async {
+    while (true) {
+      if (_closed) throw _cancelled();
+      if (_deliveredVersion == null) {
+        // 首帧尚未移交：与公共契约一致用 typed Conflict，不给 demo 另立例外。
+        throw const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'The timeline first frame has not been consumed yet',
+          retryable: false,
+          correlationId: 'demo-timeline-next-before-initial',
+        );
+      }
+      final seen = _api._chatChangeSeq[_threadId] ?? 0;
+      await _api._awaitItemsChanged(_threadId, seen);
+      // 关闭先拒绝新调用并取消，取消优先于任何「正常结束」。
+      if (_closed) throw _cancelled();
+      final delivered = _deliveredVersion!;
+      final version = _version;
+      if (version <= delivered) continue;
+      // 只有通知里能证明的**单次连续变化**才用差量表达；跨过的多次变化无法证明，
+      // 直接给出最新小页基线（design/26 §26.8）。
+      final change = _api._lastItemChangeOf(_threadId);
+      final single =
+          version == delivered + 1 &&
+              change != null &&
+              change.version == version
+          ? change
+          : null;
+      final expressed = single == null ? null : _express(single);
+      if (expressed == null) {
+        return StudioTimelineResync(
+          subscriptionId: _subscriptionId,
+          reason: StudioTimelineResyncReason.lagging,
+          baseline: _baseline(),
+        );
+      }
+      _deliveredVersion = version;
+      return StudioTimelinePatch(
+        subscriptionId: _subscriptionId,
+        from: delivered,
+        to: version,
+        changes: List.unmodifiable(expressed),
+        priority: StudioTimelinePriority.coalesced,
+      );
+    }
   }
 
-  @override
-  Future<StudioChatFrame?> next() async {
-    // 控制操作也会唤醒这条唯一出口（与原生窗口一致）；唤醒不等于有可交付变化。
-    // 只有窗口版本真的前进才交付帧，否则回到等待：空 Patch（from == to）是退化帧，
-    // 下游会按非递增版本拒收并要求重同步。
-    while (!_closed) {
-      final from = _api._chatChangeSeq[_threadId] ?? 0;
-      await _api._awaitItemsChanged(_threadId, from);
-      if (_closed) return null;
-      final version = _api._workspaces[_threadId]?.revision ?? 0;
-      final baseline = _baselineVersion;
-      if (baseline == null || version <= baseline) continue;
-      return _patchFrame(baseline, version) ?? _resetFrame();
+  /// 把通知里的单次变化表达成 typed 差量；null 表示无法证明连续。
+  List<StudioTimelineChange>? _express(_DemoItemChange change) {
+    final id = change.itemId;
+    if (change.removed) {
+      // 真实删除按身份自包含：即使从未交付或已滑出副本也照常交付，
+      // 接收者本来没有该身份时为空操作。
+      _delivered.remove(id);
+      _deliveredDetails.remove(id);
+      _deliveredBytes.remove(id);
+      _evicted.remove(id);
+      return [StudioTimelineRemove(id)];
     }
-    return null;
-  }
-
-  StudioChatReset _resetFrame() {
-    final snapshot = _snapshot();
-    _adopt(snapshot.version, _items);
-    return StudioChatReset(snapshot);
-  }
-
-  /// 把「基线 -> 当前窗口」表达成 typed 差量；不可表达时返回 null，由调用方回退到 Reset。
-  StudioChatPatch? _patchFrame(int from, int to) {
-    final items = _items;
-    final changes = _windowChanges(_baselineItems, items);
-    if (changes == null) return null;
-    _adopt(to, items);
-    return StudioChatPatch(
-      from: from,
-      to: to,
-      focusedItemId: _focusId,
-      changes: changes,
-      hasOlder: false,
-      hasNewer: false,
-    );
-  }
-
-  /// 与原生窗口同形的差量：前缀/后缀共同前缀裁剪后的单段 splice，或逐条 typed 字段提交。
-  List<StudioViewChange>? _windowChanges(
-    List<ThreadItemView> delivered,
-    List<ThreadItemView> current,
-  ) {
-    var head = 0;
-    while (head < delivered.length &&
-        head < current.length &&
-        delivered[head].id == current[head].id) {
-      head++;
-    }
-    var tail = 0;
-    while (tail < delivered.length - head &&
-        tail < current.length - head &&
-        delivered[delivered.length - 1 - tail].id ==
-            current[current.length - 1 - tail].id) {
-      tail++;
-    }
-    final removed = delivered.length - head - tail;
-    final inserted = current.sublist(head, current.length - tail);
-    if (removed != 0 || inserted.length != delivered.length - head - tail) {
-      // 窗口移动：用一次 splice 表达插入/删除，不逐条重发正文。
-      return [
-        StudioViewSplice(
-          index: head,
-          remove: removed,
-          items: [for (final item in inserted) _chatItem(item)],
-        ),
-      ];
-    }
-    final changes = <StudioViewChange>[];
-    for (var index = 0; index < inserted.length; index++) {
-      final previous = delivered[head + index];
-      final next = current[head + index];
-      final update = _itemUpdate(previous, next);
+    final item = change.item;
+    if (item == null) return null;
+    final previous = _delivered[id];
+    if (previous != null) {
+      final preview = _previewOf(item);
+      final update = _itemUpdate(
+        previous,
+        _deliveredDetails[id]!,
+        preview,
+        item,
+      );
       if (update == null) return null;
-      if (update.fields.isNotEmpty ||
+      final changed =
+          update.fields.isNotEmpty ||
           update.expectedRevision != update.revision ||
-          previous.saved != next.saved ||
-          previous.executionTerminal != next.executionTerminal ||
-          update.itemShell != null) {
-        changes.add(update);
+          previous.saved != preview.item.saved ||
+          previous.executionTerminal != preview.item.executionTerminal ||
+          update.itemShell != null;
+      _delivered[id] = preview.item;
+      _deliveredDetails[id] = preview.details;
+      // 更新后的总量与正文账目原子同步：只留数字，不留第二份正文。
+      _deliveredBytes[id] = preview.accountedBytes;
+      _prune(id);
+      return changed ? [update] : const [];
+    }
+    final key = _keyOf(item);
+    final floor = _floor;
+    if (floor != null && _compareKeys(key, floor) < 0) {
+      // 更早且从未交付：不插入、不缓存正文；后续页读取当时的权威值。
+      // 但它若曾在本连接副本里被淘汰，这次事实变化就无法证明 → 显式重同步。
+      if (_evicted.contains(id) || _evictedOverflow) return null;
+      return const [];
+    }
+    final ceiling = _ceiling;
+    if (ceiling != null && _compareKeys(key, ceiling) <= 0) {
+      // 落在已交付范围内部的**新**身份：无法证明与本连接连续。
+      return null;
+    }
+    final preview = _previewOf(item);
+    _delivered[id] = preview.item;
+    _deliveredDetails[id] = preview.details;
+    _deliveredBytes[id] = preview.accountedBytes;
+    _ceiling = key;
+    _prune(id);
+    return [StudioTimelineAdd(_timelineItem(item, preview))];
+  }
+
+  /// 有界副本：同时受 [_continuityLimit] 条与 [_continuityLimitBytes] 字节约束，
+  /// 只保留最新的已交付预览；淘汰不是删除通知（design/26 §26.8）。
+  void _prune(String newest) {
+    while (_delivered.length > _continuityLimit ||
+        _deliveredBytesTotal() > _continuityLimitBytes) {
+      if (_delivered.length <= 1) break;
+      final oldest = _delivered.keys
+          .where((id) => id != newest)
+          .reduce(
+            (left, right) =>
+                _compareKeys(
+                      _keyOf(_delivered[left]!),
+                      _keyOf(_delivered[right]!),
+                    ) <=
+                    0
+                ? left
+                : right,
+          );
+      _delivered.remove(oldest);
+      _deliveredDetails.remove(oldest);
+      _deliveredBytes.remove(oldest);
+      if (_evicted.length >= _continuityLimit) {
+        _evicted.remove(_evicted.first);
+        _evictedOverflow = true;
+      }
+      _evicted.add(oldest);
+    }
+    if (_delivered.isEmpty) return;
+    _floor = _delivered.values
+        .map(_keyOf)
+        .reduce((left, right) => _compareKeys(left, right) <= 0 ? left : right);
+    _ceiling = _delivered.values
+        .map(_keyOf)
+        .reduce((left, right) => _compareKeys(left, right) >= 0 ? left : right);
+  }
+
+  /// 已交付预览的保守计量总量（只有数字账目，不扫描正文）。
+  int _deliveredBytesTotal() {
+    var total = 0;
+    for (final bytes in _deliveredBytes.values) {
+      total += bytes;
+    }
+    return total;
+  }
+
+  StudioFailure _cancelled() => const StudioFailure(
+    code: StudioFailureCode.cancelled,
+    message: 'The timeline connection is closed',
+    retryable: false,
+    correlationId: 'demo-timeline-cancelled',
+  );
+
+  /// 产品预览预算（design/26 §26.5）：正文预览 32 KiB，工具参数/结果各 4 KiB。
+  static const int _bodyPreviewBytes = 32 * 1024;
+  static const int _toolPreviewBytes = 4 * 1024;
+
+  StudioTimelineItem _timelineItem(ThreadItemView full, _DemoPreview preview) {
+    return StudioTimelineItem(
+      item: preview.item,
+      saved: full.saved,
+      lifecycle: full.executionTerminal
+          ? StudioTimelineLifecycle.terminal
+          : StudioTimelineLifecycle.streaming,
+      omittedBytes: preview.omitted,
+      details: preview.details,
+    );
+  }
+
+  /// 条目预览值：只交付**有界预览**，完整正文留在 canonical 条目里由详情读取。
+  ///
+  /// 逐字段账目由这一对（完整正文、预览正文）的 UTF-8 字节差直接算出，不用某个输入
+  /// 声明的整体省略量代替合成结果（design/26 §26.7）。
+  ///
+  /// 单条总量是「不可缩结构 + 实际保留正文」：结构先占额度，剩余额度再由正文取
+  /// [_bodyPreviewBytes] 与「单条上限减结构」的交集。结构自身已经超限时报告 typed
+  /// `Overloaded`，不删字段、不截身份，也不回退到完整载荷（design/26 §预算计量边界）。
+  _DemoPreview _previewOf(ThreadItemView item) {
+    final full = _fieldsOf(item);
+    final structure = _structureBytes(item, full);
+    if (structure > _itemPreviewLimitBytes) throw _timelineBudgetExceeded();
+    final room = _itemPreviewLimitBytes - structure;
+    final budget = _PreviewBudget(
+      room < _bodyPreviewBytes ? room : _bodyPreviewBytes,
+    );
+    final capped = _withCappedFields(item, budget);
+    final preview = _fieldsOf(capped);
+    final details = <StudioTimelineDetailRef>[
+      for (final entry in full.entries)
+        StudioTimelineDetailRef(
+          field: entry.key,
+          revision: item.revision,
+          totalBytes: _byteLength(entry.value),
+          previewBytes: _byteLength(preview[entry.key] ?? ''),
+        ),
+    ];
+    var omitted = 0;
+    var kept = 0;
+    for (final ref in details) {
+      omitted += ref.totalBytes - ref.previewBytes;
+      kept += ref.previewBytes;
+    }
+    return (
+      item: capped.copyWith(bodyOmittedUnits: omitted),
+      details: List.unmodifiable(details),
+      omitted: omitted,
+      accountedBytes: structure + kept,
+    );
+  }
+
+  /// 以最新端为起点累计同一总量，按条数与页字节预算提前截页。
+  ///
+  /// 截页后的 `before` 是**实际交付的最早条目**，`hasOlder` 只看是否真的还有更早条目：
+  /// 不把预算截页伪装成 EOF，也不让游标越过被截掉的条目（design/26 §26.2）。
+  /// 只计量本次候选范围，不为分页预热历史。
+  _DemoPageStage _stagePage(List<ThreadItemView> older, int limit) {
+    final staged = <_DemoStagedItem>[];
+    var total = 0;
+    for (
+      var index = older.length - 1;
+      index >= 0 && staged.length < limit;
+      index--
+    ) {
+      final item = older[index];
+      final preview = _previewOf(item);
+      if (staged.isNotEmpty &&
+          total + preview.accountedBytes > _pageLimitBytes) {
+        break;
+      }
+      total += preview.accountedBytes;
+      staged.add(_DemoStagedItem(item, preview));
+    }
+    final items = List<_DemoStagedItem>.unmodifiable(staged.reversed);
+    final oldest = items.isEmpty ? null : items.first.full;
+    return _DemoPageStage(
+      items: items,
+      before: oldest == null ? null : _cursor(oldest.ordinal),
+      hasOlder: _hasOlderThan(oldest?.ordinal),
+    );
+  }
+
+  // ---- 保守结构计量（design/26 §预算计量边界） ----
+  //
+  // demo 没有 core 的 `meta` 编码，这里按自身 typed 表示做确定性的资源准入估算：
+  // 实际静态字符串的 UTF-8 字节 + 各 typed 容器/字段声明的固定壳。它不是 FRB wire
+  // 长度，也不等于分配器 heap 或 RSS；两个宿主的估算无需逐字节相等，但单条 256 KiB、
+  // 页 2 MiB、连续性副本 8 MiB 的口径与错误分类必须相同。
+  //
+  // 固定系数只需要覆盖 typed 容器的结构性成本（长度头、槽位、判别与引用），取整数值；
+  // 它们属于实现细节，不成为 wire 或持久化字段。
+
+  /// 条目固定壳：ordinal/revision/时间戳/枚举/标记等不可缩元数据。
+  static const int _itemShellBytes = 128;
+
+  /// 每个字符串的长度头与槽位。
+  static const int _stringSlotBytes = 8;
+
+  /// 每个内容字段的身份 + total/preview 声明 + 详情引用槽位。
+  static const int _contentFieldSlotBytes = 24;
+
+  /// 列表/载荷/分块/选项/答案等容器元素的固定成本。
+  static const int _containerSlotBytes = 16;
+
+  /// 附件条目的 id/mediaType/filename 头与尺寸字段。
+  static const int _attachmentSlotBytes = 24;
+
+  int _stringBytes(String? value) =>
+      value == null ? 0 : _stringSlotBytes + _byteLength(value);
+
+  /// 一条条目的不可缩结构成本。
+  ///
+  /// 覆盖 `ThreadItemStateView` 的全部封闭分支：稳定身份（item/Thread/Turn、工具调用、
+  /// 推理、技能、文件路径、问答问题 id 与答案身份）与生命周期错误原因都原样交付，
+  /// 因此完整计入；字段**声明**（含空正文、空选项、空分块、空载荷）按字段槽位计费，
+  /// 不因为正文为空就免费。
+  int _structureBytes(
+    ThreadItemView item,
+    Map<ThreadContentFieldView, String> fields,
+  ) {
+    var total = _itemShellBytes;
+    total += _stringBytes(item.id);
+    total += _stringBytes(item.threadId);
+    total += _stringBytes(item.turnId);
+    total += fields.length * _contentFieldSlotBytes;
+    switch (item.state) {
+      case ThreadTextItemStateView(:final attachments, :final lifecycle):
+        total += _attachmentBytes(attachments);
+        total += _contentLifecycleBytes(lifecycle);
+      case ThreadThinkingItemStateView(
+        :final summary,
+        :final content,
+        :final lifecycle,
+      ):
+        total += (summary.length + content.length) * _containerSlotBytes;
+        total += _contentLifecycleBytes(lifecycle);
+      case ThreadSkillItemStateView(
+        :final name,
+        :final source,
+        :final providerId,
+        :final resourceBase,
+        :final cause,
+      ):
+        total += _stringBytes(name);
+        total += _stringBytes(source);
+        total += _stringBytes(providerId);
+        total += _stringBytes(resourceBase.value);
+        total += _stringBytes(cause.id);
+      case ThreadToolItemStateView(
+        :final invocation,
+        :final lifecycle,
+        :final userInput,
+        :final wait,
+      ):
+        total += _stringBytes(invocation.toolCallId);
+        total += _stringBytes(invocation.callId);
+        total += _stringBytes(invocation.providerItemId);
+        total += _stringBytes(invocation.name);
+        total += _stringBytes(invocation.workingDirectory);
+        total += _stringBytes(invocation.taskId);
+        total += _toolLifecycleBytes(lifecycle);
+        total += _userInputBytes(userInput);
+        total += _waitBytes(wait);
+      case ThreadAgentItemStateView(:final identity, :final lifecycle):
+        total += _stringBytes(identity.id);
+        total += _stringBytes(identity.path);
+        total += _stringBytes(identity.parentPath);
+        total += _stringBytes(identity.role);
+        total += _stringBytes(identity.task);
+        total += switch (lifecycle) {
+          SucceededThreadAgentView(:final summary) => _stringBytes(summary),
+          DeniedThreadAgentView(:final reason) => _stringBytes(reason),
+          CancelledThreadAgentView(:final reason) => _stringBytes(reason),
+          FailedThreadAgentView(:final error) => _stringBytes(error),
+          QueuedThreadAgentView() || RunningThreadAgentView() => 0,
+        };
+      case ThreadTurnItemStateView(:final state, :final inputId):
+        total += _stringBytes(inputId);
+        total += _turnStateBytes(state);
+      case ThreadInferenceItemStateView(
+        :final inferenceId,
+        :final model,
+        :final lifecycle,
+      ):
+        total += _stringBytes(inferenceId);
+        total += _stringBytes(model);
+        total += switch (lifecycle) {
+          FailedThreadInferenceView(:final error) => _stringBytes(error),
+          CancelledThreadInferenceView(:final reason) => _stringBytes(reason),
+          RunningThreadInferenceView() || CompletedThreadInferenceView() => 0,
+        };
+      case ThreadRawItemStateView(:final payloads, :final notice):
+        // `notice` 是 canonical 静态原文，不是可裁的正文域：完整计入不可缩结构，
+        // 不裁空、不挪成动态字段，也不改变它的详情契约。
+        total += _stringBytes(notice);
+        for (final payload in payloads) {
+          total += _stringBytes(payload.format);
+        }
+      case ThreadFileItemStateView(:final path, :final mediaType):
+        total += _stringBytes(path);
+        total += _stringBytes(mediaType);
+      case ThreadContextCompactionItemStateView():
+        break;
+    }
+    return total;
+  }
+
+  int _contentLifecycleBytes(ThreadContentLifecycleView lifecycle) =>
+      switch (lifecycle) {
+        FailedThreadContentView(:final error) => _stringBytes(error),
+        CancelledThreadContentView(:final reason) => _stringBytes(reason),
+        StreamingThreadContentView() || CompletedThreadContentView() => 0,
+      };
+
+  /// Turn 状态的不可缩原文。
+  ///
+  /// [StudioTurnState.reason] 是派生串（失败 message / 取消原因 / 预算种类），而失败分类的
+  /// `category`/`providerKind`/`code` 与预算回滚的 [RolloverFailed.error] 都是**任意
+  /// String**，它们原样随条目交付，固定壳覆盖不了，必须按实际字节计入。`reason` 已经包含
+  /// 失败 `message` 与 `CoalescedTurnCancellation.targetTurnId` 的派生串，因此这两处不重复
+  /// 计费；其余原文一个都不省略。
+  int _turnStateBytes(StudioTurnState state) {
+    var total = _stringBytes(state.reason);
+    total += switch (state) {
+      FailedStudioTurnState(:final failure) =>
+        _stringBytes(failure.category) +
+            _stringBytes(failure.providerKind) +
+            _stringBytes(failure.code),
+      BudgetLimitedStudioTurnState(:final rollover) => switch (rollover) {
+        RolloverFailed(:final error) => _stringBytes(error),
+        RolloverNotAttempted() || RolloverSucceeded() => 0,
+      },
+      QueuedStudioTurnState() ||
+      RunningStudioTurnState() ||
+      CompletedStudioTurnState() ||
+      CancelledStudioTurnState() => 0,
+    };
+    return total;
+  }
+
+  int _attachmentBytes(List<ThreadAttachmentView> attachments) {
+    var total = 0;
+    for (final attachment in attachments) {
+      total += _attachmentSlotBytes;
+      total += _stringBytes(attachment.id);
+      total += _stringBytes(attachment.mediaType);
+      total += _stringBytes(attachment.filename);
+    }
+    return total;
+  }
+
+  int _toolLifecycleBytes(ThreadToolLifecycleView lifecycle) =>
+      switch (lifecycle) {
+        InterruptedThreadToolView(:final reason) => _stringBytes(reason),
+        DeniedThreadToolView(:final reason) => _stringBytes(reason),
+        CancelledThreadToolView(:final reason) => _stringBytes(reason),
+        FailedThreadToolView(:final failure, :final output) =>
+          _stringBytes(failure.message) + _toolOutputBytes(output),
+        SucceededThreadToolView(:final output) => _toolOutputBytes(output),
+        QueuedThreadToolView() ||
+        CancellingThreadToolView() ||
+        StartedThreadToolView() ||
+        StreamingThreadToolView() ||
+        AwaitingApprovalThreadToolView() ||
+        ApprovedThreadToolView() ||
+        RunningThreadToolView() => 0,
+      };
+
+  int _toolOutputBytes(ThreadToolOutputView? output) {
+    if (output == null) return 0;
+    // 预览里的产物数组恒为空：名字/路径等原文属于独立的 `toolOutputArtifacts` 字段
+    // （已有字段声明 + 详情引用）与详情读取。计量只针对**实际保留的预览表示**，
+    // 因此这里是一个空数组的固定壳，不随原始元素数增长，也不能把已经移出预览的
+    // 动态原文误判成不可缩结构。
+    return _attachmentBytes(output.attachments) + _containerSlotBytes;
+  }
+
+  /// 问答投影的结构成本：交互与问题身份、选项容器、答案身份与答案容器。
+  ///
+  /// 空选项与空答案仍然各有容器与字段声明成本，因此不会被当免费内容；
+  /// 这里也不为字段数量设 hardcap，成本始终按结构字节计。
+  ///
+  /// 没有对应问题的答案值（`questionId` 找不到匹配问题）不属于任何可寻址内容域：它既
+  /// 不会成为内容字段，也无法按字段读详情，只能原样随预览交付，因此按实际字节计入
+  /// 不可缩结构，不能让固定壳替任意 String 免单。有匹配问题的答案值仍只经该字段的
+  /// 正文额度、total 与详情引用计费，不在这里重复计。
+  int _waitBytes(ThreadWaitPresentationView? wait) {
+    if (wait == null) return 0;
+    var total = _containerSlotBytes;
+    switch (wait.intent) {
+      case ThreadWaitEventsIntentView(:final targets):
+        for (final target in targets) {
+          total += _stringBytes(target.taskId);
+          total += _stringBytes(target.toolName);
+          total += _stringBytes(target.summary);
+        }
+      case ThreadWaitTimerIntentView():
+        total += _containerSlotBytes;
+    }
+    return total;
+  }
+
+  int _userInputBytes(ThreadToolUserInputView? userInput) {
+    if (userInput == null) return 0;
+    var total = _containerSlotBytes + _stringBytes(userInput.interactionId);
+    for (final question in userInput.questions) {
+      total += _containerSlotBytes;
+      total += _stringBytes(question.id);
+      total += question.options.length * _containerSlotBytes;
+    }
+    for (final answer in userInput.answers) {
+      total += _containerSlotBytes;
+      total += _stringBytes(answer.questionId);
+      total += answer.answers.length * _containerSlotBytes;
+      if (userInput.questionIndex(answer.questionId) == null) {
+        for (final value in answer.answers) {
+          total += _stringBytes(value);
+        }
       }
     }
-    return changes;
+    return total;
   }
 
-  StudioViewItemUpdate? _itemUpdate(
-    ThreadItemView previous,
-    ThreadItemView next,
+  /// 按产品预览预算截断各内容字段；完整正文仍留在 demo 的 canonical 条目里。
+  ///
+  /// 正文（含问答与原始记录）共享 32 KiB；工具参数与结果各最多 4 KiB，且都从同一份额度里
+  /// 取。字段**存在性**与结构（chunk 身份、问答位置、判别字段）不因没额度而消失：
+  /// 只留下空预览占位 + 真实 total，正文按需读详情（design/26 §26.5）。
+  ThreadItemView _withCappedFields(ThreadItemView item, _PreviewBudget budget) {
+    switch (item.state) {
+      case ThreadTextItemStateView(
+        :final channel,
+        :final text,
+        :final attachments,
+        :final lifecycle,
+      ):
+        return item.copyWith(
+          state: ThreadTextItemStateView(
+            channel: channel,
+            text: budget.cap(text, _bodyPreviewBytes),
+            attachments: attachments,
+            lifecycle: lifecycle,
+          ),
+        );
+      case ThreadThinkingItemStateView(
+        :final summary,
+        :final content,
+        :final lifecycle,
+        :final summaryChunkBase,
+        :final contentChunkBase,
+      ):
+        return item.copyWith(
+          state: ThreadThinkingItemStateView(
+            summary: _cappedChunks(summary, budget),
+            content: _cappedChunks(content, budget),
+            lifecycle: lifecycle,
+            summaryChunkBase: summaryChunkBase,
+            contentChunkBase: contentChunkBase,
+          ),
+        );
+      case ThreadToolItemStateView(
+        :final invocation,
+        :final lifecycle,
+        :final userInput,
+        :final wait,
+      ):
+        return item.copyWith(
+          state: ThreadToolItemStateView(
+            invocation: invocation.withArguments(
+              budget.cap(invocation.arguments, _toolPreviewBytes),
+            ),
+            lifecycle: _cappedToolLifecycle(lifecycle, budget),
+            userInput: _cappedUserInput(userInput, budget),
+            wait: wait,
+          ),
+        );
+      case ThreadRawItemStateView(
+        :final payloads,
+        :final notice,
+        :final recordedAt,
+      ):
+        return item.copyWith(
+          state: ThreadRawItemStateView(
+            [
+              for (final payload in payloads)
+                // 每段都是独立的稳定身份：没额度时保留空预览占位，不丢段。
+                RawHistoryPayload(
+                  payload.format,
+                  payload.version,
+                  budget.cap(payload.content, _bodyPreviewBytes),
+                ),
+            ],
+            notice,
+            recordedAt,
+          ),
+        );
+      default:
+        return item;
+    }
+  }
+
+  /// 问答正文（含计划确认在公开 typed 字段里的反馈）与普通正文共享同一份预算。
+  ///
+  /// 计划确认的**后端权威决定标记**是判别事实：先为这些小的固定标记预留字节，再按剩余
+  /// 预算裁剪自由正文，避免长正文把批准/请求修改标记挤掉而降级成普通“已回答”
+  /// （design/26 §26.5）。标记字节仍计入该字段的总量与详情引用，不隐藏反馈。
+  ThreadToolUserInputView? _cappedUserInput(
+    ThreadToolUserInputView? userInput,
+    _PreviewBudget budget,
   ) {
-    final fields = _fieldUpdates(next.id, previous.state, next.state);
+    if (userInput == null) return null;
+    for (final answer in userInput.answers) {
+      for (final value in answer.answers) {
+        if (value == agentSessionPlanApproveAnswer ||
+            value == agentSessionPlanReviseAnswer) {
+          budget.reserve(_byteLength(value));
+        }
+      }
+    }
+    var capped = userInput;
+    for (var index = 0; index < userInput.questions.length; index++) {
+      capped = capped
+          .withText(
+            index,
+            const ThreadUserInputHeaderFieldPartView(),
+            budget.cap(userInput.headerText(index), _bodyPreviewBytes),
+          )
+          .withText(
+            index,
+            const ThreadUserInputQuestionFieldPartView(),
+            budget.cap(userInput.questionText(index), _bodyPreviewBytes),
+          );
+      final options = userInput.questions[index].options.length;
+      for (var option = 0; option < options; option++) {
+        capped = capped
+            .withText(
+              index,
+              ThreadUserInputOptionLabelFieldPartView(option),
+              budget.cap(
+                userInput.optionLabel(index, option),
+                _bodyPreviewBytes,
+              ),
+            )
+            .withText(
+              index,
+              ThreadUserInputOptionDescriptionFieldPartView(option),
+              budget.cap(
+                userInput.optionDescription(index, option),
+                _bodyPreviewBytes,
+              ),
+            );
+      }
+    }
+    for (final answer in userInput.answers) {
+      final index = userInput.questionIndex(answer.questionId);
+      if (index == null) continue;
+      for (var value = 0; value < answer.answers.length; value++) {
+        final text = userInput.answerText(index, value);
+        // 判别标记原样交付（已预留额度），自由反馈仍受剩余预算约束。
+        final keepVerbatim =
+            text == agentSessionPlanApproveAnswer ||
+            text == agentSessionPlanReviseAnswer;
+        capped = capped.withText(
+          index,
+          ThreadUserInputAnswerFieldPartView(value),
+          keepVerbatim ? text : budget.cap(text, _bodyPreviewBytes),
+        );
+      }
+    }
+    return capped;
+  }
+
+  ThreadToolLifecycleView _cappedToolLifecycle(
+    ThreadToolLifecycleView lifecycle,
+    _PreviewBudget budget,
+  ) {
+    return switch (lifecycle) {
+      RunningThreadToolView(:final streamedOutput) => RunningThreadToolView(
+        budget.cap(streamedOutput, _toolPreviewBytes),
+      ),
+      CancellingThreadToolView(:final streamedOutput) =>
+        CancellingThreadToolView(budget.cap(streamedOutput, _toolPreviewBytes)),
+      SucceededThreadToolView(:final completedAt, :final output) =>
+        SucceededThreadToolView(completedAt, _cappedToolOutput(output, budget)),
+      FailedThreadToolView(:final failedAt, :final failure, :final output) =>
+        FailedThreadToolView(
+          failedAt,
+          failure,
+          output == null ? null : _cappedToolOutput(output, budget),
+        ),
+      _ => lifecycle,
+    };
+  }
+
+  ThreadToolOutputView _cappedToolOutput(
+    ThreadToolOutputView output,
+    _PreviewBudget budget,
+  ) => ThreadToolOutputView(
+    result: budget.cap(output.result, _toolPreviewBytes),
+    attachments: output.attachments,
+    // 产物正文是独立内容字段：预览数组可以为空，完整原文只经详情读取。
+    outputArtifacts: const [],
+    exitCode: output.exitCode,
+  );
+
+  /// 分块预览：**每个 canonical chunk 都保留**（顺序即身份），只把没额度的块截成空串。
+  /// 这样字段存在性不会因为预算耗尽而变成“被删除”。
+  List<String> _cappedChunks(List<String> chunks, _PreviewBudget budget) => [
+    for (final chunk in chunks) budget.cap(chunk, _bodyPreviewBytes),
+  ];
+
+  StudioTimelineUpdateItem? _itemUpdate(
+    ThreadItemView previous,
+    List<StudioTimelineDetailRef> previousDetails,
+    _DemoPreview next,
+    ThreadItemView full,
+  ) {
+    final fields = _fieldUpdates(previous, previousDetails, next, full);
     if (fields == null) return null;
-    return StudioViewItemUpdate(
-      itemId: next.id,
+    return StudioTimelineUpdateItem(
+      itemId: full.id,
       expectedRevision: previous.revision,
-      revision: next.revision,
-      omittedUnits: next.bodyOmittedUnits,
-      saved: next.saved,
-      lifecycle: next.executionTerminal
-          ? StudioChatLifecycle.terminal
-          : StudioChatLifecycle.streaming,
+      revision: full.revision,
+      omittedBytes: next.omitted,
+      saved: full.saved,
+      lifecycle: full.executionTerminal
+          ? StudioTimelineLifecycle.terminal
+          : StudioTimelineLifecycle.streaming,
       itemShell:
-          previous.state.runtimeType != next.state.runtimeType ||
-              previous.updatedAt != next.updatedAt ||
-              previous.isTerminal != next.isTerminal
-          ? next
+          previous.state.runtimeType != next.item.state.runtimeType ||
+              previous.updatedAt != full.updatedAt ||
+              previous.isTerminal != full.isTerminal
+          ? next.item
           : null,
       fields: fields,
     );
   }
 
-  /// 两个条目状态之间的 typed 字段变化；出现 demo 无法表达的状态种类时返回 null。
+  /// 两个**已封顶预览**之间的 typed 字段变化；完整正文只用来提供字段总字节数。
+  ///
+  /// 字段**存在性**由完整 canonical 字段集合决定（不以裁剪后的预览是否有字符串判定）：
+  /// 没额度的字段以空预览 + 真实 total 交付，只有 canonical 字段真的消失才发 `Remove`。
+  /// 字段身份直接用 SDK 的值语义（判别分支 + 逻辑索引）。
   List<StudioFieldUpdateView>? _fieldUpdates(
-    String itemId,
-    ThreadItemStateView previous,
-    ThreadItemStateView next,
+    ThreadItemView previous,
+    List<StudioTimelineDetailRef> previousDetails,
+    _DemoPreview next,
+    ThreadItemView full,
   ) {
-    switch (next) {
-      case ThreadTextItemStateView() when previous is ThreadTextItemStateView:
-        return _withoutUnchanged([
-          _textField(const ThreadTextFieldView(), previous.text, next.text),
-        ]);
-      case ThreadThinkingItemStateView()
-          when previous is ThreadThinkingItemStateView:
-        return _chunkFields(itemId, previous, next);
-      case ThreadToolItemStateView() when previous is ThreadToolItemStateView:
-        return _withoutUnchanged([
-          _textField(
-            const ThreadToolArgumentsFieldView(),
-            previous.invocation.arguments,
-            next.invocation.arguments,
-          ),
-          _textField(
-            const ThreadToolResultFieldView(),
-            _toolResultText(previous.lifecycle),
-            _toolResultText(next.lifecycle),
-          ),
-          ..._userInputFields(previous.userInput, next.userInput),
-        ]);
-      default:
-        // 字段域与 reducer 不一致的条目种类：宁可用权威 Reset 整窗收束，也不能提交一个
-        // 不带字段的版本——那会让消费者把版本前进当成“内容已同步”。
+    final previousFields = _fieldsOf(previous);
+    final fullFields = _fieldsOf(full);
+    final previewFields = _fieldsOf(next.item);
+    final previousTotals = {
+      for (final ref in previousDetails) ref.field: ref.totalBytes,
+    };
+    final changes = <StudioFieldUpdateView>[];
+    for (final entry in fullFields.entries) {
+      final field = entry.key;
+      final previewText = previewFields[field] ?? '';
+      final total = _byteLength(entry.value);
+      final previewBytes = _byteLength(previewText);
+      final previousText = previousFields[field];
+      final previousTotal = previousTotals[field] ?? 0;
+      if (previousText != null &&
+          previewBytes < _byteLength(previousText) &&
+          total >= previousTotal) {
+        // 原文没有变短却把预览挤短：这是预算重新分配，无法用连续差量证明 → 显式重同步。
         return null;
+      }
+      if (previousText == null) {
+        // 新字段：即使预览为空也要建立该字段（空预览占位 + 真实 total），不能当成缺失。
+        changes.add(
+          StudioFieldUpdateView(
+            field: field,
+            change: AppendThreadFieldChangeView(previewText),
+            totalBytes: total,
+            previewBytes: previewBytes,
+          ),
+        );
+        continue;
+      }
+      if (previousText == previewText) {
+        // 预览已封顶而正文继续增长：仍要推进逐字段元数据（与生产 producer 同形状）。
+        if (previousTotal != total) {
+          changes.add(
+            StudioFieldUpdateView(
+              field: field,
+              change: const UnchangedThreadFieldChangeView(),
+              totalBytes: total,
+              previewBytes: previewBytes,
+            ),
+          );
+        }
+        continue;
+      }
+      changes.add(
+        StudioFieldUpdateView(
+          field: field,
+          change: previewText.startsWith(previousText)
+              ? AppendThreadFieldChangeView(
+                  previewText.substring(previousText.length),
+                )
+              : ReplaceThreadFieldChangeView(previewText),
+          totalBytes: total,
+          previewBytes: previewBytes,
+        ),
+      );
     }
+    for (final entry in previousFields.entries) {
+      // 只有 canonical 字段真的消失才是 Remove。
+      if (fullFields.containsKey(entry.key)) continue;
+      changes.add(
+        StudioFieldUpdateView(
+          field: entry.key,
+          change: const RemoveThreadFieldChangeView(),
+          totalBytes: 0,
+          previewBytes: 0,
+        ),
+      );
+    }
+    return changes;
   }
 
-  /// 工具生命周期里的结果正文（与 `TOOL_RESULT_FIELD` 对应）；该状态没有结果字段时为空串。
+  /// 工具生命周期里的结果正文（与 `tool.result` 字段对应）。
   String _toolResultText(ThreadToolLifecycleView lifecycle) {
     return switch (lifecycle) {
       RunningThreadToolView(:final streamedOutput) => streamedOutput,
@@ -3770,239 +5072,467 @@ class _DemoChatWindow implements StudioChatWindow {
     };
   }
 
-  List<StudioFieldUpdateView> _withoutUnchanged(
-    List<StudioFieldUpdateView> fields,
-  ) {
-    return [
-      for (final field in fields)
-        if (field.change is! UnchangedThreadFieldChangeView) field,
-    ];
+  /// 工具产物正文（与 `toolOutputArtifacts` 字段对应）：只在 canonical 边界编码。
+  String _toolArtifactsText(ThreadToolLifecycleView lifecycle) {
+    final output = switch (lifecycle) {
+      SucceededThreadToolView(:final output) => output,
+      FailedThreadToolView(:final output) => output,
+      _ => null,
+    };
+    if (output == null || output.outputArtifacts.isEmpty) return '';
+    return jsonEncode(output.outputArtifacts);
   }
 
-  /// 普通问答正文域的变化：结构由条目本体携带，正文逐字段比对。
-  List<StudioFieldUpdateView> _userInputFields(
-    ThreadToolUserInputView? previous,
-    ThreadToolUserInputView? next,
-  ) {
-    if (next == null) return const [];
-    final fields = <StudioFieldUpdateView>[];
-    for (var index = 0; index < next.questions.length; index++) {
-      fields.add(
-        _textField(
-          ThreadToolUserInputFieldView(
-            questionIndex: index,
-            part: const ThreadUserInputHeaderFieldPartView(),
-          ),
-          previous?.headerText(index) ?? '',
-          next.headerText(index),
-        ),
-      );
-      fields.add(
-        _textField(
-          ThreadToolUserInputFieldView(
-            questionIndex: index,
-            part: const ThreadUserInputQuestionFieldPartView(),
-          ),
-          previous?.questionText(index) ?? '',
-          next.questionText(index),
-        ),
-      );
-      final options = next.questions[index].options.length;
-      for (var option = 0; option < options; option++) {
-        fields.add(
-          _textField(
-            ThreadToolUserInputFieldView(
-              questionIndex: index,
-              part: ThreadUserInputOptionLabelFieldPartView(option),
-            ),
-            previous?.optionLabel(index, option) ?? '',
-            next.optionLabel(index, option),
-          ),
-        );
-        fields.add(
-          _textField(
-            ThreadToolUserInputFieldView(
-              questionIndex: index,
-              part: ThreadUserInputOptionDescriptionFieldPartView(option),
-            ),
-            previous?.optionDescription(index, option) ?? '',
-            next.optionDescription(index, option),
-          ),
-        );
-      }
-    }
-    for (final answer in next.answers) {
-      final questionIndex = next.questionIndex(answer.questionId);
-      if (questionIndex == null) continue;
-      for (var value = 0; value < answer.answers.length; value++) {
-        fields.add(
-          _textField(
-            ThreadToolUserInputFieldView(
-              questionIndex: questionIndex,
-              part: ThreadUserInputAnswerFieldPartView(value),
-            ),
-            previous?.answerText(questionIndex, value) ?? '',
-            answer.answers[value],
-          ),
-        );
-      }
-    }
-    return fields;
-  }
-
-  StudioFieldUpdateView _textField(
-    ThreadContentFieldView field,
-    String previous,
-    String next,
-  ) {
-    if (previous == next) {
-      return StudioFieldUpdateView(
-        field: field,
-        change: const UnchangedThreadFieldChangeView(),
+  /// 无状态历史页：`before` 是绑定 Thread 的不透明顺序边界。
+  @override
+  Future<StudioTimelinePage> page({String? before, int? limit}) async {
+    if (_closed) throw _cancelled();
+    final size = limit ?? _pageSize;
+    if (size < 1 || size > 100) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'Timeline page limit must be within 1..100',
+        retryable: false,
+        correlationId: 'demo-timeline-page-limit',
       );
     }
-    if (next.startsWith(previous)) {
-      return StudioFieldUpdateView(
-        field: field,
-        change: AppendThreadFieldChangeView(next.substring(previous.length)),
-      );
-    }
-    return StudioFieldUpdateView(
-      field: field,
-      change: ReplaceThreadFieldChangeView(next),
+    final items = _items;
+    final boundary = before == null ? null : _ordinalFromCursor(before);
+    final older = boundary == null
+        ? items
+        : items
+              .where((item) => item.ordinal < boundary)
+              .toList(growable: false);
+    // 页是自包含查询：与首帧/重同步基线使用同一份总量与截页规则。
+    final stage = _stagePage(older, size);
+    return StudioTimelinePage(
+      items: List.unmodifiable([
+        for (final entry in stage.items)
+          _timelineItem(entry.full, entry.preview),
+      ]),
+      before: stage.before,
+      hasOlder: stage.hasOlder,
     );
   }
 
-  /// 按 chunk 追加表达 `summary` / `content`：只提交真正新增的块，并保留逻辑块下标。
-  ///
-  /// 生产链路的 `chunkIndex` 是**逻辑**下标（见 `ThreadThinkingItemStateView` 的
-  /// `*ChunkBase`）：本地列表被有界裁剪后下标会整体前移，因此这里用「已交付块数」而不是本地
-  /// 长度推下标；块列表一旦不是前缀追加（裁剪/替换），退回整字段 `Replace`。
-  List<StudioFieldUpdateView> _chunkFields(
-    String itemId,
-    ThreadThinkingItemStateView previous,
-    ThreadThinkingItemStateView next,
-  ) {
-    final fields = <StudioFieldUpdateView>[];
-    final contentField = _chunkField(
-      itemId: itemId,
-      kind: 'content',
-      isSummary: false,
-      base: next.contentChunkBase,
-      previous: previous.content,
-      next: next.content,
-    );
-    if (contentField == null) return const <StudioFieldUpdateView>[];
-    fields.addAll(contentField);
-    final summaryField = _chunkField(
-      itemId: itemId,
-      kind: 'summary',
-      isSummary: true,
-      base: next.summaryChunkBase,
-      previous: previous.summary,
-      next: next.summary,
-    );
-    if (summaryField == null) return const <StudioFieldUpdateView>[];
-    fields.addAll(summaryField);
-    return fields;
-  }
-
-  List<StudioFieldUpdateView>? _chunkField({
+  /// 按 item/field/revision 读取完整正文；continuation 是不透明的 UTF-8 字节游标。
+  @override
+  Future<StudioTimelineDetailChunk> readDetail({
     required String itemId,
-    required String kind,
-    required bool isSummary,
-    required int base,
-    required List<String> previous,
-    required List<String> next,
+    required StudioTimelineDetailQuery query,
+  }) async {
+    if (_closed) throw _cancelled();
+    final maxBytes = query.maxBytes ?? _defaultDetailBytes;
+    if (maxBytes < _minDetailBytes || maxBytes > _maxDetailBytes) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'Timeline detail block size must be within 4..262144 bytes',
+        retryable: false,
+        correlationId: 'demo-timeline-detail-block',
+      );
+    }
+    final item = _items.where((entry) => entry.id == itemId).firstOrNull;
+    if (item == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'The timeline item is no longer available',
+        retryable: false,
+        correlationId: 'demo-timeline-detail-not-found',
+      );
+    }
+    if (item.revision != query.revision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'The timeline item revision changed',
+        retryable: false,
+        correlationId: 'demo-timeline-detail-stale',
+      );
+    }
+    final body = _fieldText(item, query.field);
+    if (body == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'The timeline field is not available',
+        retryable: false,
+        correlationId: 'demo-timeline-detail-field',
+      );
+    }
+    final bytes = utf8.encode(body);
+    var start = 0;
+    final continuation = query.continuation;
+    if (continuation != null) {
+      final parsed = _parseDetailContinuation(continuation);
+      // continuation 绑定 Thread、item、字段与 revision：跨 scope 复用一律拒绝。
+      if (parsed.threadId != _threadId ||
+          parsed.itemId != itemId ||
+          parsed.field != query.field) {
+        throw _invalidDetailCursor();
+      }
+      if (parsed.revision != query.revision) {
+        throw const StudioFailure(
+          code: StudioFailureCode.staleRevision,
+          message: 'The timeline detail cursor belongs to another revision',
+          retryable: false,
+          correlationId: 'demo-timeline-detail-cursor-revision',
+        );
+      }
+      if (parsed.offset > bytes.length) throw _invalidDetailCursor();
+      // offset 必须落在合法 UTF-8 起始字节上：落在续字节上会让后续 decode 泄 FormatException。
+      if (parsed.offset < bytes.length &&
+          (bytes[parsed.offset] & 0xC0) == 0x80) {
+        throw _invalidDetailCursor();
+      }
+      start = parsed.offset;
+    }
+    var end = start + maxBytes;
+    if (end > bytes.length) end = bytes.length;
+    if (end < bytes.length) {
+      // 只在合法 UTF-8 边界切块：不跨多字节字符（maxBytes ≥ 4 保证至少推进一个码点）。
+      while (end > start && (bytes[end] & 0xC0) == 0x80) {
+        end -= 1;
+      }
+      if (end == start) throw _invalidDetailCursor();
+    }
+    final String text;
+    try {
+      text = utf8.decode(bytes.sublist(start, end));
+    } on FormatException {
+      // 任何损坏的游标/边界都统一成 typed invalidArgument，不把解码异常泄给上层。
+      throw _invalidDetailCursor();
+    }
+    return StudioTimelineDetailChunk(
+      itemId: item.id,
+      field: query.field,
+      revision: item.revision,
+      text: text,
+      totalBytes: bytes.length,
+      continuation: end < bytes.length
+          ? _detailContinuationToken(
+              itemId: item.id,
+              field: query.field,
+              revision: item.revision,
+              offset: end,
+            )
+          : null,
+    );
+  }
+
+  static const int _minDetailBytes = 4;
+
+  StudioFailure _invalidDetailCursor() => const StudioFailure(
+    code: StudioFailureCode.invalidArgument,
+    message: 'The timeline detail cursor is invalid',
+    retryable: false,
+    correlationId: 'demo-timeline-detail-cursor',
+  );
+
+  /// 不透明 continuation：版本化 JSON + base64url，绑定 Thread/item/field/revision 与
+  /// 合法 UTF-8 字节偏移。字段用一个私有 typed 编码表达（Dart record 不是 JSON 可直接
+  /// 编码的对象，也不能拿 `toString` 当稳定 codec）。
+  String _detailContinuationToken({
+    required String itemId,
+    required ThreadContentFieldView field,
+    required int revision,
+    required int offset,
   }) {
-    final deliveredKey = '$itemId|$kind';
-    final delivered = _deliveredChunks[deliveredKey] ?? 0;
-    // 本地列表被裁剪过，或内容不是前缀追加：只能用权威整字段替换表达。
-    final growth = next.length - delivered;
-    if (delivered > previous.length || growth <= 0) {
-      final previousText = previous.join();
-      final nextText = next.join();
-      if (previousText == nextText) {
-        return const <StudioFieldUpdateView>[];
-      }
-      _deliveredChunks[deliveredKey] = next.length;
-      return [
-        StudioFieldUpdateView(
-          field: isSummary
-              ? ThreadThinkingSummaryFieldView(base)
-              : ThreadThinkingContentFieldView(base),
-          change: ReplaceThreadFieldChangeView(nextText),
-        ),
-      ];
+    final payload = <String, Object?>{
+      'v': 1,
+      't': _threadId,
+      'i': itemId,
+      'f': _fieldToWire(field),
+      'r': revision,
+      'o': offset,
+    };
+    return base64Url.encode(utf8.encode(jsonEncode(payload)));
+  }
+
+  ({
+    String threadId,
+    String itemId,
+    ThreadContentFieldView field,
+    int revision,
+    int offset,
+  })
+  _parseDetailContinuation(String token) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(base64Url.decode(token)));
+    } catch (_) {
+      throw _invalidDetailCursor();
     }
-    for (var index = delivered; index < next.length; index++) {
-      if (index < previous.length && previous[index] != next[index]) {
+    if (decoded is! Map<String, Object?>) throw _invalidDetailCursor();
+    final version = decoded['v'];
+    final threadId = decoded['t'];
+    final itemId = decoded['i'];
+    final revision = decoded['r'];
+    final offset = decoded['o'];
+    final field = _fieldFromWire(decoded['f']);
+    if (version != 1 ||
+        threadId is! String ||
+        itemId is! String ||
+        revision is! int ||
+        offset is! int ||
+        revision < 0 ||
+        offset < 0 ||
+        field == null) {
+      throw _invalidDetailCursor();
+    }
+    return (
+      threadId: threadId,
+      itemId: itemId,
+      field: field,
+      revision: revision,
+      offset: offset,
+    );
+  }
+
+  Map<String, Object?> _fieldToWire(ThreadContentFieldView field) =>
+      switch (field) {
+        ThreadTextFieldView() => {'k': 'text'},
+        ThreadThinkingSummaryFieldView(:final chunkIndex) => {
+          'k': 'summary',
+          'i': chunkIndex,
+        },
+        ThreadThinkingContentFieldView(:final chunkIndex) => {
+          'k': 'content',
+          'i': chunkIndex,
+        },
+        ThreadToolArgumentsFieldView() => {'k': 'args'},
+        ThreadToolResultFieldView() => {'k': 'result'},
+        ThreadToolOutputArtifactsFieldView() => {'k': 'artifacts'},
+        ThreadRawPayloadFieldView(:final payloadIndex) => {
+          'k': 'raw',
+          'i': payloadIndex,
+        },
+        ThreadToolUserInputFieldView(:final questionIndex, :final part) => {
+          'k': 'input',
+          'q': questionIndex,
+          'p': _partToWire(part),
+        },
+      };
+
+  Map<String, Object?> _partToWire(ThreadUserInputFieldPartView part) =>
+      switch (part) {
+        ThreadUserInputHeaderFieldPartView() => {'k': 'header'},
+        ThreadUserInputQuestionFieldPartView() => {'k': 'question'},
+        ThreadUserInputAnswerFieldPartView(:final answerIndex) => {
+          'k': 'answer',
+          'i': answerIndex,
+        },
+        ThreadUserInputOptionLabelFieldPartView(:final optionIndex) => {
+          'k': 'label',
+          'i': optionIndex,
+        },
+        ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) => {
+          'k': 'description',
+          'i': optionIndex,
+        },
+      };
+
+  ThreadContentFieldView? _fieldFromWire(Object? value) {
+    if (value is! Map<String, Object?>) return null;
+    final index = value['i'];
+    switch (value['k']) {
+      case 'text':
+        return const ThreadTextFieldView();
+      case 'summary':
+        return index is int ? ThreadThinkingSummaryFieldView(index) : null;
+      case 'content':
+        return index is int ? ThreadThinkingContentFieldView(index) : null;
+      case 'args':
+        return const ThreadToolArgumentsFieldView();
+      case 'result':
+        return const ThreadToolResultFieldView();
+      case 'artifacts':
+        return const ThreadToolOutputArtifactsFieldView();
+      case 'raw':
+        return index is int ? ThreadRawPayloadFieldView(index) : null;
+      case 'input':
+        final questionIndex = value['q'];
+        final part = _partFromWire(value['p']);
+        if (questionIndex is! int || part == null) return null;
+        return ThreadToolUserInputFieldView(
+          questionIndex: questionIndex,
+          part: part,
+        );
+      default:
         return null;
-      }
     }
-    _deliveredChunks[deliveredKey] = next.length;
-    return [
-      for (var index = delivered; index < next.length; index++)
-        StudioFieldUpdateView(
-          field: isSummary
-              ? ThreadThinkingSummaryFieldView(base + index)
-              : ThreadThinkingContentFieldView(base + index),
-          change: AppendThreadFieldChangeView(next[index]),
-        ),
-    ];
   }
 
-  StudioChatItem _chatItem(ThreadItemView item) {
-    return StudioChatItem(
-      item,
-      saved: item.saved,
-      lifecycle: item.executionTerminal
-          ? StudioChatLifecycle.terminal
-          : StudioChatLifecycle.streaming,
-    );
+  ThreadUserInputFieldPartView? _partFromWire(Object? value) {
+    if (value is! Map<String, Object?>) return null;
+    final index = value['i'];
+    switch (value['k']) {
+      case 'header':
+        return const ThreadUserInputHeaderFieldPartView();
+      case 'question':
+        return const ThreadUserInputQuestionFieldPartView();
+      case 'answer':
+        return index is int ? ThreadUserInputAnswerFieldPartView(index) : null;
+      case 'label':
+        return index is int
+            ? ThreadUserInputOptionLabelFieldPartView(index)
+            : null;
+      case 'description':
+        return index is int
+            ? ThreadUserInputOptionDescriptionFieldPartView(index)
+            : null;
+      default:
+        return null;
+    }
   }
 
-  @override
-  Future<StudioChatReceipt> load(TimelineDirection direction) async =>
-      _receipt();
-
-  @override
-  Future<StudioChatReceipt> focus(String? itemId) async {
-    ChatViewMetrics.focusCalls += 1;
-    final changed = _focusId != itemId;
-    _focusId = itemId;
-    // 与原生窗口对齐：控制操作完成后必须唤醒唯一出口，让下一次 `next` 交付权威窗口。
-    _api._notifyItemsChanged(_threadId);
-    return _receipt(
-      disposition: changed
-          ? StudioChatDisposition.applied
-          : StudioChatDisposition.noChange,
-    );
+  /// 字段身份 → 完整正文（demo 只有这些 typed 字段域）。
+  String? _fieldText(ThreadItemView item, ThreadContentFieldView field) {
+    return _fieldsOf(item)[field];
   }
 
-  /// demo 的窗口条目没有字节预览预算：窗口里已经是完整正文，按身份展开只需确认身份仍在窗口。
-  @override
-  Future<StudioChatReceipt> expandItem(String itemId) async {
-    final retained = _items.any((item) => item.id == itemId);
-    return StudioChatReceipt(
-      operationId: ++_operations,
-      version: _api._workspaces[_threadId]?.revision ?? 0,
-      retained: retained,
-      disposition: StudioChatDisposition.noChange,
-    );
+  Map<ThreadContentFieldView, String> _fieldsOf(ThreadItemView item) {
+    final fields = <ThreadContentFieldView, String>{};
+    switch (item.state) {
+      case ThreadTextItemStateView(:final text):
+        fields[const ThreadTextFieldView()] = text;
+      case ThreadThinkingItemStateView(
+        :final summary,
+        :final content,
+        :final summaryChunkBase,
+        :final contentChunkBase,
+      ):
+        for (var index = 0; index < summary.length; index++) {
+          fields[ThreadThinkingSummaryFieldView(summaryChunkBase + index)] =
+              summary[index];
+        }
+        for (var index = 0; index < content.length; index++) {
+          fields[ThreadThinkingContentFieldView(contentChunkBase + index)] =
+              content[index];
+        }
+      case ThreadToolItemStateView(
+        :final invocation,
+        :final lifecycle,
+        :final userInput,
+        wait: _,
+      ):
+        fields[const ThreadToolArgumentsFieldView()] = invocation.arguments;
+        fields[const ThreadToolResultFieldView()] = _toolResultText(lifecycle);
+        fields[const ThreadToolOutputArtifactsFieldView()] = _toolArtifactsText(
+          lifecycle,
+        );
+        if (userInput != null) {
+          for (var index = 0; index < userInput.questions.length; index++) {
+            fields[ThreadToolUserInputFieldView(
+              questionIndex: index,
+              part: const ThreadUserInputHeaderFieldPartView(),
+            )] = userInput.headerText(
+              index,
+            );
+            fields[ThreadToolUserInputFieldView(
+              questionIndex: index,
+              part: const ThreadUserInputQuestionFieldPartView(),
+            )] = userInput.questionText(
+              index,
+            );
+            final options = userInput.questions[index].options.length;
+            for (var option = 0; option < options; option++) {
+              fields[ThreadToolUserInputFieldView(
+                questionIndex: index,
+                part: ThreadUserInputOptionLabelFieldPartView(option),
+              )] = userInput.optionLabel(
+                index,
+                option,
+              );
+              fields[ThreadToolUserInputFieldView(
+                questionIndex: index,
+                part: ThreadUserInputOptionDescriptionFieldPartView(option),
+              )] = userInput.optionDescription(
+                index,
+                option,
+              );
+            }
+          }
+          for (final answer in userInput.answers) {
+            final questionIndex = userInput.questionIndex(answer.questionId);
+            if (questionIndex == null) continue;
+            for (var value = 0; value < answer.answers.length; value++) {
+              fields[ThreadToolUserInputFieldView(
+                    questionIndex: questionIndex,
+                    part: ThreadUserInputAnswerFieldPartView(value),
+                  )] =
+                  answer.answers[value];
+            }
+          }
+        }
+      case ThreadRawItemStateView(:final payloads):
+        for (var index = 0; index < payloads.length; index++) {
+          fields[ThreadRawPayloadFieldView(index)] = payloads[index].content;
+        }
+      default:
+        break;
+    }
+    return fields;
   }
+
+  bool _hasOlderThan(int? ordinal) {
+    if (ordinal == null) return false;
+    return _items.any((item) => item.ordinal < ordinal);
+  }
+
+  String _cursor(int ordinal) =>
+      'dtl1.${base64Url.encode(utf8.encode(_threadId))}.$ordinal';
+
+  int _ordinalFromCursor(String token) {
+    final parts = token.split('.');
+    if (parts.length != 3 || parts[0] != 'dtl1') {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'The timeline page cursor is invalid',
+        retryable: false,
+        correlationId: 'demo-timeline-page-cursor',
+      );
+    }
+    String threadId;
+    try {
+      threadId = utf8.decode(base64Url.decode(parts[1]));
+    } catch (_) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'The timeline page cursor is invalid',
+        retryable: false,
+        correlationId: 'demo-timeline-page-cursor',
+      );
+    }
+    final ordinal = int.tryParse(parts[2]);
+    if (threadId != _threadId || ordinal == null || ordinal < 0) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'The timeline page cursor is invalid',
+        retryable: false,
+        correlationId: 'demo-timeline-page-cursor',
+      );
+    }
+    return ordinal;
+  }
+
+  int _byteLength(String value) => utf8.encode(value).length;
 
   @override
   void requestClose() {
+    if (_closed) return;
     _closed = true;
+    // 关闭即释放正文与数字账目：连接不再持有任何预览副本。
+    _delivered.clear();
+    _deliveredDetails.clear();
+    _deliveredBytes.clear();
+    _evicted.clear();
+    _floor = null;
+    _ceiling = null;
+    // 与原生连接对齐：close 必须打断挂起的 next 等待，否则内容泵永久泄漏。
     _api._notifyItemsChanged(_threadId);
   }
 
   @override
   Future<void> close() async {
-    _closed = true;
-    // 与原生窗口对齐：close 必须打断挂起的 next 等待，否则内容泵永久泄漏。
-    _api._notifyItemsChanged(_threadId);
+    requestClose();
   }
 }
 
@@ -4512,7 +6042,7 @@ SkillsStateSnapshot _demoSkillsState(
                 'runtime-review' =>
                   'Review runtime behavior, lifecycle, and concurrency.',
                 'studio-settings' =>
-                  'Manage Studio providers, skills, and application settings.',
+                  'Manage Studio accounts, skills, and application settings.',
                 _ => 'Installed Studio skill.',
               },
               source: 'demo',

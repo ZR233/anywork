@@ -2,6 +2,8 @@
   "promptAccepted": "Accepted",
   "composerSendAndContinue": "Send and continue",
   "appTitle": "anywork",
+  "trayShowWindow": "Show main window",
+  "trayExit": "Exit",
   "sidebarProjects": "Projects",
   "sidebarSessions": "Sessions",
   "sidebarLoadingMore": "Loading more sessions…",
@@ -9,8 +11,6 @@
   "shutdownTitle": "Shutting down safely",
   "shutdownFinalizing": "Finishing up",
   "shutdownFinalizingHint": "Necessary diagnostics were recorded; the app will exit automatically.",
-  "startupInstanceBusy": "Another instance is already running",
-  "startupInstanceBusyHint": "Close the other anywork window, then start again.",
   "shutdownPhaseStoppingSubscriptions": "Stopping subscriptions",
   "shutdownPhaseCancellingTurns": "Stopping active turns",
   "shutdownPhaseFlushingPersistence": "Saving sessions",
@@ -33,8 +33,12 @@
   "sidebarArchiveSessionFailedReason": "Could not archive this session: {reason} (diagnostic ID: {correlationId})",
   "@sidebarArchiveSessionFailedReason": {
     "placeholders": {
-      "reason": {"type": "String"},
-      "correlationId": {"type": "String"}
+      "reason": {
+        "type": "String"
+      },
+      "correlationId": {
+        "type": "String"
+      }
     }
   },
   "sidebarArchiveSessionConfirmTitle": "Archive session",
@@ -177,6 +181,33 @@
   "sidebarOpen": "Open",
   "shellNoSession": "New session",
   "startPageWelcome": "What can I help you build?",
+  "preparationTitle": "Preparing your session",
+  "preparationSubtitle": "Your request will start once the workspace is ready.",
+  "preparationFailedTitle": "Environment setup incomplete",
+  "preparationRetainedBody": "Your prompt and attachments are saved. Adjust the settings and send again.",
+  "preparationUnknownTitle": "Creation outcome unconfirmed",
+  "preparationUnknownBody": "The connection ended before session creation was confirmed. Do not send again.",
+  "preparationCheckProject": "Check project",
+  "preparationWorkspace": "Prepare workspace",
+  "preparationInitializeSession": "Initialize session",
+  "preparationSubmitPrompt": "Submit request",
+  "preparationWaiting": "Waiting to begin…",
+  "preparationCheckingProject": "Checking the project and session configuration…",
+  "preparationPreparingWorkspace": "Preparing the session workspace…",
+  "preparationResolvingRepository": "Checking the Git repository and base commit…",
+  "preparationCreatingWorktree": "Creating the worktree and checking out files…",
+  "preparationInitializingSession": "Initializing the session environment…",
+  "preparationSubmittingPrompt": "Submitting your first request…",
+  "preparationMoreDetails": "More details",
+  "preparationProjectLabel": "Project",
+  "preparationRemoteLabel": "Remote host",
+  "preparationPathLabel": "Workspace path",
+  "preparationBranchLabel": "Worktree branch",
+  "preparationDiagnosticLabel": "Diagnostic ID",
+  "preparationStepComplete": "Complete",
+  "preparationStepPending": "Pending",
+  "preparationStepRunning": "In progress",
+  "preparationStepFailed": "Incomplete",
   "startPageProject": "Working in {project}",
   "@startPageProject": {
     "placeholders": {
@@ -202,7 +233,7 @@
   "settingsBackToChat": "Back to chat",
   "settingsWorkspaceGroup": "Workspace",
   "settingsSystemGroup": "System",
-  "settingsProvidersTab": "Providers",
+  "settingsAccountsTab": "Accounts",
   "settingsInstructionsTab": "Instructions",
   "settingsSkillsTab": "Skills",
   "settingsAgentsTab": "Agents",
@@ -306,9 +337,13 @@
   "statusModelRouteUnavailable": "Current model unavailable; show reason",
   "statusModelRouteUnavailableDetail": "Current model unavailable: {reason}",
   "@statusModelRouteUnavailableDetail": {
-    "placeholders": {"reason": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
   },
-  "statusModelRouteUnavailableFallback": "The current model route is unavailable. Check the provider and model settings.",
+  "statusModelRouteUnavailableFallback": "The current model route is unavailable. Check the account and model settings.",
   "statusModelSwitchWhileRunning": "This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.",
   "statusModelSwitchWhileWorkflowActive": "The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.",
   "statusModelSwitchWhileInactive": "This session is closing, closed, or unavailable due to an error. Restore it before changing the model.",
@@ -357,9 +392,9 @@
   "sessionZedOpenFailed": "Failed to open Zed",
   "sessionTerminalOpenFailed": "Failed to open terminal",
   "sessionOpenServerMissing": "The SSH alias for this project is no longer in ~/.ssh/config",
-  "statusCurrentAgentTokenSpeed": "Current agent token speed",
+  "statusLastConfirmedAgentTokenSpeed": "Last confirmed token speed",
   "settingsStatisticsTitle": "Statistics",
-  "settingsStatisticsSubtitle": "Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.",
+  "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with an in-group effort breakdown.",
   "settingsStatisticsSummaryTitle": "Model performance",
   "settingsStatisticsHistoryTitle": "Call history",
   "settingsStatisticsAllModels": "All models",
@@ -374,7 +409,7 @@
   "settingsStatisticsReadFailedBody": "The displayed data may be unavailable or out of date.",
   "settingsStatisticsMismatchesOnly": "Mismatches only",
   "settingsStatisticsMismatchEmpty": "No model mismatches match these filters.",
-  "statisticsModel": "Provider / model",
+  "statisticsModel": "Account / model",
   "statisticsHistoryModelHeader": "Model",
   "statisticsConfiguredModel": "Configured model",
   "statisticsSentModel": "Sent model",
@@ -480,10 +515,16 @@
   "timelineRemoteImageOpen": "Click to load and preview",
   "timelineJumpToLatest": "Jump to latest",
   "timelineNew": "New",
+  "timelineLoadEarlier": "Load earlier messages",
+  "timelineBackToLive": "Back to live",
+  "timelineDetailUnavailable": "This content is no longer available",
+  "timelineReconnecting": "Reconnecting messages… Current content is preserved.",
+  "timelineConnectionFailed": "Unable to synchronize messages. Current content is preserved.",
   "timelineReasoningFallback": "Thinking",
   "timelineReasoningActive": "Thinking",
   "timelineReasoningCompleted": "Thought",
-  "timelineReasoningEmpty": "No reasoning text was provided.",
+  "timelineReasoningSummary": "Summary",
+  "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
   "timelineToolFallback": "Tool",
   "timelineToolGroupTitle": "Tool activity",
@@ -560,14 +601,25 @@
   "timelineViewImageRead": "Image read",
   "timelineImagesViewed": "{count, plural, =1{Viewed 1 image} other{Viewed {count} images}}",
   "@timelineImagesViewed": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineImagesProduced": "{count, plural, =1{1 image} other{{count} images}}",
   "@timelineImagesProduced": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
+  "timelineReadFileCompleted": "Read",
+  "timelineReadFileReading": "Reading",
+  "timelineReadFileFailed": "Unable to read",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {
@@ -662,7 +714,6 @@
   "interactionLastQuestion": "Last question",
   "interactionContinueAfterAnswer": "Continue after answering",
   "timelineRolledBack": "Rolled back from active context",
-  "timelinePendingSave": "Waiting to save",
   "interactionSubmitEmptyAnswersHint": "Unanswered questions are submitted as empty arrays.",
   "interactionAnsweredPendingHint": "{answeredCount} answered · {pendingCount} pending",
   "@interactionAnsweredPendingHint": {
@@ -727,7 +778,6 @@
   "statusPlanEntry": "Plan",
   "interactionPlanViewDetails": "View full plan",
   "interactionPlanDetailsTitle": "Implementation plan",
-  "interactionPlanComposerPausedHint": "Normal messages are paused to keep plan feedback unambiguous.",
   "interactionPlanConfirmFooterHint": "Confirming starts the document-editing checkpoint in {mode} mode.",
   "@interactionPlanConfirmFooterHint": {
     "placeholders": {
@@ -740,32 +790,42 @@
   "interactionPlanConfirmAction": "Confirm and execute",
   "interactionPlanAdjustHint": "Describe what should change...",
   "interactionPlanAdjustSubmit": "Submit changes",
-  "settingsProvidersTitle": "Providers",
-  "settingsProvidersSubtitle": "Model providers, credentials, models, and usage",
+  "interactionPlanFeedbackHint": "Enter submits · Shift+Enter adds a line",
+  "planExpandReading": "Read full width",
+  "planRestoreSplit": "Restore side-by-side",
+  "planReceiptApproved": "Plan approved",
+  "planReceiptRevisionRequested": "Plan changes requested",
+  "planReceiptCancelled": "Plan confirmation cancelled",
+  "planReceiptAnswered": "Plan confirmation answered",
+  "planReceiptYourReply": "Your reply",
+  "planReceiptYourFeedback": "Requested changes",
+  "planReceiptApproveReply": "Approved this plan for execution",
+  "settingsAccountsTitle": "Accounts",
+  "settingsAccountsSubtitle": "Accounts, credentials, models, and usage",
   "settingsRefreshUsage": "Refresh usage",
-  "settingsAddProvider": "Add provider",
-  "settingsSearchProviders": "Search providers",
-  "settingsNoProvidersMatchTitle": "No providers match this filter",
-  "settingsNoProvidersMatchMessage": "Clear the search to see all configured providers.",
-  "settingsNoProvidersTitle": "No providers found",
-  "settingsNoProvidersMessage": "Add a provider to configure credentials and models.",
-  "settingsDefaultProvider": "Default provider",
-  "settingsSetAsDefaultProvider": "Set as default",
+  "settingsAddAccount": "Add account",
+  "settingsSearchAccounts": "Search accounts",
+  "settingsNoAccountsMatchTitle": "No accounts match this filter",
+  "settingsNoAccountsMatchMessage": "Clear the search to see all configured accounts.",
+  "settingsNoAccountsTitle": "No accounts found",
+  "settingsNoAccountsMessage": "Add an account to configure credentials and models.",
+  "settingsDefaultAccount": "Default account",
+  "settingsSetAsDefaultAccount": "Set as default",
   "settingsOpenDetails": "Open details",
-  "settingsProviderActions": "Provider actions",
-  "settingsEditProvider": "Edit provider",
-  "settingsDeleteProvider": "Delete provider",
-  "settingsNoProviderSelected": "No provider selected",
-  "settingsProviderTitle": "Provider",
-  "settingsProviderModelsTitle": "Models",
-  "settingsProviderConnectionTitle": "Connection",
-  "settingsProviderDefaultModelsTitle": "Default catalog (not yet synced)",
-  "settingsProviderCustomModelsTitle": "Manual models",
-  "settingsProviderOnlineModelsTitle": "Online models",
-  "settingsNewProvider": "New provider",
-  "settingsProviderKey": "Provider key",
-  "settingsTemplate": "Template",
-  "settingsCustomProvider": "Custom provider",
+  "settingsAccountActions": "Account actions",
+  "settingsEditAccount": "Edit account",
+  "settingsDeleteAccount": "Delete account",
+  "settingsNoAccountSelected": "No account selected",
+  "settingsAccountTitle": "Account",
+  "settingsAccountModelsTitle": "Models",
+  "settingsAccountConnectionTitle": "Connection",
+  "settingsAccountDefaultModelsTitle": "Default catalog (not yet synced)",
+  "settingsAccountCustomModelsTitle": "Manual models",
+  "settingsAccountOnlineModelsTitle": "Online models",
+  "settingsNewAccount": "New account",
+  "settingsAccountId": "Account ID",
+  "settingsAccountTemplate": "Account template",
+  "settingsCustomAccount": "Custom account",
   "settingsDefaultModel": "Default model",
   "settingsApiKey": "API key",
   "settingsApiKeyKeepCurrent": "API key (leave blank to keep current)",
@@ -774,7 +834,7 @@
   "settingsDisplayName": "Display name",
   "settingsProtocolType": "Protocol type",
   "settingsBaseUrl": "Base URL",
-  "settingsModelSlug": "Model slug",
+  "settingsModelId": "Model model_id",
   "settingsReasoningEfforts": "Reasoning efforts",
   "settingsEdit": "Edit",
   "settingsCancel": "Cancel",
@@ -787,12 +847,11 @@
   "settingsModelOriginOnline": "Online",
   "settingsModelOriginBundled": "Bundled",
   "settingsModelOriginManual": "Manual",
-  "settingsUnverifiedOnlineModel": "Unverified model",
   "settingsRemoveManualModelConfirmTitle": "Delete this manual model?",
   "settingsRemoveManualModelConfirmBody": "This cannot be undone. The model leaves the catalog, and its connection and compact overrides are cleared. History, bills, and session costs stay unchanged.",
   "settingsRemoveManualModelConfirmAction": "Delete",
   "settingsRemoveManualModelFailed": "Could not delete this manual model.",
-  "settingsManualModelSlugConflict": "A model with this slug already exists in the online or bundled catalog.",
+  "settingsManualModelIdConflict": "A model with this model_id already exists in the online or bundled catalog.",
   "settingsBundledModels": "{count} bundled",
   "@settingsBundledModels": {
     "placeholders": {
@@ -845,11 +904,11 @@
   "settingsUsageMissingKey": "Missing key",
   "settingsUsageFailed": "Usage failed",
   "settingsUsageQueryFailed": "Usage query failed",
-  "settingsUsageApiKeyMissing": "Provider API key is not configured",
-  "settingsUsageUnsupportedForProvider": "Usage is not supported for {providerName}",
-  "@settingsUsageUnsupportedForProvider": {
+  "settingsUsageApiKeyMissing": "Account API key is not configured",
+  "settingsUsageUnsupportedForAccount": "Usage is not supported for {accountName}",
+  "@settingsUsageUnsupportedForAccount": {
     "placeholders": {
-      "providerName": {
+      "accountName": {
         "type": "String"
       }
     }
@@ -973,7 +1032,7 @@
   "settingsWebSearchSubtitle": "Search through an eligible OpenAI account. Changes apply from the next turn.",
   "settingsWebSearchConfiguredMode": "Configured mode",
   "settingsWebSearchEffectiveMode": "Effective mode",
-  "settingsWebSearchProvider": "OpenAI provider",
+  "settingsWebSearchAccount": "OpenAI account",
   "settingsWebSearchModel": "Search model",
   "settingsWebSearchMode": "Mode",
   "settingsWebSearchModeDisabled": "Disabled",
@@ -994,17 +1053,17 @@
   "settingsWebSearchAvailable": "Available",
   "settingsWebSearchDisabled": "Disabled",
   "settingsWebSearchMissingCredential": "Missing credential",
-  "settingsWebSearchUnsupportedProvider": "Unsupported provider",
+  "settingsWebSearchUnsupportedAccount": "Unsupported account",
   "settingsWebSearchUnsupportedModel": "Unsupported model",
-  "settingsWebSearchMissingCredentialReason": "No credentialed provider originating from the OpenAI preset is available. Remote web search is fully disabled.",
-  "settingsWebSearchUnsupportedProviderReason": "The current provider does not expose this web search backend.",
+  "settingsWebSearchMissingCredentialReason": "No credentialed account originating from the OpenAI template is available. Remote web search is fully disabled.",
+  "settingsWebSearchUnsupportedAccountReason": "The current account does not expose this web search backend.",
   "settingsWebSearchUnsupportedModelReason": "The current route cannot expose either the function tool or hosted web search.",
   "settingsNotAvailable": "Not available",
   "settingsSaveWebSearch": "Save web search",
   "settingsWebSearchUnsaved": "Unsaved search settings",
   "settingsDeepSeekWebSearchTitle": "DeepSeek native web search",
   "settingsDeepSeekWebSearchSubtitle": "Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.",
-  "settingsDeepSeekWebSearchProvider": "DeepSeek provider",
+  "settingsDeepSeekWebSearchAccount": "DeepSeek account",
   "settingsDeepSeekWebSearchConfigured": "Search configured",
   "settingsDeepSeekWebSearchEffective": "Search effective",
   "settingsDeepSeekWebSearchEnabled": "Enabled",
@@ -1098,7 +1157,9 @@
   "settingsStudioUpdateReady": "Version {version} is downloaded and will install when you close anywork.",
   "@settingsStudioUpdateReady": {
     "placeholders": {
-      "version": { "type": "String" }
+      "version": {
+        "type": "String"
+      }
     }
   },
   "settingsStudioUpdateReleaseNotes": "Release notes",
@@ -1178,7 +1239,7 @@
   "settingsAgentProfileDescriptionField": "Description",
   "settingsAgentProfileWhenToUseField": "Best for",
   "settingsAgentProfileInstructionsField": "System instructions",
-  "settingsAgentProfileProviderField": "Provider",
+  "settingsAgentProfileAccountField": "Account",
   "settingsAgentProfileEffortDefault": "Use model default",
   "settingsAgentProfileWorkspaceModeField": "Workspace mode",
   "settingsAgentWorkspaceModeUnrestricted": "Unrestricted",
@@ -1193,7 +1254,7 @@
   "settingsAgentProfileRequired": "Required",
   "settingsServiceCapabilitiesTitle": "Service capabilities",
   "settingsCapabilitySourceField": "Capability source",
-  "settingsCapabilitySourcePreset": "Follow preset defaults",
+  "settingsCapabilitySourceTemplate": "Follow template defaults",
   "settingsCapabilitySourceExplicit": "Explicit override",
   "settingsHostedWebSearchField": "Hosted Web Search",
   "settingsHostedWebSearchDialectField": "Hosted Web Search dialect",
@@ -1223,27 +1284,17 @@
   "settingsContextBudget": "Context budget (tokens)",
   "settingsOutputBudget": "Maximum output (tokens)",
   "settingsModelAutoCompactTitle": "Context compaction threshold",
-  "settingsModelAutoCompactRestore": "Restore default",
+  "settingsModelAutoCompactRestore": "Reset to automatic",
   "settingsModelAutoCompactSaving": "Applying automatically…",
   "settingsModelAutoCompactSaveFailed": "Could not apply. Your input is kept.",
   "settingsModelAutoCompactRetry": "Retry",
-  "settingsModelAutoCompactDefaultLabel": "Default",
-  "settingsModelAutoCompactOverrideLabel": "User",
+  "settingsModelAutoCompactOverrideLabel": "Mode",
   "settingsModelAutoCompactEffectiveLabel": "Effective",
-  "settingsModelAutoCompactSafeLabel": "Safe limit",
-  "settingsModelAutoCompactUsingDefault": "Using default",
+  "settingsModelAutoCompactUsingDefault": "Automatic",
   "settingsModelAutoCompactInputLabel": "Threshold (tokens)",
   "settingsModelAutoCompactInvalid": "Enter a positive integer token count.",
-  "settingsModelAutoCompactHelp": "Effective value is the smaller of the selected threshold and 90% of the context window.",
-  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so compaction stays off.",
-  "settingsModelAutoCompactAboveSafe": "Above the safe limit; {value} takes effect.",
-  "@settingsModelAutoCompactAboveSafe": {
-    "placeholders": {
-      "value": {
-        "type": "String"
-      }
-    }
-  },
+  "settingsModelAutoCompactHelp": "The effective threshold is capped at 90% of the context window and reserves the maximum output budget.",
+  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so an automatic compaction threshold cannot be calculated.",
   "settingsPriceInput": "Input",
   "settingsPriceOutput": "Output",
   "settingsPriceCacheRead": "Cache read",
@@ -1385,9 +1436,9 @@
   "toolStatusDenied": "Denied",
   "toolStatusCancelled": "Cancelled",
   "toolStatusCancelling": "Cancelling",
-  "settingsProviderCatalogUnavailable": "Provider catalog is unavailable.",
-  "settingsProviderPresetUnavailable": "Provider preset is unavailable.",
-  "settingsProviderMissingCredential": "Missing credential",
+  "settingsAccountCatalogUnavailable": "Account catalog is unavailable.",
+  "settingsAccountTemplateUnavailable": "Account template is unavailable.",
+  "settingsAccountMissingCredential": "Missing credential",
   "settingsSshStateDisconnected": "Disconnected",
   "settingsSshStateConnecting": "Connecting",
   "settingsSshStateWaitingForInput": "Waiting for input",
@@ -1425,14 +1476,14 @@
   "startupRecoveredNotice": "Unrecoverable data was backed up and initial settings restored. Backup location:",
   "settingsModelCatalogDefault": "Bundled models",
   "settingsModelCatalogCached": "Last successful model list",
-  "settingsModelCatalogOnline": "Models from this provider",
+  "settingsModelCatalogOnline": "Models from this account",
   "settingsModelCatalogChecked": "Last checked",
   "settingsModelCatalogFailed": "Startup model sync failed. The current list is still available.",
   "settingsModelCatalogCacheWarning": "The saved model list could not be loaded. Showing bundled models.",
-  "settingsModelCatalogEmpty": "This provider has no models.",
+  "settingsModelCatalogEmpty": "This account has no models.",
   "settingsModelCatalogRestartHint": "Restart the app to sync again.",
   "timelineActivityTitle": "Thinking and tools",
-  "timelineContextCompacted": "Context automatically compacted",
+  "timelineContextCompacted": "Context compacted",
   "timelineCompactionDetail": "Before: {before}; after: {after} tokens",
   "@timelineCompactionDetail": {
     "placeholders": {
@@ -1457,5 +1508,378 @@
   },
   "timelineUserInputYourAnswer": "Your answer",
   "timelineUserInputNoAnswer": "No answer provided",
-  "timelineUserInputSecretHidden": "Sensitive answer hidden"
+  "timelineUserInputSecretHidden": "Sensitive answer hidden",
+  "settingsModelParametersUnknown": "Model parameters unknown",
+  "settingsModelPriceUnknown": "Price unknown",
+  "modelTextFilterExcluded": "{model}: excluded from text models ({reasons})",
+  "@modelTextFilterExcluded": {
+    "placeholders": {
+      "model": {
+        "type": "String"
+      },
+      "reasons": {
+        "type": "String"
+      }
+    }
+  },
+  "modelTextInputUnsupported": "Text input unsupported",
+  "modelTextOutputUnsupported": "Text output unsupported",
+  "modelContextWindowUnknown": "Context window unknown",
+  "modelTextFilterEmpty": "No matching text models. Check model parameters in account settings.",
+  "modeEditorTitle": "Work modes",
+  "modeEditorNewMode": "New mode",
+  "modeEditorImportJson": "Import JSON",
+  "modeEditorSearchHint": "Find name or id",
+  "modeEditorBuiltInGroup": "Built-in",
+  "modeEditorMyModesGroup": "My modes",
+  "modeEditorNoMatches": "No matching work modes.",
+  "modeEditorCatalogReadOnlyHint": "Built-in modes are read-only. Duplicate one to customize stages.",
+  "modeEditorReadOnly": "Read-only",
+  "modeEditorUnsaved": "Unsaved",
+  "modeEditorUndo": "Undo",
+  "modeEditorRedo": "Redo",
+  "modeEditorReload": "Reload",
+  "modeEditorDuplicate": "Duplicate",
+  "modeEditorDeleteMode": "Delete mode",
+  "modeEditorSave": "Save",
+  "modeEditorTabFlow": "Flow",
+  "modeEditorTabJson": "JSON",
+  "modeEditorTabSettings": "Settings",
+  "modeEditorTabPreview": "Preview",
+  "modeEditorDraftUnsaved": "Draft unsaved",
+  "modeEditorSelectOrCreate": "Select or create a work mode.",
+  "modeEditorOpenNotice": "Opened {id}",
+  "@modeEditorOpenNotice": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaveValidationIssues": "Validation found {count} issues before save.",
+  "@modeEditorSaveValidationIssues": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorPreSaveValidationFailed": "Pre-save validation failed: {error}",
+  "@modeEditorPreSaveValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorSaved": "Mode saved. Changes apply from the next turn.",
+  "modeEditorSaveFailed": "Save failed.",
+  "modeEditorReloaded": "Mode definition reloaded.",
+  "modeEditorReloadFailed": "Reload failed.",
+  "modeEditorDeleteFailed": "Delete failed.",
+  "modeEditorDeleted": "Mode deleted; thread history is kept.",
+  "modeEditorCopySuffix": "copy",
+  "modeEditorCopyCreated": "Copy created as a draft; save to publish it.",
+  "modeEditorDraftCreated": "Draft created. Save after validation.",
+  "modeEditorImportReadFailed": "Could not read mode JSON: {error}",
+  "@modeEditorImportReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorImportObjectRequired": "Mode JSON must be an object.",
+  "modeEditorInvalidModeId": "Mode id must look like mode.example.",
+  "modeEditorBuiltInCannotOverwrite": "Built-in modes cannot be overwritten.",
+  "modeEditorImportedDraft": "Configuration loaded as a draft; save to publish it.",
+  "modeEditorJsonCopied": "Mode JSON copied.",
+  "modeEditorSchemaReadFailed": "Could not read schema: {error}",
+  "@modeEditorSchemaReadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorValidationPassed": "Validation passed.",
+  "modeEditorIssuesFound": "{count} issues found.",
+  "@modeEditorIssuesFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorValidationFailed": "Validation failed: {error}",
+  "@modeEditorValidationFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorJsonApplied": "JSON applied to the draft.",
+  "modeEditorJsonApplyFailed": "JSON could not be applied.",
+  "modeEditorJsonApplyFix": "JSON could not be applied; fix the syntax or fields.",
+  "modeEditorPreviewReasonDefault": "Manually confirm stage completion and guard",
+  "modeEditorPreviewFailed": "Preview failed: {error}",
+  "@modeEditorPreviewFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorMaxStates": "At most {count} states are supported.",
+  "@modeEditorMaxStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNewFinalState": "New final state",
+  "modeEditorNewStage": "New work stage",
+  "modeEditorFinalStateAdded": "Final state added. Add an incoming path.",
+  "modeEditorStageAdded": "Stage added. Add incoming and outgoing transitions.",
+  "modeEditorContinueGuardPlaceholder": "Continue when the guard is satisfied.",
+  "modeEditorTransitionAdded": "Transition added. Complete its guard.",
+  "modeEditorNeedTwoStates": "Add at least two states before creating a transition.",
+  "modeEditorLayoutReset": "Layout reset. The workflow definition is unchanged.",
+  "modeEditorWorkflowEnabled": "Workflow enabled.",
+  "modeEditorWorkflow": "Workflow",
+  "modeEditorWorkflowGoalText": "Complete the task in stages with a reviewable path.",
+  "modeEditorStart": "Start",
+  "modeEditorStageInstructionsPlaceholder": "Describe the work for this stage.",
+  "modeEditorStageCriterionPlaceholder": "This stage goal is satisfied.",
+  "modeEditorDone": "Done",
+  "modeEditorTransitionGuardPlaceholder": "The result satisfies the goal.",
+  "modeEditorPromptDescription": "Describe this mode responsibilities, sequence, and boundaries.",
+  "modeEditorPortIn": "In",
+  "modeEditorPortOut": "Out",
+  "modeEditorGuardRequiredShort": "Guard required",
+  "modeEditorDuplicateTransition": "A transition between those states already exists.",
+  "modeEditorInitialBadge": "Start",
+  "modeEditorStageAction": "Stage",
+  "modeEditorFinalLabel": "Final",
+  "modeEditorTransitionAction": "Transition",
+  "modeEditorValidate": "Validate",
+  "modeEditorAutoLayout": "Auto layout",
+  "modeEditorZoomOut": "Zoom out",
+  "modeEditorZoomIn": "Zoom in",
+  "modeEditorFitView": "Fit view",
+  "modeEditorFlowInspector": "Flow inspector",
+  "modeEditorNoWorkflow": "This mode has no workflow",
+  "modeEditorNoWorkflowReadOnlyHint": "Duplicate this mode to add stages and transitions.",
+  "modeEditorNoWorkflowEnableHint": "Enabling a workflow adds a starting stage and a final state.",
+  "modeEditorEnableWorkflow": "Enable workflow",
+  "modeEditorUnsavedTitle": "Unsaved draft",
+  "modeEditorUnsavedBody": "Save the current changes before continuing, or discard this draft.",
+  "modeEditorCancel": "Cancel",
+  "modeEditorDiscard": "Discard",
+  "modeEditorSaveAndContinue": "Save and continue",
+  "modeEditorNewWorkMode": "New work mode",
+  "modeEditorModeName": "Mode name",
+  "modeEditorModeNameHint": "For example: Research",
+  "modeEditorModeNameRequired": "Enter a mode name.",
+  "modeEditorModeId": "Mode id",
+  "modeEditorModeIdFormat": "Use the form mode.example with lowercase letters, digits, - and _.",
+  "modeEditorModeIdExists": "That mode id already exists.",
+  "modeEditorStartingPoint": "Starting point",
+  "modeEditorMinimalWorkflow": "Minimal workflow",
+  "modeEditorNoWorkflowTemplate": "No workflow",
+  "modeEditorCreateMode": "Create mode",
+  "modeEditorImportDialogTitle": "Import mode JSON",
+  "modeEditorImportDialogBody": "Paste mode JSON. Built-in modes stay read-only; an existing custom id opens as an unsaved draft.",
+  "modeEditorLoadAsDraft": "Load as draft",
+  "modeEditorSchemaDialogTitle": "Mode JSON schema",
+  "modeEditorClose": "Close",
+  "modeEditorDeleteDialogTitle": "Delete this work mode?",
+  "modeEditorDeleteDialogBody": "Remove the \"{displayName}\" definition. Thread history is kept.",
+  "@modeEditorDeleteDialogBody": {
+    "placeholders": {
+      "displayName": {
+        "type": "String"
+      }
+    }
+  },
+  "modeEditorConfirmDelete": "Delete",
+  "modeEditorRemoveStateTitle": "Delete this state?",
+  "modeEditorRemoveStateBody": "Delete \"{title}\" and its {transitionCount} related transitions. Undo can restore it.",
+  "@modeEditorRemoveStateBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "transitionCount": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorDeleteState": "Delete state",
+  "modeEditorRemoveWorkflowTitle": "Remove workflow?",
+  "modeEditorRemoveWorkflowBody": "The mode can still chat, but stage graph and workflow tools are removed. Undo is available before saving.",
+  "modeEditorRemoveWorkflow": "Remove workflow",
+  "modeEditorStateIdInvalid": "Use lowercase letters, digits, - and _ only.",
+  "modeEditorStateIdExists": "That state id exists.",
+  "modeEditorRenameStateTitle": "Rename state id",
+  "modeEditorStateId": "State id",
+  "modeEditorApply": "Apply",
+  "modeEditorAddTransition": "Add transition",
+  "modeEditorSourceState": "Source state",
+  "modeEditorChooseSource": "Choose a source.",
+  "modeEditorTargetState": "Target state",
+  "modeEditorChooseTarget": "Choose a target.",
+  "modeEditorTransitionGuard": "Transition guard",
+  "modeEditorTransitionGuardHint": "For example: after the user confirms scope",
+  "modeEditorGuardRequiredField": "Enter a guard.",
+  "modeEditorCollapse": "Collapse",
+  "modeEditorNoWorkflowPeriod": "This mode has no workflow.",
+  "modeEditorInspectorSelectHint": "Select a stage or transition on the canvas to edit its fields.",
+  "modeEditorRenameId": "Rename id",
+  "modeEditorStageTitle": "Stage title",
+  "modeEditorStageKind": "Stage kind",
+  "modeEditorAtomicStage": "Atomic stage",
+  "modeEditorFinalState": "Final state",
+  "modeEditorInitialStateSwitch": "Initial state",
+  "modeEditorInitialStateLockedHint": "The workflow always keeps one initial state; enable another stage instead.",
+  "modeEditorInitialStateHint": "A run starts from this stage.",
+  "modeEditorStageInstructions": "Stage instructions",
+  "modeEditorCompletionCriteria": "Completion criteria (one per line)",
+  "modeEditorAtomicCriteriaRequired": "An atomic stage needs at least one completion criterion; Rust validates on save.",
+  "modeEditorOutgoingTransitions": "Outgoing transitions",
+  "modeEditorAdd": "Add",
+  "modeEditorNoOutgoing": "No outgoing transitions.",
+  "modeEditorDeleteTransition": "Delete transition",
+  "modeEditorStateTransition": "State transition",
+  "modeEditorTransitionRuleHint": "One transition per source/target pair; multiple successors, self loops and cycles are allowed.",
+  "modeEditorValidationIssuesCount": "{count} issues",
+  "@modeEditorValidationIssuesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNotValidated": "Not validated",
+  "modeEditorApplyJson": "Apply JSON",
+  "modeEditorCopyJson": "Copy JSON",
+  "modeEditorSchemaLabel": "Schema",
+  "modeEditorReadOnlyCopyHint": "Read-only: copy or validate",
+  "modeEditorJsonHint": "Mode JSON keeps the six top-level fields plus editor layout.",
+  "modeEditorModeSettingsTitle": "Mode settings",
+  "modeEditorModeSettingsSubtitle": "Execution definition and editor layout are stored separately; layout never changes workflow identity.",
+  "modeEditorDisplayName": "Display name",
+  "modeEditorDescription": "Description",
+  "modeEditorOrder": "Order",
+  "modeEditorRawPrompt": "Raw prompt",
+  "modeEditorRawPromptHelper": "This is the full mode prompt injected without GUI rewriting.",
+  "modeEditorWorkflowTitle": "Workflow title",
+  "modeEditorWorkflowGoal": "Workflow goal",
+  "modeEditorInitialStateLabel": "Initial state",
+  "modeEditorWorkflowSummary": "{states} states · {transitions} transitions",
+  "@modeEditorWorkflowSummary": {
+    "placeholders": {
+      "states": {
+        "type": "int"
+      },
+      "transitions": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorNoWorkflowToolHint": "Without a workflow there is no stage graph or workflow tools.",
+  "modeEditorPreviewUnavailable": "This mode has no workflow to preview.",
+  "modeEditorRunPreview": "Run preview",
+  "modeEditorPreviewSubtitle": "Bounded replay uses the production Rust state machine; it never rewrites the configured initial state.",
+  "modeEditorStartPreview": "Start preview",
+  "modeEditorRestart": "Restart",
+  "modeEditorTransitionReason": "Transition reason",
+  "modeEditorTransitionReasonHint": "Manually confirm stage completion and guard",
+  "modeEditorTransitionReasonHelper": "Sent as the reason when advancing to a successor.",
+  "modeEditorAllowedNextStates": "Allowed next states · {count}",
+  "@modeEditorAllowedNextStates": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "modeEditorTerminalReached": "Reached a final state. Restarting never rewrites the saved initial state.",
+  "modeEditorPreviewIntroText": "Preview starts from the current JSON document. Each step follows one valid transition from the current state and keeps the path in this preview.",
+  "modeEditorPreviewAccepted": "Preview accepted.",
+  "modeEditorPreviewRejected": "Preview rejected.",
+  "modeEditorCurrentStage": "Current stage",
+  "modeEditorPath": "Path",
+  "modeEditorAdvance": "Advance",
+  "modeEditorPreviewHistory": "Preview history",
+  "modeDeletedUsingSnapshot": "Deleted mode · using saved snapshot",
+  "modeDeletedChooseAnother": "This mode was deleted. Choose another mode.",
+  "modeSnapshotBadge": "Snapshot",
+  "modeDeletedBadge": "Deleted",
+  "settingsAccountProtocol": "Account protocol",
+  "statisticsGroupTotal": "Group total",
+  "statisticsAllEfforts": "All effort levels",
+  "statisticsEffortBreakdownTitle": "Effort breakdown",
+  "accountProtocolOpenAi": "OpenAI",
+  "accountProtocolDeepSeek": "DeepSeek",
+  "accountProtocolZhipu": "Zhipu",
+  "accountProtocolMiMo": "MiMo",
+  "accountProtocolXai": "xAI",
+  "accountProtocolCustom": "Custom (OpenAI compatible)",
+  "timelineWaitToolsTitle": "Waiting for tools",
+  "timelineWaitMessagesTitle": "Waiting for a subagent or new message",
+  "timelineWaitTimerTitle": "Timer",
+  "timelineWaitTimerElapsed": "Timer elapsed",
+  "timelineWaitReady": "A waited source is ready",
+  "timelineWaitMessagesReady": "A new message arrived",
+  "timelineWaitTimedOut": "Wait timed out",
+  "timelineWaitCancelled": "Wait cancelled",
+  "timelineWaitFailed": "Wait failed",
+  "timelineWaitInterrupted": "Wait interrupted",
+  "timelineWaitTargetCount": "{count, plural, =1{1 task} other{{count} tasks}}",
+  "@timelineWaitTargetCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineWaitMessageSource": "New messages",
+  "timelineWaitMaxDuration": "up to {duration}",
+  "@timelineWaitMaxDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitTimerDuration": "{duration}",
+  "@timelineWaitTimerDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitMessagesMayWake": "A new message can wake this wait early",
+  "timelineWaitAnyReadyRule": "Returns when any selected task or a new message is ready",
+  "timelineWaitDiagnostics": "Diagnostics",
+  "timelineWaitUnknownStatus": "Unknown",
+  "timelineWaitStatusRunning": "Running",
+  "timelineWaitStatusSucceeded": "Succeeded",
+  "timelineWaitStatusFailed": "Failed",
+  "timelineWaitStatusCancelled": "Cancelled",
+  "timelineWaitStatusInterrupted": "Interrupted",
+  "conversationActivityWaitingTools": "Waiting for tools",
+  "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
+  "conversationActivityWaitingTimer": "Timer",
+  "settingsModelAutoCompactAdjusted": "The effective limit was adjusted for context capacity and output reserve.",
+  "modelContextParametersInvalid": "Inconsistent context parameters",
+  "modelInputBudgetExhausted": "No input capacity after reserving output",
+  "statusCompactNow": "Compact now",
+  "statusCompacting": "Compacting…",
+  "statusCompactionFailed": "Compaction failed. Try again.",
+  "settingsModelAutoCompactCustom": "Custom"
 }

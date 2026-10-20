@@ -84,7 +84,11 @@ impl SkillCatalogRuntime {
         cancellation: tokio_util::sync::CancellationToken,
         source: DiscoverySource,
     ) -> Result<SkillsStateSnapshot> {
-        let _command = self.command_lock.lock().await;
+        let _command = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => anyhow::bail!("Skill discovery cancelled"),
+            command = self.command_lock.lock() => command,
+        };
         let fingerprint = skills_fingerprint(config)?;
         let previous = self.read(project_id).await;
         let revision = previous.state.revision();

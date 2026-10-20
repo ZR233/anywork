@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -98,7 +97,7 @@ void main() {
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.windows,
+        transport.timelines,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
@@ -107,14 +106,17 @@ void main() {
       await pumpClientUntil(
         tester,
         () =>
-            graph.client.existingSession('thread-main')?.state.hasChatWindow ??
-            false,
-        'selected Thread ChatView',
+            graph.client
+                .existingSession('thread-main')
+                ?.timeline
+                .lastDeliveredFrame !=
+            null,
+        'selected Thread timeline baseline',
       );
       await tester.pumpAndSettle();
       final session = graph.client.existingSession('thread-main')!;
-      final viewId = session.state.chatViewId;
-      final window = transport.windows.single;
+      final attemptId = session.timeline.currentAttemptId?.value;
+      final connection = transport.timelines.single;
       final composer = graph.client.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -130,10 +132,6 @@ void main() {
       );
       await tester.pump();
       expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
-      expect(
-        tester.widget<TimelineView>(find.byType(TimelineView)).turn,
-        running,
-      );
       await tester.enterText(
         find.byKey(StudioDriverKeys.composerInput),
         'Thread draft entered before Settings',
@@ -169,9 +167,9 @@ void main() {
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
           expect(graph.client.existingSession('thread-main'), same(session));
-          expect(session.state.chatViewId, viewId);
-          expect(window.requestCloseCalls, 0);
-          expect(window.closeCalls, 0);
+          expect(session.timeline.currentAttemptId?.value, attemptId);
+          expect(connection.requestCloseCalls, 0);
+          expect(connection.closeCalls, 0);
         },
       );
 
@@ -183,10 +181,6 @@ void main() {
       expect(
         session.state.workspace?.latestTurn?.state,
         isA<CompletedStudioTurnState>(),
-      );
-      expect(
-        tester.widget<TimelineView>(find.byType(TimelineView)).turn,
-        isNull,
       );
       expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
       final submit = find.byKey(StudioDriverKeys.composerSubmit);
@@ -200,11 +194,11 @@ void main() {
         startOwner.state.forProject(projectId).text,
         'start draft entered before Settings',
       );
-      expect(session.state.chatViewId, viewId);
-      expect(session.state.hasChatWindow, isTrue);
-      expect(transport.windows, hasLength(1));
-      expect(window.requestCloseCalls, 0);
-      expect(window.closeCalls, 0);
+      expect(session.timeline.currentAttemptId?.value, attemptId);
+      expect(session.timeline.lastDeliveredFrame != null, isTrue);
+      expect(transport.timelines, hasLength(1));
+      expect(connection.requestCloseCalls, 0);
+      expect(connection.closeCalls, 0);
       expect(transport.bootstrapCalls, 1);
       expect(transport.runtimeSubscriptions, 1);
       expect(transport.runtimeCancellations, 0);
@@ -232,7 +226,7 @@ void main() {
         )).complete,
         isTrue,
       );
-      expect(window.joined.isCompleted, isTrue);
+      expect(connection.joined.isCompleted, isTrue);
       expect(tester.takeException(), isNull);
     },
   );
@@ -245,7 +239,7 @@ Future<void> _settingsRoundTrip(
   await tester.tap(find.byKey(StudioDriverKeys.settingsOpen));
   await tester.pumpAndSettle();
   expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
-  for (final tab in ['general', 'agents', 'providers']) {
+  for (final tab in ['general', 'agents', 'accounts']) {
     final target = find.byKey(StudioDriverKeys.settingsTab(tab));
     await tester.ensureVisible(target);
     await tester.tap(target);

@@ -136,11 +136,16 @@ class _DockFooter extends StatelessWidget {
       decoration: BoxDecoration(color: context.colors.surfaceContainerLowest),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final compact = constraints.maxWidth < 560;
+          // 横向内边距与输入区共用同一响应阈值（< 460 用 12，否则 18）：
+          // 按钮组的右缘因此与输入框右缘落在同一条边界上。
+          final compact = constraints.maxWidth < 460;
+          final horizontal = compact ? 12.0 : 18.0;
+          // 提示与操作同排需要更多宽度；不足时分行，右边界保持一致。
+          final stacked = constraints.maxWidth < 560;
           final hintWidget = (hintText?.isNotEmpty ?? false)
               ? Text(
                   hintText!,
-                  maxLines: compact ? 3 : 2,
+                  maxLines: stacked ? 3 : 2,
                   overflow: TextOverflow.ellipsis,
                   style: context.text.labelSmall?.copyWith(
                     color: context.colors.onSurfaceVariant,
@@ -148,8 +153,8 @@ class _DockFooter extends StatelessWidget {
                 )
               : null;
           return Padding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 12),
-            child: compact
+            padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 12),
+            child: stacked
                 ? Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     mainAxisSize: MainAxisSize.min,
@@ -164,11 +169,16 @@ class _DockFooter extends StatelessWidget {
                 : Row(
                     children: [
                       if (hintWidget != null) ...[
+                        // 提示取 1 份、操作组取 2 份：操作优先拿到余量，提示仍有
+                        // 可用宽度。两者都是有界紧约束——Row 的非 flex 子项会拿到
+                        // 无限横向约束，Wrap 因此永不折行并顶出右边界。
                         Expanded(child: hintWidget),
                         const SizedBox(width: 12),
-                      ] else
+                        Expanded(flex: 2, child: child),
+                      ] else ...[
                         const Spacer(),
-                      Flexible(child: child),
+                        Expanded(child: child),
+                      ],
                     ],
                   ),
           );
@@ -214,6 +224,7 @@ class InfoChip extends StatelessWidget {
             label,
             style: context.text.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
+              fontFamily: studioCodeFontFamily,
             ),
           ),
         ),
@@ -237,10 +248,7 @@ class InteractionCodeBlock extends StatelessWidget {
       horizontalScroll: false,
       backgroundColor: colors.surfaceContainerLow,
       borderColor: colors.outlineVariant,
-      textStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-        fontFamily: 'JetBrains Mono',
-        fontFamilyFallback: const ['Consolas', 'monospace'],
-      ),
+      textStyle: Theme.of(context).textTheme.bodySmall,
     );
   }
 }

@@ -2,8 +2,9 @@
 library;
 
 export 'src/application/studio_client.dart';
-export 'src/chat/chat_channel.dart';
+export 'src/chat/timeline_channel.dart';
 export 'src/chat/chat_models.dart';
+export 'src/studio/timeline_contract.dart';
 export 'src/commands/mutation_board.dart';
 export 'src/contracts/stamps.dart';
 export 'src/drafts/draft_store.dart';

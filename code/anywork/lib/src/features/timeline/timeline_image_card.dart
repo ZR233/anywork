@@ -2,30 +2,50 @@ part of 'timeline_view.dart';
 
 /// 展示工具（`show_image`）的图片卡片（design/19 §19.9）。
 ///
-/// 卡片在时间线占一行：头部是图片图标、标题与工具状态胶囊，中间按可用宽度等比展示大图
-/// 并限制最大高度，图片下方展示模型给出的说明文案。图片字节只经 Thread 附件缓存按
-/// typed 附件身份读取，卡片不解析 opaque 工具回执，也不建立第二份附件缓存
-/// （design/25 §25.6）。
-class _ImageCardPart extends StatelessWidget {
-  const _ImageCardPart({required this.row});
+/// 卡片在时间线占一行，与其他块共用同一条左对齐内容列：头部是图片图标、标题与工具
+/// 状态胶囊，中间按可用宽度等比展示大图并限制最大高度，图片下方展示模型给出的说明
+/// 文案。图片字节只经 Thread 附件缓存按 typed 附件身份读取，卡片不解析 opaque 工具
+/// 回执，也不建立第二份附件缓存（design/25 §25.6）。
+class _TimelineImageCardBlock extends StatelessWidget {
+  const _TimelineImageCardBlock({required this.payload});
 
-  final TimelineImageCardRow row;
+  final TimelineMessagePayload payload;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    key: StudioDriverKeys.timelineRow(payload.id),
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 700),
+        child: _ImageCardPart(payload: payload),
+      ),
+    ),
+  );
+}
+
+class _ImageCardPart extends StatelessWidget {
+  const _ImageCardPart({required this.payload});
+
+  final TimelineMessagePayload payload;
 
   @override
   Widget build(BuildContext context) {
-    final tool = row.tool.tool;
+    final item = payload.item;
+    final tool = item.tool;
     // 只消费 canonical 工具输出里的 typed 附件：第一个图片类型的附件就是被展示的图片。
     final attachment = tool?.attachments
         .where((item) => item.modality == AttachmentModalityView.image)
         .firstOrNull;
-    // 条目身份沿用 owning 调用 + 附件 id：同一资源被不同调用展示时仍是两张卡片。
+    // 条目身份沿用 owning 调用 + 附件身份：同一资源被不同调用展示时仍是两张卡片。
     final entryId = attachment == null
         ? null
         : StudioDriverKeys.toolImageEntryId(
-            tool?.callId ?? tool?.toolCallId ?? row.id,
+            tool?.callId ?? tool?.toolCallId ?? item.id,
             attachment.id,
           );
-    final status = row.tool.status;
+    final status = item.status;
     final failed = const {
       'failed',
       'denied',
@@ -33,7 +53,7 @@ class _ImageCardPart extends StatelessWidget {
       'interrupted',
       'budgetLimited',
     }.contains(status);
-    final caption = row.caption;
+    final caption = _imageCardCaption(tool?.arguments);
     return SizedBox(
       key: entryId == null ? null : StudioDriverKeys.imageCard(entryId),
       width: double.infinity,
@@ -71,7 +91,7 @@ class _ImageCardPart extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _StatusPill(
+                    StudioPill(
                       label: context.toolStatusLabel(status),
                       tone: failed ? StudioTone.error : StudioTone.neutral,
                     ),
@@ -80,7 +100,7 @@ class _ImageCardPart extends StatelessWidget {
               ),
               if (attachment != null && entryId != null)
                 _ImageCardMedia(
-                  threadId: row.threadId,
+                  threadId: item.threadId,
                   attachment: attachment,
                   entryId: entryId,
                 )
@@ -107,6 +127,23 @@ class _ImageCardPart extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 卡片说明文案的最大长度；超出按 rune 截断而不是按 UTF-16 码元。
+const int _maxImageCardCaptionRunes = 240;
+
+/// 卡片文案只来自 canonical 工具参数中的 `caption`（design/19 §19.9）。
+///
+/// 非字符串、空白与无法解析的参数都视为没有文案：不猜测图片内容，也不把参数正文直接
+/// 铺进卡片；超长文案按 rune 截断，避免代理异常参数撑破阅读列。
+String? _imageCardCaption(String? arguments) {
+  final value = decodeJsonObject(arguments ?? '')['caption'];
+  if (value is! String) return null;
+  final caption = value.trim();
+  if (caption.isEmpty) return null;
+  final runes = caption.runes;
+  if (runes.length <= _maxImageCardCaptionRunes) return caption;
+  return String.fromCharCodes(runes.take(_maxImageCardCaptionRunes));
 }
 
 /// 没有可展示的 typed 图片附件时的占位：卡片保持可读的错误态，不抛异常。
@@ -137,7 +174,7 @@ class _ImageCardUnavailable extends StatelessWidget {
 /// 卡片的图片区：稳定尺寸、显式加载/失败状态，成功后可打开可缩放预览。
 ///
 /// 加载、成功与失败共用同一个由附件比例推出的方框（宽度跟随卡片、高度不超过
-/// [maxImageCardHeight]），因此异步读取不会带来布局抖动，也不改变阅读位置。
+/// [_maxImageCardHeight]），因此异步读取不会带来布局抖动，也不改变阅读位置。
 class _ImageCardMedia extends ConsumerStatefulWidget {
   const _ImageCardMedia({
     required this.threadId,
@@ -221,9 +258,13 @@ class _ImageCardMediaState extends ConsumerState<_ImageCardMedia> {
   }
 
   void _retry() {
+    final failed = _image;
     _imageGeneration++;
-    _ThreadImageCacheScope.of(context)
-        .invalidate(widget.threadId, widget.attachment.id);
+    if (failed != null) {
+      // 只作废本条目持有的那次读取：另一次调用已开始的新读取不受影响。
+      _ThreadImageCacheScope.of(context)
+          .invalidate(widget.threadId, widget.attachment.id, failed);
+    }
     setState(() => _image = _loadImage());
   }
 

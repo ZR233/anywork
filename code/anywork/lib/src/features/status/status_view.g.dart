@@ -114,170 +114,40 @@ final class StatusLspServersProvider
 
 String _$statusLspServersHash() => r'd636fc36cb4cc890efe9f1427cbdb9554f75b235';
 
-@ProviderFor(statusRuntimeProjection)
-final statusRuntimeProjectionProvider = StatusRuntimeProjectionProvider._();
-
-final class StatusRuntimeProjectionProvider
-    extends
-        $FunctionalProvider<
-          StudioRuntimeProjection?,
-          StudioRuntimeProjection?,
-          StudioRuntimeProjection?
-        >
-    with $Provider<StudioRuntimeProjection?> {
-  StatusRuntimeProjectionProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusRuntimeProjectionProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$statusRuntimeProjectionHash();
-
-  @$internal
-  @override
-  $ProviderElement<StudioRuntimeProjection?> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  StudioRuntimeProjection? create(Ref ref) {
-    return statusRuntimeProjection(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(StudioRuntimeProjection? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<StudioRuntimeProjection?>(value),
-    );
-  }
-}
-
-String _$statusRuntimeProjectionHash() =>
-    r'c4e131163b4e632664c8b59c4dfe740643c4e254';
-
-@ProviderFor(statusContextProjection)
-final statusContextProjectionProvider = StatusContextProjectionProvider._();
-
-final class StatusContextProjectionProvider
-    extends
-        $FunctionalProvider<
-          StudioContextProjection?,
-          StudioContextProjection?,
-          StudioContextProjection?
-        >
-    with $Provider<StudioContextProjection?> {
-  StatusContextProjectionProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusContextProjectionProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$statusContextProjectionHash();
-
-  @$internal
-  @override
-  $ProviderElement<StudioContextProjection?> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  StudioContextProjection? create(Ref ref) {
-    return statusContextProjection(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(StudioContextProjection? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<StudioContextProjection?>(value),
-    );
-  }
-}
-
-String _$statusContextProjectionHash() =>
-    r'cdd7786967916d4e4dc7754d41c8f1b74923265e';
-
-@ProviderFor(statusThroughputProjection)
-final statusThroughputProjectionProvider =
-    StatusThroughputProjectionProvider._();
-
-final class StatusThroughputProjectionProvider
-    extends
-        $FunctionalProvider<
-          StudioThroughputProjection?,
-          StudioThroughputProjection?,
-          StudioThroughputProjection?
-        >
-    with $Provider<StudioThroughputProjection?> {
-  StatusThroughputProjectionProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusThroughputProjectionProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$statusThroughputProjectionHash();
-
-  @$internal
-  @override
-  $ProviderElement<StudioThroughputProjection?> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  StudioThroughputProjection? create(Ref ref) {
-    return statusThroughputProjection(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(StudioThroughputProjection? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<StudioThroughputProjection?>(value),
-    );
-  }
-}
-
-String _$statusThroughputProjectionHash() =>
-    r'48a028c2d03c2a0c7e8d57008c66e07afb1c2528';
+/// Stable status-bar fields for one Thread. Throughput and context are not
+/// part of this value, so decode updates cannot rebuild the chrome.
 
 @ProviderFor(statusBarView)
-final statusBarViewProvider = StatusBarViewProvider._();
+final statusBarViewProvider = StatusBarViewFamily._();
+
+/// Stable status-bar fields for one Thread. Throughput and context are not
+/// part of this value, so decode updates cannot rebuild the chrome.
 
 final class StatusBarViewProvider
     extends $FunctionalProvider<StatusBarView?, StatusBarView?, StatusBarView?>
     with $Provider<StatusBarView?> {
-  StatusBarViewProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusBarViewProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
+  /// Stable status-bar fields for one Thread. Throughput and context are not
+  /// part of this value, so decode updates cannot rebuild the chrome.
+  StatusBarViewProvider._({
+    required StatusBarViewFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'statusBarViewProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
 
   @override
   String debugGetCreateSourceHash() => _$statusBarViewHash();
+
+  @override
+  String toString() {
+    return r'statusBarViewProvider'
+        ''
+        '($argument)';
+  }
 
   @$internal
   @override
@@ -286,7 +156,8 @@ final class StatusBarViewProvider
 
   @override
   StatusBarView? create(Ref ref) {
-    return statusBarView(ref);
+    final argument = this.argument as String;
+    return statusBarView(ref, argument);
   }
 
   /// {@macro riverpod.override_with_value}
@@ -296,6 +167,289 @@ final class StatusBarViewProvider
       providerOverride: $SyncValueProvider<StatusBarView?>(value),
     );
   }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StatusBarViewProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
 }
 
-String _$statusBarViewHash() => r'49921666fec1a9d2259c75f20b7427d6b3d83746';
+String _$statusBarViewHash() => r'b7e6631120bec41224595f16765fe95172dd4ead';
+
+/// Stable status-bar fields for one Thread. Throughput and context are not
+/// part of this value, so decode updates cannot rebuild the chrome.
+
+final class StatusBarViewFamily extends $Family
+    with $FunctionalFamilyOverride<StatusBarView?, String> {
+  StatusBarViewFamily._()
+    : super(
+        retry: null,
+        name: r'statusBarViewProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// Stable status-bar fields for one Thread. Throughput and context are not
+  /// part of this value, so decode updates cannot rebuild the chrome.
+
+  StatusBarViewProvider call(String threadId) =>
+      StatusBarViewProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'statusBarViewProvider';
+}
+
+@ProviderFor(statusCompactionCommand)
+final statusCompactionCommandProvider = StatusCompactionCommandFamily._();
+
+final class StatusCompactionCommandProvider
+    extends $FunctionalProvider<CommandStatus?, CommandStatus?, CommandStatus?>
+    with $Provider<CommandStatus?> {
+  StatusCompactionCommandProvider._({
+    required StatusCompactionCommandFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'statusCompactionCommandProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$statusCompactionCommandHash();
+
+  @override
+  String toString() {
+    return r'statusCompactionCommandProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<CommandStatus?> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  CommandStatus? create(Ref ref) {
+    final argument = this.argument as String;
+    return statusCompactionCommand(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(CommandStatus? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<CommandStatus?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StatusCompactionCommandProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$statusCompactionCommandHash() =>
+    r'fd660618710e688c794bee3b85281fc041014496';
+
+final class StatusCompactionCommandFamily extends $Family
+    with $FunctionalFamilyOverride<CommandStatus?, String> {
+  StatusCompactionCommandFamily._()
+    : super(
+        retry: null,
+        name: r'statusCompactionCommandProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  StatusCompactionCommandProvider call(String threadId) =>
+      StatusCompactionCommandProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'statusCompactionCommandProvider';
+}
+
+@ProviderFor(statusContextProjection)
+final statusContextProjectionProvider = StatusContextProjectionFamily._();
+
+final class StatusContextProjectionProvider
+    extends
+        $FunctionalProvider<
+          StudioContextProjection?,
+          StudioContextProjection?,
+          StudioContextProjection?
+        >
+    with $Provider<StudioContextProjection?> {
+  StatusContextProjectionProvider._({
+    required StatusContextProjectionFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'statusContextProjectionProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$statusContextProjectionHash();
+
+  @override
+  String toString() {
+    return r'statusContextProjectionProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<StudioContextProjection?> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  StudioContextProjection? create(Ref ref) {
+    final argument = this.argument as String;
+    return statusContextProjection(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(StudioContextProjection? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<StudioContextProjection?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StatusContextProjectionProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$statusContextProjectionHash() =>
+    r'9cb1f768f067e57bb876d86ca4dfdabb6ef6bbe4';
+
+final class StatusContextProjectionFamily extends $Family
+    with $FunctionalFamilyOverride<StudioContextProjection?, String> {
+  StatusContextProjectionFamily._()
+    : super(
+        retry: null,
+        name: r'statusContextProjectionProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  StatusContextProjectionProvider call(String threadId) =>
+      StatusContextProjectionProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'statusContextProjectionProvider';
+}
+
+@ProviderFor(statusThroughputProjection)
+final statusThroughputProjectionProvider = StatusThroughputProjectionFamily._();
+
+final class StatusThroughputProjectionProvider
+    extends
+        $FunctionalProvider<
+          StudioThroughputProjection?,
+          StudioThroughputProjection?,
+          StudioThroughputProjection?
+        >
+    with $Provider<StudioThroughputProjection?> {
+  StatusThroughputProjectionProvider._({
+    required StatusThroughputProjectionFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'statusThroughputProjectionProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$statusThroughputProjectionHash();
+
+  @override
+  String toString() {
+    return r'statusThroughputProjectionProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<StudioThroughputProjection?> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  StudioThroughputProjection? create(Ref ref) {
+    final argument = this.argument as String;
+    return statusThroughputProjection(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(StudioThroughputProjection? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<StudioThroughputProjection?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StatusThroughputProjectionProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$statusThroughputProjectionHash() =>
+    r'ab6fa928badd2d980a621834f5cc2bb6ed5750c8';
+
+final class StatusThroughputProjectionFamily extends $Family
+    with $FunctionalFamilyOverride<StudioThroughputProjection?, String> {
+  StatusThroughputProjectionFamily._()
+    : super(
+        retry: null,
+        name: r'statusThroughputProjectionProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  StatusThroughputProjectionProvider call(String threadId) =>
+      StatusThroughputProjectionProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'statusThroughputProjectionProvider';
+}

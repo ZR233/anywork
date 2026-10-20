@@ -13,6 +13,7 @@ use pl_tool::workspace::ToolWorkspace;
 
 #[derive(Clone)]
 pub(super) struct ToolBinding {
+    pub lifetime: std::sync::Arc<ThreadToolLifetime>,
     pub incarnation: std::sync::Arc<()>,
     pub target_invalidated: bool,
     pub catalog: Option<std::sync::Arc<pl_tool::skill::FrozenSkillCatalog>>,
@@ -28,6 +29,12 @@ pub(super) struct ToolBinding {
     pub ssh_profile: Option<pl_tool::remote::SshServerProfile>,
 }
 
+#[derive(Default)]
+pub(super) struct ThreadToolLifetime {
+    gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
 /// Candidate metadata is published only after the Thread accepts its registrations.
 pub(in crate::studio) struct RefreshedToolBinding {
     previous: std::sync::Arc<()>,
@@ -35,6 +42,37 @@ pub(in crate::studio) struct RefreshedToolBinding {
 }
 
 impl StudioThreadFactory {
+    pub(in crate::studio) fn tool_operation(
+        &self,
+        id: &str,
+    ) -> Result<
+        (
+            std::sync::Arc<tokio::sync::Mutex<()>>,
+            tokio_util::sync::CancellationToken,
+        ),
+        ThreadAssemblyError,
+    > {
+        let bindings = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let binding = bindings
+            .get(id)
+            .ok_or(pl_core::thread::ThreadError::Closed)?;
+        Ok((
+            binding.lifetime.gate.clone(),
+            binding.lifetime.cancellation.clone(),
+        ))
+    }
+
+    pub(in crate::studio) fn tool_project(&self, id: &str) -> Option<ProjectRecord> {
+        self.bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|binding| binding.project.clone())
+    }
+
     pub(in crate::studio) fn tool_authority_invalidated(&self, id: &str) -> anyhow::Result<bool> {
         let mode = self
             .services
@@ -50,14 +88,6 @@ impl StudioThreadFactory {
         Ok(bindings
             .get(id)
             .is_some_and(|binding| binding.target_invalidated || binding.permission_mode != mode))
-    }
-
-    pub(in crate::studio) fn ssh_alias(&self, id: &str) -> Option<String> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .and_then(|binding| binding.project.ssh_alias.clone())
     }
 
     pub(in crate::studio) fn commit_refreshed_binding(
@@ -137,10 +167,54 @@ impl StudioThreadFactory {
         }
     }
     pub(in crate::studio) fn forget_tool_binding(&self, id: &str) {
-        self.bindings
+        if let Some(binding) = self
+            .bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+            .remove(id)
+        {
+            binding.lifetime.cancellation.cancel();
+        }
+    }
+    pub(super) fn forget_tool_binding_if_current(
+        &self,
+        id: &str,
+        lifetime: &std::sync::Arc<ThreadToolLifetime>,
+    ) {
+        let mut bindings = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if bindings
+            .get(id)
+            .is_some_and(|binding| std::sync::Arc::ptr_eq(&binding.lifetime, lifetime))
+            && let Some(binding) = bindings.remove(id)
+        {
+            binding.lifetime.cancellation.cancel();
+        }
+    }
+
+    pub(in crate::studio) fn stop_tool_operation(
+        &self,
+        id: &str,
+    ) -> Option<std::sync::Arc<tokio::sync::Mutex<()>>> {
+        let bindings = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let binding = bindings.get(id)?;
+        binding.lifetime.cancellation.cancel();
+        Some(binding.lifetime.gate.clone())
+    }
+    pub(in crate::studio) fn stop_all_tool_operations(&self) {
+        for binding in self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            binding.lifetime.cancellation.cancel();
+        }
     }
 
     pub(in crate::studio) async fn refresh_thread_tools(
@@ -325,27 +399,16 @@ impl StudioThreadFactory {
         let exposure = if child {
             crate::thread_assembler::AgentControlExposure::Disabled
         } else {
-            let mode_id = crate::studio::thread_projection::saved_mode(snapshot)
-                .map_err(|error| resource_error("read current mode for tool refresh", error))?
-                .unwrap_or(thread.mode);
-            let mode = self
-                .services
-                .thread_modes
-                .snapshot()
-                .mode(&mode_id)
+            crate::mode::saved_registered_mode(snapshot)
+                .map_err(|error| resource_error("read Mode snapshot for tool refresh", error))?
                 .ok_or_else(|| {
-                    ThreadAssemblyError::Identity(
-                        "current Mode is unavailable; reactivate this Thread".into(),
-                    )
+                    ThreadAssemblyError::Identity("current Mode snapshot is unavailable".into())
                 })?;
             prepared.tools = prepared
                 .tools
-                .with_tools(crate::workflow_tool::workflow_registrations(mode)?);
+                .with_tools(crate::workflow_tool::workflow_registrations()?);
             crate::thread_assembler::AgentControlExposure::Enabled
         };
-        if cancellation.is_cancelled() {
-            return Err(pl_core::thread::ThreadError::Cancelled.into());
-        }
         let commands = prepared
             .tools
             .command_processes

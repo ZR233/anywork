@@ -3,15 +3,201 @@ import 'dart:convert';
 import 'package:anywork_client/studio_client.dart';
 
 import '../domain/models/agent_workspace_view.dart';
+import '../domain/models/timeline_commands.dart';
+
+/// 一个展示代次的只读事实（design/26 §26.9）。
+///
+/// 身份与数量来自当前 stock controller 的真实消息集合，不从状态流猜测；`items` 是同一批
+/// Message 的轻量 typed 预览诊断，只用于验收旅程，不是第二份业务事实源。
+final class TimelineDisplayFacts {
+  TimelineDisplayFacts({
+    required this.threadId,
+    required this.generation,
+    required this.ready,
+    required this.mode,
+    required this.connection,
+    required this.appliedVersion,
+    required this.olderCursor,
+    required this.hasOlder,
+    required this.loadingOlder,
+    required this.olderError,
+    required this.olderErrorCode,
+    required this.hasNewOutput,
+    required this.preparingLive,
+    List<TimelineItemFacts> items = const [],
+    List<TimelinePresentationFacts> presentationItems = const [],
+  }) : items = List.unmodifiable(items),
+       presentationItems = List.unmodifiable(presentationItems);
+
+  final String threadId;
+  final int generation;
+  final bool ready;
+  final TimelineDisplayMode mode;
+  final TimelineConnectionPhase connection;
+  final int? appliedVersion;
+  final String? olderCursor;
+  final bool hasOlder;
+  final bool loadingOlder;
+  final String? olderError;
+  final StudioFailureCode? olderErrorCode;
+  final bool hasNewOutput;
+  final bool preparingLive;
+  final List<TimelineItemFacts> items;
+  final List<TimelinePresentationFacts> presentationItems;
+}
+
+/// GUI groups have their own identity; members still denote individual canonical records.
+final class TimelinePresentationFacts {
+  TimelinePresentationFacts({
+    required this.id,
+    required this.kind,
+    required this.ordinal,
+    required List<String> memberIds,
+    required this.expanded,
+    required this.activeCount,
+    required this.issueCount,
+  }) : memberIds = List.unmodifiable(memberIds);
+  final String id;
+  final String kind;
+  final int ordinal;
+  final List<String> memberIds;
+  final bool expanded;
+  final int activeCount;
+  final int issueCount;
+}
+
+/// 一条 canonical item 的轻量 typed 预览诊断。
+final class TimelineItemFacts {
+  TimelineItemFacts({
+    required this.id,
+    required this.ordinal,
+    required this.revision,
+    required this.saved,
+    required this.terminal,
+    required this.omittedBytes,
+    required this.kind,
+    required this.status,
+    required this.text,
+    required this.channel,
+    List<TimelineDetailFacts> details = const [],
+    List<TimelineAttachmentFacts> attachments = const [],
+    this.tool,
+    this.userInput,
+  }) : details = List.unmodifiable(details),
+       attachments = List.unmodifiable(attachments);
+
+  final String id;
+  final int ordinal;
+  final int revision;
+  final bool saved;
+  final bool terminal;
+  final int omittedBytes;
+  final String kind;
+  final String status;
+
+  /// 已脱敏的预览正文（工具行是命令摘要，不是完整参数）。
+  final String text;
+
+  /// 文本条目的权威频道（commentary / finalAnswer / user / parentAgent）；
+  /// 非文本条目为 null。它来自 `ThreadTextItemStateView.channel`，不从 kind 或文本推测：
+  /// `agentMessage` 同时覆盖 commentary 与 finalAnswer。
+  final ThreadTextChannel? channel;
+  final List<TimelineDetailFacts> details;
+  final List<TimelineAttachmentFacts> attachments;
+  final TimelineToolFacts? tool;
+  final TimelineUserInputFacts? userInput;
+}
+
+/// 一条工具调用的预览诊断：不展开全文，也不为 Driver 额外读取详情。
+final class TimelineToolFacts {
+  TimelineToolFacts({
+    required this.name,
+    required this.status,
+    required this.callId,
+    required this.arguments,
+    required this.result,
+    required this.progressBytes,
+    required this.itemRevision,
+    this.denialReason,
+    this.workingDirectory,
+    this.exitCode,
+    List<TimelineAttachmentFacts> attachments = const [],
+  }) : attachments = List.unmodifiable(attachments);
+
+  final String name;
+  final String status;
+  final String callId;
+  final String arguments;
+  final String? result;
+
+  /// 预览结果的 UTF-8 字节数：逐次增长即在途真实产出。
+  final int progressBytes;
+  final int itemRevision;
+  final String? denialReason;
+  final String? workingDirectory;
+  final int? exitCode;
+  final List<TimelineAttachmentFacts> attachments;
+}
+
+/// 一个内容字段的详情引用诊断（字段身份 + revision + 完整/预览字节数）。
+final class TimelineDetailFacts {
+  const TimelineDetailFacts({
+    required this.field,
+    required this.revision,
+    required this.totalBytes,
+    required this.previewBytes,
+  });
+
+  final String field;
+  final int revision;
+  final int totalBytes;
+  final int previewBytes;
+}
+
+final class TimelineAttachmentFacts {
+  const TimelineAttachmentFacts({
+    required this.id,
+    required this.modality,
+    required this.filename,
+    required this.byteSize,
+    this.source,
+  });
+
+  final String id;
+  final String modality;
+  final String filename;
+  final int byteSize;
+  final String? source;
+}
+
+/// 普通问答/计划确认的只读回执事实；来自公开 typed 投影，不解析私有载荷。
+final class TimelineUserInputFacts {
+  const TimelineUserInputFacts({
+    required this.interactionId,
+    required this.state,
+    required this.isPlanConfirmation,
+    this.planDecision,
+  });
+
+  final String interactionId;
+  final String state;
+
+  /// 这条问答是否就是计划确认：来自唯一 public typed `planReceipt != null`。
+  ///
+  /// 待确认（pending）的计划同样是计划确认；它不是“已决才为真”。
+  final bool isPlanConfirmation;
+
+  /// 权威决定（`pending`/`approved`/`revisionRequested`/`cancelled`/`resolved`）；
+  /// 普通问答为 null。
+  final String? planDecision;
+}
 
 /// One immutable, synchronous read of the Client's current mirrors. Driver keeps
 /// no copy after serialization and cannot write these values back to the Client.
 final class StudioDriverFacts {
   StudioDriverFacts({
-    this.timelineWorkspace,
-    this.chatViewId,
-    this.hasChatWindow = false,
-    this.history = const ThreadHistoryWindow(),
+    this.timeline,
+    this.timelineScroll,
     Map<String, ThreadWorkspace> workspacesByThread = const {},
     List<StudioThread> rootThreads = const [],
     this.directoryHasMore = false,
@@ -22,10 +208,11 @@ final class StudioDriverFacts {
     this.newThreadComposer = const ComposerThreadState.idle(),
     this.threadComposer = const ComposerThreadState.idle(),
     this.settingsRevision = 0,
+    this.sidebarWidth,
     this.modelCatalogRevision = 0,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
-    List<ProviderSettingsView> providers = const [],
+    List<AccountSettingsView> accounts = const [],
     List<CommandStatus> commands = const [],
     this.settingsReady = false,
     this.persistence = const PersistenceStateSnapshot.ready(),
@@ -36,14 +223,18 @@ final class StudioDriverFacts {
        rootThreads = List.unmodifiable(rootThreads),
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
        roles = List.unmodifiable(roles),
-       providers = List.unmodifiable(providers),
+       accounts = List.unmodifiable(accounts),
        commands = List.unmodifiable(commands),
        recoveryIssues = List.unmodifiable(recoveryIssues);
 
-  final ThreadWorkspace? timelineWorkspace;
-  final String? chatViewId;
-  final bool hasChatWindow;
-  final ThreadHistoryWindow history;
+  /// 当前展示代次的只读事实；没有展示时为 null。
+  final TimelineDisplayFacts? timeline;
+
+  /// 滚动几何：**由每次诊断请求现场读取**当前展示 lease 实测挂载的标准 controller。
+  ///
+  /// 没有挂载代次时为 null；不保留上一代几何，也没有任何通知发布的快照可读
+  /// （design/26 §26.9）。
+  final TimelineScrollDiagnostic? timelineScroll;
   final Map<String, ThreadWorkspace> workspacesByThread;
   final List<StudioThread> rootThreads;
   final bool directoryHasMore;
@@ -54,10 +245,11 @@ final class StudioDriverFacts {
   final ComposerThreadState newThreadComposer;
   final ComposerThreadState threadComposer;
   final int settingsRevision;
+  final int? sidebarWidth;
   final int modelCatalogRevision;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<CommandStatus> commands;
   final bool settingsReady;
   final PersistenceStateSnapshot persistence;
@@ -78,7 +270,6 @@ abstract final class StudioDriverState {
   static String? _startupFailureCorrelationId;
   static ConversationActivityView? _conversationActivity;
   static bool _activityExpanded = false;
-  static TimelineScrollDiagnostic? _timelineScroll;
 
   /// Application assembly lends a query; binding never creates an observer or
   /// changes resource demand. Each request reads current Client facts directly.
@@ -88,91 +279,6 @@ abstract final class StudioDriverState {
 
   static StudioDriverFacts readFacts() => _query?.call() ?? StudioDriverFacts();
 
-  /// 内容交付计数是否启用。
-  ///
-  /// **只在 Driver 构建启用**：编译期 `ANYWORK_DRIVER`（`cargo xtask run-gui --driver`
-  /// 注入的 dart-define）为真时默认开启，Driver 入口也可用
-  /// [enableContentDeliveryMetrics] 显式开启。普通运行与 release 恒为关闭，完全不
-  /// 统计、也不为统计序列化正文。
-  static bool _contentMetricsEnabled = const bool.fromEnvironment(
-    'ANYWORK_DRIVER',
-  );
-  static int _contentResets = 0;
-  static int _contentPatches = 0;
-  static int _contentChanges = 0;
-  static int _contentBodyBytes = 0;
-  static int _contentMaxWindowItems = 0;
-
-  /// Driver 入口启用内容交付计数。这是应用载荷计量，不是 FRB 物理 wire 字节。
-  static void enableContentDeliveryMetrics() {
-    _contentMetricsEnabled = true;
-  }
-
-  static void resetContentDeliveryMetrics() {
-    _contentResets = 0;
-    _contentPatches = 0;
-    _contentChanges = 0;
-    _contentBodyBytes = 0;
-    _contentMaxWindowItems = 0;
-  }
-
-  /// 记录一次权威整窗交付（窗口条目数）。
-  static void recordChatWindowReset(int windowItems) {
-    if (!_contentMetricsEnabled) return;
-    _contentResets++;
-    if (windowItems > _contentMaxWindowItems) {
-      _contentMaxWindowItems = windowItems;
-    }
-  }
-
-  /// 记录一次差量交付；[windowItems] 是交付后的窗口条目数。
-  static void recordChatWindowPatch(int windowItems) {
-    if (!_contentMetricsEnabled) return;
-    _contentPatches++;
-    if (windowItems > _contentMaxWindowItems) {
-      _contentMaxWindowItems = windowItems;
-    }
-  }
-
-  /// 记录一次正文内容增量（按 UTF-8 字节计）。
-  static void recordContentDelta(String delta) {
-    if (!_contentMetricsEnabled) return;
-    _contentChanges++;
-    if (delta.isEmpty) return;
-    _contentBodyBytes += _utf8Length(delta);
-  }
-
-  /// 记录一次整条/多条正文交付（按 UTF-8 字节计的是正文文本，不是 JSON 载荷）。
-  static void recordContentBody(String text) {
-    if (!_contentMetricsEnabled) return;
-    if (text.isEmpty) return;
-    _contentBodyBytes += _utf8Length(text);
-  }
-
-  /// 直接按 code unit 数出 UTF-8 字节长度。
-  ///
-  /// 正文可以很大，`utf8.encode` 会为每次交付复制一份字节；这里的计数是只读诊断，
-  /// 因此按 code unit 就地累加，不额外物化全文副本。
-  static int _utf8Length(String text) {
-    var bytes = 0;
-    for (var index = 0; index < text.length; index += 1) {
-      final unit = text.codeUnitAt(index);
-      if (unit < 0x80) {
-        bytes += 1;
-      } else if (unit < 0x800) {
-        bytes += 2;
-      } else if (unit >= 0xD800 && unit < 0xDC00 && index + 1 < text.length) {
-        // 高位代理：与紧随的低位代理合成一个 4 字节字符。
-        bytes += 4;
-        index += 1;
-      } else {
-        bytes += 3;
-      }
-    }
-    return bytes;
-  }
-
-  /// 固定活动条的当前投影；驱动据此断言阶段/摘要/详情而无需从渲染文本猜测。
   static void publishConversationActivity(ConversationActivityView? view) {
     _conversationActivity = view;
   }
@@ -183,11 +289,6 @@ abstract final class StudioDriverState {
   /// 能力，`expanded` 是当前状态。仅由活动条在展开/收起或身份变化时上报。
   static void publishActivityExpanded(bool expanded) {
     _activityExpanded = expanded;
-  }
-
-  /// Timeline 滚动几何诊断；只读投影，不是第二份业务状态。
-  static void publishTimelineScroll(TimelineScrollDiagnostic? diagnostic) {
-    _timelineScroll = diagnostic;
   }
 
   static void publishShutdownProgress(StudioShutdownProgress progress) {
@@ -212,12 +313,13 @@ abstract final class StudioDriverState {
     _nativeCleanupBudgetMs = cleanupBudgetMs;
   }
 
-  /// 记录一次退出请求（窗口关闭 / ServicesBinding / Driver / dispose）。
+  /// 记录一次应用退出请求（托盘退出 / 系统会话结束 / 无托盘窗口关闭 /
+  /// ServicesBinding / Driver / dispose）。
   static void markExitRequested() {
     _exitRequests++;
   }
 
-  /// 记录启动致命失败（如第二实例 instanceBusy）的 typed code 与 correlation，供
+  /// 记录启动致命失败的 typed code 与 correlation，供
   /// Driver-only 验收可靠判定，而不是从 UI 文本猜测。
   static void publishStartupFailure(StudioFailure failure) {
     _startupFailureCode = failure.code.name;
@@ -292,54 +394,11 @@ abstract final class StudioDriverState {
             'detail': issue.detail,
           },
       ],
-      'timelineWindow': {
-        'viewId': facts.chatViewId,
-        'ready': facts.hasChatWindow,
-        'itemIds':
-            facts.timelineWorkspace?.items.map((item) => item.id).toList() ??
-            [],
-        // 有界预览与显式回源身份：驱动据此按 canonical item id 定位大正文，
-        // 无需从渲染文本里猜测。
-        'previewedItemIds': [
-          for (final item
-              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
-            if (facts.history.previewedItemIds.contains(item.id)) item.id,
-        ],
-        // 窗口内正文完整的条目：窗口是唯一正文 owner，展开后省略量归零即视为已完整。
-        'loadedItemIds': [
-          for (final item
-              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
-            if (!item.bodyPreviewed) item.id,
-        ],
-        // 回源已发出但完整正文尚未可取（例如历史事务尚未 durable）：入口仍可见可重试。
-        'pendingItemBodyIds': [
-          for (final item
-              in facts.timelineWorkspace?.items ?? const <ThreadItemView>[])
-            if (facts.history.pendingItemBodyIds.contains(item.id)) item.id,
-        ],
-        // ChatView 窗口条目数（唯一正文源）。
-        'windowItemCount': facts.timelineWorkspace?.items.length ?? 0,
-        'hasOlder': facts.history.hasOlder,
-        'hasNewer': facts.history.hasNewer,
-        'loading': facts.history.isLoading,
-        'direction': facts.history.direction.name,
-        'epoch': facts.history.epoch,
-        'olderError': facts.history.errorMessage,
-        'newerError': facts.history.newerError,
-        'anchor': facts.history.anchor == null
-            ? null
-            : {
-                'itemId': facts.history.anchor!.itemId,
-                'offset': facts.history.anchor!.offset,
-                'followingBottom':
-                    facts.history.anchor!.readingIntent ==
-                    TimelineReadingIntent.followLatest,
-                'readingIntent': facts.history.anchor!.readingIntent.name,
-              },
-      },
-      // 只读滚动几何：判断“末尾是否贴底、内容是否填满视口、上翻历史是否还在原锚点”
-      // 不必从截图猜测（见 TimelineScrollDiagnostic）。
-      'timelineScroll': _timelineScroll?.toJson(),
+      // 唯一展示代次的只读事实：身份与数量来自当前 stock controller 的真实消息集合。
+      'timeline': _timelineJson(facts.timeline),
+      // 只读滚动几何：查询时现场读取当前挂在屏幕上的标准 controller/position，
+      // 没有挂载时为 null，不回放上一代快照（见 TimelineScrollDiagnostic）。
+      'timelineScroll': facts.timelineScroll?.toJson(),
       'sidebarDirectory': {
         'count': facts.rootThreads.length,
         'hasMore': facts.directoryHasMore,
@@ -388,22 +447,38 @@ abstract final class StudioDriverState {
       'nativeExit': _nativeExitJson(),
       'settings': {
         'revision': facts.settingsRevision,
+        'sidebarWidth': facts.sidebarWidth,
         'modelCatalogRevision': facts.modelCatalogRevision,
-        'providers': [
-          for (final provider in facts.providers)
+        'accounts': [
+          for (final account in facts.accounts)
             {
-              'id': provider.id,
-              'preset': provider.templateKind,
-              'defaultModel': provider.defaultModel,
-              'pricingEnabled': provider.pricingEnabled,
-              'hasBearerToken': provider.hasBearerToken,
-              'status': provider.status,
-              'models': [for (final model in provider.models) model.slug],
+              'id': account.id,
+              'templateId': account.templateId,
+              'protocol': account.protocol,
+              'defaultModelId': account.defaultModelId,
+              'pricingEnabled': account.pricingEnabled,
+              'hasBearerToken': account.hasBearerToken,
+              'status': account.status,
+              'models': [for (final model in account.models) model.modelId],
+              'textModels': [
+                for (final model in account.modelsFor(type: ModelType.text))
+                  model.modelId,
+              ],
               'modelDetails': [
-                for (final model in provider.models)
+                for (final model in account.models)
                   {
-                    'slug': model.slug,
+                    'modelId': model.modelId,
                     'contextWindow': model.contextWindow,
+                    'maxContextWindow': model.maxContextWindow,
+                    'typeSupport': [
+                      for (final support in model.typeSupport)
+                        {
+                          'modelType': support.modelType.name,
+                          'exclusions': support.exclusions
+                              .map((reason) => reason.name)
+                              .toList(),
+                        },
+                    ],
                     'maxOutputTokens': model.maxOutputTokens,
                     'reasoningEfforts': model.reasoningEfforts,
                     'defaultReasoningEffort': model.defaultReasoningEffort,
@@ -411,27 +486,28 @@ abstract final class StudioDriverState {
                   },
               ],
               'modelCatalog': {
-                'supported': provider.modelCatalog.supported,
-                'source': provider.modelCatalog.source.name,
-                'probing': provider.modelCatalog.probing,
-                'error': provider.modelCatalog.error?.kind.name,
-                'cacheWarning': provider.modelCatalog.cacheWarning?.name,
-                'lastSuccessAt': provider.modelCatalog.lastSuccessAt,
+                'supported': account.modelCatalog.supported,
+                'source': account.modelCatalog.source.name,
+                'probing': account.modelCatalog.probing,
+                'error': account.modelCatalog.error?.kind.name,
+                'cacheWarning': account.modelCatalog.cacheWarning?.name,
+                'lastSuccessAt': account.modelCatalog.lastSuccessAt,
               },
-              // 压缩阈值四层视图：slug → {default, override, effective, safe}。
+              // 配置意图与模型层最终解析结果，Driver 不派生阈值。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
-                for (final model in provider.models)
+                for (final model in account.models)
                   {
-                    'slug': model.slug,
-                    'default': provider.autoCompactLimitFor(model).defaultLimit,
-                    'override': provider
+                    'modelId': model.modelId,
+                    'override': account
                         .autoCompactLimitFor(model)
                         .overrideLimit,
-                    'effective': provider
+                    'effective': account
                         .autoCompactLimitFor(model)
-                        .effectiveLimit,
-                    'safe': provider.autoCompactLimitFor(model).safeLimit,
+                        .context
+                        .autoCompactLimit,
+                    'adjustment': model.context.adjustment?.name,
+                    'unavailable': model.context.unavailable?.name,
                   },
               ],
             },
@@ -440,8 +516,8 @@ abstract final class StudioDriverState {
           for (final role in facts.roles)
             {
               'key': role.key,
-              'providerId': role.providerId,
-              'model': role.model,
+              'accountId': role.accountId,
+              'modelId': role.modelId,
               'effort': role.effort,
             },
         ],
@@ -449,8 +525,8 @@ abstract final class StudioDriverState {
           for (final route in facts.modeModelRoutes)
             {
               'modeId': route.modeId.id,
-              'providerId': route.providerId,
-              'model': route.model,
+              'accountId': route.accountId,
+              'modelId': route.modelId,
               'effort': route.effort,
             },
         ],
@@ -462,8 +538,8 @@ abstract final class StudioDriverState {
               'operationId': null,
               'phase': command.phase.name,
               'startedAt': null,
-              'providerId': command.target.providerId,
-              'model': command.target.model,
+              'accountId': command.target.accountId,
+              'modelId': command.target.modelId,
               'effort': command.target.effort,
               'error': command.error?.message,
             },
@@ -501,12 +577,12 @@ abstract final class StudioDriverState {
               'threadMode': workspace.thread.mode.name,
               'threadStatus': workspace.thread.status.name,
               'isBusy': workspace.isBusy,
-              'model': workspace.runtime.model,
+              'model': workspace.runtime.modelId,
               'modelRoute': workspace.runtime.modelRoute == null
                   ? null
                   : {
-                      'providerId': workspace.runtime.modelRoute!.providerId,
-                      'model': workspace.runtime.modelRoute!.model,
+                      'accountId': workspace.runtime.modelRoute!.accountId,
+                      'modelId': workspace.runtime.modelRoute!.modelId,
                       'effort': workspace.runtime.modelRoute!.effort,
                       'revision': workspace.runtime.modelRoute!.revision,
                       'available': workspace.runtime.modelRoute!.available,
@@ -520,7 +596,7 @@ abstract final class StudioDriverState {
                 'hasIncompleteUsage': workspace.runtime.hasIncompleteUsage,
               },
               'modelCapabilities': _modelCapabilities(workspace),
-              'modelProvider': _modelProvider(workspace),
+              'modelAccount': _modelAccount(workspace),
               'composer': {
                 'mode': workspace.composerMode.name,
                 'draft': workspace.composer.draft,
@@ -551,92 +627,17 @@ abstract final class StudioDriverState {
                   },
               ],
               'historyAttachments': [
-                for (final row in workspace.timelineRows)
-                  for (final attachment in row.part?.attachments ?? const [])
+                for (final item
+                    in facts.timeline?.items ?? const <TimelineItemFacts>[])
+                  for (final attachment in item.attachments)
                     {
                       'id': attachment.id,
-                      'modality': _attachmentModalityName(attachment.modality),
+                      'modality': attachment.modality,
                       'filename': attachment.filename,
                       'byteSize': attachment.byteSize,
+                      if (attachment.source != null)
+                        'source': attachment.source,
                     },
-                for (final row in workspace.timelineRows)
-                  for (final item in row.tools)
-                    for (final attachment in item.tool?.attachments ?? const [])
-                      {
-                        'id': attachment.id,
-                        'modality': _attachmentModalityName(
-                          attachment.modality,
-                        ),
-                        'filename': attachment.filename,
-                        'byteSize': attachment.byteSize,
-                        'source': 'tool',
-                      },
-              ],
-              'timeline': [
-                for (final row in workspace.timelineRows)
-                  {
-                    'id': row.id,
-                    'type': row.type.name,
-                    'itemIds': [for (final part in row.entries) part.id],
-                    'activityKinds': [
-                      for (final part in row.entries) part.type.name,
-                    ],
-                    'text':
-                        row.part?.text ??
-                        row.entries
-                            .where(
-                              (part) =>
-                                  part.type == TimelineEntryType.reasoning,
-                            )
-                            .expand((part) => part.reasoningSummary)
-                            .join('\n'),
-                    'tools': [
-                      for (final item in row.tools)
-                        if (item.tool case final tool?)
-                          {
-                            'name': tool.name,
-                            'itemId': item.id,
-                            'callId': tool.callId ?? tool.toolCallId,
-                            'status': item.status,
-                            'arguments': tool.arguments,
-                            'result': tool.result,
-                            // 在途工具的只读采样字段（同一 typed 事实的派生视图，不是第二份
-                            // 状态源、不做内容推断）：`output` 与 `result` 同源——运行中即窗口
-                            // 已交付的 streamed 输出、终态即最终输出；`progressBytes` 是该输出
-                            // 当前 UTF-8 字节数，逐次增长即在途真实产出；`itemRevision` 是承载
-                            // 该工具的窗口条目 revision，供按版本采样。
-                            'output': tool.result,
-                            'progressBytes': _utf8Length(tool.result ?? ''),
-                            'itemRevision': item.part.revision,
-                            'denialReason': tool.denialReason,
-                            'workingDirectory': tool.workingDirectory,
-                            'exitCode': tool.exitCode,
-                            'attachments': [
-                              for (final attachment in tool.attachments)
-                                {
-                                  'id': attachment.id,
-                                  'modality': _attachmentModalityName(
-                                    attachment.modality,
-                                  ),
-                                  'filename': attachment.filename,
-                                  'byteSize': attachment.byteSize,
-                                },
-                            ],
-                          },
-                    ],
-                    'attachments': [
-                      for (final attachment
-                          in row.part?.attachments ?? const [])
-                        {
-                          'id': attachment.id,
-                          'modality': _attachmentModalityName(
-                            attachment.modality,
-                          ),
-                          'filename': attachment.filename,
-                          'byteSize': attachment.byteSize,
-                        },
-                    ],
-                  },
               ],
               'interactionCount': workspace.activeInteraction == null ? 0 : 1,
               'activeInteraction': workspace.activeInteraction == null
@@ -660,7 +661,6 @@ abstract final class StudioDriverState {
                           .toIso8601String(),
                     },
               'lastTurn': lastTurn == null ? null : _turnJson(lastTurn),
-              'timelineProgress': _timelineProgress(workspace),
             },
       // Workflow and Plan are the lifecycle projections exposed to acceptance
       // drivers. Product-specific orchestration payloads are intentionally not
@@ -691,16 +691,6 @@ abstract final class StudioDriverState {
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
               ],
             },
-      // 内容交付计数：**应用载荷指标**，不是 FRB 物理 wire 字节。仅 Driver 启用时统计。
-      'contentDelivery': {
-        'enabled': _contentMetricsEnabled,
-        'resets': _contentResets,
-        'patches': _contentPatches,
-        'contentChanges': _contentChanges,
-        'bodyUtf8Bytes': _contentBodyBytes,
-        'maxWindowItems': _contentMaxWindowItems,
-        'metric': 'application-payload',
-      },
       // 保存故障/恢复的 typed 诊断（只读投影，不是第二份业务状态）。
       //
       // 每个已观测到存储事实的 Thread 一条：typed 故障类别、代数与水位、执行阶段、
@@ -756,63 +746,141 @@ abstract final class StudioDriverState {
     };
   }
 
-  static List<String> _modelCapabilities(AgentWorkspaceView workspace) {
-    for (final provider in workspace.providers) {
-      for (final model in provider.models) {
-        if (model.slug == workspace.runtime.model) {
-          return [
-            for (final capability in model.inputCapabilities)
-              capability.modality.name,
-          ];
+  /// 展示用模型身份一律来自已解析的 Thread 路由 `(accountId, modelId)`。
+  ///
+  /// 同名模型可同时存在于多个账号，裸 model id 不足以定位账号：路由缺失、账号未知或
+  /// 该账号目录不含此模型时返回 `null` 保持 unknown，不按 model id 猜另一个账号。
+  static ({AccountSettingsView account, AccountModelView model})?
+  _routedAccountModel(AgentWorkspaceView workspace) {
+    final route = workspace.runtime.modelRoute;
+    if (route == null) return null;
+    for (final account in workspace.accounts) {
+      if (account.id != route.accountId) continue;
+      for (final model in account.models) {
+        if (model.modelId == route.modelId) {
+          return (account: account, model: model);
         }
       }
-    }
-    return const [];
-  }
-
-  static Map<String, Object?>? _modelProvider(AgentWorkspaceView workspace) {
-    for (final provider in workspace.providers) {
-      if (provider.models.any(
-        (model) => model.slug == workspace.runtime.model,
-      )) {
-        return {
-          'id': provider.id,
-          'hasBearerToken': provider.hasBearerToken,
-          'credentialEnv': provider.credentialEnv,
-        };
-      }
+      return null;
     }
     return null;
   }
 
-  static Map<String, Object?> _timelineProgress(AgentWorkspaceView workspace) {
-    final rows = workspace.timelineRows;
+  static List<String> _modelCapabilities(AgentWorkspaceView workspace) {
+    final routed = _routedAccountModel(workspace);
+    if (routed == null) return const [];
+    return [
+      for (final capability in routed.model.inputCapabilities)
+        capability.modality.name,
+    ];
+  }
+
+  static Map<String, Object?>? _modelAccount(AgentWorkspaceView workspace) {
+    final routed = _routedAccountModel(workspace);
+    if (routed == null) return null;
     return {
-      'rowCount': rows.length,
-      'lastSequence': rows.fold<int>(
-        0,
-        (latest, row) => row.sequence > latest ? row.sequence : latest,
-      ),
-      'renderVersion': Object.hashAll([
-        for (final row in rows) row.id,
-        for (final row in rows) row.sequence,
-        for (final row in rows) row.renderVersion,
-      ]),
-      // Driver 顺序验收：完整行序列（id/type/text/sequence）。
-      'rows': [
-        for (final row in rows)
+      'id': routed.account.id,
+      'hasBearerToken': routed.account.hasBearerToken,
+      'credentialEnv': routed.account.credentialEnv,
+    };
+  }
+
+  /// 展示代次诊断：身份、数量与模式全部来自当前展示真相。
+  static Map<String, Object?>? _timelineJson(TimelineDisplayFacts? timeline) {
+    if (timeline == null) return null;
+    return {
+      'threadId': timeline.threadId,
+      'generation': timeline.generation,
+      'ready': timeline.ready,
+      'mode': timeline.mode.name,
+      'connection': timeline.connection.name,
+      'appliedVersion': timeline.appliedVersion,
+      'itemCount': timeline.items.length,
+      'itemIds': [for (final item in timeline.items) item.id],
+      'presentationItemCount': timeline.presentationItems.length,
+      'presentationItems': [
+        for (final item in timeline.presentationItems)
           {
-            'id': row.id,
-            'type': row.type.name,
-            'itemIds': [for (final part in row.entries) part.id],
-            'activityKinds': [for (final part in row.entries) part.type.name],
-            'text':
-                row.part?.text ??
-                row.entries
-                    .where((part) => part.type == TimelineEntryType.reasoning)
-                    .expand((part) => part.reasoningSummary)
-                    .join('\n'),
-            'sequence': row.sequence,
+            'id': item.id,
+            'kind': item.kind,
+            'ordinal': item.ordinal,
+            'memberIds': item.memberIds,
+            'expanded': item.expanded,
+            'activeCount': item.activeCount,
+            'issueCount': item.issueCount,
+          },
+      ],
+      'olderCursor': timeline.olderCursor,
+      'hasOlder': timeline.hasOlder,
+      'loadingOlder': timeline.loadingOlder,
+      'olderError': timeline.olderError,
+      'olderErrorCode': timeline.olderErrorCode?.name,
+      'hasNewOutput': timeline.hasNewOutput,
+      'preparingLive': timeline.preparingLive,
+      'items': [
+        for (final item in timeline.items)
+          {
+            'id': item.id,
+            'ordinal': item.ordinal,
+            'revision': item.revision,
+            'saved': item.saved,
+            'terminal': item.terminal,
+            'omittedBytes': item.omittedBytes,
+            'kind': item.kind,
+            'status': item.status,
+            'text': item.text,
+            'channel': item.channel?.name,
+            'details': [
+              for (final detail in item.details)
+                {
+                  'field': detail.field,
+                  'revision': detail.revision,
+                  'totalBytes': detail.totalBytes,
+                  'previewBytes': detail.previewBytes,
+                },
+            ],
+            'attachments': [
+              for (final attachment in item.attachments)
+                {
+                  'id': attachment.id,
+                  'modality': attachment.modality,
+                  'filename': attachment.filename,
+                  'byteSize': attachment.byteSize,
+                  if (attachment.source != null) 'source': attachment.source,
+                },
+            ],
+            if (item.tool case final tool?)
+              'tool': {
+                'name': tool.name,
+                'status': tool.status,
+                'callId': tool.callId,
+                'arguments': tool.arguments,
+                'result': tool.result,
+                // 在途工具的只读采样字段（同一 typed 事实的派生视图）。
+                'output': tool.result,
+                'progressBytes': tool.progressBytes,
+                'itemRevision': tool.itemRevision,
+                'denialReason': tool.denialReason,
+                'workingDirectory': tool.workingDirectory,
+                'exitCode': tool.exitCode,
+                'attachments': [
+                  for (final attachment in tool.attachments)
+                    {
+                      'id': attachment.id,
+                      'modality': attachment.modality,
+                      'filename': attachment.filename,
+                      'byteSize': attachment.byteSize,
+                    },
+                ],
+              },
+            if (item.userInput case final userInput?)
+              'userInput': {
+                'interactionId': userInput.interactionId,
+                'state': userInput.state,
+                // 计划确认是 typed 判别事实：任何问答都给出真实 bool 与权威决定。
+                'isPlanConfirmation': userInput.isPlanConfirmation,
+                'planDecision': userInput.planDecision,
+              },
           },
       ],
     };
@@ -847,120 +915,50 @@ abstract final class StudioDriverState {
       };
 }
 
-/// Read-only timeline geometry and lazy row count for native Driver observation.
-class TimelineScrollDiagnostic {
+/// 当前代次标准 `ScrollController` 的真实几何（design/26 §26.9）。
+///
+/// 每次诊断请求都**现场**从当前展示 lease 实测挂载的 controller 读取，`isScrolling` 直接
+/// 反映该 `ScrollPosition.isScrollingNotifier` 的此刻取值：`ScrollEndNotification` 与
+/// activity/notifier 的提交不同步，不能被当成一份可缓存的几何快照。
+///
+/// `atLiveEdge` 是反向列表 offset 0 的**几何**事实，不等于 Live 模式；History 滚到本地
+/// 底端仍然是 History。这里没有 anchor/restore/pin/settling/programmaticScroll/hasNewer
+/// 等恢复状态，也不猜测可见行：挂载行位置由 Driver 在请求时扫描真实 element/render tree。
+final class TimelineScrollDiagnostic {
   const TimelineScrollDiagnostic({
     required this.threadId,
-    required this.mountedRowCount,
-    required this.rowCount,
-    required this.readingIntent,
-    required this.detachedByUser,
-    required this.pendingNewEvents,
+    required this.generation,
     required this.pixels,
     required this.minScrollExtent,
     required this.maxScrollExtent,
     required this.viewportDimension,
+    required this.extentBefore,
     required this.extentAfter,
-    required this.bottomSlack,
-    required this.hasNewer,
-    required this.showJumpToLatest,
-    required this.programmaticScroll,
+    required this.atLiveEdge,
     required this.isScrolling,
-    required this.userDragUpdates,
-    required this.anchor,
-    required this.restorePending,
-    required this.restoreAnchor,
   });
 
   final String? threadId;
-
-  /// Rows currently mounted in the viewport and its small cache area.
-  final int mountedRowCount;
-
-  final int rowCount;
-  final TimelineReadingIntent readingIntent;
-  final bool detachedByUser;
-  final int pendingNewEvents;
+  final int generation;
   final double? pixels;
   final double? minScrollExtent;
   final double? maxScrollExtent;
   final double? viewportDimension;
+  final double? extentBefore;
   final double? extentAfter;
-
-  /// 贴底 sliver 最近一次布局上报的前导留白（内容比视口长时为 0）。
-  final double bottomSlack;
-
-  final bool hasNewer;
-  final bool showJumpToLatest;
-
-  /// 时间线当前是否把滚动通知当成**程序化滚动**忽略。
-  ///
-  /// 正常状态恒为 false；如果一次真实上翻后仍为 true，说明时间线把用户滚动当成了自己的
-  /// 程序化定位（例如恢复标记没有归零），此时 `detachedByUser` 永远不会变化——这与锚点/
-  /// 贴底几何无关（见 `_restorePendingPosition`）。
-  final bool programmaticScroll;
-
-  /// Flutter's current scroll activity, including an unfinished drag or fling.
+  final bool atLiveEdge;
   final bool isScrolling;
-
-  /// 真实指针拖动累计产生的滚动更新次数（单调递增，`dragDetails != null`）。
-  ///
-  /// 与 [programmaticScroll] 一起读，用来区分「拖动到达了滚动视图、位置被状态机复位」和
-  /// 「拖动根本没有到达滚动视图」：前者该计数在拖动后增长，后者不增长。
-  final int userDragUpdates;
-
-  /// 当前可见锚点（最靠上可见行的内容偏移）。
-  final TimelineAnchor? anchor;
-
-  /// 待恢复的阅读意图是否还没被当前布局表达出来。
-  ///
-  /// 为 `true` 时说明目标 offset 被当前 `maxScrollExtent`（正文仍是预览）钳位，界面正等
-  /// 完整正文到位后按同一身份 + offset 重新落位；此时 [anchor] 只是钳位结果，[restoreAnchor]
-  /// 才是读者的原始阅读位置。
-  final bool restorePending;
-
-  /// 尚未被布局表达的恢复目标（身份 + 原始 offset）；[restorePending] 为 false 时是本次
-  /// 恢复的目标或空。
-  final TimelineAnchor? restoreAnchor;
 
   Map<String, Object?> toJson() => {
     'threadId': threadId,
-    'mountedRowCount': mountedRowCount,
-    'rowCount': rowCount,
-    'followingBottom': readingIntent == TimelineReadingIntent.followLatest,
-    'readingIntent': readingIntent.name,
-    'detachedByUser': detachedByUser,
-    'pendingNewEvents': pendingNewEvents,
+    'generation': generation,
     'pixels': pixels,
     'minScrollExtent': minScrollExtent,
     'maxScrollExtent': maxScrollExtent,
     'viewportDimension': viewportDimension,
+    'extentBefore': extentBefore,
     'extentAfter': extentAfter,
-    'bottomSlack': bottomSlack,
-    'hasNewer': hasNewer,
-    'showJumpToLatest': showJumpToLatest,
-    'programmaticScroll': programmaticScroll,
+    'atLiveEdge': atLiveEdge,
     'isScrolling': isScrolling,
-    'userDragUpdates': userDragUpdates,
-    'restorePending': restorePending,
-    'restoreAnchor': restoreAnchor == null
-        ? null
-        : {
-            'itemId': restoreAnchor!.itemId,
-            'offset': restoreAnchor!.offset,
-            'followingBottom':
-                restoreAnchor!.readingIntent ==
-                TimelineReadingIntent.followLatest,
-            'readingIntent': restoreAnchor!.readingIntent.name,
-          },
-    'anchor': anchor == null
-        ? null
-        : {
-            'itemId': anchor!.itemId,
-            'offset': anchor!.offset,
-            'followingBottom':
-                anchor!.readingIntent == TimelineReadingIntent.followLatest,
-            'readingIntent': anchor!.readingIntent.name,
-          },
   };
 }

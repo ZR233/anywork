@@ -7,6 +7,8 @@ import '../../../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
+
+import 'thread_stream/item.dart';
 part 'thread_activity.freezed.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
@@ -160,6 +162,7 @@ class BridgeThreadActivityToolDetail {
   final String? output;
   final BigInt? ordinal;
   final PlatformInt64? startedAt;
+  final BridgeThreadWaitPresentation? wait;
 
   const BridgeThreadActivityToolDetail({
     required this.callId,
@@ -170,6 +173,7 @@ class BridgeThreadActivityToolDetail {
     this.output,
     this.ordinal,
     this.startedAt,
+    this.wait,
   });
 
   @override
@@ -181,7 +185,8 @@ class BridgeThreadActivityToolDetail {
       arguments.hashCode ^
       output.hashCode ^
       ordinal.hashCode ^
-      startedAt.hashCode;
+      startedAt.hashCode ^
+      wait.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -195,7 +200,8 @@ class BridgeThreadActivityToolDetail {
           arguments == other.arguments &&
           output == other.output &&
           ordinal == other.ordinal &&
-          startedAt == other.startedAt;
+          startedAt == other.startedAt &&
+          wait == other.wait;
 }
 
 class BridgeThreadActivityToolEntry {
@@ -207,6 +213,7 @@ class BridgeThreadActivityToolEntry {
   final BridgeThreadActivityToolState state;
   final BigInt? ordinal;
   final PlatformInt64? startedAt;
+  final BridgeThreadWaitPresentation? wait;
 
   const BridgeThreadActivityToolEntry({
     required this.callId,
@@ -217,6 +224,7 @@ class BridgeThreadActivityToolEntry {
     required this.state,
     this.ordinal,
     this.startedAt,
+    this.wait,
   });
 
   @override
@@ -228,7 +236,8 @@ class BridgeThreadActivityToolEntry {
       arguments.hashCode ^
       state.hashCode ^
       ordinal.hashCode ^
-      startedAt.hashCode;
+      startedAt.hashCode ^
+      wait.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -242,7 +251,8 @@ class BridgeThreadActivityToolEntry {
           arguments == other.arguments &&
           state == other.state &&
           ordinal == other.ordinal &&
-          startedAt == other.startedAt;
+          startedAt == other.startedAt &&
+          wait == other.wait;
 }
 
 /// 一条工具调用的执行状态；活动条目只会取到前三个变体，终态调用是 `finished`。

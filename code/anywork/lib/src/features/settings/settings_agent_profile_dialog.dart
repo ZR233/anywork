@@ -8,10 +8,10 @@ import 'agent_workspace_mode_label.dart';
 import 'settings_common.dart';
 
 class AgentProfileDialog extends StatefulWidget {
-  const AgentProfileDialog({super.key, this.profile, required this.providers});
+  const AgentProfileDialog({super.key, this.profile, required this.accounts});
 
   final AgentProfileView? profile;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
 
   @override
   State<AgentProfileDialog> createState() => _AgentProfileDialogState();
@@ -24,7 +24,7 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
   late final TextEditingController _description;
   late final TextEditingController _whenToUse;
   late final TextEditingController _instructions;
-  late String _providerId;
+  late String _accountId;
   late String _model;
   String? _effort;
   late bool _enabled;
@@ -40,16 +40,16 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
     _whenToUse = TextEditingController(text: profile?.whenToUse);
     _instructions = TextEditingController(text: profile?.systemInstructions);
     if (profile == null) {
-      final route = ModelRouteQueries.newAgentProfileRoute(widget.providers);
-      _providerId = route.providerId;
-      _model = route.model;
+      final route = ModelRouteQueries.newAgentProfileRoute(widget.accounts);
+      _accountId = route.accountId;
+      _model = route.modelId;
       _effort = route.effort;
     } else {
-      // 保留 canonical provider/model/effort；不可解析时只在展示层标记
+      // 保留 canonical account/model/effort；不可解析时只在展示层标记
       // unavailable，不静默改为 options.first 或模型默认 effort，也不阻断
       // 其他字段的保存。
-      _providerId = profile.providerId;
-      _model = profile.model;
+      _accountId = profile.accountId;
+      _model = profile.modelId;
       _effort = profile.effort;
     }
     _enabled = profile?.enabled ?? true;
@@ -102,26 +102,27 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                 ),
                 FormField<String>(
                   initialValue: _model.isEmpty ? null : _model,
-                  validator: (value) => _providerId.isEmpty || value == null
+                  validator: (value) => _accountId.isEmpty || value == null
                       ? l10n.settingsAgentProfileRequired
                       : null,
                   builder: (field) {
                     final options = _modelSelectionOptions;
-                    final providerName =
-                        widget.providers
-                            .where((provider) => provider.id == _providerId)
+                    final accountName =
+                        widget.accounts
+                            .where((account) => account.id == _accountId)
                             .firstOrNull
                             ?.name ??
-                        _providerId;
+                        _accountId;
                     final unavailableLabel =
-                        _providerUnavailable || _modelUnavailable
-                        ? l10n.settingsAgentRouteUnavailable(
-                            [
-                              providerName,
-                              _model,
-                            ].where((part) => part.isNotEmpty).join(' / '),
-                          )
-                        : null;
+                        modelTextFilterMessage(context, _selectedModel) ??
+                        (_providerUnavailable || _modelUnavailable
+                            ? l10n.settingsAgentRouteUnavailable(
+                                [
+                                  accountName,
+                                  _model,
+                                ].where((part) => part.isNotEmpty).join(' / '),
+                              )
+                            : null);
                     final errorText = field.errorText;
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -142,19 +143,20 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
                                 ),
                                 fieldLabel: l10n.settingsModelField,
                                 options: options,
-                                providerId: _providerId,
-                                model: _model,
+                                accountId: _accountId,
+                                modelId: _model,
                                 unresolvedLabel: unavailableLabel,
-                                showUnresolvedOption: unavailableLabel != null,
                                 enabled: options.isNotEmpty,
                                 onSelected: (option) {
                                   setState(() {
-                                    _providerId = option.providerId;
-                                    _model = option.model;
+                                    _accountId = option.accountId;
+                                    _model = option.modelId;
                                     _effort = _canonicalEffort(null);
                                   });
                                   field.didChange(
-                                    option.model.isEmpty ? null : option.model,
+                                    option.modelId.isEmpty
+                                        ? null
+                                        : option.modelId,
                                   );
                                 },
                               ),
@@ -294,8 +296,8 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
         description: _description.text.trim(),
         whenToUse: _whenToUse.text.trim(),
         systemInstructions: _instructions.text.trim(),
-        providerId: _providerId,
-        model: _model,
+        accountId: _accountId,
+        modelId: _model,
         effort: _effort,
         enabled: _enabled,
         workspaceMode: _workspaceMode,
@@ -303,31 +305,28 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
     );
   }
 
-  List<ProviderModelView> _modelsFor(String providerId) =>
-      widget.providers
-          .where((provider) => provider.id == providerId)
+  List<AccountModelView> _modelsFor(String accountId) =>
+      widget.accounts
+          .where((account) => account.id == accountId)
           .firstOrNull
           ?.models ??
       const [];
 
-  ProviderModelView? get _selectedModel =>
-      _modelsFor(_providerId)
-          .where((model) => model.slug == _model)
+  AccountModelView? get _selectedModel =>
+      _modelsFor(_accountId)
+          .where((model) => model.modelId == _model)
           .firstOrNull;
 
   List<String> get _efforts => _selectedModel?.reasoningEfforts ?? const [];
 
   bool get _providerUnavailable =>
-      _providerId.isNotEmpty &&
-      !widget.providers.any((provider) => provider.id == _providerId);
+      _accountId.isNotEmpty &&
+      !widget.accounts.any((account) => account.id == _accountId);
 
   bool get _modelUnavailable => _model.isNotEmpty && _selectedModel == null;
 
   List<ModelSelectionOption> get _modelSelectionOptions =>
-      buildModelSelectionOptions(
-        widget.providers,
-        modelsForProvider: (provider) => provider.models,
-      );
+      buildModelSelectionOptions(widget.accounts, type: ModelType.text);
 
   bool get _effortUnavailable => _effort != null && !_efforts.contains(_effort);
 

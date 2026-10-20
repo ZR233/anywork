@@ -25,12 +25,9 @@ impl StudioRuntime {
             .product_events
             .read_agent_directory()
             .await;
-        let settings = self.config_runtime.read()?;
+        let (settings, catalog) = self.config_runtime.read_with_catalog()?;
         let settings_config = super::settings_api::settings_config_snapshot(&settings)?;
-        let model_catalog = super::settings_api::model_catalog_snapshot(
-            &settings,
-            &self.config_runtime.read_catalog()?,
-        )?;
+        let model_catalog = super::settings_api::model_catalog_snapshot(&settings, &catalog)?;
         let recovery = crate::StudioRecoveryStateSnapshot {
             state: self.recovery.state(),
         };
@@ -71,7 +68,7 @@ impl StudioRuntime {
             lsp,
             skills_by_project,
             thread_mode_catalog: self.read_thread_mode_catalog(),
-            provider_usage: self.read_provider_usage_state().await,
+            account_usage: self.read_account_usage_state().await,
             model_performance,
             session_costs,
             updater: self.read_update_state().await,
@@ -156,6 +153,6 @@ impl StudioRuntime {
 
     /// Reads the current process-wide Thread Mode catalog.
     pub fn read_thread_mode_catalog(&self) -> pl_protocol::ThreadModeCatalogSnapshot {
-        self.thread_modes.snapshot().catalog().clone()
+        self.config_runtime.read_thread_mode_catalog()
     }
 }

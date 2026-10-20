@@ -71,6 +71,12 @@ membership/probe/repair/reset/start，但允许读取 stopped snapshot。
 
 ## 21.5 并发与进程
 
+文件路径和文件地址使用文件所属宿主声明的路径语义。远端 POSIX 路径的编码、解码、初始化、
+文档请求与诊断投影不能套用本地 Windows 路径规则；共用地址组件负责转义，不手工拼接地址。
+所有语言服务进程确认退出后释放所属宿主引用，失败时保留原对象与关闭责任。
+远端宿主身份来自仍然存活的工作区租约实例；复用同一租约保持身份，新连接或重新打开产生新
+身份。目录和辅助程序可重复使用的工作区编号不能作为宿主代次。
+
 membership、probe、repair、reset 与 shutdown 通过 registry lifecycle 锁串行化；状态锁内
 不等待 probe、rustup、client 初始化或子进程退出。异步操作捕获 operation id、desired
 revision 与 fingerprint，过期结果不得覆盖新状态。workspace/server 删除时先从状态中原子

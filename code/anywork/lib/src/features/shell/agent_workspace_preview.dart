@@ -41,18 +41,16 @@ Widget _agentWorkspacePreview(StudioState state) {
     themeMode: ThemeMode.light,
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
+    builder: (context, child) => Theme(
+      data: pureStudioTheme(locale: Localizations.localeOf(context)),
+      child: child ?? const SizedBox(),
+    ),
     home: Scaffold(
       body:
           workspace == null ||
               workspace.syncState == AgentWorkspaceSyncState.loading
           ? const Center(child: CircularProgressIndicator())
-          : TimelineView(
-              threadId: workspace.threadId,
-              rows: workspace.timelineRows,
-              body: const ThreadHistoryWindow(),
-              turn: workspace.turn,
-              onCommand: (_) {},
-            ),
+          : TimelinePreview(threadId: workspace.threadId),
     ),
   );
 }
@@ -93,25 +91,8 @@ StudioState _agentWorkspacePreviewState({
     workspacePath: project.path,
   );
   final selected = selectChild ? child : root;
-  final item = ThreadItemView(
-    id: '${selected.id}-item',
-    threadId: selected.id,
-    turnId: '${selected.id}-turn',
-    ordinal: 0,
-    revision: 0,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    state: ThreadTextItemStateView(
-      channel: ThreadTextChannel.finalAnswer,
-      text: selectChild
-          ? 'Reviewer is checking the workspace boundary.'
-          : 'Main agent owns this root workspace and its editable composer.',
-      attachments: const [],
-      lifecycle: CompletedThreadContentView(timestamp),
-    ),
-  );
   final runtime = ThreadRuntimeView(
-    model: selectChild ? 'reviewer/model' : 'planner/model',
+    modelId: selectChild ? 'reviewer/model' : 'planner/model',
     contextTokens: selectChild ? 4800 : 12800,
     contextWindow: 128000,
     totalTokens: selectChild ? 7200 : 19200,
@@ -141,18 +122,20 @@ StudioState _agentWorkspacePreviewState({
         updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
         lastCheckedAt: null,
         value: const SettingsStateData(
-          providers: [
-            ProviderSettingsView(
-              id: 'preview-provider',
-              name: 'Preview Provider',
+          accounts: [
+            AccountSettingsView(
+              id: 'preview-account',
+              templateId: 'openai',
+              protocol: 'open_ai',
+              name: 'Preview Account',
               baseUrl: '',
-              defaultModel: 'planner/model',
+              defaultModelId: 'planner/model',
               models: [
-                ProviderModelView(
-                  slug: 'planner/model',
+                AccountModelView(
+                  modelId: 'planner/model',
                   displayName: 'Main agent model',
                   reasoningEfforts: ['high'],
-                  wireProtocol: 'responses',
+                  wireApi: 'responses',
                   supportedConnectionModes: ['web_socket', 'http'],
                   defaultConnectionMode: 'web_socket',
                   connectionMode: 'web_socket',
@@ -165,14 +148,14 @@ StudioState _agentWorkspacePreviewState({
           roles: [
             RoleSettingsView(
               key: 'planner',
-              providerId: 'preview-provider',
-              model: 'planner/model',
+              accountId: 'preview-account',
+              modelId: 'planner/model',
               effort: 'high',
             ),
             RoleSettingsView(
               key: 'executor',
-              providerId: 'preview-provider',
-              model: 'planner/model',
+              accountId: 'preview-account',
+              modelId: 'planner/model',
               effort: 'high',
             ),
           ],
@@ -196,7 +179,7 @@ StudioState _agentWorkspacePreviewState({
       ),
     ),
     skillsByProject: const {},
-    providerUsageState: ProviderUsageStateSnapshot.fromState(
+    accountUsageState: AccountUsageStateSnapshot.fromState(
       state: UninitializedObservedResource(
         updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
       ),
@@ -211,7 +194,6 @@ StudioState _agentWorkspacePreviewState({
             selected.id: ThreadWorkspace(
               thread: selected,
               revision: 1,
-              items: [item],
               interactions: const [],
               runtime: runtime,
               activeTurn: !selectChild

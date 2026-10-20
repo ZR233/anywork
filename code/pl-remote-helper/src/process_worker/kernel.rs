@@ -139,14 +139,20 @@ impl Kernel {
 }
 
 pub(super) fn children() -> io::Result<Vec<libc::pid_t>> {
-    let pid = std::process::id();
-    std::fs::read_to_string(format!("/proc/self/task/{pid}/children"))?
-        .split_whitespace()
-        .map(|pid| {
-            pid.parse::<libc::pid_t>()
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-        })
-        .collect()
+    let parent = std::process::id() as libc::pid_t;
+    let mut children = Vec::new();
+    for process in procfs::process::all_processes().map_err(io::Error::other)? {
+        let stat = process.and_then(|process| process.stat());
+        match stat {
+            Ok(stat) if stat.ppid == parent => children.push(stat.pid),
+            Ok(_) | Err(procfs::ProcError::NotFound(_)) => {}
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    }
+    // procfs binds each read to its process directory. Own unreaped children cannot have
+    // their PIDs reused: this single-threaded worker is their only wait/reap owner.
+    // This one enumeration path does not require optional CONFIG_PROC_CHILDREN support.
+    Ok(children)
 }
 
 /// Called only for direct unreaped children (or the initial self probe). This worker is the

@@ -2,6 +2,9 @@
 use super::*;
 
 type Observe = dyn Fn(String, ThreadHandle) + Send + Sync;
+type BeforeClose = dyn Fn(String, ThreadHandle) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+    + Send
+    + Sync;
 type Drain = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
@@ -43,7 +46,12 @@ pub(super) enum DeliveryDisposition {
     New,
 }
 #[derive(Clone)]
-pub(super) struct AssemblyObservation(Arc<Observe>, Arc<Drain>, Option<Arc<MessageIdentityLookup>>);
+pub(super) struct AssemblyObservation(
+    Arc<Observe>,
+    Arc<Drain>,
+    Option<Arc<MessageIdentityLookup>>,
+    Arc<BeforeClose>,
+);
 impl std::fmt::Debug for AssemblyObservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AssemblyObservation")
@@ -58,6 +66,14 @@ impl StudioThreadAssembler {
         + Sync
         + 'static,
         messages: Option<Arc<MessageIdentityLookup>>,
+        before_close: impl Fn(
+            String,
+            ThreadHandle,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.closing
@@ -71,6 +87,7 @@ impl StudioThreadAssembler {
             Arc::new(observe),
             Arc::new(drain),
             messages,
+            Arc::new(before_close),
         ));
         Ok(())
     }
@@ -87,6 +104,17 @@ impl StudioThreadAssembler {
             result?;
         }
         Ok(())
+    }
+    pub(super) fn prepare_close(
+        &self,
+        id: &str,
+        thread: &ThreadHandle,
+    ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>> {
+        let observer = self.0.state().observation.clone();
+        match observer {
+            Some(observer) => (observer.3)(id.to_owned(), thread.clone()),
+            None => Box::pin(async { Ok(()) }),
+        }
     }
 
     /// Adjudicates one message delivery against the target Thread's durable identity index.

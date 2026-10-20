@@ -14,7 +14,9 @@ import 'settings_general_tab.dart';
 import 'settings_instructions_tab.dart';
 import 'settings_lsp_tab.dart';
 import 'settings_mcp_tab.dart';
-import 'settings_provider_tab.dart';
+import 'mode_editor/mode_editor_dialogs.dart';
+import 'mode_editor/mode_editor_page.dart';
+import 'settings_account_tab.dart';
 import 'settings_scope.dart';
 import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
@@ -30,7 +32,7 @@ class SettingsPage extends StatelessWidget {
 }
 
 /// Owns the tab controller independently from the reactive settings projection.
-/// A model/provider save refreshes canonical content without recreating the
+/// A model/account save refreshes canonical content without recreating the
 /// navigation controller or restarting the whole settings page animation.
 class _SettingsPageShell extends StatelessWidget {
   const _SettingsPageShell();
@@ -74,7 +76,7 @@ class _SettingsPageBody extends ConsumerWidget {
 /// 把设置壳的 [DefaultTabController] 当前索引同步到 [settingsVisibleTabProvider]。
 ///
 /// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察，不接线 topic lease。
-/// provider 写入延到微任务，避免在 build/通知阶段直接改 provider。
+/// account 写入延到微任务，避免在 build/通知阶段直接改 account。
 class _SettingsTabVisibilitySync extends ConsumerStatefulWidget {
   const _SettingsTabVisibilitySync({required this.child});
 
@@ -122,13 +124,13 @@ class _SettingsTabVisibilitySyncState
 
 /// Each settings tab subscribes to the smallest projection it can render.
 /// The retained settings shell therefore survives catalog/config events and a
-/// model click only rebuilds the provider tab that displays that catalog.
+/// model click only rebuilds the account tab that displays that catalog.
 class _ProvidersSettingsTab extends StatelessWidget {
   const _ProvidersSettingsTab();
 
   @override
   Widget build(BuildContext context) {
-    return ProvidersTab(tabIndex: _SettingsTab.providers.index);
+    return AccountsTab(tabIndex: _SettingsTab.accounts.index);
   }
 }
 
@@ -185,8 +187,9 @@ class _GeneralSettingsTab extends ConsumerWidget {
 }
 
 const _settingsTabs = [
-  _SettingsTabInfo(Icons.cloud_outlined, _SettingsTab.providers),
+  _SettingsTabInfo(Icons.cloud_outlined, _SettingsTab.accounts),
   _SettingsTabInfo(Icons.notes_outlined, _SettingsTab.instructions),
+  _SettingsTabInfo(Icons.account_tree_outlined, _SettingsTab.workModes),
   _SettingsTabInfo(Icons.extension_outlined, _SettingsTab.skills),
   _SettingsTabInfo(Icons.groups_outlined, _SettingsTab.agents),
   _SettingsTabInfo(Icons.hub_outlined, _SettingsTab.mcp),
@@ -205,8 +208,9 @@ class _SettingsTabInfo {
 
   String label(BuildContext context) {
     return switch (tab) {
-      _SettingsTab.providers => context.l10n.settingsProvidersTab,
+      _SettingsTab.accounts => context.l10n.settingsAccountsTab,
       _SettingsTab.instructions => context.l10n.settingsInstructionsTab,
+      _SettingsTab.workModes => context.l10n.modeEditorTitle,
       _SettingsTab.skills => context.l10n.settingsSkillsTab,
       _SettingsTab.agents => context.l10n.settingsAgentsTab,
       _SettingsTab.mcp => context.l10n.settingsMcpTab,
@@ -220,8 +224,9 @@ class _SettingsTabInfo {
 }
 
 enum _SettingsTab {
-  providers,
+  accounts,
   instructions,
+  workModes,
   skills,
   agents,
   mcp,
@@ -240,6 +245,7 @@ class _SettingsScaffold extends StatelessWidget {
     final views = [
       const _ProvidersSettingsTab(),
       const _InstructionsSettingsTab(),
+      ModeEditorTab(tabIndex: _SettingsTab.workModes.index),
       SkillsTab(tabIndex: _SettingsTab.skills.index),
       AgentsTab(tabIndex: _SettingsTab.agents.index),
       McpTab(tabIndex: _SettingsTab.mcp.index),
@@ -258,6 +264,7 @@ class _SettingsScaffold extends StatelessWidget {
               _SettingsNav(compact: true),
               Expanded(
                 child: TabBarView(
+                  physics: const NeverScrollableScrollPhysics(),
                   children: [
                     for (final view in views) _RetainedSettingsTab(child: view),
                   ],
@@ -272,6 +279,7 @@ class _SettingsScaffold extends StatelessWidget {
             VerticalDivider(width: 1, color: context.colors.outlineVariant),
             Expanded(
               child: TabBarView(
+                physics: const NeverScrollableScrollPhysics(),
                 children: [
                   for (final view in views) _RetainedSettingsTab(child: view),
                 ],
@@ -284,14 +292,24 @@ class _SettingsScaffold extends StatelessWidget {
   }
 }
 
-class _SettingsNav extends StatelessWidget {
+class _SettingsNav extends ConsumerWidget {
   const _SettingsNav({required this.compact});
 
   final bool compact;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final controller = DefaultTabController.of(context);
+    Future<void> select(int index) async {
+      if (index == controller.index) return;
+      if (controller.index == _SettingsTab.workModes.index &&
+          !await confirmLeaveModeEditor(context, ref)) {
+        return;
+      }
+      if (!context.mounted) return;
+      controller.animateTo(index);
+    }
+
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
@@ -302,7 +320,7 @@ class _SettingsNav extends StatelessWidget {
               tab: _settingsTabs[index],
               selected: selected == index,
               compact: compact,
-              onTap: () => controller.animateTo(index),
+              onTap: () => select(index),
             ),
         ];
         if (compact) {
@@ -341,11 +359,11 @@ class _SettingsNav extends StatelessWidget {
               children: [
                 const _SettingsBackTile(compact: false),
                 _SettingsNavGroupLabel(context.l10n.settingsModelsGroup),
-                for (final index in [0, 3, 1]) navItems[index],
+                for (final index in [0, 4, 1, 2]) navItems[index],
                 _SettingsNavGroupLabel(context.l10n.settingsExtensionsGroup),
-                for (final index in [2, 4, 5, 6]) navItems[index],
+                for (final index in [3, 5, 6, 7]) navItems[index],
                 _SettingsNavGroupLabel(context.l10n.settingsPreferencesGroup),
-                for (final index in [7, 8, 9]) navItems[index],
+                for (final index in [8, 9, 10]) navItems[index],
               ],
             ),
           ),
@@ -355,13 +373,13 @@ class _SettingsNav extends StatelessWidget {
   }
 }
 
-class _SettingsBackTile extends StatelessWidget {
+class _SettingsBackTile extends ConsumerWidget {
   const _SettingsBackTile({required this.compact});
 
   final bool compact;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final content = Row(
       mainAxisSize: compact ? MainAxisSize.min : MainAxisSize.max,
       children: [
@@ -394,8 +412,9 @@ class _SettingsBackTile extends StatelessWidget {
         child: InkWell(
           key: StudioDriverKeys.settingsBack,
           borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: () {
-            if (context.canPop()) context.pop();
+          onTap: () async {
+            if (!await confirmLeaveModeEditor(context, ref)) return;
+            if (context.mounted && context.canPop()) context.pop();
           },
           child: Padding(
             padding: EdgeInsets.symmetric(

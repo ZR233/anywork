@@ -8,7 +8,9 @@
 - 先明确要验证的交互、状态变化、异常路径及证据；通过 `code/pl-studio-acceptance/src/`
   核实当前 CLI 与场景参数，不为绕过终端检查选择无关场景。
 - `cargo xtask verify-gui` 负责生成一致性、格式及静态分析，不包含 GUI 人工结论。
-- 真实供应商验收使用 `cargo xtask run-gui --driver`，不把模拟通过外推为真实模型兼容。
+- 真实厂商验收使用 `cargo xtask run-gui --driver`，不把模拟通过外推为真实模型兼容。
+  用户数据根已被其它 Studio 占用时，使用受保护的配置/Profile 副本与同一凭据关联建立独立验收
+  home，进程级指定 ANYWORK_HOME；不复制正在写入的历史库，不修改用户密钥或原历史。
   使用外部 helper 模式的 Linux Studio/Server 入口按根 `AGENTS.md` 预先安装 remote helper；
   桌面 xtask 入口使用 bundle 内的 `data/remote-helper/`，不能以 PATH 中的程序代替资源校验。
 
@@ -45,7 +47,8 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 等待，不重复启动。GUI ready 后才能交互。若启动迟迟未完成，检查本次进程树及其日志，
 区分构建中、VM Service 未就绪、显示失败与应用异常，不盲目重试。
 
-`tool-scroll` 与 `stress-body` 使用性能分析构建。`tool-scroll --retain-environment` 在场景成功、
+`tool-scroll`、`stress-body` 与 `wait-events` 使用性能分析构建。支持 `--retain-environment` 的场景
+（包括 `tool-scroll`、`wait-events`）在场景成功、
 运行时正常关闭且所属进程回收后，把本次合成环境保留在证据目录中，并写出
 `retained-environment.json`。保留整个环境根，避免配置及工作区里的绝对路径失效；仅复制 home
 不足以重开同一合成会话。随后可构建正式程序，以该文件中的 home 作为进程级 `ANYWORK_HOME`
@@ -53,8 +56,9 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 
 ## 涉及系统凭据的隔离场景
 
-`ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `provider:<id>` account 不随数据根改变。
-预置实例优先使用唯一 ID；若验收必须通过真实 UI 新增供应商（由 UI 自动生成 preset ID），
+`ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `account:<id>` 项不随数据根改变；
+账号升级还可能读取迁移前 `provider:<id>` 项并创建新关联，隔离模拟必须覆盖这两个命名空间。
+预置实例优先使用唯一 ID；若验收必须通过真实 UI 新增账号（由 UI 自动生成账号 ID），
 不能仅靠临时 home 就读写这些 account，也不能新增生产内存凭据开关绕过真实边界。
 
 Linux 可为该场景创建私有 D-Bus 会话，并把 `XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和
@@ -63,7 +67,8 @@ Unix socket。移除继承的 `GNOME_KEYRING_CONTROL`，不复用用户 keyring 
 需要 Secret Service 时，在该隔离环境中前台启动 `gnome-keyring-daemon --unlock --components=secrets`，
 仅向新建测试 keyring 提供空的合成密码；使用 `gdbus wait` 等待服务注册，不以 sleep 猜测就绪。
 daemon 必须归属本次进程树，并在正常完成、失败和取消时停止、wait 和核对 PID；不能尝试解锁
-或清空用户已有 keyring。可参考现有 `pl-studio-acceptance` 的 `provider_usage` 场景封装。
+或清空用户已有 keyring。可参考现有 `pl-studio-acceptance` 的 `account_usage` 模块封装
+（CLI 场景名仍为 `provider-usage`）。
 
 证据脱敏应保留当前场景的判定信息：安全的 HTTP method/path、凭据 alias、请求计数与错误
 类别，而不是 Authorization 或完整请求正文。通用日志投影可能只保留启动计时；扩展场景时
@@ -76,11 +81,15 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
    `readSnapshot()`、`renderTree()`、`screenshot()`。客户端在 `finally` 中关闭连接。
 2. 从**本次**启动日志取得 VM Service URL。harness 最终日志会脱敏该地址，故需要在运行中
    根据本次子进程/日志定位；不要硬编码端口、PID、临时目录或以广泛扫描他人临时目录代替定位。
+   区分 VM Service 与 DevTools 地址；VM 根路径可能只有 `/`，不能假定总有认证路径。
    不占用项目保留端口 `1420`，不对外暴露调试服务。
 3. 先读当前源码中的 `StudioDriverKeys`、实际控件 key 与快照，再构建 Finder。
-   动态 key 可包含 provider/profile ID，不能猜测为空或照抄上次 ID。
+   动态 key 可包含 account/profile ID，不能猜测为空或照抄上次 ID。
    Linux 原生环境中普通 tap 的 hit-test 可能超时，项目已有 `rawTap` 扩展会验证目标及
    模态遮挡，应复用该入口而不是屏幕坐标点击；查找超时先核对 key、滚动位置及模态状态。
+   折叠面板只点真实标题行，不点整个展开面板或静态正文的中心；展开后中心可能在空白、
+   屏幕外或裁剪区。存在性、可见几何与标准组件的真实展开态分别核对，不把正文可点击当作
+   成功条件，也不在已经展开时再次点击把它收起。
 4. 临时定向客户端可放在忽略的 `target/gui-acceptance/probe.dart`，无需增加永久测试。
    该位置可通过 `../../code/anywork/test_driver/flutter_driver_session.dart` 导入会话封装。
    从根目录运行（将 `<本次VM_URL>` 替换为实测地址）：
@@ -105,6 +114,28 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
 6. 不把临时原始快照/界面树当作已脱敏产物；可能包含正文、配置与路径。只收集需要的字段，
    分享前检查并脱敏；不提交截图、运行日志、VM URL 或一次性脚本到源码库。
 
+### Driver 宿主与原生文本输入
+
+- Journey 客户端由独立 `dart run` 执行，不能导入 `package:flutter/services.dart` 等依赖
+  `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
+  `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
+  宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
+- 仅连接现有 GUI 的纯 Dart 脚本可使用当前应用的 `--packages=.dart_tool/package_config.json`
+  直接执行，避免为宿主脚本重新构建 Flutter native assets。工具包装可能把非零退出映射成
+  自身失败；同时核对原始 Dart 退出码，不能把 usage 失败误认为导入或编译失败。
+- Driver 的 DTO 列表投影使用显式类型的空集合，避免 `?? const []` 将循环元素降为 dynamic、
+  令分析器漏报已删除的 getter。统计等接口须以非空真实记录调用取证，空列表成功不能证明字段迁移完整。
+- 不对聚焦文本框使用「全局动画全部停止」作为编辑完成条件，光标闪烁可以持续产生帧。
+  优先读 `TextField.controller.text` 的 Driver `getText` 结果、当前交互身份及精确后置状态。
+  产品会自动打开的面板或菜单先观察当前状态，再决定是否点击，避免把已打开状态反向关闭；
+  这只适用于无副作用的 UI 开关，不能据此重放批准或提交。
+- `sendTextInputAction` 只证明框架 `performAction` 通道，不证明物理回车或 IME。需要覆盖
+  原生输入时先用 `setTextEntryEmulation(enabled: false)` 恢复平台文本输入，再通过本次
+  GUI 专属显示器的原生键盘通道验证。Linux 可在私有 D-Bus、Xvfb 与独立 XDG 目录中使用
+  系统 IBus 和输入法引擎；它们的 config owner、引擎与凭据服务也须由本次进程树持有并回收。
+  保留组词预览、确认后文本与未提交状态的实际证据；输入法的 Return 可能确认原始拼音，
+  不应把「Return 必须输出汉字」当成所有输入法的通用判据。
+
 ## 跨重启交互与 Driver 判定
 
 - `cargo xtask manual-gui --scenario plan-recovery` 使用同一隔离 home 的多个原生 GUI 生命周期，
@@ -115,6 +146,28 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
   后有界确认结果并记录证据；不得重放批准、提交等副作用，也不得吞掉未达成后置状态的错误。
 - 跨进程阶段使用独立不可覆盖的阶段事实或显式握手，不依赖 latest-stage 的短暂值。用于
   证明无额外请求的观测文件必须传播写失败，不能用陈旧计数制造静默窗口通过。
+- 多 Turn 旅程按本次 canonical callId/itemId 绑定工具与 UI 断言；同名工具可以多次出现，
+  不能用全历史第一个或最后一个同名条目替代精确身份。实时截图前后也须核对活动身份与展开态，
+  不能把旧活动的展开结果算到新活动。
+- 就绪返回中的目标状态是返回时的一致快照；慢速展开或截图之后查询到的当前终态，不能反推
+  等待没有提前返回。按精确 taskId 核对返回快照中的已完成来源与仍运行目标；核心 future 的
+  时序由受控公开 API 测试证明。确需观察短暂实时窗口时，用有所有权、会 join 的只读观察与
+  UI 操作并行，不要求可能合并更新的 GUI topic 暴露每一个中间状态。
+
+## 原生可访问性补验
+
+- 先确认构建模式。profile/AOT 会裁去 Flutter 的诊断属性，不能依靠 render tree 或
+  `getWidgetDiagnostics` 必然读到 `textScaler`、减少动画等值；需要只读 VM evaluate 时使用
+  独立 debug 原生窗口，沿用完整保留的合成环境，不修改生产入口或 SDK。
+- Linux 先核对当前 Flutter engine 的设置来源；写 GTK/GSettings 不自动证明 Flutter 收到了
+  `disableAnimations`。需要 Portal 时复用系统官方 backend，在启动私有 D-Bus **之前**设置
+  独立 XDG/Portal 环境，按已安装版本的正式选择机制启用 backend，再用 Settings.Read 核实。
+  不自造 Portal 服务、不修改用户会话偏好。
+- 临时目录的所有者必须覆盖整个私有 D-Bus 生命周期：先停止并等待自有服务，再退出 bus，
+  最后确认自有挂载已释放并清理目录，避免自动激活的文档/VFS 服务仍持有目录。进程核对使用
+  本次 PID 及启动身份，不按名称全局清理。
+- 活动中的动画观察须先确认目标仍在等待；Thinking、动画结束后的终态或系统偏好配置成功，
+  都不能替代真实等待指示器的减少动画证据。结合原生偏好、实际布局/帧条件及截图判定。
 
 ## 富文本选择与复制回归
 

@@ -13,10 +13,10 @@ use crate::model::info::{
 use crate::model::parameter::ModelParameter;
 use crate::model::pricing::{ModelPricing, TokenPriceTier};
 
-const MIMO_DEFAULT_MODEL_SLUGS: &[&str] = &["mimo-v2.5-pro", "mimo-v2.5"];
+const MIMO_DEFAULT_MODEL_MODEL_IDS: &[&str] = &["mimo-v2.5-pro", "mimo-v2.5"];
 
-pub fn mimo_default_model_slugs() -> &'static [&'static str] {
-    MIMO_DEFAULT_MODEL_SLUGS
+pub fn mimo_default_model_ids() -> &'static [&'static str] {
+    MIMO_DEFAULT_MODEL_MODEL_IDS
 }
 
 pub(super) fn models() -> Vec<ModelInfo> {
@@ -24,7 +24,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
     let mimo_vision = mimo_vision_family();
     vec![
         mimo_text.instantiate(ModelInstanceSpec {
-            slug: "mimo-v2.5-pro",
+            model_id: "mimo-v2.5-pro",
             display_name: "MiMo V2.5 Pro",
             description: "Xiaomi MiMo flagship model for long-horizon agent work.",
             context_window: 1_000_000,
@@ -33,7 +33,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
             pricing: ModelPricing::published("CNY", vec![TokenPriceTier::flat(3.0, 6.0, Some(0.025), None)], "https://mimo.mi.com/docs/en-US/price/pay-as-you-go"),
         }),
         mimo_vision.instantiate(ModelInstanceSpec {
-            slug: "mimo-v2.5",
+            model_id: "mimo-v2.5",
             display_name: "MiMo V2.5",
             description:
                 "Xiaomi MiMo full-modal agent model with a one-million-token context window.",
@@ -90,6 +90,7 @@ fn mimo_family(
 /// MiMo thinking 开关；官方 Chat API 只声明 `thinking.type`。
 fn mimo_effort_parameter() -> ModelParameter {
     ModelParameter {
+        default: None,
         name: "effort".to_string(),
         label: Some("Thinking".to_string()),
         candidates: vec!["disabled".to_string(), "enabled".to_string()],

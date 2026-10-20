@@ -3,10 +3,12 @@ import 'dart:async';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
-final class _FakeTransport implements StudioTransport, ChatWindowReader {
+import 'support/timeline_transport.dart';
+
+final class _FakeTransport implements StudioTransport {
   final StreamController<ThreadStreamFrame> frames =
       StreamController<ThreadStreamFrame>.broadcast();
-  final List<Completer<StudioChatWindow>> pendingOpens = [];
+  final List<Completer<StudioTimelineConnection>> pendingOpens = [];
   int subscriptions = 0;
 
   @override
@@ -16,8 +18,8 @@ final class _FakeTransport implements StudioTransport, ChatWindowReader {
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) {
-    final completer = Completer<StudioChatWindow>();
+  Future<StudioTimelineConnection> openTimeline(String threadId) {
+    final completer = Completer<StudioTimelineConnection>();
     pendingOpens.add(completer);
     return completer.future;
   }
@@ -30,92 +32,12 @@ final class _FakeTransport implements StudioTransport, ChatWindowReader {
   Future<void> close() => frames.close();
 }
 
-final class _FakeWindow implements StudioChatWindow {
-  _FakeWindow({required this.initialSnapshot, this.failInitial});
-
-  final StudioChatSnapshot initialSnapshot;
-  final Object? failInitial;
-  final List<Completer<StudioChatFrame?>> _nextReads = [];
-  final Completer<StudioChatReceipt> loadResult = Completer();
-  final expandEntered = Completer<void>();
-  final expandRequests = <String>[];
-  final focusEntered = Completer<void>();
-  final List<String?> focusRequests = [];
-  final Completer<void> closeCompleted = Completer();
-  int nextCalls = 0;
-  int closeCalls = 0;
-  int requestCloseCalls = 0;
-  bool closed = false;
-
-  @override
-  Future<StudioChatSnapshot> initial() async {
-    if (failInitial case final error?) throw error;
-    return initialSnapshot;
-  }
-
-  @override
-  Future<StudioChatFrame?> next() {
-    if (closed) return Future.value(null);
-    if (_nextReads.isNotEmpty) throw StateError('Two pending next calls');
-    nextCalls++;
-    final read = Completer<StudioChatFrame?>();
-    _nextReads.add(read);
-    return read.future;
-  }
-
-  void emit(StudioChatFrame frame) {
-    if (_nextReads.isEmpty) throw StateError('No pending content read');
-    _nextReads.removeAt(0).complete(frame);
-  }
-
-  void failNext(Object error) {
-    _nextReads.removeAt(0).completeError(error);
-  }
-
-  @override
-  Future<StudioChatReceipt> load(TimelineDirection direction) =>
-      loadResult.future;
-  @override
-  Future<StudioChatReceipt> focus(String? itemId) {
-    focusRequests.add(itemId);
-    if (!focusEntered.isCompleted) focusEntered.complete();
-    return loadResult.future;
-  }
-
-  @override
-  Future<StudioChatReceipt> expandItem(String itemId) {
-    expandRequests.add(itemId);
-    if (!expandEntered.isCompleted) expandEntered.complete();
-    return loadResult.future;
-  }
-
-  @override
-  void requestClose() {
-    requestCloseCalls++;
-    closed = true;
-    for (final read in _nextReads) {
-      if (!read.isCompleted) read.complete(null);
-    }
-    _nextReads.clear();
-    if (focusRequests.isNotEmpty && !loadResult.isCompleted) {
-      loadResult.completeError(const StaleChatAttempt());
-    }
-  }
-
-  @override
-  Future<void> close() async {
-    closeCalls++;
-    requestClose();
-    if (!closeCompleted.isCompleted) closeCompleted.complete();
-  }
-}
-
 /// Supplies Thread frames per binding; reduction and reconnection stay in the
 /// actual StudioThreadSession. Timers are released separately by the test.
-final class _RuntimeRetryTransport
-    implements StudioTransport, ChatWindowReader {
+final class _RuntimeRetryTransport implements StudioTransport {
   final List<StreamController<ThreadStreamFrame>> sources = [];
-  final window = _FakeWindow(initialSnapshot: _snapshot(1));
+  final List<Completer<StudioTimelineConnection>> pendingOpens = [];
+  int opened = 0;
 
   @override
   Stream<ThreadStreamFrame> subscribeThread(String threadId) {
@@ -125,7 +47,14 @@ final class _RuntimeRetryTransport
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async => window;
+  Future<StudioTimelineConnection> openTimeline(String threadId) {
+    final connection = TestTimelineConnection(
+      initial: baseline(1, subscriptionId: 'sub-${++opened}'),
+    );
+    final pending = Completer<StudioTimelineConnection>()..complete(connection);
+    pendingOpens.add(pending);
+    return pending.future;
+  }
 
   Future<void> close() async {
     await Future.wait([for (final source in sources) source.close()]);
@@ -199,12 +128,11 @@ ThreadWorkspace _workspace({int revision = 1, ThreadRuntimeView? runtime}) {
   return ThreadWorkspace(
     thread: thread,
     revision: revision,
-    items: const [],
     interactions: const [],
     runtime:
         runtime ??
         const ThreadRuntimeView(
-          model: 'model',
+          modelId: 'model',
           contextTokens: 0,
           contextWindow: 1,
           totalTokens: 0,
@@ -222,7 +150,7 @@ ThreadRuntimeView _approvedPlanRuntime({
   String contentHash = 'hash-v3',
 }) {
   return ThreadRuntimeView(
-    model: 'model',
+    modelId: 'model',
     contextTokens: 0,
     contextWindow: 1,
     totalTokens: 0,
@@ -244,7 +172,7 @@ ThreadRuntimeView _approvedPlanRuntime({
 }
 
 ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
-  model: 'model',
+  modelId: 'model',
   contextTokens: 1,
   contextWindow: 100000,
   totalTokens: completionTokens + 1,
@@ -254,18 +182,6 @@ ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
   activeSkills: const [],
   activeMcpServers: const [],
   activeLspServers: const [],
-);
-
-StudioChatSnapshot _snapshot(
-  int version, {
-  String? focusedItemId,
-  List<StudioChatItem> items = const [],
-}) => StudioChatSnapshot(
-  focusedItemId: focusedItemId,
-  version: version,
-  items: items,
-  hasOlder: true,
-  hasNewer: false,
 );
 
 StudioThreadSession _session(_FakeTransport transport) => StudioThreadSession(
@@ -285,142 +201,27 @@ Future<void> _deliverSnapshot(
   await established;
 }
 
-void main() {
-  for (final contentFailure in [false, true]) {
-    test(
-      'retired body request cannot block or fail the returning view (content failure: $contentFailure)',
-      () async {
-        final transport = _FakeTransport();
-        final client = AnyworkClient(
-          transport: transport,
-          clientId: 'body-lifetime',
-        );
-        final session = client.session('thread');
-        StudioChatItem preview(String text) => StudioChatItem(
-          ThreadItemView(
-            id: 'body',
-            threadId: 'thread',
-            turnId: 'turn',
-            ordinal: 1,
-            revision: 1,
-            createdAt: DateTime.utc(2026),
-            updatedAt: DateTime.utc(2026),
-            bodyOmittedUnits: 64,
-            executionTerminal: true,
-            saved: true,
-            state: ThreadTextItemStateView(
-              channel: ThreadTextChannel.finalAnswer,
-              text: text,
-              attachments: const [],
-              lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
-            ),
-          ),
-          saved: true,
-          lifecycle: StudioChatLifecycle.terminal,
-        );
-        final first = _FakeWindow(
-          initialSnapshot: _snapshot(1, items: [preview('old preview')]),
-        );
-        final returned = _FakeWindow(
-          initialSnapshot: _snapshot(8, items: [preview('new preview')]),
-        );
-        addTearDown(() async {
-          for (final window in [first, returned]) {
-            if (!window.loadResult.isCompleted) {
-              window.loadResult.complete(
-                const StudioChatReceipt(
-                  operationId: 1,
-                  version: 1,
-                  retained: false,
-                  disposition: StudioChatDisposition.noChange,
-                ),
-              );
-            }
-          }
-          for (final open in transport.pendingOpens) {
-            if (!open.isCompleted)
-              open.complete(_FakeWindow(initialSnapshot: _snapshot(1)));
-          }
-          await client.close();
-          await transport.close();
-        });
-        await _deliverSnapshot(session, transport);
-        transport.pendingOpens.single.complete(first);
-        await session.chat.ready;
-        final oldLoad = client.threadCommands.ensureItemBodies('thread', [
-          'body',
-        ]);
-        await first.expandEntered.future;
-        if (contentFailure) {
-          final reconnecting = session.chat.state.waitFor(
-            (state) => state is ChatReconnecting<StudioChatSnapshot>,
-          );
-          first.failNext(StateError('content connection failed'));
-          await reconnecting;
-          expect(session.state.history.loadingItemIds, isEmpty);
-          expect(session.beginItemBodyLoad('body'), isNull);
-        }
-        session.chat.retry();
-        transport.pendingOpens.last.complete(returned);
-        await session.chat.ready;
-        expect(session.state.history.loadingItemIds, isEmpty);
-        first.loadResult.completeError(const StaleChatAttempt());
-        await oldLoad;
-        expect(session.state.history.itemBodyErrors, isEmpty);
-        expect(session.state.items.single.text, 'new preview');
-        final newLoad = client.threadCommands.ensureItemBodies('thread', [
-          'body',
-        ]);
-        await returned.expandEntered.future;
-        returned.emit(
-          const StudioChatPatch(
-            from: 8,
-            to: 9,
-            hasNewer: false,
-            changes: [
-              StudioViewItemUpdate(
-                itemId: 'body',
-                expectedRevision: 1,
-                revision: 1,
-                omittedUnits: 0,
-                saved: true,
-                lifecycle: StudioChatLifecycle.terminal,
-                fields: [
-                  StudioFieldUpdateView(
-                    field: ThreadTextFieldView(),
-                    change: ReplaceThreadFieldChangeView('complete new body'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-        await session.source.waitFor((state) => state.chatVersion == 9);
-        returned.loadResult.complete(
-          const StudioChatReceipt(
-            operationId: 1,
-            version: 9,
-            retained: true,
-            disposition: StudioChatDisposition.applied,
-          ),
-        );
-        await newLoad;
-        expect(returned.expandRequests, ['body']);
-        expect(session.state.items.single.text, 'complete new body');
-        expect(session.state.items.single.bodyOmittedUnits, 0);
-        expect(session.state.history.loadingItemIds, isEmpty);
-        expect(session.state.history.itemBodyErrors, isEmpty);
-      },
-    );
-  }
+Future<StudioTimelineBaselineFrame> _deliverContent(
+  _FakeTransport transport,
+  StudioThreadSession session, {
+  int version = 1,
+  String subscriptionId = 'sub',
+}) async {
+  final connection = TestTimelineConnection(
+    initial: baseline(version, subscriptionId: subscriptionId),
+  );
+  transport.pendingOpens.last.complete(connection);
+  return session.timeline.ready;
+}
 
+void main() {
   test('runtime snapshot and updates expose approved plan markdown', () async {
     final transport = _FakeTransport();
     final session = _session(transport);
     addTearDown(() async {
       for (final open in transport.pendingOpens) {
         if (!open.isCompleted) {
-          open.complete(_FakeWindow(initialSnapshot: _snapshot(1)));
+          open.complete(TestTimelineConnection(initial: baseline(1)));
         }
       }
       await session.close();
@@ -485,7 +286,7 @@ void main() {
   });
 
   test(
-    'Chat capacity recovery keeps runtime synchronization independent',
+    'content capacity recovery keeps runtime synchronization independent',
     () async {
       final transport = _FakeTransport();
       final budget = ResourceBudget(
@@ -509,135 +310,145 @@ void main() {
         retiring.release();
         for (final open in transport.pendingOpens) {
           if (!open.isCompleted) {
-            open.complete(_FakeWindow(initialSnapshot: _snapshot(1)));
+            open.complete(TestTimelineConnection(initial: baseline(1)));
           }
         }
         await session.close();
         await transport.close();
       });
       await _deliverSnapshot(session, transport);
-      expect(session.chat.state.value, isA<ChatFailed<StudioChatSnapshot>>());
+      expect(
+        session.timeline.state.value,
+        isA<ChatFailed<StudioTimelineFrame>>(),
+      );
       expect(session.state.sync.phase, DomainSyncPhase.ready);
       expect(session.state.sync.errorMessage, isNull);
 
       retiring.release();
-      final window = _FakeWindow(initialSnapshot: _snapshot(1));
-      transport.pendingOpens.single.complete(window);
-      await session.chat.ready;
+      final connection = TestTimelineConnection(initial: baseline(1));
+      transport.pendingOpens.single.complete(connection);
+      await session.timeline.ready;
       expect(session.state.sync.phase, DomainSyncPhase.ready);
       expect(session.state.sync.errorMessage, isNull);
 
-      // Content progress also cannot clear a genuine Thread-state failure.
+      // 内容进度也不能清除真实的 Thread 状态失败。
       session.markResync(StateError('runtime offline'), failed: true);
-      window.emit(
-        const StudioChatPatch(from: 1, to: 2, changes: [], hasNewer: false),
+      await connection.nextStarted.future;
+      connection.emit(patch(1, 2));
+      await session.timeline.state.waitFor(
+        (state) => state.snapshot is StudioTimelinePatchFrame,
       );
-      await session.source.waitFor((state) => state.chatVersion == 2);
       expect(session.state.sync.phase, DomainSyncPhase.failed);
       expect(session.state.sync.errorMessage, contains('runtime offline'));
     },
   );
 
-  test('runtime progress renews retries and eventually observes terminal usage', () async {
-    final timers = _RetryTimers();
-    await runZoned(() async {
-      final transport = _RuntimeRetryTransport();
-      final session = StudioThreadSession(
-        'thread',
-        transport: transport,
-        directory: ThreadDirectoryStore(),
-        budget: ResourceBudget(),
-      );
-      addTearDown(() async {
-        await session.close();
-        await transport.close();
-      });
-      session.start();
-      // More outages than the consecutive-failure limit, with actual owner
-      // notification progress between them. A successful baseline alone is not
-      // sufficient progress; the snapshot-only cases below retain that limit.
-      for (var cycle = 0; cycle < 5; cycle++) {
-        final baseline = 100 * (cycle + 1);
-        transport.sources.last.add(
-          ThreadSnapshotFrame(workspace: _workspace(revision: baseline)),
+  test(
+    'runtime progress renews retries and eventually observes terminal usage',
+    () async {
+      final timers = _RetryTimers();
+      await runZoned(() async {
+        final transport = _RuntimeRetryTransport();
+        final session = StudioThreadSession(
+          'thread',
+          transport: transport,
+          directory: ThreadDirectoryStore(),
+          budget: ResourceBudget(),
         );
-        if (cycle == 0) await session.chat.ready;
+        addTearDown(() async {
+          await session.close();
+          await transport.close();
+        });
+        session.start();
+        await session.timeline.ready;
+        // More outages than the consecutive-failure limit, with actual owner
+        // notification progress between them. A successful baseline alone is
+        // not sufficient progress; the snapshot-only cases retain that limit.
+        for (var cycle = 0; cycle < 5; cycle++) {
+          final baselineRevision = 100 * (cycle + 1);
+          transport.sources.last.add(
+            ThreadSnapshotFrame(
+              workspace: _workspace(revision: baselineRevision),
+            ),
+          );
+          transport.sources.last.add(
+            ThreadNotificationFrame(
+              threadId: 'thread',
+              epoch: 1,
+              baseRevision: baselineRevision,
+              revision: baselineRevision + 1,
+              update: ThreadRuntimeUpdate(
+                runtime: _runtimeUsage(cycle + 1),
+                todo: null,
+              ),
+            ),
+          );
+          expect(session.state.runtime!.completionTokens, cycle + 1);
+          transport.sources.last.add(
+            const ThreadResyncRequiredFrame(
+              threadId: 'thread',
+              dropped: 512,
+              epoch: 2,
+            ),
+          );
+          expect(
+            session.state.sync.phase,
+            DomainSyncPhase.reconnecting,
+            reason: 'an outage after real progress is a new recovery episode',
+          );
+          expect(
+            session.state.sync.errorMessage,
+            allOf(contains('Thread state lagged'), contains('dropped=512')),
+          );
+          await timers.fireNext();
+          expect(transport.sources, hasLength(cycle + 2));
+        }
+
+        transport.sources.last.add(
+          ThreadSnapshotFrame(workspace: _workspace(revision: 1000)),
+        );
+        final terminal = StudioTurnView(
+          inputId: 'input',
+          turnId: 'turn',
+          threadId: 'thread',
+          revision: 20000,
+          state: const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
+          ),
+          updatedAt: DateTime.utc(2026),
+        );
         transport.sources.last.add(
           ThreadNotificationFrame(
             threadId: 'thread',
             epoch: 1,
-            baseRevision: baseline,
-            revision: baseline + 1,
+            baseRevision: 1000,
+            revision: 1001,
+            update: ThreadTurnUpdate(terminal),
+          ),
+        );
+        transport.sources.last.add(
+          ThreadNotificationFrame(
+            threadId: 'thread',
+            epoch: 1,
+            baseRevision: 1001,
+            revision: 1002,
             update: ThreadRuntimeUpdate(
-              runtime: _runtimeUsage(cycle + 1),
+              runtime: _runtimeUsage(20000),
               todo: null,
             ),
           ),
         );
-        expect(session.state.runtime!.completionTokens, cycle + 1);
-        transport.sources.last.add(
-          const ThreadResyncRequiredFrame(
-            threadId: 'thread',
-            dropped: 512,
-            epoch: 2,
-          ),
-        );
-        expect(
-          session.state.sync.phase,
-          DomainSyncPhase.reconnecting,
-          reason: 'an outage after real progress is a new recovery episode',
-        );
-        expect(
-          session.state.sync.errorMessage,
-          allOf(contains('Thread state lagged'), contains('dropped=512')),
-        );
-        await timers.fireNext();
-        expect(transport.sources, hasLength(cycle + 2));
-      }
-
-      transport.sources.last.add(
-        ThreadSnapshotFrame(workspace: _workspace(revision: 1000)),
-      );
-      final terminal = StudioTurnView(
-        inputId: 'input',
-        turnId: 'turn',
-        threadId: 'thread',
-        revision: 20000,
-        state: const CompletedStudioTurnState(
-          startedAt: 1,
-          completedAt: 2,
-          completion: StudioTurnCompletion.normal,
-        ),
-        updatedAt: DateTime.utc(2026),
-      );
-      transport.sources.last.add(
-        ThreadNotificationFrame(
-          threadId: 'thread',
-          epoch: 1,
-          baseRevision: 1000,
-          revision: 1001,
-          update: ThreadTurnUpdate(terminal),
-        ),
-      );
-      transport.sources.last.add(
-        ThreadNotificationFrame(
-          threadId: 'thread',
-          epoch: 1,
-          baseRevision: 1001,
-          revision: 1002,
-          update: ThreadRuntimeUpdate(
-            runtime: _runtimeUsage(20000),
-            todo: null,
-          ),
-        ),
-      );
-      expect(session.state.sync.phase, DomainSyncPhase.ready);
-      expect(session.state.workspace!.lastTurn, terminal);
-      expect(session.state.activeTurn, isNull);
-      expect(session.state.runtime!.completionTokens, 20000);
-      expect(session.state.chatVersion, 1);
-    }, zoneSpecification: timers.specification);
-  });
+        expect(session.state.sync.phase, DomainSyncPhase.ready);
+        expect(session.state.workspace!.lastTurn, terminal);
+        expect(session.state.activeTurn, isNull);
+        expect(session.state.runtime!.completionTokens, 20000);
+        // 正文帧不反写 Thread 状态：状态 revision 只由状态流推进。
+        expect(session.state.revision, 1002);
+      }, zoneSpecification: timers.specification);
+    },
+  );
 
   for (final eof in [false, true]) {
     test(
@@ -665,7 +476,7 @@ void main() {
                 workspace: _workspace(revision: 10 + attempt),
               ),
             );
-            if (attempt == 0) await session.chat.ready;
+            if (attempt == 0) await session.timeline.ready;
             if (eof) {
               await source.close();
             } else {
@@ -706,10 +517,10 @@ void main() {
         await transport.close();
       });
       session.start();
+      await session.timeline.ready;
       transport.sources.single.add(
         ThreadSnapshotFrame(workspace: _workspace(revision: 10)),
       );
-      await session.chat.ready;
       transport.sources.single.add(
         ThreadNotificationFrame(
           threadId: 'thread',
@@ -745,7 +556,7 @@ void main() {
   });
 
   test(
-    'actual Client keeps the same draft and owned view across Settings',
+    'actual Client keeps the same draft and owned timeline across Settings',
     () async {
       final transport = _FakeTransport();
       final client = AnyworkClient(transport: transport, clientId: 'client');
@@ -771,16 +582,17 @@ void main() {
       client.workspace.selectThread('thread', projectId: 'project');
       final session = client.session('thread');
       await _deliverSnapshot(session, transport);
-      final window = _FakeWindow(initialSnapshot: _snapshot(3));
-      transport.pendingOpens.single.complete(window);
-      await session.source.waitFor((value) => value.chatVersion == 3);
-      final viewId = session.state.chatViewId;
+      await _deliverContent(transport, session, version: 3);
       client.workspace.showSettings();
       client.workspace.hideSettings();
       expect(identical(client.session('thread'), session), isTrue);
-      expect(session.state.chatViewId, viewId);
+      expect(
+        (session.timeline.lastDeliveredFrame! as StudioTimelineBaselineFrame)
+            .baseline
+            .version,
+        3,
+      );
       expect(transport.pendingOpens, hasLength(1));
-      expect(window.closeCalls, 0);
       expect(session.isActive, isTrue);
       await client.close();
       await transport.close();
@@ -788,7 +600,7 @@ void main() {
   );
 
   test(
-    'actual Clients never share same-id session, view or draft ownership',
+    'actual Clients never share same-id session, timeline or draft ownership',
     () async {
       final leftTransport = _FakeTransport();
       final rightTransport = _FakeTransport();
@@ -798,19 +610,27 @@ void main() {
       final rightSession = right.session('thread');
       await _deliverSnapshot(leftSession, leftTransport);
       await _deliverSnapshot(rightSession, rightTransport);
-      final leftWindow = _FakeWindow(initialSnapshot: _snapshot(1));
-      final rightWindow = _FakeWindow(initialSnapshot: _snapshot(6));
-      leftTransport.pendingOpens.single.complete(leftWindow);
-      rightTransport.pendingOpens.single.complete(rightWindow);
-      await leftSession.source.waitFor((value) => value.chatVersion == 1);
-      await rightSession.source.waitFor((value) => value.chatVersion == 6);
+      await _deliverContent(leftTransport, leftSession, version: 1);
+      await _deliverContent(rightTransport, rightSession, version: 6);
       left.startDraft.updateDraft('project', 'left draft');
       expect(right.startDraft.state.forProject('project').text, isEmpty);
       expect(identical(leftSession, rightSession), isFalse);
+      expect(
+        (leftSession.timeline.lastDeliveredFrame!
+                as StudioTimelineBaselineFrame)
+            .baseline
+            .version,
+        1,
+      );
+      expect(
+        (rightSession.timeline.lastDeliveredFrame!
+                as StudioTimelineBaselineFrame)
+            .baseline
+            .version,
+        6,
+      );
       await left.close();
-      expect(leftWindow.closeCalls, 1);
-      expect(rightWindow.closeCalls, 0);
-      expect(rightSession.state.chatVersion, 6);
+      expect(leftSession.isActive, isFalse);
       expect(rightSession.isActive, isTrue);
       await right.close();
       await leftTransport.close();
@@ -818,375 +638,88 @@ void main() {
     },
   );
 
-  test('initial Reset and following Patch use the same session reducer and one next', () async {
-    final transport = _FakeTransport();
-    final session = _session(transport);
-    await _deliverSnapshot(session, transport);
-    final window = _FakeWindow(initialSnapshot: _snapshot(1));
-    transport.pendingOpens.single.complete(window);
-    await session.source.waitFor((value) => value.chatVersion == 1);
-    expect(window.nextCalls, 1);
-    expect(session.state.chatViewId, isNotNull);
+  test(
+    'late open and first baseline failure close their own connection',
+    () async {
+      final transport = _FakeTransport();
+      final session = _session(transport);
+      await _deliverSnapshot(session, transport);
+      final lateOpen = transport.pendingOpens.single;
+      final retired = await session.retire(deadline: DateTime.utc(2000));
+      expect(retired.unresolved, isNotEmpty);
+      final late = TestTimelineConnection(initial: baseline(99));
+      lateOpen.complete(late);
+      await late.closeCompleted.future;
+      expect(late.initialCalls, 0);
+      expect(session.timeline.lastDeliveredFrame, isNull);
 
-    window.emit(
-      StudioChatPatch(from: 1, to: 2, changes: const [], hasNewer: false),
-    );
-    await session.source.waitFor((value) => value.chatVersion == 2);
-    expect(
-      window.nextCalls,
-      2,
-      reason: 'next is requested only after the prior frame reduces',
-    );
-    await session.close();
-    await transport.close();
-  });
-
-  for (final badRevision in [false, true]) {
-    test(
-      'mixed Patch failure commits no prior splice or field (${badRevision ? 'revision' : 'field'})',
-      () async {
-        final transport = _FakeTransport();
-        final session = _session(transport);
-        await _deliverSnapshot(session, transport);
-        StudioChatItem item(String id) => StudioChatItem(
-          ThreadItemView(
-            id: id,
-            threadId: 'thread',
-            turnId: 'turn',
-            ordinal: 1,
-            revision: 1,
-            saved: false,
-            createdAt: DateTime.utc(2026),
-            updatedAt: DateTime.utc(2026),
-            state: const ThreadTextItemStateView(
-              channel: ThreadTextChannel.commentary,
-              text: 'original',
-              attachments: [],
-              lifecycle: StreamingThreadContentView(),
-            ),
-          ),
-          saved: false,
-          lifecycle: StudioChatLifecycle.streaming,
-        );
-        final window = _FakeWindow(
-          initialSnapshot: _snapshot(1, items: [item('original')]),
-        );
-        transport.pendingOpens.single.complete(window);
-        await session.source.waitFor((state) => state.chatVersion == 1);
-        final failed = session.chat.state.waitFor(
-          (state) => state is ChatReconnecting<StudioChatSnapshot>,
-        );
-        window.emit(
-          StudioChatPatch(
-            from: 1,
-            to: 2,
-            hasNewer: true,
-            changes: [
-              StudioViewSplice(index: 0, remove: 0, items: [item('inserted')]),
-              StudioViewItemUpdate(
-                itemId: 'original',
-                expectedRevision: badRevision ? 99 : 1,
-                revision: 2,
-                omittedUnits: 0,
-                saved: true,
-                lifecycle: StudioChatLifecycle.streaming,
-                fields: [
-                  const StudioFieldUpdateView(
-                    field: ThreadTextFieldView(),
-                    change: AppendThreadFieldChangeView(' should roll back'),
-                  ),
-                  if (!badRevision)
-                    const StudioFieldUpdateView(
-                      field: ThreadToolResultFieldView(),
-                      change: ReplaceThreadFieldChangeView('wrong field'),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-        await failed;
-        expect(session.state.chatVersion, 1);
-        expect(session.state.items.map((item) => item.id), ['original']);
-        expect(session.state.items.single.text, 'original');
-        expect(session.state.items.single.revision, 1);
-        expect(session.state.items.single.saved, isFalse);
-        await session.close();
-        await transport.close();
-      },
-    );
-  }
+      session.start();
+      final failed = TestTimelineConnection();
+      transport.pendingOpens.last.complete(failed);
+      await failed.initialStarted.future;
+      failed.initialResult.completeError(StateError('initial failed'));
+      await failed.closeCompleted.future;
+      expect(session.timeline.lastDeliveredFrame, isNull);
+      // 内容首帧失败不污染 Thread 状态同步：两路事实各自报告。
+      expect(session.state.sync.phase, DomainSyncPhase.ready);
+      // 首帧失败先进入有界重连（默认重试策略），仍然只影响内容连接。
+      expect(
+        session.timeline.state.value,
+        isA<ChatReconnecting<StudioTimelineFrame>>(),
+      );
+      await session.close();
+      await transport.close();
+    },
+  );
 
   test('retire then start A to B to A never reuses an old baseline', () async {
     final transport = _FakeTransport();
     final session = _session(transport);
     await _deliverSnapshot(session, transport);
-    final first = _FakeWindow(initialSnapshot: _snapshot(1));
+    final first = TestTimelineConnection(
+      initial: baseline(5, subscriptionId: 'first'),
+    );
     transport.pendingOpens.single.complete(first);
-    await session.source.waitFor((value) => value.chatVersion == 1);
-    final firstView = session.state.chatViewId;
-
+    await session.timeline.ready;
     await session.retire();
+    expect(first.closeCalls, 1);
+    expect(session.timeline.lastDeliveredFrame, isNull);
+
     session.start();
-    final second = _FakeWindow(initialSnapshot: _snapshot(8));
+    final second = TestTimelineConnection(
+      initial: baseline(1, subscriptionId: 'second'),
+    );
     transport.pendingOpens.last.complete(second);
-    await session.source.waitFor((value) => value.chatVersion == 8);
-    expect(session.state.chatViewId, isNot(firstView));
-    await session.retire();
-    session.start();
-    final third = _FakeWindow(initialSnapshot: _snapshot(1));
-    transport.pendingOpens.last.complete(third);
-    await session.source.waitFor((value) => value.chatVersion == 1);
-    expect(session.state.chatViewId, isNot(firstView));
-    expect(session.state.chatViewId, isNotNull);
-    // A patch from B is a continuity gap for the new A view and cannot alter it.
-    third.emit(
-      StudioChatPatch(from: 8, to: 9, changes: const [], hasNewer: false),
+    final reopened = await session.timeline.ready;
+    expect(reopened.baseline.subscriptionId, 'second');
+    expect(reopened.baseline.version, 1);
+    // 新 attempt 的补丁必须从它自己的基线开始。
+    await second.nextStarted.future;
+    second.emit(patch(1, 2, subscriptionId: 'second'));
+    final delivered = await session.timeline.state.waitFor(
+      (state) => state.snapshot is StudioTimelinePatchFrame,
     );
-    await session.chat.state.waitFor(
-      (value) => value is ChatReconnecting<StudioChatSnapshot>,
-    );
-    expect(session.state.chatVersion, 1);
+    expect((delivered.snapshot! as StudioTimelinePatchFrame).patch.from, 1);
     await session.close();
     await transport.close();
   });
 
   test(
-    'returning view Reset preserves the Client reading intent and offset',
+    'content demand belongs to the session, not the thread snapshot',
     () async {
       final transport = _FakeTransport();
       final session = _session(transport);
-      addTearDown(() async {
-        await session.close();
-        await transport.close();
-      });
-      await _deliverSnapshot(session, transport);
-      final first = _FakeWindow(initialSnapshot: _snapshot(1));
-      transport.pendingOpens.single.complete(first);
-      await session.source.waitFor((value) => value.chatVersion == 1);
-      const anchor = TimelineAnchor(
-        'historical-item',
-        -120,
-        readingIntent: TimelineReadingIntent.browseHistory,
-      );
-      session.setTimelineAnchor(anchor);
-
-      await session.retire();
-      expect(first.closeCalls, 1);
-      expect(session.state.items, isEmpty);
-      expect(session.state.history.anchor, anchor);
+      // 没有 Thread 快照时内容连接同样建立：正文与状态流互相独立。
       session.start();
-      final returned = _FakeWindow(initialSnapshot: _snapshot(8));
-      transport.pendingOpens.last.complete(returned);
-      await session.source.waitFor((value) => value.chatVersion == 8);
-
-      expect(session.state.history.anchor, anchor);
-      expect(session.state.history.detached, isTrue);
-      await returned.focusEntered.future;
-      expect(returned.focusRequests, ['historical-item']);
-      expect(session.state.history.isLoading, isTrue);
-      final historical = StudioChatItem(
-        ThreadItemView(
-          id: 'historical-item',
-          threadId: 'thread',
-          turnId: 'turn',
-          ordinal: 1,
-          revision: 1,
-          createdAt: DateTime.utc(2026),
-          updatedAt: DateTime.utc(2026),
-          state: ThreadTextItemStateView(
-            channel: ThreadTextChannel.user,
-            text: 'historical body outside the initial latest window',
-            attachments: const [],
-            lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
-          ),
-        ),
-        saved: true,
-        lifecycle: StudioChatLifecycle.terminal,
-      );
-      returned.emit(
-        StudioChatReset(
-          _snapshot(9, focusedItemId: 'historical-item', items: [historical]),
-        ),
-      );
-      await session.source.waitFor((value) => value.chatVersion == 9);
-      // A frame may win the race with its receipt. It still cannot finish a
-      // pending control or replace the Client's item + pixel offset intent.
-      expect(session.state.history.isLoading, isTrue);
-      returned.loadResult.complete(
-        const StudioChatReceipt(
-          operationId: 1,
-          version: 9,
-          retained: true,
-          disposition: StudioChatDisposition.applied,
-        ),
-      );
-      await session.source.waitFor((value) => !value.history.isLoading);
-      expect(session.state.history.anchor, anchor);
-      expect(session.state.items.single.id, 'historical-item');
-      expect(session.confirmedViewFocus, 'historical-item');
-    },
-  );
-
-  test('late focus replies cannot settle a newer same-item intent', () async {
-    final transport = _FakeTransport();
-    final session = _session(transport);
-    addTearDown(() async {
+      expect(transport.pendingOpens, hasLength(1));
+      final connection = TestTimelineConnection(initial: baseline(2));
+      transport.pendingOpens.single.complete(connection);
+      final ready = await session.timeline.ready;
+      expect(ready.baseline.version, 2);
+      expect(session.state.hasSnapshot, isFalse);
+      expect(session.state.sync.phase, DomainSyncPhase.idle);
       await session.close();
-      await transport.close();
-    });
-    await _deliverSnapshot(session, transport);
-    transport.pendingOpens.single.complete(
-      _FakeWindow(initialSnapshot: _snapshot(1)),
-    );
-    await session.chat.ready;
-    final firstA = session.requestViewFocus('A')!;
-    final requestB = session.requestViewFocus('B')!;
-    final newA = session.requestViewFocus('A')!;
-    session.settleViewFocus(firstA, succeeded: true);
-    session.settleViewFocus(requestB, succeeded: true);
-    expect(session.viewFocusPending, isTrue);
-    expect(session.confirmedViewFocus, isNull);
-    expect(session.isViewFocusCurrent(newA), isTrue);
-    session.settleViewFocus(newA, succeeded: true);
-    expect(session.confirmedViewFocus, 'A');
-    expect(session.viewFocusPending, isFalse);
-
-    await session.retire();
-    session.start();
-    transport.pendingOpens.last.complete(
-      _FakeWindow(initialSnapshot: _snapshot(1)),
-    );
-    await session.chat.ready;
-    final reopenedA = session.requestViewFocus('A')!;
-    session.settleViewFocus(newA, succeeded: true);
-    expect(session.confirmedViewFocus, isNull);
-    expect(session.isViewFocusCurrent(reopenedA), isTrue);
-  });
-
-  test(
-    'closing a restore waiting for initial joins its attempt control',
-    () async {
-      final transport = _FakeTransport();
-      final session = _session(transport);
-      addTearDown(transport.close);
-      await _deliverSnapshot(session, transport);
-      transport.pendingOpens.single.complete(
-        _FakeWindow(initialSnapshot: _snapshot(1)),
-      );
-      await session.chat.ready;
-      session.setTimelineAnchor(
-        const TimelineAnchor(
-          'historical-item',
-          -120,
-          readingIntent: TimelineReadingIntent.browseHistory,
-        ),
-      );
-      await session.retire();
-      session.start();
-      expect(session.budget.used(ResourceKind.pendingOperation), 1);
-      final closing = session.close();
-      final late = _FakeWindow(initialSnapshot: _snapshot(8));
-      transport.pendingOpens.last.complete(late);
-      final report = await closing;
-      expect(report.unresolved, isEmpty);
-      expect(late.closeCalls, 1);
-      expect(late.focusRequests, isEmpty);
-      expect(session.budget.used(ResourceKind.pendingOperation), 0);
-    },
-  );
-
-  test('late open and initial failure close their own native window', () async {
-    final transport = _FakeTransport();
-    final session = _session(transport);
-    await _deliverSnapshot(session, transport);
-    final lateOpen = transport.pendingOpens.single;
-    final retired = await session.retire(deadline: DateTime.utc(2000));
-    expect(retired.unresolved, isNotEmpty);
-    final late = _FakeWindow(initialSnapshot: _snapshot(99));
-    lateOpen.complete(late);
-    await late.closeCompleted.future;
-    expect(session.state.chatVersion, isNull);
-
-    session.start();
-    final failed = _FakeWindow(
-      initialSnapshot: _snapshot(2),
-      failInitial: StateError('initial failed'),
-    );
-    transport.pendingOpens.last.complete(failed);
-    await failed.closeCompleted.future;
-    expect(session.state.chatVersion, isNull);
-    await session.close();
-    await transport.close();
-  });
-
-  test(
-    'Applied equal-version receipt ends loading without becoming NoChange',
-    () async {
-      final transport = _FakeTransport();
-      final session = _session(transport);
-      await _deliverSnapshot(session, transport);
-      final window = _FakeWindow(initialSnapshot: _snapshot(4));
-      transport.pendingOpens.single.complete(window);
-      await session.source.waitFor((value) => value.chatVersion == 4);
-
-      final token = session.beginHistoryOp(TimelineDirection.older);
-      expect(token, isNotNull);
-      final operationToken = token!;
-      final receipt = StudioChatReceipt(
-        operationId: operationToken,
-        version: 4,
-        retained: true,
-        disposition: StudioChatDisposition.applied,
-      );
-      session.observeHistoryOp(operationToken, receipt);
-      expect(session.state.history.isLoading, isFalse);
-      expect(
-        session.historyOperation.value?.outcome,
-        HistoryOperationOutcome.observed,
-      );
-      expect(
-        session.historyOperation.value?.receipt?.disposition,
-        StudioChatDisposition.applied,
-      );
-      await session.close();
-      await transport.close();
-    },
-  );
-
-  test(
-    'NoChange ends loading without waiting for unrelated session progress',
-    () async {
-      final transport = _FakeTransport();
-      final session = _session(transport);
-      await _deliverSnapshot(session, transport);
-      final window = _FakeWindow(initialSnapshot: _snapshot(4));
-      transport.pendingOpens.single.complete(window);
-      await session.source.waitFor((value) => value.chatVersion == 4);
-
-      final token = session.beginHistoryOp(TimelineDirection.older)!;
-      session.observeHistoryOp(
-        token,
-        StudioChatReceipt(
-          operationId: token,
-          version: 99,
-          retained: true,
-          disposition: StudioChatDisposition.noChange,
-        ),
-      );
-      expect(session.state.history.isLoading, isFalse);
-      expect(session.state.chatVersion, 4);
-      expect(
-        session.historyOperation.value?.outcome,
-        HistoryOperationOutcome.noChange,
-      );
-      expect(session.historyOperation.value?.receipt?.version, 99);
-      expect(
-        window.nextCalls,
-        1,
-        reason: 'there is no control-owned content frame',
-      );
-      await session.close();
+      expect(connection.closeCalls, 1);
       await transport.close();
     },
   );

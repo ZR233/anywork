@@ -2,9 +2,8 @@
 
 mod compiler;
 mod context;
+mod editor;
 mod manager;
-mod model_compatibility;
-pub(crate) use model_compatibility::validate_thread_mode_model;
 mod registration;
 mod runtime;
 pub mod state;
@@ -15,15 +14,26 @@ pub use compiler::{
     compile_workflow_definition,
 };
 pub use context::workflow_model_context_section;
+pub(crate) use editor::MAX_MODE_DOCUMENT_BYTES;
+pub use editor::{mode_document_schema, validate_mode_document, validate_mode_json};
 pub use manager::{
     RegisteredThreadMode, ThreadModeManager, ThreadModeManagerError, ThreadModeRegistrySnapshot,
     ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,
 };
+pub use pl_protocol::ThreadModeDefinition;
 pub use registration::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
-    StaticWorkflowTransition, ThreadModeRegistration,
+    StaticWorkflowTransition,
 };
 pub use runtime::{new_run, reconcile_workflow_for_turn};
 
 /// 工作流上下文段的稳定标识符。
 pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
+
+mod snapshot;
+pub(crate) use snapshot::{
+    SavedThreadMode, decode_mode_snapshot, decode_saved_mode, encode_mode_snapshot,
+    migrate_mode_snapshot, saved_registered_mode,
+};
+mod preview;
+pub use preview::preview_workflow;

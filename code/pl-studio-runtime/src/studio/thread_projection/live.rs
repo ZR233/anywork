@@ -372,10 +372,30 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
     if let Some(user_input) = tool.user_input() {
         bytes = bytes.saturating_add(user_input_bytes(user_input));
     }
+    if let Some(wait) = tool.wait() {
+        bytes = bytes.saturating_add(wait_bytes(wait));
+    }
     bytes
 }
 
-/// Questions and accepted answers of one Q&A history projection.
+fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
+    match wait.intent() {
+        pl_protocol::ThreadWaitIntent::Events { targets, .. } => {
+            targets
+                .iter()
+                .fold(RETAINED_ENTRY_OVERHEAD, |total, target| {
+                    total
+                        .saturating_add(target.task_id().len() as u64)
+                        .saturating_add(optional_bytes(target.tool_name()))
+                        .saturating_add(optional_bytes(target.summary()))
+                        .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                })
+        }
+        pl_protocol::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
+    }
+}
+
+/// Questions and accepted answers of one user-input history projection.
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
@@ -813,10 +833,11 @@ impl LiveProjection {
 
     /// Whether this projection still holds the canonical tool body of `id`, in any state.
     ///
-    /// An ordinary Q&A interaction lands on the call that asked it, and the answering effect carries
-    /// neither the call nor its task: after a restart, or once a finished Turn leaves the retained
-    /// window, this projection holds no body for that identity. Placement metadata alone is not a
-    /// body — only a real tool item can carry the answer.
+    /// A user-input interaction — an ordinary question or a Plan confirmation — lands on the call
+    /// that raised it, and the answering effect carries neither the call nor its task: after a
+    /// restart, or once a finished Turn leaves the retained window, this projection holds no body for
+    /// that identity. Placement metadata alone is not a body — only a real tool item can carry the
+    /// answer.
     pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
         self.items.get(id).is_some_and(|item| item.tool().is_some())
     }
@@ -1059,7 +1080,7 @@ impl LiveProjection {
         // 身份不复查（`adopt_revisions` 跳过 `self.items` 持有的 id），只有冷恢复/被淘汰后重现的身份才
         // 由放置元数据恢复；同一条目因此绝不因为缓存淘汰而从 1 重编、被会话当成旧帧丢弃。
         self.adopt_revisions(&existing);
-        // 每一条目的窗口版本由本投影自己的内容版本给出，和 effect 序号（提交 / 可靠保存水位）无关：
+        // 每一条目的内容版本由本投影自己的内容版本给出，和 effect 序号（提交 / 可靠保存水位）无关：
         // Turn 绑定、正文、结构或终态状态真的变了才递增，否则沿用旧版本（例如只推进 saved 的保存确认，
         // 或与上次完全相同的重新投影）。该版本同时被流式预览使用，因此同一身份的预览与终态沿同一个
         // 计数器收束，终态不会被预览版本挡住，旧保存回执也无法确认它没写过的新载荷。
@@ -1498,17 +1519,16 @@ impl LiveProjection {
         revision: u64,
         entry: &LivePreview,
     ) -> Result<(), ProjectionError> {
-        chat.publish_preview(ChatItem {
+        chat.publish_preview(ChatItem::complete(pl_core::chat::ChatItemParts {
             item_id: id.to_owned(),
             turn_id: turn_id.to_owned(),
             order: entry.order,
             revision,
             fields: entry.fields.clone(),
             meta: entry.meta.clone(),
-            omitted_bytes: 0,
             saved: false,
             lifecycle: ChatLifecycle::Streaming,
-        })
+        }))
         .map_err(|error| ProjectionError::History(error.to_string()))
     }
 
@@ -1547,14 +1567,10 @@ impl LiveProjection {
         if chat.assigned_order(id).is_none() {
             return Ok(());
         }
-        let Some(item) = chat
-            .read_item(id)
-            .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-        else {
+        let Some(revision) = chat.resident_revision(id) else {
             return Ok(());
         };
-        self.raise_revision(id, item.revision);
+        self.raise_revision(id, revision);
         Ok(())
     }
 
@@ -1710,17 +1726,16 @@ impl LiveProjection {
     ) -> Result<Vec<(String, ThreadItem)>, ProjectionError> {
         self.provider_previews(attempt_id)
             .map(|(id, preview)| {
-                let item = ChatItem {
+                let item = ChatItem::complete(pl_core::chat::ChatItemParts {
                     item_id: id.clone(),
                     turn_id: turn_id.to_owned(),
                     order: preview.order,
                     revision: self.revisions.get(id).copied().unwrap_or(0),
                     fields: preview.fields.clone(),
                     meta: preview.meta.clone(),
-                    omitted_bytes: 0,
                     saved: false,
                     lifecycle: ChatLifecycle::Streaming,
-                };
+                });
                 crate::studio::runtime::chat_item::canonical_item(&item)
                     .map(|item| (id.clone(), item))
                     .map_err(|error| ProjectionError::History(error.to_string()))
@@ -2230,25 +2245,28 @@ pub(in crate::studio) async fn seed_repaired_targets(
     Ok(())
 }
 
-/// Reads the tool items an effect's ordinary Q&A interactions name, when this projection holds no
+/// Reads the tool items an effect's user-input interactions name, when this projection holds no
 /// canonical body for them.
 ///
 /// A pending question outlives the Turn that asked it: the asking call is already terminal, its body
 /// leaves the retained window, and a projection seeded after a restart never saw the call at all.
 /// The answering effect carries only the interaction and the hidden continuation, so the answer can
 /// only land on the call's own item if the owner reads that one identity back from reliable history
-/// and hands it to the projection as a fact — the same shape as a reliable-output repair target.
-/// Nothing else is read: no Turn is scanned, no tool is activated, no model step starts, and the
-/// projection itself still performs no IO. A missing or non-tool durable item fails explicitly,
-/// because an accepted answer must never be dropped or published as a fabricated row.
+/// and hands it to the projection as a fact — the same shape as a reliable-output repair target. A
+/// Plan confirmation is answered after the same `plan_submit` call is already terminal, so it needs
+/// the same identity read-back. Nothing else is read: no Turn is scanned, no tool is activated, no
+/// model step starts, and the projection itself still performs no IO. A missing or non-tool durable
+/// item fails explicitly, because an accepted answer must never be dropped or published as a
+/// fabricated row.
 pub(in crate::studio) async fn seed_interaction_targets(
     projection: &mut LiveProjection,
+    thread_id: &str,
     history: &crate::studio::storage::history::HistoryStore,
     effect: &ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
     let mut seeded = Vec::new();
     for record in effect.interactions.iter() {
-        let Some(user_input) = super::user_input::project_user_input(record)? else {
+        let Some(user_input) = super::user_input::project_user_input(thread_id, record)? else {
             continue;
         };
         let tool_id =
@@ -2256,7 +2274,7 @@ pub(in crate::studio) async fn seed_interaction_targets(
                 Some(call_id) => super::order::tool_id(call_id),
                 None => {
                     return Err(ProjectionError::UserInput(format!(
-                        "ordinary user Q&A interaction `{}` names no tool call",
+                        "user-input interaction `{}` names no tool call",
                         user_input.interaction_id()
                     )));
                 }
@@ -2271,7 +2289,7 @@ pub(in crate::studio) async fn seed_interaction_targets(
             .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
         if item.tool().is_none() {
             return Err(ProjectionError::UserInput(format!(
-                "durable item `{tool_id}` is not a tool call and cannot own an ordinary user Q&A"
+                "durable item `{tool_id}` is not a tool call and cannot own a user-input history"
             )));
         }
         seeded.push(item);

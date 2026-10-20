@@ -1,12 +1,9 @@
 import 'package:anywork_client/models.dart';
 
 import 'agent_workspace_view.dart';
-import 'timeline_rows.dart';
 
 // Canonical workspace values are replaced by reducers. UI-only anchor/composer
 // changes must not rebuild all row projections; old entries are weakly held.
-final _timelineRowsByWorkspace = Expando<List<TimelineRow>>();
-final _timelineRowsByItems = Expando<List<TimelineRow>>();
 
 class _StudioStateUnset {
   const _StudioStateUnset();
@@ -14,7 +11,7 @@ class _StudioStateUnset {
 
 const _studioStateUnset = _StudioStateUnset();
 const _emptySessionRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,
@@ -35,7 +32,7 @@ class StudioState {
     required this.lspState,
     required this.skillsByProject,
     this.threadModeCatalog = const ThreadModeCatalogView(),
-    required this.providerUsageState,
+    required this.accountUsageState,
     this.modelPerformance = const ModelPerformanceSnapshotView(),
     required this.updaterState,
     this.persistenceState = const PersistenceStateSnapshot.ready(),
@@ -84,7 +81,7 @@ class StudioState {
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
-  final ProviderUsageStateSnapshot providerUsageState;
+  final AccountUsageStateSnapshot accountUsageState;
   final ModelPerformanceSnapshotView modelPerformance;
   final UpdaterStateSnapshot updaterState;
   final PersistenceStateSnapshot persistenceState;
@@ -122,10 +119,10 @@ class StudioState {
   Map<String, StudioAgentView> get agentsByThread => {
     for (final agent in agentDirectory.values) agent.threadId: agent,
   };
-  List<ProviderSettingsView> get providers => settingsState.providers;
-  String? get defaultProviderId => settingsState.defaultProviderId;
+  List<AccountSettingsView> get accounts => settingsState.accounts;
+  String? get defaultAccountId => settingsState.defaultAccountId;
   List<ModeModelRouteView> get modeModelRoutes => settingsState.modeModelRoutes;
-  List<ProviderUsageView> get providerUsages => providerUsageState.usages;
+  List<AccountUsageView> get accountUsages => accountUsageState.usages;
   SessionCostsStateView? get selectedSessionCostState {
     final rootId = selectedRootThread?.id;
     return rootId == null ? null : sessionCostsByRoot[rootId];
@@ -254,21 +251,6 @@ class StudioState {
     return ordered;
   }
 
-  List<TimelineRow> get selectedTimelineRows {
-    final workspace = selectedWorkspace;
-    if (workspace == null) return const [];
-    // Runtime/turn/activity/storage updates replace the workspace wrapper while
-    // retaining the canonical bounded item list. Cache by that list identity so
-    // a high-frequency state update does not manufacture a new timeline
-    // projection for unchanged content.
-    final cached = _timelineRowsByItems[workspace.items];
-    if (cached != null) return cached;
-    final rows = timelineRowsFromThreadItems(workspace.items);
-    _timelineRowsByItems[workspace.items] = rows;
-    _timelineRowsByWorkspace[workspace] = rows;
-    return rows;
-  }
-
   TimelineTodoListUpdate? get selectedTodoList => selectedWorkspace?.todo;
 
   List<PendingInteraction> get pendingInteractions => [
@@ -316,7 +298,6 @@ class StudioState {
       rootThread: root,
       syncState: selectedWorkspaceUi.syncState,
       loadError: selectedWorkspaceUi.loadError,
-      timelineRows: selectedTimelineRows,
       todo: selectedTodoList,
       runtime: runtime,
       turn: turn,
@@ -326,7 +307,7 @@ class StudioState {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      providers: providers,
+      accounts: accounts,
       modeModelRoutes: modeModelRoutes,
       roles: roles,
       agents: selectedAgents,
@@ -380,7 +361,7 @@ class StudioState {
     LspStateSnapshot? lspState,
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
-    ProviderUsageStateSnapshot? providerUsageState,
+    AccountUsageStateSnapshot? accountUsageState,
     ModelPerformanceSnapshotView? modelPerformance,
     UpdaterStateSnapshot? updaterState,
     PersistenceStateSnapshot? persistenceState,
@@ -418,7 +399,7 @@ class StudioState {
       lspState: lspState ?? this.lspState,
       skillsByProject: skillsByProject ?? this.skillsByProject,
       threadModeCatalog: threadModeCatalog ?? this.threadModeCatalog,
-      providerUsageState: providerUsageState ?? this.providerUsageState,
+      accountUsageState: accountUsageState ?? this.accountUsageState,
       modelPerformance: modelPerformance ?? this.modelPerformance,
       updaterState: updaterState ?? this.updaterState,
       persistenceState: persistenceState ?? this.persistenceState,

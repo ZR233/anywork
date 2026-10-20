@@ -1922,13 +1922,15 @@ mod storage_fault_tests {
         )
     }
 
-    /// The item the window currently shows for `item_id`.
-    fn snapshot_item(view: &pl_core::chat::ChatView, item_id: &str) -> pl_core::chat::ChatItem {
-        view.snapshot()
+    /// The item the shared session currently shows for `item_id`.
+    async fn shown_item(chat: &pl_core::chat::Session, item_id: &str) -> pl_core::chat::ChatItem {
+        chat.page(pl_core::chat::ChatPageRequest::latest().with_limit(100))
+            .await
+            .expect("the preview page is readable")
             .items
             .into_iter()
             .find(|item| item.item_id == item_id)
-            .expect("the identity stays inside the window")
+            .expect("the identity stays inside the bounded preview page")
     }
 
     /// The writer never reads a committed body back to publish it.
@@ -1943,7 +1945,6 @@ mod storage_fault_tests {
         let id = "writer-confirmation";
         let (_temp, store, sink) = sink(id).await?;
         let chat = store.chat_session(id).await?;
-        let view = chat.open_chat(pl_core::chat::ChatFocus::Latest).await?;
 
         // The live projection publishes the body; the reliable handoff then commits that same batch.
         chat.publish_preview(chat_item(
@@ -1952,12 +1953,7 @@ mod storage_fault_tests {
         )?)?;
         sink.admit(id, visible_input_ticket(id, 1, "projected-first")?)?;
         tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
-        let published = view
-            .snapshot()
-            .items
-            .into_iter()
-            .find(|item| item.item_id == "projected-first")
-            .expect("the published body stays in the window");
+        let published = shown_item(&chat, "projected-first").await;
         assert!(
             published.saved,
             "the committed identity confirms the body the projection already published"
@@ -2296,10 +2292,10 @@ mod storage_fault_tests {
     )> {
         let receipt = pl_model::runtime::ModelResponseReceipt {
             binding: pl_model::runtime::ModelCallBinding {
-                provider_instance_id: "fixture".into(),
-                requested_model: "fixture-model".into(),
-                adapter: pl_model::provider::ProviderAdapterKind::OpenAiCompatible,
-                protocol: pl_model::provider::ProviderWireProtocol::ChatCompletions,
+                account_id: "fixture".into(),
+                model_id: "fixture-model".into(),
+                protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
+                wire_api: pl_model::protocol::WireApi::ChatCompletions,
                 isolation: "test".into(),
                 purpose: "test".into(),
                 context_window: None,
@@ -2331,7 +2327,8 @@ mod storage_fault_tests {
         }
         let frame = OpaquePayload::new(
             "pl.model.assistant",
-            2,
+            // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
+            3,
             serde_json::to_string(&Frame {
                 receipt: &receipt,
                 bindings: Vec::new(),
@@ -2396,7 +2393,7 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn running_save_ack_preserves_later_failed_and_current_observations() -> Result<()> {
         use pl_core::{
-            chat::{ChatFocus, PresentationPart, presentation_item_id},
+            chat::{PresentationPart, presentation_item_id},
             model::{
                 ActiveModelProgress, ModelProgressSender, ModelTextChannel, ObservedItemKind,
                 ObservedPart, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
@@ -2411,7 +2408,6 @@ mod storage_fault_tests {
             ThreadStorageSink::new(store.clone(), pl_protocol::Thread::placeholder(id), None)
                 .await?;
         let chat = store.chat_session(id).await?;
-        let view = chat.open_chat(ChatFocus::Latest).await?;
         let mut projection = live_projection();
         let (mut attempt, mut update) = committed_parts_attempt("turn", "attempt", 0)?;
         attempt.status = AttemptStatus::Running;
@@ -2454,16 +2450,18 @@ mod storage_fault_tests {
             "same-provider-id",
             Some(PresentationPart::OutputText(0)),
         );
-        let failed = snapshot_item(&view, &failed_id);
-        let current = snapshot_item(&view, &current_id);
+        let failed = shown_item(&chat, &failed_id).await;
+        let current = shown_item(&chat, &current_id).await;
         drop(locked);
         tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
 
         // No further provider update is needed to keep either identity visible after the save ack.
-        let saved_window = view.snapshot();
+        let saved_window = chat
+            .page(pl_core::chat::ChatPageRequest::latest().with_limit(100))
+            .await?
+            .items;
         assert_eq!(
             saved_window
-                .items
                 .iter()
                 .find(|item| item.item_id == failed_id)
                 .context("Running save acknowledgement removed the failed observation")?,
@@ -2471,7 +2469,6 @@ mod storage_fault_tests {
         );
         assert_eq!(
             saved_window
-                .items
                 .iter()
                 .find(|item| item.item_id == current_id)
                 .context("Running save acknowledgement removed the current observation")?,
@@ -2516,10 +2513,7 @@ mod storage_fault_tests {
         accepted.checkpoint.state.inbox = Arc::from([record.clone()]);
         Arc::make_mut(&mut accepted.effect).inbox = Arc::from([record.clone()]);
         drive_live_projection(&mut projection, &chat, &sink, id, accepted.clone())?;
-        let original = chat
-            .read_item(&item_id)
-            .await?
-            .context("accepted message")?;
+        let original = shown_item(&chat, &item_id).await;
         // Re-observation before consumption must not invent a new content version.
         projection.advance(
             &chat,
@@ -2528,7 +2522,7 @@ mod storage_fault_tests {
             &accepted.checkpoint.state,
         )?;
         assert_eq!(
-            chat.read_item(&item_id).await?.unwrap().revision,
+            shown_item(&chat, &item_id).await.revision,
             original.revision
         );
 
@@ -3487,7 +3481,6 @@ mod storage_fault_tests {
         sink.admit("closed-view", ticket("closed-view", 1))?;
         tokio::time::timeout(Duration::from_secs(5), sink.flush("closed-view", 1)).await??;
         let chat = store.chat_session("closed-view").await?;
-        let view = chat.open_chat(pl_core::chat::ChatFocus::Latest).await?;
         let path = store
             .thread_storage_dir("closed-view")
             .join("history.sqlite");
@@ -3508,7 +3501,6 @@ mod storage_fault_tests {
         })
         .await??;
         let generation = updates.borrow().fault_generation;
-        drop(view);
         drop(chat);
         drop(sink);
         assert_eq!(channel.subscribe().borrow().queued_records, 1);
@@ -3739,7 +3731,6 @@ mod storage_fault_tests {
         )
         .await?;
         let chat = store.chat_session("revision-fence").await?;
-        let view = chat.open_chat(pl_core::chat::ChatFocus::Latest).await?;
         // The commit sequence is deliberately far above the item's first content version: the
         // projection decides the content version, and the writer has to store that exact value.
         let write = visible_input_ticket("revision-fence", 9, "revision-input")?;
@@ -3773,7 +3764,7 @@ mod storage_fault_tests {
         sink.0.channel.prepare(prepared);
         tokio::time::timeout(Duration::from_secs(5), sink.flush("revision-fence", 9)).await??;
 
-        let published = snapshot_item(&view, "revision-input");
+        let published = shown_item(&chat, "revision-input").await;
         // The real allocation entry point is pinned, not just "different from the commit sequence":
         // a fresh projection's first delivery of a new identity is that identity's content version 1.
         assert_eq!(
@@ -3816,7 +3807,6 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         let chat = store.chat_session("stale-ack").await?;
-        let view = chat.open_chat(pl_core::chat::ChatFocus::Latest).await?;
 
         chat.publish_preview(revised_preview("stale-ack", "revised", 1, 1, "first body")?)?;
         chat.publish_preview(revised_preview(
@@ -3826,18 +3816,18 @@ mod storage_fault_tests {
             2,
             "second body",
         )?)?;
-        assert_eq!(snapshot_item(&view, "revised").revision, 2);
+        assert_eq!(shown_item(&chat, "revised").await.revision, 2);
 
         // The stale receipt names revision 1 while the identity already advanced to revision 2.
         chat.confirm_saved("revised", 1);
         assert!(
-            !snapshot_item(&view, "revised").saved,
+            !shown_item(&chat, "revised").await.saved,
             "an acknowledgement of a revision the identity left behind confirms nothing"
         );
 
         chat.confirm_saved("revised", 2);
         assert!(
-            snapshot_item(&view, "revised").saved,
+            shown_item(&chat, "revised").await.saved,
             "only the exact published revision becomes the saved watermark"
         );
         Ok(())

@@ -26,6 +26,8 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+percent-encoding = "2.3.2"
+procfs = { version = "0.18.0", default-features = false }
 tokio = { version = "1.53.3", features = ["full"] }
 tokio-util = "0.7.20"
 tokio-stream = "0.1"
@@ -61,6 +63,7 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 downlowd = "0.1.4"
 hyper = { version = "1.12.0", default-features = false }
 eventsource-stream = "0.2.3"
+enum_dispatch = "=0.3.13"
 secrecy = "0.10"
 axum = "0.8"
 fs4 = "=1.1.0"

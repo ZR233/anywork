@@ -25,8 +25,7 @@ WorkflowDefinition；不经过 Skill frontmatter、调用策略或 Provider。Mo
 一批注册：先在锁外完成所有 ID、Prompt、重复项和工作流编译校验，全部成功后才在短写锁内发布
 新的不可变目录快照；读取方取得快照后不再持锁。批次失败保留上一份完整快照。同一 ID 不能由
 两个来源同时提供，内置来源不可被外部来源覆盖，其他来源之间不设 winner precedence——重复 ID
-使整个注册批次失败。注册表不读取文件；未来文件加载器只能在边界层把文件解析为注册输入后调用
-同一接口。结构 revision/hash 只覆盖规范化后的工作流图，Prompt 和展示元数据不参与图 hash。
+使整个注册批次失败。注册表不读取文件；配置 owner 在文件边界解析、校验后提交同一注册接口。结构 revision/hash 只覆盖规范化后的工作流图，Prompt 和展示元数据不参与图 hash。
 
 ### 图协议
 
@@ -50,8 +49,8 @@ state 显式携带穷尽的 kind（atomic | final），transition 使用 sourceS
   重复 transition、final state 无出边；从初态正向遍历拒绝不可达节点，从所有终态反向遍历
   拒绝无法终结的非终态。编译复杂度为 O(V + E)。
 
-编译结果建立按 ID 和 source 索引的只读结构，保留声明顺序用于 UI，并从规范化协议数据计算
-稳定 hash——数组顺序是 definition 的一部分，相同规范化定义必然得到相同 hash。编译器不执行
+编译结果建立按 ID 和 source 索引的只读结构，按 ID 排序 state、按 source/target/guard 排序 transition，并从规范化协议数据计算
+稳定 hash；单纯重排 state 或 transition 不改变 hash，完成标准的声明顺序保留。编译器不执行
 workflow，也不接受模型输入；模型没有定义、编译、patch 或 supersede 图的入口。
 
 ## 11.3 Turn 快照与 run 生命周期
@@ -78,12 +77,16 @@ wait 仅用于接收已存在的后台任务、代理或定时器结果；不存
 用户输入与新 working state 在第一次 Thread checkpoint 一起提交，准备或提交失败不得调用
 provider。进入 terminal 后，下一条根用户输入创建新 lineage。切换 Mode 会归档旧活动 run，但
 不会在没有用户输入时创建新 run。
+模式选择复用归档操作，根装配只保存 `studio.mode`，不启动工作流；恢复边界仅在该扩展缺失时
+依据已核验的目录模式补写。模型准备从 core 冻结的、尚未消费的 Turn 发起输入识别新根用户
+请求，并将工作流候选与当前事实一次提交；不从聊天正文或后续工具续接推断新任务。
 
 每个 run 只保存 Mode ID、图 hash、lineage/run ID、生命周期（active/terminal）、当前 state、
 CAS revision、转换记录与归档关系，不保存 Mode Prompt 或完整图。下一个 Turn 若发现相同
 Mode 的图 hash 已变化，先以 modeUpdated 归档旧 run，再以同 lineage 创建 replacement；仅
-Prompt 变化时继续当前 run 并使用最新 Prompt。所选 ID 不再可用时在 provider 前返回类型化的
-Mode 不可用错误，不得静默回退。
+Prompt 变化时继续当前活动 run 并使用最新 Prompt；已终结且图未变化的工作流在新根输入到来时
+仍按新任务创建 lineage。图身份变化优先按 modeUpdated 对账，包括已有 run 为终态的情况。
+已删除的 ID 继续使用会话最后保存的完整快照；新建会话和显式切换只能选择当前目录中的 Mode。
 
 冷会话激活只解码保存的工作流，不要求保存的图 hash 与当前注册图相同，也不归档或重置 run。
 恢复后第一次模型请求的上下文准备按上述 modeUpdated 规则生成候选更新；新工作流扩展与当前
@@ -91,7 +94,7 @@ Mode 不可用错误，不得静默回退。
 不发起 provider 请求。图身份相同但当前 state 无法投影仍作为无效状态拒绝。
 
 模型输入注入 `<preloaded_thread_mode_prompt>` 与由注册图和 run 派生的精简当前状态；完整图
-按需通过工具读取。Prompt 不进入 Studio 数据库或 workflow working state。持久化结构变化
+按需通过工具读取。完整 Mode 定义（包含 Prompt 和图）随 `studio.mode` checkpoint 保存，workflow working state 只保存运行事实。持久化结构变化
 遵循 [17](./17-studio-storage.md) 的迁移契约；Mode/Workflow 历史形状在迁移边界转换，
 运行时只使用当前结构。
 
@@ -212,3 +215,19 @@ Mode 目录覆盖已完成切换的新工具；过期发布不记为已安装、
 ## 当前工作流投影
 
 根会话请求直接包含当前工作流身份、图版本、当前阶段指令、完成标准、允许转换及比较交换所需参数。关闭自动压缩仍保持投影；压缩和重启后恢复最新业务状态，不能依据旧摘要回退到初始阶段。注册图版本变化按 11.3 的 modeUpdated 规则归档替换；图身份相同但业务状态无法投影时明确拒绝。查询工具用于信息缺失或并发冲突，不作为每步重新定位的强制前置操作。
+
+## 11.8 工作流编辑与预演
+
+工作模式编辑器复用注册协议、编译器和转换机器。内置简洁与任务模式可查看和复制，自定义模式
+可增删改查。文件定义的执行字段为 id、displayName、description、order、prompt、workflow；
+可选 editor.nodes 只保存 stateId 和有限二维坐标，不参与工作流 hash 或会话执行快照。
+图与 JSON 编辑同一份 Client 草稿。非法中间状态允许留在草稿中，只有完整校验成功的定义才可保存。
+
+预演接收完整草稿和最多 128 步的路径，在隔离内存中由生产转换机器逐步重放；不创建真实会话、
+不访问模型、不改变持久化状态。操作者负责判断自然语言条件，机器验证合法边、完成声明和终态。
+
+会话持久化完整 Mode 快照及其图 revision。下一 root Turn 在首次 provider 请求准备时，从同一次目录快照
+捕获最新定义，并将 Mode、Prompt、workflow 对账一起 CAS 提交；后续推理和工具只读取本 Turn
+已保存的冻结定义。仅 Prompt 变化保留运行进度；图变化按 modeUpdated 规则替换 run。
+删除配置不删除会话快照，也不将恢复快照重新注册到目录。当前 Turn、热会话、冷会话及归档会话
+都拥有其快照；更新、切换和删除会话自然释放旧引用，不以工作流终态或归档作为回收条件。

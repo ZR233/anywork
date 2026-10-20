@@ -36,7 +36,7 @@ void bootstrapStudio({ProviderContainer? container, AppGraph? graph}) {
       runApp(
         UncontrolledProviderScope(
           container: external,
-          child: const AnyworkApp(),
+          child: const AnyworkApp(enableDesktopTray: true),
         ),
       );
       return;
@@ -44,7 +44,7 @@ void bootstrapStudio({ProviderContainer? container, AppGraph? graph}) {
     runApp(
       ProviderScope(
         overrides: [appGraphProvider.overrideWithValue(application)],
-        child: const AnyworkApp(),
+        child: const AnyworkApp(enableDesktopTray: true),
       ),
     );
   }, recordDartError);

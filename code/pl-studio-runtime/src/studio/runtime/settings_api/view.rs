@@ -2,19 +2,19 @@
 
 use anyhow::{Context, Result};
 use pl_model::model::ModelInfo;
-use pl_model::provider::{ProviderConnectionMode, ProviderWireProtocol};
+use pl_model::protocol::{ConnectionMode, WireApi};
 use pl_protocol::WebSearchContextSize;
 use pl_protocol::search::WebSearchMode;
 use pl_protocol::studio::{
-    ModelCatalogSnapshot, SettingsConfigSnapshot, SettingsStateResponse, StudioCustomModelSettings,
-    StudioDeepSeekWebSearchSettings, StudioGeneralSettings, StudioInstructionsSettings,
-    StudioMcpServerSettings, StudioModeModelSettings, StudioModelAutoCompactSettings,
-    StudioModelCatalogProvider, StudioModelConnectionSettings, StudioProviderSettings,
+    ModelCatalogSnapshot, SettingsConfigSnapshot, SettingsStateResponse, StudioAccountModelCatalog,
+    StudioAccountSettings, StudioCustomModelSettings, StudioDeepSeekWebSearchSettings,
+    StudioGeneralSettings, StudioInstructionsSettings, StudioMcpServerSettings,
+    StudioModeModelSettings, StudioModelAutoCompactSettings, StudioModelConnectionSettings,
     StudioRoleSettings, StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot, StudioRole};
-use pl_model::config::{ProviderCapabilitySelection, ProviderModelCatalogConfig};
+use pl_model::config::{AccountCapabilitySelection, AccountModelCatalogConfig};
 use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
 pub(crate) fn settings_config_snapshot(
@@ -31,16 +31,16 @@ pub(crate) fn model_catalog_snapshot(
     state: &ConfigRuntimeSnapshot,
     catalog: &ModelCatalogRuntimeSnapshot,
 ) -> Result<ModelCatalogSnapshot> {
-    let providers = state
+    let accounts = state
         .config
         .models
-        .providers
+        .accounts
         .iter()
-        .map(|(id, provider)| {
+        .map(|(id, account)| {
             let status = match catalog.catalogs.get(id).cloned() {
                 Some(status) => status,
                 None => pl_protocol::studio::StudioModelCatalogStatus {
-                    supported: provider.discovery_profile()?.is_some(),
+                    supported: account.discovery_profile()?.is_some(),
                     source: pl_protocol::studio::StudioModelCatalogSource::Default,
                     probing: false,
                     last_success_at: None,
@@ -49,10 +49,10 @@ pub(crate) fn model_catalog_snapshot(
                     cache_warning: None,
                 },
             };
-            Ok(StudioModelCatalogProvider {
-                id: id.to_string(),
-                effective_models: provider
-                    .effective_catalog()?
+            Ok(StudioAccountModelCatalog {
+                account_id: id.to_string(),
+                effective_models: account
+                    .effective_catalog(None)?
                     .iter()
                     .map(pl_model::config::model_descriptor)
                     .collect(),
@@ -63,7 +63,7 @@ pub(crate) fn model_catalog_snapshot(
     Ok(ModelCatalogSnapshot {
         revision: catalog.revision,
         updated_at: catalog.updated_at,
-        providers,
+        accounts,
     })
 }
 
@@ -79,47 +79,45 @@ pub(crate) fn settings_state_response(
 
 fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
     let config = state.canonical_config();
-    let providers = config
+    let accounts = config
         .models
-        .providers
+        .accounts
         .iter()
-        .map(|(id, provider)| {
-            let models = provider
-                .effective_catalog()?
+        .map(|(id, account)| {
+            let models = account
+                .effective_catalog(None)?
                 .into_iter()
                 .map(|entry| entry.model)
                 .collect::<Vec<_>>();
-            let default_model = config
+            let default_model_id = config
                 .models
                 .routes
                 .values()
-                .find(|route| route.provider == *id)
-                .map(|route| route.model.clone())
-                .or_else(|| models.first().map(|model| model.slug.clone()))
+                .find(|route| route.account_id == *id)
+                .map(|route| route.model_id.clone())
+                .or_else(|| models.first().map(|model| model.model_id.clone()))
                 .unwrap_or_default();
-            let service_capabilities = provider.service_capabilities()?;
-            let catalog_id = match &provider.catalog {
-                ProviderModelCatalogConfig::Bundled { catalog, .. } => Some(catalog.to_string()),
-                ProviderModelCatalogConfig::Explicit { .. } => None,
+            let service_capabilities = account.service_capabilities()?;
+            let catalog_id = match &account.catalog {
+                AccountModelCatalogConfig::Bundled { catalog, .. } => Some(catalog.to_string()),
+                AccountModelCatalogConfig::Explicit { .. } => None,
             };
-            Ok(StudioProviderSettings {
-                pricing_enabled: provider.pricing_mode == pl_protocol::PricingMode::Catalog,
-                id: id.to_string(),
-                template_kind: provider
-                    .preset_id()
-                    .map(|preset| preset.to_string())
-                    .unwrap_or_default(),
-                name: provider.name.clone(),
-                base_url: provider.base_url.clone(),
-                has_bearer_token: provider.resolved_bearer_token().is_some(),
+            Ok(StudioAccountSettings {
+                pricing_enabled: account.pricing_mode == pl_protocol::PricingMode::Catalog,
+                account_id: id.to_string(),
+                template_id: account.template_id().map(ToString::to_string),
+                protocol: account.protocol.as_str().to_string(),
+                name: account.name.clone(),
+                base_url: account.base_url.clone(),
+                has_bearer_token: account.resolved_bearer_token().is_some(),
                 usage_query_revision: state
                     .usage_query_revision(id)
-                    .context("provider usage query identity is missing")?,
-                credential_required: provider.adapter
-                    != pl_model::provider::ProviderAdapterKind::OpenAiCompatible,
-                capability_source: match &provider.capabilities {
-                    ProviderCapabilitySelection::PresetDefaults => "preset_defaults",
-                    ProviderCapabilitySelection::Explicit(_) => "explicit",
+                    .context("account usage query identity is missing")?,
+                credential_required: account.protocol
+                    != pl_model::protocol::ProtocolKind::OpenAiCompatible,
+                capability_source: match &account.capabilities {
+                    AccountCapabilitySelection::TemplateDefaults => "template_defaults",
+                    AccountCapabilitySelection::Explicit(_) => "explicit",
                 }
                 .to_string(),
                 hosted_web_search: service_capabilities.web_search.hosted_responses,
@@ -140,54 +138,28 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 responses_programmatic_tool_calling: service_capabilities
                     .responses_tools
                     .programmatic_tool_calling,
-                default_model,
-                custom_models: provider
+                default_model_id,
+                custom_models: account
                     .editable_models()
                     .iter()
                     .map(custom_model_settings)
                     .collect(),
-                model_connection_modes: provider
+                model_connection_modes: account
                     .connection_overrides()
                     .iter()
-                    .map(|(slug, mode)| StudioModelConnectionSettings {
-                        slug: slug.clone(),
+                    .map(|(model_id, mode)| StudioModelConnectionSettings {
+                        model_id: model_id.clone(),
                         connection_mode: connection_mode_label(*mode).to_string(),
                     })
                     .collect(),
-                model_auto_compact_limits: {
-                    let overrides = provider.auto_compact_overrides();
-                    let mut limits = models
-                        .iter()
-                        .map(|model| {
-                            let override_limit = overrides.get(&model.slug).copied();
-                            StudioModelAutoCompactSettings {
-                                slug: model.slug.clone(),
-                                default_limit: model.default_auto_compact_token_limit(),
-                                override_limit,
-                                effective_limit: model
-                                    .resolved_auto_compact_limit_with(override_limit),
-                                safe_limit: model.safe_auto_compact_token_limit(),
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    // A successful remote inventory can withdraw a model without deleting
-                    // its desired override. Full provider edits must retain those choices.
-                    limits.extend(
-                        overrides
-                            .iter()
-                            .filter(|(slug, _)| {
-                                !models.iter().any(|model| model.slug == slug.as_str())
-                            })
-                            .map(|(slug, limit)| StudioModelAutoCompactSettings {
-                                slug: slug.clone(),
-                                default_limit: None,
-                                override_limit: Some(*limit),
-                                effective_limit: None,
-                                safe_limit: None,
-                            }),
-                    );
-                    limits
-                },
+                model_auto_compact_limits: account
+                    .auto_compact_overrides()
+                    .iter()
+                    .map(|(model_id, limit)| StudioModelAutoCompactSettings {
+                        model_id: model_id.clone(),
+                        override_limit: Some(*limit),
+                    })
+                    .collect(),
                 catalog_id,
             })
         })
@@ -197,8 +169,8 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
         .iter()
         .map(|(mode, route)| StudioModeModelSettings {
             mode_id: mode.to_string(),
-            provider_id: route.provider.to_string(),
-            model: route.model.clone(),
+            account_id: route.account_id.to_string(),
+            model_id: route.model_id.clone(),
             effort: route
                 .effort
                 .as_ref()
@@ -216,8 +188,8 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 .with_context(|| format!("missing Studio role route: {}", role.key()))?;
             Ok(StudioRoleSettings {
                 key: role.key().to_string(),
-                provider_id: route.provider.to_string(),
-                model: route.model.clone(),
+                account_id: route.account_id.to_string(),
+                model_id: route.model_id.clone(),
                 effort: route
                     .effort
                     .as_ref()
@@ -249,11 +221,11 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
         .collect();
     let (web_search, deepseek_web_search) = search_settings(config)?;
     Ok(StudioSettings {
-        default_provider_id: config
+        default_account_id: config
             .mode_model_routes
             .get(&pl_protocol::ThreadModeId::simple())
-            .map(|route| route.provider.to_string()),
-        providers,
+            .map(|route| route.account_id.to_string()),
+        accounts,
         mode_model_routes,
         roles,
         permission_mode: config.runtime.permission_mode.label().to_string(),
@@ -299,15 +271,15 @@ fn custom_model_settings(model: &ModelInfo) -> StudioCustomModelSettings {
         .unwrap_or_default();
     StudioCustomModelSettings {
         input_capabilities: model.capabilities.input.iter().map(Into::into).collect(),
-        context_window: model.context_window.unwrap_or(32_000),
-        max_output_tokens: model.max_output_tokens.unwrap_or(4_096),
-        slug: model.slug.clone(),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        model_id: model.model_id.clone(),
         display_name: model.display_name.clone(),
         reasoning_efforts: reasoning_efforts.to_vec(),
         base_instructions: model.base_instructions.clone(),
-        wire_protocol: match model.binding.transport.protocol {
-            ProviderWireProtocol::Responses => "responses",
-            ProviderWireProtocol::ChatCompletions => "chat_completions",
+        wire_api: match model.binding.transport.protocol {
+            WireApi::Responses => "responses",
+            WireApi::ChatCompletions => "chat_completions",
         }
         .to_string(),
         supported_connection_modes: model
@@ -362,8 +334,8 @@ fn search_settings(
             region: location.and_then(|location| location.region.clone()),
             city: location.and_then(|location| location.city.clone()),
             timezone: location.and_then(|location| location.timezone.clone()),
-            provider_id: openai.provider_id.map(|provider| provider.to_string()),
-            model: openai.model,
+            account_id: openai.account_id.map(|account| account.to_string()),
+            model_id: openai.model_id,
         },
         StudioDeepSeekWebSearchSettings {
             configured_enabled: config.deepseek_web_search.enabled,
@@ -371,7 +343,7 @@ fn search_settings(
             configured_fetch_enabled: config.deepseek_web_search.fetch_enabled,
             effective_fetch_enabled: config.deepseek_web_search.fetch_enabled && deepseek_available,
             availability: web_search_availability_label(deepseek.availability).to_string(),
-            provider_id: deepseek.provider_id.map(|provider| provider.to_string()),
+            account_id: deepseek.account_id.map(|account| account.to_string()),
         },
     ))
 }
@@ -381,7 +353,7 @@ fn web_search_availability_label(availability: WebSearchAvailability) -> &'stati
         WebSearchAvailability::Available => "available",
         WebSearchAvailability::Disabled => "disabled",
         WebSearchAvailability::MissingCredential => "missingCredential",
-        WebSearchAvailability::ProviderUnsupported => "providerUnsupported",
+        WebSearchAvailability::AccountUnsupported => "accountUnsupported",
         WebSearchAvailability::ModelUnsupported => "modelUnsupported",
     }
 }
@@ -412,9 +384,9 @@ fn web_search_mode_label(mode: WebSearchMode) -> &'static str {
     }
 }
 
-fn connection_mode_label(mode: ProviderConnectionMode) -> &'static str {
+fn connection_mode_label(mode: ConnectionMode) -> &'static str {
     match mode {
-        ProviderConnectionMode::WebSocket => "web_socket",
-        ProviderConnectionMode::Http => "http",
+        ConnectionMode::WebSocket => "web_socket",
+        ConnectionMode::Http => "http",
     }
 }

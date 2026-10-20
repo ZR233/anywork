@@ -1,21 +1,20 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
-import '../../presentation/providers/selection_store.dart';
-import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
+import '../settings/settings_views.dart';
 
 import 'package:anywork_client/studio_client.dart';
-
-import '../../presentation/providers/thread_session_store.dart';
 
 import '../../domain/models/studio_models.dart';
 
 part 'status_view.g.dart';
 
 const statusEmptyRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,
@@ -38,90 +37,149 @@ List<LspServerStateView> statusLspServers(Ref ref) {
   return ref.watch(lspStoreProvider).value?.servers ?? const [];
 }
 
+/// Stable status-bar fields for one Thread. Throughput and context are not
+/// part of this value, so decode updates cannot rebuild the chrome.
 @riverpod
-StudioRuntimeProjection? statusRuntimeProjection(Ref ref) {
-  final session = _selectedSession(ref);
-  if (session == null) return null;
-  final runtime = session.runtime ?? statusEmptyRuntime;
-  return StudioRuntimeProjection(
-    threadId: session.threadId,
-    runtime: runtime,
-    turn: session.activeTurn,
-    isBusy: session.activeTurn?.state.isBusy ?? false,
-    syncState: _syncState(session),
-    loadError: session.sync.phase == DomainSyncPhase.failed
-        ? session.sync.errorMessage
-        : null,
-  );
-}
-
-@riverpod
-StudioContextProjection? statusContextProjection(Ref ref) {
-  final session = _selectedSession(ref);
-  if (session == null) return null;
-  return StudioContextProjection.fromRuntime(
-    session.threadId,
-    session.runtime ?? statusEmptyRuntime,
-  );
-}
-
-@riverpod
-StudioThroughputProjection? statusThroughputProjection(Ref ref) {
-  final session = _selectedSession(ref);
-  if (session == null) return null;
-  final runtime = session.runtime ?? statusEmptyRuntime;
-  final live = runtime.liveUsage;
-  // Live 输出与解码计数独立出现：一个 provider 可能先报其一。两者必须保持
-  // 同一样本，否则新一次尝试的短解码窗口会与上一次尝试的输出总数交叉配对，
-  // 显示出虚假的数千 tokens/s（design/18 §18.8.1）。
-  final liveOutputTokens = live?.completionTokens;
-  final liveDecodeMillis = live?.decodeMillis;
-  final hasCompleteLiveSample =
-      liveOutputTokens != null &&
-      liveOutputTokens > 0 &&
-      liveDecodeMillis != null &&
-      liveDecodeMillis > 0;
-  return StudioThroughputProjection(
-    threadId: session.threadId,
-    completionTokens: hasCompleteLiveSample
-        ? liveOutputTokens
-        : live != null
-        ? 0
-        : runtime.turnCompletionTokens,
-    decodeMillis: hasCompleteLiveSample
-        ? liveDecodeMillis
-        : live != null
-        ? 0
-        : runtime.turnDecodeMillis,
-  );
-}
-
-@riverpod
-StatusBarView? statusBarView(Ref ref) {
-  final session = _selectedSession(ref);
-  if (session == null) return null;
-  final thread = _directoryThread(ref, session.threadId);
+StatusBarView? statusBarView(Ref ref, String threadId) {
+  final thread = _directoryThread(ref, threadId);
   if (thread == null) return null;
-  final settings = ref.watch(settingsStoreProvider);
-  final canonical = settings.canonical;
-  final runtime = session.runtime ?? statusEmptyRuntime;
+  final catalog = ref.watch(settingsAccountsViewProvider);
+  final chrome =
+      _observeSession(
+        ref,
+        threadId,
+        _chromeFromSession,
+        equals: _chromeEquals,
+      ) ??
+      (
+        isBusy: false,
+        modelRoute: null,
+        workflowRun: null,
+        activeSkills: const <String>[],
+        activeMcpServers: const <String>[],
+        activeLspServers: const <String>[],
+      );
   return StatusBarView(
     thread: thread,
-    runtime: runtime,
-    providers: providersWithCatalogMetadata(
-      canonical?.providers ?? const <ProviderSettingsView>[],
-      settings.providerCatalog,
-    ),
-    roles: canonical?.roles ?? const [],
-    isBusy: session.activeTurn?.state.isBusy ?? false,
+    accounts: catalog.accounts,
+    roles: catalog.canonical?.roles ?? const [],
+    isBusy: chrome.isBusy,
+    modelRoute: chrome.modelRoute,
+    workflowRun: chrome.workflowRun,
+    activeSkills: chrome.activeSkills,
+    activeMcpServers: chrome.activeMcpServers,
+    activeLspServers: chrome.activeLspServers,
   );
 }
 
-ThreadSessionState? _selectedSession(Ref ref) {
-  final selection = ref.watch(selectionStoreProvider);
-  final threadId = selection.selectedThreadId;
-  if (threadId == null || selection.needsOpen) return null;
-  return ref.watch(threadSessionStoreProvider(threadId));
+@riverpod
+CommandStatus? statusCompactionCommand(Ref ref, String threadId) {
+  final commands = ref.read(anyworkClientProvider).threadCommands;
+  final key = 'compact:$threadId';
+  var current = commands.state.commands[key];
+  observeClient(ref, commands.source, (next) {
+    if (current == next.commands[key]) return;
+    current = next.commands[key];
+    ref.invalidateSelf();
+  });
+  return current;
+}
+
+@riverpod
+StudioContextProjection? statusContextProjection(Ref ref, String threadId) {
+  final accounts = ref.watch(settingsAccountsViewProvider).accounts;
+  return _observeSession(
+    ref,
+    threadId,
+    (session) => StudioContextProjection.fromRuntime(
+      threadId,
+      session.runtime ?? statusEmptyRuntime,
+      accounts: accounts,
+      isBusy: session.activeTurn?.state.isBusy ?? false,
+    ),
+  );
+}
+
+@riverpod
+StudioThroughputProjection? statusThroughputProjection(
+  Ref ref,
+  String threadId,
+) {
+  return _observeSession(ref, threadId, (session) {
+    final runtime = session.runtime ?? statusEmptyRuntime;
+    final source = ModelRouteQueries.throughputSource(runtime);
+    return StudioThroughputProjection(
+      threadId: threadId,
+      completionTokens: source?.outputTokens ?? 0,
+      decodeMillis: source?.decodeMillis ?? 0,
+    );
+  });
+}
+
+typedef _StatusChrome = ({
+  bool isBusy,
+  ThreadModelRouteView? modelRoute,
+  WorkflowRunView? workflowRun,
+  List<String> activeSkills,
+  List<String> activeMcpServers,
+  List<String> activeLspServers,
+});
+
+_StatusChrome _chromeFromSession(ThreadSessionState session) {
+  final runtime = session.runtime ?? statusEmptyRuntime;
+  return (
+    isBusy: session.activeTurn?.state.isBusy ?? false,
+    modelRoute: runtime.modelRoute,
+    workflowRun: runtime.workflow?.currentRun,
+    activeSkills: runtime.activeSkills,
+    activeMcpServers: runtime.activeMcpServers,
+    activeLspServers: runtime.activeLspServers,
+  );
+}
+
+bool _chromeEquals(_StatusChrome left, _StatusChrome right) {
+  return left.isBusy == right.isBusy &&
+      left.modelRoute == right.modelRoute &&
+      left.workflowRun == right.workflowRun &&
+      _sameStrings(left.activeSkills, right.activeSkills) &&
+      _sameStrings(left.activeMcpServers, right.activeMcpServers) &&
+      _sameStrings(left.activeLspServers, right.activeLspServers);
+}
+
+bool _sameStrings(List<String> left, List<String> right) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
+T? _observeSession<T>(
+  Ref ref,
+  String threadId,
+  T Function(ThreadSessionState session) project, {
+  bool Function(T left, T right)? equals,
+}) {
+  final owner = ref.read(anyworkClientProvider).existingSession(threadId);
+  if (owner == null) {
+    observeClientDemand(
+      ref,
+      ownsFailure: (owner) => owner == 'session:$threadId',
+    );
+    return null;
+  }
+  late final T current;
+  current = project(
+    observeClient(ref, owner.source, (next) {
+      final projected = project(next);
+      final unchanged = equals == null
+          ? projected == current
+          : equals(projected, current);
+      if (!unchanged) ref.invalidateSelf();
+    }),
+  );
+  return current;
 }
 
 StudioThread? _directoryThread(Ref ref, String threadId) {
@@ -133,23 +191,4 @@ StudioThread? _directoryThread(Ref ref, String threadId) {
     if (thread.id == threadId) return thread;
   }
   return null;
-}
-
-AgentWorkspaceSyncState _syncState(ThreadSessionState session) {
-  return switch (session.sync.phase) {
-    DomainSyncPhase.idle =>
-      session.hasSnapshot
-          ? AgentWorkspaceSyncState.ready
-          : AgentWorkspaceSyncState.loading,
-    DomainSyncPhase.connecting => AgentWorkspaceSyncState.loading,
-    DomainSyncPhase.ready => AgentWorkspaceSyncState.ready,
-    DomainSyncPhase.reconnecting =>
-      session.hasSnapshot
-          ? AgentWorkspaceSyncState.reconnecting
-          : AgentWorkspaceSyncState.loading,
-    DomainSyncPhase.failed =>
-      session.hasSnapshot
-          ? AgentWorkspaceSyncState.stale
-          : AgentWorkspaceSyncState.failed,
-  };
 }

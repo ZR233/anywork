@@ -9,16 +9,15 @@ use pl_protocol::{InferenceModelObservation, InferenceTiming, PureError, Result}
 
 use super::{ModelSession, responses_websocket, wire_capture};
 
-use crate::completion::stream::{
-    CompletionEventStream, StreamCollectContext, decode_raw_event_stream,
-};
+use crate::completion::stream::{CompletionEventStream, StreamCollectContext};
 use crate::completion::{
     CompletionFailure, CompletionRequest, CompletionResponse, CompletionTraceContext,
 };
 use crate::model::capabilities::ModelCapabilities;
 use crate::model::info::ModelInfo;
-use crate::provider::{ProviderConnectionMode, ProviderEndpoint, ProviderWireProtocol};
-use crate::runtime::openai::{OpenAiProtocol, OpenAiRequestBody};
+use crate::protocol::{ConnectionMode, ProtocolEndpoint, WireApi};
+use crate::protocol::{ProtocolAdaptation, ProtocolAdapter};
+use crate::runtime::openai::OpenAiRequestBody;
 use crate::runtime::transport_policy::{
     MODEL_MAX_RETRIES, RESPONSES_WEBSOCKET_IDLE_TIMEOUT, RESPONSES_WEBSOCKET_MAX_RETRIES,
     model_request_retry_delay,
@@ -142,8 +141,8 @@ impl Default for ModelInvocationContext {
 
 #[derive(Clone)]
 pub(crate) struct InvocationRunner {
-    provider_instance_id: String,
-    endpoint: ProviderEndpoint,
+    account_id: String,
+    endpoint: ProtocolEndpoint,
     pub(super) http_client: reqwest::Client,
     model: ModelInfo,
     native_body: serde_json::Map<String, serde_json::Value>,
@@ -184,25 +183,43 @@ impl OpenAiTransport {
 struct InferenceTimer {
     started_at: tokio::time::Instant,
     first_token_millis: Arc<AtomicU64>,
+    terminal_millis: Arc<AtomicU64>,
 }
 
 impl InferenceTimer {
-    const FIRST_TOKEN_UNSET: u64 = u64::MAX;
+    const UNSET: u64 = u64::MAX;
 
     fn start() -> Self {
         Self {
             started_at: tokio::time::Instant::now(),
-            first_token_millis: Arc::new(AtomicU64::new(Self::FIRST_TOKEN_UNSET)),
+            first_token_millis: Arc::new(AtomicU64::new(Self::UNSET)),
+            terminal_millis: Arc::new(AtomicU64::new(Self::UNSET)),
         }
     }
 
     fn observe(&self, event: &crate::completion::stream::event::ModelStreamEvent) {
+        // One stream observes events in order; finish runs only after its collector returns. The
+        // cloned counters share this attempt's boundaries, never a retry's or a consumer's clock.
+        if self.terminal_millis.load(Ordering::Acquire) != Self::UNSET {
+            return;
+        }
+        if matches!(
+            event,
+            crate::completion::stream::event::ModelStreamEvent::Completed { .. }
+                | crate::completion::stream::event::ModelStreamEvent::Failed { .. }
+        ) {
+            self.terminal_millis.store(
+                duration_millis(self.started_at.elapsed()),
+                Ordering::Release,
+            );
+            return;
+        }
         if !event.starts_visible_output() {
             return;
         }
         let elapsed = duration_millis(self.started_at.elapsed());
         let _ = self.first_token_millis.compare_exchange(
-            Self::FIRST_TOKEN_UNSET,
+            Self::UNSET,
             elapsed,
             Ordering::AcqRel,
             Ordering::Acquire,
@@ -211,16 +228,27 @@ impl InferenceTimer {
 
     fn decode_millis(&self) -> Option<u64> {
         let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        (ttft_millis != Self::FIRST_TOKEN_UNSET)
-            .then(|| duration_millis(self.started_at.elapsed()).saturating_sub(ttft_millis))
+        if ttft_millis == Self::UNSET {
+            return None;
+        }
+        let terminal_millis = self.terminal_millis.load(Ordering::Acquire);
+        let elapsed = if terminal_millis == Self::UNSET {
+            duration_millis(self.started_at.elapsed())
+        } else {
+            terminal_millis
+        };
+        elapsed.checked_sub(ttft_millis)
     }
 
     fn finish(&self) -> Option<InferenceTiming> {
-        let total_millis = duration_millis(self.started_at.elapsed());
+        let total_millis = self.terminal_millis.load(Ordering::Acquire);
         let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        (ttft_millis != Self::FIRST_TOKEN_UNSET).then_some(InferenceTiming {
+        if total_millis == Self::UNSET || ttft_millis == Self::UNSET {
+            return None;
+        }
+        Some(InferenceTiming {
             ttft_millis,
-            decode_millis: total_millis.saturating_sub(ttft_millis),
+            decode_millis: total_millis.checked_sub(ttft_millis)?,
             total_millis,
         })
     }
@@ -230,8 +258,8 @@ impl std::fmt::Debug for InvocationRunner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("InvocationRunner")
-            .field("provider", &self.provider_instance_id)
-            .field("model", &self.model.slug)
+            .field("account", &self.account_id)
+            .field("model", &self.model.model_id)
             .field("transport", &self.model.binding.transport)
             .field("pricing_mode", &self.pricing_mode)
             .finish_non_exhaustive()
@@ -241,18 +269,18 @@ impl std::fmt::Debug for InvocationRunner {
 impl InvocationRunner {
     /// 使用已解析 endpoint 与单个模型构造运行时。
     /// 使用稳定 Provider 实例 ID、已解析 endpoint 与单个模型构造运行时。
-    pub fn new_with_provider_id(
-        provider_instance_id: impl Into<String>,
-        endpoint: ProviderEndpoint,
+    pub fn new_with_account_id(
+        account_id: impl Into<String>,
+        endpoint: ProtocolEndpoint,
         model: ModelInfo,
     ) -> Result<Self> {
         model
             .validate()
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
-        let provider_instance_id = provider_instance_id.into();
-        if provider_instance_id.trim().is_empty() {
+        let account_id = account_id.into();
+        if account_id.trim().is_empty() {
             return Err(PureError::ConfigError(
-                "provider instance id cannot be empty".to_string(),
+                "account id cannot be empty".to_string(),
             ));
         }
         let http_client = reqwest::Client::builder()
@@ -263,7 +291,7 @@ impl InvocationRunner {
             .map_err(|e| PureError::HttpError(e.to_string()))?;
 
         Ok(Self {
-            provider_instance_id,
+            account_id,
             endpoint,
             http_client,
             model,
@@ -281,7 +309,7 @@ impl InvocationRunner {
             .trim_end_matches('/')
             .to_string()
     }
-    pub fn endpoint(&self) -> &ProviderEndpoint {
+    pub fn endpoint(&self) -> &ProtocolEndpoint {
         &self.endpoint
     }
 
@@ -300,14 +328,14 @@ impl InvocationRunner {
         body: serde_json::Map<String, serde_json::Value>,
     ) -> Self {
         let mut runner = self.with_native_body(body);
-        runner.model.binding.transport.default_connection_mode = ProviderConnectionMode::Http;
+        runner.model.binding.transport.default_connection_mode = ConnectionMode::Http;
         runner.model.binding.request.headers = headers;
         runner.purpose = InvocationPurpose::RemoteCompaction;
         runner
     }
 
-    pub fn provider_instance_id(&self) -> &str {
-        &self.provider_instance_id
+    pub fn account_id(&self) -> &str {
+        &self.account_id
     }
 
     pub async fn complete(
@@ -395,14 +423,14 @@ impl InvocationRunner {
         let mut request = super::context::project_request(
             &self.endpoint,
             &self.model,
-            &self.provider_instance_id,
+            &self.account_id,
             request,
         )?;
         let original_trace = context.trace.clone();
         let retry_jitter_key = original_trace
             .as_ref()
             .map(|trace| trace.inference_id.as_str())
-            .unwrap_or(self.model.slug.as_str())
+            .unwrap_or(self.model.model_id.as_str())
             .to_string();
         let mut attempt_number = 0_u32;
         let mut transport_attempts = 0_u64;
@@ -774,14 +802,18 @@ impl InvocationRunner {
         request: CompletionRequest,
         prompt_cache_key: Option<&str>,
     ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
-        let protocol = openai_protocol(self.model.binding.transport.protocol);
         let request = super::context::project_request(
             &self.endpoint,
             &self.model,
-            &self.provider_instance_id,
+            &self.account_id,
             request,
         )?;
-        let mut body = protocol.build_request(&request, &self.model, prompt_cache_key)?;
+        let mut body = self.protocol().build_request(
+            self.model.binding.transport.protocol,
+            &request,
+            &self.model,
+            prompt_cache_key,
+        )?;
         body.apply_native_options(&self.native_body);
         if self.purpose == InvocationPurpose::RemoteCompaction {
             body.prepare_compaction();
@@ -790,7 +822,7 @@ impl InvocationRunner {
         Ok((
             body,
             InferenceModelObservation {
-                configured_model: self.model.slug.clone(),
+                configured_model: self.model.model_id.clone(),
                 sent_model,
                 reported_model: None,
             },
@@ -800,8 +832,8 @@ impl InvocationRunner {
     fn active_transport(&self, session: &ModelSession) -> OpenAiTransport {
         let transport = &self.model.binding.transport;
         let connection_key = self.connection_fingerprint();
-        if transport.protocol == ProviderWireProtocol::Responses
-            && transport.default_connection_mode == ProviderConnectionMode::WebSocket
+        if transport.protocol == WireApi::Responses
+            && transport.default_connection_mode == ConnectionMode::WebSocket
             && !session.uses_responses_http_fallback(connection_key)
         {
             return OpenAiTransport::ResponsesWebSocket;
@@ -809,12 +841,17 @@ impl InvocationRunner {
         OpenAiTransport::Http
     }
 
+    /// The selected vendor protocol adapter for this route.
+    fn protocol(&self) -> ProtocolAdapter {
+        ProtocolAdapter::of(self.endpoint.protocol)
+    }
+
     fn supports_http_fallback(&self) -> bool {
         self.model
             .binding
             .transport
             .supported_connection_modes
-            .contains(&ProviderConnectionMode::Http)
+            .contains(&ConnectionMode::Http)
     }
 
     fn stream_events(
@@ -827,7 +864,8 @@ impl InvocationRunner {
         let api_base = self.resolve_base_url();
         let endpoint = self.endpoint.clone();
         let model_info = self.model.clone();
-        let protocol = openai_protocol(model_info.binding.transport.protocol);
+        let protocol = self.protocol();
+        let wire_api = model_info.binding.transport.protocol;
         let connection_key = self.connection_fingerprint();
         let transport = self.active_transport(&session);
         async move {
@@ -854,7 +892,7 @@ impl InvocationRunner {
                 )
                 .await?;
                 return Ok(OpenedCompletionStream {
-                    events: decode_raw_event_stream(raw_stream.stream, protocol, trace),
+                    events: protocol.decode_stream(wire_api, raw_stream.stream, trace),
                     sent_model: raw_stream.sent_model,
                     idle_timeout: Some(RESPONSES_WEBSOCKET_IDLE_TIMEOUT),
                 });
@@ -896,29 +934,28 @@ impl InvocationRunner {
 
             let raw_stream = stream;
             let raw_stream = wire_capture::observe_http_stream(raw_stream, capture);
-            let raw_stream =
-                if model_info.binding.transport.protocol == ProviderWireProtocol::Responses {
-                    // HTTP has no continuation lease; close the body after the terminal response.
-                    // WebSocket sources must still be fully drained so their lease can commit.
-                    futures::stream::unfold((raw_stream, false), |(mut stream, ended)| async move {
-                        if ended {
-                            return None;
-                        }
-                        let event = stream.next().await?;
-                        let ended = event.as_ref().is_ok_and(|event| {
-                            matches!(
-                                event.kind.as_str(),
-                                "response.completed" | "response.failed" | "response.incomplete"
-                            )
-                        });
-                        Some((event, (stream, ended)))
-                    })
-                    .boxed()
-                } else {
-                    raw_stream
-                };
+            let raw_stream = if model_info.binding.transport.protocol == WireApi::Responses {
+                // HTTP has no continuation lease; close the body after the terminal response.
+                // WebSocket sources must still be fully drained so their lease can commit.
+                futures::stream::unfold((raw_stream, false), |(mut stream, ended)| async move {
+                    if ended {
+                        return None;
+                    }
+                    let event = stream.next().await?;
+                    let ended = event.as_ref().is_ok_and(|event| {
+                        matches!(
+                            event.kind.as_str(),
+                            "response.completed" | "response.failed" | "response.incomplete"
+                        )
+                    });
+                    Some((event, (stream, ended)))
+                })
+                .boxed()
+            } else {
+                raw_stream
+            };
             Ok(OpenedCompletionStream {
-                events: decode_raw_event_stream(raw_stream, protocol, trace),
+                events: protocol.decode_stream(wire_api, raw_stream, trace),
                 sent_model: expected_sent_model,
                 idle_timeout: None,
             })
@@ -942,7 +979,7 @@ impl InvocationRunner {
         let model_info = &self.model;
         let mut hasher = DefaultHasher::new();
         self.endpoint.connection_fingerprint().hash(&mut hasher);
-        model_info.slug.hash(&mut hasher);
+        model_info.model_id.hash(&mut hasher);
         model_info.binding.transport.protocol.hash(&mut hasher);
         model_info
             .binding
@@ -972,12 +1009,4 @@ impl InvocationRunner {
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// 按 wire protocol 选择 endpoint；供应商能力由模型目录与数据化 wire policy 收敛。
-fn openai_protocol(protocol: ProviderWireProtocol) -> OpenAiProtocol {
-    match protocol {
-        ProviderWireProtocol::Responses => OpenAiProtocol::responses(),
-        ProviderWireProtocol::ChatCompletions => OpenAiProtocol::chat(),
-    }
 }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "flutter_window.h"
+#include "desktop_instance.h"
 #include "studio_host_lifecycle.h"
 #include "utils.h"
 
@@ -98,6 +99,12 @@ LONG WINAPI WriteUnhandledMinidump(EXCEPTION_POINTERS *exception) {
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  anywork::DesktopInstanceBootstrap bootstrap;
+  DesktopInstanceActivation activation(bootstrap);
+  const auto startup = activation.Initialize();
+  if (startup != anywork::InstanceStartup::Primary) {
+    return startup == anywork::InstanceStartup::Redirected ? EXIT_SUCCESS : EXIT_FAILURE;
+  }
   ConfigureWindowsErrorReporting();
   ::SetUnhandledExceptionFilter(WriteUnhandledMinidump);
 
@@ -124,7 +131,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   ::SetCurrentProcessExplicitAppUserModelID(L"io.github.zr233.anywork");
 
-  FlutterWindow window(project);
+  FlutterWindow window(project, &activation);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   const wchar_t* title =

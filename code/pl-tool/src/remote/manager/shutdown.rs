@@ -42,7 +42,7 @@ impl SshManager {
         }
         self.workspaces
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(id, _), _| id != server_id);
         self.set_state(server_id, SshConnectionState::Disconnected)
             .await;

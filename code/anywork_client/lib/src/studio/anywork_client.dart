@@ -7,13 +7,14 @@ import '../../studio_ports.dart';
 import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
-import 'commands/provider_usage_queries.dart';
+import 'commands/account_usage_queries.dart';
 import 'commands/settings_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
 import 'drafts/attachment_drafts.dart';
 import 'drafts/composer_draft_owner.dart';
 import 'drafts/start_session_draft_owner.dart';
+import 'mode_editor_owner.dart';
 import 'thread_session.dart';
 import 'thread_session_state.dart';
 import 'stores/project_store.dart';
@@ -24,7 +25,7 @@ import 'stores/mcp_store.dart';
 import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
 import 'stores/model_performance_store.dart';
-import 'stores/provider_usage_store.dart';
+import 'stores/account_usage_store.dart';
 import 'stores/recovery_store.dart';
 import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
@@ -47,9 +48,10 @@ class AnyworkClient {
     bool updatesEnabled = false,
   }) : budget = budget ?? ResourceBudget() {
     mutations = MutationBoard(clientId: clientId, budget: this.budget);
+    modeEditor = ModeEditorOwner(this);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
-    providerUsageQueries = ProviderUsageQueries(this);
+    accountUsageQueries = AccountUsageQueries(this);
     settingsCommands = SettingsCommands(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
@@ -90,6 +92,10 @@ class AnyworkClient {
         if (value.loaded)
           observeResource('thread-directory', value.window.revision);
       }),
+      modeCatalog.source.watch((value) {
+        if (value.loaded)
+          observeResource('thread-mode-catalog', value.revision);
+      }),
     ]);
   }
 
@@ -99,8 +105,9 @@ class AnyworkClient {
   late final MutationBoard mutations;
   late final WorkspaceController workspace;
   late final StudioChannels channels;
+  late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;
-  late final ProviderUsageQueries providerUsageQueries;
+  late final AccountUsageQueries accountUsageQueries;
   late final SettingsCommands settingsCommands;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
@@ -115,7 +122,7 @@ class AnyworkClient {
   final lsp = LspStore();
   final modeCatalog = ModeCatalogStore();
   final modelPerformance = ModelPerformanceStore();
-  final providerUsage = ProviderUsageStore();
+  final accountUsage = AccountUsageStore();
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
@@ -130,6 +137,8 @@ class AnyworkClient {
   final Map<String, int> _reportGenerations = {};
   final Map<String, Future<void>> _pendingJoins = {};
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
+
+  final _activeSession = LatestValue<StudioThreadSession?>(null);
   final Map<String, ResourcePermit> _mirrorPermits = {};
   final CommandLane _queries = CommandLane();
   int _querySequence = 0;
@@ -164,6 +173,15 @@ class AnyworkClient {
       _sessions[threadId]?.state;
   StudioThreadSession? existingSession(String threadId) => _sessions[threadId];
 
+  /// The selected, admitted Session owner. Reading never admits a resource.
+  StudioThreadSession? get activeSession => _activeSession.value;
+
+  /// Atomically observes availability with its current snapshot. The publisher
+  /// stays private; an admission retry publishes the owner stored in _sessions.
+  LatestWatch<StudioThreadSession?> watchActiveSession(
+    void Function(StudioThreadSession?) listener,
+  ) => _activeSession.watchLatest(listener);
+
   /// Resource admission is an explicit workspace action, never an observation.
   void retrySession(String threadId) {
     _ensureOpen();
@@ -180,6 +198,7 @@ class AnyworkClient {
       } else {
         owner.start();
       }
+      _activeSession.publish(owner);
       if (resourceFailure.value?.owner == 'session:$threadId') {
         resourceFailure.publish(null);
       }
@@ -381,16 +400,16 @@ class AnyworkClient {
     final snapshot = await transport.readBootstrap();
     if (_closed) return;
     applyBootstrap(snapshot);
-    final catalog = await transport.loadProviderCatalog();
+    final catalog = await transport.loadAccountCatalog();
     if (_closed) return;
-    settings.applyProviderCatalog(catalog);
+    settings.applyAccountCatalog(catalog);
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
       const McpTopic(),
       const LspTopic(),
       const ModelPerformanceTopic(),
-      const ProviderUsageTopic(),
+      const AccountUsageTopic(),
       const PersistenceQueueTopic(),
     ]);
   }
@@ -407,7 +426,7 @@ class AnyworkClient {
     mcp.apply(snapshot.mcpState);
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
-    providerUsage.apply(snapshot.providerUsageState);
+    accountUsage.apply(snapshot.accountUsageState);
     modelPerformance.apply(snapshot.modelPerformance);
     updater.apply(snapshot.updaterState);
     persistence.applyState(snapshot.persistenceState);
@@ -501,10 +520,13 @@ class AnyworkClient {
     if (_activeThread == nextId) return;
     final old = _activeThread;
     _activeThread = nextId;
+    _activeSession.publish(null);
     if (old != null) _retireSession(old);
     if (nextId != null) {
       try {
-        session(nextId).start();
+        final owner = session(nextId);
+        owner.start();
+        _activeSession.publish(owner);
       } catch (error) {
         resourceFailure.publish(
           UnresolvedResource(
@@ -580,6 +602,8 @@ class AnyworkClient {
 
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
+    _activeSession.publish(null);
+    _activeSession.close();
     _selectionObservation.cancel();
     _queries.seal();
     attachments.sealAdmissions();
@@ -594,11 +618,12 @@ class AnyworkClient {
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
       _joinOwner(
-        'provider-usage-queries',
-        providerUsageQueries.close(),
+        'account-usage-queries',
+        accountUsageQueries.close(),
         deadline,
       ),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
+      _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),
       _joinOwner('queries', _queries.join(), deadline),
       for (final entry in _sessions.entries)

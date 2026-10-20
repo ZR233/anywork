@@ -16,13 +16,13 @@ pub(super) const MAX_EVIDENCE_ITEMS: usize = 16;
 pub(super) const MAX_EVIDENCE_ITEM_BYTES: usize = 2 * 1024;
 
 #[derive(Debug)]
-pub(super) struct WorkflowOperation {
+pub(crate) struct WorkflowOperation {
     pub turn_id: String,
     pub call_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct WorkflowMachine {
+pub(crate) struct WorkflowMachine {
     state: WorkflowSessionState,
     pub mode: Arc<RegisteredThreadMode>,
 }
@@ -311,7 +311,7 @@ impl RestartInput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct WorkflowMutationResponse {
+pub(crate) struct WorkflowMutationResponse {
     pub accepted: bool,
     pub code: &'static str,
     pub operation_revision: u64,

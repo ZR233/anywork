@@ -74,6 +74,7 @@ class _DriverProjectPathDialogState extends State<_DriverProjectPathDialog> {
         key: StudioDriverKeys.projectPathInput,
         controller: _controller,
         autofocus: true,
+        style: const TextStyle(fontFamily: studioCodeFontFamily),
         decoration: InputDecoration(
           labelText: context.l10n.agentDetailPathLabel,
         ),

@@ -1,19 +1,21 @@
+mod account_usage;
 mod context_replay_recovery;
+mod mode_editor;
 mod model_catalog;
-mod provider_usage;
 mod shutdown;
+mod wait_events;
 mod web_search;
 mod websocket_recovery;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_dev_support::{paths, process};
-use pl_model::config::{ProviderConfig, ProviderId};
+use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{
     MediaRepresentation, MediaWireFormat, ModelInfo, ModelInputCapability, ModelInputSource,
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
-use pl_model::provider::ProviderEndpoint;
+use pl_model::protocol::ProtocolEndpoint;
 use pl_studio_runtime::config::{McpServerTransport, StudioConfig, StudioMcpServerEntry};
 use sea_orm::sqlx::{
     Connection as _,
@@ -33,14 +35,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(
     name = "cargo xtask manual-gui",
     bin_name = "cargo xtask manual-gui",
-    about = "Start an isolated native GUI with a local provider fixture for manual review"
+    about = "Start an isolated native GUI with a local account fixture for manual review"
 )]
 pub(crate) struct ManualGuiOptions {
     /// Run the regular, stress, single-item long-body stress (`stress-body`,
     /// `stress-body-large`), isolated call-statistics, realtime, paused
     /// history-writer, history-fault retry/resume, plan shutdown/restart
     /// recovery (`plan-recovery`), or the 30-second application shutdown
-    /// acceptance journey (`shutdown`).
+    /// acceptance journey (`shutdown`), or the wait/sleep/child observation
+    /// journey (`wait-events`).
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -52,6 +55,9 @@ pub(crate) struct ManualGuiOptions {
     /// Run tool-scroll against an explicitly supplied SSH test host (user@host).
     #[arg(long, value_name = "USER@HOST")]
     pub(crate) ssh_target: Option<String>,
+    /// Parent directory for synthetic remote fixtures; must already exist.
+    #[arg(long, value_name = "PATH", requires = "ssh_target")]
+    pub(crate) ssh_workspace_parent: Option<String>,
     /// Damage an isolated startup input, then capture recovery and its backup.
     #[arg(long, value_parser = ["config", "database", "log", "cache"])]
     pub(crate) startup_fault: Option<String>,
@@ -76,15 +82,22 @@ pub(crate) struct ManualGuiOptions {
         value_parser = ["unstructured", "wrong-search-key", "wrong-mcp-key", "missing-search-key"]
     )]
     pub(crate) web_search_fault: Option<String>,
-    /// Reusable web-search probe provider ids, forwarded to the Driver probe.
+    /// Reusable web-search probe account ids, forwarded to the Driver probe.
     #[arg(long, value_name = "ID,ID,ID")]
-    pub(crate) web_search_providers: Option<String>,
-    /// Reusable web-search probe model slugs, forwarded to the Driver probe.
+    pub(crate) web_search_accounts: Option<String>,
+    /// Reusable web-search probe model model_ids, forwarded to the Driver probe.
     #[arg(long, value_name = "MODEL,MODEL,MODEL")]
     pub(crate) web_search_models: Option<String>,
-    /// Label the reusable web-search probe as a fixture or real provider run.
+    /// Label the reusable web-search probe as a fixture or real account run.
     #[arg(long, value_parser = ["fixture", "real"])]
     pub(crate) web_search_probe: Option<String>,
+    /// Run the native visible-displacement matrix after the `timeline-history`
+    /// cold restart: six sizes × 96 fixed ±60 pointer inputs, plus 600 continuous
+    /// inputs with direction reversal for each of the three primary sizes
+    /// (1800 in total). The GUI runs in profile mode, so the numbers are input
+    /// evidence, not an AOT/release performance measurement.
+    #[arg(long)]
+    pub(crate) timeline_displacement: bool,
 }
 
 #[derive(Deserialize)]
@@ -99,7 +112,10 @@ struct FixtureReady {
 struct StressSessionsReport {
     original_thread_id: String,
     original_reopened: bool,
-    original_window_items: usize,
+    original_loaded_items: usize,
+    original_mode: String,
+    original_has_older: bool,
+    rapid_switch_ok: bool,
     session_count: usize,
     directory_count: usize,
     sessions: Vec<StressSessionReport>,
@@ -110,32 +126,160 @@ struct StressSessionsReport {
 struct StressSessionReport {
     ordinal: usize,
     thread_id: String,
-    window_items: usize,
-    previewed_bodies: usize,
-    pending_bodies: usize,
+    loaded_items: usize,
+    mode: String,
+    generation: u64,
+    has_older: bool,
+    saved_items: usize,
+    terminal_items: usize,
+    typed_detail_refs: usize,
+    truncated_bodies: usize,
+    preview_text_bytes: usize,
     assistant_characters: Option<usize>,
+    assistant_text_bytes: Option<usize>,
+    assistant_preview_bytes: Option<usize>,
+    assistant_text_total_bytes: Option<usize>,
+    detail_copy: Option<DetailCopyReport>,
 }
 
-/// The stress probe's window-paging evidence.
+/// 显式详情查看器的完整读取/复制证据（用户打开的真实查看器 + 平台剪贴板回读）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailCopyReport {
+    expected_characters: usize,
+    expected_hash: String,
+    /// ceil(bytes/64KiB) 的结构推算，不是实际读了多少块。
+    theoretical_chunks: usize,
+    loaded_characters: usize,
+    loaded_hash: Option<String>,
+    clipboard_characters: usize,
+    clipboard_hash: Option<String>,
+    /// 只记录，不作为通过条件：快速多块读取允许在一次轮询前完成。
+    saw_partial_chunk: bool,
+    /// 只有真实点击打开的查看器才提供完整正文；两个脚本都记录该事实。
+    viewer_opened: bool,
+    viewer_closed: bool,
+    /// 关闭后行内预览没有被升级成另一份正文；多会话脚本不产生该事实。
+    row_preview_unchanged: Option<bool>,
+    pass: bool,
+}
+
+/// Flutter Driver 的 `stress-body-report.json`：单条长正文压力旅程的判定报告。
 ///
-/// Proves the production `load-older` command really moved the typed content
-/// window (`timelineWindow`) toward older content while retaining identity,
-/// instead of a version counter changing on its own. `capacity` is reported by
-/// the probe itself (the native `ChatView` window bound in `pl-core/src/chat.rs`)
-/// so the multi-session bound below never hard-codes the number twice.
+/// 只声明验收真正判定的顶层结论与观测段，producer 的其余观测（时间点、时间线、
+/// 滚动、分帧采样等）由 serde 忽略。字段缺失或类型不符时 serde 报出具体字段，
+/// 验收按报告契约收束并释放资源，不在 `serde_json::Map` 上按下标取值。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StressBodyReport {
+    scenario: String,
+    verdict: String,
+    status: String,
+    stage: String,
+    error: Option<String>,
+    shutdown_error: Option<String>,
+    failed_checks: Vec<String>,
+    observations: StressBodyObservations,
+}
+
+/// `stress-body-report.json` 的 `observations` 中参与判定的观测段。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StressBodyObservations {
+    session_switch: SessionSwitchReport,
+    preview_copy: PreviewCopyReport,
+    detail_copy: DetailCopyReport,
+    long_body: LongBodyReport,
+    /// 只有 `stress-body-large` 才采样的生成期增长证据；默认场景不产生该观测。
+    streaming_growth: Option<StreamingGrowthReport>,
+}
+
+/// 换会话后回到原 Thread 的事实。
+///
+/// 最新小页、同身份正文与展示代次推进由 Driver 的 `reopenStartsAtLatestPage`
+/// 检查给出；`status == "complete"` 已经排除任何未通过的检查与关停错误。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSwitchReport {
+    returned_to_original: bool,
+}
+
+/// 有界行内预览的跨渲染块选择/复制证据。
+///
+/// `renderedParagraphCount` 是实际参与选择的渲染块数；canonical 预览是连续纯文本，
+/// 渲染分块不在原文里插入分隔符，因此不存在另一份“复制段数”。复制保真由整段文本的
+/// 长度与 hash 和同一份 canonical 预览一致证明，不能用子串或两个实际副本互相相等代替。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCopyReport {
+    preview_characters: usize,
+    /// canonical 预览（fixture 原文前缀）的 hash；渲染与复制都必须与它一致。
+    expected_hash: String,
+    rendered_characters: Option<usize>,
+    rendered_hash: Option<String>,
+    rendered_paragraph_count: Option<usize>,
+    rendered_matches_preview: bool,
+    /// 产品右键菜单的复制项存在且可点。
+    copy_button_present: bool,
+    copy_ok: bool,
+    copied_length: Option<usize>,
+    copied_hash: Option<String>,
+    copied_matches_preview: bool,
+    selection_cleared: bool,
+    scroll_stable: bool,
+    mode_stable: bool,
+    pass: bool,
+}
+
+/// 长正文的行内/详情账目：声明总长、截断标记、前缀事实与有界预览额度。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LongBodyReport {
+    expected_characters: usize,
+    delivered_characters: usize,
+    delivered_bytes: usize,
+    detail_total_bytes: usize,
+    preview_bytes: usize,
+    truncated: bool,
+    large_body: bool,
+    prefix_ok: bool,
+}
+
+/// `stress-body-large` 的生成期增长采样：同一身份在预览封顶后仍真实增长且保持 Live 贴底。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamingGrowthReport {
+    window_passed: bool,
+    identity_stable: bool,
+    stayed_live_at_edge: bool,
+    threshold_bytes: usize,
+    growth_frames_above_window: usize,
+}
+
+/// The stress probe's paging evidence.
+///
+/// Proves the production `load-older` command really prepended an older page in
+/// canonical order while retaining every identity already displayed. There is no
+/// 96-item window capacity any more: the loaded set grows with the pages this run
+/// actually visited, and the evidence reports the real page boundaries, cursors
+/// and generations instead of a trim bound.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProbePagingReport {
-    capacity: usize,
+    max_pages: usize,
     paged: bool,
     page_count: usize,
     final_items: Option<usize>,
-    saturated: bool,
     moved_older: bool,
     identity_retained: bool,
-    anchor_retained: bool,
-    all_within_capacity: bool,
-    all_unique: bool,
+    order_monotonic: bool,
+    unique_ids: bool,
+    cursor_advanced: bool,
+    generation_stable: bool,
+    mode_stable: bool,
+    final_has_older: Option<bool>,
+    final_mode: Option<String>,
+    final_generation: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Debug)]
@@ -235,6 +379,32 @@ struct HistoryLockScenario<'a> {
     interrupt: &'a mpsc::Receiver<()>,
 }
 
+/// Persisted long-history scenario: one driver-driven turn, a cold restart on the
+/// same isolated home, and (opt-in) the native visible-displacement matrix.
+struct TimelineHistoryScenario<'a> {
+    workspace: &'a Path,
+    app_dir: &'a Path,
+    home: &'a Path,
+    working: &'a Path,
+    output: &'a Path,
+    fixture_log: &'a Path,
+    requests_file: &'a Path,
+    /// 严格脚本的实时计数（同时证明 required 步骤全部消费且无拒绝请求）。
+    status_file: &'a Path,
+    interrupt: &'a mpsc::Receiver<()>,
+    run_displacement: bool,
+}
+
+/// live 阶段从真实 snapshot 记录、其余生命周期必须复现的持久化目标身份。
+///
+/// 项目 id 与会话 id 是 canonical 身份，项目路径是同一数据根上的真实目录；三者
+/// 一起排除“同名不同库”或“选到第一个项目/会话”的误通过。
+struct PersistedTargetIdentity {
+    project_id: String,
+    project_path: String,
+    thread_id: String,
+}
+
 struct HistoryFaultScenario<'a> {
     workspace: &'a Path,
     app_dir: &'a Path,
@@ -266,7 +436,7 @@ struct WebSearchScenario<'a> {
     output: &'a Path,
     fixture_log: &'a Path,
     requests_file: &'a Path,
-    providers: Option<&'a str>,
+    accounts: Option<&'a str>,
     models: Option<&'a str>,
     probe_mode: &'a str,
     interrupt: &'a mpsc::Receiver<()>,
@@ -489,8 +659,22 @@ impl Drop for OwnedProcess {
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ensure!(
-        !options.retain_environment || matches!(options.scenario.as_str(), "gui" | "tool-scroll"),
-        "--retain-environment is supported by --scenario gui and tool-scroll"
+        !options.retain_environment
+            || matches!(
+                options.scenario.as_str(),
+                "gui"
+                    | "single-instance"
+                    | "tool-scroll"
+                    | "timeline-history"
+                    | "stress-body-large"
+                    | "wait-events"
+            ),
+        "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
+         timeline-history, stress-body-large and wait-events"
+    );
+    ensure!(
+        !options.timeline_displacement || options.scenario == "timeline-history",
+        "--timeline-displacement requires --scenario timeline-history"
     );
     ensure!(
         options.startup_fault.is_none() || options.scenario == "gui",
@@ -505,11 +689,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "--web-search-fault requires --scenario web-search"
     );
     ensure!(
-        (options.web_search_providers.is_none()
+        (options.web_search_accounts.is_none()
             && options.web_search_models.is_none()
             && options.web_search_probe.is_none())
             || options.scenario == "web-search",
-        "--web-search-providers/--web-search-models/--web-search-probe require --scenario web-search"
+        "--web-search-accounts/--web-search-models/--web-search-probe require --scenario web-search"
     );
     ensure!(
         (options.model_catalog_inventory.is_none() && options.model_catalog_control.is_none())
@@ -547,7 +731,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             control.openai.payload.is_none(),
-            "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable slug"
+            "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable model_id"
         );
     }
     // The statistics, realtime, history and plan-recovery journeys are fully
@@ -562,6 +746,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "history-lock"
             | "history-fault"
             | "plan-recovery"
+            | "mode-editor"
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
@@ -569,6 +754,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "web-search"
             | "provider-usage"
             | "shutdown"
+            | "timeline-history"
+            | "wait-events"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
     {
@@ -672,6 +859,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .arg(&stress_report_file)
         .stdout(Stdio::from(fixture_log.try_clone()?))
         .stderr(Stdio::from(fixture_log));
+    if options.ssh_target.is_some() {
+        fixture_command.arg("--posix-exec");
+    }
+    if options.ssh_workspace_parent.is_some() {
+        fixture_command.arg("--resource-lifecycle");
+    }
     if catalog_control.is_some() {
         fixture_command
             .arg("--model-catalog-control")
@@ -683,10 +876,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if matches!(
         options.scenario.as_str(),
         "plan-recovery"
+            | "mode-editor"
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
             | "shutdown"
+            | "timeline-history"
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
@@ -782,8 +977,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
 
     if options.scenario == "provider-usage" {
-        return provider_usage::run(
-            &provider_usage::Scenario {
+        return account_usage::run(
+            &account_usage::Scenario {
                 workspace: &workspace,
                 app_dir: &app_dir,
                 home: &home,
@@ -813,7 +1008,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
-                providers: options.web_search_providers.as_deref(),
+                accounts: options.web_search_accounts.as_deref(),
                 models: options.web_search_models.as_deref(),
                 probe_mode: options.web_search_probe.as_deref().unwrap_or("fixture"),
                 interrupt: &interrupt_rx,
@@ -886,11 +1081,33 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
+    if options.scenario == "wait-events" {
+        let project = working.path().join("wait-events-project");
+        let result = wait_events::run(
+            &wait_events::WaitEventsScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
+    }
+
     if matches!(
         options.scenario.as_str(),
         "stress-body" | "stress-body-large"
     ) {
-        return run_stress_body_scenario(
+        let project = working.path().join("stress-body-project");
+        let result = run_stress_body_scenario(
             &StressBodyScenario {
                 scenario: options.scenario.as_str(),
                 workspace: &workspace,
@@ -904,6 +1121,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
+        // 长正文复查需要整个临时根（含项目与配置绝对路径），不只复制 home。
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
     }
 
     if options.scenario == "history-lock" {
@@ -924,6 +1146,23 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
 
     if options.scenario == "plan-recovery" {
         return run_plan_recovery_scenario(
+            &RecoveryScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
+    }
+
+    if options.scenario == "mode-editor" {
+        return mode_editor::run(
             &RecoveryScenario {
                 workspace: &workspace,
                 app_dir: &app_dir,
@@ -970,6 +1209,30 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
+    }
+
+    if options.scenario == "timeline-history" {
+        let project = working.path().join("timeline-history-project");
+        let result = run_timeline_history_scenario(
+            &TimelineHistoryScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+                run_displacement: options.timeline_displacement,
+            },
+            fixture,
+        );
+        // 保留整个临时根与配置绝对路径（不只 home），供发布视觉复查复用。
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
     }
 
     let gui_log_path = working.path().join("gui.log");
@@ -1041,9 +1304,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 .stderr(Stdio::from(log));
             if let Some(target) = &options.ssh_target {
                 command.arg(target);
+                if let Some(parent) = &options.ssh_workspace_parent {
+                    command.arg(parent);
+                }
             }
             let mut driver = OwnedProcess::start(&mut command, false)?;
-            let deadline = Instant::now() + Duration::from_secs(600);
+            // Full tool, image recycling and compact-tail journeys include many native
+            // frames. Software-rendered Linux hosts need a bounded budget for the
+            // entire journey in addition to each command's own deadline.
+            let deadline = Instant::now() + Duration::from_secs(1800);
             let status = loop {
                 if let Some(status) = driver.child.try_wait()? {
                     driver.stopped = true;
@@ -1177,7 +1446,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                                 "GUI stress probe exited before completion"
                             );
                             ensure!(!gui.exited()?, "GUI exited before stress completion");
-                            ensure!(!fixture.exited()?, "provider fixture exited during stress");
+                            ensure!(!fixture.exited()?, "account fixture exited during stress");
                             ensure!(
                                 interrupt_rx.try_recv().is_err(),
                                 "GUI stress wait cancelled"
@@ -1213,7 +1482,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             ensure!(!gui.exited()?, "GUI exited before manual review completed");
             ensure!(
                 !fixture.exited()?,
-                "provider fixture exited during manual review"
+                "account fixture exited during manual review"
             );
             thread::sleep(Duration::from_millis(200));
         }
@@ -1234,6 +1503,16 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
     if stress_sessions_report.exists() {
         fs::copy(&stress_sessions_report, output.join("stress-sessions.json"))?;
+    }
+    for name in [
+        "session-switch-other.png",
+        "session-switch-third.png",
+        "session-switch-return.png",
+    ] {
+        let screenshot = working.path().join(name);
+        if screenshot.exists() {
+            fs::copy(screenshot, output.join(name))?;
+        }
     }
     let stress_screenshot = stress_stage.with_extension("png");
     if stress_screenshot.exists() {
@@ -1369,39 +1648,42 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             counts.iter().any(|count| *count >= 3),
-            "provider did not receive the sent image and both tool-read images"
+            "account did not receive the sent image and both tool-read images"
         );
     }
     if options.scenario == "stress" {
-        // The probe must have really moved the typed content window toward older
-        // content and saturated it at its capacity. Its own reported `capacity`
-        // is the shared bound for the per-session window checks below.
+        // The probe must have really prepended an older page in canonical order
+        // while retaining every already-displayed identity. There is no window
+        // capacity to saturate any more: the loaded set grows with the pages this
+        // run visited, so the evidence is the real page boundaries, cursors,
+        // order and generation instead of a trim bound.
         let paging: ProbePagingReport = serde_json::from_slice(
             &fs::read(&probe_paging)
-                .context("GUI stress probe did not write its window-paging evidence")?,
+                .context("GUI stress probe did not write its paging evidence")?,
         )?;
         ensure!(
             paging.paged
                 && paging.page_count >= 1
-                && paging.saturated
-                && paging.final_items == Some(paging.capacity)
                 && paging.moved_older
                 && paging.identity_retained
-                && paging.anchor_retained
-                && paging.all_within_capacity
-                && paging.all_unique,
-            "GUI stress window never moved to an older page: {}",
+                && paging.order_monotonic
+                && paging.unique_ids
+                && paging.cursor_advanced
+                && paging.generation_stable
+                && paging.mode_stable,
+            "GUI stress paging never prepended an older canonical page: {}",
             serde_json::json!({
-                "capacity": paging.capacity,
+                "maxPages": paging.max_pages,
                 "paged": paging.paged,
                 "pageCount": paging.page_count,
                 "finalItems": paging.final_items,
-                "saturated": paging.saturated,
                 "movedOlder": paging.moved_older,
                 "identityRetained": paging.identity_retained,
-                "anchorRetained": paging.anchor_retained,
-                "allWithinCapacity": paging.all_within_capacity,
-                "allUnique": paging.all_unique,
+                "orderMonotonic": paging.order_monotonic,
+                "uniqueIds": paging.unique_ids,
+                "cursorAdvanced": paging.cursor_advanced,
+                "generationStable": paging.generation_stable,
+                "modeStable": paging.mode_stable,
             })
         );
         let sessions: StressSessionsReport = serde_json::from_slice(
@@ -1410,8 +1692,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         )?;
         ensure!(
             sessions.original_reopened
+                && sessions.rapid_switch_ok
                 && !sessions.original_thread_id.is_empty()
-                && sessions.original_window_items <= paging.capacity
+                && sessions.original_mode == "live"
+                && sessions.original_loaded_items >= 2
                 && sessions.session_count == pl_provider_fixture::GUI_STRESS_SESSION_COUNT
                 && sessions.sessions.len() == sessions.session_count
                 && sessions.directory_count > sessions.session_count,
@@ -1421,32 +1705,107 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         for (index, session) in sessions.sessions.iter().enumerate() {
             ensure!(
                 session.ordinal == index + 1
-                    && session.window_items <= paging.capacity
+                    && session.loaded_items >= 2
+                    && session.saved_items >= 1
+                    && session.typed_detail_refs >= 1
                     && ids.insert(session.thread_id.clone()),
-                "multi-session stress item {} invalid",
-                index + 1
+                "multi-session stress item {} invalid: {:?}",
+                index + 1,
+                serde_json::json!({
+                    "loadedItems": session.loaded_items,
+                    "savedItems": session.saved_items,
+                    "terminalItems": session.terminal_items,
+                    "typedDetailRefs": session.typed_detail_refs,
+                })
             );
         }
-        // The large first-session assistant body must be delivered whole: it may
-        // not fall back to a lazy preview or await a manual full-body load, and
-        // its length must match the strict fixture. Truncating it to a bounded
-        // preview was the removed Dart 8 KiB behaviour and is deliberately not a
-        // passing condition any more.
+        // 131085 字节正文超过产品 32 KiB 展示预算：行内必须是有界预览，真实总长由
+        // 详情引用给出；完整正文只能由用户显式打开的查看器逐块读取并复制。
         let large = &sessions.sessions[0];
+        let preview_budget = 32 * 1024;
         ensure!(
-            large.previewed_bodies == 0 && large.pending_bodies == 0,
-            "large assistant body must be delivered whole without a manual load, \
-             but the first session reported {} previewed and {} pending items",
-            large.previewed_bodies,
-            large.pending_bodies
+            large.truncated_bodies >= 1,
+            "large assistant body was not reported as a bounded preview"
         );
         ensure!(
-            large.assistant_characters
+            large.assistant_text_total_bytes
                 == Some(pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS),
-            "large assistant body incomplete: {:?} of {} code units",
-            large.assistant_characters,
+            "large assistant body detail reference reports {:?} of {} bytes",
+            large.assistant_text_total_bytes,
             pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
         );
+        ensure!(
+            large
+                .assistant_preview_bytes
+                .is_some_and(|bytes| bytes <= preview_budget)
+                && large.assistant_preview_bytes == large.assistant_text_bytes,
+            "large assistant preview exceeded the product budget: {:?} of {:?} bytes",
+            large.assistant_preview_bytes,
+            large.assistant_text_bytes
+        );
+        let copy = large
+            .detail_copy
+            .as_ref()
+            .context("large assistant body has no detail copy evidence")?;
+        ensure!(
+            copy.pass
+                && copy.viewer_closed
+                && copy.expected_characters
+                    == pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
+                && copy.loaded_characters == copy.expected_characters
+                && copy.loaded_hash.as_deref() == Some(copy.expected_hash.as_str())
+                && copy.clipboard_characters == copy.expected_characters
+                && copy.clipboard_hash.as_deref() == Some(copy.expected_hash.as_str()),
+            "large assistant body was not read/copied completely through the viewer: {}",
+            serde_json::json!({
+                "expectedCharacters": copy.expected_characters,
+                "loadedCharacters": copy.loaded_characters,
+                "clipboardCharacters": copy.clipboard_characters,
+                "theoreticalChunks": copy.theoretical_chunks,
+                "sawPartialChunk": copy.saw_partial_chunk,
+                "viewerClosed": copy.viewer_closed,
+            })
+        );
+        // 已加载数据随访问页增长是明示取舍：这里只记录真实观测值，不断言常量内存。
+        let session_rows: Vec<serde_json::Value> = sessions
+            .sessions
+            .iter()
+            .map(|session| {
+                serde_json::json!({
+                    "ordinal": session.ordinal,
+                    "loadedItems": session.loaded_items,
+                    "mode": session.mode,
+                    "generation": session.generation,
+                    "hasOlder": session.has_older,
+                    "truncatedBodies": session.truncated_bodies,
+                    "previewTextBytes": session.preview_text_bytes,
+                    "assistantCharacters": session.assistant_characters,
+                    "assistantTextBytes": session.assistant_text_bytes,
+                    "assistantPreviewBytes": session.assistant_preview_bytes,
+                    "assistantTextTotalBytes": session.assistant_text_total_bytes,
+                })
+            })
+            .collect();
+        fs::write(
+            output.join("timeline-loading.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "note": "loaded items and preview bytes grow with the pages this run visited; \
+                         this is not a constant-memory claim",
+                "reopenedOriginal": {
+                    "mode": sessions.original_mode,
+                    "loadedItems": sessions.original_loaded_items,
+                    "hasOlder": sessions.original_has_older,
+                },
+                "paging": {
+                    "pageCount": paging.page_count,
+                    "finalItems": paging.final_items,
+                    "finalHasOlder": paging.final_has_older,
+                    "finalMode": paging.final_mode,
+                    "finalGeneration": paging.final_generation,
+                },
+                "sessions": session_rows,
+            }))?,
+        )?;
         let report = stress_report.context("stress fixture did not emit a report")?;
         let gui_errors = count_gui_errors(&gui_log_path)?;
         let debug_log = output.join("gui-debug.log");
@@ -1492,7 +1851,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         let completion_lag = gui_finished.saturating_sub(finished);
         ensure!(
             completion_lag <= 15_000,
-            "GUI stress result lagged provider completion by {completion_lag}ms"
+            "GUI stress result lagged account completion by {completion_lag}ms"
         );
         let samples: Vec<serde_json::Value> = serde_json::from_slice(
             &fs::read(&probe_report).context("GUI stress probe did not write a report")?,
@@ -1622,6 +1981,683 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     Ok(())
 }
 
+/// timeline-history：一次真实提交、同 home 冷重启、可选原生位移矩阵。
+///
+/// 每个阶段都用独立 GUI 进程与独立 Driver 会话；正常关闭必须由 Driver 的
+/// `shutdown` 协调器完成，并以真实 OS waitpid 退出码 0 判定（自然关窗退出码故意为 1，
+/// 不能替代协调退出）。
+fn run_timeline_history_scenario(
+    context: &TimelineHistoryScenario<'_>,
+    mut fixture: OwnedProcess,
+) -> Result<()> {
+    let TimelineHistoryScenario {
+        workspace,
+        app_dir,
+        home,
+        working,
+        output,
+        fixture_log,
+        requests_file,
+        status_file,
+        interrupt,
+        run_displacement,
+    } = context;
+    let project = working.join("timeline-history-project");
+    let mut phases: Vec<(
+        &str,
+        Option<std::process::ExitStatus>,
+        Option<std::process::ExitStatus>,
+    )> = Vec::new();
+    // live 阶段记录的真实持久化身份（项目 id、会话 id）。冷启动与位移矩阵必须恢复
+    // 同一身份：不猜值、不选“第一个”项目/会话，也不为验收新增选择持久化。
+    let mut persisted_identity: Option<PersistedTargetIdentity> = None;
+    let journey = (|| -> Result<()> {
+        fs::create_dir(&project)?;
+        ensure!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .arg(&project)
+                .status()?
+                .success(),
+            "failed to initialize isolated timeline-history project"
+        );
+        for phase in ["live", "restart"] {
+            let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
+            let stage = working.join(format!("timeline-history-{phase}-stage"));
+            let driver_log = working.join(format!("timeline-history-{phase}-driver.log"));
+            let mut gui = start_timeline_history_gui(
+                workspace,
+                home,
+                &gui_log,
+                &output.join(format!("timeline-history-{phase}-native-exit.json")),
+            )?;
+            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
+            let mut driver = start_timeline_history_driver(
+                app_dir,
+                home,
+                &vm_url,
+                &project,
+                output,
+                working,
+                phase,
+                &driver_log,
+            )?;
+            let driver_exit = wait_for_timeline_history_driver(
+                &stage,
+                &mut driver,
+                &mut fixture,
+                interrupt,
+                phase,
+            )?;
+            ensure!(
+                driver_exit.success(),
+                "timeline-history {phase} Driver failed: {driver_exit}"
+            );
+            let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), phase)?;
+            ensure!(
+                gui_exit.success(),
+                "timeline-history {phase} GUI did not exit cleanly: {gui_exit}"
+            );
+            let report: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join(format!("timeline-history-{phase}.json")))
+                    .with_context(|| format!("timeline-history {phase} wrote no report"))?,
+            )?;
+            require_timeline_native_exit(output, phase, report["pid"].as_u64())?;
+            ensure!(
+                report.get("pass") == Some(&serde_json::Value::Bool(true)),
+                "timeline-history {phase} did not pass: {}",
+                serde_json::to_string_pretty(&report)?
+            );
+            ensure!(
+                report.get("shutdown") == Some(&serde_json::Value::String("completed".into())),
+                "timeline-history {phase} shutdown was not the coordinated completion"
+            );
+            // 报告键与 Dart 实际产出逐个核对：20k 条必须保持真实 40 页深度、仍有更早
+            // 内容、没有重复/错序/停滞游标，冷启动与最新小页符合 tail 基线契约。
+            let latest_page = report
+                .get("latestPage")
+                .and_then(serde_json::Value::as_object)
+                .with_context(|| format!("timeline-history {phase} report has no latest page"))?;
+            ensure!(
+                report.get("latestPageOk") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("atLiveEdge") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("hasOlder") == Some(&serde_json::Value::Bool(true)),
+                "timeline-history {phase} latest display did not fill its viewport: \
+                 {latest_page:?}"
+            );
+            let cold_start = report
+                .get("coldStartLatest")
+                .and_then(serde_json::Value::as_object)
+                .with_context(|| {
+                    format!("timeline-history {phase} report has no cold-start observation")
+                })?;
+            ensure!(
+                cold_start.get("live") == Some(&serde_json::Value::Bool(true))
+                    && cold_start
+                        .get("loadedItems")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|items| items > 0)
+                    && cold_start.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && cold_start.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true)),
+                "timeline-history {phase} cold start did not fill the latest viewport: \
+                 {cold_start:?}"
+            );
+            let paging = report
+                .get("paging")
+                .and_then(serde_json::Value::as_object)
+                .with_context(|| {
+                    format!("timeline-history {phase} report has no paging evidence")
+                })?;
+            let page_count = paging
+                .get("pageCount")
+                .and_then(serde_json::Value::as_u64)
+                .context("timeline-history paging page count missing")?;
+            let pages = paging
+                .get("pages")
+                .and_then(serde_json::Value::as_array)
+                .context("timeline-history paging pages missing")?;
+            let partial_depth = paging
+                .get("partialDepthPages")
+                .and_then(serde_json::Value::as_u64)
+                .context("timeline-history partial depth missing")?;
+            ensure!(
+                page_count == 40
+                    && partial_depth == 40
+                    && pages.len() as u64 == page_count
+                    && paging.get("reachedEnd") == Some(&serde_json::Value::Bool(false))
+                    && paging.get("hasOlder") == Some(&serde_json::Value::Bool(true))
+                    && paging.get("duplicateIdentity") == Some(&serde_json::Value::Bool(false))
+                    && paging.get("orderViolation") == Some(&serde_json::Value::Bool(false))
+                    && paging.get("cursorStalled") == Some(&serde_json::Value::Bool(false))
+                    && paging
+                        .get("growthViolations")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(Vec::is_empty),
+                "timeline-history {phase} paging did not prove 40 real partial pages over a \
+                 20k-item history: {}",
+                serde_json::json!({
+                    "pageCount": page_count,
+                    "partialDepthPages": partial_depth,
+                    "pages": pages.len(),
+                    "reachedEnd": paging.get("reachedEnd"),
+                    "hasOlder": paging.get("hasOlder"),
+                })
+            );
+            if phase == "live" {
+                ensure!(
+                    report
+                        .get("streamingHistory")
+                        .and_then(|value| value.get("pass"))
+                        == Some(&serde_json::Value::Bool(true)),
+                    "timeline-history did not prove streaming freeze and native page retry"
+                );
+                // 首轮真实 snapshot 是冷启动目标身份的**唯一**来源；baseline 与报告必须
+                // 指向同一身份，否则后续冷启动可能打开别的东西却仍然“通过”。
+                let identity = report
+                    .get("identity")
+                    .and_then(serde_json::Value::as_object)
+                    .with_context(|| "timeline-history live report has no persisted identity")?;
+                ensure!(
+                    identity.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true)),
+                    "timeline-history live identity is not consistent across \
+                     selection/workspace/project/timeline: {identity:?}"
+                );
+                let project_id = identity
+                    .get("projectId")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .context("timeline-history live identity has no projectId")?
+                    .to_owned();
+                let thread_id = identity
+                    .get("threadId")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .context("timeline-history live identity has no threadId")?
+                    .to_owned();
+                let project_path = identity
+                    .get("projectPath")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .context("timeline-history live identity has no projectPath")?
+                    .to_owned();
+                let baseline: serde_json::Value = serde_json::from_slice(
+                    &fs::read(output.join("timeline-history-baseline.json"))
+                        .context("timeline-history live wrote no restart baseline")?,
+                )?;
+                ensure!(
+                    baseline
+                        .get("projectId")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(project_id.as_str())
+                        && baseline
+                            .get("projectPath")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(project_path.as_str())
+                        && baseline.get("threadId").and_then(serde_json::Value::as_str)
+                            == Some(thread_id.as_str()),
+                    "timeline-history baseline identity does not match the live report: \
+                     {baseline:?}"
+                );
+                persisted_identity = Some(PersistedTargetIdentity {
+                    project_id,
+                    project_path,
+                    thread_id,
+                });
+            }
+            if phase == "restart" {
+                let comparison = report
+                    .get("restartComparison")
+                    .and_then(serde_json::Value::as_object)
+                    .with_context(|| "timeline-history restart has no comparison evidence")?;
+                ensure!(
+                    comparison.get("sameOrder") == Some(&serde_json::Value::Bool(true))
+                        && comparison.get("identityMatches")
+                            == Some(&serde_json::Value::Bool(true))
+                        && comparison.get("latestMatches") == Some(&serde_json::Value::Bool(true))
+                        && comparison.get("pageCountMatches")
+                            == Some(&serde_json::Value::Bool(true))
+                        && comparison.get("oldestMatches") == Some(&serde_json::Value::Bool(true))
+                        && comparison.get("loadedItemsMatch")
+                            == Some(&serde_json::Value::Bool(true)),
+                    "timeline-history cold start did not reproduce the same ordered pages: \
+                     {comparison:?}"
+                );
+                // 冷启动是在**同一持久化身份**上重建的：正常侧栏选择/打开的真实证据
+                // 必须与 live 记录的项目、会话一致，且不得把“没点过”写成自动打开。
+                let restore = report
+                    .get("restore")
+                    .and_then(serde_json::Value::as_object)
+                    .with_context(
+                        || "timeline-history restart has no cold-start restoration evidence",
+                    )?;
+                let target = persisted_identity
+                    .as_ref()
+                    .context("timeline-history restart ran without the live identity")?;
+                ensure!(
+                    restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
+                        && restore.get("projectId").and_then(serde_json::Value::as_str)
+                            == Some(target.project_id.as_str())
+                        && restore
+                            .get("projectPath")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(target.project_path.as_str())
+                        && restore.get("threadId").and_then(serde_json::Value::as_str)
+                            == Some(target.thread_id.as_str()),
+                    "timeline-history cold start did not restore the same persisted \
+                     project/thread: {restore:?}"
+                );
+                let auto_opened = restore
+                    .get("autoOpened")
+                    .and_then(serde_json::Value::as_bool)
+                    .context("timeline-history cold start has no auto-opened fact")?;
+                let tap_attempts = restore
+                    .get("tapAttempts")
+                    .and_then(serde_json::Value::as_u64)
+                    .context("timeline-history cold start has no tap count")?;
+                ensure!(
+                    auto_opened == (tap_attempts == 0),
+                    "timeline-history cold start mislabels auto-opened vs selected: {restore:?}"
+                );
+            }
+            phases.push((phase, Some(driver_exit), Some(gui_exit)));
+        }
+        if *run_displacement {
+            let gui_log = working.join("timeline-history-displacement-gui.log");
+            let driver_log = working.join("timeline-history-displacement-driver.log");
+            let stage = working.join("timeline-history-displacement-stage");
+            let mut gui = start_timeline_history_gui(
+                workspace,
+                home,
+                &gui_log,
+                &output.join("timeline-history-displacement-native-exit.json"),
+            )?;
+            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
+            let target = persisted_identity.as_ref().context(
+                "native displacement requires the live timeline-history persisted identity",
+            )?;
+            let mut command = process::path_command("dart", &[]);
+            command
+                .current_dir(app_dir)
+                .args(["run", "test_driver/timeline_displacement_journey.dart"])
+                .arg(&vm_url)
+                .arg(output)
+                .arg("--project-id")
+                .arg(&target.project_id)
+                .arg("--thread-id")
+                .arg(&target.thread_id)
+                .env("ANYWORK_HOME", home)
+                .stdout(Stdio::from(File::create(&driver_log)?))
+                .stderr(Stdio::from(File::create(stage.with_extension("err"))?));
+            let mut driver = OwnedProcess::start(&mut command, false)?;
+            let deadline = Instant::now() + Duration::from_secs(3_600);
+            let driver_exit = loop {
+                if let Some(status) = driver.child.try_wait()? {
+                    driver.stopped = true;
+                    ensure!(
+                        status.success(),
+                        "native displacement collector failed: {status}"
+                    );
+                    break status;
+                }
+                if gui.exited()? {
+                    // After the completed cleanup ACK the Driver requests the
+                    // native exit. OS exit can precede the Driver socket closing;
+                    // both real exit statuses are still required below.
+                    let final_report: serde_json::Value =
+                        serde_json::from_slice(&fs::read(output.join("observations.json"))?)?;
+                    ensure!(
+                        final_report.get("shutdown")
+                            == Some(&serde_json::Value::String("completed".into())),
+                        "GUI exited before displacement cleanup completed"
+                    );
+                }
+                ensure!(
+                    !fixture.exited()?,
+                    "account fixture exited during displacement collection"
+                );
+                ensure!(
+                    interrupt.try_recv().is_err(),
+                    "displacement collection cancelled"
+                );
+                ensure!(
+                    Instant::now() < deadline,
+                    "displacement collection timed out"
+                );
+                thread::sleep(Duration::from_millis(100));
+            };
+            let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
+            ensure!(
+                gui_exit.success(),
+                "displacement GUI did not exit cleanly: {gui_exit}"
+            );
+            let observations: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join("observations.json"))
+                    .context("displacement collector wrote no observations")?,
+            )?;
+            require_timeline_native_exit(output, "displacement", observations["pid"].as_u64())?;
+            ensure!(
+                observations.get("checksPassed") == Some(&serde_json::Value::Bool(true)),
+                "displacement matrix recorded failures: {}",
+                observations
+                    .get("failureCount")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            );
+            // 矩阵规模必须与批准规格一致：六组各 96 次固定 ±60，三组主要尺寸各 600
+            // （合计 1800），并包含连续段与真实分页交叠取证。
+            let matrix = observations
+                .get("matrix")
+                .and_then(serde_json::Value::as_object)
+                .context("displacement observations have no matrix size record")?;
+            ensure!(
+                matrix
+                    .get("inputsPerSingleSize")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(96)
+                    && matrix
+                        .get("inputsPerRapidSize")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(600)
+                    && matrix
+                        .get("rapidTotalInputs")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(1_800),
+                "displacement matrix size drifted from the approved inputs: {matrix:?}"
+            );
+            let single = observations
+                .get("single")
+                .and_then(serde_json::Value::as_array)
+                .context("displacement observations have no single-size phases")?;
+            let rapid = observations
+                .get("rapid")
+                .and_then(serde_json::Value::as_array)
+                .context("displacement observations have no rapid phases")?;
+            ensure!(
+                single.len() == 6
+                    && single.iter().all(|phase| {
+                        phase.get("inputs").and_then(serde_json::Value::as_u64) == Some(96)
+                            && phase
+                                .get("steps")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|steps| steps.len() == 96)
+                    })
+                    && rapid.len() == 3
+                    && rapid.iter().all(|phase| {
+                        phase.get("inputs").and_then(serde_json::Value::as_u64) == Some(600)
+                            && phase
+                                .get("steps")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|steps| steps.len() == 600)
+                    }),
+                "displacement phases did not run the approved input counts: \
+                 single={} rapid={}",
+                single.len(),
+                rapid.len()
+            );
+            ensure!(
+                observations
+                    .get("continuousBurst")
+                    .and_then(|burst| burst.get("pass"))
+                    == Some(&serde_json::Value::Bool(true))
+                    && observations
+                        .get("overlap")
+                        .and_then(|overlap| overlap.get("pass"))
+                        == Some(&serde_json::Value::Bool(true)),
+                "displacement continuous/overlap evidence is missing or failed: {}",
+                serde_json::json!({
+                    "continuousBurst": observations.get("continuousBurst"),
+                    "overlap": observations.get("overlap"),
+                })
+            );
+            // 位移矩阵必须在**同一首轮持久化项目/会话**上运行：冷启动同样从启动页
+            // 走正常侧栏选择与打开，身份不符即强失败，不能只在 history restart 修。
+            let restore = observations
+                .get("restore")
+                .and_then(serde_json::Value::as_object)
+                .context("displacement collector recorded no cold-start restoration evidence")?;
+            ensure!(
+                restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
+                    && restore.get("projectIdMatches") == Some(&serde_json::Value::Bool(true))
+                    && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
+                    && restore.get("projectId").and_then(serde_json::Value::as_str)
+                        == Some(target.project_id.as_str())
+                    && restore
+                        .get("projectPath")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(target.project_path.as_str())
+                    && restore.get("threadId").and_then(serde_json::Value::as_str)
+                        == Some(target.thread_id.as_str()),
+                "displacement ran on a different persisted project/thread than the history \
+                 live phase: {restore:?}"
+            );
+            fs::copy(
+                output.join("observations.json"),
+                output.join("timeline-displacement.json"),
+            )?;
+            phases.push(("displacement", Some(driver_exit), Some(gui_exit)));
+        }
+        Ok(())
+    })();
+
+    for (phase, driver_exit, gui_exit) in &phases {
+        for (source, suffix) in [
+            (
+                working.join(format!("timeline-history-{phase}-gui.log")),
+                "gui.log",
+            ),
+            (
+                working.join(format!("timeline-history-{phase}-driver.log")),
+                "driver.log",
+            ),
+        ] {
+            if source.is_file() {
+                let destination = output.join(format!("timeline-history-{phase}-{suffix}"));
+                write_sanitized_log(&source, &destination)?;
+            }
+        }
+        fs::write(
+            output.join(format!("timeline-history-{phase}-exit.json")),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "phase": phase,
+                "driverExit": driver_exit.map(|status| status.code()),
+                "guiExit": gui_exit.map(|status| status.code()),
+            }))?,
+        )?;
+    }
+    let stage = working.join("timeline-history-live-stage");
+    if stage.is_file() {
+        fs::copy(&stage, output.join("timeline-history-stage.txt"))?;
+    }
+    let fixture_result = fixture.stop(requests_file);
+    drop(fixture);
+    write_fixture_log(fixture_log, &output.join("fixture.log"))?;
+    let requests = if requests_file.is_file() {
+        sanitize_requests(requests_file, &output.join("requests.json"))?;
+        serde_json::from_slice::<Vec<serde_json::Value>>(&fs::read(requests_file)?)?
+    } else {
+        Vec::new()
+    };
+    let accepted = requests
+        .iter()
+        .filter(|row| row["accepted"] == true)
+        .count();
+    let rejected = requests
+        .iter()
+        .filter(|row| row["accepted"] == false)
+        .count();
+    let live_status: Option<pl_provider_fixture::FixtureLiveStatus> = if status_file.is_file() {
+        Some(serde_json::from_slice(&fs::read(status_file)?)?)
+    } else {
+        None
+    };
+    fs::write(
+        output.join("fixture-status.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "scenario": "timeline-history",
+            "acceptedRequests": accepted,
+            "rejectedRequests": rejected,
+            "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
+            "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
+        }))?,
+    )?;
+    journey?;
+    ensure!(
+        rejected == 0,
+        "timeline-history fixture rejected {rejected} account request(s)"
+    );
+    ensure!(
+        accepted >= 1,
+        "timeline-history fixture accepted no account request"
+    );
+    if let Some(status) = live_status {
+        ensure!(
+            status.rejected == 0 && status.remaining_optional,
+            "timeline-history strict script did not consume every required step: {status:?}"
+        );
+    }
+    if *run_displacement {
+        // 位移矩阵的 ChecksPassed 已在 journey 中核对；这里只记录最终判定来源。
+        fs::write(
+            output.join("timeline-displacement-verdict.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "checksPassed": true,
+                "humanVerdict": "pending",
+                "note": "zero-exit never replaces the human screenshot review",
+            }))?,
+        )?;
+    }
+    Ok(())
+}
+
+fn start_timeline_history_gui(
+    workspace: &Path,
+    home: &Path,
+    log_path: &Path,
+    native_exit: &Path,
+) -> Result<OwnedProcess> {
+    let log = File::create(log_path)?;
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(workspace)
+        // Profile（不是 debug）与其它长历史场景一致；仍不是 AOT/release 性能证据。
+        .args([
+            "xtask",
+            "run-gui",
+            "--driver",
+            "--profile",
+            "--native-launch",
+            "--native-exit-report",
+        ])
+        .arg(native_exit)
+        .env("ANYWORK_HOME", home)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    OwnedProcess::start(&mut command, false)
+}
+
+fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) -> Result<()> {
+    let path = output.join(format!("timeline-history-{phase}-native-exit.json"));
+    let report: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path)
+            .with_context(|| format!("missing native exit report {}", path.display()))?,
+    )?;
+    ensure!(
+        report["schema"] == "anywork-native-exit/1"
+            && pid.is_some_and(|pid| pid > 0 && report["pid"].as_u64() == Some(pid))
+            && report["exitCode"].as_i64() == Some(0)
+            && report["signal"].is_null()
+            && report["cancelled"].as_bool() == Some(false)
+            && report["descendantsAtRootExit"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+            && report["reclaimedDescendants"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        "timeline-history {phase} native host did not exit cleanly: {report}"
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_timeline_history_driver(
+    app_dir: &Path,
+    home: &Path,
+    vm_url: &str,
+    project: &Path,
+    output: &Path,
+    working: &Path,
+    phase: &str,
+    log_path: &Path,
+) -> Result<OwnedProcess> {
+    let log = File::create(log_path)?;
+    let mut command = process::path_command("dart", &[]);
+    command
+        .current_dir(app_dir)
+        .args(["run", "test_driver/timeline_history_journey.dart", phase])
+        .arg(vm_url)
+        .arg(project)
+        .arg(output)
+        .arg(working)
+        .env("ANYWORK_HOME", home)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    OwnedProcess::start(&mut command, false)
+}
+
+fn wait_for_timeline_history_driver(
+    stage: &Path,
+    driver: &mut OwnedProcess,
+    fixture: &mut OwnedProcess,
+    interrupt: &mpsc::Receiver<()>,
+    phase: &str,
+) -> Result<std::process::ExitStatus> {
+    let deadline = Instant::now() + Duration::from_secs(3_600);
+    loop {
+        if let Some(status) = driver.child.try_wait()? {
+            driver.stopped = true;
+            return Ok(status);
+        }
+        ensure!(
+            !fixture.exited()?,
+            "account fixture exited during timeline-history {phase}"
+        );
+        ensure!(
+            interrupt.try_recv().is_err(),
+            "timeline-history {phase} cancelled"
+        );
+        ensure!(
+            Instant::now() < deadline,
+            "timeline-history {phase} timed out (last stage: {})",
+            fs::read_to_string(stage).unwrap_or_else(|_| "connect".to_owned())
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// 等待被 Driver 协调关闭的 GUI 自然退出，并返回真实退出状态。
+fn wait_for_gui_exit(
+    gui: &mut OwnedProcess,
+    timeout: Duration,
+    phase: &str,
+) -> Result<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = gui.child.try_wait()? {
+            gui.stopped = true;
+            return Ok(status);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "GUI did not exit after the coordinated timeline-history {phase} shutdown"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn safe_action(line: &str) -> &'static str {
     match line.split_whitespace().next().unwrap_or("") {
         "open-project" => "open-project",
@@ -1695,7 +2731,7 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
 /// for the `web-search` scenario, so the other callers pass `None`.
 fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str>) -> Result<()> {
     if ready.scenario == "provider-usage" {
-        return provider_usage::write_config(home, ready);
+        return account_usage::write_config(home, ready);
     }
     if ready.scenario == "web-search" {
         let fault = match web_search_fault {
@@ -1874,10 +2910,10 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
         .args(args)
         .arg("--message-format=json")
         .output()
-        .context("failed to query Cargo for the provider fixture executable")?;
+        .context("failed to query Cargo for the account fixture executable")?;
     ensure!(
         discovery.status.success(),
-        "failed to locate the provider fixture executable: {}",
+        "failed to locate the account fixture executable: {}",
         String::from_utf8_lossy(&discovery.stderr)
     );
     for line in String::from_utf8_lossy(&discovery.stdout).lines() {
@@ -1901,11 +2937,11 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
             return Ok(executable);
         }
     }
-    bail!("Cargo reported no provider fixture bin executable")
+    bail!("Cargo reported no account fixture bin executable")
 }
 
 /// Builds the isolated acceptance config without persisting it, so every writer
-/// shares one model/provider/route fact source.
+/// shares one model/account/route fact source.
 fn fixture_config(
     home: &Path,
     ready: &FixtureReady,
@@ -1939,41 +2975,38 @@ fn fixture_config(
             replay: vec![MediaRepresentation::DataUrl],
         });
     }
-    let provider_id = ProviderId::new(format!("gui-fixture-{}", std::process::id()))?;
-    let mut endpoint = ProviderEndpoint::compatible("Local GUI fixture", &ready.base_url);
+    let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
+    let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
     endpoint.service_capabilities.remote_compaction = ready.scenario == "call-lifecycle-recovery";
     let mut models = vec![model];
     if ready.scenario == "gui" {
-        // Distinct metadata in the same isolated provider exercises the real
+        // Distinct metadata in the same isolated account exercises the real
         // settings projection without creating system credential accounts.
         let mut preset = models[0].clone();
-        preset.slug = "fixture-preset".into();
+        preset.model_id = "fixture-preset".into();
         preset.display_name = "Fixture with a model preset".into();
         preset.context_window = Some(64_000);
         preset.max_context_window = Some(64_000);
         preset.auto_compact_token_limit = Some(24_000);
         let mut unknown = models[0].clone();
-        unknown.slug = "fixture-unknown".into();
+        unknown.model_id = "fixture-unknown".into();
         unknown.display_name = "Fixture with unknown context capacity".into();
         unknown.context_window = None;
         unknown.max_context_window = None;
         unknown.auto_compact_token_limit = None;
         models.extend([preset, unknown]);
     }
-    let provider = ProviderConfig::from_explicit_models(endpoint, models);
-    config.models.providers.clear();
-    config
-        .models
-        .providers
-        .insert(provider_id.clone(), provider);
+    let account = AccountConfig::from_explicit_models(endpoint, models);
+    config.models.accounts.clear();
+    config.models.accounts.insert(provider_id.clone(), account);
     for route in config
         .models
         .routes
         .values_mut()
         .chain(config.mode_model_routes.values_mut())
     {
-        route.provider = provider_id.clone();
-        route.model = "fixture-model".into();
+        route.account_id = provider_id.clone();
+        route.model_id = "fixture-model".into();
         route.effort = None;
     }
     config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
@@ -2094,7 +3127,7 @@ fn wait_for_vm(
         ensure!(!gui.exited()?, "GUI exited before publishing VM service");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited while GUI started"
+            "account fixture exited while GUI started"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -2160,21 +3193,29 @@ fn capture(
     output: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut command = process::path_command("dart", &[]);
+    let driver_log_path = output.join("capture-driver.log");
+    let driver_log = File::create(&driver_log_path)?;
+    // This host script only connects to the existing Flutter VM. Running it directly
+    // avoids rebuilding the application's unrelated native assets via `dart run`.
+    let mut command = process::path_command(
+        "dart",
+        &["--packages=.dart_tool/package_config.json".into()],
+    );
     command
         .current_dir(app_dir)
-        .args(["run", "test_driver/manual_capture.dart", vm_url])
+        .args(["test_driver/manual_capture.dart", vm_url])
         .arg(output)
         .env("ANYWORK_HOME", home)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(driver_log.try_clone()?))
+        .stderr(Stdio::from(driver_log));
     let mut capture = OwnedProcess::start(&mut command, false)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if let Some(status) = capture.child.try_wait()? {
             ensure!(
                 status.success(),
-                "Driver capture or shutdown failed; human verdict pending"
+                "Driver capture or shutdown failed ({status}); see {}; human verdict pending",
+                driver_log_path.display()
             );
             return Ok(());
         }
@@ -2715,7 +3756,7 @@ fn wait_for_statistics_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -2795,7 +3836,7 @@ fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
 /// command is more than one request: the assistant `exec` call, the scripted
 /// model's supported `wait` on the task receipt, and the step that observes the
 /// delivered result (the two parallel commands add one extra `wait` for the
-/// still-running task, and the approved command is gated behind consent).
+/// still-running task). The host-cwd command uses the product's fixed full-access policy.
 const REALTIME_REQUIRED_STEPS: usize = 15;
 
 fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
@@ -2956,8 +3997,8 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
 /// comparable while the evidence is recorded separately. The `stress-body-large`
 /// scenario keeps the same event count but pads each increment above the 256KiB
 /// native window and slows the paced rate only there, so the generation-time
-/// growth above the threshold can be sampled. The synthetic provider's byte
-/// count is reported as provider output bytes only; it is never presented as the
+/// growth above the threshold can be sampled. The synthetic account's byte
+/// count is reported as account output bytes only; it is never presented as the
 /// volume transferred across the bridge.
 fn run_stress_body_scenario(
     context: &StressBodyScenario<'_>,
@@ -3066,9 +4107,9 @@ fn run_stress_body_scenario(
             "rejectedRequests": rejected,
             "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
             "providerEmittedEvents": host_report.as_ref().map(|report| report.emitted_events),
-            // Synthetic provider text bytes; explicitly not an FRB transfer measurement.
+            // Synthetic account text bytes; explicitly not an FRB transfer measurement.
             "providerOutputBytes": host_report.as_ref().map(|report| report.emitted_bytes),
-            "providerOutputBytesNote": "synthetic provider output text bytes, not FRB transfer volume",
+            "providerOutputBytesNote": "synthetic account output text bytes, not FRB transfer volume",
         }))?,
     )?;
     let errors = if gui_log_path.is_file() {
@@ -3084,96 +4125,136 @@ fn run_stress_body_scenario(
     )?;
     println!("Evidence: {} (human verdict pending)", output.display());
     journey?;
-    let driver_report: serde_json::Value = serde_json::from_slice(
+    let driver_report: StressBodyReport = serde_json::from_slice(
         &fs::read(output.join("stress-body-report.json"))
             .context("Flutter Driver did not write the stress-body report")?,
-    )?;
+    )
+    .context("stress-body report does not match the acceptance contract")?;
     ensure!(
-        driver_report["scenario"] == context.scenario && driver_report["verdict"] == "pending",
+        driver_report.scenario == context.scenario && driver_report.verdict == "pending",
         "stress-body report is missing its scenario or pending verdict"
     );
+    // `status == "complete"` 是 Driver 聚合后的结论：任何未通过的检查、主错或关停
+    // 错误都会让它变成 `failed`，因此先按聚合结论与原始原因收束，再逐项核对证据。
     ensure!(
-        driver_report["status"] == "complete",
-        "stress-body journey did not complete: stage={} failedChecks={}",
-        driver_report["stage"],
-        driver_report["failedChecks"],
+        driver_report.status == "complete",
+        "stress-body journey did not complete: stage={} failedChecks={:?} error={:?} \
+         shutdownError={:?}",
+        driver_report.stage,
+        driver_report.failed_checks,
+        driver_report.error,
+        driver_report.shutdown_error,
     );
-    let session_switch = driver_report["observations"]["sessionSwitch"]
-        .as_object()
-        .context("stress-body report has no session-switch or reading-restoration evidence")?;
+    let StressBodyObservations {
+        session_switch,
+        preview_copy,
+        detail_copy,
+        long_body,
+        streaming_growth,
+    } = driver_report.observations;
     ensure!(
-        session_switch["returnedToOriginal"] == true,
+        session_switch.returned_to_original,
         "stress-body journey did not return to the original session"
     );
-    // Cross-block selection/copy: the real `SelectionArea` copy of the whole
-    // long reply must contain the exact canonical body as one contiguous run and
-    // the body must have been carried by more than one real `RenderParagraph`, so
-    // a single-paragraph render or a direct domain-text write cannot pass.
-    let selection_copy = driver_report["observations"]["selectionCopy"]
-        .as_object()
-        .context("stress-body report has no cross-block selection-copy evidence")?;
+    // 行内预览的跨块选择/复制：交付的是产品 32 KiB 预算内的有界预览，复制内容必须与
+    // 该预览逐字节一致（不是全文）；完整正文由下面的详情查看器证明。
     ensure!(
-        selection_copy["pass"] == true,
-        "stress-body cross-block selection copy did not pass: {selection_copy:?}"
+        preview_copy.pass,
+        "stress-body preview selection copy did not pass: {preview_copy:?}"
     );
     ensure!(
-        selection_copy["copyButtonPresent"] == true,
-        "stress-body copy did not go through the product context-menu callback: \
-         {selection_copy:?}"
+        preview_copy.copy_button_present
+            && preview_copy.copy_ok
+            && preview_copy.selection_cleared
+            && preview_copy.scroll_stable
+            && preview_copy.mode_stable,
+        "stress-body preview copy did not use the product callback or disturbed the view: \
+         {preview_copy:?}"
+    );
+    // 跨渲染块选择分别核实际参与选择的渲染块数与整段复制文本：渲染与复制的长度必须
+    // 等于预览长度，两者的 hash 都必须等于同一份 canonical 预览，不能用子串包含或
+    // 只比较两个实际副本代替原文。
+    ensure!(
+        preview_copy.rendered_matches_preview
+            && preview_copy.copied_matches_preview
+            && preview_copy
+                .rendered_paragraph_count
+                .is_some_and(|count| count >= 2)
+            && preview_copy.rendered_characters == Some(preview_copy.preview_characters)
+            && preview_copy.rendered_hash.as_deref() == Some(preview_copy.expected_hash.as_str())
+            && preview_copy.copied_length == Some(preview_copy.preview_characters)
+            && preview_copy.copied_hash.as_deref() == Some(preview_copy.expected_hash.as_str()),
+        "stress-body preview was not rendered/copied as multiple real blocks of the canonical \
+         preview: {preview_copy:?}"
     );
     ensure!(
-        selection_copy["copiedParagraphCount"].as_u64().unwrap_or(0) >= 2
-            && selection_copy["renderedParagraphCount"]
-                .as_u64()
-                .unwrap_or(0)
-                >= 2,
-        "stress-body body was not rendered as multiple real paragraphs: {selection_copy:?}"
+        (1..=32 * 1024).contains(&preview_copy.preview_characters),
+        "stress-body inline preview exceeded the product 32 KiB budget: {preview_copy:?}"
+    );
+
+    // 完整正文：只有用户显式打开的详情查看器与平台剪贴板能证明，且长度/hash 必须
+    // 等于 fixture 的 canonical 原文。
+    // 默认正文每次增量是 `body-%05d `（11 字节）；large 另有 fixture 常量。
+    // ASCII 标记使字符数与 UTF-8 字节数相等。
+    const STRESS_BODY_UNIT_CHARACTERS: usize = "body-00000 ".len();
+    let expected_body = if context.scenario == "stress-body-large" {
+        pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS
+    } else {
+        pl_provider_fixture::STRESS_EVENT_COUNT * STRESS_BODY_UNIT_CHARACTERS
+    };
+    ensure!(
+        detail_copy.pass
+            && detail_copy.viewer_opened
+            && detail_copy.viewer_closed
+            && detail_copy.row_preview_unchanged == Some(true),
+        "stress-body detail viewer did not read/copy the complete body: {detail_copy:?}"
     );
     ensure!(
-        selection_copy["renderedMatchesCanonicalBody"] == true
-            && selection_copy["copiedContainsCanonicalBody"] == true
-            && selection_copy["copiedBodyMatchesCanonical"] == true
-            && selection_copy["copiedChunksMatchCanonical"] == true
-            && selection_copy["selectionCleared"] == true,
-        "stress-body clipboard readback did not match the canonical body: {selection_copy:?}"
+        detail_copy.expected_characters == expected_body
+            && detail_copy.loaded_characters == expected_body
+            && detail_copy.clipboard_characters == expected_body
+            && detail_copy.loaded_hash.as_deref() == Some(detail_copy.expected_hash.as_str())
+            && detail_copy.clipboard_hash.as_deref() == Some(detail_copy.expected_hash.as_str()),
+        "stress-body detail copy did not match the canonical fixture body: {detail_copy:?}"
     );
-    // The large scenario must deliver a body genuinely above the 256KiB native
-    // timeline window; the fixed 220,000-character body cannot, so this is a
-    // distinct requirement, not a restatement of the full-text check.
+    ensure!(
+        long_body.expected_characters == expected_body
+            && long_body.detail_total_bytes == expected_body
+            && long_body.truncated
+            && long_body.prefix_ok,
+        "stress-body body facts disagree with the fixture: {long_body:?}"
+    );
+    ensure!(
+        long_body.preview_bytes <= 32 * 1024
+            && long_body.delivered_bytes == long_body.preview_bytes
+            && long_body.delivered_characters == long_body.preview_bytes,
+        "stress-body inline preview exceeded the product budget or lost its accounting: \
+         {long_body:?}"
+    );
     if context.scenario == "stress-body-large" {
-        let long_body = driver_report["observations"]["longBody"]
-            .as_object()
-            .context("stress-body-large report has no long-body evidence")?;
+        // Generation-time proof (large only): 640000B 正文在预览封顶后仍继续增长，
+        // 同一身份至少两帧真实增长且展示保持 Live 贴底。默认 220000B 场景不产生该
+        // 观测，因此这里不得读取 `streamingGrowth`，也不为默认场景造假字段。
+        //
+        // 进入 History 后冻结、后台仍有新输出的 companion 事实由 Driver 在证据缺失时
+        // 抛错，使 `status` 变成 `failed`；这里不另读 `streamingCompanion`。
+        let growth = streaming_growth
+            .as_ref()
+            .context("stress-body-large report has no streaming growth observation")?;
         ensure!(
-            long_body["largeBody"] == true,
-            "stress-body-large did not record its large-body marker: {long_body:?}"
+            growth.window_passed
+                && growth.identity_stable
+                && growth.stayed_live_at_edge
+                && growth.threshold_bytes == 32 * 1024
+                && growth.growth_frames_above_window >= 2,
+            "stress-body-large did not prove the body kept following the stream above the \
+             product preview budget: {growth:?}"
         );
-        // Tie the Driver's mirrored expectation to the fixture constant so the
-        // two cannot drift apart silently.
         ensure!(
-            long_body["expectedCharacters"].as_u64()
-                == Some(pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS as u64),
+            long_body.large_body
+                && long_body.expected_characters
+                    == pl_provider_fixture::GUI_STRESS_BODY_LARGE_CHARACTERS,
             "stress-body-large expected body drifted from the fixture constant: {long_body:?}"
-        );
-        ensure!(
-            long_body["fullTextPresent"] == true
-                && long_body["prefixOk"] == true
-                && long_body["suffixOk"] == true,
-            "stress-body-large did not deliver the full body: {long_body:?}"
-        );
-        ensure!(
-            long_body["deliveredBytes"].as_u64().unwrap_or(0) > 256 * 1024,
-            "stress-body-large body did not exceed the 256KiB native window: {long_body:?}"
-        );
-        // Generation-time proof: the body kept following the stream above the
-        // threshold in at least two real growth frames of the same row.
-        let growth = &driver_report["observations"]["streamingGrowth"];
-        ensure!(
-            growth["windowPassed"] == true
-                && growth["identityStable"] == true
-                && growth["growthFramesAboveWindow"].as_u64().unwrap_or(0) >= 2,
-            "stress-body-large did not prove the body kept following the stream above \
-             the 256KiB window: {growth:?}"
         );
     }
     let report = host_report.context("stress-body fixture did not emit a stress report")?;
@@ -3185,7 +4266,7 @@ fn run_stress_body_scenario(
     );
     ensure!(
         report.emitted_bytes > 0,
-        "stress-body stream reported no provider output bytes"
+        "stress-body stream reported no account output bytes"
     );
     // The large scenario is deliberately paced slower (2,500 token/s) so the
     // window above the 256KiB threshold stays long enough to sample at least two
@@ -3850,7 +4931,7 @@ fn run_history_fault_scenario(
 /// script. The first lifecycle submits a real `plan_submit` through the GUI and
 /// shuts the GUI down normally while the confirmation is pending; the restart
 /// proves the reopened session restores the exact Plan body, interaction and
-/// turn identity with no provider request before the answer (the coordinator
+/// turn identity with no account request before the answer (the coordinator
 /// holds the Driver on a quiet marker until the fixture counters prove it),
 /// approves, and stages the Revise branch before a second normal shutdown; the
 /// recheck restores that second pending Plan, answers Revise (which must produce
@@ -3942,13 +5023,13 @@ fn run_plan_recovery_scenario(
         ensure!(
             after_first.total == at_first_card.total
                 && after_first.consumed_steps == at_first_card.consumed_steps,
-            "the first normal GUI shutdown issued provider requests: \
+            "the first normal GUI shutdown issued account requests: \
              {at_first_card:?} -> {after_first:?}"
         );
         fs::write(
             output.join("plan-recovery-requests-first.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "note": "baseline settled at the pending card; the normal shutdown itself added no provider request",
+                "note": "baseline settled at the pending card; the normal shutdown itself added no account request",
                 "atCard": at_first_card,
                 "afterShutdown": after_first,
             }))?,
@@ -3999,7 +5080,7 @@ fn run_plan_recovery_scenario(
                 output.join("plan-recovery-requests-restart.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
                     "quietBeforeAnswer": quiet_evidence,
-                    "note": "baseline settled at the second pending card; the second normal shutdown added no provider request",
+                    "note": "baseline settled at the second pending card; the second normal shutdown added no account request",
                     "atReviseCard": at_card,
                 }))?,
             )?;
@@ -4014,7 +5095,7 @@ fn run_plan_recovery_scenario(
         ensure!(
             after_restart.total == at_revise_card.total
                 && after_restart.consumed_steps == at_revise_card.consumed_steps,
-            "the second normal GUI shutdown issued provider requests: \
+            "the second normal GUI shutdown issued account requests: \
              {at_revise_card:?} -> {after_restart:?}"
         );
         if let Some(value) = serde_json::from_slice::<serde_json::Value>(&fs::read(
@@ -4211,7 +5292,7 @@ fn plan_recovery_settled_baseline(
     Ok(second)
 }
 
-/// Proves a reopened-card window recorded no provider traffic, then releases
+/// Proves a reopened-card window recorded no account traffic, then releases
 /// the Driver's quiet marker.
 ///
 /// The baseline comes from the previous lifecycle's settled counters, so any
@@ -4230,14 +5311,14 @@ fn plan_recovery_quiet_window(
     );
     ensure!(
         reopened.total == baseline.total && reopened.consumed_steps == baseline.consumed_steps,
-        "provider traffic appeared between the restart display and the answer: \
+        "account traffic appeared between the restart display and the answer: \
          {baseline:?} -> {reopened:?}"
     );
     thread::sleep(Duration::from_millis(2_500));
     let after_window = plan_recovery_read_status(status_file)?;
     ensure!(
         after_window == reopened,
-        "provider traffic appeared during the quiet window: {reopened:?} -> {after_window:?}"
+        "account traffic appeared during the quiet window: {reopened:?} -> {after_window:?}"
     );
     evidence.insert("baseline".into(), serde_json::to_value(baseline)?);
     evidence.insert("reopened".into(), serde_json::to_value(reopened)?);
@@ -4314,7 +5395,7 @@ fn wait_for_plan_recovery_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -4355,7 +5436,7 @@ fn wait_for_plan_recovery_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the plan-recovery {phase} journey"
+            "account fixture exited during the plan-recovery {phase} journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -4669,7 +5750,7 @@ fn wait_for_realtime_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the realtime journey"
+            "account fixture exited during the realtime journey"
         );
         ensure!(interrupt.try_recv().is_err(), "realtime journey cancelled");
         ensure!(
@@ -4738,7 +5819,7 @@ fn wait_for_history_lock_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -4773,7 +5854,7 @@ fn wait_for_history_lock_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the history-lock journey"
+            "account fixture exited during the history-lock journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -4845,7 +5926,7 @@ fn wait_for_history_fault_stage(
         ensure!(!gui.exited()?, "GUI exited before {expected}");
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited before {expected}"
+            "account fixture exited before {expected}"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -4880,7 +5961,7 @@ fn wait_for_history_fault_driver(
         );
         ensure!(
             !fixture.exited()?,
-            "provider fixture exited during the history-fault journey"
+            "account fixture exited during the history-fault journey"
         );
         ensure!(
             interrupt.try_recv().is_err(),
@@ -5133,7 +6214,7 @@ fn sanitize_requests(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Persists the synthetic provider log as reviewable evidence.
+/// Persists the synthetic account log as reviewable evidence.
 ///
 /// The fixture prints one `fixture_*` line per strict-match fact; those lines
 /// carry scenario-owned prompts and a match category but never the caller's

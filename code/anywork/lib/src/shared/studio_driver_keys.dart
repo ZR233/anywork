@@ -7,6 +7,12 @@ import 'studio_driver_key_values.dart';
 abstract final class StudioDriverKeys {
   static const shell = ValueKey<String>(StudioDriverKeyValues.shell);
   static const startPage = ValueKey<String>(StudioDriverKeyValues.startPage);
+  static const threadPreparation = ValueKey<String>(
+    StudioDriverKeyValues.threadPreparation,
+  );
+  static const threadPreparationDetails = ValueKey<String>(
+    StudioDriverKeyValues.threadPreparationDetails,
+  );
 
   /// 已选中但尚未打开的会话占位；首屏恢复的选择不自动打开会话（§6.1）。
   static const unopenedThread = ValueKey<String>('studio-unopened-thread');
@@ -18,9 +24,56 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> openThread(String id) =>
       ValueKey<String>('studio-open-thread-$id');
   static const sidebar = ValueKey<String>('studio-sidebar');
-  static const timeline = ValueKey<String>('timeline-scrollable');
+  static const sidebarResize = ValueKey<String>(
+    StudioDriverKeyValues.sidebarResize,
+  );
+  static const timeline = ValueKey<String>(
+    StudioDriverKeyValues.timelineScrollable,
+  );
   static ValueKey<String> timelineRow(String id) =>
-      ValueKey<String>('timeline-row-$id');
+      ValueKey<String>(StudioDriverKeyValues.timelineRow(id));
+
+  /// 分页与回到实时的稳定操作入口。
+  static const timelineLoadingOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineLoadingOlder,
+  );
+  static const timelineRetryOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineRetryOlder,
+  );
+  static const timelineReturnLive = ValueKey<String>(
+    StudioDriverKeyValues.timelineReturnLive,
+  );
+  static const timelineNewOutput = ValueKey<String>(
+    StudioDriverKeyValues.timelineNewOutput,
+  );
+
+  /// 全文查看器：只在用户显式打开后存在，按 canonical item + typed field 打开。
+  static const timelineDetailDialog = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailDialog,
+  );
+  static const timelineDetailText = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailText,
+  );
+  static const timelineDetailCopy = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailCopy,
+  );
+  static const timelineDetailClose = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailClose,
+  );
+  static const timelineDetailRetry = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailRetry,
+  );
+  static const timelineDetailTerminal = ValueKey<String>(
+    StudioDriverKeyValues.timelineDetailTerminal,
+  );
+  static const timelineConnectionNotice = ValueKey<String>(
+    StudioDriverKeyValues.timelineConnectionNotice,
+  );
+  static const timelineRetryConnection = ValueKey<String>(
+    StudioDriverKeyValues.timelineRetryConnection,
+  );
+  static ValueKey<String> timelineDetailOpen(String id, String field) =>
+      ValueKey<String>(StudioDriverKeyValues.timelineDetailOpen(id, field));
   static ValueKey<String> parentAgentLabel(String id) =>
       ValueKey<String>('timeline-parent-agent-label-$id');
   static const workspaceFooterScroll = ValueKey<String>(
@@ -58,7 +111,7 @@ abstract final class StudioDriverKeys {
   static const reasoningEffortLabel = ValueKey<String>(
     StudioDriverKeyValues.reasoningEffortLabel,
   );
-  static const providerUsageCheck = ValueKey<String>('provider-usage-check');
+  static const accountUsageCheck = ValueKey<String>('account-usage-check');
   static const skillsDiscover = ValueKey<String>('skills-discover');
   static const mcpRefresh = ValueKey<String>('mcp-refresh');
   static const mcpResetAll = ValueKey<String>('mcp-reset-all');
@@ -153,52 +206,62 @@ abstract final class StudioDriverKeys {
   static const statisticsSummary = ValueKey<String>('statistics-summary');
   static const statisticsHistory = ValueKey<String>('statistics-history');
   static const statisticsFilter = ValueKey<String>('statistics-filter');
+  static const statisticsEffortFilter = ValueKey<String>(
+    'statistics-effort-filter',
+  );
   static const statisticsMismatchOnly = ValueKey<String>(
     'statistics-mismatch-only',
   );
 
+  /// 顶层汇总身份 (accountId, 配置 modelId)；effort 是组内细分，不进入顶层 key。
   static ValueKey<String> statisticsSummaryRow(
-    String providerInstanceId,
-    String model,
-    String? reasoningEffort,
+    String accountId,
+    String modelId,
   ) => ValueKey<String>(
-    'statistics-summary-row:${jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort])}',
+    'statistics-summary-row:${jsonEncode(<Object?>[accountId, modelId])}',
+  );
+
+  /// 组内 effort 细分行；`null` 与显式 `none` 由元组编码区分。
+  static ValueKey<String> statisticsSummaryEffortRow(
+    String accountId,
+    String modelId,
+    String? effort,
+  ) => ValueKey<String>(
+    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort])}',
   );
 
   static ValueKey<String> statisticsHistoryRow(
-    String providerInstanceId,
-    String model,
-    String? reasoningEffort,
+    String accountId,
+    String modelId,
+    String? effort,
     int sampleIndex,
   ) => ValueKey<String>(
-    'statistics-history-row:${jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort, sampleIndex])}',
+    'statistics-history-row:${jsonEncode(<Object?>[accountId, modelId, effort, sampleIndex])}',
   );
-  static const providerEditor = ValueKey<String>('provider-editor');
-  static const providerEdit = ValueKey<String>('provider-edit');
-  static const providerSave = ValueKey<String>('provider-save');
-  static const providerPricing = ValueKey<String>('provider-pricing');
-  static const providerEditorScroll = ValueKey<String>(
-    'provider-editor-scroll',
-  );
-  static const providerAdd = ValueKey<String>('provider-add');
-  static const providerPreset = ValueKey<String>('provider-preset');
-  static const providerBaseUrl = ValueKey<String>('provider-base-url');
-  static const providerApiKey = ValueKey<String>('provider-api-key');
-  static const providerModelAdd = ValueKey<String>('provider-model-add');
-  static ValueKey<String> providerManualModelDelete(
-    String providerId,
-    String slug,
-  ) => ValueKey<String>('settings.provider.$providerId.model.$slug.delete');
-  static const providerManualModelDeleteConfirm = ValueKey<String>(
-    'settings.provider.model.delete.confirm',
+  static const accountEditor = ValueKey<String>('account-editor');
+  static const accountEdit = ValueKey<String>('account-edit');
+  static const accountSave = ValueKey<String>('account-save');
+  static const accountPricing = ValueKey<String>('account-pricing');
+  static const accountEditorScroll = ValueKey<String>('account-editor-scroll');
+  static const accountAdd = ValueKey<String>('account-add');
+  static const accountTemplate = ValueKey<String>('account-template');
+  static const accountBaseUrl = ValueKey<String>('account-base-url');
+  static const accountApiKey = ValueKey<String>('account-api-key');
+  static const accountModelAdd = ValueKey<String>('account-model-add');
+  static ValueKey<String> accountManualModelDelete(
+    String accountId,
+    String modelId,
+  ) => ValueKey<String>('settings.account.$accountId.model.$modelId.delete');
+  static const accountManualModelDeleteConfirm = ValueKey<String>(
+    'settings.account.model.delete.confirm',
   );
   static ValueKey<String> customModelId(int index) =>
-      ValueKey<String>('provider-model-$index-id');
+      ValueKey<String>('account-model-$index-id');
   static ValueKey<String> customModelAdvanced(int index) =>
-      ValueKey<String>('provider-model-$index-advanced');
+      ValueKey<String>('account-model-$index-advanced');
   static ValueKey<String> customModelDisplayName(int index) =>
-      ValueKey<String>('provider-model-$index-display-name');
-  static const providerCancel = ValueKey<String>('provider-cancel');
+      ValueKey<String>('account-model-$index-display-name');
+  static const accountCancel = ValueKey<String>('account-cancel');
   static const toolApprove = ValueKey<String>('tool-approve');
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');
@@ -211,6 +274,17 @@ abstract final class StudioDriverKeys {
   static const planFeedbackInput = ValueKey<String>('plan-feedback-input');
   static const planSubmitRevision = ValueKey<String>('plan-submit-revision');
   static const planApprove = ValueKey<String>('plan-approve');
+  static const planFeedbackError = ValueKey<String>('plan-feedback-error');
+  static const planDetailsReadingMode = ValueKey<String>(
+    'plan-details-reading-mode',
+  );
+  static const planDetailsStatus = ValueKey<String>('plan-details-status');
+  static const planDetailsTitle = ValueKey<String>('plan-details-title');
+  static const planDetailsMarkdown = ValueKey<String>('plan-details-markdown');
+  static ValueKey<String> timelinePlanReceipt(String id) =>
+      ValueKey<String>('timeline-plan-receipt-$id');
+  static ValueKey<String> timelinePlanReceiptReply(String id) =>
+      ValueKey<String>('timeline-plan-receipt-reply-$id');
   static const userInputFirstOption = ValueKey<String>(
     'user-input-first-option',
   );
@@ -362,21 +436,19 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> settingsRoleModelOption(
     String role,
-    String providerId,
+    String accountId,
     String model,
   ) => ValueKey<String>(
-    'settings-role-${jsonEncode(<String>[role, providerId, model])}',
+    'settings-role-${jsonEncode(<String>[role, accountId, model])}',
   );
 
-  static ValueKey<String> modelOption(String providerId, String model) =>
-      ValueKey<String>('model-${jsonEncode(<String>[providerId, model])}');
+  static ValueKey<String> modelOption(String accountId, String model) =>
+      ValueKey<String>('model-${jsonEncode(<String>[accountId, model])}');
 
-  static ValueKey<String> modelCapabilityTags(
-    String providerId,
-    String model,
-  ) => ValueKey<String>(
-    'model-${jsonEncode(<String>[providerId, model])}-capabilities',
-  );
+  static ValueKey<String> modelCapabilityTags(String accountId, String model) =>
+      ValueKey<String>(
+        'model-${jsonEncode(<String>[accountId, model])}-capabilities',
+      );
 
   static ValueKey<String> attachmentDraft(String id) =>
       ValueKey<String>('attachment-draft-$id');
@@ -408,6 +480,14 @@ abstract final class StudioDriverKeys {
   /// 回执里一题的答案正文。
   static ValueKey<String> timelineUserInputAnswer(String id, int index) =>
       ValueKey<String>('timeline-user-input-answer-$id-$index');
+
+  /// Wait/sleep card, expanded details and secondary diagnostics.
+  static ValueKey<String> waitingCard(String itemId) =>
+      ValueKey<String>('wait-card:$itemId');
+  static ValueKey<String> waitingDetails(String itemId) =>
+      ValueKey<String>('wait-details:$itemId');
+  static ValueKey<String> waitingDiagnostics(String itemId) =>
+      ValueKey<String>('wait-diagnostics:$itemId');
 
   static ValueKey<String> viewImageTool(String callId) =>
       ValueKey<String>('view-image-tool-$callId');
@@ -492,6 +572,9 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> lspActivityOverflow() =>
       const ValueKey<String>('lsp-activity-overflow');
 
+  static ValueKey<String> compactContext() =>
+      const ValueKey<String>('studio-compact-context');
+
   static ValueKey<String> contextUsage() =>
       const ValueKey<String>('context-usage');
 
@@ -518,43 +601,36 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> agentTaskSummary(String id) =>
       ValueKey<String>('agent-task-summary-$id');
 
-  static ValueKey<String> providerRow(String id) =>
-      ValueKey<String>('provider-row-$id');
+  static ValueKey<String> accountRow(String id) =>
+      ValueKey<String>('account-row-$id');
 
-  static ValueKey<String> providerConnectionMode(String providerId) =>
-      ValueKey<String>('provider-$providerId-connection-mode');
+  static ValueKey<String> accountConnectionMode(String accountId) =>
+      ValueKey<String>('account-$accountId-connection-mode');
 
-  static ValueKey<String> providerConnectionModeOption(
-    String providerId,
+  static ValueKey<String> accountConnectionModeOption(
+    String accountId,
     String mode,
-  ) => ValueKey<String>('provider-$providerId-connection-mode-$mode');
+  ) => ValueKey<String>('account-$accountId-connection-mode-$mode');
 
-  static ValueKey<String> providerModelConnectionMode(
-    String providerId,
+  static ValueKey<String> accountModelConnectionMode(
+    String accountId,
     String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-connection-mode');
+  ) => ValueKey<String>('account-$accountId-model-$model-connection-mode');
 
-  static ValueKey<String> providerModelConnectionModeOption(
-    String providerId,
+  static ValueKey<String> accountModelConnectionModeOption(
+    String accountId,
     String model,
     String mode,
-  ) => ValueKey<String>(
-    'provider-$providerId-model-$model-connection-mode-$mode',
-  );
-
-  static ValueKey<String> providerModelAutoCompactInput(
-    String providerId,
-    String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-auto-compact-input');
-
-  static ValueKey<String> providerModelAutoCompactSlider(
-    String providerId,
-    String model,
   ) =>
-      ValueKey<String>('provider-$providerId-model-$model-auto-compact-slider');
+      ValueKey<String>('account-$accountId-model-$model-connection-mode-$mode');
 
-  static ValueKey<String> providerModelAutoCompactReset(
-    String providerId,
+  static ValueKey<String> accountModelAutoCompactInput(
+    String accountId,
     String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-auto-compact-reset');
+  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-input');
+
+  static ValueKey<String> accountModelAutoCompactReset(
+    String accountId,
+    String model,
+  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-reset');
 }

@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use super::error::BridgeError;
 use super::event::BridgeProductEventEnvelope;
 use super::{
-    BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeLspStateSnapshot,
-    BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
-    BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
-    BridgeProjectDirectoryState, BridgeProviderUsageStateSnapshot, BridgeRecoveryStateSnapshot,
+    BridgeAccountUsageStateSnapshot, BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot,
+    BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
+    BridgeModelPerformanceSnapshot, BridgePersistenceQueueStateSnapshot,
+    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
     BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
     BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
@@ -27,7 +27,7 @@ pub enum BridgeProductTopic {
     Lsp,
     Skills { project_id: String },
     ThreadModeCatalog,
-    ProviderUsage,
+    AccountUsage,
     ModelPerformance,
     SessionCosts { root_thread_id: String },
     Updater,
@@ -64,7 +64,7 @@ impl BridgeProductTopic {
             Self::Lsp => StudioProductTopic::Lsp,
             Self::Skills { project_id } => StudioProductTopic::Skills { project_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
-            Self::ProviderUsage => StudioProductTopic::ProviderUsage,
+            Self::AccountUsage => StudioProductTopic::AccountUsage,
             Self::ModelPerformance => StudioProductTopic::ModelPerformance,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
@@ -91,7 +91,7 @@ pub enum BridgeProductBaseline {
     Lsp(BridgeLspStateSnapshot),
     Skills(BridgeSkillsStateSnapshot),
     ThreadModeCatalog(BridgeThreadModeCatalogSnapshot),
-    ProviderUsage(BridgeProviderUsageStateSnapshot),
+    AccountUsage(BridgeAccountUsageStateSnapshot),
     ModelPerformance(BridgeModelPerformanceSnapshot),
     SessionCosts(Box<BridgeSessionCostsState>),
     Updater(BridgeUpdaterStateSnapshot),

@@ -915,7 +915,7 @@ as List<PendingInteraction>,
 /// @nodoc
 mixin _$StatusBarView {
 
- StudioThread get thread; ThreadRuntimeView get runtime; List<ProviderSettingsView> get providers; List<RoleSettingsView> get roles; bool get isBusy;
+ StudioThread get thread; List<AccountSettingsView> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun; List<String> get activeSkills; List<String> get activeMcpServers; List<String> get activeLspServers;
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -927,20 +927,20 @@ $StatusBarViewCopyWith<StatusBarView> get copyWith => _$StatusBarViewCopyWithImp
 @override
 bool operator ==(Object other) {
   final _this = this as StatusBarView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&const DeepCollectionEquality().equals(other.providers, _this.providers)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.workflowRun, _this.workflowRun) || other.workflowRun == _this.workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _this.activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _this.activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _this.activeLspServers));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StatusBarView;
-  return Object.hash(runtimeType,_this.thread,_this.runtime,const DeepCollectionEquality().hash(_this.providers),const DeepCollectionEquality().hash(_this.roles),_this.isBusy);
+  return Object.hash(runtimeType,_this.thread,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.roles),_this.isBusy,_this.modelRoute,_this.workflowRun,const DeepCollectionEquality().hash(_this.activeSkills),const DeepCollectionEquality().hash(_this.activeMcpServers),const DeepCollectionEquality().hash(_this.activeLspServers));
 }
 
 @override
 String toString() {
   final _this = this as StatusBarView;
-  return 'StatusBarView(thread: ${_this.thread}, runtime: ${_this.runtime}, providers: ${_this.providers}, roles: ${_this.roles}, isBusy: ${_this.isBusy})';
+  return 'StatusBarView(thread: ${_this.thread}, accounts: ${_this.accounts}, roles: ${_this.roles}, isBusy: ${_this.isBusy}, modelRoute: ${_this.modelRoute}, workflowRun: ${_this.workflowRun}, activeSkills: ${_this.activeSkills}, activeMcpServers: ${_this.activeMcpServers}, activeLspServers: ${_this.activeLspServers})';
 }
 
 
@@ -951,7 +951,7 @@ abstract mixin class $StatusBarViewCopyWith<$Res>  {
   factory $StatusBarViewCopyWith(StatusBarView value, $Res Function(StatusBarView) _then) = _$StatusBarViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread thread, ThreadRuntimeView runtime, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
+ StudioThread thread, List<AccountSettingsView> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -968,14 +968,18 @@ class _$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? thread = null,Object? runtime = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? thread = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
   return _then(StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
-as StudioThread,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
-as ThreadRuntimeView,providers: null == providers ? _self.providers : providers // ignore: cast_nullable_to_non_nullable
-as List<ProviderSettingsView>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
+as StudioThread,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
+as List<AccountSettingsView>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
+as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable
+as WorkflowRunView?,activeSkills: null == activeSkills ? _self.activeSkills : activeSkills // ignore: cast_nullable_to_non_nullable
+as List<String>,activeMcpServers: null == activeMcpServers ? _self.activeMcpServers : activeMcpServers // ignore: cast_nullable_to_non_nullable
+as List<String>,activeLspServers: null == activeLspServers ? _self.activeLspServers : activeLspServers // ignore: cast_nullable_to_non_nullable
+as List<String>,
   ));
 }
 
@@ -1060,10 +1064,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   return orElse();
 
 }
@@ -1081,10 +1085,10 @@ return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isB
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView():
-return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1101,10 +1105,10 @@ return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isB
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  ThreadRuntimeView runtime,  List<ProviderSettingsView> providers,  List<RoleSettingsView> roles,  bool isBusy)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isBusy);case _:
+return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
   return null;
 
 }
@@ -1116,16 +1120,15 @@ return $default(_that.thread,_that.runtime,_that.providers,_that.roles,_that.isB
 
 
 class _StatusBarView extends StatusBarView {
-  const _StatusBarView({required this.thread, required this.runtime, required  List<ProviderSettingsView> providers, required  List<RoleSettingsView> roles, required this.isBusy}): _providers = providers,_roles = roles,super._();
+  const _StatusBarView({required this.thread, required  List<AccountSettingsView> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun,  List<String> activeSkills = const <String>[],  List<String> activeMcpServers = const <String>[],  List<String> activeLspServers = const <String>[]}): _accounts = accounts,_roles = roles,_activeSkills = activeSkills,_activeMcpServers = activeMcpServers,_activeLspServers = activeLspServers,super._();
 
 
 @override final  StudioThread thread;
-@override final  ThreadRuntimeView runtime;
- final  List<ProviderSettingsView> _providers;
-@override List<ProviderSettingsView> get providers {
-  if (_providers is EqualUnmodifiableListView) return _providers;
+ final  List<AccountSettingsView> _accounts;
+@override List<AccountSettingsView> get accounts {
+  if (_accounts is EqualUnmodifiableListView) return _accounts;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_providers);
+  return EqualUnmodifiableListView(_accounts);
 }
 
  final  List<RoleSettingsView> _roles;
@@ -1136,6 +1139,29 @@ class _StatusBarView extends StatusBarView {
 }
 
 @override final  bool isBusy;
+@override final  ThreadModelRouteView? modelRoute;
+@override final  WorkflowRunView? workflowRun;
+ final  List<String> _activeSkills;
+@override@JsonKey() List<String> get activeSkills {
+  if (_activeSkills is EqualUnmodifiableListView) return _activeSkills;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_activeSkills);
+}
+
+ final  List<String> _activeMcpServers;
+@override@JsonKey() List<String> get activeMcpServers {
+  if (_activeMcpServers is EqualUnmodifiableListView) return _activeMcpServers;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_activeMcpServers);
+}
+
+ final  List<String> _activeLspServers;
+@override@JsonKey() List<String> get activeLspServers {
+  if (_activeLspServers is EqualUnmodifiableListView) return _activeLspServers;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_activeLspServers);
+}
+
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
@@ -1147,18 +1173,18 @@ _$StatusBarViewCopyWith<_StatusBarView> get copyWith => __$StatusBarViewCopyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.thread, thread) || other.thread == thread)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&const DeepCollectionEquality().equals(other.providers, _providers)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.thread, thread) || other.thread == thread)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.workflowRun, workflowRun) || other.workflowRun == workflowRun)&&const DeepCollectionEquality().equals(other.activeSkills, _activeSkills)&&const DeepCollectionEquality().equals(other.activeMcpServers, _activeMcpServers)&&const DeepCollectionEquality().equals(other.activeLspServers, _activeLspServers));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,thread,runtime,const DeepCollectionEquality().hash(_providers),const DeepCollectionEquality().hash(_roles),isBusy);
+    return Object.hash(runtimeType,thread,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_roles),isBusy,modelRoute,workflowRun,const DeepCollectionEquality().hash(_activeSkills),const DeepCollectionEquality().hash(_activeMcpServers),const DeepCollectionEquality().hash(_activeLspServers));
 }
 
 @override
 String toString() {
-    return 'StatusBarView(thread: $thread, runtime: $runtime, providers: $providers, roles: $roles, isBusy: $isBusy)';
+    return 'StatusBarView(thread: $thread, accounts: $accounts, roles: $roles, isBusy: $isBusy, modelRoute: $modelRoute, workflowRun: $workflowRun, activeSkills: $activeSkills, activeMcpServers: $activeMcpServers, activeLspServers: $activeLspServers)';
 }
 
 
@@ -1169,7 +1195,7 @@ abstract mixin class _$StatusBarViewCopyWith<$Res> implements $StatusBarViewCopy
   factory _$StatusBarViewCopyWith(_StatusBarView value, $Res Function(_StatusBarView) _then) = __$StatusBarViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread thread, ThreadRuntimeView runtime, List<ProviderSettingsView> providers, List<RoleSettingsView> roles, bool isBusy
+ StudioThread thread, List<AccountSettingsView> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -1186,14 +1212,18 @@ class __$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? thread = null,Object? runtime = null,Object? providers = null,Object? roles = null,Object? isBusy = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? thread = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,Object? activeSkills = null,Object? activeMcpServers = null,Object? activeLspServers = null,}) {
   return _then(_StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
-as StudioThread,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
-as ThreadRuntimeView,providers: null == providers ? _self._providers : providers // ignore: cast_nullable_to_non_nullable
-as List<ProviderSettingsView>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
+as StudioThread,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
+as List<AccountSettingsView>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
+as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable
+as WorkflowRunView?,activeSkills: null == activeSkills ? _self._activeSkills : activeSkills // ignore: cast_nullable_to_non_nullable
+as List<String>,activeMcpServers: null == activeMcpServers ? _self._activeMcpServers : activeMcpServers // ignore: cast_nullable_to_non_nullable
+as List<String>,activeLspServers: null == activeLspServers ? _self._activeLspServers : activeLspServers // ignore: cast_nullable_to_non_nullable
+as List<String>,
   ));
 }
 

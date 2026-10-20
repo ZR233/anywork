@@ -1,0 +1,22 @@
+{
+  "generateTool": "generate_image",
+  "generateCallId": "call_ea93e8e7c4d74d4cbc74f6fac907eab4",
+  "generateItemId": "tool:37:call_ea93e8e7c4d74d4cbc74f6fac907eab4",
+  "cardTool": "show_image",
+  "cardCallId": "call_2302380b16964098811a4fa1c3a05099",
+  "cardPresentationId": "presentation:1:9",
+  "status": "succeeded",
+  "attachments": [
+    {
+      "id": "pl.studio.resource:52ed165261ff97cc6b94f088215cdb18e9d9b607aebdcd1f395e349f91ad06b2",
+      "modality": "image",
+      "filename": "",
+      "byteSize": 2270631,
+      "source": "tool"
+    }
+  ],
+  "caption": "日落海滩上的柴犬",
+  "cardMounted": true,
+  "dialogOpened": true,
+  "capturedAt": "2026-10-20T11:27:05.313175Z"
+}

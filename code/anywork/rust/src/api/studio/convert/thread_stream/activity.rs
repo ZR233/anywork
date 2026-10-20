@@ -75,6 +75,7 @@ fn activity_tool(value: pl_protocol::ThreadActivityToolEntry) -> BridgeThreadAct
         state: tool_state(value.state),
         ordinal: value.ordinal,
         started_at: value.started_at,
+        wait: value.wait.map(super::wait_presentation),
     }
 }
 
@@ -127,6 +128,7 @@ fn tool_detail(value: pl_protocol::ThreadActivityToolDetail) -> BridgeThreadActi
         output: value.output,
         ordinal: value.ordinal,
         started_at: value.started_at,
+        wait: value.wait.map(super::wait_presentation),
     }
 }
 

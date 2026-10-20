@@ -337,7 +337,7 @@ impl StudioThreadTools {
         Ok(self)
     }
 
-    /// Installs independent image generation over the selected provider backend and media host.
+    /// Installs independent image generation over the selected account backend and media host.
     ///
     /// The caller resolves the backend from the current directory observation, so an absent
     /// service capability, online image model or credential never reaches this builder.
@@ -350,7 +350,7 @@ impl StudioThreadTools {
         media: std::sync::Arc<H>,
     ) -> Result<Self, ThreadAssemblyError> {
         let client =
-            pl_model::provider::images::ImagesClient::new(backend.endpoint).map_err(|error| {
+            pl_model::protocol::images::ImagesClient::new(backend.endpoint).map_err(|error| {
                 ThreadAssemblyError::Resource {
                     operation: "bind image generation",
                     source: Box::new(error),
@@ -363,7 +363,7 @@ impl StudioThreadTools {
             pl_tool::image_generation::ThreadImageGenerationTool::new(
                 client,
                 backend.model,
-                backend.provider_id,
+                backend.account_id.to_string(),
                 media,
             )
             .registration(declaration)?,

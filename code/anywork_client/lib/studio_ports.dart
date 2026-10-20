@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'transport_ports.dart';
 import 'src/studio/thread_frames.dart';
-import 'src/studio/chat_contract.dart';
 import 'src/studio/bootstrap.dart';
 
 export 'src/studio/thread_frames.dart';
-export 'src/studio/chat_contract.dart';
+export 'src/studio/timeline_contract.dart';
 export 'src/studio/bootstrap.dart';
 
 abstract interface class RuntimeTransport {
@@ -42,6 +42,39 @@ abstract interface class CommandTransport {
   });
 }
 
+/// Typed Mode authoring commands and read-only validation helpers.
+///
+/// The schema is the only string-based authoring surface; runtime snapshots,
+/// documents and preview results stay typed.
+abstract interface class ModeEditorTransport {
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId);
+
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  });
+
+  Future<ModeValidationResult> validateThreadModeDefinition(String json);
+
+  Future<String> threadModeDefinitionSchema();
+
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  );
+}
+
 /// 按需读取进程级持久化队列压力的可选能力。
 ///
 /// 队列压力（排队操作数、字节、最老待保存年龄、在途字节与最近错误）是诊断观测，不是权威
@@ -56,20 +89,14 @@ abstract interface class PersistenceQueueReader {
   Future<PersistenceQueueSnapshot> readPersistenceQueue();
 }
 
-/// 生产聊天内容出口：打开该会话的有界 ChatView。
-///
-/// 这是正文显示的必要能力，不是可选后备。生产数据源与可证明内容路径的测试替身
-/// 必须实现它；缺少实现时 store 把内容同步标为失败，而不是静默当成空窗口。
-abstract interface class ChatWindowReader {
-  Future<StudioChatWindow> openChatWindow(String threadId);
-}
-
 abstract class StudioTransport
     implements
         RuntimeTransport,
         AttachmentTransport,
         BootstrapTransport,
-        CommandTransport {
+        TimelineTransport,
+        CommandTransport,
+        ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.
   void sealForShutdown() {}
   Future<List<StudioShutdownIssue>> cancelDartSubscriptions({
@@ -77,7 +104,7 @@ abstract class StudioTransport
   }) async => const [];
 
   Future<RecoveryStateSnapshot> retryRecovery();
-  Future<ProviderCatalogView> loadProviderCatalog();
+  Future<AccountCatalogView> loadAccountCatalog();
 
   /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。
   Future<AgentProfilesStateView> readAgentProfilesState();
@@ -127,7 +154,10 @@ abstract class StudioTransport
     String? path,
   });
   Future<StudioProject> openRemoteProject(String alias, String path);
-  Future<StartNewThreadResult> startNewThread(
+
+  /// One creation command, with progress followed by exactly one terminal outcome.
+  /// EOF or a transport error before that outcome does not prove rejection.
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
@@ -167,10 +197,12 @@ abstract class StudioTransport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   });
+  Future<void> compactThread(String threadId);
+
   Future<ThreadModeCommandReply> setThreadMode({
     required OperationId operationId,
     required String threadId,
@@ -246,26 +278,26 @@ abstract class StudioTransport
     PermissionMode mode, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   });
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   });
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
-    String slug,
+    String accountId,
+    String modelId,
   );
   Future<SettingsCommandReply> applySettingsField(
     int expectedSettingsRevision,
@@ -275,7 +307,7 @@ abstract class StudioTransport
 
   /// 重新读取 backend canonical settings 快照（不依赖本地缓存）。
   Future<SettingsStateSnapshot> readSettingsState();
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(String providerId);
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId);
   Future<SkillsStateSnapshot> readSkillsState(String projectId);
   Future<SkillsStateSnapshot> discoverSkills(String projectId);
   Future<SkillSearchResultView> searchSkills(

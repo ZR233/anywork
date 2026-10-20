@@ -12,12 +12,12 @@ pub struct SettingsConfigSnapshot {
     pub settings: StudioSettings,
 }
 
-/// Provider model directory observation. It is owned by the catalog clock and
-/// is deliberately absent from [`StudioProviderSettings`].
+/// One account's model directory observation. It is owned by the catalog clock and
+/// is deliberately absent from [`StudioAccountSettings`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioModelCatalogProvider {
-    pub id: String,
+pub struct StudioAccountModelCatalog {
+    pub account_id: String,
     pub effective_models: Vec<crate::ModelDescriptor>,
     pub model_catalog: StudioModelCatalogStatus,
 }
@@ -29,7 +29,7 @@ pub struct StudioModelCatalogProvider {
 pub struct ModelCatalogSnapshot {
     pub revision: u64,
     pub updated_at: i64,
-    pub providers: Vec<StudioModelCatalogProvider>,
+    pub accounts: Vec<StudioAccountModelCatalog>,
 }
 
 /// Direct response for a configuration command. The two resources are
@@ -44,8 +44,8 @@ pub struct SettingsStateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioSettings {
-    pub default_provider_id: Option<String>,
-    pub providers: Vec<StudioProviderSettings>,
+    pub default_account_id: Option<String>,
+    pub accounts: Vec<StudioAccountSettings>,
     pub mode_model_routes: Vec<StudioModeModelSettings>,
     pub roles: Vec<StudioRoleSettings>,
     pub permission_mode: String,
@@ -59,10 +59,13 @@ pub struct StudioSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioProviderSettings {
+pub struct StudioAccountSettings {
     pub pricing_enabled: bool,
-    pub id: String,
-    pub template_kind: String,
+    pub account_id: String,
+    /// 可选的内置账号模板引用；完全自定义账号为 `None`。
+    pub template_id: Option<String>,
+    /// 明确的厂商协议适配选择。
+    pub protocol: String,
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
@@ -75,14 +78,15 @@ pub struct StudioProviderSettings {
     pub standalone_web_search: Option<String>,
     pub prompt_cache_dialect: String,
     pub responses_programmatic_tool_calling: bool,
-    pub default_model: String,
+    /// 目录或创建路由的默认模型投影；不是账号 runtime 的第二份模型选择。
+    pub default_model_id: String,
     pub custom_models: Vec<StudioCustomModelSettings>,
     pub model_connection_modes: Vec<StudioModelConnectionSettings>,
     pub model_auto_compact_limits: Vec<StudioModelAutoCompactSettings>,
     pub catalog_id: Option<String>,
 }
 
-/// One provider instance's derived directory observation, never desired configuration.
+/// One account instance's derived directory observation, never desired configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelCatalogStatus {
@@ -133,26 +137,26 @@ pub enum StudioModelCatalogCacheWarning {
     Declaration,
 }
 
-/// 删除手动模型的配置命令。只接受 `additional_models` 或 Explicit 目录中的 slug。
+/// 删除手动模型的配置命令。只接受 `additional_models` 或 Explicit 目录中的 model_id。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemoveProviderModelRequest {
+pub struct RemoveAccountModelRequest {
     pub expected_revision: u64,
-    pub provider_id: String,
-    pub slug: String,
+    pub account_id: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCustomModelSettings {
     pub input_capabilities: Vec<crate::ModelInputCapabilityDto>,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
-    pub slug: String,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub model_id: String,
     pub display_name: String,
     pub reasoning_efforts: Vec<String>,
     pub base_instructions: String,
-    pub wire_protocol: String,
+    pub wire_api: String,
     pub supported_connection_modes: Vec<String>,
     pub default_connection_mode: String,
 }
@@ -160,31 +164,24 @@ pub struct StudioCustomModelSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelConnectionSettings {
-    pub slug: String,
+    pub model_id: String,
     pub connection_mode: String,
 }
 
-/// provider 实例中某模型的上下文压缩阈值三层视图。
-///
-/// `default_limit` 为模型默认元信息；`override_limit` 为用户覆盖（`None` 表示使用默认）；
-/// `effective_limit` 为实际生效值 `min(覆盖或默认, 上下文 90%)`，上下文未知时为 `None`；
-/// `safe_limit` 为上下文 90% 安全上限，上下文未知时为 `None`。
+/// Persisted account override intent; resolved policy belongs to the effective catalog.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelAutoCompactSettings {
-    pub slug: String,
-    pub default_limit: Option<u64>,
+    pub model_id: String,
     pub override_limit: Option<u64>,
-    pub effective_limit: Option<u64>,
-    pub safe_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioRoleSettings {
     pub key: String,
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: String,
 }
 
@@ -192,8 +189,8 @@ pub struct StudioRoleSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModeModelSettings {
     pub mode_id: String,
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     pub effort: String,
 }
 
@@ -264,8 +261,8 @@ pub struct StudioWebSearchSettings {
     pub region: Option<String>,
     pub city: Option<String>,
     pub timezone: Option<String>,
-    pub provider_id: Option<String>,
-    pub model: Option<String>,
+    pub account_id: Option<String>,
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -276,5 +273,5 @@ pub struct StudioDeepSeekWebSearchSettings {
     pub configured_fetch_enabled: bool,
     pub effective_fetch_enabled: bool,
     pub availability: String,
-    pub provider_id: Option<String>,
+    pub account_id: Option<String>,
 }

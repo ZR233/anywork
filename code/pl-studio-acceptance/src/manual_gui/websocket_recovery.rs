@@ -184,7 +184,7 @@ pub(super) fn run(
     fs::write(
         context.output.join("collection.json"),
         serde_json::to_vec_pretty(&json!({
-            "scenario":ready.scenario,"platform":std::env::consts::OS,"protocol":if native {"responsesHttp"} else {"responsesWebSocket"},
+            "scenario":ready.scenario,"platform":std::env::consts::OS,"protocol":if native {"responsesHttp"} else {"responsesWebSocket+responsesHttp"},
             "guiLifecycles":lifecycles.len(),"plannedGuiLifecycles":2,
             "status":if journey.is_ok() && wire.is_ok() {"complete"} else {"failed"},
             "error":journey.as_ref().err().or(wire.as_ref().err()).map(ToString::to_string),
@@ -289,6 +289,7 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
     }
     for (body, lifecycle) in [
         ("WS abandoned fragment", "failed"),
+        ("WS abandoned second fragment", "failed"),
         ("WS cancelled fragment", "failed"),
         ("WS recovered answer", "completed"),
         ("WS next turn answer", "completed"),
@@ -331,6 +332,7 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
                 let text = response[field].to_string();
                 ensure!(
                     !text.contains("WS abandoned fragment")
+                        && !text.contains("WS abandoned second fragment")
                         && !text.contains("WS cancelled fragment"),
                     "failed observation contaminated canonical {field}"
                 );
@@ -411,9 +413,9 @@ fn validate_requests(requests: &[Value]) -> Result<()> {
     ensure!(
         !requests.is_empty()
             && requests.iter().all(|request| request["accepted"] == true
-                && request["method"] == "WS"
+                && matches!(request["method"].as_str(), Some("WS" | "POST"))
                 && request["path"] == "/v1/responses"),
-        "request rejected or not Responses WebSocket"
+        "request rejected or not Responses WS/HTTP"
     );
     // Match the last user entry: earlier prompts in a full history do not identify new work.
     let user_requests = |prompt: &str| {
@@ -434,21 +436,29 @@ fn validate_requests(requests: &[Value]) -> Result<()> {
     };
     let recover = user_requests("WebSocket recover");
     ensure!(
-        recover.len() == 2
-            && recover[0]["body"]["input"] == recover[1]["body"]["input"]
-            && recover[1]["body"]["previous_response_id"].is_null(),
+        recover.len() == 3
+            && recover[0]["method"] == "WS"
+            && recover[1]["method"] == "WS"
+            && recover[2]["method"] == "POST"
+            && recover.iter().all(|request| request["body"]["input"]
+                == recover[0]["body"]["input"]
+                && request["body"]["previous_response_id"].is_null()),
         "recovery did not resend frozen full input"
     );
     let cancel = user_requests("WebSocket cancel");
     let next = user_requests("WebSocket next");
     ensure!(
-        next.len() == 1 && cancel.len() == 1,
+        next.len() == 1
+            && cancel.len() == 1
+            && next[0]["method"] == "POST"
+            && cancel[0]["method"] == "POST",
         "cancel or next Turn issued extra requests"
     );
     for request in requests {
         let input = request["body"]["input"].to_string();
         ensure!(
             !input.contains("WS abandoned fragment")
+                && !input.contains("WS abandoned second fragment")
                 && !input.contains("WS cancelled fragment")
                 && !input.contains("连接中断，正在重试"),
             "failed body or recovery notice entered model input"

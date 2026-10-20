@@ -4,6 +4,9 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'key_press.dart';
+import 'pointer_drag.dart';
+import 'pointer_scroll.dart';
 import 'raw_tap.dart';
 
 typedef FlutterDriverConnector = Future<FlutterDriverClient> Function(
@@ -14,6 +17,7 @@ typedef SnapshotReconnectObserver = FutureOr<void> Function(
 );
 
 abstract interface class FlutterDriverClient {
+  Future<Map<String, dynamic>> sendCommand(Command command);
   Future<void> checkHealth();
 
   Future<void> setFrameSync(bool enabled);
@@ -35,6 +39,7 @@ abstract interface class FlutterDriverClient {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   });
 
@@ -63,6 +68,26 @@ abstract interface class FlutterDriverClient {
   Future<void> waitForNoPendingFrame({Duration? timeout});
 
   Future<void> sendTextInputAction(TextInputAction action, {Duration? timeout});
+
+  /// Drags from the finder's centre along ([dx], [dy]) in logical pixels.
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
+    Duration? timeout,
+  });
+
+  /// Sends a key (optionally with shift held) through the framework's focus path.
+  ///
+  /// Pure integers on purpose: host Driver scripts run under `dart run` and must
+  /// not import `package:flutter/services.dart` (it pulls in `dart:ui`).
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  });
 
   Future<String> renderTree();
 
@@ -234,12 +259,19 @@ class FlutterDriverSession {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   }) {
+    final effectiveTimeout = timeout ?? tapDeadline;
     return _runSideEffectWithDeadline(
-      _client.scrollBy(scrollable, dy, timeout: timeout),
+      _client.scrollBy(
+        scrollable,
+        dy,
+        mouseWheel: mouseWheel,
+        timeout: effectiveTimeout,
+      ),
       name: 'scrollBy',
-      timeout: timeout,
+      timeout: effectiveTimeout,
     );
   }
 
@@ -264,14 +296,22 @@ class FlutterDriverSession {
     );
   }
 
-  Future<void> _runSideEffectWithDeadline(
-    Future<void> operation, {
+  /// Custom Driver inputs use the same bounded, never-replayed side-effect path.
+  Future<Map<String, dynamic>> sendCommand(Command command) =>
+      _runSideEffectWithDeadline(
+        _client.sendCommand(command),
+        name: command.kind,
+        timeout: command.timeout ?? tapDeadline,
+      );
+
+  Future<T> _runSideEffectWithDeadline<T>(
+    Future<T> operation, {
     required String name,
     required Duration? timeout,
   }) async {
     if (timeout == null) return operation;
     try {
-      await operation.timeout(timeout);
+      return await operation.timeout(timeout);
     } on TimeoutException catch (_, stackTrace) {
       // A timed-out Driver side effect may still own the transport. Dispose the
       // connection without delaying the caller's deadline; the command itself
@@ -329,6 +369,36 @@ class FlutterDriverSession {
     Duration? timeout,
   }) {
     return _client.sendTextInputAction(action, timeout: timeout);
+  }
+
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
+    Duration? timeout,
+  }) {
+    final effectiveTimeout = timeout ?? tapDeadline;
+    return _runSideEffectWithDeadline(
+      _client.dragBy(
+        finder,
+        dx: dx,
+        dy: dy,
+        pointerKind: pointerKind,
+        timeout: effectiveTimeout,
+      ),
+      name: 'dragBy',
+      timeout: effectiveTimeout,
+    );
+  }
+
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  }) {
+    return _client.pressKey(keyId, usbHidUsage, shift: shift, timeout: timeout);
   }
 
   Future<String> requestData(String message, {Duration? timeout}) {
@@ -400,6 +470,10 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
   const _RealFlutterDriverClient(this._driver);
 
   final FlutterDriver _driver;
+
+  @override
+  Future<Map<String, dynamic>> sendCommand(Command command) =>
+      _driver.sendCommand(command);
 
   @override
   Future<void> checkHealth() async {
@@ -476,8 +550,14 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
   Future<void> scrollBy(
     SerializableFinder scrollable,
     double dy, {
+    bool mouseWheel = false,
     Duration? timeout,
   }) {
+    if (mouseWheel) {
+      return _driver
+          .sendCommand(PointerScroll(scrollable, -dy, timeout: timeout))
+          .then((_) {});
+    }
     return _driver.scroll(
       scrollable,
       0,
@@ -534,6 +614,37 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
     Duration? timeout,
   }) {
     return _driver.sendTextInputAction(action, timeout: timeout);
+  }
+
+  @override
+  Future<void> dragBy(
+    SerializableFinder finder, {
+    double dx = 0,
+    double dy = 0,
+    PointerDragKind pointerKind = PointerDragKind.touch,
+    Duration? timeout,
+  }) async {
+    await _driver.sendCommand(
+      PointerDrag(
+        finder,
+        dy,
+        dx: dx,
+        pointerKind: pointerKind,
+        timeout: timeout,
+      ),
+    );
+  }
+
+  @override
+  Future<void> pressKey(
+    int keyId,
+    int usbHidUsage, {
+    bool shift = false,
+    Duration? timeout,
+  }) async {
+    await _driver.sendCommand(
+      KeyPress(keyId, usbHidUsage, shift: shift, timeout: timeout),
+    );
   }
 
   @override

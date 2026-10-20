@@ -1,7 +1,7 @@
 # 07 - Thread 实时流
 
 产品低频 topic 与作用域见 [18](./18-studio-state.md) §18.2.1；它们与本篇 Thread 状态、
-ChatView 内容窗口组合，不汇成 GUI 全事件流。选中会话仅观察该 Thread 的状态和内容，
+Timeline 内容源组合，不汇成 GUI 全事件流。选中会话仅观察该 Thread 的状态和内容，
 费用另按所属根会话订阅。切换、离开页面或关闭时先使旧世代失效，再取消并等待释放旧句柄；
 迟到帧不得写入新会话。共享 topic 的最后一个观察者离开即释放订阅。
 
@@ -24,16 +24,11 @@ ChatView 内容窗口组合，不汇成 GUI 全事件流。选中会话仅观察
 typed 变更。订阅只是这份投影的读者：先注册投影帧 receiver，再读取 Thread owner 的小型
 authoritative snapshot，最后发送 snapshot，之后只转发投影帧，自己不投影、不读 effect window、
 不发布会话内容；注册与快照之间提交的 effect 仍会投递，其中已被快照覆盖的帧按提交序号丢弃。
-内容只有一个 owner：每条 Item 正文由该 Thread 唯一的共享内容窗口（`ChatWindowStream` / FRB
-`BridgeChatView`）持有并发布，订阅状态流既不携带内容帧也不拼装正文。窗口在打开或重连时立即
-返回内存中已成立的 pending/流式正文，**不等待** history writer 或 checkpoint 水位；已保存历史
-只在窗口内部按 cursor 分页读取 `history.sqlite`，磁盘写入与保存水位都不进入状态流。普通滚动
-分页不得查询 owner 或触发 flush。未驻留 Thread 只有执行或读取当前状态时才显式激活；单纯历史
-查询直接读取 `history.sqlite`。
-实时流没有 durable replay，状态缺口通过重新订阅以新基线收束；内容缺口废弃当前绑定并重开
-同一会话的有界 ChatView（core 从内存尾部、可靠待保存集合与历史存储统一生成 `Reset`），只读
-SQL 页不是 GUI 的恢复替代路径。恢复仅重建受影响资源的观察，不重启业务 owner，也不要求重放
-全部 token。
+内容权威来自共享 Session：它统一合并 pending、流式与已保存历史，提供 keyset 小页、有界
+尾部订阅与按身份详情，契约见 [26](./26-timeline-content.md)。状态订阅不携带正文、不构造
+另一条实时内容队列；内容初开无需等待 writer，冷历史查询不激活执行 owner。
+内容缺口只重建受影响订阅，返回明确新基线，不要求重放全部 token，不重启业务 owner。
+历史展示冻结期间的重同步不替换已显示消息，Live 使用同一新展示代次语义接收新基线。
 
 实时事件总线只拥有 Turn、Item、Interaction、runtime 与 live overlay 的实时投影，不拥有
 Thread directory 元数据。订阅注册完成后，Studio 运行时必须用内存 Thread directory owner 的
@@ -54,7 +49,7 @@ Thread directory 元数据。订阅注册完成后，Studio 运行时必须用�
 
 查询快照的 core commit sequence 与订阅通知的 revision 属于不同版本域，不能用查询结果修补
 当前订阅水位。已知 CAS 冲突需要刷新 Thread 轻状态时，Client 取消并 join 旧 runtime binding，
-重新订阅并等待该 binding 的首个 owner baseline，再按原 OperationId 重试；当前 ChatView 保留。
+重新订阅并等待该 binding 的首个 owner baseline，再按原 OperationId 重试；当前内容连接保留。
 关闭或切换会话终止 baseline 等待，实际取消未完成的 binding 仍由 Session 持有并计入预算。
 
 通知穷尽为：
@@ -69,7 +64,7 @@ Thread directory 元数据。订阅注册完成后，Studio 运行时必须用�
 - `lagged`
 
 状态流**不含内容帧**：`itemStarted`/`itemDelta`/`itemCompleted` 不再存在，条目与流式正文只由该
-Thread 的内容窗口（`ChatWindowStream` / FRB `BridgeChatView`）交付；过滤发生在生产端，客户端不靠
+Thread 的 Session 内容源交付；过滤发生在生产端，客户端不靠
 末端丢弃内容帧来去重，也不会因此制造 revision 空洞。Turn 与 Interaction 的通知 payload 仍携带
 canonical tagged state，而不是 status string 与平行 failure/reason/timestamp。Turn 终态固定为
 Completed、Cancelled、Failed、BudgetLimited；取消原因和预算 rollover 结果位于对应终态 payload。
@@ -94,7 +89,7 @@ typed 事实。订阅建立时若快照没有活动 Turn，就以同一水位在
 该帧与被广播帧来自同一个 Turn 投影，因此最近终态、原因与身份在实时与重订阅之间一致，不
 需要客户端从窗口正文反推 Turn，也不需要缓存它曾见到的 `running` 状态。活动 Turn 存在时不补发，
 迟到的终态帧也不会把已终结的 Turn 重新标成运行；同一 Turn 的终态只交付一次。Item 仍然没有
-durable replay：缺口依旧靠重开有界内容窗口的权威 `Reset` 收束，这里补发的只是 owner 作为当前
+durable replay：缺口依旧靠内容订阅的显式新基线收束，这里补发的只是 owner 作为当前
 状态持有的**最新 Turn 事实**，不是历史条目。
 
 owner 首次安装或进程回收后冷恢复时，这份保留事实不能是空：live owner 在安装路径（本就读取
@@ -102,7 +97,7 @@ history 的唯一冷读点）从既有 durable Turn 记录做一次有界、不�
 并按执行序号播种；正在投影的更新只按更大的执行序号/修订向前合并，正常实时提交路径仍不回读刚写
 SQL。retired 子会话没有 owner 可保留，其订阅在权威快照之后以同一 `turnCompleted` 契约补发一次
 durable 最近终态 Turn，因此有无 owner 的前端都从同一 Turn 事实读 `lastTurn`。这仍不是 Item 的
-durable replay，缺的条目依旧由重开有界内容窗口的权威 `Reset` 收束。
+durable replay，缺的条目依旧由内容订阅新基线和按需历史页恢复。
 
 TurnFinished 是最终校验与 worker 失败的终态投影边界：非正常完成必须在 TurnCompleted 前发布
 对应 typed Turn Item，使实时与持久化历史均能显示失败、取消或预算原因；已有同轮终态错误 Item
@@ -116,11 +111,11 @@ TurnFinished 是最终校验与 worker 失败的终态投影边界：非正常�
 保留，用户停止、关闭、交互和实际失败独立生效。历史预算终态保持可读，不自动续跑已停止的
 Turn；上下文压力触发的正常压缩不属于停止预算。
 
-内容窗口的字段变化只携带 canonical 身份与 typed 字段（`ChatField`，例如 agent message text、
+内容源的字段变化只携带 canonical 身份与 typed 字段（`ChatField`，例如 agent message text、
 reasoning summary/content、plan text、tool arguments/output），正文按 `Append`/`Replace`/`Remove`
-交付，一次 `UpdateItem` 只提交一次内容 revision；未终态的流式正文只驻留窗口内存，不形成
+交付，一次 `UpdateItem` 只提交一次内容 revision；未终态的流式正文只驻留 Session 内存，不形成
 history 写入。terminal Item 携带完整 authoritative payload 并随同一 `ThreadEffectBatch` 交给唯一
-history writer；窗口按 `ChatLifecycle` 收敛执行终态、保存确认只翻 `saved`，不等待 SQL 确认，也不
+history writer；内容订阅按 `ChatLifecycle` 收敛执行终态、保存确认只翻 `saved`，不等待 SQL 确认，也不
 存在第二份 overlay 与 SQL 行合并。文本 Item 的 channel
 穷尽区分 `user`、`parentAgent`、`commentary` 与 `final`；`parentAgent` 只由 runtime 冻结的
 mailbox 来源产生，所有 transport 和 Flutter reducer 都机械透传，不在客户端推导。
@@ -181,99 +176,27 @@ Thread directory 是 Thread 元数据的唯一 canonical cache。snapshot 中携
 身份并重绑到当前 directory entry，不能反向覆盖 directory——product stream 与 thread stream
 即使并发到达，也不会用旧 workspace snapshot 回滚刚确认的 mode/role。
 
-切换 Thread 时增加 generation、立即创建新订阅并取消旧订阅；旧 generation 的 frame、error 和
-done 全部丢弃。正文不再走状态流：内容只由该 Thread 的内容窗口（`ChatWindowStream` / FRB
-`BridgeChatView`）交付，状态流自身不产生也不转发 Item/Delta 帧。窗口的内容 delta 只允许命中当前
-未终态 Item 且该 item 的 `expected_revision` 相等，正文变化按 `ChatField` 字段身份输出
-`Append` / `Replace` / `Remove` / `Unchanged`；一次 `UpdateItem` 只允许一次内容 revision 提交，
-不存在把新字节追加到已失效前缀的分支。缺口、未知变体或 lagged 统一重新订阅。
-新代的首个 authoritative snapshot 重置该代通知水位，即使旧代的实时通知 revision 更高也必须
-采纳；旧代未终态预览作废，尚待 SQL 同身份确认的终态条目继续保留至分页确认。只允许同一代的
-后续通知按 `base_revision` 连续拼接。
+切换 Thread 时立即使旧 attempt 失效、取消并 join 旧内容连接；迟到 frame、query、error 与
+finally 只结束自己，不影响新选择。正文与 Thread 状态分离；状态流首快照及连续封套仍由
+原状态 reducer 管理，不能拿查询版本修补状态流水位。
 
-Timeline workspace 的正文只有一个 owner：这份单列视图就是该 Thread 的内容窗口
-（`ChatWindowStream` / FRB `BridgeChatView`）本身，不维护独立实时尾部、第二份 item cache，
-也不把 SQL 行与内存 overlay 归并成两条来源。窗口建立时立即返回内存中已成立的 pending/流式
-正文，因此打开或重连即可见，**不等待** history writer 或 checkpoint 水位；已保存历史只在窗口
-内部按 cursor 分页读取 `history.sqlite`，首窗与翻页都走同一条 view 内部路径，不做状态流
-`Latest` 首窗加 overlay 合并，磁盘写入与 flush 也不进入状态流。
+Timeline 的数据接口、尾部版本与字段更新以 [26](./26-timeline-content.md) 为准。
+历史页来自同一 Session 的无状态 keyset query，不再通过服务端窗口移动；详情也不改变
+订阅基线。尾部 initial 与 next 只推进自身连续性，历史页不能作为尾部 Patch 的新基线。
+Client 保留一个在途 next，内容变化必须匹配 identity 与 expected revision，一批只提交
+一次内容版本，不向 JSON 字符串追加文本。字段删除、权威替换、保存确认、终态和只推进
+revision 的变化均有明确语义，缺口触发该内容连接的显式重同步。
 
-窗口内容交付只有**一个出口** `next`：首帧 `initial`（Reset），之后 Reset/Patch。控制操作
-（`load`/`focus`/`expand`）只返回操作回执（`ChatWindowReceipt`：`operation_id`、
-权威 `Applied | NoChange` 与操作提交的窗口版本；`expand` 另带正文是否成功保留），不直接交付
-窗口，也不重置订阅基线。disposition 在窗口 owner 的提交边界裁决，不能由消费者读两次快照推断。
-向上与向下分页统一通过 `load(Older)` / `load(Newer)` 驱动：当窗口处于 `Latest` 且向旧加载后总条数
-未超过有界窗口上限（`WINDOW_ITEMS`）时，不淘汰尾部条目、保持 `Latest` 聚焦与 `has_newer = false`，
-使实时流式尾部在向上翻阅近期历史时继续追加；仅当向旧加载超出窗口容量并裁剪尾部时才切换为
-`Around` 历史滑窗并置 `has_newer = true`；历史滑窗向新加载抵达最新尾部时自动恢复 `Latest` 聚焦。
-在已达历史边界时 `load` 为合法 no-op：版本不变、不发内容帧。
-相同 Latest 焦点，或窗口内仍可见的同一 Around 身份，focus 为 no-op：不推进 generation、不通知。
-core 在真正改变窗口的操作完成时推进窗口版本并立即唤醒，下一次 `take` 由消费者自己的帧判定：
-仅当窗口与已交付基线无重叠身份或版本回退时发出权威 `Reset`，存在重叠身份的分页、扩窗、滑窗淘汰、
-边界标志（`focus`/`has_older`/`has_newer`）变化均通过携带最新窗口边界元数据的 `Patch` 增量交付，
-`from` 始终等于客户端最后收到的版本。因此「已交付给客户端」的水位只由 `next`/`take` 推进；GUI
-不再有 load/focus 直接返回快照的第二条交付路径，也不存在 SQL 分页与实时条目的双路合并。回执里随手
-读取的会话进度不是必须在内容帧出现的完成水位：ChatUpdates 会跳过当前窗口不可见的变化。回执版本未超过
-当前已交付版本，只能证明观察屏障到达；Applied 的帧先于回包到达时版本也会相等，不能因此改判 NoChange。
-Client ChatChannel 把 initial 作为新 attempt 的首个 Reset，和后续帧送入同一个 reducer；
-同一 view 同时至多一个未完成的 `next`，
-reduce 完上一帧后再取下一帧。连续性缺口（`from` 不匹配本地版本、目标 item 不在窗口、
-`expected_revision` 不匹配或传输故障）废弃当前绑定并重开同一会话的有界窗口，期间保留最后
-有效内容。lastGood 仅暂时显示，不能成为新 view 的 Patch baseline。`expand` 在可见全文升级时推进
-版本并通知，完整正文仍由下一次 `take` 交付；条目已离开窗口时不 retain、不通知。
-ViewStamp 与 ResourceStamp 的版本域、attempt 关闭和 provider 观察边界见 [25](./25-frontend-state.md)。
+应用的唯一已加载 Message 集合归当前展示 lease，库内部消费 operations；Client 不持有
+第二份随访问增长的窗口镜像。Live 原位增量更新与追加，用户阅读后进入 History，冻结
+已显示内容但继续接收有界尾部和新内容提示。只有显式回实时或发送才替换最新小页和
+展示代次；不通过 resize、方向通知或滚轮到达本地底端自动恢复。
 
-core `pl-core::chat` 窗口是这一单列视图的唯一内容窗口：它以稳定的 `ChatField` 为内容身份，
-`Body`、带 provider part 身份的 `Part` 与宿主定义的 opaque `Host` key（例如工具 arguments 与
-result 两个不同域）都只是字段身份，core 不从正文推断协议字段。正文是共享不可变 `ContentBlock`，
-向宿主产出基于 `(order, item_id)` 归并对齐的 typed 差量：窗口头尾的插入或滑窗裁剪表达为结构
-`Splice`，重叠区间内同一 item 的全部变化合批为一次原位 `UpdateItem`（`expected_revision`
-一次基线校验、`revision` 一次版本提交，`omitted_bytes`、保存水位 `saved`、执行生命周期
-`lifecycle` 与可选静态元数据壳 `meta` 随批一次提交），流式终态收敛或工具状态变更不重传已交付正文；
-字段删除、仅版本推进、仅保存确认、同版本预览升级为完整正文都有完整可应用语义，
-宿主不向 JSON 字符串追加字节、也不在每 token 解码或编码全文。四个事实互不替代：item 内容
-`revision`、窗口 `version`（patch 的 `from`/`to`）、保存水位 `saved`、执行终态 `ChatLifecycle`。
-`confirm_saved` 只翻 `saved`，不改变身份、顺序、revision、正文或执行终态，所以终态条目可以尚未
-保存、已保存条目仍可继续增量；终态拒绝迟到预览只依赖执行终态事实，不依赖 writer 速度。窗口只
-保留有界终态标记，超过上限时淘汰最小顺序并把该顺序折入单调顺序水位，顺序槽严格递增且从不复用，
-因此标记淘汰后同一身份仍被顺序水位拒绝；持久化历史始终是内容最终 owner，冷历史读取不受该水位
-限制。
-
-窗口对宿主暴露廉价、可 clone、取消安全的锁外 readiness 等待：Session 发布的事实只有窗口
-`version` 与边界水位线 `urgent` 两个数；`ChatView::version()` /
-`ChatView::watch()->ChatWatch::wait(seen)` 只读这两个数，不构快照、不算差量、不持锁，level-triggered
-且取消安全，取消不消耗版本。`wait` 只在有待交付边界（`urgent > seen`）时立即返回，只有已开始普通
-文本才持有一个**固定**合帧 deadline，且该 deadline 锚定在首次观察处、后续 delta 不重启；无变化则
-阻塞。宿主因此在锁外等就绪、在短临界区用同步 `ChatUpdates::take()` 相对本消费者已交付 baseline
-**只算一次**要交付的差量并原子推进基线（无 await）。消费者持有两个互不混用的水位：
-`ChatUpdates::delivered_version()` 是客户端真正收到过内容的版本（`take()` 只在实际交付一帧时推进
-它，`Patch::from` 永远等于它），`ChatUpdates::observed_version()` 是已经看过/跳过的唤醒水位（对每个
-新版本都推进）。等待必须用 `observed_version()` 入 `ChatWatch::wait(seen)`，`take()` 的差量则从
-delivered baseline 计算：这样既不会为已跳过的版本反复唤醒，也不会让下一次可见 Patch 的 `from`
-落在客户端从未收到的版本上。`next()` 复用同一 `wait` 与 `take` 语义，HTTP 与 FRB 共用一套合帧规则，
-不重复构 diff、不二次合帧。窗口按权威事实给出更新优先级：新身份首字、执行终态准入、保存确认、
-字段删除、权威替换与结构变化是立即交付的边界，合帧等待被任何边界更新打断，首字与终态立即交付。
-历史窗口遇到无关 live 更新时可见正文不变，只在 `has_newer` 首次翻起时通知一次新内容，之后的无关
-更新不产生空 Patch、不 Reset、不重建历史；此时只推进 observed 唤醒水位，delivered baseline 停在
-客户端最后一个 `to`，因此后续窗口内可见变化（含按身份取回完整正文）仍从该版本接起，等待侧也不会
-空转；显式回到 `Latest` 立即以一帧恢复权威内容。
-
-运行中的 Item 在窗口里始终给出完整正文，已持久化历史在窗口里只保留有界预览，宿主按身份请求完整
-正文并拿到同一窗口 revision 的权威正文；完整历史正文至多冷读一次，保留到该身份离开窗口为止，
-读取不在锁内等待存储，不静默截断助手正文，也不为观察层保留第二份全文。按身份取回完整正文同时是
-该 view 对那个身份的**持续完整正文意图**：之后每个新 revision 都继续沿同一共享链把完整正文作为
-typed `Append` 交付，可见正文不再回落到有界预览、也不再发生第二次存储读取；该意图只在该身份离开
-该 view 时随 overlay 释放，身份离窗后重新请求才再读一次存储，且不会把已释放的正文复活进窗口。
-宿主因此不需要（也不允许）用"先预览、再取全"的时序自己猜何时该继续跟随。
-按身份取回完整正文若改变了
-窗口**可见**正文（例如同 revision 的有界预览升级为完整正文），由 core 推进窗口 `version` 并通知
-watcher（不是运行时捏版本）；`revision` 不变，`saved` 与 `ChatLifecycle` 也不受影响，窗口的完整
-正文缓存只承载正文，`saved`、`lifecycle`、`turn_id`、`meta` 与顺序始终以时间线为准，缓存 overlay
-只在同 revision 且更完整时升级正文，绝不回退独立状态事实（保存确认或终态准入不会被先前读取的缓存
-body 覆盖）；迟到读取在身份离窗后不写回、不推进版本。reconcile 只在 revision 完全相等时合并，绝不
-产出跨 revision 的混合 item：窗口已推进到更高 revision 时，迟到的旧正文被丢弃并返回权威最新 item；
-正文比窗口槽更新时按自身事实保留。窗口缓存也不被迟到的旧 revision 覆盖较新的缓存条目（只在
-`revision >= 缓存 revision` 时写入）。
+内容 publisher 仍按稳定 ChatField 和共享不可变 ContentBlock 发布；内容 revision、订阅
+version、saved 与执行终态独立。终态拒绝迟到预览不依赖 writer，可靠事实更高版本补充仍
+合法。保存确认不改变正文或顺序，缓存释放不能删除前端已加载消息或漏报连续性。
+合帧只在 core 尾部交付处发生一次，首字、终态、保存和故障打断固定普通正文 deadline；
+HTTP 与 FRB 不二次合帧。取消安全的 readiness 等待不跨锁阻塞，终止必须唤醒等待者。
 
 运行中工具调用的输出不走"每来一个 chunk 就把累计全文再报一遍"的路径。生产者（命令执行等）持有
 共享不可变 `ContentBlock` 链，只把**变化的部分**交给 Thread：一个生产者自选的 opaque 输出身份
@@ -354,10 +277,10 @@ receiver 与 pin。Runtime subscription 在恢复 owner 前取得 pin，并持�
 临时激活分别计数，任一 guard 释放不影响其余 pin。
 
 FRB `readThreadSnapshot` 与 HTTP `GET /api/v1/threads/{thread_id}` 机械调用同一个 snapshot
-query，均返回不含历史 Item 的当前 Thread 状态，不得让 HTTP route 退化为只返回 Thread directory
-元数据。Timeline 历史与实时正文在 GUI 侧统一由权威 ChatView 窗口交付；FRB 不再暴露 SQL 分页
-或按 identity 读条目的旁路入口，HTTP 仍保留只读的
-`GET /api/v1/threads/{thread_id}/timeline` 分页供外部消费，两者不共用 GUI 热路径。
+query，均返回不含历史 Item 的当前 Thread 状态，不得退化为只返回 directory 元数据。
+Timeline 内容页、tail events 与详情统一消费 Session 内容能力，HTTP 与 FRB 只做机械映射；
+旧 window/focus/load/expand 回执接口删除，不保留纯 SQL 页作为 GUI 恢复旁路。
+公开内容接口与版本契约见 [26](./26-timeline-content.md)。
 Skill 激活使用普通的终态 Skill Item 和 `threadRuntimeUpdated` 通知；激活来源是 typed 的
 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置是 typed resource base，不允许
 transport 或前端从工具 JSON 推断；Timeline 文案按来源区分代理激活与用户激活。首次订阅及重连
@@ -385,8 +308,14 @@ Thread 的 runtime、turn、interaction、workflow、activity 与 storage 继续
 token 保持未知，宿主不得用字符数、字节数或本地计时冒充 token。live 观察不写入 durable
 `UsageSummary`，attempt 结束时由 authoritative 事实覆盖并清除 live 标识；重订阅首帧必须
 携带当前 live/authoritative 状态。吞吐 projection 只接受同一 live 观察内同时存在的
-output token 与 decode 时长；live 观察已建立但任一字段缺失时保持未知，不回退另一 attempt
-的 authoritative 分子或分母。没有 live 观察时才可成对使用 authoritative 计数。
+有效 output token 与 decode 时长。live 任一字段缺失或无效时，不能借用另一 attempt 的字段
+拼成速度；状态栏可以改为完整采用 canonical runtime 中最近已确认的成对聚合样本。只有两类
+完整样本均不可用时才显示未知，具体选择与聚合保持语义见 [18](./18-studio-state.md) §18.8。
+
+Runtime 是同一有序状态流中的独立 typed 事件，不另开速度 transport 或 reducer。投影 owner
+先折叠本轮已受理 effect 的累计摘要，再从当前 owner 快照发布变更后的 runtime；终态计数不能
+等待无关事件或页面重开才交付。Flutter 的速度、上下文与稳定状态分别观察该镜像的不可变、
+值相等派生值；独立呈现订阅不改变底层的单一水位和事实源。
 
 所有用户可见实时字段都必须有可追踪的 owner、事件或快照、Dart reducer、watermark、selector
 和可见 lease。Widget 不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、

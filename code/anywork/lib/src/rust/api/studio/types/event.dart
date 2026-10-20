@@ -88,9 +88,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.threadModeCatalogChanged(
     BridgeThreadModeCatalogSnapshot field0,
   ) = BridgeProductEventPayload_ThreadModeCatalogChanged;
-  const factory BridgeProductEventPayload.providerUsageStateChanged(
-    BridgeProviderUsageStateSnapshot field0,
-  ) = BridgeProductEventPayload_ProviderUsageStateChanged;
+  const factory BridgeProductEventPayload.accountUsageStateChanged(
+    BridgeAccountUsageStateSnapshot field0,
+  ) = BridgeProductEventPayload_AccountUsageStateChanged;
   const factory BridgeProductEventPayload.modelPerformanceStateChanged(
     BridgeModelPerformanceSnapshot field0,
   ) = BridgeProductEventPayload_ModelPerformanceStateChanged;

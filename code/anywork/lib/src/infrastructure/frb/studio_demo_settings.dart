@@ -1,25 +1,26 @@
 part of 'studio_api.dart';
 
-const demoProviderCatalogFixture = ProviderCatalogView(
+const demoAccountCatalogFixture = AccountCatalogView(
   schemaVersion: 6,
   revision: 'demo-future-catalog-v6',
-  presets: [
-    ProviderPresetView(
-      id: 'future-provider',
-      displayName: 'Future Provider',
-      description: 'Injected demo provider catalog fixture',
+  templates: [
+    AccountTemplateView(
+      id: 'future-account',
+      displayName: 'Future Account',
+      description: 'Injected demo account catalog fixture',
       baseUrl: 'https://future.example/v1',
       credentialLabel: 'Access Key',
       credentialEnv: 'FUTURE_PROVIDER_KEY',
       modelCatalogId: 'future-catalog',
-      suggestedModel: 'future-model',
+      protocol: 'open_ai_compatible',
+      suggestedModelId: 'future-model',
       hostedWebSearch: true,
       hostedWebSearchDialect: 'open_ai_responses',
       standaloneWebSearch: 'future_search_dialect',
       promptCacheDialect: 'implicit_prefix',
       responsesProgrammaticToolCalling: false,
     ),
-    ProviderPresetView(
+    AccountTemplateView(
       id: 'openai-compatible',
       displayName: 'OpenAI API 兼容',
       description: 'Custom compatible API',
@@ -27,15 +28,17 @@ const demoProviderCatalogFixture = ProviderCatalogView(
       credentialLabel: 'API Key (optional)',
       credentialEnv: '',
       modelCatalogId: 'openai-compatible',
-      suggestedModel: '',
+      protocol: 'open_ai_compatible',
+      suggestedModelId: '',
       pricingEnabled: false,
     ),
   ],
   modelCatalogs: {
     'openai-compatible': [],
     'future-catalog': [
-      ProviderModelView(
-        slug: 'future-model',
+      AccountModelView(
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-model',
         displayName: 'Future Model',
         reasoningEfforts: ['eco', 'balanced', 'max'],
         defaultReasoningEffort: 'balanced',
@@ -57,14 +60,15 @@ const demoProviderCatalogFixture = ProviderCatalogView(
         ],
         contextWindow: 500000,
         maxOutputTokens: 64000,
-        wireProtocol: 'chat_completions',
+        wireApi: 'chat_completions',
         supportedConnectionModes: ['http'],
         defaultConnectionMode: 'http',
         connectionMode: 'http',
-        origin: ProviderModelOrigin.bundled,
+        origin: ModelOrigin.bundled,
       ),
-      ProviderModelView(
-        slug: 'future-text',
+      AccountModelView(
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-text',
         displayName: 'Future Text',
         reasoningEfforts: ['eco', 'balanced'],
         defaultReasoningEffort: 'balanced',
@@ -76,14 +80,15 @@ const demoProviderCatalogFixture = ProviderCatalogView(
         ],
         contextWindow: 256000,
         maxOutputTokens: 32000,
-        wireProtocol: 'chat_completions',
+        wireApi: 'chat_completions',
         supportedConnectionModes: ['http'],
         defaultConnectionMode: 'http',
         connectionMode: 'http',
-        origin: ProviderModelOrigin.bundled,
+        origin: ModelOrigin.bundled,
       ),
-      ProviderModelView(
-        slug: 'future-vision',
+      AccountModelView(
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+        modelId: 'future-vision',
         displayName: 'Future Vision',
         reasoningEfforts: ['balanced', 'max'],
         defaultReasoningEffort: 'max',
@@ -102,75 +107,75 @@ const demoProviderCatalogFixture = ProviderCatalogView(
         ],
         contextWindow: 1000000,
         maxOutputTokens: 128000,
-        wireProtocol: 'chat_completions',
+        wireApi: 'chat_completions',
         supportedConnectionModes: ['http'],
         defaultConnectionMode: 'http',
         connectionMode: 'http',
-        origin: ProviderModelOrigin.bundled,
+        origin: ModelOrigin.bundled,
       ),
     ],
   },
 );
 
-ProviderUsageView _demoProviderUsage(ProviderSettingsView provider) {
+AccountUsageView _demoAccountUsage(AccountSettingsView account) {
   final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  if (!provider.hasBearerToken) {
-    return ProviderUsageView(
-      providerId: provider.id,
+  if (!account.hasBearerToken) {
+    return AccountUsageView(
+      accountId: account.id,
       updatedAt: now,
-      state: const MissingCredentialProviderUsageView(
-        message: 'provider API key is not configured',
+      state: const MissingCredentialAccountUsageView(
+        message: 'account API key is not configured',
       ),
     );
   }
-  return ProviderUsageView(
-    providerId: provider.id,
+  return AccountUsageView(
+    accountId: account.id,
     updatedAt: now,
-    state: const UnsupportedProviderUsageView(),
+    state: const UnsupportedAccountUsageView(),
   );
 }
 
-List<ProviderSettingsView> _providersFromCommands(
-  List<ProviderCommand> commands, {
-  List<ProviderSettingsView> previous = const [],
-  required ProviderCatalogView catalog,
+List<AccountSettingsView> _providersFromCommands(
+  List<AccountCommand> commands, {
+  List<AccountSettingsView> previous = const [],
+  required AccountCatalogView catalog,
 }) {
-  return commands.map((provider) {
-    final customModels = provider.customModels
+  return commands.map((account) {
+    final customModels = account.customModels
         .map(
-          (model) => ProviderModelView(
-            slug: model.slug,
+          (model) => AccountModelView(
+            typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+            modelId: model.modelId,
             displayName: model.displayName,
             reasoningEfforts: const [],
             contextWindow: model.contextWindow,
             maxOutputTokens: model.maxOutputTokens,
-            wireProtocol: model.wireProtocol,
+            wireApi: model.wireApi,
             supportedConnectionModes: const ['http'],
             defaultConnectionMode: 'http',
             connectionMode: 'http',
-            origin: ProviderModelOrigin.manual,
+            origin: ModelOrigin.manual,
           ),
         )
-        .where((model) => model.slug.isNotEmpty)
+        .where((model) => model.modelId.isNotEmpty)
         .toList();
     final template =
-        catalog.preset(provider.templateKind) ?? catalog.presets.first;
+        catalog.template(account.templateId ?? '') ?? catalog.templates.first;
     final connectionModes = {
-      for (final model in provider.modelConnectionModes)
-        model.slug: model.connectionMode,
+      for (final model in account.modelConnectionModes)
+        model.modelId: model.connectionMode,
     };
-    ProviderModelView withCurrentConnection(ProviderModelView model) =>
+    AccountModelView withCurrentConnection(AccountModelView model) =>
         model.copyWith(
           connectionMode:
-              connectionModes[model.slug] ?? model.defaultConnectionMode,
+              connectionModes[model.modelId] ?? model.defaultConnectionMode,
         );
-    final previousProvider = previous
-        .where((item) => item.id == (provider.originalId ?? provider.id))
+    final previousAccount = previous
+        .where((item) => item.id == account.id)
         .firstOrNull;
     final observed = [
-      for (final model
-          in previousProvider?.models ?? const <ProviderModelView>[])
-        if (model.origin != ProviderModelOrigin.manual) model,
+      for (final model in previousAccount?.models ?? const <AccountModelView>[])
+        if (model.origin != ModelOrigin.manual) model,
     ];
     final catalogModels = catalog.modelsFor(template.modelCatalogId);
     final observedModels = (observed.isNotEmpty ? observed : catalogModels)
@@ -181,34 +186,35 @@ List<ProviderSettingsView> _providersFromCommands(
       ...customModels.map(withCurrentConnection),
     ];
     final autoCompactOverrides = {
-      for (final limit in provider.modelAutoCompactLimits)
-        limit.slug: limit.limit,
+      for (final limit in account.modelAutoCompactLimits)
+        limit.modelId: limit.limit,
     };
     final autoCompactLimits = {
       for (final model in models)
-        model.slug: _demoAutoCompactLimit(
+        model.modelId: _demoAutoCompactLimit(
           model,
-          override: autoCompactOverrides[model.slug],
+          override: autoCompactOverrides[model.modelId],
         ),
     };
-    final hasToken = switch (provider.secret.action) {
-      ProviderSecretAction.preserve =>
-        previousProvider?.hasBearerToken ?? false,
-      ProviderSecretAction.replace => true,
-      ProviderSecretAction.clear => false,
+    final hasToken = switch (account.secret.action) {
+      AccountSecretAction.preserve => previousAccount?.hasBearerToken ?? false,
+      AccountSecretAction.replace => true,
+      AccountSecretAction.clear => false,
     };
-    return ProviderSettingsView(
-      id: provider.id,
-      templateKind: template.id,
-      name: provider.name.isEmpty ? template.displayName : provider.name,
-      subtitle: provider.name.isEmpty ? template.displayName : provider.name,
-      baseUrl: provider.baseUrl.isEmpty ? template.baseUrl : provider.baseUrl,
+    return AccountSettingsView(
+      id: account.id,
+      templateId: account.templateId,
+      protocol: account.protocol,
+      name: account.name.isEmpty ? template.displayName : account.name,
+      subtitle: account.name.isEmpty ? template.displayName : account.name,
+      baseUrl: account.baseUrl.isEmpty ? template.baseUrl : account.baseUrl,
       bearerToken: '',
       hasBearerToken: hasToken,
       credentialRequired: template.credentialEnv.isNotEmpty,
-      defaultModel: provider.defaultModel.isEmpty
-          ? template.suggestedModel
-          : provider.defaultModel,
+      defaultModelId:
+          models.any((model) => model.modelId == template.suggestedModelId)
+          ? template.suggestedModelId
+          : models.firstOrNull?.modelId ?? '',
       models: models,
       autoCompactLimits: autoCompactLimits,
       status: hasToken || template.credentialEnv.isEmpty
@@ -220,19 +226,19 @@ List<ProviderSettingsView> _providersFromCommands(
       catalogId: template.modelCatalogId,
       credentialLabel: template.credentialLabel,
       credentialEnv: template.credentialEnv,
-      pricingEnabled: provider.pricingEnabled,
-      capabilitySource: 'preset_defaults',
+      pricingEnabled: account.pricingEnabled,
+      capabilitySource: 'template_defaults',
       hostedWebSearch:
-          previousProvider?.hostedWebSearch ?? template.hostedWebSearch,
+          previousAccount?.hostedWebSearch ?? template.hostedWebSearch,
       hostedWebSearchDialect:
-          previousProvider?.hostedWebSearchDialect ??
+          previousAccount?.hostedWebSearchDialect ??
           template.hostedWebSearchDialect,
       standaloneWebSearch:
-          previousProvider?.standaloneWebSearch ?? template.standaloneWebSearch,
+          previousAccount?.standaloneWebSearch ?? template.standaloneWebSearch,
       promptCacheDialect:
-          previousProvider?.promptCacheDialect ?? template.promptCacheDialect,
+          previousAccount?.promptCacheDialect ?? template.promptCacheDialect,
       responsesProgrammaticToolCalling:
-          previousProvider?.responsesProgrammaticToolCalling ??
+          previousAccount?.responsesProgrammaticToolCalling ??
           template.responsesProgrammaticToolCalling,
       iconKey: template.iconKey,
     );
@@ -240,13 +246,13 @@ List<ProviderSettingsView> _providersFromCommands(
 }
 
 /// 预览态也消费共享模型规则，不维护独立的默认值算法。
-ProviderModelAutoCompactView _demoAutoCompactLimit(
-  ProviderModelView model, {
+AccountModelAutoCompactView _demoAutoCompactLimit(
+  AccountModelView model, {
   int? override,
 }) {
-  final base = ProviderModelAutoCompactView.forModel(model);
-  if (override == null || override <= 0 || override == base.defaultLimit) {
-    return base;
-  }
-  return base.withOverride(override);
+  return AccountModelAutoCompactView(
+    modelId: model.modelId,
+    overrideLimit: override,
+    context: model.context,
+  );
 }

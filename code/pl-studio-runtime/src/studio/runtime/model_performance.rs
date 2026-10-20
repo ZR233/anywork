@@ -29,8 +29,9 @@ use crate::studio::storage::calls::{
 use crate::studio::store::object::{PersistedStudioObject, load_object, put_object};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
 use crate::{
-    PureError, StudioModelPerformanceSample, StudioModelPerformanceSnapshot,
-    StudioModelPerformanceSummary, StudioSessionCostSnapshot, StudioSessionCostsState,
+    PureError, StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
+    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioSessionCostSnapshot,
+    StudioSessionCostsState,
 };
 
 pub(in crate::studio) const MODEL_PERFORMANCE_OWNER_ID: &str = "global";
@@ -120,34 +121,53 @@ impl ScopedCostEntry {
 }
 
 /// 最近 inference 身份窗口（固定上限、不持久化）。
+///
+/// inference ID 只在执行它的 Thread 内唯一；根 Thread 只用于清理整棵会话树的缓存。
 #[derive(Debug, Clone, Default)]
 struct RecentIdentities {
-    fingerprints: BTreeMap<(String, String), String>,
+    entries: BTreeMap<(String, String), RecentInference>,
     order: VecDeque<(String, String)>,
 }
 
+#[derive(Debug, Clone)]
+struct RecentInference {
+    root_thread_id: String,
+    fingerprint: String,
+}
+
 impl RecentIdentities {
-    fn get(&self, root_thread_id: &str, identity: &str) -> Option<&String> {
-        self.fingerprints
-            .get(&(root_thread_id.to_owned(), identity.to_owned()))
+    fn get(&self, thread_id: &str, identity: &str) -> Option<&String> {
+        self.entries
+            .get(&(thread_id.to_owned(), identity.to_owned()))
+            .map(|entry| &entry.fingerprint)
     }
 
-    fn insert(&mut self, root_thread_id: &str, identity: &str, fingerprint: String) {
-        let key = (root_thread_id.to_owned(), identity.to_owned());
-        if self.fingerprints.insert(key.clone(), fingerprint).is_none() {
+    fn insert(
+        &mut self,
+        root_thread_id: &str,
+        thread_id: &str,
+        identity: &str,
+        fingerprint: String,
+    ) {
+        let key = (thread_id.to_owned(), identity.to_owned());
+        let entry = RecentInference {
+            root_thread_id: root_thread_id.to_owned(),
+            fingerprint,
+        };
+        if self.entries.insert(key.clone(), entry).is_none() {
             self.order.push_back(key);
         }
         while self.order.len() > RECENT_IDENTITY_LIMIT {
             if let Some(oldest) = self.order.pop_front() {
-                self.fingerprints.remove(&oldest);
+                self.entries.remove(&oldest);
             }
         }
     }
 
     fn remove_root(&mut self, root_thread_id: &str) {
-        self.fingerprints
-            .retain(|(root, _), _| root != root_thread_id);
-        self.order.retain(|(root, _)| root != root_thread_id);
+        self.entries
+            .retain(|_, entry| entry.root_thread_id != root_thread_id);
+        self.order.retain(|key| self.entries.contains_key(key));
     }
 }
 
@@ -474,7 +494,7 @@ impl ModelPerformanceOwner {
         let fingerprint = billing_fingerprint(billing)?;
         let conflict = {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.recent.get(root_thread_id, &billing.inference_id) {
+            match state.recent.get(thread_id, &billing.inference_id) {
                 Some(existing) if existing == &fingerprint => return Ok(()),
                 Some(_) => true,
                 None => false,
@@ -486,7 +506,7 @@ impl ModelPerformanceOwner {
             // 终端 `Blocked` 只留给调用库真实不可恢复的持久化冲突，避免一次应用级拒绝让整个
             // Studio 的写者健康永久失效。已受理事实与写者健康都不因这次拒绝改变。
             return Err(PureError::MemoryError(format!(
-                "inference {} conflicts with the model performance owner",
+                "Thread {thread_id} inference {} conflicts with the model performance owner",
                 billing.inference_id
             )));
         }
@@ -510,9 +530,12 @@ impl ModelPerformanceOwner {
         {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if ticket.is_some() {
-                state
-                    .recent
-                    .insert(root_thread_id, &billing.inference_id, fingerprint);
+                state.recent.insert(
+                    root_thread_id,
+                    thread_id,
+                    &billing.inference_id,
+                    fingerprint,
+                );
             }
             state.revision = state.revision.saturating_add(1);
             state.updated_at = unix_seconds();
@@ -567,7 +590,7 @@ impl ModelPerformanceOwner {
                 statistics_pending: admitted > settled_before_read,
                 statistics_gap: calls.statistics_gap(),
                 read_failed: false,
-                summaries: summaries.iter().map(summary_snapshot).collect(),
+                summaries: summary_snapshots(&summaries),
                 history: samples.iter().map(history_sample).collect(),
             },
             session_costs: costs
@@ -778,41 +801,98 @@ fn purpose_cost_snapshot(rollup: &PurposeCostRollup) -> crate::StudioPurposeCost
     }
 }
 
-fn summary_snapshot(row: &PerformanceSummaryRow) -> StudioModelPerformanceSummary {
-    let samples = row.sample_count as f64;
-    StudioModelPerformanceSummary {
-        provider_instance_id: row.provider_instance_id.clone(),
-        provider_display_name: row.provider_display_name.clone(),
-        model: row.sent_model.clone(),
-        reasoning_effort: row.reasoning_effort.clone(),
-        sample_count: row.sample_count,
-        completion_tokens: row.completion_tokens,
-        total_ttft_millis: row.total_ttft_millis,
-        total_decode_millis: row.total_decode_millis,
-        total_response_millis: row.total_response_millis,
-        tokens_per_second: throughput(row.completion_tokens, row.total_decode_millis),
-        average_ttft_millis: row.total_ttft_millis as f64 / samples,
-        average_response_millis: row.total_response_millis as f64 / samples,
+/// 把 (account_id, model_id, effort) 的数据库分组折叠为唯一顶层 (account, model) 汇总。
+///
+/// 同一账号模型在不同推理强度下的样本先在该组内累加得到顶层指标，再以
+/// `effort_breakdowns` 提供二级细分；显示名取组内最新的非空展示值，不参与身份。
+fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerformanceSummary> {
+    let mut groups: Vec<(String, String, StudioModelPerformanceSummary)> = Vec::new();
+    for row in rows {
+        let existing = groups
+            .iter()
+            .position(|(account, model, _)| account == &row.account_id && model == &row.model_id);
+        let index = match existing {
+            Some(index) => index,
+            None => {
+                groups.push((
+                    row.account_id.clone(),
+                    row.model_id.clone(),
+                    StudioModelPerformanceSummary {
+                        account_id: row.account_id.clone(),
+                        account_display_name: row.account_display_name.clone(),
+                        model_id: row.model_id.clone(),
+                        sample_count: 0,
+                        completion_tokens: 0,
+                        total_ttft_millis: 0,
+                        total_decode_millis: 0,
+                        total_response_millis: 0,
+                        tokens_per_second: 0.0,
+                        average_ttft_millis: 0.0,
+                        average_response_millis: 0.0,
+                        effort_breakdowns: Vec::new(),
+                    },
+                ));
+                groups.len() - 1
+            }
+        };
+        let summary = &mut groups[index].2;
+        if summary.account_display_name.is_empty() && !row.account_display_name.is_empty() {
+            summary.account_display_name = row.account_display_name.clone();
+        }
+        summary.sample_count = summary.sample_count.saturating_add(row.sample_count);
+        summary.completion_tokens = summary
+            .completion_tokens
+            .saturating_add(row.completion_tokens);
+        summary.total_ttft_millis = summary
+            .total_ttft_millis
+            .saturating_add(row.total_ttft_millis);
+        summary.total_decode_millis = summary
+            .total_decode_millis
+            .saturating_add(row.total_decode_millis);
+        summary.total_response_millis = summary
+            .total_response_millis
+            .saturating_add(row.total_response_millis);
+        summary
+            .effort_breakdowns
+            .push(StudioModelPerformanceEffortSummary {
+                effort: row.effort.clone(),
+                sample_count: row.sample_count,
+                completion_tokens: row.completion_tokens,
+                total_ttft_millis: row.total_ttft_millis,
+                total_decode_millis: row.total_decode_millis,
+                total_response_millis: row.total_response_millis,
+                tokens_per_second: throughput(row.completion_tokens, row.total_decode_millis),
+                average_ttft_millis: row.total_ttft_millis as f64 / row.sample_count as f64,
+                average_response_millis: row.total_response_millis as f64 / row.sample_count as f64,
+            });
     }
+    groups
+        .into_iter()
+        .map(|(_, _, mut summary)| {
+            let samples = summary.sample_count as f64;
+            summary.tokens_per_second =
+                throughput(summary.completion_tokens, summary.total_decode_millis);
+            summary.average_ttft_millis = summary.total_ttft_millis as f64 / samples;
+            summary.average_response_millis = summary.total_response_millis as f64 / samples;
+            summary
+        })
+        .collect()
 }
 
 fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
-    let observation =
-        row.configured_model
-            .as_ref()
-            .map(|configured_model| InferenceModelObservation {
-                configured_model: configured_model.clone(),
-                sent_model: row.sent_model.clone(),
-                reported_model: row.reported_model.clone(),
-            });
+    let observation = row
+        .model_id
+        .as_ref()
+        .map(|model_id| InferenceModelObservation {
+            configured_model: model_id.clone(),
+            sent_model: row.sent_model.clone(),
+            reported_model: row.reported_model.clone(),
+        });
     StudioModelPerformanceSample {
         completed_at: row.completed_at,
-        provider_instance_id: row.provider_instance_id.clone(),
-        provider_display_name: row.provider_display_name.clone(),
-        model: row.sent_model.clone(),
-        configured_model: observation
-            .as_ref()
-            .map(|value| value.configured_model.clone()),
+        account_id: row.account_id.clone(),
+        account_display_name: row.account_display_name.clone(),
+        model_id: row.model_id.clone(),
         sent_model: observation.as_ref().map(|value| value.sent_model.clone()),
         reported_model: observation
             .as_ref()
@@ -820,14 +900,14 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
         model_match_state: observation
             .as_ref()
             .map_or(ModelMatchState::LegacyUnknown, |value| value.match_state()),
-        reasoning_effort: row.reasoning_effort.clone(),
+        effort: row.effort.clone(),
         completion_tokens: row.completion_tokens,
         ttft_millis: row.ttft_millis,
         decode_millis: row.decode_millis,
         total_response_millis: row.response_millis,
         tokens_per_second: row
             .decode_millis
-            .filter(|value| *value > 0)
+            .filter(|_| row.has_throughput_sample)
             .map(|value| throughput(row.completion_tokens, value)),
     }
 }

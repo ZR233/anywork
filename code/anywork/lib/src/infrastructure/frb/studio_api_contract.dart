@@ -181,51 +181,53 @@ class _BeginExitOutcome {
   final StackTrace? stackTrace;
 }
 
-frb.ProviderInput _providerInputFromCommand(ProviderCommand provider) {
-  return frb.ProviderInput(
-    id: provider.id,
-    originalId: provider.originalId,
-    templateKind: provider.templateKind,
-    name: provider.name,
-    baseUrl: provider.baseUrl,
-    secret: switch (provider.secret.action) {
-      ProviderSecretAction.preserve => const frb.ProviderSecretInput.preserve(),
-      ProviderSecretAction.replace => frb.ProviderSecretInput.replace(
-        value: provider.secret.value!,
+frb.AccountInput _accountInputFromCommand(AccountCommand account) {
+  return frb.AccountInput(
+    accountId: account.id,
+    templateId: account.templateId,
+    protocol: account.protocol,
+    name: account.name,
+    baseUrl: account.baseUrl,
+    secret: switch (account.secret.action) {
+      AccountSecretAction.preserve => const frb.AccountSecretInput.preserve(),
+      AccountSecretAction.replace => frb.AccountSecretInput.replace(
+        value: account.secret.value!,
       ),
-      ProviderSecretAction.clear => const frb.ProviderSecretInput.clear(),
+      AccountSecretAction.clear => const frb.AccountSecretInput.clear(),
     },
-    pricingEnabled: provider.pricingEnabled,
-    defaultModel: provider.defaultModel,
+    pricingEnabled: account.pricingEnabled,
     customModels: [
-      for (final model in provider.customModels)
-        frb.ProviderModelInput(
-          slug: model.slug,
+      for (final model in account.customModels)
+        frb.AccountModelInput(
+          modelId: model.modelId,
           displayName: model.displayName,
-          wireProtocol: model.wireProtocol,
-          contextWindow: BigInt.from(model.contextWindow),
-          maxOutputTokens: BigInt.from(model.maxOutputTokens),
+          wireApi: model.wireApi,
+          contextWindow: model.contextWindow == null
+              ? null
+              : BigInt.from(model.contextWindow!),
+          maxOutputTokens: model.maxOutputTokens == null
+              ? null
+              : BigInt.from(model.maxOutputTokens!),
         ),
     ],
     modelConnectionModes: [
-      for (final model in provider.modelConnectionModes)
-        frb.ProviderModelConnectionInput(
-          slug: model.slug,
+      for (final model in account.modelConnectionModes)
+        frb.AccountModelConnectionInput(
+          modelId: model.modelId,
           connectionMode: model.connectionMode,
         ),
     ],
     modelAutoCompactLimits: [
-      for (final limit in provider.modelAutoCompactLimits)
-        frb.ProviderModelAutoCompactInput(
-          slug: limit.slug,
+      for (final limit in account.modelAutoCompactLimits)
+        frb.AccountModelAutoCompactInput(
+          modelId: limit.modelId,
           limit: BigInt.from(limit.limit),
         ),
     ],
   );
 }
 
-class FrbStudioTransport
-    implements StudioTransport, PersistenceQueueReader, ChatWindowReader {
+class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   static final startupProgress = ValueNotifier(
     StudioStartupPhase.loadingBridge,
   );
@@ -263,8 +265,8 @@ class FrbStudioTransport
   static bool _safeToDisposeAfterShutdown = false;
   // 单向终止闩：一经置位，本进程余下生命周期内不再启动或发布运行时。
   static bool _closing = false;
-  ProviderCatalogView? _providerCatalogCache;
-  Future<ProviderCatalogView>? _providerCatalogFuture;
+  AccountCatalogView? _accountCatalogCache;
+  Future<AccountCatalogView>? _accountCatalogFuture;
 
   static Future<void> ensureReady() => _ensureReady();
 
@@ -425,7 +427,25 @@ class FrbStudioTransport
           if (!_rustInitialized) {
             startupProgress.value = StudioStartupPhase.loadingBridge;
             final bridgeWatch = Stopwatch()..start();
-            await RustLib.init();
+            // Native startup owns the lease in this exact packaged library.
+            // FRB's default search can select a development library from CWD or
+            // environment, which would have a different set of Rust statics.
+            final executable = File(Platform.resolvedExecutable);
+            final bundle = Platform.isLinux
+                ? File(executable.resolveSymbolicLinksSync()).parent
+                : executable.parent;
+            final libraryPath = bundle.uri
+                .resolve(
+                  Platform.isWindows
+                      ? 'pl_studio_bridge.dll'
+                      : 'lib/libpl_studio_bridge.so',
+                )
+                .toFilePath();
+            await RustLib.init(
+              // FRB exposes custom loading through its generated entrypoint.
+              // ignore: invalid_use_of_internal_member
+              externalLibrary: ExternalLibrary.open(libraryPath),
+            );
             _rustInitialized = true;
             debugPrint(
               'startup_stage=load_bridge elapsed_ms=${bridgeWatch.elapsedMilliseconds}',
@@ -593,9 +613,9 @@ class FrbStudioTransport
     }
   }
 
-  /// 共享同一退出 future：重复调用（重复关窗、dispose、driver）复用同一次收束，绝不复位
-  /// 或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束得到的
-  /// typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
+  /// 共享同一退出 future：重复调用（重复退出请求、dispose、driver）复用同一次收束，
+  /// 绝不复位或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束
+  /// 得到的 typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
   static Future<StudioShutdownReport> shutdownAndDispose({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
@@ -894,29 +914,29 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ProviderCatalogView> loadProviderCatalog() async {
-    final cached = _providerCatalogCache;
+  Future<AccountCatalogView> loadAccountCatalog() async {
+    final cached = _accountCatalogCache;
     if (cached != null) return cached;
-    final inFlight = _providerCatalogFuture;
+    final inFlight = _accountCatalogFuture;
     if (inFlight != null) return inFlight;
-    final future = _loadProviderCatalog();
-    _providerCatalogFuture = future;
+    final future = _loadAccountCatalog();
+    _accountCatalogFuture = future;
     try {
       return await future;
     } finally {
-      if (identical(_providerCatalogFuture, future)) {
-        _providerCatalogFuture = null;
+      if (identical(_accountCatalogFuture, future)) {
+        _accountCatalogFuture = null;
       }
     }
   }
 
-  Future<ProviderCatalogView> _loadProviderCatalog() async {
+  Future<AccountCatalogView> _loadAccountCatalog() async {
     await _ensureReady();
-    final catalog = providerCatalogFromFrb(
-      await _bridgeCall(frb.loadProviderCatalog),
+    final catalog = accountCatalogFromFrb(
+      await _bridgeCall(frb.loadAccountCatalog),
     );
     if (catalog.isUsable) {
-      _providerCatalogCache = catalog;
+      _accountCatalogCache = catalog;
     }
     return catalog;
   }
@@ -972,8 +992,8 @@ class FrbStudioTransport
           description: draft.description,
           whenToUse: draft.whenToUse,
           systemInstructions: draft.systemInstructions,
-          providerId: draft.providerId,
-          model: draft.model,
+          accountId: draft.accountId,
+          modelId: draft.modelId,
           effort: draft.effort,
           workspaceMode: switch (draft.workspaceMode) {
             AgentWorkspaceMode.unrestricted =>
@@ -1225,33 +1245,31 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StartNewThreadResult> startNewThread(
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
     String? workspaceMode,
-  }) async {
+  }) async* {
     await _ensureReady();
-    final response = await _bridgeCall(
-      () => frb.startNewThread(
-        projectId: projectId,
-        input: _bridgePromptInput(input),
-        mode: mode.id,
-        providerId: route.providerId,
-        model: route.model,
-        effort: route.effort.isEmpty ? null : route.effort,
-        workspaceMode: workspaceMode,
-      ),
-    );
-    return StartNewThreadResult(
-      thread: _threadFromFrb(response.thread),
-      receipt: SubmitPromptReceipt(
-        threadId: response.receipt.threadId,
-        inputId: response.receipt.inputId,
-        cursor: response.receipt.revision.toInt(),
-      ),
-    );
+    try {
+      await for (final event in frb.startNewThread(
+        request: frb.BridgeStartNewThreadRequest(
+          projectId: projectId,
+          input: _bridgePromptInput(input),
+          mode: mode.id,
+          accountId: route.accountId,
+          modelId: route.modelId,
+          effort: route.effort.isEmpty ? null : route.effort,
+          workspaceMode: workspaceMode,
+        ),
+      )) {
+        yield _newThreadStartEventFromFrb(event);
+      }
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(_studioFailure(error), stackTrace);
+    }
   }
 
   @override
@@ -1359,8 +1377,8 @@ class FrbStudioTransport
     required String threadId,
     required int expectedModelRouteRevision,
     required int expectedSettingsRevision,
-    required String providerId,
-    required String model,
+    required String accountId,
+    required String modelId,
     String? effort,
   }) async {
     await _ensureReady();
@@ -1368,8 +1386,8 @@ class FrbStudioTransport
       () => frb.setThreadModelRoute(
         operationId: operationId.value,
         threadId: threadId,
-        providerId: providerId,
-        model: model,
+        accountId: accountId,
+        modelId: modelId,
         effort: effort,
         expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
         expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
@@ -1382,6 +1400,12 @@ class FrbStudioTransport
       modeDefaultSaved: response.modeDefaultSaved,
       warning: response.warning,
     );
+  }
+
+  @override
+  Future<void> compactThread(String threadId) async {
+    await _ensureReady();
+    await _bridgeCall(() => frb.compactThread(threadId: threadId));
   }
 
   @override
@@ -1400,6 +1424,98 @@ class FrbStudioTransport
     );
     return ThreadModeCommandReply(
       receipt: _commandReceiptFromFrb(response.receipt),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionSnapshot> readThreadModeDefinition(String modeId) async {
+    await _ensureReady();
+    return _modeDefinitionSnapshotFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.readThreadModeDefinition(modeId: modeId),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> saveThreadModeDefinition(
+    ModeDocument document, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.saveThreadModeDefinition(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+          document: _bridgeModeDocument(document),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> deleteThreadModeDefinition(
+    String modeId, {
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.deleteThreadModeDefinition(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+          modeId: modeId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeDefinitionCommandReply> reloadThreadModeDefinitions({
+    required int expectedRevision,
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _modeDefinitionCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.reloadThreadModeDefinitions(
+          operationId: operationId.value,
+          expectedRevision: BigInt.from(expectedRevision),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModeValidationResult> validateThreadModeDefinition(String json) async {
+    await _ensureReady();
+    return _modeValidationResultFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.validateThreadModeDefinition(json: json),
+      ),
+    );
+  }
+
+  @override
+  Future<String> threadModeDefinitionSchema() async {
+    await _ensureReady();
+    return _bridgeCall(frb_mode_editor.threadModeDefinitionSchema);
+  }
+
+  @override
+  Future<WorkflowPreviewSnapshot> previewThreadModeWorkflow(
+    WorkflowPreviewRequest request,
+  ) async {
+    await _ensureReady();
+    return _workflowPreviewSnapshotFromFrb(
+      await _bridgeCall(
+        () => frb_mode_editor.previewThreadModeWorkflow(
+          request: _bridgeWorkflowPreviewRequest(request),
+        ),
+      ),
     );
   }
 
@@ -1811,15 +1927,12 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StudioChatWindow> openChatWindow(String threadId) async {
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
     await _ensureReady();
-    final view = await _bridgeCall(
-      () => frb_chat.openChatView(
-        threadId: threadId,
-        focus: const frb_chat_types.BridgeChatFocus.latest(),
-      ),
+    final timeline = await _bridgeCall(
+      () => frb_chat.openTimeline(threadId: threadId),
     );
-    return FrbChatWindow(view);
+    return FrbTimelineConnection(timeline);
   }
 
   @override
@@ -1930,19 +2043,19 @@ class FrbStudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> saveProvider(
+  Future<SettingsCommandReply> saveAccount(
     int expectedSettingsRevision,
-    ProviderCommand command, {
+    AccountCommand command, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.saveProvider(
+        () => frb.saveAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          input: frb.ProviderSettingsInput(
-            provider: _providerInputFromCommand(command),
+          input: frb.AccountSettingsInput(
+            account: _accountInputFromCommand(command),
           ),
         ),
       ),
@@ -1950,57 +2063,57 @@ class FrbStudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> setDefaultProvider(
+  Future<SettingsCommandReply> setDefaultAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.setDefaultProvider(
+        () => frb.setDefaultAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
+          accountId: accountId,
         ),
       ),
     );
   }
 
   @override
-  Future<SettingsCommandReply> removeProviderModel(
+  Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
-    String providerId,
-    String slug,
+    String accountId,
+    String modelId,
   ) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.removeProviderModel(
+        () => frb.removeAccountModel(
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
-          slug: slug,
+          accountId: accountId,
+          modelId: modelId,
         ),
       ),
     );
   }
 
   @override
-  Future<SettingsCommandReply> removeProvider(
+  Future<SettingsCommandReply> removeAccount(
     int expectedSettingsRevision,
-    String providerId, {
+    String accountId, {
     required OperationId operationId,
-    String? replacementProviderId,
+    String? replacementAccountId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.removeProvider(
+        () => frb.removeAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
-          providerId: providerId,
-          input: frb.RemoveProviderInput(
-            replacementProviderId: replacementProviderId,
+          accountId: accountId,
+          input: frb.RemoveAccountInput(
+            replacementAccountId: replacementAccountId,
           ),
         ),
       ),
@@ -2032,12 +2145,10 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ProviderUsageStateSnapshot> checkProviderUsage(
-    String providerId,
-  ) async {
+  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
     await _ensureReady();
-    return _providerUsageStateFromFrb(
-      await _bridgeCall(() => frb.checkProviderUsage(providerId: providerId)),
+    return _accountUsageStateFromFrb(
+      await _bridgeCall(() => frb.checkAccountUsage(accountId: accountId)),
     );
   }
 

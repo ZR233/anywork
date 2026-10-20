@@ -1,5 +1,5 @@
 import 'agent_models.dart';
-import 'provider_models.dart';
+import 'account_models.dart';
 import 'recovery_models.dart';
 import 'settings_models.dart';
 import 'studio_enums.dart';
@@ -171,8 +171,8 @@ abstract class ObservedStateSnapshot<T> {
 class SettingsStateData {
   const SettingsStateData({
     this.modelCatalogRevision = 0,
-    this.providers = const [],
-    this.defaultProviderId,
+    this.accounts = const [],
+    this.defaultAccountId,
     this.modeModelRoutes = const [],
     this.roles = const [],
     this.mcpServers = const [],
@@ -184,8 +184,8 @@ class SettingsStateData {
     this.permissionMode = PermissionMode.requestApproval,
   });
   final int modelCatalogRevision;
-  final List<ProviderSettingsView> providers;
-  final String? defaultProviderId;
+  final List<AccountSettingsView> accounts;
+  final String? defaultAccountId;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
   final List<McpServerSettingsView> mcpServers;
@@ -208,8 +208,8 @@ class StudioMutationView {
     required this.key,
     required this.phase,
     required this.startedAt,
-    this.providerId,
-    this.model,
+    this.accountId,
+    this.modelId,
     this.effort,
     this.error,
   });
@@ -221,8 +221,8 @@ class StudioMutationView {
 
   /// Desired route carried by a pending typed intent. It is a presentation
   /// projection only and is replaced by the canonical route on success.
-  final String? providerId;
-  final String? model;
+  final String? accountId;
+  final String? modelId;
   final String? effort;
   final String? error;
 
@@ -231,8 +231,8 @@ class StudioMutationView {
 
 class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   SettingsStateSnapshot({
-    List<ProviderSettingsView> providers = const [],
-    String? defaultProviderId,
+    List<AccountSettingsView> accounts = const [],
+    String? defaultAccountId,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
     List<McpServerSettingsView> mcpServers = const [],
@@ -251,8 +251,8 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
          lastCheckedAt: null,
          value: SettingsStateData(
            modelCatalogRevision: modelCatalogRevision,
-           providers: providers,
-           defaultProviderId: defaultProviderId,
+           accounts: accounts,
+           defaultAccountId: defaultAccountId,
            modeModelRoutes: modeModelRoutes,
            roles: roles,
            mcpServers: mcpServers,
@@ -271,8 +271,8 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   final ObservedResource<SettingsStateData> state;
   SettingsStateData get _data => state.value ?? const SettingsStateData();
   int get modelCatalogRevision => _data.modelCatalogRevision;
-  List<ProviderSettingsView> get providers => _data.providers;
-  String? get defaultProviderId => _data.defaultProviderId;
+  List<AccountSettingsView> get accounts => _data.accounts;
+  String? get defaultAccountId => _data.defaultAccountId;
   List<ModeModelRouteView> get modeModelRoutes => _data.modeModelRoutes;
   List<RoleSettingsView> get roles => _data.roles;
   List<McpServerSettingsView> get mcpServers => _data.mcpServers;
@@ -457,6 +457,7 @@ class ThreadModeDescriptorView {
     required this.description,
     required this.order,
     required this.hasWorkflow,
+    this.readOnly = false,
   });
 
   final String id;
@@ -464,6 +465,7 @@ class ThreadModeDescriptorView {
   final String description;
   final int order;
   final bool hasWorkflow;
+  final bool readOnly;
 
   ThreadModeId get mode => ThreadModeId.fromId(id);
 }
@@ -548,38 +550,38 @@ class SkillsStateSnapshot extends ObservedStateSnapshot<SkillsStateData> {
   List<SkillSummaryView> get summaries => _data.summaries;
 }
 
-class ProviderUsageStateData {
-  const ProviderUsageStateData({
+class AccountUsageStateData {
+  const AccountUsageStateData({
     this.configFingerprint = '',
     this.usages = const [],
   });
   final String configFingerprint;
-  final List<ProviderUsageView> usages;
+  final List<AccountUsageView> usages;
 }
 
-class ProviderUsageStateSnapshot
-    extends ObservedStateSnapshot<ProviderUsageStateData> {
-  ProviderUsageStateSnapshot({
+class AccountUsageStateSnapshot
+    extends ObservedStateSnapshot<AccountUsageStateData> {
+  AccountUsageStateSnapshot({
     String configFingerprint = '',
-    List<ProviderUsageView> usages = const [],
+    List<AccountUsageView> usages = const [],
     int revision = 0,
-  }) : state = ReadyObservedResource<ProviderUsageStateData>(
+  }) : state = ReadyObservedResource<AccountUsageStateData>(
          revision: revision,
          updatedAt: 0,
          lastCheckedAt: null,
-         value: ProviderUsageStateData(
+         value: AccountUsageStateData(
            configFingerprint: configFingerprint,
            usages: usages,
          ),
        );
 
-  const ProviderUsageStateSnapshot.fromState({required this.state});
+  const AccountUsageStateSnapshot.fromState({required this.state});
   @override
-  final ObservedResource<ProviderUsageStateData> state;
-  ProviderUsageStateData get _data =>
-      state.value ?? const ProviderUsageStateData();
+  final ObservedResource<AccountUsageStateData> state;
+  AccountUsageStateData get _data =>
+      state.value ?? const AccountUsageStateData();
   String get configFingerprint => _data.configFingerprint;
-  List<ProviderUsageView> get usages => _data.usages;
+  List<AccountUsageView> get usages => _data.usages;
 }
 
 sealed class UpdaterStateSnapshot {

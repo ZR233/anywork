@@ -8,11 +8,11 @@ import 'support/recording_demo_transport.dart';
 class _CatalogFailureTransport extends RecordingDemoTransport {
   int catalogCalls = 0;
   @override
-  Future<ProviderCatalogView> loadProviderCatalog() {
+  Future<AccountCatalogView> loadAccountCatalog() {
     if (++catalogCalls == 1) {
       return Future.error(StateError('catalog unavailable'));
     }
-    return super.loadProviderCatalog();
+    return super.loadAccountCatalog();
   }
 }
 

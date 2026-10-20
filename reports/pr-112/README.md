@@ -28,3 +28,16 @@
 - `image-card-evidence.json`：两次工具调用的身份、附件元数据与 caption（不含提示词正文、
   资源字节或凭据）。
 - 同一轮 GUI 正常关停，未残留进程。
+
+## 3. 合并 main（6.22.0）后的新架构复验
+
+- 背景：`main` 已重构为 Account/协议分层与新的时间线呈现层；本分支合并 `origin/main` 解决冲突后复验。
+- 采集方式同上（真实配置 GUI + Driver 旅程）。
+- 采集时间：2026-10-20T11:27:05Z（UTC）。
+- 链路事实：`generate_image` 后台受理 → `wait` → `show_image {"caption":"日落海滩上的柴犬"}` → 独立图片卡片；附件 2,270,631 bytes。
+- `merge-card.png`：卡片头部（`Image card` + 状态胶囊）与大图；`merge-card-caption.png`：图片与说明文案；
+  `merge-card-dialog.png`：全屏可缩放查看；`merge-card-evidence.json`：调用身份、附件与 caption。
+- 关停：本环境报告 `degraded`（GUI 仍以退出码 0 退出，无残留进程）；证据脚本如实记录该状态。
+- 生图模型选择：账号目录声明 `gpt-image-` 前缀且不再钉死首选模型，按版本择优（`tests/image_generation.rs`
+  覆盖 `1.5 > 1`、同版本无变体优先与字典序 tiebreak）；该网关库存含 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst`，
+  因此解析为 `gpt-image-2.5-flare`，并由本轮真实调用成功验证。

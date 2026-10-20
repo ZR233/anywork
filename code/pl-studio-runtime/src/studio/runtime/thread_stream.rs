@@ -8,8 +8,9 @@
 //! forwards the owner's typed frames as continuous `notification` envelopes. It never publishes
 //! content, never reads the effect window, never runs a model/tool query and never opens a second
 //! content source: the current activity is the owner's own typed projection of the state it
-//! published, and content itself is delivered only by the shared ChatView window — this status
-//! stream carries no window version, so one body update never costs a second status frame. A frame
+//! published, and content itself is delivered only by the shared Timeline content source — this
+//! status stream carries no content version, so one body update never costs a second status frame. A
+//! frame
 //! the owner could not prove continuous becomes `lagged`, and the client resynchronizes from the
 //! authoritative window instead of splicing a hole.
 use super::StudioRuntime;
@@ -155,6 +156,7 @@ impl LiveSubscription {
             persistence.as_ref(),
         )?;
         runtime.annotate_model_route(&mut snapshot)?;
+        runtime.annotate_mode_availability(&mut snapshot);
         // The first frame carries the authoritative activity and the owner's typed storage state;
         // later frames only carry them when they really changed. Reading the owner's own value here
         // (and marking it seen) means the very first frame can never disagree with the owner, and the
@@ -398,12 +400,12 @@ impl LiveSubscription {
         self.push_frame(ThreadNotification::Lagged { dropped });
     }
 
-    /// The status stream only forwards status frames; content is delivered by the ChatView window.
+    /// The status stream only forwards status frames; content is delivered by the Timeline source.
     ///
     /// The projection owner's feed is already content-free — the same bodies are written once into
     /// the shared session and read from that one window — so no `state_only` end-of-pipe filter is
     /// needed and no content revision hole can be manufactured here. 状态流只保留活动、交互、运行时
-    /// 与 lagged 事实：窗口版本不属于状态流，正文更新不会再额外走一遍状态流。
+    /// 与 lagged 事实：内容版本不属于状态流，正文更新不会再额外走一遍状态流。
     fn push(&mut self, event: LiveEvent) {
         let notification = match event {
             LiveEvent::Turn { turn, event } => {
@@ -443,7 +445,7 @@ impl LiveSubscription {
     /// watermark and `revision` advances it by exactly one.
     fn enqueue(&mut self, notification: ThreadNotification) {
         // 未交付的观察帧就地合并：活动帧只带小型摘要（同一身份最多留一条，身份变化必须按顺序交付），
-        // 内容窗口帧只带版本（始终只留最新一条）。
+        // 内容通知只带版本（始终只留最新一条）。
         if self.coalesce_pending(&notification) {
             return;
         }
@@ -621,7 +623,14 @@ impl StudioThreadSubscription {
                     live.refresh_observations();
                 }
                 live.observation_due = None;
-                return Ok(live.pending.pop_front());
+                let mut update = live.pending.pop_front();
+                if let Some(ThreadSubscriptionUpdate::Notification { notification }) = &mut update
+                    && let ThreadNotification::ThreadRuntimeUpdated { runtime: observed } =
+                        &mut notification.notification
+                {
+                    runtime.annotate_runtime_mode_availability(observed);
+                }
+                return Ok(update);
             }
             live.observation_due = None;
             if matches!(step, FeedStep::Closed) {
@@ -737,7 +746,24 @@ impl StudioRuntime {
             persistence.as_ref(),
         )?;
         self.annotate_model_route(&mut snapshot)?;
+        self.annotate_mode_availability(&mut snapshot);
         Ok(snapshot)
+    }
+
+    fn annotate_mode_availability(&self, snapshot: &mut pl_protocol::ThreadSnapshot) {
+        if let Some(runtime) = snapshot.runtime.as_mut() {
+            self.annotate_runtime_mode_availability(runtime);
+        }
+    }
+
+    fn annotate_runtime_mode_availability(&self, runtime: &mut pl_protocol::ThreadRuntimeSnapshot) {
+        if let Some(run) = runtime
+            .workflow
+            .as_mut()
+            .and_then(|workflow| workflow.current_run.as_mut())
+        {
+            run.mode_deleted = self.thread_modes.snapshot().mode(&run.mode_id).is_none();
+        }
     }
 
     /// 该 Thread 的 typed 持久化快照；没有登记过持久化的 Thread 为 `None`（未知不等于健康）。
@@ -903,8 +929,8 @@ impl StudioRuntime {
             return Ok(());
         };
         let selector = pl_model::config::ModelRouteConfig {
-            provider: pl_model::config::ProviderId::new(route.provider_id.clone())?,
-            model: route.model.clone(),
+            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
+            model_id: route.model_id.clone(),
             effort: route
                 .effort
                 .clone()
@@ -916,19 +942,7 @@ impl StudioRuntime {
         } else {
             pl_protocol::AgentRoleId::new(snapshot.thread.role.clone())?
         };
-        let resolved = config
-            .models
-            .resolve_route(role, &selector)
-            .and_then(|resolved| {
-                if snapshot.thread.parent_thread_id.is_none() {
-                    let mode = self.thread_modes.snapshot().mode(&snapshot.thread.mode);
-                    crate::mode::validate_thread_mode_model(
-                        mode.as_ref().map(|mode| mode.as_ref()),
-                        &resolved.model,
-                    )?;
-                }
-                Ok(resolved)
-            });
+        let resolved = config.models.resolve_route(role, &selector);
         match resolved {
             Ok(_) => {
                 route.available = true;

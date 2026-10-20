@@ -1,11 +1,14 @@
 //! Restricted task capabilities; weak commands never keep their Thread alive.
 use super::*;
+use std::{collections::BTreeMap, time::Duration};
 
 /// A coherent wait result; pending messages remain unconsumed until model admission.
 #[derive(Debug, Clone)]
 pub struct TaskWaitSnapshot {
     pub tasks: Vec<task::TaskRecord>,
     pub messages_ready: bool,
+    /// True only when the fixed deadline was reached without a ready task or message.
+    pub timed_out: bool,
 }
 
 /// Thread-local task reads and explicitly granted controls for one running tool call.
@@ -287,13 +290,21 @@ impl TaskAccess {
     }
 
     /// Waits for any selected task to finish or for a pending Thread message.
-    /// Empty IDs wait only for messages. This operation never consumes inbox contents.
+    /// Empty IDs wait only for messages. This operation never consumes inbox contents or cancels
+    /// selected tasks. The readiness deadline is fixed on entry, including across unrelated wakes;
+    /// the final observation always checks committed readiness before reporting a timeout.
+    ///
+    /// Archived identities are resolved from the Thread's durable facts. Those reads must finish
+    /// (or fail) before returning a complete task snapshot; the readiness timeout does not fabricate
+    /// metadata when a storage read has not completed. Cancellation still interrupts the read.
     ///
     /// # Errors
-    /// Rejects missing permission, self-waits, stale callers, unknown tasks and cancelled waits.
+    /// Rejects missing or revoked permission, self-waits, stale callers, unknown tasks, an
+    /// unrepresentable deadline, cancelled waits and durable read failures.
     pub async fn wait(
         &self,
         ids: &[String],
+        timeout: Duration,
         cancellation: CancellationToken,
     ) -> Result<TaskWaitSnapshot, ThreadError> {
         if !self.may_wait {
@@ -302,30 +313,43 @@ impl TaskAccess {
         if ids.iter().any(|id| id == &self.caller) {
             return Err(ThreadError::TaskSelfWait);
         }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or(ThreadError::InvalidWaitTimeout)?;
         let mut snapshots = self.snapshots.clone();
+        // Only immutable terminal facts are retained locally, for this wait alone. Live task and
+        // inbox state always come from the same owner observation, never from a second registry.
+        let mut archived = BTreeMap::new();
         loop {
             if cancellation.is_cancelled() {
                 return Err(ThreadError::Cancelled);
             }
-            {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
+                validated = self.validate_execution() => validated?,
+            }
+            let (observed, missing, ready) = {
                 let snapshot = snapshots.borrow_and_update();
                 self.ensure_running(&snapshot)?;
-                let tasks = ids
-                    .iter()
-                    .map(|id| {
-                        snapshot
-                            .tasks
-                            .get(id)
-                            .or_else(|| {
-                                snapshot
-                                    .terminal_tasks
-                                    .iter()
-                                    .find(|record| record.id == *id)
-                            })
-                            .cloned()
-                            .ok_or_else(|| ThreadError::TaskNotFound { task_id: id.into() })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let mut tasks = Vec::with_capacity(ids.len());
+                let mut missing = Vec::new();
+                for id in ids {
+                    match snapshot
+                        .tasks
+                        .get(id)
+                        .or_else(|| {
+                            snapshot
+                                .terminal_tasks
+                                .iter()
+                                .find(|record| record.id == *id)
+                        })
+                        .or_else(|| archived.get(id))
+                    {
+                        Some(task) => tasks.push(task.clone()),
+                        None => missing.push(id.clone()),
+                    }
+                }
                 if tasks
                     .iter()
                     .any(|task| snapshot.pending_tool_commits.contains(&task.call_id))
@@ -338,20 +362,72 @@ impl TaskAccess {
                     .inbox
                     .iter()
                     .any(|record| record.sequence > snapshot.consumed_messages);
-                if messages_ready
+                let ready = messages_ready
                     || tasks
                         .iter()
-                        .any(|task| task.status != task::TaskStatus::Running)
-                {
-                    return Ok(TaskWaitSnapshot {
+                        .any(|task| task.status != task::TaskStatus::Running);
+                (
+                    TaskWaitSnapshot {
                         tasks,
                         messages_ready,
-                    });
+                        // Check the clock while still borrowing this exact observation: a publish
+                        // between releasing the borrow and checking the clock cannot be missed.
+                        timed_out: !ready && tokio::time::Instant::now() >= deadline,
+                    },
+                    missing,
+                    ready,
+                )
+            };
+            if !missing.is_empty() {
+                for id in missing {
+                    if archived.contains_key(&id) {
+                        continue;
+                    }
+                    let fact = {
+                        let read = self.durable(&id);
+                        tokio::pin!(read);
+                        loop {
+                            tokio::select! {
+                                    biased;
+                            _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
+                                    fact = &mut read => break fact?,
+                                    changed = snapshots.changed() => {
+                                        changed.map_err(|_| ThreadError::Closed)?;
+                                        tokio::select! {
+                                            biased;
+                                            _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
+                                            validated = self.validate_execution() => validated?,
+                                        }
+                                    }
+                                }
+                        }
+                    };
+                    tokio::select! {
+                                biased;
+                                _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
+                                validated = self.validate_execution() => validated?,
+                    }
+                    match fact {
+                        Some(fact) if fact.task.status != task::TaskStatus::Running => {
+                            archived.insert(id, fact.task);
+                        }
+                        // A durable Running row without a live owner task cannot be waited on.
+                        // In particular, neither a missing identity nor stale data becomes success.
+                        _ => return Err(ThreadError::TaskNotFound { task_id: id }),
+                    }
                 }
+                // Storage may have yielded while messages or live tasks changed. Re-read the
+                // owner, including the caller's authority, instead of returning the older snapshot.
+                continue;
+            }
+            if ready || observed.timed_out {
+                return Ok(observed);
             }
             tokio::select! {
+                biased;
                 _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
                 changed = snapshots.changed() => changed.map_err(|_| ThreadError::Closed)?,
+                _ = tokio::time::sleep_until(deadline) => {},
             }
         }
     }

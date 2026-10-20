@@ -688,7 +688,7 @@ fn inference_item(
         .request_metadata
         .as_ref()
         .and_then(|payload| pl_model::runtime::model_request_receipt(payload).ok())
-        .map_or_else(String::new, |receipt| receipt.binding.requested_model);
+        .map_or_else(String::new, |receipt| receipt.binding.model_id);
     let state = match &attempt.outcome {
         AttemptOutcome::Running => State::Running(pl_protocol::RunningThreadInference),
         AttemptOutcome::Committed(output) => {

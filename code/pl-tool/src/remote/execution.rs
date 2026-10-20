@@ -15,17 +15,22 @@ static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(0);
 /// 在远端 workspace 中执行宿主传入的 Git/worktree 命令。
 #[derive(Debug, Clone)]
 pub struct RemoteExecutionBackend {
+    lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
     client: RemoteClient,
     workspace_id: String,
     canonical_root: String,
 }
 
 impl RemoteExecutionBackend {
-    pub(crate) fn new(client: RemoteClient, workspace_id: String, canonical_root: String) -> Self {
+    pub(super) fn new(
+        client: RemoteClient,
+        lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
+    ) -> Self {
         Self {
             client,
-            workspace_id,
-            canonical_root,
+            workspace_id: lease.id.clone(),
+            canonical_root: lease.path.clone(),
+            lease,
         }
     }
 }
@@ -47,40 +52,39 @@ impl ExecutionBackend for RemoteExecutionBackend {
             .map(|part| shell_quote_word(&part))
             .collect::<Vec<_>>()
             .join(" ");
-        let transport = self
+        let mut transport = self
             .client
-            .spawn_process(RemoteSpawnRequest {
-                process_id: process_id.clone(),
-                workspace_id: self.workspace_id.clone(),
-                command,
-                cwd,
-                environment: request.env,
-                capture: RemoteCapture::None,
-            })
+            .spawn_workspace_process(
+                self.lease.clone(),
+                RemoteSpawnRequest {
+                    process_id: process_id.clone(),
+                    workspace_id: self.workspace_id.clone(),
+                    command,
+                    cwd,
+                    environment: request.env,
+                    capture: RemoteCapture::None,
+                },
+            )
             .await
             .map_err(|error| error.to_string())?;
-        drop(transport.stdin);
-        let wait = collect_process_output(transport.stdout, transport.stderr, transport.exit);
+        drop(transport.take_stdin());
+        let cancellation = transport.cancellation();
+        let stdout = transport.take_stdout().ok_or("remote stdout is missing")?;
+        let stderr = transport.take_stderr().ok_or("remote stderr is missing")?;
+        let wait = collect_process_output(stdout, stderr, &mut transport);
         tokio::pin!(wait);
         let result = match request.timeout {
             Some(timeout) => match tokio::time::timeout(timeout, &mut wait).await {
                 Ok(result) => result,
                 Err(_) => {
-                    let (termination, settled) =
-                        tokio::join!(self.client.terminate_process(&process_id), wait,);
-                    return Err(match (termination, settled) {
-                        (Ok(()), Ok(_)) => {
+                    cancellation.cancel();
+                    return Err(match wait.await {
+                        Ok(_) => {
                             "remote command timed out; process exit and output drain completed"
                                 .to_string()
                         }
-                        (Err(error), Ok(_)) => format!(
-                            "remote command timed out; termination request failed ({error}), but process exit and output drain subsequently completed"
-                        ),
-                        (Ok(()), Err(error)) => format!(
+                        Err(error) => format!(
                             "remote command timed out; exit or output drain failed: {error}"
-                        ),
-                        (Err(termination), Err(settlement)) => format!(
-                            "remote command timed out; termination failed: {termination}; exit or output drain failed: {settlement}"
                         ),
                     });
                 }
@@ -94,14 +98,10 @@ impl ExecutionBackend for RemoteExecutionBackend {
 async fn collect_process_output(
     stdout: impl AsyncRead + Unpin,
     stderr: impl AsyncRead + Unpin,
-    exit: tokio::sync::oneshot::Receiver<
-        Result<pl_protocol::remote::RemoteProcessExit, super::RemoteClientError>,
-    >,
+    command: &mut crate::command::ManagedCommand,
 ) -> Result<ExecutionOutput, String> {
-    let (stdout, stderr, exit) = tokio::join!(read_all(stdout), read_all(stderr), exit);
-    let exit = exit
-        .map_err(|_| "remote process exit channel closed".to_string())?
-        .map_err(|error| error.to_string())?;
+    let (stdout, stderr, exit) = tokio::join!(read_all(stdout), read_all(stderr), command.wait());
+    let exit = exit?;
     if exit.capture.is_some() {
         return Err("stream-only execution returned an unexpected capture receipt".into());
     }

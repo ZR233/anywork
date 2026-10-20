@@ -34,7 +34,7 @@ pub fn project_thread_interaction(
             thread_id, permission,
         )?)),
         (None, Some(record)) => match record.request.payload.format() {
-            "pl.studio.plan-confirmation" => {
+            crate::plan_tool::PLAN_CONFIRMATION_FORMAT => {
                 Ok(Some(super::project_plan_confirmation(thread_id, record)?))
             }
             _ => Ok(Some(super::project_user_input(thread_id, record)?)),

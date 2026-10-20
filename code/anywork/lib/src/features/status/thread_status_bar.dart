@@ -1,12 +1,15 @@
-import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
+import 'dart:async';
+
+import 'package:anywork_client/studio_client.dart' show CommandPhase;
+
+import '../../presentation/providers/client_provider.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/studio_models.dart';
 import '../../presentation/providers/lsp_store.dart';
-import '../../presentation/providers/settings_store.dart';
-import '../../presentation/providers/thread_directory_store.dart';
-import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/mode_catalog_store.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
@@ -14,6 +17,7 @@ import 'context_usage_readout.dart';
 import 'session_selectors.dart';
 import 'status_bar_item.dart';
 import 'status_detail_panel.dart';
+import 'status_view.dart';
 
 /// Reads one stable Thread owner and passes a single frame to the pure View.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -36,24 +40,18 @@ class ThreadStatusConnector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final session = ref.watch(threadSessionStoreProvider(threadId));
-    final directory = ref.watch(threadDirectoryStoreProvider);
-    final settings = ref.watch(settingsStoreProvider);
-    final facts = ModelRouteQueries.threadStatus(
-      threadId: threadId,
-      directory: [...directory.window.threads, ...directory.overlayThreads],
-      runtime: session.runtime,
-    );
-    final thread = facts.thread;
-    if (thread == null) return const SizedBox(height: 38);
+    final status = ref.watch(statusBarViewProvider(threadId));
+    if (status == null) return const SizedBox(height: 38);
     return ThreadStatusBar(
-      thread: thread,
-      runtime: facts.runtime,
-      providers: providersWithCatalogMetadata(
-        settings.canonical?.providers ?? const [],
-        settings.providerCatalog,
-      ),
+      threadId: threadId,
+      thread: status.thread,
+      accounts: status.accounts,
       lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
+      modelRoute: status.modelRoute,
+      workflowRun: status.workflowRun,
+      activeSkills: status.activeSkills,
+      activeMcpServers: status.activeMcpServers,
+      activeLspServers: status.activeLspServers,
       showTodo: showTodo,
       todoExpanded: todoExpanded,
       onToggleTodo: onToggleTodo,
@@ -66,10 +64,15 @@ class ThreadStatusConnector extends ConsumerWidget {
 class ThreadStatusBar extends StatelessWidget {
   const ThreadStatusBar({
     super.key,
+    required this.threadId,
     required this.thread,
-    required this.runtime,
-    required this.providers,
+    required this.accounts,
     required this.lspServers,
+    this.modelRoute,
+    this.workflowRun,
+    this.activeSkills = const [],
+    this.activeMcpServers = const [],
+    this.activeLspServers = const [],
     this.showTodo = false,
     this.todoExpanded = false,
     this.onToggleTodo,
@@ -77,10 +80,15 @@ class ThreadStatusBar extends StatelessWidget {
     this.onOpenPlan,
   });
 
+  final String threadId;
   final StudioThread thread;
-  final ThreadRuntimeView? runtime;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<LspServerStateView> lspServers;
+  final ThreadModelRouteView? modelRoute;
+  final WorkflowRunView? workflowRun;
+  final List<String> activeSkills;
+  final List<String> activeMcpServers;
+  final List<String> activeLspServers;
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
@@ -89,25 +97,12 @@ class ThreadStatusBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final runtime = this.runtime;
-    if (runtime == null) {
-      return SizedBox(
-        height: 38,
-        child: Row(
-          children: [
-            const SizedBox(width: 12),
-            Text(thread.title),
-            const SizedBox(width: 12),
-            Text(context.l10n.settingsNotAvailable),
-          ],
-        ),
-      );
-    }
-    final contextUsage = StudioContextProjection.fromRuntime(
-      thread.id,
-      runtime,
+    final capabilityLabel = _capabilityLabel(
+      context,
+      activeSkills: activeSkills,
+      activeMcpServers: activeMcpServers,
+      activeLspServers: activeLspServers,
     );
-    final capabilityLabel = _runtimeCapabilityLabel(context, runtime);
     final lspActiveServers = [
       for (final server in lspServers)
         if (_lspActiveActivity(server) != null) server,
@@ -125,10 +120,10 @@ class ThreadStatusBar extends StatelessWidget {
                 final showModel = constraints.maxWidth >= 610;
                 final showCapabilities = constraints.maxWidth >= 840;
                 final showLspActivity = constraints.maxWidth >= 850;
-                final route = runtime.modelRoute;
+                final route = modelRoute;
                 final routeModel = route == null
                     ? null
-                    : modelForRoute(providers, route.providerId, route.model);
+                    : modelForRoute(accounts, route.accountId, route.modelId);
                 final hasOverflow =
                     (thread.isRoot &&
                         (routeModel?.reasoningEfforts.isNotEmpty ?? false)) ||
@@ -171,22 +166,24 @@ class ThreadStatusBar extends StatelessWidget {
                     if (showModel && thread.isAgent)
                       _StatusReadout(
                         icon: Icons.smart_toy_outlined,
-                        label: route?.model.isNotEmpty == true
-                            ? route!.model
+                        label: route?.modelId.isNotEmpty == true
+                            ? route!.modelId
                             : context.l10n.settingsNotAvailable,
                         tooltip:
                             route?.unavailableReason ??
-                            route?.model ??
+                            route?.modelId ??
                             context.l10n.settingsNotAvailable,
                         maxWidth: 140,
                       ),
-                    if (runtime.workflow?.currentRun case final run?)
-                      _WorkflowRuntimeReadout(run: run),
-                    ContextUsageReadout(projection: contextUsage),
+                    if (workflowRun case final run?)
+                      _WorkflowRuntimeReadout(
+                        run: run,
+                        maxWidth: constraints.maxWidth >= 1000 ? 260 : 140,
+                      ),
+                    _ContextUsageConnector(threadId: threadId),
                     ThreadThroughputReadout(
                       key: StudioDriverKeys.threadThroughput,
-                      threadId: thread.id,
-                      runtime: runtime,
+                      threadId: threadId,
                     ),
                     if (showLspActivity && lspActiveServers.isNotEmpty)
                       _LspActivityReadout(servers: lspActiveServers),
@@ -197,8 +194,11 @@ class ThreadStatusBar extends StatelessWidget {
                         tooltip: context.l10n.statusCapabilitiesTitle,
                         detailWidth: 520,
                         maxWidth: 160,
-                        detailBuilder: (context) =>
-                            _CapabilityDetail(runtime: runtime),
+                        detailBuilder: (context) => _CapabilityDetail(
+                          activeSkills: activeSkills,
+                          activeMcpServers: activeMcpServers,
+                          activeLspServers: activeLspServers,
+                        ),
                       ),
                     if (hasOverflow)
                       _StatusOverflow(
@@ -206,7 +206,9 @@ class ThreadStatusBar extends StatelessWidget {
                             ? null
                             : rootEffort,
                         capabilities: capabilityLabel,
-                        runtime: runtime,
+                        activeSkills: activeSkills,
+                        activeMcpServers: activeMcpServers,
+                        activeLspServers: activeLspServers,
                         lspServers: showLspActivity
                             ? const <LspServerStateView>[]
                             : lspActiveServers,
@@ -226,108 +228,53 @@ class ThreadStatusBar extends StatelessWidget {
   }
 }
 
-/// Owns the status-bar display lifetime for the current Thread's throughput.
-///
-/// The runtime remains canonical and [ModelRouteQueries.throughput] remains a
-/// pure same-sample calculation. This component only keeps the last value that
-/// was already valid when a later frame has no new throughput observation.
-class ThreadThroughputReadout extends StatefulWidget {
-  const ThreadThroughputReadout({
-    required this.threadId,
-    required this.runtime,
-    super.key,
-  });
+class _ContextUsageConnector extends ConsumerWidget {
+  const _ContextUsageConnector({required this.threadId});
 
   final String threadId;
-  final ThreadRuntimeView runtime;
 
   @override
-  State<ThreadThroughputReadout> createState() =>
-      _ThreadThroughputReadoutState();
-}
-
-class _ThreadThroughputReadoutState extends State<ThreadThroughputReadout> {
-  _ThroughputSnapshot? _snapshot;
-
-  @override
-  void initState() {
-    super.initState();
-    _acceptRuntime();
-  }
-
-  @override
-  void didUpdateWidget(covariant ThreadThroughputReadout oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId != widget.threadId) _snapshot = null;
-    _acceptRuntime();
-  }
-
-  void _acceptRuntime() {
-    final tokensPerSecond = ModelRouteQueries.throughput(widget.runtime);
-    final live = widget.runtime.liveUsage;
-    if (tokensPerSecond != null) {
-      _snapshot = _ThroughputSnapshot(
-        threadId: widget.threadId,
-        source: _ThroughputSource.fromLive(live),
-        tokensPerSecond: tokensPerSecond,
-      );
-      return;
-    }
-
-    final previous = _snapshot;
-    if (previous == null || live == null || previous.source.matchesLive(live)) {
-      return;
-    }
-    // A new live turn/attempt is an explicit invalidation. Do not show the
-    // previous turn's speed while this new sample is incomplete.
-    _snapshot = null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tokensPerSecond = _snapshot?.threadId == widget.threadId
-        ? _snapshot?.tokensPerSecond
-        : null;
-    return _StatusReadout(
-      icon: Icons.speed_outlined,
-      label: context.tokenThroughputLabel(tokensPerSecond),
-      tooltip: context.l10n.statusCurrentAgentTokenSpeed,
-      maxWidth: 84,
+  Widget build(BuildContext context, WidgetRef ref) {
+    final projection = ref.watch(statusContextProjectionProvider(threadId));
+    if (projection == null) return const SizedBox.shrink();
+    final command = ref.watch(statusCompactionCommandProvider(threadId));
+    final busy = ref.watch(statusBarViewProvider(threadId))?.isBusy ?? true;
+    final compacting = command?.phase == CommandPhase.pending;
+    return ContextUsageReadout(
+      projection: projection,
+      compacting: compacting,
+      compactionFailed: command?.phase == CommandPhase.failed,
+      onCompact: busy || compacting || !projection.hasUsage
+          ? null
+          : () {
+              unawaited(
+                ref
+                    .read(anyworkClientProvider)
+                    .threadCommands
+                    .compactThread(threadId)
+                    .catchError((Object _) {}),
+              );
+            },
     );
   }
 }
 
-/// Identity of the live turn/attempt that produced the last valid value.
-///
-/// A missing live observation is deliberately not treated as a new speed
-/// sample: the status bar keeps its last confirmed display until a new live
-/// turn/attempt is actually observed or a replacement speed is available.
-class _ThroughputSource {
-  const _ThroughputSource({this.turnId, this.attemptId});
-
-  factory _ThroughputSource.fromLive(ThreadRuntimeLiveUsageView? live) =>
-      _ThroughputSource(turnId: live?.turnId, attemptId: live?.attemptId);
-
-  final String? turnId;
-  final String? attemptId;
-
-  bool matchesLive(ThreadRuntimeLiveUsageView live) =>
-      turnId != null &&
-      attemptId != null &&
-      turnId == live.turnId &&
-      attemptId == live.attemptId;
-}
-
-class _ThroughputSnapshot {
-  const _ThroughputSnapshot({
-    required this.threadId,
-    required this.source,
-    required this.tokensPerSecond,
-  });
+/// Pure readout for the current Thread's canonical throughput query.
+class ThreadThroughputReadout extends ConsumerWidget {
+  const ThreadThroughputReadout({required this.threadId, super.key});
 
   final String threadId;
-  final _ThroughputSource source;
-  final double? tokensPerSecond;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final projection = ref.watch(statusThroughputProjectionProvider(threadId));
+    return _StatusReadout(
+      icon: Icons.speed_outlined,
+      label: context.tokenThroughputLabel(projection?.tokensPerSecond),
+      tooltip: context.l10n.statusLastConfirmedAgentTokenSpeed,
+      maxWidth: 84,
+    );
+  }
 }
 
 class _LspActivityReadout extends StatelessWidget {
@@ -439,38 +386,53 @@ class _LspActivityDetail extends StatelessWidget {
   }
 }
 
-class _WorkflowRuntimeReadout extends StatelessWidget {
-  const _WorkflowRuntimeReadout({required this.run});
+class _WorkflowRuntimeReadout extends ConsumerWidget {
+  const _WorkflowRuntimeReadout({required this.run, this.maxWidth = 140});
 
   final WorkflowRunView run;
+  final double maxWidth;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final catalog = ref.watch(modeCatalogStoreProvider).value;
+    final deleted = catalog == null
+        ? run.modeDeleted
+        : !catalog.modes.any((mode) => mode.id == run.modeId);
+    final stateTitle = run.currentStateTitle.isEmpty
+        ? context.workflowStateLabel(run.currentStateId)
+        : run.currentStateTitle;
+    final modeName = run.modeDisplayName.isEmpty
+        ? context.workflowModeLabel(run.modeId)
+        : run.modeDisplayName;
     return KeyedSubtree(
       key: ValueKey('workflow-runtime-${run.runId}'),
       child: _StatusReadout(
         key: ValueKey('workflow-state-${run.currentStateId}'),
         icon: run.terminal ? Icons.check_circle_outline : Icons.route_outlined,
-        label: context.workflowStateLabel(run.currentStateId),
+        label: deleted
+            ? '$stateTitle · ${context.l10n.modeDeletedUsingSnapshot}'
+            : stateTitle,
         tooltip:
-            '${context.workflowModeLabel(run.modeId)} · ${context.workflowStateLabel(run.currentStateId)}',
-        maxWidth: 140,
+            '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}',
+        maxWidth: deleted ? maxWidth : 140,
       ),
     );
   }
 }
 
-String _runtimeCapabilityLabel(
-  BuildContext context,
-  ThreadRuntimeView runtime,
-) {
+String _capabilityLabel(
+  BuildContext context, {
+  required List<String> activeSkills,
+  required List<String> activeMcpServers,
+  required List<String> activeLspServers,
+}) {
   final parts = [
-    if (runtime.activeSkills.isNotEmpty)
-      context.l10n.statusSkillsCount(runtime.activeSkills.length),
-    if (runtime.activeMcpServers.isNotEmpty)
-      context.l10n.statusMcpCount(runtime.activeMcpServers.length),
-    if (runtime.activeLspServers.isNotEmpty)
-      context.l10n.statusLspCount(runtime.activeLspServers.length),
+    if (activeSkills.isNotEmpty)
+      context.l10n.statusSkillsCount(activeSkills.length),
+    if (activeMcpServers.isNotEmpty)
+      context.l10n.statusMcpCount(activeMcpServers.length),
+    if (activeLspServers.isNotEmpty)
+      context.l10n.statusLspCount(activeLspServers.length),
   ];
   return parts.join(' · ');
 }
@@ -479,7 +441,9 @@ class _StatusOverflow extends StatefulWidget {
   const _StatusOverflow({
     required this.effort,
     required this.capabilities,
-    required this.runtime,
+    required this.activeSkills,
+    required this.activeMcpServers,
+    required this.activeLspServers,
     this.lspServers = const <LspServerStateView>[],
     this.showPlanEntry = false,
     this.onOpenPlan,
@@ -487,7 +451,9 @@ class _StatusOverflow extends StatefulWidget {
 
   final String? effort;
   final String capabilities;
-  final ThreadRuntimeView runtime;
+  final List<String> activeSkills;
+  final List<String> activeMcpServers;
+  final List<String> activeLspServers;
   final List<LspServerStateView> lspServers;
   final bool showPlanEntry;
   final VoidCallback? onOpenPlan;
@@ -566,7 +532,9 @@ class _StatusOverflowState extends State<_StatusOverflow> {
   void _showDetail(BuildContext context, _StatusOverflowAction action) {
     final detail = switch (action) {
       _StatusOverflowAction.capabilities => _CapabilityDetail(
-        runtime: widget.runtime,
+        activeSkills: widget.activeSkills,
+        activeMcpServers: widget.activeMcpServers,
+        activeLspServers: widget.activeLspServers,
       ),
       _StatusOverflowAction.lsp => _LspActivityDetail(
         servers: widget.lspServers,
@@ -637,35 +605,41 @@ class _StatusReadout extends StatelessWidget {
 }
 
 class _CapabilityDetail extends StatelessWidget {
-  const _CapabilityDetail({required this.runtime});
+  const _CapabilityDetail({
+    required this.activeSkills,
+    required this.activeMcpServers,
+    required this.activeLspServers,
+  });
 
-  final ThreadRuntimeView runtime;
+  final List<String> activeSkills;
+  final List<String> activeMcpServers;
+  final List<String> activeLspServers;
 
   @override
   Widget build(BuildContext context) {
     return StatusDetailPanel(
       title: context.l10n.statusCapabilitiesTitle,
       children: [
-        if (runtime.activeSkills.isNotEmpty)
+        if (activeSkills.isNotEmpty)
           StatusDetailIconList(
             icon: Icons.extension_outlined,
             title: context.l10n.statusSkillsSection,
-            items: runtime.activeSkills,
+            items: activeSkills,
             itemKey: StudioDriverKeys.statusActiveSkill,
             tone: StudioTone.brand,
           ),
-        if (runtime.activeMcpServers.isNotEmpty)
+        if (activeMcpServers.isNotEmpty)
           StatusDetailIconRow(
             icon: Icons.hub_outlined,
             title: context.l10n.statusMcpSection,
-            detail: runtime.activeMcpServers.join(', '),
+            detail: activeMcpServers.join(', '),
             tone: StudioTone.success,
           ),
-        if (runtime.activeLspServers.isNotEmpty)
+        if (activeLspServers.isNotEmpty)
           StatusDetailIconRow(
             icon: Icons.terminal_outlined,
             title: context.l10n.statusLspSection,
-            detail: runtime.activeLspServers.join(', '),
+            detail: activeLspServers.join(', '),
             tone: StudioTone.neutral,
           ),
       ],

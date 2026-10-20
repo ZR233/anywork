@@ -69,6 +69,8 @@ impl LspRuntimeRegistry {
                 resolved.workspace_root.clone(),
                 diagnostics,
                 self.updates.clone(),
+                host.as_ref()
+                    .map_or(crate::host::LspPathStyle::Native, |host| host.path_style()),
             );
             let client = LspClient::new(resolved, driver, sink, host);
             let client = std::sync::Arc::new(client);
