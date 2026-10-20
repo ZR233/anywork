@@ -37,7 +37,7 @@
 | 22 | [SSH 远程开发](./22-ssh-remote.md) | helper 能力代理、最小协议、连接管理、凭据与路径、helper 随包资源 |
 | 23 | [发布与更新](./23-release-update.md) | 发布渠道与信任根、Windows 包边界、更新清单与状态机、诊断 |
 | 24 | [测试与人工验收](./24-testing.md) | 两库公开 API 测试、本地模拟供应商、GUI 人工证据 |
-| 25 | [Client、前端状态与资源生命周期](./25-frontend-state.md) | SDK-only Client、FRB/Riverpod 边界、唯一 writer、命令回执、草稿与资源关闭契约（唯一权威源） |
+| 25 | [Repository、呈现状态与资源生命周期](./25-frontend-state.md) | 分域数据层、AsyncNotifier／Freezed、Smart/Dumb 边界、唯一 writer、命令回执、草稿与关闭契约（唯一权威源） |
 | 26 | [Timeline 内容源与原生列表](./26-timeline-content.md) | keyset 页、有界尾部订阅、详情、Live/History、原生列表与显示预算（唯一权威源） |
 
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型

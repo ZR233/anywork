@@ -28,7 +28,8 @@ owner。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服
 仅在额度查询输入（包括服务地址、template、有效凭据）改变时推进。该身份与 runtime owner
 epoch 一起解释，不是全局 Settings revision，不随名称、默认路由或在线模型目录观察推进，
 也不持久化为用户配置。不能以 secret 或 secret 哈希作为公开查询身份。自动加载和手动刷新
-均消费同一身份及结果 reducer，Client 需求合同见 [25.7.1](./25-frontend-state.md#2571-账号用量需求)。
+均消费同一身份及结果 reducer，Repository／ViewModel 需求合同见
+[25.7.1](./25-frontend-state.md#2571-账号用量需求)。
 
 Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由成功受理用户输入推进，
 与普通 `updatedAt` 分离。Rust protocol、FRB DTO、Dart domain 与目录增量均传递同一事实；
@@ -36,13 +37,14 @@ Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由�
 失败提交和恢复重放不计入。目录排序和版本化游标只消费会话元信息，不从历史回填；
 字段缺失与保存语义遵循 [17](./17-studio-storage.md)。
 
-服务端启动 snapshot 聚合 projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、
-recovery、MCP/LSP、account usage、模型统计、根会话费用、Agent Profiles、持久化队列与 updater。
-Thread workspace 单独包含当前
-状态、pending Interaction、ThreadRuntimeView、workflow 投影和 Plan 投影；Timeline 内容通过
-独立的小页、尾部订阅与详情读取交付，不放入工作区轻状态；
-不存在 taskDirectory。Client 只将聚合读取用于一次 typed bootstrap，拆入各自 read model；正常命令成功
-不重读聚合状态。runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
+应用启动先取得 runtime identity 与恢复选择等最小启动事实，再登记所需领域的基线和事件。
+projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、recovery、MCP/LSP、
+account usage、模型统计、根会话费用、Profiles、持久化队列与 updater 按独立职责交付，
+不为普通页面或命令成功回传全应用聚合 snapshot。服务端聚合诊断查询不是 GUI 的正常恢复路径。
+Thread 的 execution、metrics、context、configuration 和 plan/workflow 使用分域 feed，
+需要原子解释的字段在同一 typed 投影内提交；不同 feed 不冒充跨域事务。Timeline 内容通过
+独立推送、小页和详情读取交付，不放入工作区轻状态；不存在 taskDirectory。
+runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
 epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner epoch。Thread 目录条目携带
 会话工作区模式（`local | worktree`）与会话工作区地址 `workspacePath`，只读投影为侧栏与会话
 展示的 canonical 事实，GUI 不推导、不本地改写，也不按模式分别取 Project 路径或工作树路径。
@@ -81,17 +83,18 @@ Effective 要等目标 Turn 结束；交互受理可先 Effective，但仍等待
 Durable，只有命中真实已保存的交互回执才确认持久化。输入提交的 Durable 必须匹配
 ThreadId + inputId 的 Chat Turn `saved`，执行终态、receipt cursor 与其他资源 revision 都不能代替。
 
-Product event 携带完整领域 snapshot 或明确 revision：ProjectDirectoryChanged、
-ThreadDirectoryChanged、AgentDirectoryChanged、ModeCatalogChanged、ThreadRuntimeChanged
-等。Dart reducer 拒绝旧 revision，并用受影响领域的基线从 stream lag 恢复；它不自行
+Product event 按领域 revision 发布 typed 实体 upsert/remove、有界窗口变化或小型状态替换。
+Project／Thread／Agent directory、catalog、账号、Profiles、资源与统计等集合不能因单项
+变化重传其它无关实体；模型统计摘要与历史明细分别交付。Dart Repository 拒绝旧 revision，
+并用受影响领域的基线从 stream lag 恢复；它不自行
 推导 workflow transition。一次目录命令可以同时改变 Project 与 Thread，但每个实际变化的
 领域最多发布一次事件；空 delta 不得提升 revision 或发布空事件。冷记录进入驻留/归档命令
 的内存索引属于 owner 准备步骤，不单独形成产品事实或广播。归档只装载目录，不读取冷历史
 或激活冷 owner；最终业务 mutation 才通过
 directory command 发布 canonical delta。
 
-全量 snapshot resync 按领域 revision 合并模型统计与根会话费用，与增量事件使用同一 canonical
-状态；本地已有快照不能遮蔽服务端更新，旧全量快照也不能覆盖已收到的新事件。
+作用域 baseline resync 按所属领域 revision 合并模型统计或根会话费用，与增量事件使用同一
+canonical 状态；本地已有快照不能遮蔽服务端更新，旧基线也不能覆盖已收到的新事件。
 模型统计属于尽力而为的数据库投影：读取已提交数据与发布其展示 revision 串行化，
 待写事实的早期空读不能占用最终落库结果的版本。写入结论到达后发布新快照；读取失败
 保留上次可用数据并显式标记失败，待写与统计缺口也分别可见。
@@ -116,9 +119,9 @@ MCP、LSP、Mode catalog、Account usage、模型统计、Updater、持久化状
 冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable
 replay。重同步只读取受影响领域，不触发 activation、扫描或 mutation。
 
-Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应用实例的 Client 统一持有
-与释放，帧经单一分发点进入对应领域 read model reducer，再由 Riverpod 只读适配和 Connector
-派生读取。页面不得复制 reducer 或直接消费底层 stream；最后一个页面观察者退出只取消自己的
+Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应用实例的领域资源服务持有
+与释放，帧经单一分发点进入对应 Repository reducer，再由生成式 AsyncNotifier 编排功能状态，
+Smart Connector 绑定观察和意图。页面不得复制 reducer 或直接消费底层 stream；最后一个观察者退出只取消自己的
 观察，不关闭仍有应用逻辑 demand 的 topic、会话内容源或草稿。Settings 往返不重建当前会话资源。
 收到 `lagged` 时只使对应 topic/作用域进入局部重同步，取消旧句柄并重新建立“先接收后
 基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默
@@ -128,7 +131,7 @@ Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应
 设置领域保持真实职责边界：MCP、LSP、项目 Skills、Account usage、模型性能、持久化队列、
 Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
 topic；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循
-[25](./25-frontend-state.md) §25.8：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因
+[25](./25-frontend-state.md) §25.4：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因
 页面往返被清除或重建。
 
 模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
@@ -732,7 +735,7 @@ SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提�
 ## 18.10 Canonical freshness invariant
 
 每个用户可见字段都必须能沿唯一链路追溯：生产 owner → 事件/快照来源 → Bridge 唯一分发点
-→ 领域 store reducer → revision/watermark → 职责内 ViewProvider → Widget 订阅，以及
+→ Repository reducer → revision/watermark → 职责内 ViewModel／selector → Connector／View，以及
 失败、重连和退出时的局部重同步与清理。Widget 不得通过一次性 `read`、切页重建或轮询取得
 本应由订阅提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream（Dart 侧分层
 契约见 [25](./25-frontend-state.md) §25.7）。
@@ -741,8 +744,9 @@ Settings、account usage、model performance、session costs、MCP、LSP、Skill
 persistence、updater 与 recovery 等独立职责继续使用各自 typed topic/lease；无关领域不得进入
 彼此缓冲。订阅按“先登记接收者、再基线、后事件”建立，最后一个观察者释放时取消，重新进入
 先采用最新基线再接收事件。Thread 的 runtime、turn、interaction、workflow、activity 与
-storage 则继续共用带 `epoch/baseRevision/revision` 的单一有序流；Dart 可以细分 ViewProvider，
-但不得建立绕过同一水位的旁路流。gap、lagged、旧 generation 和关闭都必须走该领域既定的
+storage 按 [07](./07-streaming.md) 分属 execution、metrics、context、configuration 与
+authoring feed；可靠增量只连接同域 `ownerEpoch/baseRevision/revision`，不假装跨域事务，
+也不在末端 selector 之前重传整份 runtime。gap、lagged、旧 generation 和关闭都必须走该领域既定的
 resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
 
 违背该不变量的典型形态是"数据看起来需要一次路由往返才新鲜"：把导航、页面重建或浮层开关
@@ -755,17 +759,17 @@ Settings 配置事实与模型目录观察是两个资源，分别使用 `settin
 `modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
 对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 account
 的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
-frame 和 baseline 进入 settings store 的同一条 merge path，调用方不得按到达顺序整体替换
+frame 和 baseline 进入 Configuration／ModelCatalog Repository 各自的唯一 merge path，调用方不得按到达顺序整体替换
 （Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
 
-静态账号目录是启动阶段加载的独立事实，只由 Dart `SettingsStore` 持有并与运行时
-配置快照组合显示。`BridgeStudioStateSnapshot` 不携带该目录；聚合快照转换不得以空目录
+静态账号模板目录是启动阶段加载的独立事实，只由账号模板领域能力持有并与运行时
+配置快照组合显示。最小 bootstrap 不携带该目录；其它快照转换不得以空目录
 覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。账号 Logo、template
 能力和目录模型均通过该唯一目录投影进入 UI。
 
 Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种不同事实，所有权与
-组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由 route 作用域
-控制器持有，canonical 永不覆盖；配置写入由 settings 命令 lane 串行化并以响应 canonical
+组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由逻辑草稿服务
+持有，canonical 永不覆盖；配置写入由 settings 操作 lane 串行化并以响应 canonical
 收敛；页面离开只释放观察者租约，不取消在途命令，也不存在返回前的等待或刷新步骤。
 
 ## 18.11.1 Thread 身份的单一来源
@@ -778,9 +782,10 @@ workspace、Connector 与 Driver 从当前目录行组合身份与会话轻状�
 会话镜像仅以自身快照定位，不据此插入分页目录。mode 变更必须由 Rust 提交目录增量并推进
 目录水位；不能以首快照合并、同水位基线或命令后的回读补偿缺失的目录事件。
 
-Thread route 变更的 canonical 只由 Thread 有序流交付：native 在提交 model_route 扩展变更时
-publish 新的 thread snapshot，Dart 侧按同一 `epoch/baseRevision/revision` 水位收敛。命令响应
-里的 `runtime` 只服务于调用方 CAS 与就地提示，**不写入 store**，也不再按 revision 与流事实
+Thread route 变更的 canonical 只由 Thread configuration feed 交付：native 在提交
+model_route 扩展变更时 publish typed route 变化，Dart 侧按该域的
+`ownerEpoch/baseRevision/revision` 水位收敛。命令响应里的 route 结果只服务于调用方 CAS 与
+就地提示，**不写入 canonical 镜像**，也不再按 revision 与流事实
 比较后择一采纳——同一事实不允许存在第二条合并路径。响应同时携带的 settings 是另一个资源，
 按 §18.11 的双时钟合并；mode 变更则由 `ThreadDirectoryChanged` 增量交付（§18.2/§18.8），
 mode 默认 route 的改写属 Thread 事实。由此得到硬约束：命令成功后不得再重新读取聚合状态或 thread snapshot 来
