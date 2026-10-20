@@ -5,6 +5,34 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.22.0](https://github.com/ZR233/anywork/compare/v6.21.0...v6.22.0) (2026-10-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** Account catalog schema 16 publishes the resolved context policy; consumers must use its final auto_compact_limit and availability instead of the removed candidate threshold fields and helpers.
+* **studio:** StudioTransport.startNewThread 返回 typed 事件流；FRB 创建入口使用 typed request 和 StreamSink；runtime 创建命令增加可选进度 observer。仓库内消费者和生成绑定已同步迁移。
+* **agent-runtime:** TaskAccess::wait 增加显式 timeout: Duration 参数，TaskWaitSnapshot 新增 timed_out，ThreadError 新增 InvalidWaitTimeout。调用方需同步迁移签名和穷尽匹配，不再依赖工具层独立超时回退。
+* **studio:** 模型接入配置和公共接口的 Provider/Preset 改为 Account/AccountTemplate，路由使用 account_id/model_id，协议适配、Wire API 和连接方式正交。现行接口不保留旧业务别名；旧配置和 v2 载荷仅在明确版本迁移边界读取。
+
+### Features
+
+* **studio:** 展示新会话环境准备进度 ([#119](https://github.com/ZR233/anywork/issues/119)) ([305cf2c](https://github.com/ZR233/anywork/commit/305cf2c50bf0cd819ba9904965512556c16aab90))
+
+
+### Bug Fixes
+
+* **agent-runtime:** 统一等待通知语义并改进等待界面 ([#111](https://github.com/ZR233/anywork/issues/111)) ([8247241](https://github.com/ZR233/anywork/commit/824724165a99c30ec28e5f90e734aa6abfc64c91))
+* **studio:** 修复旧冻结 Profile 恢复时的协议错误 ([f6cb327](https://github.com/ZR233/anywork/commit/f6cb327ceb3416dca181790575711588571d3ec7))
+* **studio:** 按数据目录保持单例并唤醒已有窗口 ([#117](https://github.com/ZR233/anywork/issues/117)) ([7200c36](https://github.com/ZR233/anywork/commit/7200c369bf5b67589fa00410c68d3e6669e35b2f))
+* **studio:** 统一代码与界面字体 ([#116](https://github.com/ZR233/anywork/issues/116)) ([7c09b09](https://github.com/ZR233/anywork/commit/7c09b096ec92b2ee77185259adc94f4a4f74393b))
+* **studio:** 统一模型上下文策略并支持手动压缩 ([#118](https://github.com/ZR233/anywork/issues/118)) ([23dc4e8](https://github.com/ZR233/anywork/commit/23dc4e87a7fa71ea88be719b676292a76426557f))
+
+
+### Refactoring
+
+* **studio:** 统一账号模型身份与协议分层 ([#113](https://github.com/ZR233/anywork/issues/113)) ([981e246](https://github.com/ZR233/anywork/commit/981e24671bb56b450ffa98f31c245c638e009c08))
+
 ## [6.21.0](https://github.com/ZR233/anywork/compare/v6.20.0...v6.21.0) (2026-10-19)
 
 
