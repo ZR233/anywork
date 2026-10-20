@@ -384,6 +384,8 @@
   "timelineImageLoadFailed": "无法加载此图片。",
   "timelineImageRetry": "重试",
   "timelineImageClose": "关闭图片预览",
+  "timelineImageCardTitle": "图片展示",
+  "timelineImageCardEmpty": "这张图片无法显示",
   "timelineRemoteImageSource": "来自 {host} 的外部图片",
   "timelineRemoteImageOpen": "点击后加载并预览",
   "timelineJumpToLatest": "跳到最新",

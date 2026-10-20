@@ -1029,6 +1029,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineImageClose => '关闭图片预览';
 
   @override
+  String get timelineImageCardTitle => '图片展示';
+
+  @override
+  String get timelineImageCardEmpty => '这张图片无法显示';
+
+  @override
   String timelineRemoteImageSource(String host) {
     return '来自 $host 的外部图片';
   }

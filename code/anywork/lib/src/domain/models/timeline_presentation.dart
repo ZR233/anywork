@@ -17,7 +17,7 @@ typedef TimelineItemListener = void Function(
   TimelineMessagePayload? payload,
 );
 
-enum TimelinePresentationKind { single, activity, images, recovery }
+enum TimelinePresentationKind { single, activity, images, imageCard, recovery }
 
 /// 当前代次中一条自定义消息的唯一预览 owner。原始身份与展示身份分别表达。
 sealed class TimelinePresentationItem extends ChangeNotifier {
@@ -174,6 +174,21 @@ final class TimelineImageReadGroup extends TimelinePresentationItem {
   TimelinePresentationKind get kind => TimelinePresentationKind.images;
 }
 
+/// 展示工具（`show_image`）的独立图片卡片（design/19 §19.9、design/25 §25.6）。
+///
+/// 卡片只派生展示属性：所属调用、typed 附件与工具参数中的展示文案；图片字节仍由
+/// Thread 附件缓存按身份读取。它不并入普通工具活动组，也不与图片读取组共用摘要，
+/// 每条展示调用各占一张卡片。
+final class TimelineImageCardGroup extends TimelinePresentationItem {
+  TimelineImageCardGroup({
+    required super.id,
+    required super.serial,
+    required super.anchor,
+  });
+  @override
+  TimelinePresentationKind get kind => TimelinePresentationKind.imageCard;
+}
+
 final class TimelineRecoveryGroup extends TimelinePresentationItem {
   TimelineRecoveryGroup({
     required super.id,
@@ -220,6 +235,7 @@ TimelinePresentationKind _kindOf(TimelineMessagePayload payload) {
   if (payload.source is StudioTimelineRecoverySource) {
     return TimelinePresentationKind.recovery;
   }
+  if (_isImageCard(payload)) return TimelinePresentationKind.imageCard;
   return switch (payload.item.state) {
     ThreadThinkingItemStateView() => TimelinePresentationKind.activity,
     ThreadToolItemStateView(:final userInput) when userInput == null =>
@@ -233,6 +249,14 @@ TimelinePresentationKind _kindOf(TimelineMessagePayload payload) {
     _ => TimelinePresentationKind.single,
   };
 }
+
+/// 展示工具按工具身份独立成卡片，先于通用图片附件分类判定。
+///
+/// 判定只读 canonical 工具名，不看返回内容：即使回执里没有图片附件，也仍是一张
+/// 可读的错误态卡片，而不是退回普通工具活动组。
+bool _isImageCard(TimelineMessagePayload payload) =>
+    payload.item.kind == ThreadItemKind.toolCall &&
+    payload.item.tool?.name == 'show_image';
 
 int _compareKeys(TimelineCanonicalKey left, TimelineCanonicalKey right) {
   final order = left.$1.compareTo(right.$1);

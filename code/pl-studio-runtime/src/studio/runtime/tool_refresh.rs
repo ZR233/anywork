@@ -73,10 +73,13 @@ impl CatalogSources {
             StudioProductEventKind::ThreadModeCatalogChanged(value) => {
                 Some(("modes".into(), serde_json::json!(value)))
             }
+            StudioProductEventKind::ModelCatalogStateChanged(value) => Some((
+                "model-catalogs".into(),
+                model_catalog_witness(value.as_ref()),
+            )),
             StudioProductEventKind::ThreadDirectoryChanged(_)
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)
-            | StudioProductEventKind::ModelCatalogStateChanged(_)
             | StudioProductEventKind::RecoveryStateChanged(_)
             | StudioProductEventKind::McpStateChanged(_)
             | StudioProductEventKind::AccountUsageStateChanged(_)
@@ -91,6 +94,42 @@ impl CatalogSources {
             self.0.insert(key, crate::hash::canonical_json_hash(&value));
         }
     }
+}
+
+/// Secret-free identity of one published model directory observation.
+///
+/// The witness carries only directory facts that can change tool availability: account ids, the
+/// effective chat catalog slugs and whether the inventory behind them was replaced. Service-only
+/// slugs stay out of the effective chat catalog, so the inventory success watermark is what moves
+/// when a new observation replaces the cached one. Probe progress, status timestamps and failure
+/// text are excluded: they change without changing any installed tool, and a published directory
+/// that is unchanged must not replan the catalog again. No endpoint, header or credential enters
+/// the witness.
+fn model_catalog_witness(
+    value: &crate::protocol::StudioModelCatalogStateSnapshot,
+) -> serde_json::Value {
+    let accounts = value.state.value().map(|snapshot| {
+        snapshot
+            .accounts
+            .iter()
+            .map(|account| {
+                let mut models = account
+                    .effective_models
+                    .iter()
+                    .map(|model| model.model_id.as_str())
+                    .collect::<Vec<_>>();
+                models.sort_unstable();
+                let facts = serde_json::json!({
+                    "models": models,
+                    "supported": account.model_catalog.supported,
+                    "source": account.model_catalog.source,
+                    "inventorySuccessAt": account.model_catalog.last_success_at,
+                });
+                (account.account_id.clone(), facts)
+            })
+            .collect::<BTreeMap<_, _>>()
+    });
+    serde_json::json!({ "accounts": accounts })
 }
 
 impl StudioRuntime {

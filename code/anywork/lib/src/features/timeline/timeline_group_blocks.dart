@@ -16,6 +16,14 @@ class _TimelinePresentationBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final item = timelinePresentationOf(message);
     if (item == null || item.length == 0) return const SizedBox.shrink();
+    // 展示工具的图片卡片独立占一行：不套可折叠活动组，也不产生组摘要。
+    if (item is TimelineImageCardGroup) {
+      return ValueListenableBuilder<TimelineMessagePayload>(
+        valueListenable: item.member(item.memberIds.first),
+        builder: (context, payload, _) =>
+            _TimelineImageCardBlock(payload: payload),
+      );
+    }
     if (item is TimelineSingleItem) {
       return ValueListenableBuilder<TimelineMessagePayload>(
         valueListenable: item.member(item.memberIds.single),

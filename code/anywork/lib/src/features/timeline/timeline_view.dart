@@ -28,6 +28,7 @@ import 'timeline_wait_blocks.dart';
 part 'timeline_agent_blocks.dart';
 part 'timeline_detail_viewer.dart';
 part 'timeline_image_blocks.dart';
+part 'timeline_image_card.dart';
 part 'timeline_markdown_blocks.dart';
 part 'timeline_message_blocks.dart';
 part 'timeline_group_blocks.dart';
