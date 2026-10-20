@@ -47,7 +47,8 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 等待，不重复启动。GUI ready 后才能交互。若启动迟迟未完成，检查本次进程树及其日志，
 区分构建中、VM Service 未就绪、显示失败与应用异常，不盲目重试。
 
-`tool-scroll` 与 `stress-body` 使用性能分析构建。`tool-scroll --retain-environment` 在场景成功、
+`tool-scroll`、`stress-body` 与 `wait-events` 使用性能分析构建。支持 `--retain-environment` 的场景
+（包括 `tool-scroll`、`wait-events`）在场景成功、
 运行时正常关闭且所属进程回收后，把本次合成环境保留在证据目录中，并写出
 `retained-environment.json`。保留整个环境根，避免配置及工作区里的绝对路径失效；仅复制 home
 不足以重开同一合成会话。随后可构建正式程序，以该文件中的 home 作为进程级 `ANYWORK_HOME`
@@ -80,11 +81,15 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
    `readSnapshot()`、`renderTree()`、`screenshot()`。客户端在 `finally` 中关闭连接。
 2. 从**本次**启动日志取得 VM Service URL。harness 最终日志会脱敏该地址，故需要在运行中
    根据本次子进程/日志定位；不要硬编码端口、PID、临时目录或以广泛扫描他人临时目录代替定位。
+   区分 VM Service 与 DevTools 地址；VM 根路径可能只有 `/`，不能假定总有认证路径。
    不占用项目保留端口 `1420`，不对外暴露调试服务。
 3. 先读当前源码中的 `StudioDriverKeys`、实际控件 key 与快照，再构建 Finder。
    动态 key 可包含 account/profile ID，不能猜测为空或照抄上次 ID。
    Linux 原生环境中普通 tap 的 hit-test 可能超时，项目已有 `rawTap` 扩展会验证目标及
    模态遮挡，应复用该入口而不是屏幕坐标点击；查找超时先核对 key、滚动位置及模态状态。
+   折叠面板只点真实标题行，不点整个展开面板或静态正文的中心；展开后中心可能在空白、
+   屏幕外或裁剪区。存在性、可见几何与标准组件的真实展开态分别核对，不把正文可点击当作
+   成功条件，也不在已经展开时再次点击把它收起。
 4. 临时定向客户端可放在忽略的 `target/gui-acceptance/probe.dart`，无需增加永久测试。
    该位置可通过 `../../code/anywork/test_driver/flutter_driver_session.dart` 导入会话封装。
    从根目录运行（将 `<本次VM_URL>` 替换为实测地址）：
@@ -115,6 +120,9 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
   `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
   `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
   宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
+- 仅连接现有 GUI 的纯 Dart 脚本可使用当前应用的 `--packages=.dart_tool/package_config.json`
+  直接执行，避免为宿主脚本重新构建 Flutter native assets。工具包装可能把非零退出映射成
+  自身失败；同时核对原始 Dart 退出码，不能把 usage 失败误认为导入或编译失败。
 - Driver 的 DTO 列表投影使用显式类型的空集合，避免 `?? const []` 将循环元素降为 dynamic、
   令分析器漏报已删除的 getter。统计等接口须以非空真实记录调用取证，空列表成功不能证明字段迁移完整。
 - 不对聚焦文本框使用「全局动画全部停止」作为编辑完成条件，光标闪烁可以持续产生帧。
@@ -138,6 +146,28 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
   后有界确认结果并记录证据；不得重放批准、提交等副作用，也不得吞掉未达成后置状态的错误。
 - 跨进程阶段使用独立不可覆盖的阶段事实或显式握手，不依赖 latest-stage 的短暂值。用于
   证明无额外请求的观测文件必须传播写失败，不能用陈旧计数制造静默窗口通过。
+- 多 Turn 旅程按本次 canonical callId/itemId 绑定工具与 UI 断言；同名工具可以多次出现，
+  不能用全历史第一个或最后一个同名条目替代精确身份。实时截图前后也须核对活动身份与展开态，
+  不能把旧活动的展开结果算到新活动。
+- 就绪返回中的目标状态是返回时的一致快照；慢速展开或截图之后查询到的当前终态，不能反推
+  等待没有提前返回。按精确 taskId 核对返回快照中的已完成来源与仍运行目标；核心 future 的
+  时序由受控公开 API 测试证明。确需观察短暂实时窗口时，用有所有权、会 join 的只读观察与
+  UI 操作并行，不要求可能合并更新的 GUI topic 暴露每一个中间状态。
+
+## 原生可访问性补验
+
+- 先确认构建模式。profile/AOT 会裁去 Flutter 的诊断属性，不能依靠 render tree 或
+  `getWidgetDiagnostics` 必然读到 `textScaler`、减少动画等值；需要只读 VM evaluate 时使用
+  独立 debug 原生窗口，沿用完整保留的合成环境，不修改生产入口或 SDK。
+- Linux 先核对当前 Flutter engine 的设置来源；写 GTK/GSettings 不自动证明 Flutter 收到了
+  `disableAnimations`。需要 Portal 时复用系统官方 backend，在启动私有 D-Bus **之前**设置
+  独立 XDG/Portal 环境，按已安装版本的正式选择机制启用 backend，再用 Settings.Read 核实。
+  不自造 Portal 服务、不修改用户会话偏好。
+- 临时目录的所有者必须覆盖整个私有 D-Bus 生命周期：先停止并等待自有服务，再退出 bus，
+  最后确认自有挂载已释放并清理目录，避免自动激活的文档/VFS 服务仍持有目录。进程核对使用
+  本次 PID 及启动身份，不按名称全局清理。
+- 活动中的动画观察须先确认目标仍在等待；Thinking、动画结束后的终态或系统偏好配置成功，
+  都不能替代真实等待指示器的减少动画证据。结合原生偏好、实际布局/帧条件及截图判定。
 
 ## 富文本选择与复制回归
 

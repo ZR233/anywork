@@ -175,6 +175,7 @@ ThreadActivityToolEntry _activityToolFromFrb(
     state: _activityToolStateFromFrb(value.state),
     ordinal: value.ordinal?.toInt(),
     startedAt: _frbNullableInt(value.startedAt),
+    wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   );
 }
 
@@ -278,6 +279,7 @@ ThreadActivityToolDetail _activityToolDetailFromFrb(
     output: value.output,
     ordinal: value.ordinal?.toInt(),
     startedAt: _frbNullableInt(value.startedAt),
+    wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   );
 }
 
@@ -359,7 +361,7 @@ ThreadItemStateView _threadItemStateFromFrb(
       content: content,
       lifecycle: _contentLifecycleFromFrb(lifecycle),
     ),
-    tool: (invocation, state, userInput) => ThreadToolItemStateView(
+    tool: (invocation, state, userInput, wait) => ThreadToolItemStateView(
       invocation: ThreadToolInvocationView(
         taskId: invocation.taskId,
         toolCallId: invocation.toolCallId,
@@ -371,6 +373,7 @@ ThreadItemStateView _threadItemStateFromFrb(
       ),
       lifecycle: _toolLifecycleFromFrb(state),
       userInput: userInput == null ? null : _userInputFromFrb(userInput),
+      wait: wait == null ? null : _waitFromFrb(wait),
     ),
     agent: (identity, state) => ThreadAgentItemStateView(
       identity: ThreadAgentIdentityView(
@@ -437,6 +440,53 @@ ThreadItemStateView _threadItemStateFromFrb(
           afterTokens?.toInt(),
           _dateFromUnix(compactedAt),
         ),
+  );
+}
+
+ThreadWaitPresentationView _waitFromFrb(
+  frb_item.BridgeThreadWaitPresentation value,
+) {
+  return ThreadWaitPresentationView(
+    intent: value.intent.when(
+      events: (targets, timeoutMs) => ThreadWaitEventsIntentView(
+        targets: [
+          for (final target in targets)
+            ThreadWaitTargetView(
+              taskId: target.taskId,
+              toolName: target.toolName,
+              summary: target.summary,
+              summaryTruncated: target.summaryTruncated,
+              status: switch (target.status) {
+                frb_item.BridgeThreadWaitTargetStatus.running =>
+                  ThreadWaitTargetStatusView.running,
+                frb_item.BridgeThreadWaitTargetStatus.succeeded =>
+                  ThreadWaitTargetStatusView.succeeded,
+                frb_item.BridgeThreadWaitTargetStatus.failed =>
+                  ThreadWaitTargetStatusView.failed,
+                frb_item.BridgeThreadWaitTargetStatus.cancelled =>
+                  ThreadWaitTargetStatusView.cancelled,
+                frb_item.BridgeThreadWaitTargetStatus.interrupted =>
+                  ThreadWaitTargetStatusView.interrupted,
+                null => null,
+              },
+            ),
+        ],
+        timeoutMs: timeoutMs.toInt(),
+      ),
+      timer: (durationMs) =>
+          ThreadWaitTimerIntentView(durationMs: durationMs.toInt()),
+    ),
+    state: switch (value.state) {
+      frb_item.BridgeThreadWaitState.waiting => ThreadWaitStateView.waiting,
+      frb_item.BridgeThreadWaitState.ready => ThreadWaitStateView.ready,
+      frb_item.BridgeThreadWaitState.timedOut => ThreadWaitStateView.timedOut,
+      frb_item.BridgeThreadWaitState.elapsed => ThreadWaitStateView.elapsed,
+      frb_item.BridgeThreadWaitState.cancelled => ThreadWaitStateView.cancelled,
+      frb_item.BridgeThreadWaitState.failed => ThreadWaitStateView.failed,
+      frb_item.BridgeThreadWaitState.interrupted =>
+        ThreadWaitStateView.interrupted,
+    },
+    messagesReady: value.messagesReady,
   );
 }
 

@@ -88,7 +88,7 @@ impl ThreadBuiltin {
             ),
             Self::Task(TaskControlKind::Wait) => schema::<crate::task_control::WaitTasksInput>(
                 "wait",
-                "Call wait ALONE in a model response. For a tool use its exact receipt taskId: {\"taskIds\":[\"task:call-id\"]}. For child notifications use {\"taskIds\":[],\"timeoutMs\":300000}, the full child Turn report arrives in your next model context. Match its childId, turn and input identity; decide whether to continue or accept the work. Never put agentId or callId in taskIds. Returns readiness; completed background results arrive with the next model step.",
+                "Call wait ALONE in a model response. Observe exact receipt taskIds (including sleep timers): {\"taskIds\":[\"task:call-id\"]}. Any selected terminal task OR new Thread message returns first, not all tasks; already-ready events return immediately. Empty taskIds wait only for messages, including child reports: {\"taskIds\":[],\"timeoutMs\":300000}. Returns readiness without consuming results; full background results and child Turn reports arrive in your next model context. Match childId, turn and input identity before accepting child work. Never put agentId or bare callId in taskIds. Timeout or cancelling wait does not cancel the selected tasks.",
             ),
             Self::Task(TaskControlKind::Query) => schema::<crate::task_control::QueryTaskInput>(
                 "get_tool_task",

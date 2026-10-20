@@ -3,6 +3,7 @@ mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
 mod shutdown;
+mod wait_events;
 mod web_search;
 mod websocket_recovery;
 
@@ -41,7 +42,8 @@ pub(crate) struct ManualGuiOptions {
     /// `stress-body-large`), isolated call-statistics, realtime, paused
     /// history-writer, history-fault retry/resume, plan shutdown/restart
     /// recovery (`plan-recovery`), or the 30-second application shutdown
-    /// acceptance journey (`shutdown`).
+    /// acceptance journey (`shutdown`), or the wait/sleep/child observation
+    /// journey (`wait-events`).
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -665,9 +667,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "tool-scroll"
                     | "timeline-history"
                     | "stress-body-large"
+                    | "wait-events"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history and stress-body-large"
+         timeline-history, stress-body-large and wait-events"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
@@ -752,6 +755,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "provider-usage"
             | "shutdown"
             | "timeline-history"
+            | "wait-events"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
     {
@@ -1075,6 +1079,27 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
+    }
+
+    if options.scenario == "wait-events" {
+        let project = working.path().join("wait-events-project");
+        let result = wait_events::run(
+            &wait_events::WaitEventsScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
     }
 
     if matches!(

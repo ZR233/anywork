@@ -110,7 +110,11 @@ pub(super) fn project_repaired_tool_call(
         saved.revision,
         saved.created_at,
         updated_at,
-        ThreadItemState::Tool(ThreadToolItem::new(tool.invocation().clone(), state)),
+        ThreadItemState::Tool(
+            ThreadToolItem::new(tool.invocation().clone(), state)
+                .with_user_input(tool.user_input().cloned())
+                .with_wait(tool.wait().cloned()),
+        ),
     )])
 }
 
@@ -205,6 +209,12 @@ fn project_invocation(
     if let Some(task) = task {
         invocation = invocation.with_task_id(task.id.clone());
     }
+    let wait = super::wait::project_wait(
+        Some(snapshot),
+        invocation.name(),
+        invocation.arguments(),
+        &state,
+    );
     items.push(ThreadItem::new(
         super::order::tool_id(&id),
         thread_id.into(),
@@ -213,7 +223,7 @@ fn project_invocation(
         revision,
         created_at,
         updated_at,
-        ThreadItemState::Tool(ThreadToolItem::new(invocation, state)),
+        ThreadItemState::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
     ));
     Ok(items)
 }

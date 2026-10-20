@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::UserQuestion;
 
+use super::ThreadWaitPresentation;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadToolItem {
@@ -14,6 +16,9 @@ pub struct ThreadToolItem {
     /// question tool and the `plan_submit` call's Plan confirmation share this one structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user_input: Option<ThreadToolUserInput>,
+    /// Typed wait/sleep presentation derived from canonical parameters, tasks and results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wait: Option<Box<ThreadWaitPresentation>>,
 }
 
 impl ThreadToolItem {
@@ -22,12 +27,19 @@ impl ThreadToolItem {
             invocation,
             state,
             user_input: None,
+            wait: None,
         }
     }
 
     /// Attaches (or clears) the Q&A history projection without touching the call's own state.
     pub fn with_user_input(mut self, user_input: Option<ThreadToolUserInput>) -> Self {
         self.user_input = user_input;
+        self
+    }
+
+    /// Attaches (or clears) the wait presentation without touching the call's own state.
+    pub fn with_wait(mut self, wait: Option<ThreadWaitPresentation>) -> Self {
+        self.wait = wait.map(Box::new);
         self
     }
 
@@ -41,6 +53,10 @@ impl ThreadToolItem {
 
     pub fn user_input(&self) -> Option<&ThreadToolUserInput> {
         self.user_input.as_ref()
+    }
+
+    pub fn wait(&self) -> Option<&ThreadWaitPresentation> {
+        self.wait.as_deref()
     }
 
     pub fn terminal_output(&self) -> Option<&ThreadToolOutput> {

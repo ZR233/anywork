@@ -1,5 +1,6 @@
 import 'studio_enums.dart';
 import 'thread_models.dart';
+import 'thread_wait_models.dart';
 
 part 'timeline_todo.dart';
 
@@ -39,6 +40,7 @@ class TimelineToolPart {
     this.denialReason,
     this.taskId,
     this.userInput,
+    this.wait,
   });
 
   final String toolCallId;
@@ -58,6 +60,9 @@ class TimelineToolPart {
   /// 这条调用携带的普通问答历史；它让问答回执按工具条目独立成行而不解析工具载荷。
   final ThreadToolUserInputView? userInput;
 
+  /// Typed wait/sleep presentation; feature UI consumes this instead of parsing arguments.
+  final ThreadWaitPresentationView? wait;
+
   TimelineToolPart copyWith({String? arguments, String? result}) {
     return TimelineToolPart(
       toolCallId: toolCallId,
@@ -74,6 +79,7 @@ class TimelineToolPart {
       denialReason: denialReason,
       taskId: taskId,
       userInput: userInput,
+      wait: wait,
     );
   }
 }

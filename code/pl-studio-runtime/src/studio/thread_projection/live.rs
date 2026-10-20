@@ -372,7 +372,27 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
     if let Some(user_input) = tool.user_input() {
         bytes = bytes.saturating_add(user_input_bytes(user_input));
     }
+    if let Some(wait) = tool.wait() {
+        bytes = bytes.saturating_add(wait_bytes(wait));
+    }
     bytes
+}
+
+fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
+    match wait.intent() {
+        pl_protocol::ThreadWaitIntent::Events { targets, .. } => {
+            targets
+                .iter()
+                .fold(RETAINED_ENTRY_OVERHEAD, |total, target| {
+                    total
+                        .saturating_add(target.task_id().len() as u64)
+                        .saturating_add(optional_bytes(target.tool_name()))
+                        .saturating_add(optional_bytes(target.summary()))
+                        .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                })
+        }
+        pl_protocol::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
+    }
 }
 
 /// Questions and accepted answers of one user-input history projection.

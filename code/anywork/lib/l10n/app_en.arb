@@ -1808,5 +1808,52 @@
   "accountProtocolZhipu": "Zhipu",
   "accountProtocolMiMo": "MiMo",
   "accountProtocolXai": "xAI",
-  "accountProtocolCustom": "Custom (OpenAI compatible)"
+  "accountProtocolCustom": "Custom (OpenAI compatible)",
+  "timelineWaitToolsTitle": "Waiting for tools",
+  "timelineWaitMessagesTitle": "Waiting for a subagent or new message",
+  "timelineWaitTimerTitle": "Timer",
+  "timelineWaitTimerElapsed": "Timer elapsed",
+  "timelineWaitReady": "A waited source is ready",
+  "timelineWaitMessagesReady": "A new message arrived",
+  "timelineWaitTimedOut": "Wait timed out",
+  "timelineWaitCancelled": "Wait cancelled",
+  "timelineWaitFailed": "Wait failed",
+  "timelineWaitInterrupted": "Wait interrupted",
+  "timelineWaitTargetCount": "{count, plural, =1{1 task} other{{count} tasks}}",
+  "@timelineWaitTargetCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineWaitMessageSource": "New messages",
+  "timelineWaitMaxDuration": "up to {duration}",
+  "@timelineWaitMaxDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitTimerDuration": "{duration}",
+  "@timelineWaitTimerDuration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineWaitMessagesMayWake": "A new message can wake this wait early",
+  "timelineWaitAnyReadyRule": "Returns when any selected task or a new message is ready",
+  "timelineWaitDiagnostics": "Diagnostics",
+  "timelineWaitUnknownStatus": "Unknown",
+  "timelineWaitStatusRunning": "Running",
+  "timelineWaitStatusSucceeded": "Succeeded",
+  "timelineWaitStatusFailed": "Failed",
+  "timelineWaitStatusCancelled": "Cancelled",
+  "timelineWaitStatusInterrupted": "Interrupted",
+  "conversationActivityWaitingTools": "Waiting for tools",
+  "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
+  "conversationActivityWaitingTimer": "Timer"
 }

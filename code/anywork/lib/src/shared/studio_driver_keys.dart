@@ -475,6 +475,14 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> timelineUserInputAnswer(String id, int index) =>
       ValueKey<String>('timeline-user-input-answer-$id-$index');
 
+  /// Wait/sleep card, expanded details and secondary diagnostics.
+  static ValueKey<String> waitingCard(String itemId) =>
+      ValueKey<String>('wait-card:$itemId');
+  static ValueKey<String> waitingDetails(String itemId) =>
+      ValueKey<String>('wait-details:$itemId');
+  static ValueKey<String> waitingDiagnostics(String itemId) =>
+      ValueKey<String>('wait-diagnostics:$itemId');
+
   static ValueKey<String> viewImageTool(String callId) =>
       ValueKey<String>('view-image-tool-$callId');
 

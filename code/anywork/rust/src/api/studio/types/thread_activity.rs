@@ -58,6 +58,7 @@ pub struct BridgeThreadActivityToolEntry {
     pub state: BridgeThreadActivityToolState,
     pub ordinal: Option<u64>,
     pub started_at: Option<i64>,
+    pub wait: Option<super::BridgeThreadWaitPresentation>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +92,7 @@ pub struct BridgeThreadActivityToolDetail {
     pub output: Option<String>,
     pub ordinal: Option<u64>,
     pub started_at: Option<i64>,
+    pub wait: Option<super::BridgeThreadWaitPresentation>,
 }
 
 /// 活动详情的生命周期结果：只有 `Current` 携带正文。

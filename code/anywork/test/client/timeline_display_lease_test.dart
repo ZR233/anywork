@@ -13,11 +13,12 @@ void main() {
     String body = 'body',
     bool saved = false,
     StudioTimelineLifecycle lifecycle = StudioTimelineLifecycle.streaming,
+    String turnId = 'turn',
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
       threadId: 'thread',
-      turnId: 'turn',
+      turnId: turnId,
       ordinal: revision,
       revision: revision,
       createdAt: DateTime.utc(2026),
@@ -286,16 +287,94 @@ void main() {
     expect(first.controller, isA<InMemoryChatController>());
   });
 
+  StudioTimelineItem waitCall(
+    String id,
+    int order, {
+    String turnId = 'turn',
+    ThreadWaitStateView state = ThreadWaitStateView.waiting,
+    ThreadToolLifecycleView? lifecycle,
+    StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: turnId,
+      ordinal: order,
+      revision: 1,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'wait',
+          arguments: '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
+        ),
+        lifecycle: lifecycle ?? const RunningThreadToolView(''),
+        wait: ThreadWaitPresentationView(
+          intent: ThreadWaitEventsIntentView(
+            targets: [
+              ThreadWaitTargetView(
+                taskId: 'task:exec-1',
+                toolName: 'exec',
+                summary: 'cargo test',
+                status: ThreadWaitTargetStatusView.running,
+              ),
+            ],
+            timeoutMs: 60000,
+          ),
+          state: state,
+        ),
+      ),
+    ),
+    saved: false,
+    lifecycle: itemLifecycle,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  StudioTimelineItem sleepCall(
+    String id,
+    int order, {
+    String turnId = 'turn',
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: turnId,
+      ordinal: order,
+      revision: 1,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'sleep',
+          arguments: '{"durationMs":3000}',
+        ),
+        lifecycle: const RunningThreadToolView(''),
+        wait: const ThreadWaitPresentationView(
+          intent: ThreadWaitTimerIntentView(durationMs: 3000),
+          state: ThreadWaitStateView.waiting,
+        ),
+      ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
   StudioTimelineItem activity(
     String id,
     int order, {
     String? toolName,
     int revision = 1,
+    String turnId = 'turn',
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
       threadId: 'thread',
-      turnId: 'turn',
+      turnId: turnId,
       ordinal: order,
       revision: revision,
       createdAt: DateTime.utc(2026),
@@ -320,6 +399,85 @@ void main() {
     omittedBytes: 0,
     details: const [],
   );
+
+  StudioTimelineItem userInputCall(String id, int order) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: order,
+      revision: 1,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'ask_user',
+          arguments: '{}',
+        ),
+        lifecycle: const RunningThreadToolView(''),
+        userInput: ThreadToolUserInputView(
+          interactionId: 'ask-$id',
+          questions: const [
+            UserQuestionView(
+              id: 'q1',
+              header: 'Pick one',
+              question: 'Which option should the agent use?',
+              isOther: false,
+              isSecret: false,
+              options: [
+                UserQuestionOptionView(label: 'A', description: 'first option'),
+              ],
+            ),
+          ],
+          state: const PendingThreadToolUserInputView(),
+        ),
+      ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  StudioTimelineItem planReceiptCall(String id, int order) =>
+      StudioTimelineItem(
+        item: ThreadItemView(
+          id: id,
+          threadId: 'thread',
+          turnId: 'turn',
+          ordinal: order,
+          revision: 1,
+          createdAt: DateTime.utc(2026),
+          updatedAt: DateTime.utc(2026),
+          state: ThreadToolItemStateView(
+            invocation: ThreadToolInvocationView(
+              toolCallId: id,
+              name: 'confirm_plan',
+              arguments: '{}',
+            ),
+            lifecycle: const RunningThreadToolView(''),
+            userInput: ThreadToolUserInputView(
+              interactionId: 'plan-$id',
+              questions: const [
+                UserQuestionView(
+                  id: agentSessionPlanConfirmationQuestionId,
+                  header: 'Plan',
+                  question: '# Plan title\n\n- step one',
+                  isOther: false,
+                  isSecret: false,
+                  options: [],
+                ),
+              ],
+              state: const PendingThreadToolUserInputView(),
+            ),
+          ),
+        ),
+        saved: false,
+        lifecycle: StudioTimelineLifecycle.streaming,
+        omittedBytes: 0,
+        details: const [],
+      );
 
   test(
     'consecutive thoughts/tools and image reads become separate custom items',
@@ -352,6 +510,233 @@ void main() {
       );
     },
   );
+
+  test('typed wait/sleep join the adjacent thought/tool activity group', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          activity('command', 2, toolName: 'run_command'),
+          waitCall('wait-1', 3),
+          activity('later', 4, toolName: 'run_command'),
+          sleepCall('sleep-1', 5),
+          activity('after-sleep', 6),
+        ],
+      ),
+    );
+    final groups = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    expect(groups, hasLength(1));
+    final group = groups.single!;
+    expect(group.kind, TimelinePresentationKind.activity);
+    expect(group.memberIds, [
+      'thinking',
+      'command',
+      'wait-1',
+      'later',
+      'sleep-1',
+      'after-sleep',
+    ]);
+    expect(group.id, isNot('wait-1'));
+    expect(group.id, isNot('sleep-1'));
+    expect(group.id, startsWith('presentation:'));
+    final wait = group.payload('wait-1')!.item.tool!.wait!;
+    expect(wait.state, ThreadWaitStateView.waiting);
+    expect(wait.intent, isA<ThreadWaitEventsIntentView>());
+    final waitIntent = wait.intent as ThreadWaitEventsIntentView;
+    expect(waitIntent.targets.single.taskId, 'task:exec-1');
+    expect(waitIntent.targets.single.toolName, 'exec');
+    expect(waitIntent.timeoutMs, 60000);
+    final sleep = group.payload('sleep-1')!.item.tool!.wait!;
+    expect(sleep.state, ThreadWaitStateView.waiting);
+    expect(sleep.intent, isA<ThreadWaitTimerIntentView>());
+    expect((sleep.intent as ThreadWaitTimerIntentView).durationMs, 3000);
+  });
+
+  test(
+    'a lone wait still uses an activity container rather than a single card',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [waitCall('wait-only', 1)],
+        ),
+      );
+      final group = timelinePresentationOf(display.controller.messages.single)!;
+      expect(group.kind, TimelinePresentationKind.activity);
+      expect(group.memberIds, ['wait-only']);
+      expect(group.id, isNot('wait-only'));
+      expect(group.payload('wait-only')!.item.tool?.wait, isNotNull);
+    },
+  );
+
+  test('paging joins an older wait into the live activity group without resetting expansion', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        items: [activity('command', 30, toolName: 'run_command')],
+        before: 'older',
+        hasOlder: true,
+      ),
+    );
+    final original = timelinePresentationOf(
+      display.controller.messages.single,
+    )!;
+    original.setExpanded(true);
+    expect(
+      display.prependOlder(
+        StudioTimelinePage(
+          items: [activity('thinking', 10), waitCall('wait-older', 20)],
+          before: null,
+          hasOlder: false,
+        ),
+      ),
+      2,
+    );
+    expect(display.controller.messages, hasLength(1));
+    expect(display.controller.messages.single.id, original.id);
+    expect(original.kind, TimelinePresentationKind.activity);
+    expect(original.memberIds, ['thinking', 'wait-older', 'command']);
+    expect(original.expanded, isTrue);
+    expect(
+      original.payload('wait-older')!.item.tool!.wait!.state,
+      ThreadWaitStateView.waiting,
+    );
+  });
+
+  test(
+    'wait terminal updates keep group identity, expansion and typed wait facts',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [
+            activity('thinking', 1),
+            waitCall('wait-1', 2),
+            activity('command', 3, toolName: 'run_command'),
+          ],
+        ),
+      );
+      final group = timelinePresentationOf(display.controller.messages.single)!;
+      group.setExpanded(true);
+      final groupId = group.id;
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'sub',
+            from: 1,
+            to: 2,
+            priority: StudioTimelinePriority.immediate,
+            changes: [
+              StudioTimelineAdd(
+                waitCall(
+                  'wait-1',
+                  2,
+                  state: ThreadWaitStateView.ready,
+                  lifecycle: SucceededThreadToolView(
+                    DateTime.utc(2026),
+                    const ThreadToolOutputView(
+                      result: '{"tasks":[{"taskId":"task:exec-1","status":"succeeded"}],"timedOut":false}',
+                      attachments: [],
+                      outputArtifacts: [],
+                    ),
+                  ),
+                  itemLifecycle: StudioTimelineLifecycle.terminal,
+                ),
+              ),
+            ],
+          ),
+        ),
+        isTrue,
+      );
+      expect(display.controller.messages, hasLength(1));
+      expect(display.presentationFor('wait-1'), same(group));
+      expect(group.id, groupId);
+      expect(group.expanded, isTrue);
+      expect(group.memberIds, ['thinking', 'wait-1', 'command']);
+      final wait = group.payload('wait-1')!.item.tool!.wait!;
+      expect(wait.state, ThreadWaitStateView.ready);
+      expect(group.payload('wait-1')!.terminal, isTrue);
+      expect(
+        group.payload('wait-1')!.item.tool!.result,
+        contains('task:exec-1'),
+      );
+    },
+  );
+
+  test('bodies, userInput, plan receipts and real different turns still split wait groups', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          waitCall('wait-1', 2),
+          item('answer', 3),
+          activity('next-thinking', 4),
+          waitCall('wait-2', 5),
+          userInputCall('ask-1', 6),
+          activity('after-ask', 7, toolName: 'run_command'),
+          planReceiptCall('plan-1', 8),
+          activity('turn-b-thinking', 9, turnId: 'turn-b'),
+          waitCall('wait-turn-b', 10, turnId: 'turn-b'),
+        ],
+      ),
+    );
+    final groups = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    expect(groups.map((g) => g!.kind).toList(), [
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+      TimelinePresentationKind.activity,
+    ]);
+    expect(groups.map((g) => g!.memberIds).toList(), [
+      ['thinking', 'wait-1'],
+      ['answer'],
+      ['next-thinking', 'wait-2'],
+      ['ask-1'],
+      ['after-ask'],
+      ['plan-1'],
+      ['turn-b-thinking', 'wait-turn-b'],
+    ]);
+    expect(groups[0]!.payload('wait-1')!.item.tool?.wait, isNotNull);
+    expect(groups[2]!.payload('wait-2')!.item.tool?.wait, isNotNull);
+    expect(groups[3]!.kind, TimelinePresentationKind.single);
+    expect(groups[3]!.id, 'ask-1');
+    expect(groups[5]!.kind, TimelinePresentationKind.single);
+    expect(groups[5]!.id, 'plan-1');
+    expect(groups[6]!.first.item.turnId, 'turn-b');
+    expect(groups[0]!.first.item.turnId, 'turn');
+  });
 
   test('retry and result records of one attempt share one GUI item', () {
     StudioTimelineItem recovery(

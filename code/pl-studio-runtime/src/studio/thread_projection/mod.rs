@@ -34,6 +34,7 @@ mod responses;
 mod tools;
 mod turns;
 mod user_input;
+mod wait;
 pub(in crate::studio) use turns::project_active_turn;
 pub(in crate::studio) use user_input::{
     attach as attach_tool_user_input, project_user_input as project_tool_user_input,

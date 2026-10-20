@@ -6437,6 +6437,162 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom (OpenAI compatible)'**
   String get accountProtocolCustom;
+
+  /// No description provided for @timelineWaitToolsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for tools'**
+  String get timelineWaitToolsTitle;
+
+  /// No description provided for @timelineWaitMessagesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for a subagent or new message'**
+  String get timelineWaitMessagesTitle;
+
+  /// No description provided for @timelineWaitTimerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer'**
+  String get timelineWaitTimerTitle;
+
+  /// No description provided for @timelineWaitTimerElapsed.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer elapsed'**
+  String get timelineWaitTimerElapsed;
+
+  /// No description provided for @timelineWaitReady.
+  ///
+  /// In en, this message translates to:
+  /// **'A waited source is ready'**
+  String get timelineWaitReady;
+
+  /// No description provided for @timelineWaitMessagesReady.
+  ///
+  /// In en, this message translates to:
+  /// **'A new message arrived'**
+  String get timelineWaitMessagesReady;
+
+  /// No description provided for @timelineWaitTimedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait timed out'**
+  String get timelineWaitTimedOut;
+
+  /// No description provided for @timelineWaitCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait cancelled'**
+  String get timelineWaitCancelled;
+
+  /// No description provided for @timelineWaitFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait failed'**
+  String get timelineWaitFailed;
+
+  /// No description provided for @timelineWaitInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait interrupted'**
+  String get timelineWaitInterrupted;
+
+  /// No description provided for @timelineWaitTargetCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 task} other{{count} tasks}}'**
+  String timelineWaitTargetCount(int count);
+
+  /// No description provided for @timelineWaitMessageSource.
+  ///
+  /// In en, this message translates to:
+  /// **'New messages'**
+  String get timelineWaitMessageSource;
+
+  /// No description provided for @timelineWaitMaxDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'up to {duration}'**
+  String timelineWaitMaxDuration(String duration);
+
+  /// No description provided for @timelineWaitTimerDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'{duration}'**
+  String timelineWaitTimerDuration(String duration);
+
+  /// No description provided for @timelineWaitMessagesMayWake.
+  ///
+  /// In en, this message translates to:
+  /// **'A new message can wake this wait early'**
+  String get timelineWaitMessagesMayWake;
+
+  /// No description provided for @timelineWaitAnyReadyRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Returns when any selected task or a new message is ready'**
+  String get timelineWaitAnyReadyRule;
+
+  /// No description provided for @timelineWaitDiagnostics.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostics'**
+  String get timelineWaitDiagnostics;
+
+  /// No description provided for @timelineWaitUnknownStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get timelineWaitUnknownStatus;
+
+  /// No description provided for @timelineWaitStatusRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get timelineWaitStatusRunning;
+
+  /// No description provided for @timelineWaitStatusSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Succeeded'**
+  String get timelineWaitStatusSucceeded;
+
+  /// No description provided for @timelineWaitStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get timelineWaitStatusFailed;
+
+  /// No description provided for @timelineWaitStatusCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get timelineWaitStatusCancelled;
+
+  /// No description provided for @timelineWaitStatusInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted'**
+  String get timelineWaitStatusInterrupted;
+
+  /// No description provided for @conversationActivityWaitingTools.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for tools'**
+  String get conversationActivityWaitingTools;
+
+  /// No description provided for @conversationActivityWaitingMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for a subagent or new message'**
+  String get conversationActivityWaitingMessages;
+
+  /// No description provided for @conversationActivityWaitingTimer.
+  ///
+  /// In en, this message translates to:
+  /// **'Timer'**
+  String get conversationActivityWaitingTimer;
 }
 
 class _AppLocalizationsDelegate

@@ -186,7 +186,8 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
                 clear_arguments(tool.invocation()),
                 clear_terminal_output(&clear_streamed_output(tool.state())),
             )
-            .with_user_input(tool.user_input().map(clear_user_input)),
+            .with_user_input(tool.user_input().map(clear_user_input))
+            .with_wait(tool.wait().cloned()),
         ),
         ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
             payloads: raw
@@ -233,7 +234,8 @@ pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
                     fill_arguments(tool.invocation(), arguments),
                     fill_streamed_output(&state, &output),
                 )
-                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item))),
+                .with_user_input(tool.user_input().map(|input| fill_user_input(input, item)))
+                .with_wait(tool.wait().cloned()),
             )
         }
         ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
