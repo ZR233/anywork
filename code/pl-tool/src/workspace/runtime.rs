@@ -69,6 +69,13 @@ impl ToolWorkspace {
                 }
             }
         }
+        match self.workspace.session_files() {
+            None => part(b"no-session-files"),
+            Some(files) => {
+                part(b"session-files");
+                part(files.thread_key().as_bytes());
+            }
+        }
         pl_core::tool::opaque::ToolAuthorization::new(format!(
             "pl.workspace:{}",
             hex::encode(hash.finalize())

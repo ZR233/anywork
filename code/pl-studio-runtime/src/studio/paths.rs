@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 
 use crate::config::STUDIO_CONFIG_DIR_NAME;
@@ -15,10 +15,18 @@ const CALLS_FILE_NAME: &str = "calls.sqlite";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
 const CATALOG_FILE_NAME: &str = "catalog.toml";
+const PROJECTS_DIR_NAME: &str = "projects";
 const SESSIONS_DIR_NAME: &str = "sessions";
 const CALLS_DIR_NAME: &str = "calls";
 const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
+const HISTORY_FILE_NAME: &str = "history.sqlite";
+const ATTACHMENTS_FILE_NAME: &str = "attachments.toml";
+const BLOBS_DIR_NAME: &str = "blobs";
+const RESOURCES_DIR_NAME: &str = "thread-resources";
+const SCRATCH_DIR_NAME: &str = "scratch";
+const PROJECT_MANIFEST_FILE_NAME: &str = "project.toml";
+const SESSION_MANIFEST_FILE_NAME: &str = "session.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StudioPaths {
@@ -90,9 +98,16 @@ impl StudioPaths {
         crate::config::ConfigPaths::from_config_dir(self.home.clone())
     }
 
-    /// Root of per-Thread session directories; one child owns `state.toml`, `history.sqlite` and
-    /// `blobs`. Startup loads the directory listing only; individual Threads activate lazily.
-    pub fn sessions_dir(&self) -> PathBuf {
+    /// Canonical project roots: `v2/projects/<project-key>/`.
+    pub fn projects_dir(&self) -> PathBuf {
+        self.versioned_home().join(PROJECTS_DIR_NAME)
+    }
+
+    /// Pre-layout-migration session root: `v2/sessions/<thread-key>/`.
+    ///
+    /// Normal reads never create this directory. Migration consumes it and leaves unknown
+    /// orphans in place.
+    pub fn legacy_sessions_dir(&self) -> PathBuf {
         self.versioned_home().join(SESSIONS_DIR_NAME)
     }
 
@@ -117,20 +132,35 @@ impl StudioPaths {
         self.data_dir.join(ATTACHMENT_DRAFTS_DIR_NAME)
     }
 
-    /// Stable on-disk directory for one Thread session.
-    ///
-    /// The layout and normal store must agree on this mapping.
-    pub fn thread_storage_dir(&self, thread_id: &str) -> PathBuf {
-        self.sessions_dir().join(thread_storage_key(thread_id))
+    /// Stable on-disk directory for one Project.
+    pub fn project_dir(&self, project_id: &str) -> Result<PathBuf> {
+        Ok(self
+            .projects_dir()
+            .join(storage_key(project_id, "Project")?))
     }
 
-    /// Content-addressed blob root for one Thread session.
+    /// Versioned project identity manifest.
+    pub fn project_manifest(&self, project_id: &str) -> Result<PathBuf> {
+        Ok(self
+            .project_dir(project_id)?
+            .join(PROJECT_MANIFEST_FILE_NAME))
+    }
+
+    /// Typed session paths from an explicit Project and Thread identity.
     ///
-    /// Keeps attachments under the owning session root
-    /// (`sessions/<storage-key>/blobs`, `design/17` §17.1); every consumer resolves it here so the
-    /// attachment catalog path and the blob path can never diverge.
-    pub fn thread_blobs_dir(&self, thread_id: &str) -> PathBuf {
-        self.thread_storage_dir(thread_id).join("blobs")
+    /// Unknown Threads must not be resolved by guessing a default Project. Callers that already
+    /// hold both identities (child prepare, writer, tests) use this entry; registered Threads go
+    /// through [`StudioStore::registered_session_paths`](crate::studio::store::StudioStore::registered_session_paths).
+    pub fn session_paths(&self, project_id: &str, thread_id: &str) -> Result<SessionPaths> {
+        SessionPaths::bind(self, project_id, thread_id)
+    }
+
+    /// Legacy flat session directory for one Thread key. Used by layout migration tests.
+    #[cfg(test)]
+    pub fn legacy_thread_dir(&self, thread_id: &str) -> Result<PathBuf> {
+        Ok(self
+            .legacy_sessions_dir()
+            .join(storage_key(thread_id, "Thread")?))
     }
 
     fn versioned_home(&self) -> PathBuf {
@@ -138,9 +168,81 @@ impl StudioPaths {
     }
 }
 
+/// Bound host paths for one Project + Thread pair.
+///
+/// The layout is
+/// `v2/projects/<sha256(project_id)>/sessions/<sha256(thread_id)>/`.
+/// Keys are stable identity digests, never path, alias, or display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPaths {
+    project_id: String,
+    thread_id: String,
+    root: PathBuf,
+}
+
+impl SessionPaths {
+    fn bind(paths: &StudioPaths, project_id: &str, thread_id: &str) -> Result<Self> {
+        let project_key = storage_key(project_id, "Project")?;
+        let thread_key = storage_key(thread_id, "Thread")?;
+        Ok(Self {
+            project_id: project_id.to_owned(),
+            thread_id: thread_id.to_owned(),
+            root: paths
+                .projects_dir()
+                .join(project_key)
+                .join(SESSIONS_DIR_NAME)
+                .join(thread_key),
+        })
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn history_database(&self) -> PathBuf {
+        self.root.join(HISTORY_FILE_NAME)
+    }
+
+    pub fn attachments_catalog(&self) -> PathBuf {
+        self.root.join(ATTACHMENTS_FILE_NAME)
+    }
+
+    pub fn blobs_dir(&self) -> PathBuf {
+        self.root.join(BLOBS_DIR_NAME)
+    }
+
+    pub fn resources_dir(&self) -> PathBuf {
+        self.root.join(RESOURCES_DIR_NAME)
+    }
+
+    /// Host-owned transfer scratch. Execution scratch lives in the workspace, not here.
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.root.join(SCRATCH_DIR_NAME)
+    }
+
+    pub fn session_manifest(&self) -> PathBuf {
+        self.root.join(SESSION_MANIFEST_FILE_NAME)
+    }
+}
+
+/// Stable on-disk key for a Project or Thread directory.
+pub fn storage_key(id: &str, kind: &str) -> Result<String> {
+    ensure!(!id.is_empty(), "{kind} identity must not be empty");
+    Ok(hex::encode(Sha256::digest(id.as_bytes())))
+}
+
 /// Stable on-disk key for a Thread session directory.
-pub fn thread_storage_key(thread_id: &str) -> String {
-    hex::encode(Sha256::digest(thread_id.as_bytes()))
+#[cfg(test)]
+pub fn thread_storage_key(thread_id: &str) -> Result<String> {
+    storage_key(thread_id, "Thread")
 }
 
 pub fn default_db_path() -> Result<PathBuf> {
@@ -196,4 +298,23 @@ fn sqlite_url_with_mode(path: &Path, mode: &str) -> String {
         .unwrap_or_else(|| path.into_owned())
         .replace('\\', "/");
     format!("sqlite://{path}?mode={mode}")
+}
+
+pub(crate) fn posix_relative(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                let part = part.to_str().context("path component is not UTF-8")?;
+                ensure!(
+                    part != "." && part != ".." && !part.contains('/'),
+                    "unsafe relative path component"
+                );
+                parts.push(part);
+            }
+            _ => bail!("attachment path must be a safe session-relative reference"),
+        }
+    }
+    ensure!(!parts.is_empty(), "attachment path must not be empty");
+    Ok(parts.join("/"))
 }

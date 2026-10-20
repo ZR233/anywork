@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use super::termination::terminate_process_tree;
 #[cfg(target_os = "linux")]
 use super::worker::LocalWorkerExecutable;
-use crate::workspace::ToolPathPolicy;
+use crate::workspace::{SessionFiles, ToolPathPolicy};
 #[cfg(not(target_os = "linux"))]
 use pl_remote_helper::process::wrap_background_command;
 
@@ -229,12 +229,11 @@ impl CommandOutputTarget {
 }
 
 /// 计算模型可读取的统一命令完整输出路径。
+///
+/// `session_id` 必须是原始 Thread 身份。`tool_id` 是该次调用的物理 call key
+///（通常为 `task-{sha256}`）。路径由 [`SessionFiles`] 单点派生，不再写入 `target/pure/`。
 pub fn command_output_model_path(session_id: &str, tool_id: &str) -> PathBuf {
-    PathBuf::from("target")
-        .join("pure")
-        .join(safe_path_component(session_id, "session"))
-        .join(safe_path_component(tool_id, "tool"))
-        .join("output.log")
+    SessionFiles::new(session_id).command_output(tool_id)
 }
 
 /// stdout/stderr 的累计原始字节数。
@@ -615,14 +614,9 @@ impl CommandBackend for LocalCommandBackend {
                 ),
             ));
         }
-        if let Some(parent) = target.capture_file().parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                command_error(
-                    "exec",
-                    format!("failed to create output directory: {error}"),
-                )
-            })?;
-        }
+        prepare_local_capture_layout(&self.workspace_root, target.model_file())
+            .await
+            .map_err(|error| command_error("exec", error))?;
         tokio::fs::write(target.capture_file(), header.as_bytes())
             .await
             .map_err(|error| {
@@ -784,21 +778,12 @@ async fn confirmed_capture_len(file: &tokio::fs::File) -> Result<u64> {
     Ok(metadata.len())
 }
 
-fn safe_path_component(value: &str, fallback: &str) -> String {
-    let value = value
-        .chars()
-        .take(128)
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if value.is_empty() || matches!(value.as_str(), "." | "..") {
-        fallback.to_string()
-    } else {
-        value
-    }
+async fn prepare_local_capture_layout(
+    workspace_root: &std::path::Path,
+    model_file: &std::path::Path,
+) -> Result<()> {
+    let backend =
+        crate::workspace_file::LocalWorkspaceFileBackend::new(workspace_root.to_path_buf(), false)
+            .await?;
+    crate::workspace::prepare_command_capture(&backend, model_file).await
 }

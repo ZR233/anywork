@@ -194,6 +194,21 @@ impl StudioStore {
             attachment_lock: Default::default(),
             paths,
         };
+        if let Err(error) = super::session_layout::migrate_flat_sessions(
+            &store.paths,
+            &store.catalog,
+            &store.workspaces,
+        )
+        .await
+        {
+            let close = store.close().await;
+            return Err(match close {
+                Ok(()) => error,
+                Err(close_error) => {
+                    crate::studio::startup::cleanup_error(close_error).context(error)
+                }
+            });
+        }
         Ok(store)
     }
 
@@ -286,7 +301,8 @@ pub(in crate::studio) struct ProjectRow {
 /// Classifies the resolved Studio home before any store-owned file is created.
 async fn detect_installation(paths: &StudioPaths) -> Result<InstallationState> {
     for candidate in [
-        paths.sessions_dir(),
+        paths.projects_dir(),
+        paths.legacy_sessions_dir(),
         paths.migrations_dir(),
         paths.calls_database(),
         paths.attachment_drafts_dir(),

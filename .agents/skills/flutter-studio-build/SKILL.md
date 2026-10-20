@@ -7,6 +7,13 @@ platforms: [windows, linux]
 
 # anywork 构建
 
+## 会话临时文件
+
+一次性诊断脚本与探针优先使用最新 `studio.session-files` 事实给出的本会话执行 `scratch/`，
+不要使用宿主内部会话数据库目录、helper 缓存或其他 Thread 的目录。SSH 的事实路径属于远端；
+需要本地 Driver 时在本地工程工具自己的证据目录准备脚本，不把远端路径传给本地 Dart。
+xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临时截图、日志和 VM URL 不提交。
+
 ## 标准入口
 
 所有 GUI 构建和运行都从仓库根目录通过 xtask 执行：

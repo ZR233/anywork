@@ -163,7 +163,8 @@ impl StudioRuntime {
             .promote_attachment_drafts(&thread_id, &drafts)
             .await?;
         let resources = crate::resource_store::FileResourceStore::new(
-            self.store.session_resources_dir(&thread_id),
+            self.store
+                .session_resources_dir_for(&thread_record.project_id, &thread_id)?,
         );
         let mut context = Vec::new();
         if !prompt.is_empty() {

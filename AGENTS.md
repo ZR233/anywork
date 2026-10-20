@@ -63,6 +63,13 @@
 - SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；Client 命令通过 `cargo xtask verify-client` 在正确目录执行。
 - 每个 `AppGraph` 拥有独立 Client 与资源。`presentation/providers` 只适配只读观察；其销毁只能取消自己的观察和预算 permit，不能关闭 Session/ChatView、清草稿或清附件。业务意图直接调用 Client action；`features/**` 不导入 FRB、transport 或 Client 私有实现。
 
+### 会话文件与交付位置
+
+- 临时脚本、中间文件和一次性探针使用最新宿主 `studio.session-files` 事实给出的本会话 `scratch/`，待交付产物使用其 `artifacts/`；路径属于当前实际 workspace，SSH 场景属于远端，不能从本地 home、进程 cwd 或旧会话推导。完整布局与保留边界见 [存储契约](design/17-studio-storage.md)。
+- 正式代码、项目文档和用户明确指定的交付物仍写目标项目位置；非项目产物须报告真实路径。工程工具有明确输出入口（如 xtask 的 `target/manual-gui/`）时遵循该入口，不擅改工具的产物布局。
+- 宿主内部会话数据库、归属清单、可靠资源与传输暂存不供模型手工维护；不要将 helper 资产目录、系统 Skill 安装目录或其他 Thread 的临时目录当作可写工作区。directory 的自身临时目录许可不扩大业务 `writablePaths`，也不放宽只读或 confined 边界。
+- 一次性截图、日志与脚本不提交到源码或 Skill 支持目录；确需沉淀时只保留泛化知识。运行池自带忽略文件，已有用户忽略规则不覆盖；不要为隐藏运行产物改全局 Git 配置或清理未知文件。
+
 ### Flutter 与 Dart 命令
 
 - 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。Flutter app 命令的工作目录必须是 `code/anywork`；纯 Client 命令由 `verify-client` 切换到 `code/anywork_client`。不得在 SDK 目录执行项目命令。

@@ -78,6 +78,8 @@ pub struct StudioWorkspaceTools {
     pub binding: StudioCommandBinding,
     pub store: FileResourceStore,
     pub helper_source: crate::worker_assets::RemoteHelperSource,
+    /// Host-owned transfer scratch for this Thread. Never exposed as model-writable workspace.
+    pub host_scratch: std::path::PathBuf,
     pub capabilities: pl_tool::workspace::ToolCapabilityConfig,
 }
 
@@ -132,6 +134,7 @@ impl StudioThreadTools {
         let StudioWorkspaceTools {
             binding,
             store,
+            host_scratch,
             capabilities,
             ..
         } = options;
@@ -194,7 +197,8 @@ impl StudioThreadTools {
             }
             StudioCommandBinding::Remote { host, workspace } => {
                 if capabilities.exec {
-                    let archive = store.remote_command_archive(Arc::new(host.files.clone()));
+                    let archive = store
+                        .remote_command_archive(Arc::new(host.files.clone()), host_scratch.clone());
                     let processes = match &commands {
                         Some(StudioCommandProcesses::Remote(processes)) => processes.clone(),
                         Some(StudioCommandProcesses::Local(_)) => {

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -130,7 +130,7 @@ impl StudioStore {
                     "checkpoint names attachment {attachment_id} with no catalog record for Thread {thread_id}"
                 );
             };
-            let path = std::path::Path::new(&record.storage_path);
+            let path = Path::new(&record.storage_path);
             if !tokio::fs::try_exists(path).await? {
                 anyhow::bail!(
                     "checkpoint names missing attachment blob {} for Thread {thread_id}",
@@ -154,7 +154,7 @@ impl StudioStore {
                 // Current attachments share the per-session content-addressed blob root
                 // (`sessions/<storage-key>/blobs`) with their catalog.
                 let dir = self
-                    .thread_blobs_dir(thread_id)
+                    .thread_blobs_dir(thread_id)?
                     .join(&draft.content_sha256[..2]);
                 tokio::fs::create_dir_all(&dir).await?;
                 let storage_path = dir.join(&draft.content_sha256);
@@ -187,26 +187,33 @@ impl StudioStore {
             }
         }
 
-        Ok(prepared
+        let session = self.registered_session_paths(thread_id)?;
+        prepared
             .into_iter()
-            .map(|(draft, storage_path)| AttachmentRecord {
-                id: new_id("attachment"),
-                thread_id: thread_id.to_string(),
-                modality: draft.modality,
-                media_type: draft.media_type.clone(),
-                filename: Some(draft.filename.clone()),
-                storage_path: storage_path.to_string_lossy().to_string(),
-                byte_size: draft.byte_size,
-                content_sha256: draft.content_sha256.clone(),
-                width: draft.width,
-                height: draft.height,
-                created_at: unix_seconds(),
+            .map(|(draft, storage_path)| {
+                Ok(AttachmentRecord {
+                    id: new_id("attachment"),
+                    thread_id: thread_id.to_string(),
+                    modality: draft.modality,
+                    media_type: draft.media_type.clone(),
+                    filename: Some(draft.filename.clone()),
+                    storage_path: crate::studio::store::session_layout::relative_blob_path(
+                        &session,
+                        &storage_path,
+                    )?,
+                    byte_size: draft.byte_size,
+                    content_sha256: draft.content_sha256.clone(),
+                    width: draft.width,
+                    height: draft.height,
+                    created_at: unix_seconds(),
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn load_attachment_catalog(&self, thread_id: &str) -> Result<Vec<AttachmentRecord>> {
-        let path = self.thread_storage_dir(thread_id).join("attachments.toml");
+        let session = self.registered_session_paths(thread_id)?;
+        let path = session.attachments_catalog();
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
                 let mut catalog: AttachmentCatalog = toml::from_str(&content)
@@ -220,21 +227,9 @@ impl StudioStore {
                             .all(|record| record.thread_id == thread_id),
                     "attachment catalog identity or schema mismatch"
                 );
-                let directory = self.thread_storage_dir(thread_id);
-                let blobs = self.thread_blobs_dir(thread_id);
                 for record in &mut catalog.records {
-                    let recorded = PathBuf::from(&record.storage_path);
-                    let resolved = if recorded.is_absolute() {
-                        recorded
-                    } else {
-                        directory.join(recorded)
-                    };
-                    anyhow::ensure!(
-                        resolved.starts_with(&blobs),
-                        "attachment {} is outside its Thread blob root",
-                        record.id
-                    );
-                    record.storage_path = resolved.to_string_lossy().into_owned();
+                    record.storage_path =
+                        resolve_attachment_host_path(&session, &record.storage_path)?;
                 }
                 Ok(catalog.records)
             }
@@ -251,10 +246,47 @@ impl StudioStore {
         thread_id: &str,
         records: &[AttachmentRecord],
     ) -> Result<()> {
-        let directory = self.thread_storage_dir(thread_id);
-        tokio::fs::create_dir_all(&directory).await?;
-        write_attachment_catalog(&directory.join("attachments.toml"), thread_id, records).await
+        let session = self.registered_session_paths(thread_id)?;
+        tokio::fs::create_dir_all(session.root()).await?;
+        let persisted = records
+            .iter()
+            .map(|record| persistable_attachment(&session, record))
+            .collect::<Result<Vec<_>>>()?;
+        write_attachment_catalog(&session.attachments_catalog(), thread_id, &persisted).await
     }
+}
+
+fn persistable_attachment(
+    session: &crate::studio::paths::SessionPaths,
+    record: &AttachmentRecord,
+) -> Result<AttachmentRecord> {
+    let recorded = PathBuf::from(&record.storage_path);
+    let relative = if recorded.is_absolute() {
+        crate::studio::store::session_layout::relative_blob_path(session, &recorded)?
+    } else {
+        crate::studio::paths::posix_relative(&recorded)?
+    };
+    let mut persisted = record.clone();
+    persisted.storage_path = relative;
+    Ok(persisted)
+}
+
+fn resolve_attachment_host_path(
+    session: &crate::studio::paths::SessionPaths,
+    stored: &str,
+) -> Result<String> {
+    let recorded = PathBuf::from(stored);
+    anyhow::ensure!(
+        !recorded.is_absolute(),
+        "persistent attachments must use session-relative blob paths"
+    );
+    let relative = crate::studio::paths::posix_relative(&recorded)?;
+    let resolved = session.root().join(Path::new(&relative));
+    anyhow::ensure!(
+        resolved.starts_with(session.blobs_dir()),
+        "attachment is outside its Thread blob root"
+    );
+    Ok(resolved.to_string_lossy().into_owned())
 }
 
 /// Writes the canonical attachment catalog for one Thread.

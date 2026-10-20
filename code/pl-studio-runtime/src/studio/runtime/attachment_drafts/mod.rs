@@ -105,7 +105,7 @@ impl StudioRuntime {
                     .tool_media_deliveries(&attachment_id)
                     .await?,
             );
-            let store = FileResourceStore::new(self.store.session_resources_dir(&thread_id));
+            let store = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
             return crate::studio::thread_projection::read_persisted_media(
                 &store,
                 &deliveries,

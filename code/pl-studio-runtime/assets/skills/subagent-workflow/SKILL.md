@@ -38,6 +38,15 @@ Profile 接受 `writablePaths`，unrestricted 和 worktree Profile 不接受。�
 子代理不继承主 Thread Mode 的工作流工具或运行时状态。主代理只能查询及推进宿主已注册
 的图；主代理和子代理都不能编译工作流定义。
 
+## 子代理的临时文件
+
+每个 child/reviewer 使用自己最新 `studio.session-files` 事实中的 `scratch/`、`artifacts/` 和命令
+输出目录，不从父代理或被审者的 Thread ID、home 路径和临时文件目录推导。共享 checkout 不
+等于共享会话临时目录；跨代理交付须给出必要的产物路径和归属，不要求对方写入父会话 scratch。
+directory 的业务 `writablePaths` 与本 Thread 的 scratch/artifacts 许可分开；只读角色、工作区
+边界和禁区仍然有效，不能借临时目录许可扩大实现范围。不要把内部数据库、helper 共享资产、
+安装的 Skill 或可靠资源目录当作临时工作区。
+
 ## 派发时机与工作区
 
 `spawn_agent` 用于边界明确的异步任务。子代理始终使用独立上下文；独立探索可并行派发，由主代理

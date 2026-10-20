@@ -30,6 +30,10 @@ impl RemoteCommandBackend {
             lease,
         }
     }
+
+    fn lease_files(&self) -> super::RemoteWorkspaceFileBackend {
+        super::RemoteWorkspaceFileBackend::new(self.client.clone(), self.lease.clone())
+    }
     /// 常驻协议进程仅传输 stdin/stdout，不创建命令捕获或消费一次性命令额度。
     pub(super) async fn spawn_stream(
         &self,
@@ -109,11 +113,12 @@ impl CommandBackend for RemoteCommandBackend {
 
     async fn prepare_output(
         &self,
-        _target: &CommandOutputTarget,
+        target: &CommandOutputTarget,
         _command: &str,
         _working_directory: &str,
         _capture_limit_bytes: u64,
     ) -> Result<u64> {
+        crate::workspace::prepare_command_capture(&self.lease_files(), target.model_file()).await?;
         // The remote helper owns the capture beside the remote workspace and streams it to the live
         // observer; there is no local fragment, so the local committed length starts at zero.
         Ok(0)

@@ -28,7 +28,8 @@ child Profile 的工作区有四种模式，其中的 root 指该 child 所属�
 - `unrestricted`：Profile 不增加额外项目隔离，root 就是会话工作区根（根会话为 `worktree`
   时即在该 worktree 内）；项目内外仍遵循会话 Permission Mode。
 - `directory`：root 仍是会话工作区根；`writablePaths` 只限制 Pure 内置文件 mutation 工具在
-  其中的写入。它不是 OS 沙箱，shell、Git 与 MCP 可以绕过，工具描述、child 固定上下文和
+  其中的业务文件写入，另有本 Thread 的 scratch/artifacts 许可（见 [04](./04-security.md)）。
+  它不是 OS 沙箱，shell、Git 与 MCP 可以绕过，工具描述、child 固定上下文和
   GUI 必须共同提示该边界。
 - `worktree`：root 是独立 Git worktree，boundary 为 Confined，worktree 内全可写；base 仍是
   Project 仓库的 `HEAD`，不是父会话 worktree；主工作区未提交内容不复制过去，成果不会自动
@@ -120,7 +121,8 @@ root 与所有 child 共用可见进展合同：非平凡任务首次工具调�
 的更新，不为每批工具机械重复播报；隐藏推理和最终答复不替代执行期间的可见进展。
 
 `spawn_agent` 接收可选 `writablePaths`。只有 directory Profile 接受该字段：省略表示整个工作区
-可写，空数组表示工作区内只读；条目是该 child 实际工作区相对目录前缀。runtime 拒绝绝对路径、
+可写，空数组表示业务目录只读（不撤销本 Thread 的 scratch/artifacts 许可）；条目是该 child
+实际工作区相对目录前缀。runtime 拒绝绝对路径、
 `..`、非法分隔
 以及解析后越界或经过不安全 symlink 的路径，规范化和去重后冻结。其他模式传入该字段直接
 返回参数错误，避免形成虚假隔离预期。

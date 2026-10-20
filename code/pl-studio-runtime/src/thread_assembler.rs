@@ -69,6 +69,9 @@ pub struct StudioThreadSpec {
     pub checkpoint: Option<ThreadCheckpoint>,
     /// Initial instructions and records for a new Thread only; never used to re-render recovery.
     pub initial_context: Vec<pl_core::context::ContextRecord>,
+    /// Latest host facts queued after assembly. Recovery may supply them; they never re-render
+    /// frozen instructions or replace restored history.
+    pub initial_runtime_facts: Vec<pl_core::thread::RuntimeFact>,
     pub initial_extensions: BTreeMap<String, pl_core::context::OpaquePayload>,
     pub tools: Vec<Registration>,
     pub resources: ResourceAccess,
@@ -367,6 +370,11 @@ impl StudioThreadAssembler {
                         reason: pl_core::thread::ContextReplacementReason::Rebuild,
                         records: spec.initial_context,
                     })
+                    .await?;
+            }
+            if !spec.initial_runtime_facts.is_empty() {
+                thread
+                    .queue_runtime_facts(spec.initial_runtime_facts)
                     .await?;
             }
             // Freeze the observer's recovery baseline before exposing this owner to execution.

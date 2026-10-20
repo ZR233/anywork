@@ -1523,6 +1523,31 @@ mod storage_fault_tests {
         })
     }
 
+    async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+        let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+            crate::studio::store::directory::ProjectDirectoryRecord {
+                id: thread.project_id.clone(),
+                name: "Test".into(),
+                path: "/tmp/project-test".into(),
+                ssh_alias: None,
+                created_at: 1,
+                updated_at: 1,
+                last_opened_at: None,
+                closed: false,
+            },
+        );
+        delta.thread_upserts = vec![thread.clone()];
+        store.persist_directory_summaries(&delta).await
+    }
+
+    fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
+        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+        thread.project_id = "project-test".into();
+        thread.agent_path = thread_id.to_owned();
+        thread.root_thread_id = thread_id.to_owned();
+        thread
+    }
+
     /// 跨重开的普通问答：回答 effect 只带交互与隐藏 continuation。
     ///
     /// 回答时那条调用已经不在 Thread 状态里（工具成功的 Task 已是终态、Turn 已结束），新建的
@@ -1534,7 +1559,8 @@ mod storage_fault_tests {
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let thread = pl_protocol::Thread::placeholder("qa-restart");
+        let thread = bound_thread("qa-restart");
+        register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store.chat_session(&thread.id).await?;
@@ -1670,7 +1696,8 @@ mod storage_fault_tests {
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let thread = pl_protocol::Thread::placeholder("compaction-save");
+        let thread = bound_thread("compaction-save");
+        register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store.chat_session(&thread.id).await?;
@@ -1755,7 +1782,8 @@ mod storage_fault_tests {
     async fn recovery_projection(delayed_admission: bool) -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let thread = pl_protocol::Thread::placeholder("recovered-hidden-input");
+        let thread = bound_thread("recovered-hidden-input");
+        register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store.chat_session(&thread.id).await?;

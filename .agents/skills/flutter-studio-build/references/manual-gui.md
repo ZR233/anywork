@@ -76,6 +76,10 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
 
 ## Flutter Driver 操作与取证
 
+临时文件位置遵循当前 `studio.session-files`，工程入口明确指定的证据目录除外。下面的
+`target/gui-acceptance/` 是显式的本地工程探针示例（便于复用相对导入），不是产品的命令
+capture 或通用会话临时目录；换位置时同时按本地真实目录调整导入和 Dart 启动参数。
+
 1. 使用 Flutter Driver，不用 Computer Use 覆盖 Driver 已支持的交互。优先复用
    `code/anywork/test_driver/flutter_driver_session.dart`；它提供有截止时间的操作和
    `readSnapshot()`、`renderTree()`、`screenshot()`。客户端在 `finally` 中关闭连接。

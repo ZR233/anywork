@@ -34,7 +34,7 @@ impl StudioThreadFactory {
             let history = self
                 .services
                 .store
-                .history_writer(id)
+                .history_writer_for(&thread.project_id, id)
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
@@ -113,7 +113,12 @@ impl StudioThreadFactory {
             }
         })
         .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
-        let store = FileResourceStore::new(self.services.store.session_resources_dir(id));
+        let store = FileResourceStore::new(
+            self.services
+                .store
+                .session_resources_dir_for(&thread.project_id, id)
+                .map_err(|error| resource_error("resolve root session resources", error))?,
+        );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
@@ -224,6 +229,9 @@ impl StudioThreadFactory {
             model,
             checkpoint,
             initial_context,
+            initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
+                .into_iter()
+                .collect(),
             initial_extensions,
             tools: Vec::new(),
             resources: ResourceAccess::new(store),

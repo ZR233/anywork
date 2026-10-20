@@ -84,6 +84,12 @@ Provider/core 调用 ID 进入命令进程与归档边界时，转换为有界 `
 身份，不能直接作文件名。`exec` 与 `write_stdin` 使用同一映射，目录重建继续引用同一 Thread
 的进程管理器；不同 Thread 的管理器保持隔离。
 
+命令 capture 与模型任务临时文件共用 [17](./17-studio-storage.md) 的执行侧会话布局，不再
+把新的命令输出写入 `target/pure/`。路径身份由实际 Thread 和调用身份单点派生，提示词、
+目录写策略、本地与远端 command backend 必须消费同一映射，不能各自拼目录或用不透明
+process id 推测文件名。`outputFile` 是执行侧可读路径，可靠 resource 引用才是跨重开历史的
+持久依据；capture 归档失败保持源文件及既有修复义务，不重复执行工具。
+
 ## 9.5 Programmatic 调用资格
 
 Programmatic 调用资格由具体工具的声明提供：LSP、只读 Git、已解析为只读的 MCP 工具和 MCP

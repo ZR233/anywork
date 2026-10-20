@@ -17,14 +17,42 @@ fn options(home: &Path) -> StudioRuntimeOptions {
     }
 }
 
+fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPaths> {
+    paths.session_paths("project-cold", "cold")
+}
+
 async fn seed(home: &Path) -> Result<StudioPaths> {
     let runtime = StudioRuntime::initialize(options(home)).await?;
+    let store = runtime.store.clone();
+    let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+        crate::studio::store::directory::ProjectDirectoryRecord {
+            id: "project-cold".into(),
+            name: "Cold".into(),
+            path: "/tmp/project-cold".into(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        },
+    );
+    let (thread_delta, _) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
+        "cold".into(),
+        "project-cold",
+        "cold",
+        pl_protocol::ThreadModeId::simple(),
+        pl_protocol::ThreadWorkspaceMode::Local,
+        "/tmp/project-cold".into(),
+    );
+    delta.thread_upserts = thread_delta.thread_upserts;
+    store.persist_directory_summaries(&delta).await?;
     runtime.shutdown_runtime().await?;
     let paths = StudioPaths::resolve(Some(home.to_owned()))?;
+    let session = cold_session(&paths)?;
     for (path, bytes) in [
         (home.join("agents/preserved.bin"), b"agent bytes".as_slice()),
         (
-            paths.thread_blobs_dir("cold").join("attachment"),
+            session.blobs_dir().join("attachment"),
             b"attachment bytes".as_slice(),
         ),
         (
@@ -99,7 +127,7 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
         assert_eq!(
             std::fs::read(
                 backup
-                    .join(paths.thread_blobs_dir("cold").strip_prefix(&home)?)
+                    .join(cold_session(&paths)?.blobs_dir().strip_prefix(&home)?)
                     .join("attachment")
             )?,
             b"attachment bytes"
@@ -181,7 +209,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
         .insert("planner".into(), routes["mode.simple"].clone());
     value["schema_version"] = 18.into();
     std::fs::write(home.join("config.toml"), toml::to_string(&value)?)?;
-    let cold = paths.thread_storage_dir("cold").join("history.sqlite");
+    let cold = cold_session(&paths)?.history_database();
     std::fs::write(&cold, b"intentionally invalid cold history")?;
     let runtime = StudioRuntime::initialize(options(home)).await?;
     assert!(runtime.startup_recovery.is_none());
@@ -418,12 +446,139 @@ async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sess
     assert_eq!(std::fs::read(&mode_path)?, original);
     assert_eq!(std::fs::read(home.join("config.toml"))?, config);
     assert_eq!(
-        std::fs::read(paths.thread_blobs_dir("cold").join("attachment"))?,
+        std::fs::read(cold_session(&paths)?.blobs_dir().join("attachment"))?,
         b"attachment bytes"
     );
     assert_eq!(
         std::fs::read(home.join("sessions/old/checkpoint"))?,
         b"old session"
+    );
+    Ok(())
+}
+
+async fn seed_legacy_layout_home() -> Result<(tempfile::TempDir, StudioPaths, std::path::PathBuf)> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().to_path_buf();
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let store = runtime.store.clone();
+    let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+        crate::studio::store::directory::ProjectDirectoryRecord {
+            id: "project-a".into(),
+            name: "Layout".into(),
+            path: "/tmp/layout".into(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        },
+    );
+    let (thread_delta, _) = crate::studio::store::directory::DirectoryDelta::register_root_thread(
+        "thread-a".into(),
+        "project-a",
+        "layout",
+        pl_protocol::ThreadModeId::simple(),
+        pl_protocol::ThreadWorkspaceMode::Local,
+        "/tmp/layout".into(),
+    );
+    delta.thread_upserts = thread_delta.thread_upserts;
+    store.persist_directory_summaries(&delta).await?;
+    runtime.shutdown_runtime().await?;
+    let studio = StudioPaths::resolve(Some(home.clone()))?;
+    let session = studio.session_paths("project-a", "thread-a")?;
+    if tokio::fs::try_exists(session.root()).await? {
+        tokio::fs::remove_dir_all(session.root()).await?;
+    }
+    for name in [
+        "session-project-layout.toml",
+        "session-project-layout.complete",
+    ] {
+        let path = studio.migrations_dir().join(name);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let source = studio.legacy_thread_dir("thread-a")?;
+    tokio::fs::create_dir_all(source.join("blobs/aa")).await?;
+    tokio::fs::write(source.join("history.sqlite"), b"history-bytes").await?;
+    tokio::fs::write(source.join("blobs/aa/blob"), b"blob-bytes").await?;
+    Ok((temp, studio, source))
+}
+
+#[tokio::test]
+async fn layout_attachment_toml_fault_does_not_reset_home() -> Result<()> {
+    let (temp, paths, source) = seed_legacy_layout_home().await?;
+    tokio::fs::write(source.join("attachments.toml"), b"not = [toml").await?;
+    let original = tokio::fs::read(source.join("attachments.toml")).await?;
+    let error = StudioRuntime::initialize(options(paths.home()))
+        .await
+        .err()
+        .expect("layout toml fault must fail initialize");
+    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+    assert!(!temp.path().join("startup-backups").exists());
+    let session = paths.session_paths("project-a", "thread-a")?;
+    assert_eq!(
+        tokio::fs::read(session.attachments_catalog()).await?,
+        original
+    );
+    assert_eq!(
+        tokio::fs::read(session.history_database()).await?,
+        b"history-bytes"
+    );
+    tokio::fs::write(
+        session.attachments_catalog(),
+        toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
+            schema_version: 1,
+            thread_id: "thread-a".into(),
+            records: Vec::new(),
+        })?,
+    )
+    .await?;
+    let runtime = StudioRuntime::initialize(options(paths.home())).await?;
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn layout_target_manifest_fault_does_not_reset_home() -> Result<()> {
+    let (temp, paths, source) = seed_legacy_layout_home().await?;
+    tokio::fs::write(
+        source.join("attachments.toml"),
+        toml::to_string(&crate::studio::store::attachment::AttachmentCatalog {
+            schema_version: 1,
+            thread_id: "thread-a".into(),
+            records: Vec::new(),
+        })?,
+    )
+    .await?;
+    let session = paths.session_paths("project-a", "thread-a")?;
+    tokio::fs::create_dir_all(session.root().parent().expect("parent")).await?;
+    pl_tool::workspace::move_owned_path(&source, session.root())?;
+    tokio::fs::write(session.session_manifest(), "schemaVersion = 99\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nrootThreadId = \"thread-a\"\nworkspaceMode = \"local\"\nworkspacePath = \"/tmp/layout\"\ncreatedAt = 1\n").await?;
+    let journal = format!(
+        "schemaVersion = 1\ncompleted = false\norphans = []\n\n[[moves]]\nthreadId = \"thread-a\"\nprojectId = \"project-a\"\nsourceKey = \"{source}\"\ntargetProjectKey = \"{project}\"\ntargetThreadKey = \"{source}\"\nphase = \"moved\"\n",
+        source = crate::studio::paths::thread_storage_key("thread-a")?,
+        project = crate::studio::paths::storage_key("project-a", "Project")?,
+    );
+    tokio::fs::create_dir_all(paths.migrations_dir()).await?;
+    tokio::fs::write(
+        paths.migrations_dir().join("session-project-layout.toml"),
+        journal,
+    )
+    .await?;
+    let original = tokio::fs::read(session.session_manifest()).await?;
+    let error = StudioRuntime::initialize(options(paths.home()))
+        .await
+        .err()
+        .expect("bad target manifest must fail initialize");
+    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+    assert!(!temp.path().join("startup-backups").exists());
+    assert_eq!(tokio::fs::read(session.session_manifest()).await?, original);
+    assert_eq!(
+        tokio::fs::read(session.history_database()).await?,
+        b"history-bytes"
     );
     Ok(())
 }

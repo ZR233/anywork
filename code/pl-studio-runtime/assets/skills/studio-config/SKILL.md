@@ -1,6 +1,6 @@
 ---
 name: studio-config
-description: Use when asked where anywork stores its configuration or how to configure accounts, model routes, permissions, skills, MCP, LSP, UI, or web search. Covers config file locations, TOML schema, credential handling, and safe manual editing.
+description: Use when asked where anywork stores configuration, project/session data, temporary files, or helper transfers, or how to configure accounts, model routes, permissions, skills, MCP, LSP, UI, or web search. Covers storage ownership, TOML schema, credentials, and safe editing.
 metadata:
   category: guides
 ---
@@ -23,7 +23,17 @@ The home directory can be overridden, in resolution order:
 2. `ANYWORK_HOME` environment variable (absolute, non-empty)
 3. default `<user home>/.anywork`
 
-Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories and product settings live in `<home>/v2/`. Call records use `<home>/v2/calls/calls.sqlite` and rolling logs under `logs/`. Each Thread keeps its history and current checkpoint in `<home>/v2/sessions/<thread-key>/history.sqlite`; `<thread-key>` is derived from the Thread identity. Old-version directories remain isolated. Never edit these files by hand.
+The product database lives in `<home>/studio/v2/studio.sqlite`; canonical global directory indexes and product settings live in `<home>/v2/`. Call records use `<home>/v2/calls/calls.sqlite` and rolling logs under `logs/`. Project data lives in `<home>/v2/projects/<project-key>/`; each Thread keeps `history.sqlite`, `attachments.toml`, `blobs/`, and `thread-resources/` in its `sessions/<thread-key>/`. Both keys are SHA-256 digests of stable IDs, not display names or working directories. Old-version directories remain isolated. Never edit these files by hand.
+
+`project.toml` and `session.toml` are runtime-owned identity manifests, not extra editable settings. Mutable directory summaries stay in the canonical indexes; current route, Mode, Plan, notes, and execution metadata stay in the checkpoint. Existing flat v2 sessions are moved through a resumable layout migration, not discarded. A layout-migration failure stops startup and preserves its source and journal; it never triggers the global backup-and-defaults recovery described below.
+
+## Session Files and Helper Transfers
+
+- Use the latest `studio.session-files` host fact for this Thread's workspace-relative `scratch/`, `artifacts/`, and command-output directory. These are under `<workspace>/.anywork/sessions/<thread-key>/`; SSH paths belong to the remote workspace, not the local home. Each child and reviewer has its own Thread directory even when sharing a checkout.
+- Temporary scripts and intermediate files belong in `scratch/`; unfinished deliverables belong in `artifacts/`. Put final project files in the user's requested location and report other deliverables' actual paths. Tool-managed build and acceptance outputs keep their documented locations.
+- The host session's `scratch/` is internal transfer staging, not a model-writable database directory. Remote captures are downloaded there before durable resource retention; attachments without a Thread remain in `<home>/studio/v2/attachment-drafts/`.
+- Helper executables are shared remote-user assets in `$HOME/.anywork/remote-helper/<version>/<digest>/`. Upload staging is unique and beside the final executable; ordinary atomic file writes stage beside their target. Neither location is a general-purpose task scratch directory.
+- Runtime pools contain non-overwriting `.gitignore` files. Do not overwrite user ignore rules, clear active scratch/history, or scan old `target/pure/` output as a cleanup shortcut. Directory write scopes, read-only roles, and SSH/worktree confinement still apply.
 
 ## Format Rules
 

@@ -2,7 +2,14 @@
 
 mod assignment;
 mod atomic_file;
+mod layout;
+mod session_files;
 pub use assignment::{AgentWorkspace, WorkspaceBoundary, WorkspaceMutability};
+pub use layout::{
+    POOL_GITIGNORE, SESSIONS_POOL, WORKTREES_POOL, prepare_command_capture, prepare_session_files,
+    prepare_worktree_pool,
+};
+pub use session_files::SessionFiles;
 mod path_policy;
 pub mod path_safety;
 pub use path_policy::{PathAccess, ToolPathPolicy};

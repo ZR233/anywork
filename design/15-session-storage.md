@@ -42,7 +42,7 @@ Thread owner 共享的是稳定条目身份及变更通知，不共享执行队�
 私有 continuation、当前运行事实与未完成状态仍由 owner 持有；用于展示和审计的历史记录具有
 独立生命周期。上下文可以压缩、替换或裁剪，已提交历史不因此删除。
 
-允许存在的临时数据只有：当前运行 Item 的内存正文与输出组装、尚未持久化的可靠批次、
+会话内容读取链允许存在的临时内存数据只有：当前运行 Item 的正文与输出组装、尚未持久化的可靠批次、
 每会话有界尾部缓存、有界内容订阅基线、一次有界 SQL 查询结果。缓存命中和持久化
 责任独立：同一正文可共享不可变引用，离开缓存或关闭窗口不能释放未保存事实。writer 确认固定
 写入水位后释放对应可靠 effect payload，但最新条目仍可依尾部缓存策略短暂驻留。
@@ -414,8 +414,9 @@ effect 再次等待写入。
 物理资源与用户文件不属于这项通用删除操作，由宿主按自己的可恢复流程协调。
 
 每个 Thread 使用独立 `history.sqlite`，面向稳定条目和 keyset 分页，不保存完整执行 journal。
-该文件位于应用 home 下的 `~/.anywork/v2/sessions/<storage-key>/history.sqlite`，`<storage-key>`
-是 Thread id 的 SHA-256 十六进制摘要（布局见 [17](./17-studio-storage.md) §17.1）。
+该文件位于应用 home 下的
+`~/.anywork/v2/projects/<project-key>/sessions/<thread-key>/history.sqlite`；安全目录键、
+清单、附件相对引用及 v2 内布局迁移统一见 [17](./17-studio-storage.md) §17.1、§17.7。
 最小逻辑 schema：
 
 ```sql

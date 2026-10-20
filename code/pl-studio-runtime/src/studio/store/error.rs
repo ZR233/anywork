@@ -16,3 +16,11 @@ pub enum StudioDatabaseError {
     #[error("Studio 数据库完整性检查失败：{reason}，已保留原数据库")]
     CorruptDatabase { reason: String },
 }
+
+/// Layout-migration marker that keeps the original cause as its source.
+#[derive(Debug, thiserror::Error)]
+#[error("Studio 会话布局迁移失败，已保留原目录")]
+pub struct SessionLayoutMigrationFailed {
+    #[source]
+    pub source: anyhow::Error,
+}

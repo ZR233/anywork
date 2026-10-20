@@ -220,6 +220,10 @@ impl StudioRuntime {
                 });
             }
         }
+        if let Some(fact) = self.thread_factory.session_files_fact(thread_id, &state) {
+            facts.retain(|current| current.source_id != "studio.session-files");
+            facts.push(fact);
+        }
         let mut candidate = state.clone();
         candidate.extensions.insert(
             "studio.mode".into(),
