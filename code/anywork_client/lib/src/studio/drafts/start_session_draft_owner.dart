@@ -286,8 +286,8 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       return true;
     } catch (cause) {
       final error = cause is NewThreadStartFailed ? cause.error : cause;
-      final rejected =
-          cause is NewThreadStartFailed || isKnownSubmissionRejection(error);
+      // A transport error cannot replace this invocation's typed terminal outcome.
+      final rejected = cause is NewThreadStartFailed;
       if (acceptedResult != null) {
         frozen.operation.syncFailed(error);
         await _client.attachments.completeFrozen(

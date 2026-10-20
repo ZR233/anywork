@@ -622,6 +622,43 @@ void main() {
     await _close(client, transport);
   });
 
+  test(
+    'stream errors cannot replace the missing typed creation outcome',
+    () async {
+      final transport = _DraftTransport();
+      final client = _client(transport);
+      addTearDown(() => _close(client, transport));
+      final owner = client.startDraft;
+      owner.updateDraft(_project.id, 'keep an uncertain request');
+      final submitted = owner.submit(_project.id);
+      await transport.startEntered.future;
+      transport.startEvents.addError(
+        const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'the creation stream was interrupted',
+          retryable: true,
+          correlationId: 'interrupted-start-stream',
+        ),
+      );
+      expect(await submitted, isFalse);
+      expect(
+        owner.state.preparations[_project.id]?.phase,
+        NewThreadPreparationPhase.unknownOutcome,
+      );
+      expect(
+        client.mutations.latest('start:${_project.id}')?.state.value.phase,
+        OperationPhase.unknownOutcome,
+      );
+      expect(await owner.submit(_project.id), isFalse);
+      expect(transport.startCalls, 1);
+      expect(
+        owner.state.forProject(_project.id).text,
+        'keep an uncertain request',
+      );
+      await transport.startEvents.close();
+    },
+  );
+
   test('closing the start owner joins its creation while ignoring later display updates', () async {
     final transport = _DraftTransport();
     final client = _client(transport);
