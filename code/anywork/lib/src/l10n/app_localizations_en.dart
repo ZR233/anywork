@@ -1134,7 +1134,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningActive => 'Thinking';
 
   @override
-  String get timelineReasoningCompleted => 'Thought';
+  String get timelineReasoningEnded => 'Thought ended';
+
+  @override
+  String get timelineReasoningFailed => 'Thinking failed';
+
+  @override
+  String get timelineReasoningCancelled => 'Thinking cancelled';
+
+  @override
+  String get timelineReasoningElapsedUnderSecond => 'Thought for less than 1s';
+
+  @override
+  String timelineReasoningElapsedSeconds(int seconds) {
+    return 'Thought for ${seconds}s';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutes(int minutes) {
+    return 'Thought for ${minutes}m';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
+    return 'Thought for ${minutes}m ${seconds}s';
+  }
 
   @override
   String get timelineReasoningSummary => 'Summary';
@@ -1235,6 +1259,167 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineReadFileFailed => 'Unable to read';
+
+  @override
+  String get timelineToolEditSucceeded => 'Edited';
+
+  @override
+  String get timelineToolEditRunning => 'Editing';
+
+  @override
+  String get timelineToolEditFailed => 'Couldn\'t edit';
+
+  @override
+  String timelineToolPatchFilesMore(String first, int more) {
+    return '$first, and $more more';
+  }
+
+  @override
+  String get timelineSessionNoteName => 'session note';
+
+  @override
+  String get timelineToolCommandSucceeded => 'Ran';
+
+  @override
+  String get timelineToolCommandRunning => 'Running';
+
+  @override
+  String get timelineToolCommandFailed => 'Command failed';
+
+  @override
+  String get timelineToolStdinSucceeded => 'Wrote input';
+
+  @override
+  String get timelineToolStdinRunning => 'Writing input';
+
+  @override
+  String get timelineToolStdinFailed => 'Input not written';
+
+  @override
+  String get timelineToolElapsedUnderSecond => 'Took less than 1s';
+
+  @override
+  String timelineToolElapsedSeconds(int seconds) {
+    return 'Took ${seconds}s';
+  }
+
+  @override
+  String timelineToolElapsedMinutes(int minutes) {
+    return 'Took ${minutes}m';
+  }
+
+  @override
+  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
+    return 'Took ${minutes}m ${seconds}s';
+  }
+
+  @override
+  String get timelineToolSearchSucceeded => 'Searched';
+
+  @override
+  String get timelineToolSearchRunning => 'Searching';
+
+  @override
+  String get timelineToolSearchFailed => 'Search failed';
+
+  @override
+  String get timelineToolAgentSucceeded => 'Spawned subagent';
+
+  @override
+  String get timelineToolAgentRunning => 'Subagent running';
+
+  @override
+  String get timelineToolAgentFailed => 'Subagent failed';
+
+  @override
+  String get timelineToolMessageSucceeded => 'Sent message';
+
+  @override
+  String get timelineToolMessageRunning => 'Sending message';
+
+  @override
+  String get timelineToolMessageFailed => 'Message not sent';
+
+  @override
+  String get timelineToolCreateSucceeded => 'Created directory';
+
+  @override
+  String get timelineToolCreateRunning => 'Creating directory';
+
+  @override
+  String get timelineToolCreateFailed => 'Directory not created';
+
+  @override
+  String get timelineToolDeleteSucceeded => 'Deleted';
+
+  @override
+  String get timelineToolDeleteRunning => 'Deleting';
+
+  @override
+  String get timelineToolDeleteFailed => 'Not deleted';
+
+  @override
+  String get timelineToolCopySucceeded => 'Copied';
+
+  @override
+  String get timelineToolCopyRunning => 'Copying';
+
+  @override
+  String get timelineToolCopyFailed => 'Not copied';
+
+  @override
+  String get timelineToolMoveSucceeded => 'Moved';
+
+  @override
+  String get timelineToolMoveRunning => 'Moving';
+
+  @override
+  String get timelineToolMoveFailed => 'Not moved';
+
+  @override
+  String get timelineToolFetchSucceeded => 'Fetched web page';
+
+  @override
+  String get timelineToolFetchRunning => 'Fetching web page';
+
+  @override
+  String get timelineToolFetchFailed => 'Web page not fetched';
+
+  @override
+  String get timelineToolPlanSucceeded => 'Updated plan';
+
+  @override
+  String get timelineToolPlanRunning => 'Updating plan';
+
+  @override
+  String get timelineToolPlanFailed => 'Plan update failed';
+
+  @override
+  String get timelineToolWorkflowSucceeded => 'Updated workflow';
+
+  @override
+  String get timelineToolWorkflowRunning => 'Updating workflow';
+
+  @override
+  String get timelineToolWorkflowFailed => 'Workflow update failed';
+
+  @override
+  String get timelineToolLspSucceeded => 'Queried code';
+
+  @override
+  String get timelineToolLspRunning => 'Querying code';
+
+  @override
+  String get timelineToolLspFailed => 'Code query failed';
+
+  @override
+  String get timelineToolWaitSucceeded => 'Waited';
+
+  @override
+  String get timelineToolWaitRunning => 'Waiting';
+
+  @override
+  String get timelineToolWaitFailed => 'Wait failed';
 
   @override
   String timelineToolCompleted(String name) {
@@ -2199,6 +2384,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineWebSearchFinding => 'Finding text on a page';
+
+  @override
+  String get timelineWebSearchSearched => 'Searched the web';
+
+  @override
+  String get timelineWebSearchOpened => 'Opened a web page';
+
+  @override
+  String get timelineWebSearchFound => 'Searched page text';
+
+  @override
+  String get timelineWebSearchFailed => 'Web search failed';
+
+  @override
+  String get timelineWebSearchOpenFailed => 'Couldn\'t open a web page';
+
+  @override
+  String get timelineWebSearchFindFailed => 'Page search failed';
 
   @override
   String get timelineWebSearchResults => 'Result links';

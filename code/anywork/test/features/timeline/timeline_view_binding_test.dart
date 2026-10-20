@@ -1512,7 +1512,7 @@ void main() {
     await _pumpFrames(tester, frames: 2);
   });
 
-  testWidgets('思考展开保留概要和内容，缺失字段不生成空区块', (tester) async {
+  testWidgets('单段思考一次展开保留概要和内容，缺失字段不生成空区块', (tester) async {
     for (final (summary, content) in [
       (['Summary evidence'], ['Full reasoning evidence']),
       (['Summary evidence'], <String>[]),
@@ -1573,19 +1573,10 @@ void main() {
       await tester.pumpAndSettle();
       final hasSummary = summary.any((chunk) => chunk.trim().isNotEmpty);
       final hasContent = content.any((chunk) => chunk.trim().isNotEmpty);
-      if (hasSummary || hasContent) {
-        await tester.tap(
-          find
-              .ancestor(
-                of: find.byKey(
-                  StudioDriverKeys.timelineActivitySummary('thinking'),
-                ),
-                matching: find.byType(ListTile),
-              )
-              .first,
-        );
-        await tester.pumpAndSettle();
-      }
+      expect(
+        find.byKey(StudioDriverKeys.timelineActivitySummary('thinking')),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('timeline-thinking-summary-thinking')),
         hasSummary ? findsOneWidget : findsNothing,

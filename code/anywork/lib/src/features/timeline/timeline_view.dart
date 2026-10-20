@@ -22,6 +22,7 @@ import '../../shared/studio_driver_key_values.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/typed_json.dart';
 import 'markdown_repair.dart';
+import 'timeline_activity_row.dart';
 import 'timeline_wait_blocks.dart';
 
 part 'timeline_agent_blocks.dart';

@@ -12,10 +12,21 @@ import '../../app/theme/studio_tokens.dart';
 /// 包在 [ExcludeSemantics] 中，装饰性节点不参与朗读；稳定、可参数化的 key 由
 /// 调用方通过 [key] 提供。
 class TimelineWaitIndicator extends StatefulWidget {
-  const TimelineWaitIndicator({this.active = true, super.key});
+  const TimelineWaitIndicator({
+    this.active = true,
+    this.dotSize = 6,
+    this.gap = 3,
+    super.key,
+  });
 
   /// 是否运行循环动画；为 false 时仅呈现静态节点。
   final bool active;
+
+  /// 单颗节点直径；活动行内的紧凑图标列使用更小的值。
+  final double dotSize;
+
+  /// 相邻节点的间距。
+  final double gap;
 
   @override
   State<TimelineWaitIndicator> createState() => _TimelineWaitIndicatorState();
@@ -28,9 +39,6 @@ class _TimelineWaitIndicatorState extends State<TimelineWaitIndicator>
 
   /// 每一颗节点相对前一颗的相位偏移。
   static const _stagger = 0.33;
-
-  static const _dotSize = 6.0;
-  static const _gap = 3.0;
 
   late final AnimationController _controller;
 
@@ -79,8 +87,8 @@ class _TimelineWaitIndicatorState extends State<TimelineWaitIndicator>
     final reducedMotion = _reducedMotion;
     return ExcludeSemantics(
       child: SizedBox(
-        width: _dotSize * 3 + _gap * 2,
-        height: _dotSize,
+        width: widget.dotSize * 3 + widget.gap * 2,
+        height: widget.dotSize,
         child: AnimatedBuilder(
           animation: _controller,
           builder: (context, _) {
@@ -94,7 +102,7 @@ class _TimelineWaitIndicatorState extends State<TimelineWaitIndicator>
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 for (var i = 0; i < 3; i++) ...[
-                  if (i > 0) const SizedBox(width: _gap),
+                  if (i > 0) SizedBox(width: widget.gap),
                   _breathingDot(color, i, t),
                 ],
               ],
@@ -106,13 +114,13 @@ class _TimelineWaitIndicatorState extends State<TimelineWaitIndicator>
   }
 
   Widget _staticDots(Color color) {
-    final size = _dotSize;
+    final size = widget.dotSize;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         for (var i = 0; i < 3; i++) ...[
-          if (i > 0) const SizedBox(width: _gap),
+          if (i > 0) SizedBox(width: widget.gap),
           Container(
             width: size,
             height: size,
@@ -134,8 +142,8 @@ class _TimelineWaitIndicatorState extends State<TimelineWaitIndicator>
       child: Opacity(
         opacity: opacity,
         child: Container(
-          width: _dotSize,
-          height: _dotSize,
+          width: widget.dotSize,
+          height: widget.dotSize,
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
       ),

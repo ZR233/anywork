@@ -1070,7 +1070,31 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningActive => '思考中';
 
   @override
-  String get timelineReasoningCompleted => '已思考';
+  String get timelineReasoningEnded => '思考结束';
+
+  @override
+  String get timelineReasoningFailed => '思考失败';
+
+  @override
+  String get timelineReasoningCancelled => '思考已取消';
+
+  @override
+  String get timelineReasoningElapsedUnderSecond => '思考了不到 1 秒';
+
+  @override
+  String timelineReasoningElapsedSeconds(int seconds) {
+    return '思考了 $seconds 秒';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutes(int minutes) {
+    return '思考了 $minutes 分';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
+    return '思考了 $minutes 分 $seconds 秒';
+  }
 
   @override
   String get timelineReasoningSummary => '概要';
@@ -1159,6 +1183,167 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineReadFileFailed => '读取失败';
+
+  @override
+  String get timelineToolEditSucceeded => '已修改';
+
+  @override
+  String get timelineToolEditRunning => '正在修改';
+
+  @override
+  String get timelineToolEditFailed => '修改失败';
+
+  @override
+  String timelineToolPatchFilesMore(String first, int more) {
+    return '$first，另 $more 个文件';
+  }
+
+  @override
+  String get timelineSessionNoteName => '会话笔记';
+
+  @override
+  String get timelineToolCommandSucceeded => '已运行';
+
+  @override
+  String get timelineToolCommandRunning => '正在运行';
+
+  @override
+  String get timelineToolCommandFailed => '运行失败';
+
+  @override
+  String get timelineToolStdinSucceeded => '已写入输入';
+
+  @override
+  String get timelineToolStdinRunning => '正在写入输入';
+
+  @override
+  String get timelineToolStdinFailed => '输入写入失败';
+
+  @override
+  String get timelineToolElapsedUnderSecond => '用时不到 1 秒';
+
+  @override
+  String timelineToolElapsedSeconds(int seconds) {
+    return '用时 $seconds 秒';
+  }
+
+  @override
+  String timelineToolElapsedMinutes(int minutes) {
+    return '用时 $minutes 分';
+  }
+
+  @override
+  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
+    return '用时 $minutes 分 $seconds 秒';
+  }
+
+  @override
+  String get timelineToolSearchSucceeded => '已搜索';
+
+  @override
+  String get timelineToolSearchRunning => '正在搜索';
+
+  @override
+  String get timelineToolSearchFailed => '搜索失败';
+
+  @override
+  String get timelineToolAgentSucceeded => '已启动子代理';
+
+  @override
+  String get timelineToolAgentRunning => '子代理运行中';
+
+  @override
+  String get timelineToolAgentFailed => '子代理失败';
+
+  @override
+  String get timelineToolMessageSucceeded => '已发送消息';
+
+  @override
+  String get timelineToolMessageRunning => '正在发送消息';
+
+  @override
+  String get timelineToolMessageFailed => '消息发送失败';
+
+  @override
+  String get timelineToolCreateSucceeded => '已新建目录';
+
+  @override
+  String get timelineToolCreateRunning => '正在新建目录';
+
+  @override
+  String get timelineToolCreateFailed => '新建目录失败';
+
+  @override
+  String get timelineToolDeleteSucceeded => '已删除';
+
+  @override
+  String get timelineToolDeleteRunning => '正在删除';
+
+  @override
+  String get timelineToolDeleteFailed => '删除失败';
+
+  @override
+  String get timelineToolCopySucceeded => '已复制';
+
+  @override
+  String get timelineToolCopyRunning => '正在复制';
+
+  @override
+  String get timelineToolCopyFailed => '复制失败';
+
+  @override
+  String get timelineToolMoveSucceeded => '已移动';
+
+  @override
+  String get timelineToolMoveRunning => '正在移动';
+
+  @override
+  String get timelineToolMoveFailed => '移动失败';
+
+  @override
+  String get timelineToolFetchSucceeded => '已获取网页';
+
+  @override
+  String get timelineToolFetchRunning => '正在获取网页';
+
+  @override
+  String get timelineToolFetchFailed => '获取网页失败';
+
+  @override
+  String get timelineToolPlanSucceeded => '已更新计划';
+
+  @override
+  String get timelineToolPlanRunning => '正在更新计划';
+
+  @override
+  String get timelineToolPlanFailed => '计划更新失败';
+
+  @override
+  String get timelineToolWorkflowSucceeded => '已更新工作流';
+
+  @override
+  String get timelineToolWorkflowRunning => '正在更新工作流';
+
+  @override
+  String get timelineToolWorkflowFailed => '工作流更新失败';
+
+  @override
+  String get timelineToolLspSucceeded => '已查询代码';
+
+  @override
+  String get timelineToolLspRunning => '正在查询代码';
+
+  @override
+  String get timelineToolLspFailed => '代码查询失败';
+
+  @override
+  String get timelineToolWaitSucceeded => '已等待';
+
+  @override
+  String get timelineToolWaitRunning => '正在等待';
+
+  @override
+  String get timelineToolWaitFailed => '等待失败';
 
   @override
   String timelineToolCompleted(String name) {
@@ -2087,6 +2272,24 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineWebSearchFinding => '正在页内查找';
+
+  @override
+  String get timelineWebSearchSearched => '已搜索网页';
+
+  @override
+  String get timelineWebSearchOpened => '已打开网页';
+
+  @override
+  String get timelineWebSearchFound => '已查找页面内容';
+
+  @override
+  String get timelineWebSearchFailed => '网页搜索失败';
+
+  @override
+  String get timelineWebSearchOpenFailed => '打开网页失败';
+
+  @override
+  String get timelineWebSearchFindFailed => '页内查找失败';
 
   @override
   String get timelineWebSearchResults => '结果链接';
