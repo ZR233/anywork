@@ -494,6 +494,37 @@ void main() {
       );
     },
   );
+
+  test(
+    'typed wait presentation survives FRB adapter without JSON parsing',
+    () async {
+      final bridge = _GeneratedTimeline(
+        dto.BridgeTimelineBaseline(
+          subscriptionId: 'sub-wait',
+          version: BigInt.from(7),
+          items: [_wireWaitItem()],
+          before: null,
+          hasOlder: false,
+        ),
+      );
+      final connection = FrbTimelineConnection(bridge);
+      addTearDown(connection.close);
+
+      final initial = await connection.initial();
+      final wait = initial.items.single.item.tool?.wait;
+      expect(wait, isNotNull);
+      expect(wait!.state, ThreadWaitStateView.waiting);
+      expect(wait.messagesReady, isNull);
+      final intent = wait.intent as ThreadWaitEventsIntentView;
+      expect(intent.timeoutMs, 60000);
+      expect(intent.targets, hasLength(1));
+      expect(intent.targets.single.taskId, 'task:exec-1');
+      expect(intent.targets.single.toolName, 'exec');
+      expect(intent.targets.single.summary, 'cargo test');
+      expect(intent.targets.single.status, ThreadWaitTargetStatusView.running);
+      expect(intent.targets.single.summaryTruncated, isTrue);
+    },
+  );
 }
 
 dto.BridgeTimelineBaseline _baseline({
@@ -508,6 +539,46 @@ dto.BridgeTimelineBaseline _baseline({
   items: [_wireItem(source: source)],
   before: before,
   hasOlder: hasOlder,
+);
+
+dto.BridgeTimelineItem _wireWaitItem() => dto.BridgeTimelineItem(
+  source: const dto.BridgeTimelineItemSource.content(),
+  item: item_dto.BridgeThreadItem(
+    id: 'tool:wait-1',
+    threadId: 'thread-A',
+    turnId: 'turn-7',
+    ordinal: BigInt.from(4),
+    revision: BigInt.from(1),
+    createdAt: 1700000000,
+    updatedAt: 1700000001,
+    state: item_dto.BridgeThreadItemState.tool(
+      invocation: const item_dto.BridgeThreadToolInvocation(
+        toolCallId: 'call-wait',
+        name: 'wait',
+        arguments: '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
+      ),
+      state: const item_dto.BridgeThreadToolState.running(streamedOutput: ''),
+      wait: item_dto.BridgeThreadWaitPresentation(
+        intent: item_dto.BridgeThreadWaitIntent.events(
+          targets: const [
+            item_dto.BridgeThreadWaitTarget(
+              taskId: 'task:exec-1',
+              toolName: 'exec',
+              summary: 'cargo test',
+              summaryTruncated: true,
+              status: item_dto.BridgeThreadWaitTargetStatus.running,
+            ),
+          ],
+          timeoutMs: BigInt.from(60000),
+        ),
+        state: item_dto.BridgeThreadWaitState.waiting,
+      ),
+    ),
+  ),
+  saved: true,
+  lifecycle: dto.BridgeTimelineLifecycle.streaming,
+  omittedBytes: BigInt.zero,
+  details: const [],
 );
 
 dto.BridgeTimelineItem _wireItem({

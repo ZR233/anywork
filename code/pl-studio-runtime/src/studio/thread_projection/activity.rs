@@ -387,7 +387,31 @@ fn tool_entry(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolEn
         // on older v2 records that predate the field.
         ordinal: task.started_sequence,
         started_at: None,
+        wait: wait_presentation(state, task),
     }
+}
+
+fn wait_presentation(
+    state: &ThreadSnapshot,
+    task: &TaskRecord,
+) -> Option<pl_protocol::ThreadWaitPresentation> {
+    if !matches!(task.tool_id.as_str(), "wait" | "sleep") {
+        return None;
+    }
+    let arguments = call_arguments(state, &task.call_id)?;
+    let activity_state = tool_state(state, task);
+    let tool_lifecycle = match activity_state {
+        ThreadActivityToolState::Cancelling => pl_protocol::ThreadToolState::Cancelling(
+            pl_protocol::CancellingThreadTool::new(String::new()),
+        ),
+        ThreadActivityToolState::Finished => return None,
+        ThreadActivityToolState::Running | ThreadActivityToolState::AwaitingApproval => {
+            pl_protocol::ThreadToolState::Running(
+                pl_protocol::RunningThreadTool::new(String::new()),
+            )
+        }
+    };
+    super::wait::project_wait(Some(state), &task.tool_id, &arguments, &tool_lifecycle)
 }
 
 /// 工具条目的参数事实：完整性判断与摘要。
@@ -915,6 +939,7 @@ impl ToolDetailSource {
             output,
             ordinal: self.entry.ordinal,
             started_at: self.entry.started_at,
+            wait: self.entry.wait.clone(),
         }
     }
 }

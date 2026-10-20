@@ -5,6 +5,7 @@ mod content;
 mod inference;
 mod skill;
 mod tool;
+mod wait;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,7 @@ pub use content::*;
 pub use inference::*;
 pub use skill::*;
 pub use tool::*;
+pub use wait::*;
 
 /// Timeline 的唯一持久条目。`ordinal` 在首次插入时固定。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -186,7 +188,14 @@ impl ThreadItem {
                 )
                 // A failed call still owns the Q&A fact it already asked for; failing the tool
                 // never makes the user's accepted answer disappear from history.
-                .with_user_input(item.user_input().cloned()),
+                .with_user_input(item.user_input().cloned())
+                .with_wait(item.wait().map(|wait| {
+                    ThreadWaitPresentation::new(
+                        wait.intent().clone(),
+                        ThreadWaitState::Failed,
+                        None,
+                    )
+                })),
             ),
             ThreadItemState::Agent(item) => ThreadItemState::Agent(ThreadAgentItem::new(
                 item.identity().clone(),

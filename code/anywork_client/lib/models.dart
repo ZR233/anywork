@@ -29,6 +29,7 @@ export 'src/models/thread_activity_models.dart';
 export 'src/models/thread_directory_models.dart';
 export 'src/models/thread_models.dart';
 export 'src/models/thread_preparation_models.dart';
+export 'src/models/thread_wait_models.dart';
 export 'src/models/timeline_models.dart';
 export 'src/models/token_format.dart';
 export 'src/models/turn_models.dart';

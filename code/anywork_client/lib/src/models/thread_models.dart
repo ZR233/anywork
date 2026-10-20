@@ -4,6 +4,7 @@ import 'interaction_models.dart';
 import 'runtime_models.dart';
 import 'studio_enums.dart';
 import 'thread_activity_models.dart';
+import 'thread_wait_models.dart';
 import 'thread_directory_models.dart';
 import 'timeline_models.dart';
 import 'turn_models.dart';
@@ -884,6 +885,7 @@ final class ThreadToolItemStateView extends ThreadItemStateView {
     required this.invocation,
     required this.lifecycle,
     this.userInput,
+    this.wait,
   });
 
   final ThreadToolInvocationView invocation;
@@ -891,6 +893,9 @@ final class ThreadToolItemStateView extends ThreadItemStateView {
 
   /// 这条调用携带的普通问答历史；只有真正发起问答的调用才有。
   final ThreadToolUserInputView? userInput;
+
+  /// Typed wait/sleep presentation; only wait/sleep calls with legal parameters have it.
+  final ThreadWaitPresentationView? wait;
 }
 
 class ThreadAgentIdentityView {
@@ -1269,6 +1274,7 @@ class ThreadItemView {
       :final invocation,
       :final lifecycle,
       :final userInput,
+      :final wait,
     ) =>
       TimelineToolPart(
         taskId: invocation.taskId,
@@ -1278,6 +1284,7 @@ class ThreadItemView {
         name: invocation.name,
         arguments: invocation.arguments,
         userInput: userInput,
+        wait: wait,
         result: switch (lifecycle) {
           RunningThreadToolView(:final streamedOutput) ||
           CancellingThreadToolView(:final streamedOutput) => streamedOutput,
@@ -1442,11 +1449,13 @@ class ThreadItemView {
           invocation: final currentInvocation,
           lifecycle: final currentLifecycle,
           userInput: final currentUserInput,
+          wait: final currentWait,
         ),
         ThreadToolItemStateView(
           invocation: final shellInvocation,
           lifecycle: final shellLifecycle,
           userInput: final shellUserInput,
+          wait: final shellWait,
         ),
       ) =>
         ThreadToolItemStateView(
@@ -1473,6 +1482,7 @@ class ThreadItemView {
             (final current?, final shell?) => shell.withTextsFrom(current),
             (_, final shell) => shell,
           },
+          wait: shellWait ?? currentWait,
         ),
       _ when current.runtimeType == shell.runtimeType => shell,
       _ => null,
@@ -1545,6 +1555,7 @@ class ThreadItemView {
         :final invocation,
         :final lifecycle,
         :final userInput,
+        :final wait,
       ):
         switch (field) {
           case ThreadToolArgumentsFieldView():
@@ -1555,6 +1566,7 @@ class ThreadItemView {
                 ),
                 lifecycle: lifecycle,
                 userInput: userInput,
+                wait: wait,
               ),
               omittedUnits: omittedUnits,
             );
@@ -1564,6 +1576,7 @@ class ThreadItemView {
                 invocation: invocation,
                 lifecycle: _applyToolOutput(lifecycle, change),
                 userInput: userInput,
+                wait: wait,
               ),
               omittedUnits: omittedUnits,
             );
@@ -1578,6 +1591,7 @@ class ThreadItemView {
                     ? _withToolArtifacts(lifecycle, const [])
                     : lifecycle,
                 userInput: userInput,
+                wait: wait,
               ),
               omittedUnits: omittedUnits,
             );
@@ -1603,6 +1617,7 @@ class ThreadItemView {
               state: ThreadToolItemStateView(
                 invocation: invocation,
                 lifecycle: lifecycle,
+                wait: wait,
                 userInput: userInput.withText(
                   questionIndex,
                   part,
@@ -1760,6 +1775,7 @@ ThreadItemStateView? _convergeState(
         invocation: invocation,
         lifecycle: _convergeToolLifecycle(a.lifecycle, b.lifecycle),
         userInput: userInput as ThreadToolUserInputView?,
+        wait: b.wait ?? a.wait,
       );
     case (ThreadRawItemStateView a, ThreadRawItemStateView b):
       final payloads = _convergeRawPayloads(a.payloads, b.payloads);

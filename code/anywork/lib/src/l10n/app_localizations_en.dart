@@ -3682,4 +3682,98 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountProtocolCustom => 'Custom (OpenAI compatible)';
+
+  @override
+  String get timelineWaitToolsTitle => 'Waiting for tools';
+
+  @override
+  String get timelineWaitMessagesTitle =>
+      'Waiting for a subagent or new message';
+
+  @override
+  String get timelineWaitTimerTitle => 'Timer';
+
+  @override
+  String get timelineWaitTimerElapsed => 'Timer elapsed';
+
+  @override
+  String get timelineWaitReady => 'A waited source is ready';
+
+  @override
+  String get timelineWaitMessagesReady => 'A new message arrived';
+
+  @override
+  String get timelineWaitTimedOut => 'Wait timed out';
+
+  @override
+  String get timelineWaitCancelled => 'Wait cancelled';
+
+  @override
+  String get timelineWaitFailed => 'Wait failed';
+
+  @override
+  String get timelineWaitInterrupted => 'Wait interrupted';
+
+  @override
+  String timelineWaitTargetCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count tasks',
+      one: '1 task',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get timelineWaitMessageSource => 'New messages';
+
+  @override
+  String timelineWaitMaxDuration(String duration) {
+    return 'up to $duration';
+  }
+
+  @override
+  String timelineWaitTimerDuration(String duration) {
+    return '$duration';
+  }
+
+  @override
+  String get timelineWaitMessagesMayWake =>
+      'A new message can wake this wait early';
+
+  @override
+  String get timelineWaitAnyReadyRule =>
+      'Returns when any selected task or a new message is ready';
+
+  @override
+  String get timelineWaitDiagnostics => 'Diagnostics';
+
+  @override
+  String get timelineWaitUnknownStatus => 'Unknown';
+
+  @override
+  String get timelineWaitStatusRunning => 'Running';
+
+  @override
+  String get timelineWaitStatusSucceeded => 'Succeeded';
+
+  @override
+  String get timelineWaitStatusFailed => 'Failed';
+
+  @override
+  String get timelineWaitStatusCancelled => 'Cancelled';
+
+  @override
+  String get timelineWaitStatusInterrupted => 'Interrupted';
+
+  @override
+  String get conversationActivityWaitingTools => 'Waiting for tools';
+
+  @override
+  String get conversationActivityWaitingMessages =>
+      'Waiting for a subagent or new message';
+
+  @override
+  String get conversationActivityWaitingTimer => 'Timer';
 }

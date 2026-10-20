@@ -4585,6 +4585,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
         :final invocation,
         :final lifecycle,
         :final userInput,
+        :final wait,
       ):
         total += _stringBytes(invocation.toolCallId);
         total += _stringBytes(invocation.callId);
@@ -4594,6 +4595,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
         total += _stringBytes(invocation.taskId);
         total += _toolLifecycleBytes(lifecycle);
         total += _userInputBytes(userInput);
+        total += _waitBytes(wait);
       case ThreadAgentItemStateView(:final identity, :final lifecycle):
         total += _stringBytes(identity.id);
         total += _stringBytes(identity.path);
@@ -4717,6 +4719,22 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
   /// 不会成为内容字段，也无法按字段读详情，只能原样随预览交付，因此按实际字节计入
   /// 不可缩结构，不能让固定壳替任意 String 免单。有匹配问题的答案值仍只经该字段的
   /// 正文额度、total 与详情引用计费，不在这里重复计。
+  int _waitBytes(ThreadWaitPresentationView? wait) {
+    if (wait == null) return 0;
+    var total = _containerSlotBytes;
+    switch (wait.intent) {
+      case ThreadWaitEventsIntentView(:final targets):
+        for (final target in targets) {
+          total += _stringBytes(target.taskId);
+          total += _stringBytes(target.toolName);
+          total += _stringBytes(target.summary);
+        }
+      case ThreadWaitTimerIntentView():
+        total += _containerSlotBytes;
+    }
+    return total;
+  }
+
   int _userInputBytes(ThreadToolUserInputView? userInput) {
     if (userInput == null) return 0;
     var total = _containerSlotBytes + _stringBytes(userInput.interactionId);
@@ -4779,6 +4797,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
         :final invocation,
         :final lifecycle,
         :final userInput,
+        :final wait,
       ):
         return item.copyWith(
           state: ThreadToolItemStateView(
@@ -4787,6 +4806,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
             ),
             lifecycle: _cappedToolLifecycle(lifecycle, budget),
             userInput: _cappedUserInput(userInput, budget),
+            wait: wait,
           ),
         );
       case ThreadRawItemStateView(
@@ -5386,6 +5406,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
         :final invocation,
         :final lifecycle,
         :final userInput,
+        wait: _,
       ):
         fields[const ThreadToolArgumentsFieldView()] = invocation.arguments;
         fields[const ThreadToolResultFieldView()] = _toolResultText(lifecycle);

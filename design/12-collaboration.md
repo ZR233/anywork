@@ -222,7 +222,9 @@ spawn/send 收据仅表示消息受理。父代理绑定真实 agentId 和本轮
 
 终态提交后，完整报告以稳定 child/终态 commit 消息身份写入父 Thread inbox，重试幂等；固定终态水位
 禁止混入后续 Turn 输出。wait 只等待就绪，消息通过下一模型请求进入上下文，不再另外查询提交
-或返回重复报告。空 taskIds 等待子代理消息，工具 taskIds 仅引用工具任务。正常超时不机械轮询。
+或返回重复报告。空 taskIds 等待子代理等 Thread 消息，工具 taskIds 仅引用工具任务，不能传入
+agentId 或裸 callId。指定任务时仍可被新消息提前唤醒，`sleep` 回执也是普通工具任务；统一就绪、
+截止点与取消语义见 [14](./14-runtime-host.md) §14.4–14.5。正常超时不机械轮询。
 
 显式恢复时核对已保存 child 终态与父 inbox 并补齐缺失通知；历史查询不激活模型。Turn 结束
 不关闭 Thread、不取消跨 Turn 后台任务、不清理 worktree。read_agent_session 保留为诊断与

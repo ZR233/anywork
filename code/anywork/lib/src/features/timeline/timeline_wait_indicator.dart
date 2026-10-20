@@ -6,7 +6,7 @@ import '../../app/theme/studio_tokens.dart';
 
 /// Timeline 专用的小型“活时间线”脉冲。
 ///
-/// 三颗陶土色节点沿时间线依次呼吸，只强调当前活动的等待，避免通用大 spinner。
+/// 三颗蓝灰活动色节点沿时间线依次呼吸，只强调当前活动的等待，避免通用大 spinner。
 /// 动画由受控 [AnimationController] 驱动：`MediaQuery.disableAnimationsOf` 或
 /// `TickerMode` 禁用时不启动循环 ticker，改为绘制同尺寸的静态节点。整个组件
 /// 包在 [ExcludeSemantics] 中，装饰性节点不参与朗读；稳定、可参数化的 key 由

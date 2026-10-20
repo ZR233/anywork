@@ -322,6 +322,7 @@ pub(in crate::studio) fn project_effect_items(
     // 只从调用事实重建状态：问答属于 interaction 事实，不能被工具状态转移抹掉。已提交正文里的问答在
     // 这里原地保留，随后的交互投影才覆盖成本次 effect 的权威版本。
     preserve_user_input(&mut items, existing);
+    preserve_wait(&mut items, existing);
     // 问答与计划确认是同一个 canonical interaction 的派生投影，落在发起它的那次工具调用自己的条目上
     // （提问工具或 plan_submit），不建立第二条持久化记录。交互身份给出它所属的 call，条目因此保留
     // ID、ordinal 与创建时间，只更新问答正文；同一次 effect 里刚投影的条目优先，其次是已提交的
@@ -449,7 +450,38 @@ fn preserve_user_input(items: &mut [ThreadItem], existing: &BTreeMap<String, Thr
         let Some(tool) = item.tool() else {
             continue;
         };
-        let state = ThreadItemState::Tool(tool.clone().with_user_input(Some(user_input)));
+        let state = ThreadItemState::Tool(
+            tool.clone()
+                .with_user_input(Some(user_input))
+                .with_wait(tool.wait().cloned()),
+        );
+        *item = item.clone().with_state(state);
+    }
+}
+
+/// Keeps one call's committed wait presentation when a later projection rebuilds the same call.
+fn preserve_wait(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadItem>) {
+    for item in items {
+        if item.tool().is_none_or(|tool| tool.wait().is_some()) {
+            continue;
+        }
+        let Some(previous) = existing.get(&item.id).and_then(|saved| saved.tool()) else {
+            continue;
+        };
+        let Some(wait) = previous.wait().cloned() else {
+            continue;
+        };
+        let Some(tool) = item.tool() else {
+            continue;
+        };
+        if tool.state().is_terminal() {
+            continue;
+        }
+        let state = ThreadItemState::Tool(
+            tool.clone()
+                .with_user_input(tool.user_input().cloned())
+                .with_wait(Some(wait)),
+        );
         *item = item.clone().with_state(state);
     }
 }

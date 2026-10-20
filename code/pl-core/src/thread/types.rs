@@ -1178,6 +1178,8 @@ pub enum ThreadError {
     TaskAccessExpired,
     #[error("a task cannot wait for itself")]
     TaskSelfWait,
+    #[error("task wait duration cannot be represented by the monotonic clock")]
+    InvalidWaitTimeout,
     #[error("Thread owner is closed")]
     Closed,
     #[error("request cancelled")]

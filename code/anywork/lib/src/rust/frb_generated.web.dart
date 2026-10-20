@@ -202,6 +202,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_authenticate_ssh_server_request(dynamic raw);
 
   @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw);
+
+  @protected
   BridgeAccountUsageData dco_decode_box_autoadd_bridge_account_usage_data(
     dynamic raw,
   );
@@ -588,6 +591,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_thread_user_input_field_part(dynamic raw);
 
   @protected
+  BridgeThreadWaitPresentation
+  dco_decode_box_autoadd_bridge_thread_wait_presentation(dynamic raw);
+
+  @protected
+  BridgeThreadWaitTargetStatus
+  dco_decode_box_autoadd_bridge_thread_wait_target_status(dynamic raw);
+
+  @protected
   BridgeTimelineBaseline dco_decode_box_autoadd_bridge_timeline_baseline(
     dynamic raw,
   );
@@ -799,6 +810,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadSubscriptionUpdate
   dco_decode_box_bridge_thread_subscription_update(dynamic raw);
+
+  @protected
+  BridgeThreadWaitPresentation dco_decode_box_bridge_thread_wait_presentation(
+    dynamic raw,
+  );
 
   @protected
   BridgeTimelineItem dco_decode_box_bridge_timeline_item(dynamic raw);
@@ -1721,6 +1737,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadWaitIntent dco_decode_bridge_thread_wait_intent(dynamic raw);
+
+  @protected
+  BridgeThreadWaitPresentation dco_decode_bridge_thread_wait_presentation(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeThreadWaitState dco_decode_bridge_thread_wait_state(dynamic raw);
+
+  @protected
+  BridgeThreadWaitTarget dco_decode_bridge_thread_wait_target(dynamic raw);
+
+  @protected
+  BridgeThreadWaitTargetStatus dco_decode_bridge_thread_wait_target_status(
+    dynamic raw,
+  );
+
+  @protected
   BridgeTimelineBaseline dco_decode_bridge_timeline_baseline(dynamic raw);
 
   @protected
@@ -2181,6 +2216,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_thread_user_input_question(dynamic raw);
 
   @protected
+  List<BridgeThreadWaitTarget> dco_decode_list_bridge_thread_wait_target(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeTimelineChange> dco_decode_list_bridge_timeline_change(
     dynamic raw,
   );
@@ -2264,6 +2304,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
@@ -2365,6 +2408,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadWaitPresentation?
+  dco_decode_opt_box_autoadd_bridge_thread_wait_presentation(dynamic raw);
+
+  @protected
+  BridgeThreadWaitTargetStatus?
+  dco_decode_opt_box_autoadd_bridge_thread_wait_target_status(dynamic raw);
+
+  @protected
   BridgeTimelineUpdate? dco_decode_opt_box_autoadd_bridge_timeline_update(
     dynamic raw,
   );
@@ -2430,6 +2481,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeThreadStorageState? dco_decode_opt_box_bridge_thread_storage_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeThreadWaitPresentation?
+  dco_decode_opt_box_bridge_thread_wait_presentation(dynamic raw);
 
   @protected
   List<BridgeUserQuestionOption>?
@@ -2657,6 +2712,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_box_autoadd_authenticate_ssh_server_request(
     SseDeserializer deserializer,
   );
+
+  @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
   BridgeAccountUsageData sse_decode_box_autoadd_bridge_account_usage_data(
@@ -3155,6 +3213,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadWaitPresentation
+  sse_decode_box_autoadd_bridge_thread_wait_presentation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitTargetStatus
+  sse_decode_box_autoadd_bridge_thread_wait_target_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTimelineBaseline sse_decode_box_autoadd_bridge_timeline_baseline(
     SseDeserializer deserializer,
   );
@@ -3422,6 +3492,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadSubscriptionUpdate
   sse_decode_box_bridge_thread_subscription_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitPresentation sse_decode_box_bridge_thread_wait_presentation(
     SseDeserializer deserializer,
   );
 
@@ -4576,6 +4651,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadWaitIntent sse_decode_bridge_thread_wait_intent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitPresentation sse_decode_bridge_thread_wait_presentation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitState sse_decode_bridge_thread_wait_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitTarget sse_decode_bridge_thread_wait_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitTargetStatus sse_decode_bridge_thread_wait_target_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTimelineBaseline sse_decode_bridge_timeline_baseline(
     SseDeserializer deserializer,
   );
@@ -5150,6 +5250,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeThreadWaitTarget> sse_decode_list_bridge_thread_wait_target(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeTimelineChange> sse_decode_list_bridge_timeline_change(
     SseDeserializer deserializer,
   );
@@ -5247,6 +5352,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
   BridgeHistoryFault? sse_decode_opt_box_autoadd_bridge_history_fault(
@@ -5378,6 +5486,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadWaitPresentation?
+  sse_decode_opt_box_autoadd_bridge_thread_wait_presentation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitTargetStatus?
+  sse_decode_opt_box_autoadd_bridge_thread_wait_target_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTimelineUpdate? sse_decode_opt_box_autoadd_bridge_timeline_update(
     SseDeserializer deserializer,
   );
@@ -5455,6 +5575,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeThreadStorageState? sse_decode_opt_box_bridge_thread_storage_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeThreadWaitPresentation?
+  sse_decode_opt_box_bridge_thread_wait_presentation(
     SseDeserializer deserializer,
   );
 
@@ -5733,6 +5859,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     AuthenticateSshServerRequest self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_bridge_account_usage_data(
@@ -6287,6 +6416,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_thread_wait_presentation(
+    BridgeThreadWaitPresentation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_thread_wait_target_status(
+    BridgeThreadWaitTargetStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_timeline_baseline(
     BridgeTimelineBaseline self,
     SseSerializer serializer,
@@ -6592,6 +6733,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_bridge_thread_subscription_update(
     BridgeThreadSubscriptionUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_thread_wait_presentation(
+    BridgeThreadWaitPresentation self,
     SseSerializer serializer,
   );
 
@@ -8003,6 +8150,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_thread_wait_intent(
+    BridgeThreadWaitIntent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_wait_presentation(
+    BridgeThreadWaitPresentation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_wait_state(
+    BridgeThreadWaitState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_wait_target(
+    BridgeThreadWaitTarget self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_thread_wait_target_status(
+    BridgeThreadWaitTargetStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_timeline_baseline(
     BridgeTimelineBaseline self,
     SseSerializer serializer,
@@ -8690,6 +8867,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_thread_wait_target(
+    List<BridgeThreadWaitTarget> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_timeline_change(
     List<BridgeTimelineChange> self,
     SseSerializer serializer,
@@ -8811,6 +8994,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_bridge_history_fault(
@@ -8951,6 +9137,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_thread_wait_presentation(
+    BridgeThreadWaitPresentation? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_thread_wait_target_status(
+    BridgeThreadWaitTargetStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_timeline_update(
     BridgeTimelineUpdate? self,
     SseSerializer serializer,
@@ -9040,6 +9238,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_bridge_thread_storage_state(
     BridgeThreadStorageState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_bridge_thread_wait_presentation(
+    BridgeThreadWaitPresentation? self,
     SseSerializer serializer,
   );
 
