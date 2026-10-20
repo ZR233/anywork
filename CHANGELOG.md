@@ -5,6 +5,25 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.23.0](https://github.com/ZR233/anywork/compare/v6.22.0...v6.23.0) (2026-10-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** Rust 调用方须将 AttachmentRecord.storage_path 改为 blob_relative_path，并通过存储层读取附件。磁盘序列化字段仍为 storagePath，已有附件与历史数据保持不变。
+* **studio:** StudioPaths、StudioThreadSpec、WorkspaceFileBackend 及远端归档装配接口已更新；新写入使用项目分组的数据布局与 .anywork/sessions 执行目录。已有 v2 数据自动保全迁移，不保留旧平铺路径作为正常读写入口。
+
+### Features
+
+* **studio:** 按项目组织会话存储与临时文件 ([#115](https://github.com/ZR233/anywork/issues/115)) ([dc570be](https://github.com/ZR233/anywork/commit/dc570be568d149e21810c578d49eb3594bace35c))
+* **tool:** 生图工具异步等待与图片展示卡片 ([#112](https://github.com/ZR233/anywork/issues/112)) ([178a41f](https://github.com/ZR233/anywork/commit/178a41f6781b53c5ec05ea7c53d36d13587b4ed4))
+
+
+### Bug Fixes
+
+* **studio:** 统一存储路径语义并修复图片提交 ([3637c71](https://github.com/ZR233/anywork/commit/3637c7187b0fbd6b65bf9d9e6381f1aa34b8bcc0))
+* **studio:** 统一时间线活动组样式与耗时摘要 ([#122](https://github.com/ZR233/anywork/issues/122)) ([5883ba0](https://github.com/ZR233/anywork/commit/5883ba00f451604d727335b5ad4c3c028c7b62ea))
+
 ## [6.22.0](https://github.com/ZR233/anywork/compare/v6.21.0...v6.22.0) (2026-10-20)
 
 
