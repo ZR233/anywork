@@ -520,7 +520,37 @@
   "timelineConnectionFailed": "Unable to synchronize messages. Current content is preserved.",
   "timelineReasoningFallback": "Thinking",
   "timelineReasoningActive": "Thinking",
-  "timelineReasoningCompleted": "Thought",
+  "timelineReasoningEnded": "Thought ended",
+  "timelineReasoningFailed": "Thinking failed",
+  "timelineReasoningCancelled": "Thinking cancelled",
+  "timelineReasoningElapsedUnderSecond": "Thought for less than 1s",
+  "timelineReasoningElapsedSeconds": "Thought for {seconds}s",
+  "@timelineReasoningElapsedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineReasoningElapsedMinutes": "Thought for {minutes}m",
+  "@timelineReasoningElapsedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineReasoningElapsedMinutesSeconds": "Thought for {minutes}m {seconds}s",
+  "@timelineReasoningElapsedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -618,6 +648,91 @@
   "timelineReadFileCompleted": "Read",
   "timelineReadFileReading": "Reading",
   "timelineReadFileFailed": "Unable to read",
+  "timelineToolEditSucceeded": "Edited",
+  "timelineToolEditRunning": "Editing",
+  "timelineToolEditFailed": "Couldn't edit",
+  "timelineToolPatchFilesMore": "{first}, and {more} more",
+  "@timelineToolPatchFilesMore": {
+    "placeholders": {
+      "first": {
+        "type": "String"
+      },
+      "more": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineSessionNoteName": "session note",
+  "timelineToolCommandSucceeded": "Ran",
+  "timelineToolCommandRunning": "Running",
+  "timelineToolCommandFailed": "Command failed",
+  "timelineToolStdinSucceeded": "Wrote input",
+  "timelineToolStdinRunning": "Writing input",
+  "timelineToolStdinFailed": "Input not written",
+  "timelineToolElapsedUnderSecond": "Took less than 1s",
+  "timelineToolElapsedSeconds": "Took {seconds}s",
+  "@timelineToolElapsedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolElapsedMinutes": "Took {minutes}m",
+  "@timelineToolElapsedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolElapsedMinutesSeconds": "Took {minutes}m {seconds}s",
+  "@timelineToolElapsedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolSearchSucceeded": "Searched",
+  "timelineToolSearchRunning": "Searching",
+  "timelineToolSearchFailed": "Search failed",
+  "timelineToolAgentSucceeded": "Spawned subagent",
+  "timelineToolAgentRunning": "Subagent running",
+  "timelineToolAgentFailed": "Subagent failed",
+  "timelineToolMessageSucceeded": "Sent message",
+  "timelineToolMessageRunning": "Sending message",
+  "timelineToolMessageFailed": "Message not sent",
+  "timelineToolCreateSucceeded": "Created directory",
+  "timelineToolCreateRunning": "Creating directory",
+  "timelineToolCreateFailed": "Directory not created",
+  "timelineToolDeleteSucceeded": "Deleted",
+  "timelineToolDeleteRunning": "Deleting",
+  "timelineToolDeleteFailed": "Not deleted",
+  "timelineToolCopySucceeded": "Copied",
+  "timelineToolCopyRunning": "Copying",
+  "timelineToolCopyFailed": "Not copied",
+  "timelineToolMoveSucceeded": "Moved",
+  "timelineToolMoveRunning": "Moving",
+  "timelineToolMoveFailed": "Not moved",
+  "timelineToolFetchSucceeded": "Fetched web page",
+  "timelineToolFetchRunning": "Fetching web page",
+  "timelineToolFetchFailed": "Web page not fetched",
+  "timelineToolPlanSucceeded": "Updated plan",
+  "timelineToolPlanRunning": "Updating plan",
+  "timelineToolPlanFailed": "Plan update failed",
+  "timelineToolWorkflowSucceeded": "Updated workflow",
+  "timelineToolWorkflowRunning": "Updating workflow",
+  "timelineToolWorkflowFailed": "Workflow update failed",
+  "timelineToolLspSucceeded": "Queried code",
+  "timelineToolLspRunning": "Querying code",
+  "timelineToolLspFailed": "Code query failed",
+  "timelineToolWaitSucceeded": "Waited",
+  "timelineToolWaitRunning": "Waiting",
+  "timelineToolWaitFailed": "Wait failed",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {
@@ -1165,6 +1280,12 @@
   "timelineWebSearchSearching": "Searching the web",
   "timelineWebSearchOpening": "Opening a web page",
   "timelineWebSearchFinding": "Finding text on a page",
+  "timelineWebSearchSearched": "Searched the web",
+  "timelineWebSearchOpened": "Opened a web page",
+  "timelineWebSearchFound": "Searched page text",
+  "timelineWebSearchFailed": "Web search failed",
+  "timelineWebSearchOpenFailed": "Couldn't open a web page",
+  "timelineWebSearchFindFailed": "Page search failed",
   "timelineWebSearchResults": "Result links",
   "timelineLspQueryTitle": "LSP query",
   "timelineLspQueryTitleWithDetail": "LSP query · {detail}",

@@ -3,12 +3,14 @@ import 'package:flutter/material.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
+import 'timeline_activity_row.dart';
 import 'timeline_wait_indicator.dart';
 
-/// Shared wait/sleep presentation for the live activity bar and historical tool cards.
-class TimelineWaitPanel extends StatelessWidget {
+/// 历史活动组内的等候成员：与其它成员同一轻量活动行，来源/规则/诊断在展开区。
+///
+/// 实时活动条继续只复用 [TimelineWaitDetails]，自己拥有专用头部样式。
+class TimelineWaitPanel extends StatefulWidget {
   const TimelineWaitPanel({
     required this.presentation,
     required this.identity,
@@ -21,81 +23,72 @@ class TimelineWaitPanel extends StatelessWidget {
   final Widget? diagnostics;
 
   @override
+  State<TimelineWaitPanel> createState() => _TimelineWaitPanelState();
+}
+
+class _TimelineWaitPanelState extends State<TimelineWaitPanel> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final presentation = widget.presentation;
+    final identity = widget.identity;
     final title = _waitTitle(context, presentation);
+    final rowLabel = _waitRowLabel(context, presentation);
     final subtitle = timelineWaitSubtitle(context, presentation);
     final waiting = presentation.state == ThreadWaitStateView.waiting;
-    final panel = StudioPanel(
-      key: StudioDriverKeys.waitingCard(identity),
-      backgroundColor: context.colors.surfaceContainerLow,
-      radius: StudioRadii.md,
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          key: ValueKey('wait-expand:$identity'),
-          maintainState: true,
-          initiallyExpanded: false,
-          dense: true,
-          tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          shape: const Border(),
-          collapsedShape: const Border(),
-          title: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              if (waiting)
-                const TimelineWaitIndicator(
-                  key: ValueKey('timeline-wait-pulse'),
-                )
-              else
-                Icon(
-                  _waitStateIcon(presentation.state),
-                  size: 16,
-                  color: _waitStateColor(context, presentation.state),
-                ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.text.labelLarge?.copyWith(
-                    color: context.colors.onSurface,
-                    fontWeight: FontWeight.w600,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          subtitle: subtitle == null
-              ? null
-              : Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
-                    subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.text.bodySmall?.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                      height: 1.35,
-                    ),
-                  ),
-                ),
-          children: [
-            TimelineWaitDetails(
-              presentation: presentation,
-              identity: identity,
-              diagnostics: diagnostics,
-            ),
-          ],
-        ),
-      ),
-    );
     return Semantics(
       container: true,
       label: subtitle == null ? title : '$title · $subtitle',
-      child: panel,
+      child: KeyedSubtree(
+        key: StudioDriverKeys.waitingCard(identity),
+        child: TimelineActivityTileTheme(
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              key: ValueKey('wait-expand:$identity'),
+              maintainState: true,
+              initiallyExpanded: _expanded,
+              onExpansionChanged: (expanded) =>
+                  setState(() => _expanded = expanded),
+              dense: true,
+              minTileHeight: 28,
+              showTrailingIcon: false,
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(
+                left: TimelineActivityRow.contentIndent,
+                bottom: 8,
+              ),
+              shape: const Border(),
+              collapsedShape: const Border(),
+              title: TimelineActivityRow(
+                icon: _waitStateIcon(presentation.state),
+                leading: waiting
+                    ? const TimelineWaitIndicator(
+                        key: ValueKey('timeline-wait-pulse'),
+                        dotSize: 4,
+                        gap: 2,
+                      )
+                    : null,
+                iconColor: waiting
+                    ? null
+                    : _waitStateColor(context, presentation.state),
+                label: rowLabel,
+                active: waiting,
+                expanded: _expanded,
+                tooltip: subtitle,
+              ),
+              children: [
+                TimelineWaitDetails(
+                  presentation: presentation,
+                  identity: identity,
+                  diagnostics: widget.diagnostics,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -276,6 +269,26 @@ String _waitTitle(BuildContext context, ThreadWaitPresentationView wait) {
       l10n.timelineWaitInterrupted,
     _ => l10n.timelineWaitToolsTitle,
   };
+}
+
+/// 行内等候摘要：事件等待给出数量与最长等待，计时器给出定时时长。
+///
+/// 来源明细、等待规则与诊断仍在该行展开区；悬浮提示读到完整摘要。
+String _waitRowLabel(BuildContext context, ThreadWaitPresentationView wait) {
+  final l10n = context.l10n;
+  final title = _waitTitle(context, wait);
+  final parts = switch (wait.intent) {
+    ThreadWaitEventsIntentView(:final targets, :final timeoutMs) => [
+      title,
+      if (targets.isNotEmpty) l10n.timelineWaitTargetCount(targets.length),
+      l10n.timelineWaitMaxDuration(_formatDuration(timeoutMs)),
+    ],
+    ThreadWaitTimerIntentView(:final durationMs) => [
+      title,
+      l10n.timelineWaitTimerDuration(_formatDuration(durationMs)),
+    ],
+  };
+  return parts.join(' · ');
 }
 
 String? timelineWaitSubtitle(
