@@ -95,7 +95,6 @@ class AccountModelReadout extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: context.text.bodySmall?.copyWith(
                     color: context.colors.onSurfaceVariant,
-                    fontFamily: 'Consolas',
                   ),
                 ),
                 Text(

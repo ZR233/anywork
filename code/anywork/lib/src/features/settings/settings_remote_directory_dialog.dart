@@ -217,7 +217,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
               '${widget.server.username}@${widget.server.hostName}:${widget.server.port}',
               style: context.text.bodySmall?.copyWith(
                 color: context.colors.onSurfaceVariant,
-                fontFamily: 'monospace',
+                fontFamily: studioCodeFontFamily,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -323,7 +323,10 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
                 key: StudioDriverKeys.sshDirectoryEntry(entry.path),
                 leading: const Icon(Icons.folder_outlined),
                 title: Tooltip(
-                  message: entry.path,
+                  richMessage: TextSpan(
+                    text: entry.path,
+                    style: const TextStyle(fontFamily: studioCodeFontFamily),
+                  ),
                   child: Text(
                     entry.name,
                     maxLines: 1,
@@ -348,6 +351,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
     final field = TextField(
       key: StudioDriverKeys.sshDirectoryPathInput,
       controller: _pathController,
+      style: const TextStyle(fontFamily: studioCodeFontFamily),
       decoration: InputDecoration(
         labelText: context.l10n.settingsSshDirectoryPathLabel,
         hintText: context.l10n.settingsSshDirectoryPathHint,
@@ -420,7 +424,9 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
             key: listing == null
                 ? null
                 : StudioDriverKeys.sshDirectoryCurrent(listing.path),
-            style: context.text.bodyMedium?.copyWith(fontFamily: 'monospace'),
+            style: context.text.bodyMedium?.copyWith(
+              fontFamily: studioCodeFontFamily,
+            ),
           ),
         ),
       ],

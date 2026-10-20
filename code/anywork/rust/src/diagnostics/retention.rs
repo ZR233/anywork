@@ -182,7 +182,8 @@ fn is_legacy_log_name(file_name: &str) -> bool {
     }
     (file_name.starts_with("studio.")
         || file_name.starts_with("error-")
-        || file_name.starts_with("dart-error-"))
+        || file_name.starts_with("dart-error-")
+        || file_name.starts_with("instance-"))
         && file_name.ends_with(".log")
 }
 

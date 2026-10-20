@@ -89,8 +89,9 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 21] = [
+pub const GUI_SCENARIOS: [&str; 22] = [
     "gui",
+    "single-instance",
     "storage-compaction",
     "stress",
     "stress-body",
@@ -1898,7 +1899,8 @@ pub fn gui_script() -> Vec<Step> {
     ]
 }
 
-pub fn gui_stress_script() -> Vec<Step> {
+/// One paced turn for native single-instance and hidden-window observation.
+pub fn gui_single_instance_script() -> Vec<Step> {
     let mut steps = gui_script();
     for step in &mut steps {
         if matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_PROMPT) {
@@ -1914,6 +1916,11 @@ pub fn gui_stress_script() -> Vec<Step> {
             *text = text.replace(GUI_PROMPT, GUI_STRESS_PROMPT);
         }
     }
+    steps
+}
+
+pub fn gui_stress_script() -> Vec<Step> {
+    let mut steps = gui_single_instance_script();
     for ordinal in 1..=GUI_STRESS_SESSION_COUNT {
         let prompt = format!("{GUI_STRESS_FOLLOWUP_PROMPT_PREFIX} {ordinal}");
         let title_prompt = session_title_prompt(&prompt);

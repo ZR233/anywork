@@ -38,6 +38,37 @@ pub(crate) fn initialize() {
     INITIALIZE.call_once(initialize_once);
 }
 
+/// Pre-engine startup and activation records are synchronous and per-process: a redirect does
+/// not start the normal logging threads or contend with the live owner's rolling log writer.
+pub(crate) fn record_instance_diagnostic(event: &str, key: &str, code: &str) {
+    let code: String = code
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect();
+    let pid = std::process::id();
+    let line = format!("anywork-instance pid={pid} event={event} key={key} code={code}\n");
+    eprint!("{line}");
+    let directories = [
+        diagnostics_root().join("logs"),
+        std::env::temp_dir().join("anywork-diagnostics"),
+    ];
+    for directory in directories {
+        let write = (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&directory)?;
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(directory.join(format!("instance-{pid}-{}.log", unix_seconds())))?;
+            file.write_all(line.as_bytes())
+        })();
+        if write.is_ok() {
+            return;
+        }
+    }
+    report_fallback("cannot persist desktop instance diagnostic");
+}
+
 /// Flushes asynchronous diagnostics after Studio runtime shutdown completes.
 ///
 /// Idempotent and safe to call when diagnostics were never initialized: the live-owner command

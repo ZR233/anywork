@@ -80,9 +80,14 @@ class _AnyworkAppState extends ConsumerState<AnyworkApp> {
           supportedLocales: AppLocalizations.supportedLocales,
           routerConfig: _router,
           restorationScopeId: 'anywork-app',
-          builder: (context, child) => DesktopTrayHost(
-            enabled: widget.enableDesktopTray,
-            child: StudioShutdownOverlay(child: child ?? const SizedBox()),
+          // The builder observes Flutter's resolved locale, including system
+          // language changes, rather than resolving a second locale for fonts.
+          builder: (context, child) => Theme(
+            data: pureStudioTheme(locale: Localizations.localeOf(context)),
+            child: DesktopTrayHost(
+              enabled: widget.enableDesktopTray,
+              child: StudioShutdownOverlay(child: child ?? const SizedBox()),
+            ),
           ),
         ),
       ),

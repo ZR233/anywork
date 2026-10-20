@@ -2,6 +2,7 @@
 #define FLUTTER_MY_APPLICATION_H_
 
 #include <gtk/gtk.h>
+#include "studio_instance.h"
 
 G_DECLARE_FINAL_TYPE(MyApplication,
                      my_application,
@@ -16,6 +17,6 @@ G_DECLARE_FINAL_TYPE(MyApplication,
  *
  * Returns: a new #MyApplication.
  */
-MyApplication* my_application_new();
+MyApplication* my_application_new(anywork::DesktopInstanceBootstrap* bootstrap);
 
 #endif  // FLUTTER_MY_APPLICATION_H_

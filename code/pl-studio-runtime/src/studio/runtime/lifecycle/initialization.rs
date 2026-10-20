@@ -12,6 +12,11 @@ use super::super::background_task::{self, BackgroundTask};
 
 type Observer = Arc<dyn Fn(StudioStartupStage) + Send + Sync>;
 
+enum StartupSource {
+    Options(crate::StudioRuntimeOptions),
+    Lease(crate::StudioInstanceLease),
+}
+
 impl StudioRuntime {
     /// Initializes all global state before returning a usable runtime.
     pub async fn initialize(
@@ -26,12 +31,29 @@ impl StudioRuntime {
         options: crate::StudioRuntimeOptions,
         observer: Observer,
     ) -> Result<Self, StudioStartupError> {
+        Self::initialize_source(StartupSource::Options(options), observer).await
+    }
+
+    /// Initializes with a lease already acquired by the native desktop host, without relocking.
+    /// The host must retain its own lease until its process ends. Observer and cancellation
+    /// semantics are the same as `initialize_with_observer`.
+    pub async fn initialize_with_lease(
+        lease: crate::StudioInstanceLease,
+        observer: Observer,
+    ) -> Result<Self, StudioStartupError> {
+        Self::initialize_source(StartupSource::Lease(lease), observer).await
+    }
+
+    async fn initialize_source(
+        source: StartupSource,
+        observer: Observer,
+    ) -> Result<Self, StudioStartupError> {
         let cancellation = CancellationToken::new();
         let guard = cancellation.clone().drop_guard();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let (accepted, acceptance) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let result = Self::initialize_owned(options, observer.clone(), cancellation).await;
+            let result = Self::initialize_owned(source, observer.clone(), cancellation).await;
             if result.is_err() {
                 observer(StudioStartupStage::Failed);
             }
@@ -57,20 +79,27 @@ impl StudioRuntime {
     }
 
     async fn initialize_owned(
-        options: crate::StudioRuntimeOptions,
+        source: StartupSource,
         observer: Observer,
         cancellation: CancellationToken,
     ) -> Result<Self, StudioStartupError> {
         let _timing = crate::startup_timing::Stage::new("initialize_studio");
-        let resolved = options
-            .resolve()
-            .map_err(|error| environment("resolve_paths", error))?;
-        let lock_path = resolved.paths.runtime_lock();
-        let host = resolved.host;
-        let lock = tokio::task::spawn_blocking(move || RuntimeLock::acquire(&lock_path, host))
-            .await
-            .map_err(|error| internal("acquire_lock", error))?
-            .map_err(|error| environment("acquire_lock", error))?;
+        let (resolved, lock) = match source {
+            StartupSource::Lease(lease) => (lease.resolved, lease.lock),
+            StartupSource::Options(options) => {
+                let resolved = options
+                    .resolve()
+                    .map_err(|error| environment("resolve_paths", error))?;
+                let lock_path = resolved.paths.runtime_lock();
+                let host = resolved.host;
+                let lock =
+                    tokio::task::spawn_blocking(move || RuntimeLock::acquire(&lock_path, host))
+                        .await
+                        .map_err(|error| internal("acquire_lock", error))?
+                        .map_err(|error| environment("acquire_lock", error))?;
+                (Arc::new(resolved), Arc::new(lock))
+            }
+        };
         let home = resolved.paths.home().to_owned();
         let mut backup = tokio::task::spawn_blocking(move || StartupBackup::resume(&home))
             .await

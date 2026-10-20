@@ -66,8 +66,7 @@ Future<StudioShutdownReport> runStudioShutdown(
   }
 
   void recordProgressError(Object error, StackTrace stackTrace, String stage) {
-    // 无 runtime（未安装 / 第二实例）：不存在可观察的进度资源，跳过而不是伪造失败，
-    // 否则会把「确无 owner」误判为 second exit 1。
+    // 无 runtime（尚未安装）：不存在可观察的进度资源，跳过而不是伪造失败。
     if (error is StudioFailure &&
         error.code == StudioFailureCode.notInitialized) {
       return;

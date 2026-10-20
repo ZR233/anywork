@@ -10,9 +10,10 @@ use pl_provider_fixture::{
     FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS, ReadyFile, WebSearchFault,
     WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
     gui_plan_recovery_script, gui_question_history_script, gui_realtime_script, gui_script,
-    gui_shutdown_script, gui_statistics_script, gui_stress_body_large_script,
-    gui_stress_body_script, gui_stress_script, gui_timeline_history_script, gui_tool_scroll_script,
-    gui_wait_events_script, gui_web_search_script, gui_websocket_recovery_script,
+    gui_shutdown_script, gui_single_instance_script, gui_statistics_script,
+    gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
+    gui_timeline_history_script, gui_tool_scroll_script, gui_wait_events_script,
+    gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -184,6 +185,7 @@ async fn main() -> Result<()> {
         "tool-scroll" => {
             gui_tool_scroll_script(cfg!(windows) && !args.posix_exec, args.resource_lifecycle)
         }
+        "single-instance" => gui_single_instance_script(),
         "stress" => gui_stress_script(),
         "stress-body" => gui_stress_body_script(),
         "stress-body-large" => gui_stress_body_large_script(),

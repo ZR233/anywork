@@ -224,6 +224,7 @@ class InfoChip extends StatelessWidget {
             label,
             style: context.text.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
+              fontFamily: studioCodeFontFamily,
             ),
           ),
         ),
@@ -247,10 +248,7 @@ class InteractionCodeBlock extends StatelessWidget {
       horizontalScroll: false,
       backgroundColor: colors.surfaceContainerLow,
       borderColor: colors.outlineVariant,
-      textStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-        fontFamily: 'JetBrains Mono',
-        fontFamilyFallback: const ['Consolas', 'monospace'],
-      ),
+      textStyle: Theme.of(context).textTheme.bodySmall,
     );
   }
 }

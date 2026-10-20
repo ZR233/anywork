@@ -423,7 +423,25 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
           if (!_rustInitialized) {
             startupProgress.value = StudioStartupPhase.loadingBridge;
             final bridgeWatch = Stopwatch()..start();
-            await RustLib.init();
+            // Native startup owns the lease in this exact packaged library.
+            // FRB's default search can select a development library from CWD or
+            // environment, which would have a different set of Rust statics.
+            final executable = File(Platform.resolvedExecutable);
+            final bundle = Platform.isLinux
+                ? File(executable.resolveSymbolicLinksSync()).parent
+                : executable.parent;
+            final libraryPath = bundle.uri
+                .resolve(
+                  Platform.isWindows
+                      ? 'pl_studio_bridge.dll'
+                      : 'lib/libpl_studio_bridge.so',
+                )
+                .toFilePath();
+            await RustLib.init(
+              // FRB exposes custom loading through its generated entrypoint.
+              // ignore: invalid_use_of_internal_member
+              externalLibrary: ExternalLibrary.open(libraryPath),
+            );
             _rustInitialized = true;
             debugPrint(
               'startup_stage=load_bridge elapsed_ms=${bridgeWatch.elapsedMilliseconds}',

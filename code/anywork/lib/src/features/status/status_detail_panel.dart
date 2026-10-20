@@ -27,7 +27,6 @@ class StatusDetailPanel extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: context.text.labelSmall?.copyWith(
             color: context.colors.onSurfaceVariant,
-            fontFamily: 'Consolas',
             fontSize: 9.5,
             fontWeight: FontWeight.w600,
             letterSpacing: 1,

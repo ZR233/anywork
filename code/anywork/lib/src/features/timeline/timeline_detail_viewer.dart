@@ -464,7 +464,16 @@ class _TimelineDetailDialogState extends State<_TimelineDetailDialog> {
                   child: SelectableText(
                     _body.toString(),
                     key: StudioDriverKeys.timelineDetailText,
-                    style: context.text.bodySmall?.copyWith(height: 1.5),
+                    style: context.text.bodySmall?.copyWith(
+                      height: 1.5,
+                      fontFamily: switch (widget.field) {
+                        ThreadToolArgumentsFieldView() ||
+                        ThreadToolResultFieldView() ||
+                        ThreadToolOutputArtifactsFieldView() ||
+                        ThreadRawPayloadFieldView() => studioCodeFontFamily,
+                        _ => null,
+                      },
+                    ),
                   ),
                 ),
               ),

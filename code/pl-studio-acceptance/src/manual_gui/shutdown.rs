@@ -15,8 +15,8 @@
 //! * `normal`   — one durable turn, the typed cleanup acknowledgement, then the
 //!   real exit that must return code 0.
 //! * `reopen`   — reopen the same home and prove the saved turn is restored.
-//! * `busy`     — a second instance on the same home records the instance-lock
-//!   refusal; after it is truly closed the first instance continues and saves.
+//! * `busy`     — a duplicate activates the owner and exits before Flutter;
+//!   the original instance continues and saves.
 //! * `busy-reopen` — reopen the same home and prove that continued turn restored.
 //! * `duplicate`— a repeated exit request, seconds after the first arm, must
 //!   stay inside the single budget measured from the first arm.
@@ -34,7 +34,7 @@
 //!   runtime owner; the close must be a clean NotStarted exit 0.
 //! * `subscription-fault` — a Driver-only faulty shutdown-progress subscription
 //!   must surface a typed `progress` diagnostic and a non-zero exit.
-//! * `dart-error-fallback` — an unwritable `ANYWORK_HOME/studio` must fall back
+//! * `dart-error-fallback` — an unwritable `ANYWORK_HOME/studio/logs` must fall back
 //!   to the isolated `TMPDIR` and still record stage/correlation/stack.
 //! * `native-subtree-reclamation` — a scenario-owned stdio MCP server and its
 //!   SIGTERM-ignoring grandchild are proven live before any close, then the
@@ -68,11 +68,10 @@
 //!   the later of the two, so a grandchild that stops early can never stand in
 //!   for a parent that lingers to the native force-out.
 //!
-//! The second instance in the `busy` phase is closed through a real
-//! `WM_DELETE_WINDOW` on an isolated `Xvfb`, so the native GTK close hook is
-//! exercised (not the Dart exit the Driver covers). Nothing skipped is
-//! fabricated here. `coverage.json` lists every requirement as executed or not
-//! covered; a skipped branch is never written as passed.
+//! The duplicate in the `busy` phase exits before Flutter and activates the
+//! original native window. No duplicate error window is created or closed.
+//! `coverage.json` lists every requirement as executed or not covered; a skipped
+//! branch is never written as passed.
 
 use super::{
     FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors,
@@ -218,13 +217,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         write_config(extra, &ready, None)?;
     }
     // The temp-fallback home cannot create its canonical diagnostic directory:
-    // a regular file occupies `<home>/studio`, so `recordDartError`'s canonical
+    // a regular file occupies `<home>/studio/logs`, so `recordDartError`'s canonical
     // write fails on any host (permission bits are ignored when running as
     // root). The fallback log lands in the isolated `TMPDIR` below.
     fs::create_dir(&home_tmp_fallback)?;
     write_config(&home_tmp_fallback, &ready, None)?;
+    fs::create_dir(home_tmp_fallback.join("studio"))?;
     fs::write(
-        home_tmp_fallback.join("studio"),
+        home_tmp_fallback.join("studio/logs"),
         b"occupied by the acceptance\n",
     )?;
     let tmp_fallback_tmp = working.join("shutdown-tmp-fallback-tmp");
@@ -514,90 +514,37 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 Duration::from_secs(300),
             )?;
 
-            // The second process shares the same home. It may fail to publish a
-            // usable Driver (allowed), so both the Driver snapshot and the GUI
-            // log are captured as the instance-busy evidence. It renders into an
-            // isolated Xvfb so the delete-event close can exercise the native GTK
-            // hook without touching the user's desktop.
+            // A duplicate redirects before publishing a Flutter VM and exits on its own.
             let second_log = working.join("shutdown-busy-second-gui.log");
-            let (mut xvfb, display) = start_isolated_xvfb(working)?;
-            let second = start_gui_with(
-                workspace,
-                home,
-                &second_log,
-                working,
-                "busy-second",
-                &[("DISPLAY", display.as_str())],
-                None,
-                None,
-            )?;
-            let busy_evidence = capture_second_instance(
-                app_dir,
-                home,
-                workspace,
-                &second_log,
-                output,
-                working,
-                &project,
-                &display,
-                second,
-                interrupt,
-                &mut driver_evidence,
-            )?;
-            // The isolated display server is owned by this run; stop it once the
-            // second instance is done so nothing is left behind.
-            let _ = force_close(&mut xvfb);
+            let second = start_gui(workspace, home, &second_log, working, "busy-second")?;
+            let busy_evidence =
+                capture_second_instance(&second_log, &log, output, working, second, interrupt)?;
             fs::write(
                 output.join("shutdown-busy-second.json"),
                 serde_json::to_vec_pretty(&busy_evidence)?,
             )?;
             ensure!(
-                busy_evidence["instanceBusyEvidence"] == true,
-                "the second instance produced no instanceBusy evidence: {busy_evidence}"
-            );
-            ensure!(
-                busy_evidence["argumentError"] == false,
-                "the second instance logged an ArgumentError: {busy_evidence}"
-            );
-            // The second instance is truly closed before the first continues.
-            ensure!(
-                busy_evidence["closed"] == true,
-                "the second instance did not close: {busy_evidence}"
+                busy_evidence["redirected"] == true
+                    && busy_evidence["ownerActivated"] == true
+                    && busy_evidence["secondEngineCreated"] == false,
+                "duplicate did not activate the owner before engine creation: {busy_evidence}"
             );
             ensure!(
                 busy_evidence["secondNativeReport"]["exitCode"].as_i64() == Some(0)
-                    && busy_evidence["secondNativeReport"]["signal"].is_null(),
-                "the second instance had no real clean OS exit report: {busy_evidence}"
+                    && busy_evidence["secondNativeReport"]["elapsedMillis"]
+                        .as_u64()
+                        .is_some_and(|elapsed| elapsed < 15_000)
+                    && busy_evidence["secondNativeReport"]["signal"].is_null()
+                    && busy_evidence["secondNativeReport"]["reclaimedDescendants"]
+                        .as_array()
+                        .is_some_and(Vec::is_empty),
+                "duplicate did not exit cleanly without harness reclamation: {busy_evidence}"
             );
-            ensure!(
-                busy_evidence["secondNativeReport"]["reclaimedDescendants"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty),
-                "the second instance left a child tree for the harness: {busy_evidence}"
-            );
-            // The second instance must have been closed by the real
-            // `WM_DELETE_WINDOW` on its isolated display, not by a fallback: the
-            // delete-event pid is the same native host the launcher reports, it
-            // is start-time-guarded gone, and that host exited with code 0.
-            ensure!(
-                busy_evidence["deleteEventPid"]
-                    .as_u64()
-                    .is_some_and(|pid| pid > 0),
-                "no real WM_DELETE_WINDOW was delivered to the second instance: {busy_evidence}"
-            );
-            ensure!(
-                busy_evidence["deleteEventMatchesNative"] == true,
-                "the WM_DELETE_WINDOW target was not the launcher-reported native host: {busy_evidence}"
-            );
-            ensure!(
-                busy_evidence["deleteEventNativeExited"] == true,
-                "the WM_DELETE_WINDOW native host did not exit: {busy_evidence}"
-            );
-            ensure!(
-                busy_evidence["secondNativeExitCode"].as_i64() == Some(0),
-                "the WM_DELETE_WINDOW native host did not exit with code 0: {busy_evidence}"
-            );
-            fs::write(working.join("shutdown-signal-busy-second-closed"), "closed")?;
+            ensure!(!first.exited()?, "redirect killed the original instance");
+            fs::write(
+                working.join("shutdown-signal-busy-second-redirected"),
+                "redirected",
+            )?;
 
             wait_stage(
                 "busy_continued",
@@ -647,7 +594,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "second instance on the same home recorded the instance lock; after it closed the first instance submitted and saved another turn: {}",
+                    "duplicate redirected and exited before Flutter; the original instance submitted and saved another turn: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -735,7 +682,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "reopened the same home and verified the turn saved after the second instance closed was restored: {}",
+                    "reopened the same home and verified the turn saved after duplicate redirection was restored: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -2744,23 +2691,12 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         interface_needs: "a Windows host to run the same --scenario shutdown phases",
     }];
 
-    // The second instance must have exited through the real delete event; read
-    // the persisted evidence rather than re-deriving it from logs.
-    let busy_evidence = fs::read(output.join("shutdown-busy-second.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-    let window_delete_executed = busy_evidence.as_ref().is_some_and(|evidence| {
-        evidence["deleteEventMatchesNative"] == true
-            && evidence["deleteEventNativeExited"] == true
-            && evidence["secondNativeExitCode"].as_i64() == Some(0)
-    });
-
     // Machine checks are `passed` only for the requirements this Linux run
     // actually executed; skipped requirements are `notCovered`, never assumed.
     let machine_checks = serde_json::json!({
         "normalExit": if phases.iter().any(|phase| phase.name == "normal") { "executed" } else { "notCovered" },
         "reopenRestore": if phases.iter().any(|phase| phase.name == "reopen") { "executed" } else { "notCovered" },
-        "secondInstanceBusy": if phases.iter().any(|phase| phase.name == "busy") { "executed" } else { "notCovered" },
+        "secondInstanceRedirect": if phases.iter().any(|phase| phase.name == "busy") { "executed" } else { "notCovered" },
         "busyReopenRestore": if phases.iter().any(|phase| phase.name == "busy-reopen") { "executed" } else { "notCovered" },
         "duplicateDeadline": if phases.iter().any(|phase| phase.name == "duplicate") { "executed" } else { "notCovered" },
         "dartHangForced30s": if phases.iter().any(|phase| phase.name == "hang") { "executed" } else { "notCovered" },
@@ -2775,7 +2711,6 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         "lspSubtreeReclamation": if phases.iter().any(|phase| phase.name == "lsp-subtree-reclamation") { "executed" } else { "notCovered" },
         "toolSubtreeReclamation": if phases.iter().any(|phase| phase.name == "tool-subtree-reclamation") { "executed" } else { "notCovered" },
         "concurrentResourceStop": if phases.iter().any(|phase| phase.name == "concurrent-stop") { "executed" } else { "notCovered" },
-        "secondInstanceWindowDeleteEvent": if window_delete_executed { "executed" } else { "notCovered" },
         "windowsNativeAcceptance": "notrun",
         "humanVerdict": "pending",
     });
@@ -2891,9 +2826,8 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     journey?;
 
     // Every phase that ran to completion must have written a pending summary
-    // with all of its own checks passing. `busy-second` is excluded because the
-    // second instance is allowed to fail its startup; the coordinator judges it
-    // from the Driver snapshot OR the GUI log in `capture_second_instance`.
+    // with all of its own checks passing. The duplicate has no Driver: its
+    // native redirect and real OS exit are checked by the coordinator.
     for summary_phase in [
         "normal",
         "reopen",
@@ -3453,745 +3387,37 @@ fn wait_gui_exit(
     }
 }
 
-/// Captures the instance-busy evidence of a second instance on a shared home,
-/// tolerating a second process that never published a usable Driver, and truly
-/// closes it through a real window-manager delete event.
-///
-/// The second instance runs on its own isolated [display] (`Xvfb`), so the
-/// delete event exercises the native GTK close hook without touching the user's
-/// desktop and without the Dart `beginExit` path the Driver-only
-/// `request-app-exit` covers elsewhere. The closed window's real pid (its
-/// `_NET_WM_PID`) is start-time-guarded, and the launcher's structured report
-/// proves the native host exited with code 0.
-#[allow(clippy::too_many_arguments)]
+/// Waits for the duplicate's own native exit. It must not publish a VM or need
+/// a close event. The owner acknowledgement and subsequent turn prove redirection.
 fn capture_second_instance(
-    app_dir: &Path,
-    home: &Path,
-    _workspace: &Path,
     second_log: &Path,
+    owner_log: &Path,
     output: &Path,
     working: &Path,
-    project: &Path,
-    display: &str,
     mut second: OwnedProcess,
     interrupt: &mpsc::Receiver<()>,
-    driver_evidence: &mut Vec<DriverEvidence>,
 ) -> Result<serde_json::Value> {
-    // Give the second instance a bounded window to publish its VM service. A
-    // startup failure is allowed: the log-based evidence below still counts.
-    let vm_url = try_wait_for_vm(second_log, &mut second, Duration::from_secs(90));
-    let mut snapshot_busy = false;
-    let mut driver_observed = false;
-    if let Some(vm_url) = vm_url {
-        let driver_log = working.join("shutdown-busy-second-driver.log");
-        match start_driver(
-            app_dir,
-            home,
-            "busy-second",
-            &vm_url,
-            project,
-            output,
-            working,
-            &driver_log,
-        ) {
-            Ok(mut driver) => {
-                let exit = wait_driver(
-                    "busy-second",
-                    working,
-                    &mut driver,
-                    interrupt,
-                    Duration::from_secs(180),
-                )?;
-                let summary = output.join("shutdown-busy-second-summary.json");
-                if summary.is_file() {
-                    let report: serde_json::Value = serde_json::from_slice(&fs::read(&summary)?)?;
-                    snapshot_busy = report["checks"]["busySecondInstanceBusy"] == true;
-                    driver_observed = true;
-                }
-                driver_evidence.push(DriverEvidence {
-                    log: driver_log,
-                    stem: "shutdown-busy-second".into(),
-                    exit: Some(exit),
-                });
-            }
-            Err(error) => {
-                driver_evidence.push(DriverEvidence {
-                    log: driver_log,
-                    stem: "shutdown-busy-second".into(),
-                    exit: None,
-                });
-                eprintln!("shutdown busy-second driver did not start: {error}");
-            }
-        }
-    }
-    let log_text = fs::read_to_string(second_log).unwrap_or_default();
-    let log_busy = log_text.contains("instanceBusy")
-        || log_text.contains("已有实例")
-        || log_text.contains("instance busy");
-    // The ArgumentError the previous revision hit must never reappear in the
-    // second instance's real log; the regression is recorded, not hidden.
-    let argument_error = log_text.contains("ArgumentError");
-    // Close the second instance through a real window-manager delete event. This
-    // exercises the native GTK close hook, which the Driver-only
-    // `request-app-exit` (Dart `beginExit`) cannot.
-    //
-    // The delete is targeted at the exact native host: the sender only fires on
-    // the window whose `_NET_WM_PID` equals the Driver-reported native pid (the
-    // journey writes it early in `shutdown-native-busy-second.json`), and it
-    // reads that host's real `DISPLAY` from `/proc/<pid>/environ` so a backend or
-    // environment fallback can neither close an unrelated window nor let the
-    // phase pass with no delivery. When the second instance never published a
-    // usable Driver (allowed), the pid is unknown and the sender falls back to
-    // the only window advertising the delete protocol, which is still proven
-    // from the window itself and start-time-guarded below.
-    let expected_native_pid = fs::read(output.join("shutdown-native-busy-second.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|identity| identity["pid"].as_u64())
-        .and_then(|pid| u32::try_from(pid).ok())
-        .unwrap_or(0);
-    let delete_event = send_window_delete_event(
-        working,
-        &output.join("shutdown-busy-second-x11.json"),
-        &X11DeleteTarget {
-            native_pid: expected_native_pid,
-            display_hint: display,
-        },
-        Duration::from_secs(30),
+    // The native report measures launch time independently of xtask's cached build.
+    wait_gui_exit(
+        "busy-second",
+        &mut second,
+        interrupt,
+        Duration::from_secs(300),
     )?;
-    let delete_event_pid = Some(delete_event.pid);
-    let delete_event_ticks = proc_start_ticks(delete_event.pid);
-    // Wait for the native host to exit on its own after the delete event; only a
-    // process that neither exited nor answered is force-closed so the first
-    // instance can proceed. A forced close is recorded and fails the check.
-    let closed = if second.exited()?
-        || wait_gui_exit("busy-second", &mut second, interrupt, EXIT_GRACE).is_ok()
-    {
-        true
-    } else {
-        force_close(&mut second)
-    };
-    // The delete-event pid must be genuinely gone (start-time guarded) before
-    // the first instance is allowed to continue.
-    let delete_event_native_exited = match (delete_event_pid, delete_event_ticks) {
-        (Some(pid), _) => !proc_alive(pid, delete_event_ticks),
-        (None, _) => false,
-    };
-    // The launcher's structured report carries the second native host's real
-    // wait status, so "2nd OS exit" is proven by an OS process wait, not by a
-    // wrapper exit code.
-    let second_native = read_native_report(
+    let native = read_native_report(
         &native_report_path(working, "busy-second"),
-        if closed {
-            Duration::from_secs(20)
-        } else {
-            Duration::from_secs(5)
-        },
-    )
-    .ok();
-    let second_native_exit_code = second_native
-        .as_ref()
-        .and_then(|report| report["exitCode"].as_i64());
-    let second_native_pid = second_native
-        .as_ref()
-        .and_then(|report| report["pid"].as_u64());
-    // The delete event must have closed the same native host the launcher
-    // reports, so the evidence ties the window protocol to the OS exit.
-    let delete_event_matches_native = match (delete_event_pid, second_native_pid) {
-        (Some(pid), Some(native)) => u64::from(pid) == native,
-        _ => false,
-    };
-    // `second` is dropped at the end of this function either way; its own
-    // `Drop` is the backstop that reaps any still-running descendant.
+        Duration::from_secs(5),
+    )?;
+    let duplicate = fs::read_to_string(second_log)?;
+    let owner = fs::read_to_string(owner_log)?;
+    write_sanitized_log(second_log, &output.join("shutdown-busy-second-gui.log"))?;
     Ok(serde_json::json!({
-        "instanceBusyEvidence": snapshot_busy || log_busy,
-        "snapshotBusy": snapshot_busy,
-        "logBusy": log_busy,
-        "argumentError": argument_error,
-        "driverObserved": driver_observed,
-        "closed": closed,
-        "deleteEventPid": delete_event_pid,
-        "deleteEventWindow": delete_event.window_id,
-        "deleteEventDisplay": delete_event.display,
-        "deleteEventX11Report": output
-            .join("shutdown-busy-second-x11.json")
-            .to_string_lossy()
-            .into_owned(),
-        "deleteEventStartTicks": delete_event_ticks,
-        "deleteEventNativeExited": delete_event_native_exited,
-        "deleteEventMatchesNative": delete_event_matches_native,
-        "secondNativeExitCode": second_native_exit_code,
-        "secondNativeReport": second_native,
+        "redirected": duplicate.contains("event=redirected"),
+        "ownerActivated": owner.contains("event=window_activated"),
+        "secondEngineCreated": find_vm_url(second_log).is_some(),
+        "secondNativeReport": native,
     }))
 }
-
-/// Starts an isolated `Xvfb` the second instance renders into.
-///
-/// The display is scenario-owned (never the user's desktop), so a real
-/// `WM_DELETE_WINDOW` can be delivered to the second instance's window without
-/// disturbing anything outside this run. Returns the owned Xvfb and its
-/// `DISPLAY` string.
-fn start_isolated_xvfb(working: &Path) -> Result<(OwnedProcess, String)> {
-    let mut last_error = String::new();
-    for number in 90u32..120 {
-        let lock = PathBuf::from(format!("/tmp/.X{number}-lock"));
-        if lock.exists() {
-            continue;
-        }
-        let display = format!(":{number}");
-        let log = File::create(working.join(format!("shutdown-xvfb-{number}.log")))?;
-        let mut command = Command::new("Xvfb");
-        command
-            .arg(&display)
-            .args(["-screen", "0", "1280x1024x24", "-nolisten", "tcp"])
-            .env("DISPLAY", &display)
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log));
-        let mut xvfb = OwnedProcess::start(&mut command, false)?;
-        let socket = PathBuf::from(format!("/tmp/.X11-unix/X{number}"));
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if socket.exists() {
-                return Ok((xvfb, display));
-            }
-            if xvfb.exited()? {
-                last_error = format!(
-                    "Xvfb {display} exited before publishing its socket: {}",
-                    fs::read_to_string(working.join(format!("shutdown-xvfb-{number}.log")))
-                        .unwrap_or_default()
-                );
-                break;
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "Xvfb {display} did not publish /tmp/.X11-unix/X{number} within 20s"
-            );
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-    bail!("no isolated X display could be started for the second instance: {last_error}")
-}
-
-/// The exact native target of a real `WM_DELETE_WINDOW` delivery.
-///
-/// [display_hint] is where the second instance was *meant* to render (the
-/// scenario-owned `Xvfb`); the sender treats it as a fallback only and prefers
-/// the host's own `DISPLAY` read from `/proc/<pid>/environ`. [native_pid] is the
-/// Driver-reported host the delete must reach; `0` means the second instance
-/// never published a usable Driver, so the sender targets the only window
-/// advertising the delete protocol and the pid is proven from the window.
-struct X11DeleteTarget<'a> {
-    native_pid: u32,
-    display_hint: &'a str,
-}
-
-/// A delivered `WM_DELETE_WINDOW`: the window's real `_NET_WM_PID`, its window
-/// id and the display it was delivered on, for start-time guarding and evidence.
-struct X11DeleteOutcome {
-    pid: u32,
-    window_id: String,
-    display: String,
-}
-
-/// Delivers a real `WM_DELETE_WINDOW` to [target]'s native host window.
-///
-/// The sender walks the window tree on the host's real display (with
-/// [X11DeleteTarget::display_hint] as fallback), keeps only the windows whose
-/// `_NET_WM_PID` matches [X11DeleteTarget::native_pid] and that advertise
-/// `WM_DELETE_WINDOW`, and deletes the largest of them. It always writes a rich
-/// JSON report to [evidence] (candidate windows, their pids/protocols/names,
-/// the displays tried and the reason) so a failure is diagnosable instead of an
-/// empty stderr. A sender failure is an error: the delete-event evidence must
-/// not be fabricated, and "no window" is never a pass.
-fn send_window_delete_event(
-    working: &Path,
-    evidence: &Path,
-    target: &X11DeleteTarget<'_>,
-    timeout: Duration,
-) -> Result<X11DeleteOutcome> {
-    let script = working.join("shutdown-x11-delete-window.py");
-    fs::write(&script, X11_DELETE_WINDOW_SCRIPT)?;
-    // Drop any stale report so a sender that dies before writing cannot be
-    // misread as this run's evidence.
-    let _ = fs::remove_file(evidence);
-    let sender = Command::new("python3")
-        .arg(&script)
-        .arg(target.display_hint)
-        .arg(target.native_pid.to_string())
-        .arg(timeout.as_secs().to_string())
-        .arg(evidence)
-        .output()
-        .context("failed to run the X11 delete-event sender")?;
-    let stdout = String::from_utf8_lossy(&sender.stdout);
-    let stderr = String::from_utf8_lossy(&sender.stderr);
-    let report = fs::read(evidence)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-    // Re-emit the evidence with the sender's own streams and status alongside
-    // the script's window report, so a failed run keeps stdout/stderr and the
-    // candidate windows instead of an empty message.
-    let evidence_value = serde_json::json!({
-        "schema": "anywork-x11-delete/1",
-        "status": sender.status.code(),
-        "success": sender.status.success(),
-        "stdout": stdout.trim(),
-        "stderr": stderr.trim(),
-        "senderReport": report.clone().unwrap_or(serde_json::Value::Null),
-    });
-    if let Ok(bytes) = serde_json::to_vec_pretty(&evidence_value) {
-        let _ = fs::write(evidence, bytes);
-    }
-    let reason = report
-        .as_ref()
-        .and_then(|value| value["reason"].as_str())
-        .filter(|reason| !reason.is_empty())
-        .unwrap_or("the sender reported no reason");
-    let first = stdout.lines().next().unwrap_or_default().trim();
-    ensure!(
-        sender.status.success() && !first.is_empty() && first != "none",
-        "the X11 delete-event sender did not deliver WM_DELETE_WINDOW to native \
-         pid {} (status {:?}, stdout {:?}, stderr {:?}, report {}): {reason}",
-        target.native_pid,
-        sender.status.code(),
-        stdout.trim(),
-        stderr.trim(),
-        evidence.display()
-    );
-    let pid = first
-        .parse::<u32>()
-        .with_context(|| format!("the X11 sender printed an unexpected pid: {first:?}"))?;
-    let window_id = report
-        .as_ref()
-        .and_then(|value| value["delivered"]["window"].as_str())
-        .unwrap_or_default()
-        .to_owned();
-    let display = report
-        .as_ref()
-        .and_then(|value| value["delivered"]["display"].as_str())
-        .unwrap_or(target.display_hint)
-        .to_owned();
-    Ok(X11DeleteOutcome {
-        pid,
-        window_id,
-        display,
-    })
-}
-
-/// Sends a real `WM_DELETE_WINDOW` `ClientMessage` through libX11 (ctypes).
-///
-/// Flutter Driver cannot deliver a window-manager protocol event, so this small
-/// engineering script does it directly through libX11 (ctypes). It reads the
-/// target host's own `DISPLAY` (and `XAUTHORITY`) from `/proc/<pid>/environ`,
-/// walking the given display only as a fallback; it then walks the window tree,
-/// keeps the windows whose `_NET_WM_PID` equals the expected pid and that
-/// advertise `WM_DELETE_WINDOW`, deletes the largest of them and prints that
-/// pid. It always writes a JSON report (candidate windows with pid, protocols,
-/// name and geometry, the displays tried and the failure reason) so a failure
-/// is diagnosable. Everything is bounded and a failure exits non-zero.
-const X11_DELETE_WINDOW_SCRIPT: &str = r##"#!/usr/bin/env python3
-import ctypes
-import json
-import sys
-import time
-
-
-class XClientMessageEvent(ctypes.Structure):
-    _fields_ = [
-        ("type", ctypes.c_int),
-        ("serial", ctypes.c_ulong),
-        ("send_event", ctypes.c_int),
-        ("display", ctypes.c_void_p),
-        ("window", ctypes.c_ulong),
-        ("message_type", ctypes.c_ulong),
-        ("format", ctypes.c_int),
-        ("data", ctypes.c_long * 5),
-    ]
-
-
-class XEvent(ctypes.Union):
-    _fields_ = [
-        ("xclient", XClientMessageEvent),
-        ("pad", ctypes.c_long * 24),
-    ]
-
-
-def load_x11():
-    x11 = ctypes.CDLL("libX11.so.6")
-    x11.XOpenDisplay.restype = ctypes.c_void_p
-    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x11.XDefaultRootWindow.restype = ctypes.c_ulong
-    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-    x11.XInternAtom.restype = ctypes.c_ulong
-    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
-    x11.XGetAtomName.restype = ctypes.c_void_p
-    x11.XGetAtomName.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-    x11.XQueryTree.restype = ctypes.c_int
-    x11.XQueryTree.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
-        ctypes.POINTER(ctypes.c_uint),
-    ]
-    x11.XGetWindowProperty.restype = ctypes.c_int
-    x11.XGetWindowProperty.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-        ctypes.c_long,
-        ctypes.c_long,
-        ctypes.c_int,
-        ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.c_int),
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
-    ]
-    x11.XGetGeometry.restype = ctypes.c_int
-    x11.XGetGeometry.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.c_int),
-        ctypes.POINTER(ctypes.c_int),
-        ctypes.POINTER(ctypes.c_uint),
-        ctypes.POINTER(ctypes.c_uint),
-        ctypes.POINTER(ctypes.c_uint),
-        ctypes.POINTER(ctypes.c_uint),
-    ]
-    x11.XFetchName.restype = ctypes.c_int
-    x11.XFetchName.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_char_p),
-    ]
-    x11.XSendEvent.restype = ctypes.c_int
-    x11.XSendEvent.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.c_int,
-        ctypes.c_long,
-        ctypes.POINTER(XEvent),
-    ]
-    x11.XFlush.argtypes = [ctypes.c_void_p]
-    x11.XSync.restype = ctypes.c_int
-    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    x11.XFree.argtypes = [ctypes.c_void_p]
-    return x11
-
-
-def read_environ(pid):
-    try:
-        with open("/proc/{}/environ".format(pid), "rb") as handle:
-            raw = handle.read()
-    except OSError:
-        return {}
-    env = {}
-    for chunk in raw.split(b"\0"):
-        if not chunk:
-            continue
-        key, _, value = chunk.partition(b"=")
-        env[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
-    return env
-
-
-def write_report(path, report):
-    if not path:
-        return
-    try:
-        with open(path, "w") as handle:
-            json.dump(report, handle, indent=2, sort_keys=True)
-    except OSError:
-        pass
-
-
-def sanitize(session):
-    return {
-        "display": session.get("display"),
-        "opened": session.get("opened", False),
-        "root": session.get("root"),
-        "error": session.get("error"),
-        "windows": session.get("windows") or [],
-    }
-
-
-def main():
-    display_hint = sys.argv[1]
-    expected_pid = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    budget = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
-    report_path = sys.argv[4] if len(sys.argv) > 4 else None
-    deadline = time.time() + budget
-    env = read_environ(expected_pid) if expected_pid else {}
-    process_display = env.get("DISPLAY") or None
-    displays = []
-    for candidate in (process_display, display_hint):
-        if candidate and candidate not in displays:
-            displays.append(candidate)
-    if not displays:
-        displays = [":0"]
-    report = {
-        "nativePid": expected_pid,
-        "displayHint": display_hint,
-        "processDisplay": process_display,
-        "waylandDisplay": env.get("WAYLAND_DISPLAY") or None,
-        "xauthority": env.get("XAUTHORITY") or None,
-        "displaysTried": displays,
-        "reason": None,
-        "delivered": None,
-        "windows": [],
-    }
-    try:
-        x11 = load_x11()
-    except OSError as error:
-        report["reason"] = "libX11 could not be loaded: {}".format(error)
-        write_report(report_path, report)
-        print("none")
-        return 2
-
-    def atom_name(dpy, atom):
-        pointer = x11.XGetAtomName(dpy, atom)
-        if not pointer:
-            return None
-        name = ctypes.cast(pointer, ctypes.c_char_p).value
-        x11.XFree(pointer)
-        return name.decode("utf-8", "replace") if name else None
-
-    def children(dpy, win):
-        r = ctypes.c_ulong()
-        p = ctypes.c_ulong()
-        kids = ctypes.POINTER(ctypes.c_ulong)()
-        n = ctypes.c_uint()
-        ok = x11.XQueryTree(
-            dpy,
-            win,
-            ctypes.byref(r),
-            ctypes.byref(p),
-            ctypes.byref(kids),
-            ctypes.byref(n),
-        )
-        if not ok:
-            return []
-        out = [kids[i] for i in range(n.value)]
-        if kids:
-            x11.XFree(kids)
-        return out
-
-    def prop(dpy, win, atom):
-        actual = ctypes.c_ulong()
-        fmt = ctypes.c_int()
-        nitems = ctypes.c_ulong()
-        after = ctypes.c_ulong()
-        data = ctypes.POINTER(ctypes.c_ubyte)()
-        status = x11.XGetWindowProperty(
-            dpy,
-            win,
-            atom,
-            0,
-            1024,
-            0,
-            0,
-            ctypes.byref(actual),
-            ctypes.byref(fmt),
-            ctypes.byref(nitems),
-            ctypes.byref(after),
-            ctypes.byref(data),
-        )
-        if status != 0 or not data:
-            return None, None
-        values = []
-        if fmt.value == 32:
-            longs = ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))
-            values = [longs[i] for i in range(nitems.value)]
-        x11.XFree(data)
-        return values, fmt.value
-
-    def geometry(dpy, win):
-        root = ctypes.c_ulong()
-        x = ctypes.c_int()
-        y = ctypes.c_int()
-        width = ctypes.c_uint()
-        height = ctypes.c_uint()
-        border = ctypes.c_uint()
-        depth = ctypes.c_uint()
-        ok = x11.XGetGeometry(
-            dpy,
-            win,
-            ctypes.byref(root),
-            ctypes.byref(x),
-            ctypes.byref(y),
-            ctypes.byref(width),
-            ctypes.byref(height),
-            ctypes.byref(border),
-            ctypes.byref(depth),
-        )
-        if not ok:
-            return None
-        return {"width": width.value, "height": height.value}
-
-    def window_name(dpy, win):
-        name = ctypes.c_char_p()
-        if not x11.XFetchName(dpy, win, ctypes.byref(name)):
-            return None
-        # Read the value before freeing the X-allocated string.
-        value = name.value
-        if name:
-            x11.XFree(name)
-        return value.decode("utf-8", "replace") if value else None
-
-    def send_delete(dpy, win, atom_protocols, atom_delete):
-        event = XEvent()
-        event.xclient.type = 33
-        event.xclient.serial = 0
-        event.xclient.send_event = 0
-        event.xclient.display = dpy
-        event.xclient.window = win
-        event.xclient.message_type = atom_protocols
-        event.xclient.format = 32
-        event.xclient.data[0] = atom_delete
-        return x11.XSendEvent(dpy, win, 0, 0, ctypes.byref(event))
-
-    sessions = []
-    for display in displays:
-        session = {"display": display, "opened": False, "error": None, "windows": []}
-        dpy = x11.XOpenDisplay(display.encode())
-        if not dpy:
-            session["error"] = "XOpenDisplay failed"
-            sessions.append(session)
-            continue
-        session["opened"] = True
-        session["root"] = hex(x11.XDefaultRootWindow(dpy))
-        session["_dpy"] = dpy
-        session["_atoms"] = (
-            x11.XInternAtom(dpy, b"WM_PROTOCOLS", 0),
-            x11.XInternAtom(dpy, b"WM_DELETE_WINDOW", 0),
-            x11.XInternAtom(dpy, b"_NET_WM_PID", 0),
-        )
-        sessions.append(session)
-
-    def refresh(sessions):
-        report["displays"] = [sanitize(session) for session in sessions]
-
-    while time.time() < deadline:
-        for session in sessions:
-            if not session["opened"]:
-                continue
-            dpy = session["_dpy"]
-            atom_protocols, atom_delete, atom_pid = session["_atoms"]
-            root = x11.XDefaultRootWindow(dpy)
-            windows = []
-            stack = [root]
-            while stack:
-                win = stack.pop()
-                stack.extend(children(dpy, win))
-                if win == root:
-                    continue
-                protocols, _ = prop(dpy, win, atom_protocols)
-                pids, _ = prop(dpy, win, atom_pid)
-                windows.append(
-                    {
-                        "window": hex(win),
-                        "pid": pids[0] if pids else None,
-                        "protocols": [
-                            atom_name(dpy, atom) for atom in protocols
-                        ]
-                        if protocols
-                        else [],
-                        "name": window_name(dpy, win),
-                        "geometry": geometry(dpy, win),
-                    }
-                )
-            session["windows"] = windows
-            matches = [
-                window
-                for window in windows
-                if window["pid"] is not None
-                and (expected_pid == 0 or window["pid"] == expected_pid)
-                and "WM_DELETE_WINDOW" in (window["protocols"] or [])
-            ]
-            if not matches:
-                continue
-            target = max(
-                matches,
-                key=lambda window: (window["geometry"] or {}).get("width", 0)
-                * (window["geometry"] or {}).get("height", 0),
-            )
-            win = int(target["window"], 16)
-            if not send_delete(dpy, win, atom_protocols, atom_delete):
-                session["error"] = "XSendEvent failed for window {}".format(
-                    target["window"]
-                )
-                report["reason"] = "XSendEvent failed for window {} on {}".format(
-                    target["window"], session["display"]
-                )
-                report["delivered"] = {
-                    "display": session["display"],
-                    "window": target["window"],
-                    "pid": target["pid"],
-                    "sendFailed": True,
-                }
-                refresh(sessions)
-                write_report(report_path, report)
-                print("none")
-                return 3
-            x11.XSync(dpy, 0)
-            report["delivered"] = {
-                "display": session["display"],
-                "window": target["window"],
-                "pid": target["pid"],
-                "sendFailed": False,
-            }
-            refresh(sessions)
-            write_report(report_path, report)
-            print(target["pid"])
-            return 0
-        time.sleep(0.2)
-
-    reasons = []
-    for session in sessions:
-        if not session["opened"]:
-            reasons.append(
-                "{}: not opened ({})".format(session["display"], session["error"])
-            )
-            continue
-        windows = session["windows"] or []
-        if not windows:
-            reasons.append("{}: no client windows found".format(session["display"]))
-            continue
-        if expected_pid == 0:
-            reasons.append(
-                "{}: {} window(s), none has a readable _NET_WM_PID and "
-                "WM_DELETE_WINDOW".format(session["display"], len(windows))
-            )
-            continue
-        owned = [window for window in windows if window["pid"] == expected_pid]
-        if not owned:
-            reasons.append(
-                "{}: {} window(s), none reports _NET_WM_PID {}".format(
-                    session["display"], len(windows), expected_pid
-                )
-            )
-        else:
-            reasons.append(
-                "{}: {} window(s) report pid {} but none advertises "
-                "WM_DELETE_WINDOW".format(
-                    session["display"], len(owned), expected_pid
-                )
-            )
-    report["windows"] = [
-        window for session in sessions for window in session["windows"] or []
-    ]
-    report["reason"] = "; ".join(reasons) if reasons else "no display could be tried"
-    refresh(sessions)
-    write_report(report_path, report)
-    print("none")
-    return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-"##;
 
 /// Reads the fixture live strict-script counters, when the watcher has written.
 fn read_live_status(path: &Path) -> Result<pl_provider_fixture::FixtureLiveStatus> {
@@ -4479,24 +3705,6 @@ fn find_vm_url(log: &Path) -> Option<String> {
                 })
         })
         .next_back()
-}
-
-/// A bounded, non-fatal VM-service wait used only for the catchable second
-/// instance, which is allowed to fail its startup.
-fn try_wait_for_vm(log: &Path, gui: &mut OwnedProcess, timeout: Duration) -> Option<String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(url) = find_vm_url(log) {
-            return Some(url);
-        }
-        if gui.exited().unwrap_or(true) {
-            return None;
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// Enumerates the real descendant PIDs of [root] on Linux by walking only
