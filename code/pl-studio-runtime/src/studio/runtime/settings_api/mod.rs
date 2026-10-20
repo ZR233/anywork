@@ -22,11 +22,9 @@ pub(crate) use view::{model_catalog_snapshot, settings_config_snapshot, settings
 use view::{normalized_optional, normalized_string_list};
 
 impl StudioRuntime {
-    pub(super) fn read_settings_response(
-        &self,
-        state: &crate::ConfigRuntimeSnapshot,
-    ) -> Result<SettingsStateResponse> {
-        settings_state_response(state, &self.config_runtime.read_catalog()?)
+    pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
+        let (state, catalog) = self.config_runtime.read_with_catalog()?;
+        settings_state_response(&state, &catalog)
     }
 
     /// Reads the canonical built-in account and model catalog.
@@ -36,7 +34,7 @@ impl StudioRuntime {
 
     /// Reads the secret-free canonical Settings snapshot from the in-memory owner.
     pub fn read_settings(&self) -> Result<SettingsStateResponse> {
-        self.read_settings_response(&self.config_runtime.read()?)
+        self.read_settings_response()
     }
 
     /// Applies one typed settings field/resource mutation.
@@ -330,7 +328,7 @@ impl StudioRuntime {
                 Ok(config)
             },
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         if mark_skills_stale {
             self.skills.mark_all_stale().await;
         }
@@ -353,7 +351,7 @@ impl StudioRuntime {
                 config.runtime.permission_mode = mode;
                 Ok(config)
             })?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -363,11 +361,11 @@ impl StudioRuntime {
     }
 
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
-        let state = self.config_runtime.reload_from_disk(expected_revision)?;
-        self.publish_settings_state(state.clone())?;
+        self.config_runtime.reload_from_disk(expected_revision)?;
+        self.publish_settings_state()?;
         self.skills.mark_all_stale().await;
         let _ = self.apply_account_config().await?;
-        self.read_settings_response(&state)
+        self.read_settings_response()
     }
 
     pub async fn save_account(
@@ -381,7 +379,7 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         let _ = self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
@@ -440,7 +438,7 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
             &state,
@@ -476,7 +474,7 @@ impl StudioRuntime {
                 Ok(next)
             },
         )?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.settings_command_reply(
             format!("remove-account-model:{account_id}:{model_id}"),
             &state,
@@ -499,7 +497,7 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state(state.clone())?;
+        self.publish_settings_state()?;
         self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
@@ -630,7 +628,7 @@ impl StudioRuntime {
                 Ok(updated) => {
                     default_changed = latest.canonical_config() != updated.canonical_config();
                     confirmed_settings = updated.clone();
-                    if let Err(error) = self.publish_settings_state(updated) {
+                    if let Err(error) = self.publish_settings_state() {
                         warning = Some(format!(
                             "current Thread and Mode default were saved, but the Settings event was not published: {error}"
                         ));
@@ -670,7 +668,7 @@ impl StudioRuntime {
                 CommandEffectPoint::NextTurn,
                 false,
             ),
-            settings: self.read_settings_response(&confirmed_settings)?,
+            settings: self.read_settings_response()?,
             mode_default_saved,
             warning,
         })

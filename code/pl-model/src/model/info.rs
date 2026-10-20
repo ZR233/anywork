@@ -420,13 +420,13 @@ impl ModelInfo {
     /// Returns the inconsistent transport, media or tariff contract, or a
     /// non-positive default auto-compact token limit.
     pub fn validate(&self) -> Result<(), ModelProfileError> {
-        if [
-            self.context_window,
-            self.max_context_window,
-            self.max_output_tokens,
-        ]
-        .contains(&Some(0))
-            || matches!((self.context_window, self.max_context_window), (Some(current), Some(max)) if current > max)
+        if self.auto_compact_token_limit == Some(0) {
+            return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
+                model: self.model_id.clone(),
+            });
+        }
+        if self.resolve_context(None).unavailable
+            == Some(pl_protocol::ModelContextUnavailable::InvalidParameters)
             || self
                 .default_temperature
                 .is_some_and(|t| !t.is_finite() || t < 0.0)
@@ -483,11 +483,6 @@ impl ModelInfo {
                 protocol: self.binding.transport.protocol,
             });
         }
-        if self.auto_compact_token_limit == Some(0) {
-            return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
-                model: self.model_id.clone(),
-            });
-        }
         self.pricing
             .validate()
             .map_err(|source| ModelProfileError::InvalidPricing {
@@ -497,73 +492,55 @@ impl ModelInfo {
         self.validate_media_contract()
     }
 
-    pub fn resolved_context_window(&self) -> Option<u64> {
-        self.context_window.or(self.max_context_window)
-    }
-
-    /// Classify a final merged model; prices, tools and execution availability are independent.
-    pub fn type_support(&self, model_type: super::ModelType) -> super::ModelTypeSupport {
-        use super::{ModelType, ModelTypeExclusion as Exclusion};
-        let mut exclusions = Vec::new();
-        match model_type {
-            ModelType::Text => {
-                if !self
-                    .capabilities
-                    .supports_input_modality(super::ModelModality::Text)
-                {
-                    exclusions.push(Exclusion::TextInputUnsupported);
-                }
-                if !self
-                    .capabilities
-                    .supports_output_modality(super::ModelModality::Text)
-                {
-                    exclusions.push(Exclusion::TextOutputUnsupported);
-                }
-                if !self
-                    .resolved_context_window()
-                    .is_some_and(|window| window > 0)
-                {
-                    exclusions.push(Exclusion::ContextWindowUnknown);
-                }
-            }
+    /// Resolves the complete context policy. Consumers must reuse the catalog's frozen result.
+    pub fn resolve_context(
+        &self,
+        override_limit: Option<u64>,
+    ) -> pl_protocol::ModelContextResolution {
+        use pl_protocol::{
+            ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
+        };
+        let window = self.context_window.or(self.max_context_window);
+        let invalid = [
+            self.context_window,
+            self.max_context_window,
+            self.max_output_tokens,
+            self.auto_compact_token_limit,
+            override_limit,
+        ]
+        .contains(&Some(0))
+            || self
+                .context_window
+                .zip(self.max_context_window)
+                .is_some_and(|(current, maximum)| current > maximum);
+        let input = window.map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or(0)));
+        let unavailable = if invalid {
+            Some(ModelContextUnavailable::InvalidParameters)
+        } else if window.is_none() {
+            Some(ModelContextUnavailable::WindowUnknown)
+        } else if input == Some(0) {
+            Some(ModelContextUnavailable::InputBudgetExhausted)
+        } else {
+            None
+        };
+        let safe = window
+            .zip(input)
+            .filter(|_| unavailable.is_none())
+            .map(|(window, input)| (((u128::from(window) * 90) / 100) as u64).min(input))
+            .filter(|limit| *limit > 0);
+        let selected = override_limit.or(self.auto_compact_token_limit).or(safe);
+        ModelContextResolution {
+            unavailable,
+            context_window: window,
+            input_token_limit: input.filter(|_| !invalid),
+            auto_compact_limit: selected
+                .zip(safe)
+                .map(|(selected, safe)| selected.min(safe)),
+            adjustment: selected
+                .zip(safe)
+                .filter(|(selected, safe)| selected > safe)
+                .map(|_| ModelContextAdjustment::SafetyLimit),
         }
-        super::ModelTypeSupport {
-            model_type,
-            exclusions,
-        }
-    }
-
-    pub fn matches_type(&self, model_type: super::ModelType) -> bool {
-        self.type_support(model_type).exclusions.is_empty()
-    }
-
-    /// 模型预设优先，否则使用当前上下文容量的 90%；两者都未知时保持未知。
-    pub fn default_auto_compact_token_limit(&self) -> Option<u64> {
-        self.auto_compact_token_limit
-            .or_else(|| self.safe_auto_compact_token_limit())
-    }
-
-    /// 上下文容量 90% 的安全上限；上下文未知时返回 `None`，保持不自动压缩。
-    pub fn safe_auto_compact_token_limit(&self) -> Option<u64> {
-        let context = self.resolved_context_window()?;
-        // 用 u128 精确计算 floor(context * 90 / 100)，避免大 u64 相乘溢出。
-        let limit = ((u128::from(context) * 90) / 100) as u64;
-        (limit > 0).then_some(limit)
-    }
-
-    /// 在给定用户覆盖值下解析实际生效的压缩阈值。
-    ///
-    /// 生效值取「用户覆盖值或模型默认值」与上下文 90% 安全上限的较小值；
-    /// 上下文未知时返回 `None`。用户覆盖不能绕过安全上限。
-    pub fn resolved_auto_compact_limit_with(&self, override_limit: Option<u64>) -> Option<u64> {
-        let safe = self.safe_auto_compact_token_limit()?;
-        let selected = override_limit.or_else(|| self.default_auto_compact_token_limit())?;
-        Some(selected.min(safe))
-    }
-
-    /// 使用模型默认值（无用户覆盖）解析实际生效的压缩阈值。
-    pub fn resolved_auto_compact_limit(&self) -> Option<u64> {
-        self.resolved_auto_compact_limit_with(None)
     }
 
     /// Basic compatible model with configurable local 32K/4K budgets.

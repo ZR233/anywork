@@ -26,18 +26,15 @@ use pl_core::thread::{
     },
     extensions::ExtensionMutation,
 };
-use pl_model::{
-    config::ResolvedModelRoute,
-    runtime::{ModelRuntime, ThreadModel},
-};
+use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
 
 /// Binds the policy to the same frozen route as the main model session.
 pub(crate) fn preparer(
     route: &ResolvedModelRoute,
+    model: ThreadModel,
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
-    let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config());
     let instruction_binding = InstructionBinding {
         route_identity: model.route_identity(),
         append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
@@ -45,13 +42,12 @@ pub(crate) fn preparer(
     };
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
-        limit: route.auto_compact_limit,
         modes,
         reasoning_effort: route
             .effort
             .as_ref()
             .map(|effort| effort.as_str().to_owned()),
-        context_window: route.model.resolved_context_window(),
+        context_window: route.context.context_window,
         options: policy(mode),
         base_instructions: route.model.base_instructions.clone(),
         instruction_binding,
@@ -62,7 +58,6 @@ pub(crate) fn preparer(
 #[derive(Debug)]
 struct StudioCompaction {
     model: ThreadModel,
-    limit: Option<u64>,
     modes: crate::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
@@ -187,11 +182,6 @@ impl ContextPreparationHook for StudioCompaction {
             facts: facts.clone(),
             mutations: instruction_repair.mutations.clone(),
         };
-        let limit = match self.limit {
-            Some(limit) => limit,
-            None if request.force_compaction => u64::MAX,
-            None => return unchanged(),
-        };
         let mut preview = request.model.clone();
         let mut records = preview.context.records.to_vec();
         // Capacity includes freshly projected state, as well as this step's frozen input.
@@ -217,10 +207,14 @@ impl ContextPreparationHook for StudioCompaction {
         preview.context.records = records.into();
         let estimate = match self
             .model
-            .estimate_input(&preview, request.previous_usage.as_ref())
+            .compaction_decision(
+                &preview,
+                request.previous_usage.as_ref(),
+                request.force_compaction,
+            )
             .await
         {
-            Ok(estimate) => estimate.map(|estimate| estimate.tokens),
+            Ok(decision) => decision,
             Err(error) => {
                 return ContextPreparation::Failed {
                     error,
@@ -233,7 +227,7 @@ impl ContextPreparationHook for StudioCompaction {
             .records
             .iter()
             .all(|record| record.source == pl_core::context::ContextSource::Instruction)
-            || (!request.force_compaction && !estimate.is_some_and(|tokens| tokens >= limit))
+            || estimate == pl_model::runtime::ThreadCompactionDecision::Keep
         {
             return unchanged();
         }
@@ -542,8 +536,8 @@ fn restore_current_instructions(
             .collect::<Vec<_>>()
     };
     request.model.context.records = normalize(&request.model.context.records).into();
-    // Core validated usage against the frozen pre-repair prefix. Rebuilding it invalidates
-    // that proof even if the record count happens to remain equal.
+    // Rebuilding the observed prefix invalidates its measurement even when the record count
+    // happens to remain equal. The model validates any remaining candidate against final input.
     request.previous_usage = None;
     let records = normalize(&request.committed_context.records);
     request.committed_context.records = records.clone().into();

@@ -205,6 +205,85 @@ final class StatusBarViewFamily extends $Family
   String toString() => r'statusBarViewProvider';
 }
 
+@ProviderFor(statusCompactionCommand)
+final statusCompactionCommandProvider = StatusCompactionCommandFamily._();
+
+final class StatusCompactionCommandProvider
+    extends $FunctionalProvider<CommandStatus?, CommandStatus?, CommandStatus?>
+    with $Provider<CommandStatus?> {
+  StatusCompactionCommandProvider._({
+    required StatusCompactionCommandFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'statusCompactionCommandProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$statusCompactionCommandHash();
+
+  @override
+  String toString() {
+    return r'statusCompactionCommandProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<CommandStatus?> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  CommandStatus? create(Ref ref) {
+    final argument = this.argument as String;
+    return statusCompactionCommand(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(CommandStatus? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<CommandStatus?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StatusCompactionCommandProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$statusCompactionCommandHash() =>
+    r'fd660618710e688c794bee3b85281fc041014496';
+
+final class StatusCompactionCommandFamily extends $Family
+    with $FunctionalFamilyOverride<CommandStatus?, String> {
+  StatusCompactionCommandFamily._()
+    : super(
+        retry: null,
+        name: r'statusCompactionCommandProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  StatusCompactionCommandProvider call(String threadId) =>
+      StatusCompactionCommandProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'statusCompactionCommandProvider';
+}
+
 @ProviderFor(statusContextProjection)
 final statusContextProjectionProvider = StatusContextProjectionFamily._();
 
@@ -270,7 +349,7 @@ final class StatusContextProjectionProvider
 }
 
 String _$statusContextProjectionHash() =>
-    r'c317a7cdc87a94cff8fbc0cff5e9fc1156b03eb3';
+    r'9cb1f768f067e57bb876d86ca4dfdabb6ef6bbe4';
 
 final class StatusContextProjectionFamily extends $Family
     with $FunctionalFamilyOverride<StudioContextProjection?, String> {

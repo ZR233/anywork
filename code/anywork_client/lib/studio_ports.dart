@@ -201,6 +201,8 @@ abstract class StudioTransport
     required String modelId,
     String? effort,
   });
+  Future<void> compactThread(String threadId);
+
   Future<ThreadModeCommandReply> setThreadMode({
     required OperationId operationId,
     required String threadId,

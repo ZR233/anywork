@@ -69,7 +69,7 @@ class SettingsCommands {
           );
         }
         final updated = account.withAutoCompactLimit(
-          account.autoCompactLimitFor(model).withOverride(limit),
+          AccountModelAutoCompactView(modelId: modelId, overrideLimit: limit),
         );
         final command = AccountCommandBuilder.buildAccount(
           updated,

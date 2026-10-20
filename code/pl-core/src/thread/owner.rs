@@ -368,6 +368,13 @@ impl Owner {
                 Command::UpdateFacts(facts, reply) => {
                     let _ = reply.send(self.update_facts(facts));
                 }
+                Command::CompactContext(revision, cancellation, reply) => {
+                    let active = self.interrupt.activate(&cancellation);
+                    let result = self
+                        .compact_idle_context(revision, active.token.clone())
+                        .await;
+                    let _ = reply.send(result);
+                }
                 Command::ReplaceContext(replacement, reply) => {
                     let _ = reply.send(self.replace_context(replacement));
                 }

@@ -78,6 +78,8 @@ struct CapacityModel {
     observed: Arc<Mutex<Vec<pl_core::context::ContextSnapshot>>>,
     dispatched: Arc<std::sync::atomic::AtomicUsize>,
     always_exceeds: bool,
+    during_execution: bool,
+    fail_after_local_recovery: bool,
 }
 impl pl_core::model::ModelSession for CapacityModel {
     async fn prepare(
@@ -85,13 +87,13 @@ impl pl_core::model::ModelSession for CapacityModel {
         request: pl_core::model::ModelRequest,
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
         self.observed.lock().unwrap().push(request.context.clone());
-        if self.always_exceeds
+        let exceeds = self.always_exceeds
             || request
                 .context
                 .records
                 .iter()
-                .any(|record| record.id == "large-history")
-        {
+                .any(|record| record.id == "large-history");
+        if exceeds && !self.during_execution {
             return Err(pl_core::model::ModelError {
                 kind: pl_core::model::ModelFailureKind::ContextLimit,
                 details: None,
@@ -100,8 +102,17 @@ impl pl_core::model::ModelSession for CapacityModel {
             });
         }
         let dispatched = self.dispatched.clone();
+        let fail_after_local_recovery = self.fail_after_local_recovery;
         Ok(pl_core::model::PreparedModelCall::new(async move {
             dispatched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if exceeds || fail_after_local_recovery {
+                return Err(pl_core::model::ModelError {
+                    kind: pl_core::model::ModelFailureKind::ContextLimit,
+                    details: None,
+                    usage: Default::default(),
+                    source: None,
+                });
+            }
             Ok(support::response(&request, vec![]))
         }))
     }
@@ -117,12 +128,22 @@ impl ContextPreparationHook for CapacityRecovery {
         if !request.force_compaction {
             return ContextPreparation::Unchanged;
         }
-        assert!(
+        let mut records = vec![pl_core::context::ContextRecord {
+            id: "reduced".into(),
+            turn_id: None,
+            source: ContextSource::Runtime {
+                source_id: "summary".into(),
+            },
+            content: vec![text("completed history")],
+            tool_calls: vec![],
+        }];
+        records.extend(
             request
                 .committed_context
                 .records
                 .iter()
-                .all(|record| record.source != ContextSource::User)
+                .filter(|record| record.source == ContextSource::User)
+                .cloned(),
         );
         ContextPreparation::Prepared {
             excluded_tool_ids: Vec::new(),
@@ -131,15 +152,7 @@ impl ContextPreparationHook for CapacityRecovery {
             replacement: Some(pl_core::thread::ReplaceContext {
                 expected_revision: request.committed_context.revision,
                 reason: pl_core::thread::ContextReplacementReason::Compaction,
-                records: vec![pl_core::context::ContextRecord {
-                    id: "reduced".into(),
-                    turn_id: None,
-                    source: ContextSource::Runtime {
-                        source_id: "summary".into(),
-                    },
-                    content: vec![text("completed history")],
-                    tool_calls: vec![],
-                }],
+                records,
             }),
             facts: request.current_facts.to_vec(),
             mutations: vec![],
@@ -148,8 +161,14 @@ impl ContextPreparationHook for CapacityRecovery {
 }
 
 #[tokio::test]
-async fn preparation_overflow_recovers_once_before_dispatch_and_consumes_input_once() {
-    for always_exceeds in [false, true] {
+async fn context_overflow_recovers_once_and_consumes_input_once() {
+    for (during_execution, always_exceeds, step_limit) in [
+        (false, false, 3),
+        (false, true, 3),
+        (true, false, 3),
+        (true, true, 3),
+        (true, false, 1),
+    ] {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let preparations = Arc::new(Mutex::new(Vec::new()));
@@ -159,6 +178,8 @@ async fn preparation_overflow_recovers_once_before_dispatch_and_consumes_input_o
                 observed: observed.clone(),
                 dispatched: dispatched.clone(),
                 always_exceeds,
+                during_execution,
+                fail_after_local_recovery: false,
             }),
         )
         .unwrap();
@@ -184,12 +205,30 @@ async fn preparation_overflow_recovers_once_before_dispatch_and_consumes_input_o
             ))))
             .await
             .unwrap();
-        let result = thread.run_turn(turn("single-input")).await;
-        assert_eq!(result.is_err(), always_exceeds);
-        assert_eq!(*preparations.lock().unwrap(), [false, true]);
+        let mut input = turn("single-input");
+        input.max_model_steps =
+            pl_core::thread::ModelStepLimit::Limited(step_limit.try_into().unwrap());
+        let result = thread.run_turn(input).await;
+        let budget_exhausted = during_execution && step_limit == 1;
+        assert_eq!(
+            result.is_err(),
+            always_exceeds || budget_exhausted,
+            "during_execution={during_execution}"
+        );
+        assert!(thread.snapshot().model_execution.is_none());
+        assert_eq!(
+            *preparations.lock().unwrap(),
+            if budget_exhausted {
+                vec![false]
+            } else if during_execution {
+                vec![false, true, false]
+            } else {
+                vec![false, true]
+            }
+        );
         {
             let requests = observed.lock().unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), if budget_exhausted { 1 } else { 2 });
             for request in requests.iter() {
                 assert_eq!(
                     request
@@ -203,10 +242,162 @@ async fn preparation_overflow_recovers_once_before_dispatch_and_consumes_input_o
         }
         assert_eq!(
             dispatched.load(std::sync::atomic::Ordering::Relaxed),
-            usize::from(!always_exceeds)
+            if budget_exhausted {
+                1
+            } else if during_execution {
+                2
+            } else {
+                usize::from(!always_exceeds)
+            }
         );
         thread.close().await.unwrap();
     }
+}
+
+struct MeasuredThenFailed(usize);
+impl pl_core::model::ModelSession for MeasuredThenFailed {
+    async fn prepare(
+        &mut self,
+        request: pl_core::model::ModelRequest,
+    ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        self.0 += 1;
+        let fail = self.0 > 1;
+        Ok(pl_core::model::PreparedModelCall::new(async move {
+            if fail {
+                return Err(pl_core::model::ModelError {
+                    kind: pl_core::model::ModelFailureKind::Unavailable,
+                    details: None,
+                    usage: Default::default(),
+                    source: None,
+                });
+            }
+            let mut output = support::response(&request, vec![]);
+            output.usage.input_tokens = Some(100);
+            output.usage.output_tokens = Some(20);
+            Ok(output)
+        })
+        .with_usage_binding(pl_core::model::ModelUsageBinding {
+            route_identity: Some("measured-route".into()),
+            model: "measured-model".into(),
+            context_window: Some(1000),
+            max_context_window: Some(1000),
+            auto_compact_limit: Some(900),
+        }))
+    }
+    async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ObserveUsage(
+    Arc<Mutex<Vec<Option<pl_core::thread::context_preparation::PreviousContextUsage>>>>,
+);
+
+#[derive(Debug)]
+struct ObserveFilteredUsage(Arc<Mutex<Vec<bool>>>);
+impl ContextPreparationHook for ObserveFilteredUsage {
+    async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
+        if let Some(previous) = &request.previous_usage {
+            assert!(!previous.matches_input(&request.model));
+            request.model.tools = Default::default();
+            request.model.solo_tool_ids = Default::default();
+            request.model.tool_call_mode = pl_core::model::ToolCallMode::Parallel;
+            assert!(previous.matches_input(&request.model));
+            let mut altered = request.model.clone();
+            Arc::make_mut(&mut altered.context.records)[0].content = vec![text("changed prefix")];
+            assert!(!previous.matches_input(&altered));
+            altered = request.model.clone();
+            altered.tool_call_mode = pl_core::model::ToolCallMode::Sequential;
+            assert!(!previous.matches_input(&altered));
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .push(request.previous_usage.is_some());
+        ContextPreparation::Prepared {
+            expected_extension_sequence: request.extension_sequence,
+            rejected_mutations: vec![],
+            replacement: None,
+            facts: request.current_facts.to_vec(),
+            mutations: vec![],
+            excluded_tool_ids: vec!["workflow".into()],
+        }
+    }
+}
+
+#[tokio::test]
+async fn filtered_tool_plan_keeps_the_previous_measurement_available_for_final_preview() {
+    let thread = ThreadHandle::start(
+        "filtered-measurement".into(),
+        DynModelSession::new(MeasuredThenFailed(0)),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![tool_support::tool("workflow", &Arc::default())])
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(ObserveFilteredUsage(
+            seen.clone(),
+        ))))
+        .await
+        .unwrap();
+    thread.run_turn(turn("first")).await.unwrap();
+    assert!(thread.run_turn(turn("next")).await.is_err());
+    assert_eq!(*seen.lock().unwrap(), [false, true]);
+    thread.close().await.unwrap();
+}
+impl ContextPreparationHook for ObserveUsage {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        self.0.lock().unwrap().push(request.previous_usage);
+        ContextPreparation::Unchanged
+    }
+}
+
+#[tokio::test]
+async fn unmeasured_failure_preserves_bound_usage_across_checkpoint_and_next_turn() {
+    let thread = ThreadHandle::start(
+        "measured".into(),
+        DynModelSession::new(MeasuredThenFailed(0)),
+    )
+    .unwrap();
+    thread.run_turn(turn("measured-input")).await.unwrap();
+    assert!(thread.run_turn(turn("failed-input")).await.is_err());
+    let checkpoint = thread
+        .checkpoint(thread.snapshot().commit_sequence)
+        .unwrap();
+    let checkpoint: pl_core::thread::ThreadCheckpoint =
+        serde_json::from_str(&serde_json::to_string(&checkpoint).unwrap()).unwrap();
+    thread.close().await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::resume(
+        "measured".into(),
+        DynModelSession::new(model),
+        Some(checkpoint),
+    )
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(ObserveUsage(seen.clone()))))
+        .await
+        .unwrap();
+    thread.run_turn(turn("next-input")).await.unwrap();
+    {
+        let observations = seen.lock().unwrap();
+        let previous = observations[0]
+            .as_ref()
+            .expect("last measured prefix survives unmeasured failure");
+        assert_eq!(previous.usage.input_tokens, Some(100));
+        assert_eq!(previous.usage.output_tokens, Some(20));
+        assert_eq!(previous.origin.input_record_count, 1);
+        assert_eq!(
+            previous.origin.binding.route_identity.as_deref(),
+            Some("measured-route")
+        );
+    }
+    thread.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -665,4 +856,111 @@ async fn prepared_tool_visibility_controls_both_model_declarations_and_call_admi
         );
         thread.close().await.unwrap();
     }
+}
+
+#[derive(Debug)]
+struct RecoveryAsRebuild(Arc<Mutex<Vec<bool>>>);
+impl ContextPreparationHook for RecoveryAsRebuild {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        let mut result = CapacityRecovery(self.0.clone()).before_step(request).await;
+        if let ContextPreparation::Prepared {
+            replacement: Some(replacement),
+            ..
+        } = &mut result
+        {
+            replacement.reason = pl_core::thread::ContextReplacementReason::Rebuild;
+        }
+        result
+    }
+}
+
+#[tokio::test]
+async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recovery() {
+    for rebuild in [false, true] {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let forced = Arc::new(Mutex::new(Vec::new()));
+        let thread = ThreadHandle::start(
+            format!("mixed-overflow-{rebuild}"),
+            DynModelSession::new(CapacityModel {
+                observed: observed.clone(),
+                dispatched: Default::default(),
+                always_exceeds: false,
+                during_execution: false,
+                fail_after_local_recovery: true,
+            }),
+        )
+        .unwrap();
+        thread
+            .replace_context(pl_core::thread::ReplaceContext {
+                expected_revision: 0,
+                reason: pl_core::thread::ContextReplacementReason::Rebuild,
+                records: vec![pl_core::context::ContextRecord {
+                    id: "large-history".into(),
+                    turn_id: None,
+                    source: ContextSource::Runtime {
+                        source_id: "history".into(),
+                    },
+                    content: vec![text("large")],
+                    tool_calls: vec![],
+                }],
+            })
+            .await
+            .unwrap();
+        let hook = if rebuild {
+            ContextPreparer::new(RecoveryAsRebuild(forced.clone()))
+        } else {
+            ContextPreparer::new(CapacityRecovery(forced.clone()))
+        };
+        thread.set_context_preparation(Some(hook)).await.unwrap();
+        let result = thread.run_turn(turn("mixed")).await;
+        assert!(
+            matches!(result, Err(pl_core::thread::ThreadError::Model(ref error)) if error.kind == pl_core::model::ModelFailureKind::ContextLimit)
+        );
+        assert_eq!(*forced.lock().unwrap(), [false, true]);
+        assert_eq!(observed.lock().unwrap().len(), if rebuild { 1 } else { 2 });
+        thread.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn manual_compaction_commits_without_new_input_or_model_turn_and_can_continue() {
+    let (model, observed) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("manual-compaction".into(), DynModelSession::new(model)).unwrap();
+    thread.run_turn(turn("original")).await.unwrap();
+    let before = thread.snapshot();
+    let forced = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(CapacityRecovery(forced.clone()))))
+        .await
+        .unwrap();
+    let reduced = thread
+        .compact_context(before.context.revision, Default::default())
+        .await
+        .unwrap();
+    assert!(reduced.revision > before.context.revision);
+    assert_eq!(*forced.lock().unwrap(), [true]);
+    assert_eq!(
+        observed.lock().unwrap().len(),
+        1,
+        "the main model must not run a hidden prompt"
+    );
+    assert_eq!(thread.snapshot().inputs.len(), before.inputs.len());
+    assert_eq!(thread.snapshot().turns.len(), before.turns.len());
+    assert!(matches!(
+        thread
+            .compact_context(before.context.revision, Default::default())
+            .await,
+        Err(pl_core::thread::ThreadError::ContextConflict { .. })
+    ));
+    let cancelled = tokio_util::sync::CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        thread.compact_context(reduced.revision, cancelled).await,
+        Err(pl_core::thread::ThreadError::Cancelled)
+    ));
+    assert_eq!(thread.snapshot().context.revision, reduced.revision);
+    thread.run_turn(turn("continue")).await.unwrap();
+    assert_eq!(observed.lock().unwrap().len(), 2);
+    thread.close().await.unwrap();
 }

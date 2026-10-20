@@ -124,7 +124,7 @@ fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelInfo>, 
 }
 
 #[tokio::test]
-async fn text_lists_use_each_account_own_definition_and_do_not_gate_route_execution() {
+async fn text_lists_and_route_admission_use_each_account_resolved_context() {
     let mut a = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     accept_observation(&mut a, discover(json!({"data":[
         {"id":"shared","input_modalities":["text"],"output_modalities":["text"]},
@@ -198,10 +198,7 @@ async fn text_lists_use_each_account_own_definition_and_do_not_gate_route_execut
         ("empty-output", ModelTypeExclusion::TextOutputUnsupported),
     ] {
         let entry = all.iter().find(|entry| entry.model.model_id == id).unwrap();
-        assert_eq!(
-            entry.model.type_support(ModelType::Text).exclusions,
-            [reason]
-        );
+        assert_eq!(entry.type_support(ModelType::Text).exclusions, [reason]);
     }
     accept_observation(
         config.accounts.get_mut(&b_id).unwrap(),
@@ -229,7 +226,7 @@ async fn text_lists_use_each_account_own_definition_and_do_not_gate_route_execut
                 .iter()
                 .any(|model| model.model_id == "shared")
         );
-        assert_eq!(
+        assert!(matches!(
             config
                 .route_availability(&ModelRouteConfig {
                     account_id: id,
@@ -237,8 +234,8 @@ async fn text_lists_use_each_account_own_definition_and_do_not_gate_route_execut
                     effort: None
                 })
                 .unwrap(),
-            ModelRouteAvailability::Available
-        );
+            ModelRouteAvailability::TypeUnsupported { .. }
+        ));
     }
 }
 
@@ -717,7 +714,7 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     assert!(lower.contains("x-account: synthetic-account\r\n"));
     let model = &models[0];
     assert_eq!(model.model_id, "unregistered-Future-ID");
-    assert_eq!(model.resolved_context_window(), None);
+    assert_eq!(model.resolve_context(None).context_window, None);
     assert_eq!(model.max_output_tokens, None);
     assert!(model.supported_efforts().is_empty());
     assert!(!model.capabilities.temperature);
@@ -923,24 +920,27 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
     };
     use pl_protocol::{PricingOutcome, UnpricedReason};
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
-    for (adapter, body, effort_path, declares_image) in [
+    for (adapter, body, effort_path, declares_image, expected_limit) in [
         (
             ProtocolKind::DeepSeek,
             json!({"data":[{"id":"future-model","name":"Future","context_window":64000,"max_output_tokens":8000,"input_modalities":["text","image"],"output_modalities":["text"],"effort":{"supported_levels":["gentle","new-ultra"],"default_level":"new-ultra"},"pricing":{"input":0},"supports_function_calling":true}]}),
             "reasoning_effort",
             true,
+            56_000,
         ),
         (
             ProtocolKind::OpenAi,
             json!({"models":[{"slug":"future-model","display_name":"Future","description":"independent metadata","context_window":64000,"max_context_window":128000,"auto_compact_token_limit":12000,"supported_reasoning_levels":[{"effort":"gentle","description":"less"},{"effort":"new-ultra","description":"more"}],"default_reasoning_level":"new-ultra","base_instructions":"DO NOT IMPORT","shell_type":"powershell","supports_temperature":false}]}),
             "reasoning",
             true,
+            12_000,
         ),
         (
             ProtocolKind::Xai,
             json!({"data":[{"id":"future-model","context_length":64000,"input_modalities":["text","image"],"output_modalities":["text"],"capabilities":{"reasoning_effort":["gentle","new-ultra"],"default_reasoning_effort":"new-ultra"}}]}),
             "reasoning",
             false,
+            57_600,
         ),
     ] {
         let models = discover(body, adapter).await;
@@ -960,11 +960,10 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         config.set_model_catalog_overlay(models).unwrap();
         let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
         assert_eq!(descriptor.context_window, Some(64000));
-        let preset = (adapter == ProtocolKind::OpenAi).then_some(12_000);
-        assert_eq!(descriptor.auto_compact_token_limit, preset);
+        assert_eq!(descriptor.context.auto_compact_limit, Some(expected_limit));
         assert_eq!(
-            model.resolved_auto_compact_limit(),
-            Some(preset.unwrap_or(57_600))
+            model.resolve_context(None).auto_compact_limit,
+            Some(expected_limit)
         );
         assert_eq!(descriptor.pricing, None);
         let reasoning = descriptor.reasoning.unwrap();
@@ -1224,7 +1223,7 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
             unknown.binding.request.media.is_empty(),
             "{kind:?} must not fabricate a media profile"
         );
-        assert_eq!(unknown.resolved_context_window(), None);
+        assert_eq!(unknown.resolve_context(None).context_window, None);
     }
 
     // OpenAI-compatible 共同契约可用，但 xAI 的 context_length 不生效。
@@ -1371,24 +1370,28 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     assert_eq!(model.description, description);
     assert_eq!(model.context_window, Some(1_050_000));
     assert_eq!(
-        model_descriptor(&pl_model::config::AccountModelEntry {
-            model: model.clone(),
-            origin: pl_model::config::AccountModelOrigin::Online,
-        })
-        .auto_compact_token_limit,
+        model_descriptor(&pl_model::config::AccountModelEntry::new(
+            model.clone(),
+            pl_model::config::AccountModelOrigin::Online
+        ))
+        .context
+        .auto_compact_limit,
         Some(475_000)
     );
-    assert_eq!(model.resolved_auto_compact_limit(), Some(475_000));
+    assert_eq!(
+        model.resolve_context(None).auto_compact_limit,
+        Some(475_000)
+    );
     assert_eq!(model.max_output_tokens, Some(128_000));
     assert_eq!(
         model.supported_efforts(),
         ["low", "medium", "high", "xhigh", "max"]
     );
     assert!(
-        model_descriptor(&pl_model::config::AccountModelEntry {
-            model: model.clone(),
-            origin: pl_model::config::AccountModelOrigin::Online,
-        })
+        model_descriptor(&pl_model::config::AccountModelEntry::new(
+            model.clone(),
+            pl_model::config::AccountModelOrigin::Online
+        ))
         .pricing
         .is_some()
     );
@@ -1573,10 +1576,13 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     assert_eq!(descriptor.context_window, Some(2_000_000));
     assert_eq!(descriptor.max_context_window, Some(2_000_000));
     assert_eq!(
-        descriptor.auto_compact_token_limit,
-        builtin.auto_compact_token_limit
+        descriptor.context.auto_compact_limit,
+        builtin.resolve_context(None).auto_compact_limit
     );
-    assert_eq!(entry.model.resolved_auto_compact_limit(), Some(475_000));
+    assert_eq!(
+        entry.model.resolve_context(None).auto_compact_limit,
+        Some(475_000)
+    );
     assert!(descriptor.capabilities.reasoning);
     assert_eq!(
         descriptor
@@ -1590,7 +1596,10 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let narrowed = updated(query.execute(Some(&cache(&raised))).await.unwrap());
     assert_eq!(narrowed[0].context_window, Some(300_000));
     assert_eq!(narrowed[0].max_context_window, Some(300_000));
-    assert_eq!(narrowed[0].resolved_auto_compact_limit(), Some(270_000));
+    assert_eq!(
+        narrowed[0].resolve_context(None).auto_compact_limit,
+        Some(300_000 - builtin.max_output_tokens.unwrap())
+    );
 
     // 在线明确关闭 reasoning：清除继承的 effort 候选；随后的 id-only 响应不复活内置候选。
     let closed = updated(query.execute(Some(&cache(&narrowed))).await.unwrap());

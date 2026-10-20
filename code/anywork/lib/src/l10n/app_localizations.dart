@@ -4419,7 +4419,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactRestore.
   ///
   /// In en, this message translates to:
-  /// **'Restore default'**
+  /// **'Reset to automatic'**
   String get settingsModelAutoCompactRestore;
 
   /// No description provided for @settingsModelAutoCompactSaving.
@@ -4440,16 +4440,10 @@ abstract class AppLocalizations {
   /// **'Retry'**
   String get settingsModelAutoCompactRetry;
 
-  /// No description provided for @settingsModelAutoCompactDefaultLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Default'**
-  String get settingsModelAutoCompactDefaultLabel;
-
   /// No description provided for @settingsModelAutoCompactOverrideLabel.
   ///
   /// In en, this message translates to:
-  /// **'User'**
+  /// **'Mode'**
   String get settingsModelAutoCompactOverrideLabel;
 
   /// No description provided for @settingsModelAutoCompactEffectiveLabel.
@@ -4458,16 +4452,10 @@ abstract class AppLocalizations {
   /// **'Effective'**
   String get settingsModelAutoCompactEffectiveLabel;
 
-  /// No description provided for @settingsModelAutoCompactSafeLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Safe limit'**
-  String get settingsModelAutoCompactSafeLabel;
-
   /// No description provided for @settingsModelAutoCompactUsingDefault.
   ///
   /// In en, this message translates to:
-  /// **'Using default'**
+  /// **'Automatic'**
   String get settingsModelAutoCompactUsingDefault;
 
   /// No description provided for @settingsModelAutoCompactInputLabel.
@@ -4485,20 +4473,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactHelp.
   ///
   /// In en, this message translates to:
-  /// **'Effective value is the smaller of the selected threshold and 90% of the context window.'**
+  /// **'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.'**
   String get settingsModelAutoCompactHelp;
 
   /// No description provided for @settingsModelAutoCompactUnknownCapacity.
   ///
   /// In en, this message translates to:
-  /// **'Context capacity is unknown, so compaction stays off.'**
+  /// **'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.'**
   String get settingsModelAutoCompactUnknownCapacity;
-
-  /// No description provided for @settingsModelAutoCompactAboveSafe.
-  ///
-  /// In en, this message translates to:
-  /// **'Above the safe limit; {value} takes effect.'**
-  String settingsModelAutoCompactAboveSafe(String value);
 
   /// No description provided for @settingsPriceInput.
   ///
@@ -5319,7 +5301,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineContextCompacted.
   ///
   /// In en, this message translates to:
-  /// **'Context automatically compacted'**
+  /// **'Context compacted'**
   String get timelineContextCompacted;
 
   /// No description provided for @timelineCompactionDetail.
@@ -6755,6 +6737,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Timer'**
   String get conversationActivityWaitingTimer;
+
+  /// No description provided for @settingsModelAutoCompactAdjusted.
+  ///
+  /// In en, this message translates to:
+  /// **'The effective limit was adjusted for context capacity and output reserve.'**
+  String get settingsModelAutoCompactAdjusted;
+
+  /// No description provided for @modelContextParametersInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Inconsistent context parameters'**
+  String get modelContextParametersInvalid;
+
+  /// No description provided for @modelInputBudgetExhausted.
+  ///
+  /// In en, this message translates to:
+  /// **'No input capacity after reserving output'**
+  String get modelInputBudgetExhausted;
+
+  /// No description provided for @statusCompactNow.
+  ///
+  /// In en, this message translates to:
+  /// **'Compact now'**
+  String get statusCompactNow;
+
+  /// No description provided for @statusCompacting.
+  ///
+  /// In en, this message translates to:
+  /// **'Compacting…'**
+  String get statusCompacting;
+
+  /// No description provided for @statusCompactionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Compaction failed. Try again.'**
+  String get statusCompactionFailed;
+
+  /// No description provided for @settingsModelAutoCompactCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom'**
+  String get settingsModelAutoCompactCustom;
 }
 
 class _AppLocalizationsDelegate

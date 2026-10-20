@@ -2460,7 +2460,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactTitle => 'Context compaction threshold';
 
   @override
-  String get settingsModelAutoCompactRestore => 'Restore default';
+  String get settingsModelAutoCompactRestore => 'Reset to automatic';
 
   @override
   String get settingsModelAutoCompactSaving => 'Applying automatically…';
@@ -2473,19 +2473,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactRetry => 'Retry';
 
   @override
-  String get settingsModelAutoCompactDefaultLabel => 'Default';
-
-  @override
-  String get settingsModelAutoCompactOverrideLabel => 'User';
+  String get settingsModelAutoCompactOverrideLabel => 'Mode';
 
   @override
   String get settingsModelAutoCompactEffectiveLabel => 'Effective';
 
   @override
-  String get settingsModelAutoCompactSafeLabel => 'Safe limit';
-
-  @override
-  String get settingsModelAutoCompactUsingDefault => 'Using default';
+  String get settingsModelAutoCompactUsingDefault => 'Automatic';
 
   @override
   String get settingsModelAutoCompactInputLabel => 'Threshold (tokens)';
@@ -2496,16 +2490,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactHelp =>
-      'Effective value is the smaller of the selected threshold and 90% of the context window.';
+      'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity =>
-      'Context capacity is unknown, so compaction stays off.';
-
-  @override
-  String settingsModelAutoCompactAboveSafe(String value) {
-    return 'Above the safe limit; $value takes effect.';
-  }
+      'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.';
 
   @override
   String get settingsPriceInput => 'Input';
@@ -2959,7 +2948,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineActivityTitle => 'Thinking and tools';
 
   @override
-  String get timelineContextCompacted => 'Context automatically compacted';
+  String get timelineContextCompacted => 'Context compacted';
 
   @override
   String timelineCompactionDetail(int before, int after) {
@@ -3776,4 +3765,27 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get conversationActivityWaitingTimer => 'Timer';
+
+  @override
+  String get settingsModelAutoCompactAdjusted =>
+      'The effective limit was adjusted for context capacity and output reserve.';
+
+  @override
+  String get modelContextParametersInvalid => 'Inconsistent context parameters';
+
+  @override
+  String get modelInputBudgetExhausted =>
+      'No input capacity after reserving output';
+
+  @override
+  String get statusCompactNow => 'Compact now';
+
+  @override
+  String get statusCompacting => 'Compacting…';
+
+  @override
+  String get statusCompactionFailed => 'Compaction failed. Try again.';
+
+  @override
+  String get settingsModelAutoCompactCustom => 'Custom';
 }

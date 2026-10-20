@@ -71,21 +71,24 @@ impl Owner {
             content: Vec::new(),
             cancellation,
         };
-        self.step_with_plan(input, plan, Some(source)).await
+        self.step_with_plan(input, plan, Some(source), &mut false)
+            .await
     }
 
     pub(super) async fn step(&mut self, input: StepInput) -> Result<ModelStepOutput, ThreadError> {
         let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, None).await
+        self.step_with_plan(input, plan, None, &mut false).await
     }
 
-    pub(super) async fn correct_step(
+    pub(super) async fn step_in_turn(
         &mut self,
         input: StepInput,
-        source: String,
+        source: Option<String>,
+        recovery_used: &mut bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, Some(source)).await
+        self.step_with_plan(input, plan, source, recovery_used)
+            .await
     }
 
     fn output_violation(
@@ -188,12 +191,13 @@ impl Owner {
         input: StepInput,
         plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
+        recovery_used: &mut bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         // The explicit execution phase describes live execution only: clear it on every exit path
         // (success, failure, cancellation and error) so a projection never reads a phase left over
         // from a finished step.
         let attempt_id = input.attempt_id.clone();
-        let result = self.run_step(input, plan, retry_of).await;
+        let result = self.run_step(input, plan, retry_of, recovery_used).await;
         // The call is over on every exit path — success, failure, cancellation or an early error —
         // so the live quota is handed back here once: a call that never reserved (or already
         // released) is a no-op, and a refusal latched during the call becomes the typed fault that
@@ -219,11 +223,63 @@ impl Owner {
         self.publish_snapshot();
     }
 
+    pub(super) async fn compact_idle_context(
+        &mut self,
+        revision: u64,
+        cancellation: CancellationToken,
+    ) -> Result<ContextSnapshot, ThreadError> {
+        self.ensure_idle(false)?;
+        if self.state.context.revision != revision {
+            return Err(ThreadError::ContextConflict {
+                expected: revision,
+                actual: self.state.context.revision,
+            });
+        }
+        self.apply_model_update().await?;
+        self.ensure_idle(false)?;
+        // Completed Turn rows may have left the resident journal. Compaction owns an auxiliary
+        // call identity, without creating a Turn or depending on its hot retention.
+        let turn_id = self
+            .state
+            .context
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| record.turn_id.clone())
+            .unwrap_or_else(|| format!("context:{}", self.state.commit_sequence));
+        let input = StepInput {
+            turn_id,
+            attempt_id: format!("manual-compaction:{}", self.state.commit_sequence),
+            content: Vec::new(),
+            cancellation,
+        };
+        if !self.recover_context(&input).await? {
+            return Err(ThreadError::InvalidContext);
+        }
+        Ok(self.state.context.clone())
+    }
+
+    /// Reduces an already-admitted request after a typed service capacity refusal.
+    pub(super) async fn recover_context(&mut self, input: &StepInput) -> Result<bool, ThreadError> {
+        let result = async {
+            self.enter_model_execution(ModelExecutionPhase::Admitting);
+            self.ensure_model_admission(&input.cancellation).await?;
+            let mut plan = self.tools.freeze();
+            self.enter_model_execution(ModelExecutionPhase::PreparingContext);
+            self.prepare_context(input, &mut plan, &[], true).await
+        }
+        .await;
+        self.state.model_execution = None;
+        self.publish_snapshot();
+        result
+    }
+
     async fn run_step(
         &mut self,
         input: StepInput,
         mut plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
+        recovery_used: &mut bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         // The first boundary is admission, not a provider call: the driver may wait for storage
         // admission before it even knows whether the context hook runs.
@@ -339,7 +395,7 @@ impl Owner {
             output_budget.clone(),
         );
         self.model_progress = Some((input.attempt_id.clone(), observations));
-        let tools = plan.declarations();
+        let mut tools = plan.declarations();
         let mut request = ModelRequest {
             tool_call_mode: plan.call_mode(),
             solo_tool_ids: plan.solo_tool_ids(),
@@ -356,7 +412,6 @@ impl Owner {
         // Preparing the request runs inside the model implementation (freezing, encoding, estimating)
         // before any provider call exists, so this is still preparation, not a wait for output.
         self.enter_model_execution(ModelExecutionPhase::PreparingRequest);
-        let mut recovered_capacity = false;
         let prepared = loop {
             let mut model = self.model.take().ok_or(ThreadError::Closed)?;
             self.preparing_model_available = model.is_available();
@@ -375,15 +430,15 @@ impl Owner {
                 }
                 Err(error)
                     if error.kind == crate::model::ModelFailureKind::ContextLimit
-                        && !recovered_capacity
+                        && !*recovery_used
                         && retry_of.is_none() =>
                 {
-                    recovered_capacity = true;
-                    let before = self.state.context.revision;
+                    *recovery_used = true;
                     self.enter_model_execution(ModelExecutionPhase::PreparingContext);
-                    self.prepare_context(&input, &mut plan, &frozen_input, true)
+                    let compacted = self
+                        .prepare_context(&input, &mut plan, &frozen_input, true)
                         .await?;
-                    if self.state.context.revision == before {
+                    if !compacted {
                         return Err(ThreadError::Model(Arc::new(error)));
                     }
                     let mut records = self.state.context.records.to_vec();
@@ -402,6 +457,10 @@ impl Owner {
                         records: records.into(),
                     };
                     context.validate_complete()?;
+                    tools = plan.declarations();
+                    request.tools = tools.clone();
+                    request.tool_call_mode = plan.call_mode();
+                    request.solo_tool_ids = plan.solo_tool_ids();
                     request.context = context.clone();
                     request.committed_private_context = self.state.private_context.clone();
                     self.enter_model_execution(ModelExecutionPhase::PreparingRequest);

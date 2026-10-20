@@ -8,6 +8,8 @@ enum ModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
   contextWindowUnknown,
+  contextParametersInvalid,
+  inputBudgetExhausted,
 }
 
 class ModelTypeSupportView {
@@ -60,6 +62,46 @@ class ModelPriceTierView {
   final double? cacheWrite;
 }
 
+enum ModelContextUnavailable {
+  windowUnknown,
+  invalidParameters,
+  inputBudgetExhausted,
+}
+
+enum ModelContextAdjustment { safetyLimit }
+
+/// Immutable backend result; this layer performs no budget or threshold arithmetic.
+class ModelContextView {
+  const ModelContextView({
+    this.unavailable = ModelContextUnavailable.windowUnknown,
+    this.contextWindow,
+    this.inputTokenLimit,
+    this.autoCompactLimit,
+    this.adjustment,
+  });
+  final ModelContextUnavailable? unavailable;
+  final int? contextWindow;
+  final int? inputTokenLimit;
+  final int? autoCompactLimit;
+  final ModelContextAdjustment? adjustment;
+  @override
+  bool operator ==(Object other) =>
+      other is ModelContextView &&
+      unavailable == other.unavailable &&
+      contextWindow == other.contextWindow &&
+      inputTokenLimit == other.inputTokenLimit &&
+      autoCompactLimit == other.autoCompactLimit &&
+      adjustment == other.adjustment;
+  @override
+  int get hashCode => Object.hash(
+    unavailable,
+    contextWindow,
+    inputTokenLimit,
+    autoCompactLimit,
+    adjustment,
+  );
+}
+
 class AccountModelView {
   const AccountModelView({
     required this.modelId,
@@ -69,7 +111,7 @@ class AccountModelView {
     this.description = '',
     this.contextWindow,
     this.maxContextWindow,
-    this.autoCompactTokenLimit,
+    this.context = const ModelContextView(),
     this.maxOutputTokens,
     this.inputCapabilities = const [],
     this.outputModalities = const [],
@@ -101,8 +143,8 @@ class AccountModelView {
   final int? contextWindow;
   final int? maxContextWindow;
 
-  /// 原始模型目录预设；没有预设时按解析上下文容量的 90% 推导。
-  final int? autoCompactTokenLimit;
+  /// 后端完成声明合并和账号覆盖解析后的最终上下文策略。
+  final ModelContextView context;
   final int? maxOutputTokens;
   final List<ModelInputCapabilityView> inputCapabilities;
   final List<ModelModalityView> outputModalities;
@@ -127,7 +169,7 @@ class AccountModelView {
     String? description,
     int? contextWindow,
     int? maxContextWindow,
-    int? autoCompactTokenLimit,
+    ModelContextView? context,
     int? maxOutputTokens,
     List<ModelInputCapabilityView>? inputCapabilities,
     List<ModelModalityView>? outputModalities,
@@ -152,8 +194,7 @@ class AccountModelView {
       description: description ?? this.description,
       contextWindow: contextWindow ?? this.contextWindow,
       maxContextWindow: maxContextWindow ?? this.maxContextWindow,
-      autoCompactTokenLimit:
-          autoCompactTokenLimit ?? this.autoCompactTokenLimit,
+      context: context ?? this.context,
       maxOutputTokens: maxOutputTokens ?? this.maxOutputTokens,
       inputCapabilities: inputCapabilities ?? this.inputCapabilities,
       outputModalities: outputModalities ?? this.outputModalities,
@@ -176,91 +217,17 @@ class AccountModelView {
   }
 }
 
-/// account 实例中某模型上下文压缩阈值的四层视图。
-///
-/// `defaultLimit` 为模型默认元信息；`overrideLimit` 为用户覆盖（`null` 表示使用默认）；
-/// `effectiveLimit` 为实际生效值 `min(覆盖或默认, 上下文 90%)`，上下文未知时为 `null`；
-/// `safeLimit` 为上下文 90% 安全上限，上下文未知时为 `null`。
+/// Raw persisted override intent and the catalog's final context read model.
 class AccountModelAutoCompactView {
   const AccountModelAutoCompactView({
     required this.modelId,
-    required this.defaultLimit,
     this.overrideLimit,
-    this.effectiveLimit,
-    this.safeLimit,
+    this.context = const ModelContextView(),
   });
-
-  /// 尚无 canonical 解析结果时，由同一份目录元数据推导草稿读数。
-  factory AccountModelAutoCompactView.forModel(AccountModelView model) {
-    final safeLimit = safeLimitForContext(
-      model.contextWindow ?? model.maxContextWindow,
-    );
-    final defaultLimit = model.autoCompactTokenLimit ?? safeLimit;
-    return AccountModelAutoCompactView(
-      modelId: model.modelId,
-      defaultLimit: defaultLimit,
-      overrideLimit: null,
-      effectiveLimit: _effective(defaultLimit, safeLimit),
-      safeLimit: safeLimit,
-    );
-  }
-
-  /// 上下文容量 90% 的安全上限；容量未知或非正时返回 `null`（保持不自动压缩）。
-  ///
-  /// 用商余数计算，避免 `contextWindow * 90` 在大容量下的整数溢出。
-  static int? safeLimitForContext(int? contextWindow) {
-    if (contextWindow == null || contextWindow <= 0) {
-      return null;
-    }
-    final quotient = contextWindow ~/ 100;
-    final remainder = contextWindow % 100;
-    final limit = quotient * 90 + (remainder * 90) ~/ 100;
-    return limit > 0 ? limit : null;
-  }
-
-  static int? _effective(int? selected, int? safeLimit) {
-    if (selected == null || safeLimit == null) {
-      return null;
-    }
-    return selected < safeLimit ? selected : safeLimit;
-  }
-
   final String modelId;
-  final int? defaultLimit;
   final int? overrideLimit;
-  final int? effectiveLimit;
-  final int? safeLimit;
-
+  final ModelContextView context;
   bool get hasOverride => overrideLimit != null;
-
-  /// 返回覆盖变更后的副本；覆盖为 `null` 表示恢复默认。
-  ///
-  /// 实际生效值按 `min(覆盖或默认, 安全上限)` 重新推导，上下文未知时保持 `null`。
-  AccountModelAutoCompactView withOverride(int? overrideLimit) {
-    final normalized = overrideLimit == defaultLimit ? null : overrideLimit;
-    return AccountModelAutoCompactView(
-      modelId: modelId,
-      defaultLimit: defaultLimit,
-      overrideLimit: normalized,
-      effectiveLimit: _effective(normalized ?? defaultLimit, safeLimit),
-      safeLimit: safeLimit,
-    );
-  }
-
-  /// Reprojects a stored configuration value without normalizing it.
-  ///
-  /// Read-only catalog merges must retain an explicit override even when a
-  /// new catalog default happens to equal it. Normalization belongs to an
-  /// explicit write intent, which uses [withOverride].
-  AccountModelAutoCompactView withStoredOverride(int? overrideLimit) {
-    return AccountModelAutoCompactView(
-      modelId: modelId,
-      defaultLimit: defaultLimit,
-      overrideLimit: overrideLimit,
-      effectiveLimit: _effective(overrideLimit ?? defaultLimit, safeLimit),
-      safeLimit: safeLimit,
-    );
-  }
 }
 
 class AccountSettingsView {
@@ -362,16 +329,14 @@ class AccountSettingsView {
     );
   }
 
-  /// 返回某模型的四层压缩阈值视图。
-  ///
-  /// 优先使用 canonical snapshot 的解析结果；草稿中尚未持久化的模型（新建 account 或
-  /// 新增自定义模型）按目录预设或上下文 90% 推导，不写入用户配置。
-  AccountModelAutoCompactView autoCompactLimitFor(AccountModelView model) {
-    return autoCompactLimits[model.modelId] ??
-        AccountModelAutoCompactView.forModel(model);
-  }
+  AccountModelAutoCompactView autoCompactLimitFor(AccountModelView model) =>
+      AccountModelAutoCompactView(
+        modelId: model.modelId,
+        overrideLimit: autoCompactLimits[model.modelId]?.overrideLimit,
+        context: model.context,
+      );
 
-  /// 写入或更新某模型的三层压缩阈值视图。
+  /// Apply a raw intent; only the backend resolves its effective policy.
   AccountSettingsView withAutoCompactLimit(AccountModelAutoCompactView limit) {
     return copyWith(
       autoCompactLimits: {...autoCompactLimits, limit.modelId: limit},

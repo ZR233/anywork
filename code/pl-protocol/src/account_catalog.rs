@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Account/模型目录跨产品传输协议版本。
-pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 15;
+pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 16;
 
 /// 无敏感信息、可供 Web 与桌面端直接渲染的账号模板目录快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -117,6 +117,33 @@ pub enum ModelTypeExclusion {
     TextInputUnsupported,
     TextOutputUnsupported,
     ContextWindowUnknown,
+    ContextParametersInvalid,
+    InputBudgetExhausted,
+}
+
+/// Final model-owned context policy, frozen after catalog and account configuration merge.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelContextResolution {
+    pub unavailable: Option<ModelContextUnavailable>,
+    pub context_window: Option<u64>,
+    pub input_token_limit: Option<u64>,
+    pub auto_compact_limit: Option<u64>,
+    pub adjustment: Option<ModelContextAdjustment>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelContextUnavailable {
+    WindowUnknown,
+    InvalidParameters,
+    InputBudgetExhausted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelContextAdjustment {
+    SafetyLimit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -138,8 +165,7 @@ pub struct ModelDescriptor {
     pub description: Option<String>,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
-    /// Explicit model override only; missing values derive from the context capacity.
-    pub auto_compact_token_limit: Option<u64>,
+    pub context: ModelContextResolution,
     pub max_output_tokens: Option<u64>,
     pub transport: ModelTransportDescriptor,
     pub capabilities: ModelCapabilitiesDto,

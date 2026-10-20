@@ -1282,27 +1282,17 @@
   "settingsContextBudget": "Context budget (tokens)",
   "settingsOutputBudget": "Maximum output (tokens)",
   "settingsModelAutoCompactTitle": "Context compaction threshold",
-  "settingsModelAutoCompactRestore": "Restore default",
+  "settingsModelAutoCompactRestore": "Reset to automatic",
   "settingsModelAutoCompactSaving": "Applying automatically…",
   "settingsModelAutoCompactSaveFailed": "Could not apply. Your input is kept.",
   "settingsModelAutoCompactRetry": "Retry",
-  "settingsModelAutoCompactDefaultLabel": "Default",
-  "settingsModelAutoCompactOverrideLabel": "User",
+  "settingsModelAutoCompactOverrideLabel": "Mode",
   "settingsModelAutoCompactEffectiveLabel": "Effective",
-  "settingsModelAutoCompactSafeLabel": "Safe limit",
-  "settingsModelAutoCompactUsingDefault": "Using default",
+  "settingsModelAutoCompactUsingDefault": "Automatic",
   "settingsModelAutoCompactInputLabel": "Threshold (tokens)",
   "settingsModelAutoCompactInvalid": "Enter a positive integer token count.",
-  "settingsModelAutoCompactHelp": "Effective value is the smaller of the selected threshold and 90% of the context window.",
-  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so compaction stays off.",
-  "settingsModelAutoCompactAboveSafe": "Above the safe limit; {value} takes effect.",
-  "@settingsModelAutoCompactAboveSafe": {
-    "placeholders": {
-      "value": {
-        "type": "String"
-      }
-    }
-  },
+  "settingsModelAutoCompactHelp": "The effective threshold is capped at 90% of the context window and reserves the maximum output budget.",
+  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so an automatic compaction threshold cannot be calculated.",
   "settingsPriceInput": "Input",
   "settingsPriceOutput": "Output",
   "settingsPriceCacheRead": "Cache read",
@@ -1491,7 +1481,7 @@
   "settingsModelCatalogEmpty": "This account has no models.",
   "settingsModelCatalogRestartHint": "Restart the app to sync again.",
   "timelineActivityTitle": "Thinking and tools",
-  "timelineContextCompacted": "Context automatically compacted",
+  "timelineContextCompacted": "Context compacted",
   "timelineCompactionDetail": "Before: {before}; after: {after} tokens",
   "@timelineCompactionDetail": {
     "placeholders": {
@@ -1882,5 +1872,12 @@
   "timelineWaitStatusInterrupted": "Interrupted",
   "conversationActivityWaitingTools": "Waiting for tools",
   "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
-  "conversationActivityWaitingTimer": "Timer"
+  "conversationActivityWaitingTimer": "Timer",
+  "settingsModelAutoCompactAdjusted": "The effective limit was adjusted for context capacity and output reserve.",
+  "modelContextParametersInvalid": "Inconsistent context parameters",
+  "modelInputBudgetExhausted": "No input capacity after reserving output",
+  "statusCompactNow": "Compact now",
+  "statusCompacting": "Compacting…",
+  "statusCompactionFailed": "Compaction failed. Try again.",
+  "settingsModelAutoCompactCustom": "Custom"
 }

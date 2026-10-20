@@ -771,10 +771,11 @@ impl LiveOwner {
     /// Folds one admitted write into the shared session and the reliable save channel.
     fn project_write(&mut self, write: &ThreadWrite) -> Result<()> {
         let effect = &write.effect;
-        crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
-        let projected =
+        let projected = (|| {
+            crate::studio::thread_projection::fold_effect_accounting(&mut self.usage, effect)?;
             self.projection
-                .advance(&self.chat, &self.thread, effect, &write.checkpoint.state);
+                .advance(&self.chat, &self.thread, effect, &write.checkpoint.state)
+        })();
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
@@ -1652,6 +1653,102 @@ mod storage_fault_tests {
             .and_then(|tool| tool.user_input())
             .context("saved Q&A")?;
         assert_eq!(user_input.answers()[0].answers(), ["anthropic"]);
+        Ok(())
+    }
+
+    /// 当前压缩回执必须同时穿过计量、时间线与真实 writer，不能在投影阶段阻塞保存。
+    #[tokio::test]
+    async fn a_current_compaction_receipt_is_projected_and_saved() -> Result<()> {
+        use pl_core::thread::{
+            ContextReplacement, ContextReplacementReason,
+            extensions::{ExtensionChange, ExtensionRecord},
+        };
+        use pl_model::{
+            protocol::{ProtocolKind, WireApi},
+            runtime::ModelCallBinding,
+        };
+
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = pl_protocol::Thread::placeholder("compaction-save");
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let chat = store.chat_session(&thread.id).await?;
+        let receipt = crate::compaction::CompactionReceipt {
+            inference_id: "compaction-1".into(),
+            binding: ModelCallBinding {
+                account_id: "account".into(),
+                model_id: "model".into(),
+                protocol: ProtocolKind::OpenAi,
+                wire_api: WireApi::Responses,
+                isolation: thread.id.clone(),
+                purpose: "compaction".into(),
+                context_window: Some(100_000),
+                max_context_window: Some(100_000),
+                auto_compact_limit: Some(80_000),
+            },
+            reasoning_effort: None,
+            context_window: Some(100_000),
+            turn_id: "pruned-turn".into(),
+            accounting: Default::default(),
+            model_observation: None,
+            implementation: Some("native".into()),
+            error: None,
+        };
+        let extension = ExtensionRecord {
+            revision: 1,
+            payload: OpaquePayload::new(
+                "pl.studio.compaction",
+                2,
+                serde_json::to_string(&receipt)?,
+            )?,
+        };
+        let state = ThreadSnapshot {
+            commit_sequence: 1,
+            extension_sequence: 1,
+            extensions: [(crate::compaction::LATEST_RECEIPT.into(), extension.clone())].into(),
+            ..Default::default()
+        };
+        let effect = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 1,
+            committed_at: 10,
+            extensions: [ExtensionChange::Put {
+                id: crate::compaction::LATEST_RECEIPT.into(),
+                record: extension,
+            }]
+            .into(),
+            replacements: [ContextReplacement {
+                reason: ContextReplacementReason::Compaction,
+                previous: Default::default(),
+                current: state.context.clone(),
+                previous_private_context: None,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let mut usage = Default::default();
+        crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
+        assert_eq!(usage.inference_count, 1);
+        let mut projection = LiveProjection::new();
+        let (_, prepared) = projection.advance(&chat, &thread, &effect, &state)?;
+        let write = ThreadWrite {
+            effect: Arc::new(effect),
+            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
+            output_claim: None,
+        };
+        sink.admit(&thread.id, write)?;
+        assert!(channel.prepare(prepared));
+        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
+        let history = store.history(&thread.id).await?;
+        let items = history.items_for_turn(&receipt.turn_id).await?;
+        assert_eq!(items.len(), 1);
+        let saved = &items[0];
+        assert_eq!(saved.turn_id, receipt.turn_id);
+        assert!(matches!(
+            saved.state(),
+            ThreadItemState::ContextCompaction(_)
+        ));
         Ok(())
     }
 

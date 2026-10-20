@@ -2087,6 +2087,8 @@ impl ModelError {
 pub enum EstimateAccuracy {
     Exact,
     Approximate,
+    /// Observed usage with unmeasurable additions; cannot prove that input fits.
+    LowerBound,
 }
 
 /// Model-supplied input token estimate. Absence remains unknown, not zero.

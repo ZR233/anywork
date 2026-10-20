@@ -50,8 +50,8 @@ class _ProviderModelAutoCompactControlState
   bool _changingText = false;
 
   int? get _selected => widget.edit == null
-      ? widget.limit.overrideLimit ?? widget.limit.defaultLimit
-      : widget.edit!.overrideLimit ?? widget.limit.defaultLimit;
+      ? widget.limit.overrideLimit
+      : widget.edit!.overrideLimit;
 
   int? get _parsed {
     final text = _controller.text.trim();
@@ -80,7 +80,7 @@ class _ProviderModelAutoCompactControlState
     } else if (!_composing &&
         _parsed != null &&
         widget.edit == null &&
-        _parsed == (widget.limit.overrideLimit ?? widget.limit.defaultLimit)) {
+        _parsed == (widget.limit.overrideLimit)) {
       // 只确认本输入已被观察，不用 ACK 改写文本、选区或 IME 状态。
       _dirty = false;
     }
@@ -135,9 +135,7 @@ class _ProviderModelAutoCompactControlState
       widget.onInvalidInput?.call();
       return;
     }
-    widget.onOverrideChanged?.call(
-      parsed == widget.limit.defaultLimit ? null : parsed,
-    );
+    widget.onOverrideChanged?.call(parsed);
   }
 
   void _onFieldChanged(String text) {
@@ -148,8 +146,7 @@ class _ProviderModelAutoCompactControlState
   void _finishEditing() {
     if (!_dirty || _composing || _parsed == null) return;
     // 不重复排队已提交的意图；页面的 commit 会 flush 防抖或显式重试失败。
-    if (widget.edit == null &&
-        _parsed != (widget.limit.overrideLimit ?? widget.limit.defaultLimit)) {
+    if (widget.edit == null && _parsed != (widget.limit.overrideLimit)) {
       _publish();
     }
     widget.onEditingComplete?.call();
@@ -158,7 +155,7 @@ class _ProviderModelAutoCompactControlState
   void _restoreDefault() {
     setState(() {
       _dirty = false;
-      _showValue(widget.limit.defaultLimit);
+      _showValue(null);
     });
     widget.onOverrideChanged?.call(null);
     widget.onEditingComplete?.call();
@@ -169,7 +166,6 @@ class _ProviderModelAutoCompactControlState
     final limit = widget.limit;
     final editable = widget.onOverrideChanged != null;
     final parsed = _parsed;
-    final safe = limit.safeLimit;
     final edit = widget.edit;
     final field = TextField(
       key: StudioDriverKeys.accountModelAutoCompactInput(
@@ -182,7 +178,7 @@ class _ProviderModelAutoCompactControlState
       textInputAction: TextInputAction.done,
       decoration: InputDecoration(
         labelText: context.l10n.settingsModelAutoCompactInputLabel,
-        hintText: '—',
+        hintText: context.l10n.settingsModelAutoCompactUsingDefault,
         suffixText: parsed == null ? null : formatTokenCount(parsed),
         errorText: _dirty && parsed == null
             ? context.l10n.settingsModelAutoCompactInvalid
@@ -193,37 +189,6 @@ class _ProviderModelAutoCompactControlState
       onSubmitted: (_) => _finishEditing(),
       onTapOutside: (_) => _focus.unfocus(),
     );
-    final slider = safe == null
-        ? null
-        : Slider(
-            key: StudioDriverKeys.accountModelAutoCompactSlider(
-              widget.accountId,
-              widget.modelId,
-            ),
-            min: 1,
-            max: safe.toDouble(),
-            value: (parsed ?? _selected ?? safe).clamp(1, safe).toDouble(),
-            label: formatTokenCount(parsed),
-            onChanged: safe <= 1
-                ? null
-                : (value) {
-                    setState(() {
-                      _dirty = true;
-                      _showValue(value.round());
-                    });
-                    widget.onInvalidInput?.call();
-                  },
-            onChangeEnd: safe <= 1
-                ? null
-                : (value) {
-                    setState(() {
-                      _dirty = true;
-                      _showValue(value.round());
-                    });
-                    _publish();
-                    widget.onEditingComplete?.call();
-                  },
-          );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
@@ -256,51 +221,34 @@ class _ProviderModelAutoCompactControlState
               runSpacing: 8,
               children: [
                 SettingsMetric(
-                  context.l10n.settingsModelAutoCompactDefaultLabel,
-                  formatTokenCount(limit.defaultLimit),
-                ),
-                SettingsMetric(
                   context.l10n.settingsModelAutoCompactOverrideLabel,
                   limit.hasOverride
-                      ? formatTokenCount(limit.overrideLimit)
+                      ? context.l10n.settingsModelAutoCompactCustom
                       : context.l10n.settingsModelAutoCompactUsingDefault,
                 ),
                 SettingsMetric(
                   context.l10n.settingsModelAutoCompactEffectiveLabel,
-                  formatTokenCount(limit.effectiveLimit),
-                ),
-                SettingsMetric(
-                  context.l10n.settingsModelAutoCompactSafeLabel,
-                  formatTokenCount(limit.safeLimit),
+                  formatTokenCount(limit.context.autoCompactLimit),
                 ),
               ],
             ),
           ),
           if (editable) ...[
-            LayoutBuilder(
-              builder: (context, constraints) {
-                if (slider == null) return field;
-                if (constraints.maxWidth < 420) {
-                  return Column(children: [field, slider]);
-                }
-                return Row(
-                  children: [
-                    Expanded(child: slider),
-                    const SizedBox(width: 12),
-                    SizedBox(width: 184, child: field),
-                  ],
-                );
-              },
-            ),
+            field,
             const SizedBox(height: 6),
             Text(
-              safe == null
-                  ? context.l10n.settingsModelAutoCompactUnknownCapacity
-                  : parsed != null && parsed > safe
-                  ? context.l10n.settingsModelAutoCompactAboveSafe(
-                      formatTokenCount(safe),
-                    )
-                  : context.l10n.settingsModelAutoCompactHelp,
+              switch (limit.context.unavailable) {
+                ModelContextUnavailable.windowUnknown =>
+                  context.l10n.settingsModelAutoCompactUnknownCapacity,
+                ModelContextUnavailable.invalidParameters =>
+                  context.l10n.modelContextParametersInvalid,
+                ModelContextUnavailable.inputBudgetExhausted =>
+                  context.l10n.modelInputBudgetExhausted,
+                null =>
+                  limit.context.adjustment != null
+                      ? context.l10n.settingsModelAutoCompactAdjusted
+                      : context.l10n.settingsModelAutoCompactHelp,
+              },
               style: context.text.bodySmall?.copyWith(
                 color: context.colors.onSurfaceVariant,
               ),

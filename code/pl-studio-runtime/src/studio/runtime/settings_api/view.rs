@@ -152,42 +152,14 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                         connection_mode: connection_mode_label(*mode).to_string(),
                     })
                     .collect(),
-                model_auto_compact_limits: {
-                    let overrides = account.auto_compact_overrides();
-                    let mut limits = models
-                        .iter()
-                        .map(|model| {
-                            let override_limit = overrides.get(&model.model_id).copied();
-                            StudioModelAutoCompactSettings {
-                                model_id: model.model_id.clone(),
-                                default_limit: model.default_auto_compact_token_limit(),
-                                override_limit,
-                                effective_limit: model
-                                    .resolved_auto_compact_limit_with(override_limit),
-                                safe_limit: model.safe_auto_compact_token_limit(),
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    // A successful remote inventory can withdraw a model without deleting
-                    // its desired override. Full provider edits must retain those choices.
-                    limits.extend(
-                        overrides
-                            .iter()
-                            .filter(|(model_id, _)| {
-                                !models
-                                    .iter()
-                                    .any(|model| model.model_id == model_id.as_str())
-                            })
-                            .map(|(model_id, limit)| StudioModelAutoCompactSettings {
-                                model_id: model_id.clone(),
-                                default_limit: None,
-                                override_limit: Some(*limit),
-                                effective_limit: None,
-                                safe_limit: None,
-                            }),
-                    );
-                    limits
-                },
+                model_auto_compact_limits: account
+                    .auto_compact_overrides()
+                    .iter()
+                    .map(|(model_id, limit)| StudioModelAutoCompactSettings {
+                        model_id: model_id.clone(),
+                        override_limit: Some(*limit),
+                    })
+                    .collect(),
                 catalog_id,
             })
         })
@@ -299,8 +271,8 @@ fn custom_model_settings(model: &ModelInfo) -> StudioCustomModelSettings {
         .unwrap_or_default();
     StudioCustomModelSettings {
         input_capabilities: model.capabilities.input.iter().map(Into::into).collect(),
-        context_window: model.context_window.unwrap_or(32_000),
-        max_output_tokens: model.max_output_tokens.unwrap_or(4_096),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
         model_id: model.model_id.clone(),
         display_name: model.display_name.clone(),
         reasoning_efforts: reasoning_efforts.to_vec(),

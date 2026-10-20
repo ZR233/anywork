@@ -377,7 +377,7 @@ async fn generate_title(
         model_id: Some(route.model.model_id.clone()),
         model_observation,
         effort: reasoning_effort,
-        context_window: route.model.resolved_context_window(),
+        context_window: route.context.context_window,
         accounting,
         prompt_generation: None,
         prompt_cache_policy: None,

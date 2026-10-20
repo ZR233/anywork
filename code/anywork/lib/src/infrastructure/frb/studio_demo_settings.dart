@@ -250,9 +250,9 @@ AccountModelAutoCompactView _demoAutoCompactLimit(
   AccountModelView model, {
   int? override,
 }) {
-  final base = AccountModelAutoCompactView.forModel(model);
-  if (override == null || override <= 0 || override == base.defaultLimit) {
-    return base;
-  }
-  return base.withOverride(override);
+  return AccountModelAutoCompactView(
+    modelId: model.modelId,
+    overrideLimit: override,
+    context: model.context,
+  );
 }

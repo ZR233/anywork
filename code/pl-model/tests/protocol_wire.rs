@@ -105,6 +105,104 @@ fn retained_media_is_validated_before_model_admission() {
     assert!(validate_attachment_content([&content], &model).is_err());
 }
 
+#[tokio::test]
+async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ModelToolDeclaration, ToolCallMode},
+    };
+    use pl_model::runtime::{HostedTool, ThreadModel};
+    let mut endpoint = ProtocolEndpoint::compatible("preview", "http://127.0.0.1:1");
+    endpoint.service_capabilities.web_search.hosted_responses = true;
+    let mut info = model("preview-model", ModelTransportProfile::responses_http());
+    info.capabilities.web_search = true;
+    let plain = ThreadModel::new(
+        ModelRuntime::new_with_account_id("preview", endpoint, info).unwrap(),
+        None,
+    );
+    let hosted = plain.clone().with_hosted_tools(vec![HostedTool::WebSearch(
+        HostedWebSearchOptions::OpenAi {
+            external_web_access: false,
+            indexed_web_access: None,
+            filters: None,
+            user_location: None,
+            search_context_size: None,
+            search_content_types: None,
+        },
+    )]);
+    let mut request = ModelRequest {
+        thread_id: "preview-thread".into(),
+        turn_id: "pending-turn".into(),
+        attempt_id: "preview-attempt".into(),
+        context: ContextSnapshot {
+            revision: 2,
+            records: vec![ContextRecord {
+                id: "retained".into(),
+                turn_id: None,
+                source: ContextSource::User,
+                content: vec![ContextContent::Text {
+                    text: "retained task".into(),
+                }],
+                tool_calls: vec![],
+            }]
+            .into(),
+        },
+        tools: vec![ModelToolDeclaration {
+            tool_id: "edit".into(),
+            declaration: pl_model::runtime::thread_tool_declaration(&ToolSpec::function(
+                "edit",
+                "Edit a document",
+                json!({"type":"object"}),
+            ))
+            .unwrap(),
+        }]
+        .into(),
+        tool_call_mode: ToolCallMode::Parallel,
+        solo_tool_ids: Default::default(),
+        committed_private_context: None,
+        resources: None,
+        cancellation: Default::default(),
+        progress: None,
+    };
+    let base = plain.estimate_input(&request, None).await.unwrap().unwrap();
+    let with_hosted = hosted
+        .estimate_input(&request, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(with_hosted.tokens > base.tokens);
+    request.solo_tool_ids = vec!["edit".into()].into();
+    let with_solo = hosted
+        .estimate_input(&request, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(with_solo.tokens > with_hosted.tokens);
+    let mut records = request.context.records.to_vec();
+    records.push(ContextRecord {
+        id: "pending-input".into(),
+        turn_id: Some("pending-turn".into()),
+        source: ContextSource::User,
+        content: vec![ContextContent::Text {
+            text: "pending material ".repeat(100).into(),
+        }],
+        tool_calls: vec![],
+    });
+    request.context.records = records.into();
+    let preview = hosted
+        .estimate_input(&request, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(preview.tokens > with_solo.tokens);
+    let mut session = ModelFactory::new(hosted).open_session().await.unwrap();
+    let prepared = session.prepare(request).await.unwrap();
+    assert_eq!(prepared.input_estimate(), Some(preview));
+    // Preparation/preview must not perform provider I/O; this endpoint cannot accept requests.
+    drop(prepared);
+    session.close().await.unwrap();
+}
+
 fn request(prompt: &str) -> CompletionRequest {
     CompletionRequest::builder()
         .messages(vec![user(prompt)])
@@ -3572,27 +3670,106 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
 }
 
 #[tokio::test]
-async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage() {
-    use pl_core::thread::{ModelUsageOrigin, context_preparation::PreviousContextUsage};
+async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
+    for (protocol, transport, reply) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+            Reply::HttpError {
+                status: 400,
+                code: "context_length_exceeded".into(),
+                message: "input exceeds context window".into(),
+            },
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+            Reply::WebSocket(vec![
+                json!({"type":"error","status":400,"error":{"code":"context_length_exceeded","message":"input exceeds context window"}}),
+            ]),
+        ),
+    ] {
+        let fixture =
+            FixtureServer::start(vec![Step::prompt(protocol, "oversized input", 0, reply)])
+                .await
+                .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("capacity-model", transport),
+        )
+        .unwrap();
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+            .open_session()
+            .await
+            .unwrap();
+        let thread = ThreadHandle::start("capacity-error".into(), session).unwrap();
+        let error = thread
+            .run_turn(replay_turn("oversized input", CancellationToken::new()))
+            .await
+            .unwrap_err();
+        let pl_core::thread::ThreadError::Model(error) = error else {
+            panic!("expected model error");
+        };
+        assert_eq!(error.kind, pl_core::model::ModelFailureKind::ContextLimit);
+        let receipt = pl_model::runtime::model_failure_receipt(&error)
+            .unwrap()
+            .unwrap();
+        let failure = receipt.provider_failure.unwrap();
+        assert_eq!(failure.code.as_deref(), Some("context_length_exceeded"));
+        assert_eq!(failure.http_status, Some(400));
+        assert_eq!(error.usage.input_tokens, None);
+        assert!(thread.snapshot().model_execution.is_none());
+        thread.close().await.unwrap();
+        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_prior_usage() {
+    use pl_core::thread::context_preparation::PreviousContextUsage;
     use pl_core::{
         context::{ContextRecord, ContextSnapshot},
-        model::{ModelRequest, ModelUsage, ToolCallMode},
+        model::{ModelRequest, ToolCallMode},
     };
     use pl_model::runtime::ThreadModel;
+    #[derive(Debug)]
+    struct PreviewImage(Arc<[u8]>);
+    impl pl_core::context::ResourceReader for PreviewImage {
+        async fn read(
+            &self,
+            _: pl_core::context::ResourceReference,
+            _: CancellationToken,
+        ) -> Result<Arc<[u8]>, pl_core::context::ResourceReadError> {
+            Ok(self.0.clone())
+        }
+    }
     let checkpoint_item = json!({"type":"compaction","encrypted_content":"capacity-native"});
     let fixture = FixtureServer::start(vec![
         Step::prompt(Protocol::ResponsesHttp, "old-input", 0, Reply::Sse(responses_text("retained output", "capacity-output", "capacity-model"))),
         Step::prompt(Protocol::ResponsesHttp, "old-input", 1, Reply::Sse(vec![json!({"type":"response.output_item.done","item":checkpoint_item}), json!({"type":"response.completed","response":{"id":"capacity-compaction","output":[checkpoint_item]}})])),
+        Step::prompt(Protocol::ResponsesHttp, "measured-input", 2, Reply::Sse(responses_text("retained output", "measured-output", "capacity-model"))),
     ]).await.unwrap();
     let mut endpoint = ProtocolEndpoint::compatible("capacity", fixture.base_url());
     endpoint.service_capabilities.remote_compaction = true;
+    let mut info = model("capacity-model", ModelTransportProfile::responses_http());
+    info.capabilities
+        .input
+        .push(pl_model::model::ModelInputCapability::media(
+            pl_model::model::ModelModality::Image,
+            vec![pl_model::model::ModelInputSource::Local],
+        ));
+    info.binding
+        .request
+        .media
+        .push(pl_model::model::ModelMediaInputProfile {
+            modality: pl_model::model::ModelModality::Image,
+            wire: pl_model::model::MediaWireFormat::ResponsesInputImage,
+            first_send: vec![pl_model::model::MediaRepresentation::DataUrl],
+            replay: vec![pl_model::model::MediaRepresentation::DataUrl],
+        });
     let source = ThreadModel::new(
-        ModelRuntime::new_with_account_id(
-            "fixture",
-            endpoint,
-            model("capacity-model", ModelTransportProfile::responses_http()),
-        )
-        .unwrap(),
+        ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
         None,
     );
     let mut session = ModelFactory::new(source.clone())
@@ -3625,10 +3802,9 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
         progress: None,
     };
     let call = session.prepare(request.clone()).await.unwrap();
-    let binding = call.usage_binding().unwrap().clone();
-    let output = call.execute().await.unwrap();
+    call.execute().await.unwrap();
     session.close().await.unwrap();
-    let compacted = source
+    let mut compacted = source
         .compact(
             request.clone(),
             pl_model::runtime::ThreadCompactionOptions {
@@ -3641,15 +3817,29 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
         )
         .await
         .unwrap();
-    let mut records = compacted.replacement.records;
-    let input_record_count = records.len();
-    records.push(ContextRecord {
-        id: "old-output".into(),
-        turn_id: Some("old-turn".into()),
-        source: ContextSource::Assistant,
-        content: output.content,
-        tool_calls: output.tool_calls,
-    });
+    // Obtain an actual core prefix/tool-plan proof after installing a native checkpoint.
+    let thread = ThreadHandle::start(
+        "capacity-thread".into(),
+        ModelFactory::new(source.clone())
+            .open_session()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    compacted.replacement.expected_revision = 0;
+    thread.replace_context(compacted.replacement).await.unwrap();
+    thread
+        .run_turn(replay_turn("measured-input", CancellationToken::new()))
+        .await
+        .unwrap();
+    let state = thread.snapshot();
+    let mut previous = PreviousContextUsage {
+        usage: state.last_attempt_usage.clone().unwrap(),
+        origin: state.last_attempt_usage_origin.clone().unwrap(),
+    };
+    let mut records = state.context.records.to_vec();
+    request.tool_call_mode = ToolCallMode::Parallel;
+    thread.close().await.unwrap();
     records.push(ContextRecord {
         id: "new-input".into(),
         turn_id: Some("new-turn".into()),
@@ -3667,20 +3857,6 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
             .unwrap()
             .is_none()
     );
-    let mut previous = PreviousContextUsage {
-        usage: ModelUsage {
-            input_tokens: Some(100),
-            output_tokens: Some(20),
-            ..Default::default()
-        },
-        origin: ModelUsageOrigin {
-            binding,
-            input_revision: 1,
-            context_revision: 1,
-            input_record_count,
-            input_hash: Some("core-validated-prefix".into()),
-        },
-    };
     assert_eq!(
         source
             .estimate_input(&request, Some(&previous))
@@ -3688,7 +3864,74 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
             .unwrap()
             .unwrap()
             .tokens,
-        122
+        16
+    );
+    assert_eq!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .accuracy,
+        pl_core::model::EstimateAccuracy::LowerBound
+    );
+    previous.usage.output_tokens = None;
+    assert_eq!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens,
+        11
+    );
+    // A retained resource descriptor must not erase the measured prefix's capacity signal.
+    Arc::make_mut(&mut request.context.records)
+        .last_mut()
+        .unwrap()
+        .content
+        .push(ContextContent::Resource {
+            reference: pl_core::context::ResourceReference::new(
+                "new-resource".into(),
+                format!("sha256:{}", "0".repeat(64)),
+                16,
+                "image/png".into(),
+            )
+            .unwrap(),
+        });
+    assert!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            >= 11
+    );
+    let bytes = tiny_png();
+    let reference = pl_core::context::ResourceReference::new(
+        "new-image".into(),
+        pl_core::context::content_hash(&bytes),
+        bytes.len() as u64,
+        "image/png".into(),
+    )
+    .unwrap();
+    request.resources = Some(pl_core::context::ResourceAccess::new(PreviewImage(
+        bytes.into(),
+    )));
+    Arc::make_mut(&mut request.context.records)
+        .last_mut()
+        .unwrap()
+        .content
+        .push(pl_model::runtime::attachment_content(reference, AttachmentModality::Image).unwrap());
+    assert!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            >= 11
     );
     previous.origin.binding.route_identity = Some("another-route".into());
     assert!(

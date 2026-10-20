@@ -139,6 +139,16 @@ pub async fn archive_thread(
     })
 }
 
+/// Forces one idle context compaction through the canonical Thread owner.
+pub async fn compact_thread(thread_id: String) -> Result<(), BridgeError> {
+    active_bridge()
+        .await?
+        .studio
+        .compact_thread(&thread_id)
+        .await?;
+    Ok(())
+}
+
 /// Changes the selected root Thread to a registered Thread Mode ID.
 ///
 /// # Errors

@@ -40,7 +40,7 @@ Future<void> main(List<String> args) async {
     await driver.waitForAbsent(find.byValueKey('account-save'));
     final template = _models(fixture).singleWhere((modelId) {
       final limit = _limit(baseline, id, modelId);
-      return limit['safe'] != null && limit['default'] != limit['safe'];
+      return modelId != model && limit['effective'] != null;
     });
     await recorder._scrollTo(
       find.byValueKey('account-$id-model-$template-auto-compact-input'),
@@ -54,14 +54,13 @@ Future<void> main(List<String> args) async {
     await recorder.capture('input-pending', await recorder.readSnapshot());
     final afterInput = await recorder.waitOverride(id, model, 18000);
     await recorder.capture('input-applied-without-save', afterInput);
-    final safe = _limit(afterInput, id, model)['safe'];
-    if (safe is! int || safe <= 0) {
-      throw StateError('fixture capacity is missing');
-    }
-    await recorder.setCompactInput(id, model, '${safe + 10000}');
-    final above = await recorder.waitOverride(id, model, safe + 10000);
-    if (_limit(above, id, model)['effective'] != safe) {
-      throw StateError('above-safe override was not clamped');
+    const excessive = 9000000000;
+    await recorder.setCompactInput(id, model, '$excessive');
+    final above = await recorder.waitOverride(id, model, excessive);
+    final resolved = _limit(above, id, model);
+    if (resolved['adjustment'] != 'safetyLimit' ||
+        resolved['effective'] is! int) {
+      throw StateError('backend did not classify the adjusted override');
     }
     await recorder.capture('above-safe-clamped', above);
 
@@ -69,21 +68,18 @@ Future<void> main(List<String> args) async {
     // Negative proof: observe past the 650ms debounce, not merely one frame.
     await Future<void>.delayed(const Duration(milliseconds: 1100));
     final invalid = await recorder.readSnapshot();
-    if (_limit(invalid, id, model)['override'] != safe + 10000 ||
+    if (_limit(invalid, id, model)['override'] != excessive ||
         invalid['settings']['revision'] != above['settings']['revision']) {
       throw StateError('invalid input changed canonical settings');
     }
     await recorder.capture('invalid-kept-not-persisted', invalid);
 
-    await recorder.moveCompactSlider(id, model);
-    final slider = await recorder.waitLimit(
-      id,
-      model,
-      (limit) => limit['override'] is int && (limit['override'] as int) <= safe,
-    );
-    await recorder.capture('slider-applied', slider);
     await recorder.tapCompactReset(id, model);
-    await recorder.waitOverride(id, model, null);
+    final reset = await recorder.waitOverride(id, model, null);
+    if (_limit(reset, id, model)['effective'] !=
+        _limit(baseline, id, model)['effective']) {
+      throw StateError('reset did not restore the backend automatic value');
+    }
     await recorder.capture('restored-default', await recorder.readSnapshot());
 
     // Rapid typing must keep the newest raw input and eventually canonicalize
@@ -102,9 +98,12 @@ Future<void> main(List<String> args) async {
     }
 
     final unknown = _models(fixture)
-        .where((modelId) => _limit(baseline, id, modelId)['safe'] == null)
+        .where(
+          (modelId) =>
+              _limit(baseline, id, modelId)['unavailable'] == 'windowUnknown',
+        )
         .single;
-    if (_limit(baseline, id, unknown)['default'] != null) {
+    if (_limit(baseline, id, unknown)['effective'] != null) {
       throw StateError('unknown-capacity fixture fabricated a default');
     }
     await recorder.setCompactInput(id, unknown, '17000');
@@ -144,7 +143,7 @@ Future<void> main(List<String> args) async {
     await recorder.tapCompactReset(id, model);
     await recorder.waitOverride(id, model, null);
     await File('${output.path}/account-journey-summary.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'slider': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'humanVerdict': 'pending'})}\n',
+      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'humanVerdict': 'pending'})}\n',
     );
     stdout.writeln('Account journey captured; human verdict pending.');
   } finally {
@@ -238,14 +237,6 @@ class _Recorder {
     await _scrollTo(finder);
     await driver.tap(finder);
     await driver.enterText(value);
-  }
-
-  Future<void> moveCompactSlider(String id, String modelId) async {
-    final finder = find.byValueKey(
-      'account-$id-model-$modelId-auto-compact-slider',
-    );
-    await _scrollTo(finder);
-    await driver.rawTap(finder);
   }
 
   Future<void> tapCompactReset(String id, String modelId) async {

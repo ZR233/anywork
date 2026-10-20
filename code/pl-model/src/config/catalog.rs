@@ -257,10 +257,10 @@ impl AccountCatalogRegistry {
                             .models
                             .iter()
                             .map(|model| {
-                                model_descriptor(&AccountModelEntry {
-                                    model: model.clone(),
-                                    origin: AccountModelOrigin::Bundled,
-                                })
+                                model_descriptor(&AccountModelEntry::new(
+                                    model.clone(),
+                                    AccountModelOrigin::Bundled,
+                                ))
                             })
                             .collect(),
                     },
@@ -445,7 +445,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
     let pricing = model.pricing.catalog_pricing();
     ModelDescriptor {
         model_id: model.model_id.clone(),
-        type_support: vec![model.type_support(crate::model::ModelType::Text)],
+        type_support: vec![entry.type_support(crate::model::ModelType::Text)],
         origin: match entry.origin {
             AccountModelOrigin::Bundled => pl_protocol::ModelOriginDto::Bundled,
             AccountModelOrigin::Online => pl_protocol::ModelOriginDto::Online,
@@ -455,7 +455,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
         description: model.description.clone(),
         context_window: model.context_window,
         max_context_window: model.max_context_window,
-        auto_compact_token_limit: model.auto_compact_token_limit,
+        context: entry.context.clone(),
         max_output_tokens: model.max_output_tokens,
         transport: ModelTransportDescriptor {
             protocol: protocol_label(model.binding.transport.protocol).to_string(),

@@ -172,10 +172,16 @@ impl StudioChildResources for StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open child chat session", error))?;
+        let model = pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::ModelRuntime::from_route(&profile.route)?,
+            profile.route.reasoning_config(),
+        )
+        .with_hosted_tools(prepared_tools.hosted);
         let spec = StudioThreadSpec {
             preparation_guard: prepared_tools.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &profile.route,
+                model.clone(),
                 profile.config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
@@ -187,7 +193,7 @@ impl StudioChildResources for StudioThreadFactory {
             parent_id: Some(request.caller.clone()),
             route: profile.route.clone(),
             model_available: true,
-            hosted_tools: prepared_tools.hosted,
+            model,
             checkpoint: None,
             tools: Vec::new(),
             initial_context,

@@ -200,10 +200,16 @@ impl StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
+        let model = pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            route.reasoning_config(),
+        )
+        .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
             preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
+                model.clone(),
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
@@ -215,7 +221,7 @@ impl StudioThreadFactory {
             parent_id: None,
             route,
             model_available,
-            hosted_tools: prepared.hosted,
+            model,
             checkpoint,
             initial_context,
             initial_extensions,

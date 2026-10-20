@@ -4,14 +4,14 @@ import 'package:flutter/material.dart';
 
 import '../app/theme/studio_tokens.dart';
 
-/// 状态栏共用的只读详情悬浮表面。
+/// 状态栏共用的详情悬浮表面。
 ///
 /// 内容由官方 [Tooltip.richMessage] 承载：悬停打开、跟随所属控件的 canonical 重建刷新、长内容在
 /// 浮层内滚动，并被限制在窗口安全区域内。这里没有第二套菜单状态：点击、长按和键盘激活都不打开、
 /// 固定或切换详情，输入焦点始终留在原处；可访问性读数由触发控件的 [Semantics] 提供。
 ///
 /// 富详情沿用官方命中测试：浮层可被指针命中，因此移入浮层后仍保持展开并可滚动长内容，离开触发
-/// 控件与浮层都收起。它只承载只读内容，不注册点击、长按或定时器，开合完全由悬停决定。
+/// 控件与浮层都收起。详情可以承载明确的操作按钮；按钮只处理自身操作，浮层开合仍由官方悬停生命周期管理。
 class StudioHoverDetail extends StatelessWidget {
   const StudioHoverDetail({
     required this.child,

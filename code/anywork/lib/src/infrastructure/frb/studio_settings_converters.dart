@@ -161,10 +161,7 @@ AccountSettingsView _accountSettingsFromFrb(
     for (final limit in value.modelAutoCompactLimits)
       limit.modelId: AccountModelAutoCompactView(
         modelId: limit.modelId,
-        defaultLimit: limit.defaultLimit?.toInt(),
         overrideLimit: limit.overrideLimit?.toInt(),
-        effectiveLimit: limit.effectiveLimit?.toInt(),
-        safeLimit: limit.safeLimit?.toInt(),
       ),
   };
 

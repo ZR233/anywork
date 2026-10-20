@@ -42,7 +42,6 @@ struct RuntimeState {
 
 #[derive(Clone)]
 pub(crate) struct CatalogChange {
-    pub snapshot: ModelCatalogRuntimeSnapshot,
     pub affected: Vec<AccountId>,
 }
 
@@ -182,6 +181,14 @@ impl ConfigRuntime {
             .read()
             .map(|state| state.snapshot.clone())
             .map_err(|_| config_runtime_poisoned())
+    }
+
+    /// Coherent configuration and directory watermarks from one owner read lock.
+    pub fn read_with_catalog(
+        &self,
+    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot)> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok((state.snapshot.clone(), state.catalog.clone()))
     }
 
     /// Commits an in-memory observation at the same boundary as input invalidation.
@@ -336,8 +343,7 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        let current_catalog = self.read_catalog()?;
+        let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
         let (desired, observations) = {
             let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
@@ -396,8 +402,7 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        let current_catalog = self.read_catalog()?;
+        let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
         let desired = self.store.load_or_default()?;
         let observations = self

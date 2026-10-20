@@ -229,8 +229,8 @@ pub struct AccountModelUpdate {
     pub model_id: String,
     pub display_name: String,
     pub wire_api: String,
-    pub context_window: u64,
-    pub max_output_tokens: u64,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

@@ -2196,6 +2196,11 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
+  Future<void> compactThread(String threadId) async {
+    throw UnsupportedError('Manual compaction requires the native runtime');
+  }
+
+  @override
   Future<ThreadModeCommandReply> setThreadMode({
     required OperationId operationId,
     required String threadId,

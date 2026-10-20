@@ -559,6 +559,9 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> lspActivityOverflow() =>
       const ValueKey<String>('lsp-activity-overflow');
 
+  static ValueKey<String> compactContext() =>
+      const ValueKey<String>('studio-compact-context');
+
   static ValueKey<String> contextUsage() =>
       const ValueKey<String>('context-usage');
 
@@ -612,11 +615,6 @@ abstract final class StudioDriverKeys {
     String accountId,
     String model,
   ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-input');
-
-  static ValueKey<String> accountModelAutoCompactSlider(
-    String accountId,
-    String model,
-  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-slider');
 
   static ValueKey<String> accountModelAutoCompactReset(
     String accountId,

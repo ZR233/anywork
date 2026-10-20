@@ -39,9 +39,11 @@ AccountSettingsView _account({
     autoCompactLimits:
         limits ??
         {
-          'manual-model': AccountModelAutoCompactView.forModel(_manual)
-              .withOverride(111),
-          'online-model': AccountModelAutoCompactView.forModel(_online),
+          'manual-model': AccountModelAutoCompactView(
+            modelId: _manual.modelId,
+            overrideLimit: 111,
+          ),
+          'online-model': AccountModelAutoCompactView(modelId: _online.modelId),
         },
   );
 }
@@ -164,7 +166,9 @@ void main() {
       final remaining = _account(
         models: const [_online, _bundled],
         connections: const {},
-        limits: {'online-model': AccountModelAutoCompactView.forModel(_online)},
+        limits: {
+          'online-model': AccountModelAutoCompactView(modelId: _online.modelId),
+        },
       );
       call.reply.complete(
         SettingsCommandReply(

@@ -65,7 +65,7 @@ pub struct StudioThreadSpec {
     pub route: ResolvedModelRoute,
     /// False publishes the owner without a physical model until a later deferred update succeeds.
     pub model_available: bool,
-    pub hosted_tools: Vec<pl_model::runtime::HostedTool>,
+    pub model: ThreadModel,
     pub checkpoint: Option<ThreadCheckpoint>,
     /// Initial instructions and records for a new Thread only; never used to re-render recovery.
     pub initial_context: Vec<pl_core::context::ContextRecord>,
@@ -310,12 +310,9 @@ impl StudioThreadAssembler {
             }
         }
         let thread = if spec.model_available {
-            let runtime = ModelRuntime::from_route(&spec.route)?;
-            let model = ThreadModel::new(runtime, spec.route.reasoning_config())
-                .with_hosted_tools(spec.hosted_tools);
             ThreadHandle::resume(
                 spec.id.clone(),
-                ModelFactory::new(model).open_session().await?,
+                ModelFactory::new(spec.model).open_session().await?,
                 spec.checkpoint,
             )?
         } else {

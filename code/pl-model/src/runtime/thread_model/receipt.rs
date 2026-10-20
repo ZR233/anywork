@@ -108,9 +108,9 @@ impl ModelCallBinding {
                 runtime.endpoint(),
             ),
             purpose: purpose.to_owned(),
-            context_window: runtime.model().resolved_context_window(),
+            context_window: runtime.context().context_window,
             max_context_window: runtime.model().max_context_window,
-            auto_compact_limit: runtime.auto_compact_limit(),
+            auto_compact_limit: runtime.context().auto_compact_limit,
         }
     }
 }
@@ -586,10 +586,16 @@ pub(super) fn failure_error(
     failure: crate::completion::CompletionFailure,
     partial_progress: Option<ModelProgress>,
 ) -> ModelError {
-    // The invocation's own cancellation fact, recorded at the observation point, decides the
-    // class. Provider failures, timeouts and transport errors keep the previous classification.
+    // Only a typed provider code may trigger capacity recovery; arbitrary HTTP 400s and
+    // diagnostic wording remain ordinary failures. Invocation cancellation takes precedence.
     let kind = if failure.is_cancelled() {
         pl_core::model::ModelFailureKind::Cancelled
+    } else if failure
+        .source
+        .provider_failure_ref()
+        .is_some_and(|failure| failure.code.as_deref() == Some("context_length_exceeded"))
+    {
+        pl_core::model::ModelFailureKind::ContextLimit
     } else {
         pl_core::model::ModelFailureKind::Unavailable
     };
