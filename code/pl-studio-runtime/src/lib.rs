@@ -86,7 +86,8 @@ pub use studio::{
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
-    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadRecord, TimelineContentReader,
+    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadPreparationObserver,
+    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, TimelineContentReader,
     TimelineTailStream,
 };
 pub use updater::{

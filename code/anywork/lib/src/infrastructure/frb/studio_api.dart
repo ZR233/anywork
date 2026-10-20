@@ -35,6 +35,7 @@ import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/frb_generated.dart';
 
 part 'studio_thread_stream.dart';
+part 'studio_thread_preparation.dart';
 part 'studio_timeline.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';

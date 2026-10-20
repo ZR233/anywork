@@ -9,6 +9,7 @@ mod receipt;
 mod request;
 mod settings;
 mod settings_update;
+mod thread_preparation;
 
 pub use attachment::*;
 pub use error::*;
@@ -19,3 +20,4 @@ pub use receipt::*;
 pub use request::*;
 pub use settings::*;
 pub use settings_update::*;
+pub use thread_preparation::*;

@@ -11,6 +11,10 @@ import 'package:anywork_client/models.dart';
 abstract final class StudioDriverKeyValues {
   static const shell = 'studio-shell';
   static const startPage = 'studio-start-page';
+  static const threadPreparation = 'thread-preparation';
+  static const threadPreparationDetails = 'thread-preparation-details';
+  static String threadPreparationStage(ThreadPreparationStage stage) =>
+      'thread-preparation-${stage.name}';
   static const newSession = 'sidebar-new-session';
   static const sidebarResize = 'sidebar-resize';
   static const settingsBack = 'settings-back';

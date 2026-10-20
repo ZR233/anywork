@@ -425,7 +425,7 @@ async fn create_thread(
     Ok(Json(
         state
             .runtime
-            .create_thread_command(project_id, request)
+            .create_thread_command(project_id, request, None)
             .await
             .map_err(ApiError::from)?,
     ))

@@ -9,36 +9,22 @@ import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';
+import '../types/thread_preparation.dart';
 import '../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `thread_mode`
 
-/// Creates a root Thread with the requested mode and accepts its first Turn.
+/// Streams preparation and one terminal outcome while creating a root Thread.
 ///
-/// # Errors
-///
-/// Returns an error when the Project does not exist, the prompt is empty, the requested
-/// workspace mode is unknown, the requested session worktree cannot be created (including
-/// a remote Project whose repository root or `HEAD` cannot be resolved), or the Turn is
-/// rejected.
-Future<StartNewThreadResponse> startNewThread({
-  required String projectId,
-  required BridgeStudioPromptInput input,
-  required String mode,
-  required String accountId,
-  required String modelId,
-  String? effort,
-  String? workspaceMode,
+/// Creation errors are carried by `Failed` after the normal resource settlement;
+/// losing the sink does not cancel creation. `Succeeded` confirms acceptance of the
+/// first input, independently of its later model execution or history persistence.
+Stream<BridgeNewThreadStartEvent> startNewThread({
+  required BridgeStartNewThreadRequest request,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadStartNewThread(
-  projectId: projectId,
-  input: input,
-  mode: mode,
-  accountId: accountId,
-  modelId: modelId,
-  effort: effort,
-  workspaceMode: workspaceMode,
+  request: request,
 );
 
 /// Renames a root Thread and returns its canonical directory record.

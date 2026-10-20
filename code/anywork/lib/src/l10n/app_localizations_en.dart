@@ -309,6 +309,95 @@ class AppLocalizationsEn extends AppLocalizations {
   String get startPageWelcome => 'What can I help you build?';
 
   @override
+  String get preparationTitle => 'Preparing your session';
+
+  @override
+  String get preparationSubtitle =>
+      'Your request will start once the workspace is ready.';
+
+  @override
+  String get preparationFailedTitle => 'Environment setup incomplete';
+
+  @override
+  String get preparationRetainedBody =>
+      'Your prompt and attachments are saved. Adjust the settings and send again.';
+
+  @override
+  String get preparationUnknownTitle => 'Creation outcome unconfirmed';
+
+  @override
+  String get preparationUnknownBody =>
+      'The connection ended before session creation was confirmed. Do not send again.';
+
+  @override
+  String get preparationCheckProject => 'Check project';
+
+  @override
+  String get preparationWorkspace => 'Prepare workspace';
+
+  @override
+  String get preparationInitializeSession => 'Initialize session';
+
+  @override
+  String get preparationSubmitPrompt => 'Submit request';
+
+  @override
+  String get preparationWaiting => 'Waiting to begin…';
+
+  @override
+  String get preparationCheckingProject =>
+      'Checking the project and session configuration…';
+
+  @override
+  String get preparationPreparingWorkspace =>
+      'Preparing the session workspace…';
+
+  @override
+  String get preparationResolvingRepository =>
+      'Checking the Git repository and base commit…';
+
+  @override
+  String get preparationCreatingWorktree =>
+      'Creating the worktree and checking out files…';
+
+  @override
+  String get preparationInitializingSession =>
+      'Initializing the session environment…';
+
+  @override
+  String get preparationSubmittingPrompt => 'Submitting your first request…';
+
+  @override
+  String get preparationMoreDetails => 'More details';
+
+  @override
+  String get preparationProjectLabel => 'Project';
+
+  @override
+  String get preparationRemoteLabel => 'Remote host';
+
+  @override
+  String get preparationPathLabel => 'Workspace path';
+
+  @override
+  String get preparationBranchLabel => 'Worktree branch';
+
+  @override
+  String get preparationDiagnosticLabel => 'Diagnostic ID';
+
+  @override
+  String get preparationStepComplete => 'Complete';
+
+  @override
+  String get preparationStepPending => 'Pending';
+
+  @override
+  String get preparationStepRunning => 'In progress';
+
+  @override
+  String get preparationStepFailed => 'Incomplete';
+
+  @override
   String startPageProject(String project) {
     return 'Working in $project';
   }

@@ -131,6 +131,8 @@ class StartPageComposerProjection {
       sessionDraft.forProject(project?.id).workspaceMode;
   String get draftText => sessionDraft.forProject(project?.id).text;
   bool get submitting => sessionDraft.submitting;
+  NewThreadPreparation? get preparation =>
+      sessionDraft.preparations[project?.id];
 
   ModeModelRouteView? canonicalRoute(ThreadModeId mode) =>
       _route(mode).canonical;

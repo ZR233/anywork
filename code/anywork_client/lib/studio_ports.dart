@@ -154,7 +154,10 @@ abstract class StudioTransport
     String? path,
   });
   Future<StudioProject> openRemoteProject(String alias, String path);
-  Future<StartNewThreadResult> startNewThread(
+
+  /// One creation command, with progress followed by exactly one terminal outcome.
+  /// EOF or a transport error before that outcome does not prove rejection.
+  Stream<NewThreadStartEvent> startNewThread(
     String projectId,
     StudioPromptInput input,
     ThreadModeId mode, {

@@ -28,5 +28,6 @@ export '../../rust/api/studio/types/error.dart';
 export '../../rust/api/studio/types/response.dart';
 export '../../rust/api/studio/types/runtime.dart';
 export '../../rust/api/studio/types/thread_stream.dart';
+export '../../rust/api/studio/types/thread_preparation.dart';
 export '../../rust/api/studio/types/settings.dart';
 export '../../rust/api/studio/types/updater.dart';

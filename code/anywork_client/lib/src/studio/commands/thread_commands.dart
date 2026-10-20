@@ -234,8 +234,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     required ThreadModeId mode,
     required ModeModelRouteView route,
     String? workspaceMode,
+    required void Function(ThreadPreparationProgress) onProgress,
   }) {
     _ensureOpen();
+    final selection = _client.selection.state;
     return _lane.enqueue(() async {
       if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
         return null;
@@ -244,23 +246,46 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       final key = 'new-thread:$projectId';
       _begin(key, label: projectId);
       try {
-        final result = await _api.startNewThread(
+        await for (final event in _api.startNewThread(
           projectId,
           input,
           mode,
           route: route,
           workspaceMode: workspaceMode,
-        );
-        if (!_client.isClosed) {
-          // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
-          // 命令成功后不重读聚合状态（design/25 §25.5）。
-          _client.selection.selectThread(
-            projectId: projectId,
-            threadId: result.thread.id,
-          );
+        )) {
+          switch (event) {
+            case NewThreadStartProgress(:final progress):
+              if (progress.projectId != projectId ||
+                  progress.inputId != input.inputId) {
+                throw StateError(
+                  'New Thread preparation identity did not match',
+                );
+              }
+              onProgress(progress);
+            case NewThreadStartFailed():
+              throw event;
+            case NewThreadStartSucceeded(:final result):
+              if (result.thread.projectId != projectId ||
+                  result.receipt.threadId != result.thread.id ||
+                  result.receipt.inputId != input.inputId) {
+                throw StateError('New Thread submission receipt did not match');
+              }
+              if (!_client.isClosed &&
+                  identical(_client.selection.state, selection)) {
+                // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
+                // 命令成功后不重读聚合状态（design/25 §25.5）。
+                _client.selection.selectThread(
+                  projectId: projectId,
+                  threadId: result.thread.id,
+                );
+              }
+              _clear(key);
+              return result;
+          }
         }
-        _clear(key);
-        return result;
+        throw StateError(
+          'New Thread creation ended without a terminal outcome',
+        );
       } catch (error) {
         _fail(key, projectId, error);
         rethrow;
