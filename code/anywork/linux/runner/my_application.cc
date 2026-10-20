@@ -9,6 +9,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "local_file_dialogs.h"
+#include "desktop_instance.h"
 #include "studio_host_lifecycle.h"
 
 // Native -> Dart exit callback target. Holds a strong reference while the
@@ -134,6 +135,11 @@ static void lifecycle_method_call_cb(FlMethodChannel* channel,
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  GtkWindow* main_window;
+  bool window_created;
+  bool first_frame_ready;
+  bool activation_pending;
+  anywork::DesktopInstanceBootstrap* bootstrap;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -149,7 +155,15 @@ static const gchar* application_title() {
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+  GtkWidget* window = gtk_widget_get_toplevel(GTK_WIDGET(view));
+  gtk_widget_show(window);
+  self->first_frame_ready = true;
+  if (self->activation_pending) {
+    self->activation_pending = false;
+    gtk_window_deiconify(GTK_WINDOW(window));
+    gtk_window_present(GTK_WINDOW(window));
+    self->bootstrap->Report(anywork::InstanceEvent::Activated);
+  }
 }
 
 // Uses a registered URL application or the desktop's terminal artwork.
@@ -236,8 +250,24 @@ static void host_apps_method_call_cb(FlMethodChannel* channel,
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+  if (self->main_window != nullptr) {
+    if (self->first_frame_ready) {
+      gtk_window_deiconify(self->main_window);
+      gtk_window_present(self->main_window);
+      self->bootstrap->Report(anywork::InstanceEvent::Activated);
+    } else {
+      self->activation_pending = true;
+      self->bootstrap->Report(anywork::InstanceEvent::Pending);
+    }
+    return;
+  }
+  // A late activation during native teardown must never recreate an engine.
+  if (self->window_created) return;
+  self->window_created = true;
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+  self->main_window = window;
+  g_object_add_weak_pointer(G_OBJECT(window), reinterpret_cast<gpointer*>(&self->main_window));
   const gchar* title = application_title();
   gtk_window_set_title(window, title);
   g_autoptr(GError) icon_error = nullptr;
@@ -390,14 +420,19 @@ static void my_application_class_init(MyApplicationClass* klass) {
 
 static void my_application_init(MyApplication* self) {}
 
-MyApplication* my_application_new() {
+MyApplication* my_application_new(anywork::DesktopInstanceBootstrap* bootstrap) {
   // Set the program name to the application ID, which helps various systems
   // like GTK and desktop environments map this running application to its
   // corresponding .desktop file. This ensures better integration by allowing
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
 
-  return MY_APPLICATION(g_object_new(my_application_get_type(),
-                                     "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_NON_UNIQUE, nullptr));
+  const std::string application_id = InstanceApplicationId(bootstrap->key());
+  const auto flags = bootstrap->key().empty()
+      ? G_APPLICATION_NON_UNIQUE : static_cast<GApplicationFlags>(0);
+  MyApplication* app = MY_APPLICATION(g_object_new(my_application_get_type(),
+                                     "application-id", application_id.c_str(), "flags",
+                                     flags, nullptr));
+  app->bootstrap = bootstrap;
+  return app;
 }

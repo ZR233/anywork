@@ -660,9 +660,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         !options.retain_environment
             || matches!(
                 options.scenario.as_str(),
-                "gui" | "tool-scroll" | "timeline-history" | "stress-body-large"
+                "gui"
+                    | "single-instance"
+                    | "tool-scroll"
+                    | "timeline-history"
+                    | "stress-body-large"
             ),
-        "--retain-environment is supported by --scenario gui, tool-scroll, \
+        "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
          timeline-history and stress-body-large"
     );
     ensure!(
