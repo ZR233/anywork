@@ -1850,6 +1850,18 @@ abstract class AppLocalizations {
   /// **'Close image preview'**
   String get timelineImageClose;
 
+  /// No description provided for @timelineImageCardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Image card'**
+  String get timelineImageCardTitle;
+
+  /// No description provided for @timelineImageCardEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'This image is unavailable'**
+  String get timelineImageCardEmpty;
+
   /// No description provided for @timelineRemoteImageSource.
   ///
   /// In en, this message translates to:

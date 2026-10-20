@@ -516,6 +516,10 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
             .registration(declaration(ThreadBuiltin::ViewImage)?)?,
     );
     tools.push(
+        pl_tool::image_card::ThreadShowImageTool::new()
+            .registration(declaration(ThreadBuiltin::ShowImage)?)?,
+    );
+    tools.push(
         pl_tool::workspace_file::ThreadStatPathTool::new(
             backend.clone(),
             workspace.authorization(),

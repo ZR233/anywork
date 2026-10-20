@@ -29,6 +29,7 @@ import 'markdown_repair.dart';
 part 'timeline_blocks.dart';
 part 'timeline_chat_controller.dart';
 part 'timeline_image_blocks.dart';
+part 'timeline_image_card.dart';
 part 'timeline_markdown_blocks.dart';
 part 'timeline_plan_blocks.dart';
 part 'timeline_agent_blocks.dart';

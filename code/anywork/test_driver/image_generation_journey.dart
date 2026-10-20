@@ -5,15 +5,17 @@ import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
 
-/// Real-provider journey for the image generation tool.
+/// Real-provider journey for the asynchronous image tools.
 ///
 /// The acceptance harness only runs isolated fixture providers, so this script
-/// drives the ordinary application graph (the user configuration) and captures
-/// the timeline screenshot that proves the tool ran end to end:
+/// drives the ordinary application graph (the user configuration) and proves
+/// the end-to-end chain:
+///
+///     generate_image (background task) -> wait -> show_image -> image card
 ///
 ///     dart run test_driver/image_generation_journey.dart \
 ///       VM_URL PROJECT_DIR PROMPT OUTPUT_DIR [--keep-open] [--mode=mode.task] \
-///       [--model=provider:model]
+///       [--model=provider:model] [--capture-only] [--capture-existing]
 ///
 /// It never prints provider credentials and only records tool identity, status
 /// and attachment metadata in the evidence file.
@@ -21,7 +23,8 @@ Future<void> main(List<String> args) async {
   if (args.length < 4) {
     stderr.writeln(
       'usage: image_generation_journey.dart VM_URL PROJECT_DIR PROMPT OUTPUT_DIR '
-      '[--keep-open]',
+      '[--keep-open] [--mode=mode.task] [--model=provider:model] '
+      '[--capture-only] [--capture-existing]',
     );
     exitCode = 64;
     return;
@@ -58,13 +61,13 @@ Future<void> main(List<String> args) async {
       return;
     }
     if (captureExisting) {
-      final generated = _generatedFromSnapshot(await driver.readSnapshot());
-      if (generated == null) {
-        throw StateError(
-          'no completed generate_image call in the current thread',
-        );
+      final snapshot = await driver.readSnapshot();
+      final generated = _generatedFromSnapshot(snapshot);
+      final card = _cardFromSnapshot(snapshot);
+      if (generated == null || card == null) {
+        throw StateError('no completed image card in the current thread');
       }
-      await _captureTimeline(driver, output, generated);
+      await _captureCard(driver, output, generated, card);
       await stage('capture_completed');
       return;
     }
@@ -96,7 +99,9 @@ Future<void> main(List<String> args) async {
     await stage('prompt_submitted');
     final generated = await _waitForGeneratedImage(driver, output);
     await stage('tool_succeeded');
-    await _captureTimeline(driver, output, generated);
+    final card = await _waitForCard(driver, output);
+    await stage('card_ready');
+    await _captureCard(driver, output, generated, card);
     await stage('screenshot_captured');
     if (!keepOpen) {
       final shutdown = jsonDecode(
@@ -110,7 +115,7 @@ Future<void> main(List<String> args) async {
       }
       await stage('shutdown_completed');
     }
-    stdout.writeln('Image generation evidence captured.');
+    stdout.writeln('Image generation and card evidence captured.');
   } finally {
     try {
       await driver.close().timeout(const Duration(seconds: 5));
@@ -118,119 +123,6 @@ Future<void> main(List<String> args) async {
       // A completed shutdown must not keep the journey process open.
     }
   }
-}
-
-/// Captures one full-window frame, tolerating a rasterizer that is still busy.
-///
-/// A screenshot request can be rejected while the engine is decoding the freshly
-/// mounted image, so the capture retries instead of failing the evidence run.
-Future<void> _screenshot(FlutterDriverSession driver, String path) async {
-  Object? lastError;
-  for (var attempt = 0; attempt < 4; attempt++) {
-    await Future<void>.delayed(const Duration(seconds: 1));
-    try {
-      final bytes = await driver.screenshot().timeout(
-        const Duration(seconds: 20),
-      );
-      await File(path).writeAsBytes(bytes);
-      return;
-    } on Object catch (error) {
-      lastError = error;
-    }
-  }
-  throw StateError('screenshot did not complete: $lastError');
-}
-
-Future<bool> _isMounted(
-  FlutterDriverSession driver,
-  SerializableFinder finder, {
-  int timeout = 3,
-}) async {
-  final deadline = Duration(seconds: timeout);
-  try {
-    await driver.waitFor(finder, timeout: deadline).timeout(deadline);
-    return true;
-  } on Object {
-    return false;
-  }
-}
-
-_GeneratedImage? _generatedFromSnapshot(Map<String, dynamic> snapshot) {
-  final workspace = snapshot['workspace'];
-  if (workspace is! Map) return null;
-  final rows = workspace['timeline'];
-  if (rows is! List) return null;
-  for (final row in rows) {
-    if (row is! Map || row['type'] != 'activityGroup') continue;
-    final tools = row['tools'];
-    if (tools is! List) continue;
-    for (final tool in tools) {
-      if (tool is! Map || tool['name'] != 'generate_image') continue;
-      final attachments = tool['attachments'];
-      if (tool['status'] != 'succeeded' ||
-          attachments is! List ||
-          attachments.isEmpty) {
-        continue;
-      }
-      return _GeneratedImage(groupId: '${row['id']}', tool: tool);
-    }
-  }
-  return null;
-}
-
-Future<void> _selectMode(FlutterDriverSession driver, String mode) async {
-  await driver
-      .waitFor(
-        find.byValueKey('session-mode-selector'),
-        timeout: const Duration(seconds: 20),
-      )
-      .timeout(const Duration(seconds: 20));
-  await driver.tap(find.byValueKey('session-mode-selector'));
-  final option = find.byValueKey('session-mode-$mode');
-  await driver
-      .waitFor(option, timeout: const Duration(seconds: 20))
-      .timeout(const Duration(seconds: 20));
-  // Switching the model rebuilds the thread route and can keep scheduling
-  // frames; the frame-waiting tap cannot acknowledge that, so send the pointer
-  // event directly and let the following waits observe the result.
-  await driver.rawTap(option);
-}
-
-Future<void> _startNewSession(FlutterDriverSession driver) async {
-  // A restored project may reopen its last thread, which can be faulted from an
-  // unrelated run; a fresh thread keeps the evidence scoped to this prompt.
-  final newSession = find.byValueKey('sidebar-new-session');
-  try {
-    await driver
-        .waitFor(newSession, timeout: const Duration(seconds: 15))
-        .timeout(const Duration(seconds: 15));
-    await driver.tap(newSession);
-  } on Object {
-    return;
-  }
-}
-
-Future<void> _selectModel(FlutterDriverSession driver, String modelSpec) async {
-  final separator = modelSpec.indexOf(':');
-  if (separator <= 0) {
-    throw ArgumentError('Expected --model=provider:model');
-  }
-  final providerId = modelSpec.substring(0, separator);
-  final model = modelSpec.substring(separator + 1);
-  await driver
-      .waitFor(
-        find.byValueKey('model-selector'),
-        timeout: const Duration(seconds: 20),
-      )
-      .timeout(const Duration(seconds: 20));
-  await driver.tap(find.byValueKey('model-selector'));
-  final option = find.byValueKey(
-    'model-${jsonEncode(<String>[providerId, model])}',
-  );
-  await driver
-      .waitFor(option, timeout: const Duration(seconds: 20))
-      .timeout(const Duration(seconds: 20));
-  await driver.tap(option);
 }
 
 Future<void> _openProject(
@@ -277,6 +169,61 @@ Future<void> _openProject(
   await driver.tap(find.byValueKey('project-path-submit'));
 }
 
+Future<void> _startNewSession(FlutterDriverSession driver) async {
+  // A restored project may reopen its last thread, which can be faulted from an
+  // unrelated run; a fresh thread keeps the evidence scoped to this prompt.
+  final newSession = find.byValueKey('sidebar-new-session');
+  try {
+    await driver
+        .waitFor(newSession, timeout: const Duration(seconds: 15))
+        .timeout(const Duration(seconds: 15));
+    await driver.tap(newSession);
+  } on Object {
+    return;
+  }
+}
+
+Future<void> _selectMode(FlutterDriverSession driver, String mode) async {
+  await driver
+      .waitFor(
+        find.byValueKey('session-mode-selector'),
+        timeout: const Duration(seconds: 20),
+      )
+      .timeout(const Duration(seconds: 20));
+  await driver.tap(find.byValueKey('session-mode-selector'));
+  final option = find.byValueKey('session-mode-$mode');
+  await driver
+      .waitFor(option, timeout: const Duration(seconds: 20))
+      .timeout(const Duration(seconds: 20));
+  await driver.tap(option);
+}
+
+Future<void> _selectModel(FlutterDriverSession driver, String modelSpec) async {
+  final separator = modelSpec.indexOf(':');
+  if (separator <= 0) {
+    throw ArgumentError('Expected --model=provider:model');
+  }
+  final providerId = modelSpec.substring(0, separator);
+  final model = modelSpec.substring(separator + 1);
+  await driver
+      .waitFor(
+        find.byValueKey('model-selector'),
+        timeout: const Duration(seconds: 20),
+      )
+      .timeout(const Duration(seconds: 20));
+  await driver.tap(find.byValueKey('model-selector'));
+  final option = find.byValueKey(
+    'model-${jsonEncode(<String>[providerId, model])}',
+  );
+  await driver
+      .waitFor(option, timeout: const Duration(seconds: 20))
+      .timeout(const Duration(seconds: 20));
+  // Switching the model rebuilds the thread route and can keep scheduling
+  // frames; the frame-waiting tap cannot acknowledge that, so send the pointer
+  // event directly and let the following waits observe the result.
+  await driver.rawTap(option);
+}
+
 Future<_GeneratedImage> _waitForGeneratedImage(
   FlutterDriverSession driver,
   Directory output,
@@ -286,36 +233,10 @@ Future<_GeneratedImage> _waitForGeneratedImage(
   while (DateTime.now().isBefore(deadline)) {
     final snapshot = await driver.readSnapshot();
     last = snapshot;
-    final workspace = snapshot['workspace'];
-    final persistence = snapshot['persistence'];
-    final persistenceDetails = persistence is Map ? persistence : const {};
-    if (workspace is Map) {
-      final rows = workspace['timeline'];
-      if (rows is List) {
-        for (final row in rows) {
-          if (row is! Map || row['type'] != 'activityGroup') continue;
-          final tools = row['tools'];
-          if (tools is! List) continue;
-          for (final tool in tools) {
-            if (tool is! Map || tool['name'] != 'generate_image') continue;
-            final status = tool['status'];
-            final attachments = tool['attachments'];
-            if (status == 'failed') {
-              await _writeJson('${output.path}/failed-snapshot.json', snapshot);
-              throw StateError('generate_image failed: ${tool['callId']}');
-            }
-            if (status == 'succeeded' &&
-                attachments is List &&
-                attachments.isNotEmpty &&
-                workspace['isBusy'] == false &&
-                persistenceDetails['kind'] == 'ready' &&
-                persistenceDetails['pendingCommits'] == 0) {
-              await _writeJson('${output.path}/snapshot.json', snapshot);
-              return _GeneratedImage(groupId: '${row['id']}', tool: tool);
-            }
-          }
-        }
-      }
+    final generated = _generatedFromSnapshot(snapshot);
+    if (generated != null && _workspaceIdle(snapshot)) {
+      await _writeJson('${output.path}/snapshot.json', snapshot);
+      return generated;
     }
     await Future<void>.delayed(const Duration(milliseconds: 250));
   }
@@ -325,86 +246,202 @@ Future<_GeneratedImage> _waitForGeneratedImage(
   throw StateError('generate_image did not complete before the deadline');
 }
 
-Future<void> _captureTimeline(
+Future<_ImageCard> _waitForCard(
+  FlutterDriverSession driver,
+  Directory output,
+) async {
+  final deadline = DateTime.now().add(const Duration(minutes: 8));
+  Map<String, dynamic>? last;
+  while (DateTime.now().isBefore(deadline)) {
+    final snapshot = await driver.readSnapshot();
+    last = snapshot;
+    final card = _cardFromSnapshot(snapshot);
+    if (card != null && _workspaceIdle(snapshot)) {
+      await _writeJson('${output.path}/card-snapshot.json', snapshot);
+      return card;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+  }
+  if (last != null) {
+    await _writeJson('${output.path}/incomplete-card-snapshot.json', last);
+  }
+  throw StateError('show_image did not produce a timeline card');
+}
+
+bool _workspaceIdle(Map<String, dynamic> snapshot) {
+  final workspace = snapshot['workspace'];
+  final persistence = snapshot['persistence'];
+  final persistenceDetails = persistence is Map ? persistence : const {};
+  if (workspace is! Map) return false;
+  return workspace['isBusy'] == false &&
+      persistenceDetails['kind'] == 'ready' &&
+      persistenceDetails['pendingCommits'] == 0;
+}
+
+_GeneratedImage? _generatedFromSnapshot(Map<String, dynamic> snapshot) {
+  final workspace = snapshot['workspace'];
+  if (workspace is! Map) return null;
+  final rows = workspace['timeline'];
+  if (rows is! List) return null;
+  for (final row in rows) {
+    if (row is! Map || row['type'] != 'activityGroup') continue;
+    final tools = row['tools'];
+    if (tools is! List) continue;
+    for (final tool in tools) {
+      if (tool is! Map || tool['name'] != 'generate_image') continue;
+      final attachments = tool['attachments'];
+      if (tool['status'] != 'succeeded' ||
+          attachments is! List ||
+          attachments.isEmpty) {
+        continue;
+      }
+      return _GeneratedImage(groupId: '${row['id']}', tool: tool);
+    }
+  }
+  return null;
+}
+
+_ImageCard? _cardFromSnapshot(Map<String, dynamic> snapshot) {
+  final workspace = snapshot['workspace'];
+  if (workspace is! Map) return null;
+  final rows = workspace['timeline'];
+  if (rows is! List) return null;
+  for (final row in rows) {
+    if (row is! Map || row['type'] != 'imageCard') continue;
+    final tools = row['tools'];
+    if (tools is! List) continue;
+    for (final tool in tools) {
+      if (tool is! Map || tool['name'] != 'show_image') continue;
+      final attachments = tool['attachments'];
+      if (tool['status'] != 'succeeded' ||
+          attachments is! List ||
+          attachments.isEmpty) {
+        continue;
+      }
+      return _ImageCard(rowId: '${row['id']}', tool: tool);
+    }
+  }
+  return null;
+}
+
+Future<void> _captureCard(
   FlutterDriverSession driver,
   Directory output,
   _GeneratedImage generated,
+  _ImageCard card,
 ) async {
-  // The produced image lives in the collapsed tool activity group; expanding the
-  // same group row that the snapshot reported mounts the gallery. A re-run of
-  // this journey may find that group already expanded, so expansion is only
-  // requested while the thumbnail is still absent.
-  final attachments = generated.tool['attachments'] as List;
+  final attachments = card.tool['attachments'] as List;
   final first = attachments.first as Map;
-  final callId = generated.tool['callId'] ?? generated.tool['toolCallId'];
+  final callId = card.tool['callId'] ?? card.tool['toolCallId'];
   final attachmentId = '${first['id']}';
-  // The thumbnail key is the implementation's documented entry identity:
-  // owning call id plus the content-addressed attachment id. Waiting for it
-  // proves the archived image is mounted on the timeline, not merely projected.
-  final thumbnail = find.byValueKey(
-    'view-image-thumbnail-$callId:$attachmentId',
-  );
-  final toggle = find.byValueKey('view-image-toggle-$callId:$attachmentId');
-  var thumbnailMounted = await _isMounted(driver, thumbnail);
-  if (!thumbnailMounted) {
-    final summary = find.byValueKey(
-      'timeline-activity-summary-${generated.groupId}',
-    );
-    // Expanding an already expanded group would collapse it again, so the group
-    // is only opened while its gallery entry is still absent.
-    if (!await _isMounted(driver, toggle)) {
-      await driver
-          .waitFor(summary, timeout: const Duration(seconds: 20))
-          .timeout(const Duration(seconds: 20));
-      await driver.tap(summary);
-    }
-    if (await _isMounted(driver, toggle)) {
-      // Produced images stay behind a collapsed "1 image" entry; open it so the
-      // screenshot shows the image itself.
-      await driver.tap(toggle);
-    }
-    thumbnailMounted = await _isMounted(driver, thumbnail, timeout: 15);
+  // Both keys use the documented entry identity: owning call id plus the
+  // content-addressed attachment id.
+  final entryId = '$callId:$attachmentId';
+  final cardKey = find.byValueKey('image-card-$entryId');
+  final imageKey = find.byValueKey('image-card-image-$entryId');
+  var cardMounted = await _isMounted(driver, cardKey);
+  if (!cardMounted) {
+    await driver
+        .waitFor(imageKey, timeout: const Duration(seconds: 20))
+        .timeout(const Duration(seconds: 20));
+    cardMounted = await _isMounted(driver, cardKey);
   }
-  if (!thumbnailMounted) {
-    // The expanded tool details can be taller than the viewport; one bounded
-    // scroll is enough to bring the gallery into the visible area.
-    try {
-      await driver.scrollBy(find.byValueKey('timeline-scrollable'), -200);
-      thumbnailMounted = await _isMounted(driver, thumbnail, timeout: 10);
-    } on Object {
-      thumbnailMounted = false;
-    }
+  // The timeline follows the newest content; nudge it up so the screenshot also
+  // shows the card header and its status pill.
+  try {
+    await driver.scrollBy(find.byValueKey('timeline-scrollable'), 110);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+  } on Object {
+    // A card whose header is already visible is still valid evidence.
   }
-  await _screenshot(driver, '${output.path}/timeline.png');
+  await _screenshot(driver, '${output.path}/card.png');
+  // The card can be taller than the timeline viewport on a short window; a
+  // second frame scrolled slightly further records the caption band too.
+  try {
+    await driver.scrollBy(find.byValueKey('timeline-scrollable'), -70);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await _screenshot(driver, '${output.path}/card-caption.png');
+  } on Object {
+    // The primary card screenshot already records the image and header.
+  }
   var dialogOpened = false;
   try {
-    if (!thumbnailMounted) {
-      throw StateError('thumbnail not mounted');
-    }
-    await driver.rawTap(thumbnail);
+    await driver.rawTap(imageKey);
     await driver
         .waitFor(
           find.byValueKey('timeline-image-dialog-$attachmentId'),
-          timeout: const Duration(seconds: 15),
+          timeout: const Duration(seconds: 20),
         )
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 20));
     dialogOpened = true;
-    await _screenshot(driver, '${output.path}/dialog.png');
+    await _screenshot(driver, '${output.path}/card-dialog.png');
     await driver.tap(find.byValueKey('timeline-image-close'));
   } on Object {
-    // The dialog is a supplementary view; the timeline screenshot already
-    // proves the archived attachment reached the surface.
+    // The dialog is supplementary; the card screenshot already proves the
+    // generated image reached the timeline.
   }
   await _writeJson('${output.path}/evidence.json', {
-    'tool': '${generated.tool['name']}',
-    'callId': callId,
-    'status': generated.tool['status'],
-    'groupId': generated.groupId,
+    'generateTool': '${generated.tool['name']}',
+    'generateCallId': generated.tool['callId'],
+    'cardTool': '${card.tool['name']}',
+    'cardCallId': callId,
+    'cardRowId': card.rowId,
+    'status': card.tool['status'],
     'attachments': attachments,
-    'thumbnailMounted': thumbnailMounted,
+    'caption': _arguments(card.tool['arguments'])?['caption'],
+    'cardMounted': cardMounted,
     'dialogOpened': dialogOpened,
     'capturedAt': DateTime.now().toUtc().toIso8601String(),
   });
+}
+
+/// Tool arguments reach the driver snapshot either decoded or as their JSON text.
+Map<dynamic, dynamic>? _arguments(Object? raw) {
+  if (raw is Map) return raw;
+  if (raw is String && raw.isNotEmpty) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded;
+    } on FormatException {
+      return null;
+    }
+  }
+  return null;
+}
+
+/// Captures one full-window frame, tolerating a rasterizer that is still busy.
+///
+/// A screenshot request can be rejected while the engine is decoding the freshly
+/// mounted image, so the capture retries instead of failing the evidence run.
+Future<void> _screenshot(FlutterDriverSession driver, String path) async {
+  Object? lastError;
+  for (var attempt = 0; attempt < 4; attempt++) {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    try {
+      final bytes = await driver.screenshot().timeout(
+        const Duration(seconds: 20),
+      );
+      await File(path).writeAsBytes(bytes);
+      return;
+    } on Object catch (error) {
+      lastError = error;
+    }
+  }
+  throw StateError('screenshot did not complete: $lastError');
+}
+
+Future<bool> _isMounted(
+  FlutterDriverSession driver,
+  SerializableFinder finder, {
+  int timeout = 3,
+}) async {
+  final deadline = Duration(seconds: timeout);
+  try {
+    await driver.waitFor(finder, timeout: deadline).timeout(deadline);
+    return true;
+  } on Object {
+    return false;
+  }
 }
 
 Future<void> _writeJson(String path, Object value) => File(path)
@@ -414,5 +451,12 @@ class _GeneratedImage {
   const _GeneratedImage({required this.groupId, required this.tool});
 
   final String groupId;
+  final Map<dynamic, dynamic> tool;
+}
+
+class _ImageCard {
+  const _ImageCard({required this.rowId, required this.tool});
+
+  final String rowId;
   final Map<dynamic, dynamic> tool;
 }

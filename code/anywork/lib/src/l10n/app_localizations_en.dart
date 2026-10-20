@@ -1003,6 +1003,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineImageClose => 'Close image preview';
 
   @override
+  String get timelineImageCardTitle => 'Image card';
+
+  @override
+  String get timelineImageCardEmpty => 'This image is unavailable';
+
+  @override
   String timelineRemoteImageSource(String host) {
     return 'External image from $host';
   }

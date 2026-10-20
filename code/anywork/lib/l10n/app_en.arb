@@ -467,6 +467,8 @@
   "timelineImageLoadFailed": "Unable to load this image.",
   "timelineImageRetry": "Retry",
   "timelineImageClose": "Close image preview",
+  "timelineImageCardTitle": "Image card",
+  "timelineImageCardEmpty": "This image is unavailable",
   "timelineRemoteImageSource": "External image from {host}",
   "@timelineRemoteImageSource": {
     "placeholders": {

@@ -1269,6 +1269,128 @@ void main() {
     await _closeTimeline(tester, harness);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('展示工具的图片卡片独立成行并携带参数文案', (tester) async {
+    final now = DateTime.utc(2026);
+
+    StudioChatItem entry(String id, int ordinal, ThreadItemStateView state) {
+      final view = ThreadItemView(
+        id: id,
+        threadId: 'thread-main',
+        turnId: 'turn',
+        ordinal: ordinal,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        saved: true,
+        state: state,
+      );
+      return StudioChatItem(
+        view,
+        saved: true,
+        lifecycle: StudioChatLifecycle.terminal,
+      );
+}
+
+    ThreadToolItemStateView tool(
+      String callId,
+      String name, {
+      String arguments = '{}',
+      List<ThreadAttachmentView> attachments = const [],
+    }) => ThreadToolItemStateView(
+      invocation: ThreadToolInvocationView(
+        toolCallId: callId,
+        name: name,
+        arguments: arguments,
+      ),
+      lifecycle: SucceededThreadToolView(
+        now,
+        ThreadToolOutputView(
+          result: '$name result',
+          attachments: attachments,
+          outputArtifacts: const [],
+        ),
+      ),
+    );
+
+    ThreadTextItemStateView text(String value) => ThreadTextItemStateView(
+      channel: ThreadTextChannel.commentary,
+      text: value,
+      attachments: const [],
+      lifecycle: CompletedThreadContentView(now),
+    );
+
+    final harness = await _mountTimeline(
+      tester,
+      theme: pureStudioTheme(),
+      height: 560,
+      initialItems: [
+        entry('tool-before', 0, tool('call-read', 'read_alpha')),
+        entry(
+          'card',
+          1,
+          tool(
+            'call-show',
+            'show_image',
+            arguments: '{"caption":"  雨后的天台  ","imageId":"card-image"}',
+            attachments: const [
+              ThreadAttachmentView(
+                id: 'card-image',
+                modality: AttachmentModalityView.image,
+                mediaType: 'image/png',
+                byteSize: 8,
+                width: 800,
+                height: 450,
+              ),
+            ],
+          ),
+        ),
+        // 非字符串 caption 且没有图片附件：卡片退化为无文案的错误态，不抛异常。
+        entry(
+          'card-unavailable',
+          2,
+          tool('call-show-empty', 'show_image', arguments: '{"caption":42}'),
+        ),
+        entry('text-after', 3, text('图片卡片之后的正文。')),
+      ],
+    );
+
+    final rows = harness.graph.timeline.source.value!.rows;
+    expect(rows.map((row) => row.type.name), [
+      'activityGroup',
+      'imageCard',
+      'imageCard',
+      'commentary',
+    ]);
+    expect(
+      rows.first.entries.map((part) => part.id),
+      ['tool-before'],
+      reason: '展示工具不并入普通工具活动组',
+    );
+
+    final card = rows[1];
+    expect(card, isA<TimelineImageCardRow>());
+    final imageCard = card as TimelineImageCardRow;
+    expect(imageCard.type, TimelineRowType.imageCard);
+    expect(imageCard.tool.name, 'show_image');
+    expect(imageCard.caption, '雨后的天台', reason: 'caption 只取 canonical 工具参数');
+    expect(imageCard.tool.tool!.attachments.single.id, 'card-image');
+
+    // 非字符串 caption 视为缺失：不解析成文本，也不猜测图片内容。
+    expect((rows[2] as TimelineImageCardRow).caption, isNull);
+
+    // 卡片按 owning 调用 + 附件身份渲染；无图片附件的卡片只是错误态，不崩溃。
+    expect(
+      find.byKey(StudioDriverKeys.imageCard('call-show:card-image')),
+      findsOneWidget,
+    );
+    expect(find.text('雨后的天台'), findsOneWidget);
+    expect(find.text('This image is unavailable'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await _closeTimeline(tester, harness);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _ControlledWindow implements StudioChatWindow {

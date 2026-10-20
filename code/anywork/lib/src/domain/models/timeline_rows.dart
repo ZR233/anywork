@@ -9,6 +9,7 @@ enum TimelineRowType {
   finalAnswer,
   activityGroup,
   imageRead,
+  imageCard,
   contextCompaction,
   skillActivation,
   agentActivity,
@@ -113,6 +114,27 @@ final class TimelineImageRow extends TimelineItemRow {
   const TimelineImageRow({required super.item, required super.part});
   @override
   TimelineRowType get type => TimelineRowType.imageRead;
+  TimelineToolItem get tool => TimelineToolItem(part: part);
+}
+
+/// 展示工具的图片卡片：一条 `show_image` 调用独立成行。
+///
+/// 行只携带展示属性——所属工具条目与模型给出的说明文案；图片字节始终由 Thread 附件
+/// 缓存按 typed 附件身份读取，行模型不持有字节，也不改写工具条目本身
+/// （design/25 §25.6）。
+final class TimelineImageCardRow extends TimelineItemRow {
+  const TimelineImageCardRow({
+    required super.item,
+    required super.part,
+    required this.caption,
+  });
+
+  /// canonical 工具参数里的展示文案；缺失、非字符串或空文本时为 `null`。
+  final String? caption;
+
+  @override
+  TimelineRowType get type => TimelineRowType.imageCard;
+
   TimelineToolItem get tool => TimelineToolItem(part: part);
 }
 
@@ -330,8 +352,19 @@ final class TimelineRowProjector {
       final ordinaryTool =
           item.kind == ThreadItemKind.toolCall &&
           item.tool?.name != 'view_image';
-      // 携带 typed 问答历史的工具是独立回执：它先结束当前活动组，不并入普通工具摘要。
-      if (item.tool?.userInput case final userInput?) {
+      // 展示工具是独立图片卡片行：它先结束当前活动组，不并入普通工具摘要。
+      if (item.kind == ThreadItemKind.toolCall &&
+          item.tool?.name == 'show_image') {
+        flush();
+        add(
+          TimelineImageCardRow(
+            item: item,
+            part: part,
+            caption: _imageCardCaption(item.tool?.arguments ?? ''),
+          ),
+        );
+      } else if (item.tool?.userInput case final userInput?) {
+        // 携带 typed 问答历史的工具是独立回执：它先结束当前活动组，不并入普通工具摘要。
         flush();
         add(TimelineUserInputRow(item: item, part: part, history: userInput));
       } else if (item.kind == ThreadItemKind.reasoning || ordinaryTool) {
@@ -448,6 +481,31 @@ TimelineEntry timelineEntryFromThreadItem(ThreadItemView item) {
     attachments: item.attachments,
     contextDisposition: item.contextDisposition,
   );
+}
+
+/// `show_image` 卡片的展示文案上限；与工具后端的参数上限一致。
+///
+/// 超出上限的参数在后端会被拒绝，因此走到这里的超长值只可能来自历史或非 canonical
+/// 输入；截断比整段展示更安全，也不改变参数本身。
+const _imageCardCaptionLimit = 240;
+
+/// 从 canonical 工具参数里读取展示文案。
+///
+/// 参数跨供应商边界以文本进入，可能缺失、非对象或不是字符串：这几种情况都返回
+/// `null`，卡片因此不占位，也不抛异常。不从 opaque 工具回执里猜测文案。
+String? _imageCardCaption(String arguments) {
+  final value = decodeJsonObject(arguments)['caption'];
+  if (value is! String) {
+    return null;
+  }
+  final caption = value.trim();
+  if (caption.isEmpty) {
+    return null;
+  }
+  final runes = caption.runes;
+  return runes.length <= _imageCardCaptionLimit
+      ? caption
+      : String.fromCharCodes(runes.take(_imageCardCaptionLimit));
 }
 
 String? _commandSummary(String arguments) {

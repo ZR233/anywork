@@ -440,6 +440,7 @@ class _RowCard extends StatelessWidget {
       ),
       TimelineActivityRow(:final group) => _ActivityGroupPart(group: group),
       TimelineImageRow() => _ImageReadPart(row: row),
+      TimelineImageCardRow() => _ImageCardPart(row: row),
       final TimelineUserInputRow input => _UserInputReceipt(row: input),
       TimelineSkillRow(:final activation) => _SkillActivationPart(
         key: StudioDriverKeys.timelineSkillActivation(row.id),
@@ -742,12 +743,13 @@ class _TimelinePanel extends StatelessWidget {
 }
 
 class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.label});
+  const _StatusPill({required this.label, this.tone = StudioTone.neutral});
 
   final String label;
+  final StudioTone tone;
 
   @override
   Widget build(BuildContext context) {
-    return StudioPill(label: label);
+    return StudioPill(label: label, tone: tone);
   }
 }

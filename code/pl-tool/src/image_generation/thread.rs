@@ -89,15 +89,17 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
         )
     }
 
-    /// Transfers an executor that coexists with other foreground calls and grants no control.
+    /// Transfers an executor that runs as a Thread background task and grants no control.
+    ///
+    /// A provider request outlives the batch that accepted it: the call returns a running
+    /// receipt, its terminal output (archived media and receipt payload) is delivered through
+    /// the Thread inbox later, and cancellation uses an independent task token. Background
+    /// scheduling adds no control permission to the accepted call.
     ///
     /// # Errors
     /// Returns invalid registry identity errors.
     pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(
-            Registration::new(TOOL_IMAGE_GENERATION.into(), declaration, self)?
-                .foreground_coexisting(),
-        )
+        Registration::new(TOOL_IMAGE_GENERATION.into(), declaration, self)
     }
 }
 

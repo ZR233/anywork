@@ -16,6 +16,10 @@ Driver 旅程、native FRB 或平台 UI 验收。其他 Flutter widget/integrati
 测试与 Driver 场景不因本次重构加入自动门禁。Client 所有权与接口见
 [25](./25-frontend-state.md)，内容传输见 [07](./07-streaming.md)。
 
+Timeline 行派生规则（`view_image` 的图片行、展示工具的图片卡片行、普通工具活动组）属于应用
+适配契约：`test/client` 断言工具条目到行类型的映射、typed 附件与展示字段的传递，不重复验证
+图片解码、布局细节或像素，那些由 Driver 人工证据覆盖。
+
 Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Riverpod 的 canonical
 事实收敛放在应用 adapter 测试集；不在 Flutter 应用侧重复维护这些纯 Client 契约，
 也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。

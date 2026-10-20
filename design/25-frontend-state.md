@@ -145,6 +145,9 @@ adapter 保留问题、答案列表、脱敏标记及权威状态，不让 featu
 Client 额外缓存回答以补齐历史。关闭、分页、重订阅和重开均由 canonical 内容窗口恢复回执；
 用户主动展开/收起只改变局部展示，不写回业务状态。
 
+展示工具产生独立的图片卡片行：行只派生展示属性（所属调用、typed 附件、参数中的展示文案），
+图片字节仍由 Thread 附件缓存按身份读取；行模型不缓存字节，也不因卡片存在而改写工具条目本身。
+
 正文窗口保留有界 orderedIds 与按身份索引的 immutable row，并由 Timeline 展示 owner 驱动
 `TimelineChatController`（实现 `flutter_chat_core` 的 `ChatController`）：窗口壳层只观察会话身份、
 Turn 状态、分页边界与错误态，行内容变化通过 `ChatController.updateMessage` 原位更新对应消息子树，

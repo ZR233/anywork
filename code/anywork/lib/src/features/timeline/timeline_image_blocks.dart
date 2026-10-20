@@ -468,6 +468,7 @@ class _ThreadImageFuture extends StatelessWidget {
     required this.onRetry,
     this.loadedKey,
     this.onTap,
+    this.retryKey,
   });
 
   /// 失败与重试 key 使用的展示身份。
@@ -487,23 +488,18 @@ class _ThreadImageFuture extends StatelessWidget {
   /// 成功加载后的放大回调；与 [loadedKey] 同时给出。
   final VoidCallback? onTap;
 
+  /// 失败重试入口的身份键；缺省沿用工具条目与附件展示通用的重试键。
+  ///
+  /// 展示卡片拥有自己的重试键，Driver 因此能区分「卡片内重试」与「工具缩略图内重试」。
+  final Key? retryKey;
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Uint8List>(
       future: image,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return Tooltip(
-            message: context.l10n.timelineImageLoadFailed,
-            child: IconButton(
-              key: StudioDriverKeys.timelineImageRetry(presentationId),
-              onPressed: onRetry,
-              icon: Icon(
-                Icons.refresh,
-                key: ValueKey('attachment-load-failed-$presentationId'),
-              ),
-            ),
-          );
+          return _failure(context);
         }
         if (!snapshot.hasData) {
           return const Center(
@@ -513,7 +509,13 @@ class _ThreadImageFuture extends StatelessWidget {
             ),
           );
         }
-        final loaded = Image.memory(snapshot.data!, fit: fit);
+        // 字节读到了但解码失败同样是「失败」：它在原位置给出同一个显式重试入口，
+        // 不让不可解码的附件把异常抛进图片服务并留下空白占位。
+        final loaded = Image.memory(
+          snapshot.data!,
+          fit: fit,
+          errorBuilder: (context, error, stackTrace) => _failure(context),
+        );
         if (loadedKey == null && onTap == null) {
           return loaded;
         }
@@ -523,6 +525,20 @@ class _ThreadImageFuture extends StatelessWidget {
           child: SizedBox.expand(child: loaded),
         );
       },
+    );
+  }
+
+  Widget _failure(BuildContext context) {
+    return Tooltip(
+      message: context.l10n.timelineImageLoadFailed,
+      child: IconButton(
+        key: retryKey ?? StudioDriverKeys.timelineImageRetry(presentationId),
+        onPressed: onRetry,
+        icon: Icon(
+          Icons.refresh,
+          key: ValueKey('attachment-load-failed-$presentationId'),
+        ),
+      ),
     );
   }
 }

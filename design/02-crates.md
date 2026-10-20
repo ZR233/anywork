@@ -29,7 +29,7 @@ provider 协议的 HTTP 客户端（目录发现、文件与图像生成）归 p
 | --- | --- |
 | pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session/ChatView 有界时间线协调 |
 | pl-model | provider/transport、模型目录、配置值对象、路由、provider 图像 API、媒体编码、缓存、usage 与核心模型会话适配 |
-| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成、交互、笔记、todo、完成和协作工具 |
+| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成与图像展示、交互、笔记、todo、完成和协作工具 |
 | pl-protocol | Studio 与外围 adapter 使用的产品 wire、DTO、错误和业务状态类型 |
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |
