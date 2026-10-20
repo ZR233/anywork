@@ -63,6 +63,16 @@ isolate、FRB 订阅与 Rust runtime 继续运行；恢复窗口后直接展示�
 的窗口关闭才进入上述退出协调器。Linux 暂不实现托盘隐藏，保留既有 `delete-event` 关闭
 入口，行为不变。
 
+Windows 与 Linux 桌面以 Studio home 为单例边界。重复启动在 Flutter engine 创建前向
+原实例转发窗口激活，然后结束自身；不同数据目录允许并行运行。Windows 复用托盘的窗口
+恢复入口，Linux 通过 GApplication Activate 呈现已有 GtkWindow。首次窗口尚未就绪时
+合并保留一次激活请求，首帧后执行，不重建 AppGraph 或重发业务请求。原实例正在退出时
+只显示原退出窗口，不取消退出、不自动重启。
+
+入口发现与激活共用十秒期限；入口尚未发布时有界等待。锁已释放时可以重新竞争，只有
+取得锁者继续启动。转交成功退出码为零；占用者为 Server、其他桌面会话、无响应进程或
+激活失败时静默非零退出，只记录诊断，不出现第二个窗口或占用错误页。
+
 bridge 以 `BridgeShutdownReport`、`BridgeShutdownOutcome`、`BridgePendingPersistence`、
 `BridgeShutdownIssue` 镜像 runtime 的 typed 报告（形状权威源见
 [18](./18-studio-state.md) §18.5.1），退出入口 `shutdown_runtime(remaining_ms, external_issues)`
@@ -79,8 +89,8 @@ bridge 侧彼此独立的 owner 组（bridge 持有的订阅与其他在途更�
 诊断收尾独立于 runtime 初始化状态，`finish_shutdown_diagnostics` 在安全 dispose 之前或退出
 之前调用，使 runtime 从未安装或安装失败时也能回收诊断资源。
 
-启动期第二实例无法取得实例锁时，界面提示「已有实例在运行」；启动失败的错误码集合
-（`instanceBusy`、`cancellationTooLate`、`overloaded` 等）在 Dart 侧以穷尽 switch 映射为稳定的
+桌面重复启动在原生入口转交激活，不进入启动错误界面；服务端保留 typed `instanceBusy` 错误。
+启动失败的错误码集合（`cancellationTooLate`、`overloaded` 等）在 Dart 侧以穷尽 switch 映射为稳定的
 本地化文案与诊断编号，不得因未知变体抛出解析异常而覆盖原始 typed 错误。shutdown 失败不再
 取消本次应用退出等待用户确认：失败阶段聚合成带 `code` 与 `correlation_id` 的脱敏诊断后继续
 关闭，不阻塞在用户确认上，也不提供无限重试；剩余期限只用于完成安全收束与退出，不延长总期限。

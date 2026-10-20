@@ -319,7 +319,7 @@ abstract final class StudioDriverState {
     _exitRequests++;
   }
 
-  /// 记录启动致命失败（如第二实例 instanceBusy）的 typed code 与 correlation，供
+  /// 记录启动致命失败的 typed code 与 correlation，供
   /// Driver-only 验收可靠判定，而不是从 UI 文本猜测。
   static void publishStartupFailure(StudioFailure failure) {
     _startupFailureCode = failure.code.name;

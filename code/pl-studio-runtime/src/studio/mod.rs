@@ -2,6 +2,7 @@ mod agent_host;
 pub(crate) mod catalog;
 pub(crate) mod entity;
 mod ids;
+mod instance;
 mod merged_page;
 pub(crate) mod model_route;
 mod paths;
@@ -24,6 +25,7 @@ mod toml_store;
 pub(crate) mod workspace_receipt;
 
 pub(crate) use ids::{new_id, unix_seconds};
+pub use instance::{StudioInstance, StudioInstanceLease};
 pub use persistence::*;
 pub use product_event_bus::ProductEventBus;
 pub use records::{AttachmentRecord, ProjectRecord, ThreadKind, ThreadRecord, ThreadVisibility};

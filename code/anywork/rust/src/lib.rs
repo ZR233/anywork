@@ -1,4 +1,5 @@
 pub mod api;
+mod desktop_instance;
 mod diagnostics;
 
 pub use pl_protocol::ThreadSubscriptionUpdate;

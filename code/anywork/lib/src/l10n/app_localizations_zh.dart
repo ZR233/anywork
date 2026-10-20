@@ -46,12 +46,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shutdownFinalizingHint => '必要诊断已记录，将自动退出。';
 
   @override
-  String get startupInstanceBusy => '已有实例在运行';
-
-  @override
-  String get startupInstanceBusyHint => '请关闭另一个 anywork 窗口后重新启动。';
-
-  @override
   String get shutdownPhaseStoppingSubscriptions => '正在停止订阅';
 
   @override

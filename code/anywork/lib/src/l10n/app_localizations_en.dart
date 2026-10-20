@@ -47,13 +47,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Necessary diagnostics were recorded; the app will exit automatically.';
 
   @override
-  String get startupInstanceBusy => 'Another instance is already running';
-
-  @override
-  String get startupInstanceBusyHint =>
-      'Close the other anywork window, then start again.';
-
-  @override
   String get shutdownPhaseStoppingSubscriptions => 'Stopping subscriptions';
 
   @override

@@ -1,7 +1,5 @@
-use anyhow::{Context, Result};
-use pl_studio_runtime::{
-    RemoteHelperSource, StudioRuntime, StudioRuntimeOptions, StudioRuntimeStateKind,
-};
+use anyhow::Result;
+use pl_studio_runtime::{StudioRuntime, StudioRuntimeStateKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -135,8 +133,8 @@ pub(crate) struct BridgeRuntime {
 impl BridgeRuntime {
     async fn new() -> Result<Self> {
         Ok(Self {
-            studio: StudioRuntime::initialize_with_observer(
-                desktop_runtime_options()?,
+            studio: StudioRuntime::initialize_with_lease(
+                crate::desktop_instance::lease()?,
                 std::sync::Arc::new(super::handlers::lifecycle::publish_startup_stage),
             )
             .await?,
@@ -144,21 +142,6 @@ impl BridgeRuntime {
             shutdown: CancellationToken::new(),
         })
     }
-}
-
-/// Desktop bridge always runs from the packaged bundle, so its helper bytes come
-/// from the resources installed beside the application executable.
-fn desktop_runtime_options() -> Result<StudioRuntimeOptions> {
-    let executable = std::env::current_exe()
-        .context("locate the application executable to resolve bundled remote helper resources")?;
-    let bundle_root = executable
-        .parent()
-        .context("application executable has no parent directory")?;
-    Ok(
-        StudioRuntimeOptions::desktop().with_remote_helper_source(RemoteHelperSource::Bundled(
-            bundle_root.join("data").join("remote-helper"),
-        )),
-    )
 }
 
 /// 构造并安装 Bridge runtime；只能由显式启动命令调用。

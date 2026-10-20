@@ -170,18 +170,6 @@ abstract class AppLocalizations {
   /// **'Necessary diagnostics were recorded; the app will exit automatically.'**
   String get shutdownFinalizingHint;
 
-  /// No description provided for @startupInstanceBusy.
-  ///
-  /// In en, this message translates to:
-  /// **'Another instance is already running'**
-  String get startupInstanceBusy;
-
-  /// No description provided for @startupInstanceBusyHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Close the other anywork window, then start again.'**
-  String get startupInstanceBusyHint;
-
   /// No description provided for @shutdownPhaseStoppingSubscriptions.
   ///
   /// In en, this message translates to:

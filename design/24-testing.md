@@ -170,9 +170,9 @@ Plan 恢复使用显式 `plan-recovery` 原生 GUI 人工场景：在同一隔�
 隔离 `ANYWORK_HOME`、Flutter Driver 与进程所有权，按 phase 保存互不覆盖的证据，并由
 `coverage.json` 逐项记录已执行与未覆盖的验收要求，未覆盖分支不得写成通过。phase 至少覆盖：
 真实保存后正常退出并等待 OS 进程回收、进程退出码 0；同一隔离数据根重开并核对原会话与已提交
-历史；在同一数据根启动第二实例记录实例锁拒绝（真实 widget 文案“已有实例在运行”加日志、
-无 `ArgumentError`、有 bridge 错误关联），真正关闭第二实例（以真实 OS exit 证明）后第一实例
-仍能在同一 Thread 继续提交并保存，再重开该新 Turn；重复退出请求不重置 30 秒总期限（首次
+历史；在同一数据根启动第二实例，核对原生激活记录与第二进程的真实退出码 0、没有第二个
+Flutter VM、没有需要关闭的重复窗口，第一实例仍能在同一 Thread 继续提交并保存，再重开
+该新 Turn；重复退出请求不重置 30 秒总期限（首次
 arm 后延迟数秒再重复同一 close/request，总耗时从首次 arm 起算并在 30 秒内结束；重复请求由
 Driver-only `request-app-exit-twice` 在同一 shared future 上再次 `beginExit`，其回报的剩余只
 减不增即证明首次期限未被刷新；该 phase 复用既有 Driver-only 订阅故障入口
@@ -245,15 +245,15 @@ peer 就放行会让 Turn 在 receipt 处被取消、脚本缺步却被“已接
 （`cleanExit` 或 `pending=0` 即判锁未生效），并区分 28 秒协调降级完成（`finish`）与 30 秒 watchdog
 强退（`final` + `exitDeadlineImminent`）；Driver 挂起专用 phase 保留其 30 秒原生强退的严格判据。
 重开该数据根后 `PRAGMA quick_check` 为 `ok`、实例锁时序保持。任一资源只能随原生退出一起消失，即为
-串行停止被误记为并发，phase 失败而非记为通过。第二实例的原生退出改用真实窗口管理器协议：
-第二实例被钉在场景自有 `Xvfb` 上（`DISPLAY` 指向它，并强制 `GDK_BACKEND=x11`、移除继承的
-`WAYLAND_DISPLAY`，避免 GTK 改走 Wayland 而在该 display 上没有窗口），随后以 ctypes/libX11
-发送 `WM_DELETE_WINDOW`：工程脚本读取第二实例真实原生 PID（Driver `pid` 请求写入的身份文件）
-并优先使用该主进程 `/proc/<pid>/environ` 中的真实 `DISPLAY`，只向 `_NET_WM_PID` 等于该 PID 且
-声明 `WM_DELETE_WINDOW` 的窗口投递，读取的 `_NET_WM_PID` 与 launcher 记录一致并以 starttime
-防护，配合 `--native-exit-report` 的退出码 0 判定；失败时脚本把候选窗口（pid/协议/名称/几何）
-与所用 display、原因写入 `shutdown-busy-second-x11.json`。第一实例随后仍在同一 Thread 继续提交
-保存；Flutter Driver 无法覆盖窗口管理器协议，故该步由工程脚本触发，不影响用户桌面。
+串行停止被误记为并发，phase 失败而非记为通过。
+
+目录单例人工验收分别记录 Windows 与 Linux 的实际覆盖：普通窗口、最小化和 Windows 托盘
+隐藏后的重复启动，应保持原 PID、窗口和会话；重复进程及时退出，不触发额外业务请求。
+`single-instance` 场景提供隔离的 paced stream，用于核对隐藏期间任务仍在运行并保存。补充
+不同数据根并行、符号链接／junction／大小写别名、不同安装位置与构建模式、同时首次启动、
+首帧未就绪、退出期间激活、崩溃后重启，以及无法唤醒占用者时的静默非零退出。所有权由 OS
+文件锁证明，窗口恢复结合原生窗口状态、Driver 截图和激活日志核对。隐藏期间任务须继续完成
+并可靠保存，恢复后请求计数不增加。截图和日志存于源码之外；缺少宿主环境的平台标为未验证。
 
 init 中关闭、bridge 不可用与订阅故障由 Driver-only 注入执行：`ANYWORK_DRIVER_SHUTDOWN_FAULT`
 取值 `pending-init`（初始化永久挂起，关闭须报 Degraded + Unknown 且强制退出 1）或
@@ -263,7 +263,7 @@ Driver-only 注入而非真实 `dlopen` 失败。订阅故障由专用 Driver �
 --native-launch-driver-target test_driver/shutdown_fault_driver.dart`）在首帧后把同一
 `StudioExitCoordinator` 安装在只覆写 `subscribeShutdownProgress` 的真实 `FrbStudioTransport` 子类上：
 进度流错误与取消挂起必须成为 typed `progress` diagnostic 并使退出为非零，绝不伪 `Stopped`。
-`ANYWORK_HOME/studio` 不可写时（普通文件占位）`recordDartError` 须回落到隔离 `TMPDIR`，证据
+`ANYWORK_HOME/studio/logs` 不可写时（普通文件占位）`recordDartError` 须回落到隔离 `TMPDIR`，证据
 复制并机器校验 stage/correlation/stack（Dart logger 无 pid 字段，PID 取场景记录的 OS PID）。
 人工验收结论独立于脚本退出状态，默认待评审；模拟账号、Linux 单平台结果不外推为真实账号
 兼容或跨平台通过；Windows 以 `notrun` 记录，不是 Linux 缺口。
