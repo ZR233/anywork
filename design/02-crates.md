@@ -63,3 +63,20 @@ Studio 负责产品条目投影、产品配置和自己的持久化状态。历�
 
 契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。文档定义边界；验收结果
 以实际检查记录为准。
+
+## 2.4 Dart 与 FRB 边界
+
+`anywork_client` 是纯 Dart 数据／领域包，按领域公开 Repository、不可变值与 Session／资源
+服务；它不依赖 Flutter、Riverpod、FRB 或原生 handle。Freezed annotation 等纯 Dart 依赖
+可用于不可变领域模型，不能以“无 Flutter”误写为“所有依赖必须为空”。
+
+Flutter 应用按功能组织 Smart Connector、生成式 AsyncNotifier、Freezed ViewState 与 Dumb
+View。ViewModel 只消费领域公共能力，FRB adapter 才认识生成 DTO 和句柄；不通过巨型 Client
+或公开可写 store 穿透各层。跨功能共享能力由其领域所有者提供，不建立第二份镜像或通用
+service-locator facade。状态与生命周期的权威契约见 [25](./25-frontend-state.md)。
+
+`pl-studio-runtime` 向两个宿主提供同一领域事实的分域 feed、分页与详情；`pl-studio-bridge`
+拥有 FRB 投送额度、opaque 生命周期与机械 DTO 转换，不拥有另一份业务 reducer。core 的
+Session 异步等待接口可以在 Rust 内保留，Dart 的实时接口则使用推送，不暴露轮询 next 泵。
+产品协议变化同步 protocol、runtime、FRB、Dart 领域模型及受影响 HTTP/SSE 消费者；不为
+保留旧内部接口制造额外 crate、别名或另一条 canonical 路径。

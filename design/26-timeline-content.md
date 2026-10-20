@@ -1,7 +1,7 @@
 # 26 - Timeline 内容源与原生列表
 
 本文是 Timeline 读取接口、展示模式与预算的权威契约。执行与可靠保存仍归
-[15](./15-session-storage.md)，Client 资源生命周期归 [25](./25-frontend-state.md)。
+[15](./15-session-storage.md)，Dart 资源生命周期归 [25](./25-frontend-state.md)。
 本文描述已批准的目标设计，不代表原生交互或性能已验收。
 
 ## 26.1 职责与唯一事实源
@@ -14,7 +14,7 @@ Session 只提供无状态 keyset 页、最新端订阅与按身份详情，不�
 不再有 ChatView 几何窗口、Latest/Around 聚焦、双向对端裁剪、窗口下标 Splice、全文展开
 意图或等待窗口落位的操作回执。缓存退出不构成事实删除。
 
-SDK-only Client 拥有内容连接、版本基线、查询取消与重连；当前展示 lease 将 typed 内容
+纯 Dart Session／资源服务拥有内容连接、版本基线、查询取消与重连；当前展示 lease 将 typed 内容
 投影为库的 Message，唯一已加载消息集合由 InMemoryChatController 持有。不额外保留完整
 rows/window/body 集合后逐帧做整表差异。库的内部消费列表不成为应用可写事实源。
 
@@ -42,8 +42,9 @@ rows/window/body 集合后逐帧做整表差异。库的内部消费列表不成
 
 ### 有界尾部订阅
 
-订阅有独立身份与内容版本。initial 是与接收者登记一致的最新小页基线；next 同时至多一个
-在途调用。初开可立即显示尚未落盘的已成立内容，不等待 writer 或 checkpoint。
+订阅有独立身份与内容版本。首个推送是与接收者登记一致的最新小页基线，后续持续推送
+typed 增量；Dart 不循环调用 initial/next。Rust 内部继续复用 Session 的单消费者异步等待。
+初开立即交付已成立但尚未落盘的内容，不等待 writer 或 checkpoint。
 
 后续批次以 identity/order 表达新增、原位变更与真实删除，字段仍使用 typed
 Append/Replace/Remove/Unchanged；一次条目变更只提交一次内容 revision。批次 from 必须
@@ -198,9 +199,9 @@ HTTP 与 FRB 使用同一页／尾部／详情领域接口和转换。HTTP Timel
 共同使用 Session 内容源，不保留 GUI 热路径与纯 SQL 恢复的两套入口；旧 window/focus/
 load/expand 操作回执接口及别名删除，并以破坏性 API 说明升级。
 
-Client 首次 await 前登记 attempt、demand、查询及句柄所有权。页和详情响应只作用于其
+Session／资源服务首次 await 前登记 attempt、demand、查询及句柄所有权。页和详情响应只作用于其
 捕获的 Thread／订阅／展示代次；旧 A→B→A 回包不能写新 A。retire 先拒绝发布并取消，
-再等待内容泵、在途查询、sink 和句柄真正 close/join。失败保留 unresolved owner 和预算；
+再等待内容推送消费者、在途查询、producer、sink 和句柄真正 close/join。失败保留 unresolved owner 和预算；
 provider 销毁只取消自己的观察，不关闭跨路由资源。关内容连接不停止 Session、Turn 或
 writer。存储迁移、数据与凭据保留继续遵守 [17](./17-studio-storage.md)。
 
@@ -308,17 +309,43 @@ JSON 兼容入口。问题、答案、状态与 redacted 标记继续来自既�
 core 判定连续性或 Resync，不在 transport 积累 128 份大正文。
 
 runtime 的 `timeline_content` 是唯一 core → 产品预览／字段变化映射；HTTP 直接序列化该
-结果，FRB 仅做机械 DTO 转换。`BridgeTimeline` 捕获同一个 Session 与尾部连接，提供
-initial、page、next、read_detail、request_close、close；page/detail 不经过挂起的 next 锁。
-FRB 的 initial 也只能消费一次；外部 initial 尚未消费就调用 next 返回 Conflict，不能因为
-bridge 内部已从 core 取过首帧就绕过这道门。page/detail 不要求先消费首帧；关闭后调用
-始终以 Cancelled 优先。同句柄同时调用两个 next 返回 Busy。
+结果，FRB 仅做机械 DTO 转换。有界 Timeline feed 捕获同一个 Session reader 与尾部连接，
+提供 stream、ack_through、page、read_detail、request_close、close。stream 只允许一个消费者，
+先推送基线，再推送连续增量或显式 Resync；不再公开 initial/next 的 Dart 拉取接口。
+page/detail 不经过等待事件的锁，也不要求先消费首帧；关闭后调用始终以 Cancelled 优先。
+
+FRB 的 data 封套为 `BridgeTimelineFrame.Data`，携带独立的 `delivery_sequence` 和 typed
+`BridgeTimelineEvent`。event 只有 Baseline 与 Update；后者完整复用既有 Patch／Resync
+内容语义。首个 data sequence 为 1，baseline 占用一个额度；每连接最多两个未确认 data。
+`ack_through` 只归还该连接连续前缀的传输额度，0 和重复旧确认幂等，超过已发送序号是
+Protocol 错误。消费者完成转换、版本校验、归并与有界展示交接后才确认，不能先确认后
+在未等待的 future 链中积累正文。saved 和 Terminal 仍是有序 Update，不绕过额度。
+
+FRB 转发在途之外只保留一个待发送 data，待发送业务载荷上限为 8 MiB；单个 data 同样
+不得超过 8 MiB。此处字节是共享产品结果的标准 JSON 编码计数，用于确定性传输准入，
+不是 FRB wire 长度、core 的预览驻留计量或进程 RSS；不为计数保留编码副本，也不改变
+core 的 2 MiB 页、8 MiB 连续性副本与详情预算。超限返回 typed Overloaded 并结束本连接，
+不截短身份／决定、偷偷拆分内容版本、自动加载全文或丢弃终态维持成功。
+
+Failure 与 Closed 是传输控制帧，不消耗 data 额度，每种至多一次；Failure 后只能 Closed。
+显式取消与 shutdown 即使窗口已满也能结束所有等待。sink 发送失败触发取消；FRB 没有
+独立 disconnect 等待能力，因此 adapter 在 Stream.cancel 后仍须显式 request_close／join，
+不能依赖满窗口下未发生的新 send 探测对端离开。正常源结束要先交付已经
+取得的有序 data，再关闭；主动取消可以丢弃尚未交付的数据，但不得伪造业务终态。
+没有 consumer ACK 只会停送数据，不能阻止 request_close 后的真实 join。
+
+Timeline owner 在打开 reader／tail 之前登记到 bridge 的关闭登记表，涵盖 opening、
+未启动 stream、active、closing 与 unresolved；仅丢弃 Dart opaque 不能遗失该 owner。
+close 返回 `BridgeFeedCloseReport`：feed_id 与 Clean 或带非空 typed issues 的 Unresolved。
+producer、sink、在途 open／query 和捕获的 Session reader 真正结束后才可 Clean；重复或
+并发 close 观察同一最终结果。失败保留报告及强 owner，不能一次 close 吞掉失败后第二次
+谎报 Clean。关闭后的 ACK／stream／page／detail 均为 Cancelled，close 自身仍可重复观察。
 关闭先拒绝新调用并取消，再等待所有在途调用退出，
 最后释放首帧、尾部基线和 Session；重复 close 不能提前确认。仅持内容订阅不 pin 执行
 owner，不阻止其正常空闲退役，也不关闭执行 owner 或 writer。
 
 错误沿用共享 `StudioError` 分类：非法参数／cursor 为 InvalidArgument，不存在的 item/field
-为 NotFound，详情版本变化为 StaleRevision，关闭为 Cancelled，并发 next 为 Busy，预算
+为 NotFound，详情版本变化为 StaleRevision，关闭为 Cancelled，重复 stream 为 Conflict，预算
 耗尽为 Overloaded，读取／损坏／迁移故障为 Storage。存储失败保留结构化原因与脱敏诊断，
 checkpoint 栅栏未满足单独报告 Busy，不混同空库、EOF 或自动执行恢复。HTTP 与 FRB 不各自
 猜测错误文本，损坏、不可读、迁移失败的原因不能在映射中静默丢失。
@@ -339,22 +366,23 @@ watch 仅保留最新通知值，不能充当可靠内容事件日志；通知�
 完成。依据为 [watch 官方契约](https://docs.rs/tokio/1.53.3/tokio/sync/watch/index.html)
 与 [CancellationToken 官方契约](https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html)。
 
-## 26.8 Client 与展示 lease 边界
+## 26.8 Repository、ViewModel 与展示 lease 边界
 
-SDK-only Client 的内容连接使用 typed `StudioTimelineConnection` 能力：initial、page、next、
-readDetail、requestClose、close；同一连接捕获同一个 Session。现有 attempt、demand、
-permit、唯一内容泵及 unresolved-close 所有权继续适用，但删除窗口操作回执泛型、
+纯 Dart Session 服务的 typed 内容连接提供 events、page、readDetail、requestClose、close，
+同一连接捕获同一个 Session；native delivery ACK 由 Repository／有界消费交接负责，不向
+Widget 暴露。attempt、demand、permit 与 unresolved-close 所有权继续适用，删除 Dart next 泵、窗口操作回执泛型、
 load/focus/expand 控制面与 anchor 恢复。page/detail 是有类型返回值的查询，不通过
 “等待下一个窗口版本确认操作完成”收束。
 
 内容连接只维护有界 tail 基线和连续性校验，Thread 状态观察不再携带一份决定历史展示
-结构的 workspace.items。Client 不引入 Flutter、Riverpod、FRB 或新的运行时依赖。
+结构的 workspace.items。领域包不引入 Flutter、Riverpod、FRB；Freezed 等纯 Dart 模型依赖
+遵循 [25](./25-frontend-state.md)，不再要求运行依赖为空。
 当前 Dart 产品只需要真实 FRB 与 demo 适配，不因本次协议修改新建一套 Dart HTTP
 transport；服务端 HTTP 仍完整实现 26.7 的独立公开契约。
 
-只读 Timeline provider 仅暴露新的展示元数据类型，不保留窗口模型或兼容 provider；
-此观察接缝在 Client 迁移时同步，确保 canonical 生成输入有效，生产列表与交互仍按
-独立的界面迁移步骤替换。FRB／demo 不依赖 Driver 的界面投影：关停进度只经已有 typed
+Timeline AsyncNotifier 只暴露 Freezed 展示元数据与分页／重试／详情／回实时意图，不持有第二份
+正文列表，不保留旧窗口或兼容 provider。Smart 绑定 VM 与 UI-only 展示 lease，Dumb 只借用
+UI 控制器和 typed callbacks，不收 Repository 或业务 handle。FRB／demo 不依赖 Driver 的界面投影：关停进度只经已有 typed
 订阅交付，应用关停协调器记录其实际观察的进度和最终报告，不由适配层重复写 Driver 状态。
 FRB 连接的首帧、尾部、页、详情及清理失败在适配边界统一为 SDK 的 `StudioFailure`，
 保留类型化类别和可用诊断，不让生成的 BridgeError 穿过 SDK 暴露给 feature。
@@ -384,8 +412,8 @@ older cursor/loading/error、新输出提示及连接状态，不另附完整 ro
 builder 可以保留，不保留 `TimelineRowProjector`、整表 rows/ids/versions 快照或全表 sync。
 索引若确有需要只存稳定身份和位置，不持有另一套正文模型。
 
-Client 的唯一泵交付 identity/field 增量；presentation 通过公开 controller 方法逐条应用，
-页查询通过 insertAllMessages 前插。处理期间至多保留一个待消费通知或有界最新基线，
+Session 服务的唯一 push 消费交付 identity/field 增量；presentation 通过公开 controller 方法逐条应用，
+页查询通过 insertAllMessages 前插。处理期间仅保留传输合同允许的有界待消费通知或最新基线，
 不能用未 await 的 future 链积累无限正文操作。消费者不能证明连续时显式按 Resync
 处理，不以每帧比较全部已加载历史弥补漏帧。History 只更新提示与连接元数据，不向
 已展示 Message 应用实时正文、结构或保存确认；分页也不抬高冻结展示的内容水位。
@@ -424,7 +452,7 @@ demo 内容连接遵守同一小页基线与有界尾部契约，不把全部历
 是不同事实；不能用 disposeRequested flag、sleep、固定帧数或 provider 销毁替代确认。
 退役不等于已经释放；控制器尚存时发生的真实旧子树挂载仍须纳入卸载等待，已经释放的
 代次必须明确拒绝可用绑定，不能静默忽略挂载后继续向子树交付已销毁的控制器。
-AppGraph 关闭先发布无展示状态，使现存视图卸载，同时 Client 收束内容连接；重复关闭
+应用 composition root 关闭先发布无展示状态，使现存视图卸载，同时 Session 服务收束内容连接；重复关闭
 等待同一释放结果，不能在树仍持有控制器时提前 ACK。
 
 当前展示 lease 将原始预览增量组织为封闭的单项、活动组、连续图片组与重连组，并通过
@@ -452,7 +480,7 @@ Message.custom 呈现。每份预览只由所属展示项的成员持有，索�
 不扫描全部历史或为每个 token 复制整个组；折叠内容不构建，展开成员按需惰性布局。
 
 模型重连提示在读取 DTO 中携带类型化的 attempt 来源及 retry/result 类别，由已有 canonical
-身份派生；HTTP、FRB、Client 与 demo 使用同一语义。GUI 不匹配提示文案或解析内部身份。
+身份派生；HTTP、FRB、Repository 与 demo 使用同一语义。GUI 不匹配提示文案或解析内部身份。
 同一 attempt 的提示归入当前代次同一展示项，摘要使用最新已加载记录的原文，展开保留逐次
 明细；不同 attempt 不合并。所有调用与提示继续按原始时间和身份逐条持久化，不改变数据库
 schema 或 canonical payload，也不将展示组写回后端。
@@ -476,17 +504,17 @@ typed 等待投影同样属于原工具条目的呈现载荷，与活动共享 [
 
 ## 26.9 原生验收的只读展示诊断
 
-Driver 只借用当前 AppGraph 的 Client 和 TimelineSessionOwner；绑定与读取诊断不创建
+Driver 只借用当前应用的领域公共能力和 Timeline 展示 owner；绑定与读取诊断不创建
 订阅、业务 demand、草稿、展示 lease 或正文缓存。每次请求同步读取当前 lease 的 stock
 controller 与 typed 载荷，序列化后不保留投影。切换 Thread／代次后不能继续抓住旧正文。
 非 Timeline 的工作区、计划、退出与远程资源生命周期诊断保持各自权威来源。
-runtime 顺序的原生取证使用 Driver-only 有界记录器，被动观察已存在 Client Session 的公开
+runtime 顺序的原生取证使用 Driver-only 有界记录器，被动观察已存在 Session 服务的公开
 runtime read-model 发布；不创建 Session、不建立另一条 transport 订阅，也不改变业务 demand。
 记录器只保存 Thread／Turn／attempt、发布 revision、观察 sequence 与轻量计量事实，不保存
 Timeline 正文或整份工作区快照。登记与首个基线读取为同一同步边界，停止和退出只取消自己的
 观察；最多保留 4096 个事实，溢出、观察异常、身份不符或缺少终态均显式失败。
 当前 core 的执行期观察为 `live`，attempt 提交时清除 live 观察；验收分别证明同身份的多次
-真实 Client 发布与递增 sequence，以及之后的显式清除。不伪造 authoritative 事件、终态
+真实 Repository 发布与递增 sequence，以及之后的显式清除。不伪造 authoritative 事件、终态
 sequence 或计量值，不把无身份的 unknown 快照拼成同身份终态。快照轮询仅用于就绪，不能
 代替发布回调证据；该证明不等于逐 token 的供应商原始事件或传输时延证明。
 
