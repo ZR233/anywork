@@ -17,6 +17,7 @@ typedef SnapshotReconnectObserver = FutureOr<void> Function(
 );
 
 abstract interface class FlutterDriverClient {
+  Future<Map<String, dynamic>> sendCommand(Command command);
   Future<void> checkHealth();
 
   Future<void> setFrameSync(bool enabled);
@@ -261,15 +262,16 @@ class FlutterDriverSession {
     bool mouseWheel = false,
     Duration? timeout,
   }) {
+    final effectiveTimeout = timeout ?? tapDeadline;
     return _runSideEffectWithDeadline(
       _client.scrollBy(
         scrollable,
         dy,
         mouseWheel: mouseWheel,
-        timeout: timeout,
+        timeout: effectiveTimeout,
       ),
       name: 'scrollBy',
-      timeout: timeout,
+      timeout: effectiveTimeout,
     );
   }
 
@@ -294,14 +296,22 @@ class FlutterDriverSession {
     );
   }
 
-  Future<void> _runSideEffectWithDeadline(
-    Future<void> operation, {
+  /// Custom Driver inputs use the same bounded, never-replayed side-effect path.
+  Future<Map<String, dynamic>> sendCommand(Command command) =>
+      _runSideEffectWithDeadline(
+        _client.sendCommand(command),
+        name: command.kind,
+        timeout: command.timeout ?? tapDeadline,
+      );
+
+  Future<T> _runSideEffectWithDeadline<T>(
+    Future<T> operation, {
     required String name,
     required Duration? timeout,
   }) async {
     if (timeout == null) return operation;
     try {
-      await operation.timeout(timeout);
+      return await operation.timeout(timeout);
     } on TimeoutException catch (_, stackTrace) {
       // A timed-out Driver side effect may still own the transport. Dispose the
       // connection without delaying the caller's deadline; the command itself
@@ -368,12 +378,17 @@ class FlutterDriverSession {
     PointerDragKind pointerKind = PointerDragKind.touch,
     Duration? timeout,
   }) {
-    return _client.dragBy(
-      finder,
-      dx: dx,
-      dy: dy,
-      pointerKind: pointerKind,
-      timeout: timeout,
+    final effectiveTimeout = timeout ?? tapDeadline;
+    return _runSideEffectWithDeadline(
+      _client.dragBy(
+        finder,
+        dx: dx,
+        dy: dy,
+        pointerKind: pointerKind,
+        timeout: effectiveTimeout,
+      ),
+      name: 'dragBy',
+      timeout: effectiveTimeout,
     );
   }
 
@@ -455,6 +470,10 @@ class _RealFlutterDriverClient implements FlutterDriverClient {
   const _RealFlutterDriverClient(this._driver);
 
   final FlutterDriver _driver;
+
+  @override
+  Future<Map<String, dynamic>> sendCommand(Command command) =>
+      _driver.sendCommand(command);
 
   @override
   Future<void> checkHealth() async {

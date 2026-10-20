@@ -239,7 +239,7 @@ Future<void> _settingsRoundTrip(
   await tester.tap(find.byKey(StudioDriverKeys.settingsOpen));
   await tester.pumpAndSettle();
   expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
-  for (final tab in ['general', 'agents', 'providers']) {
+  for (final tab in ['general', 'agents', 'accounts']) {
     final target = find.byKey(StudioDriverKeys.settingsTab(tab));
     await tester.ensureVisible(target);
     await tester.tap(target);

@@ -18,7 +18,7 @@ pub(in crate::studio) fn project_runtime(
     // them here is what made a hot increment, a reconnect and a cold restore disagree.
     let usage = ThreadRuntimeUsage {
         has_incomplete_usage: summary.has_incomplete_usage,
-        model: summary.model.clone(),
+        model_id: summary.model.clone(),
         context_window: summary.context_window,
         max_context_window: summary.max_context_window,
         auto_compact_limit: summary.auto_compact_limit,
@@ -131,8 +131,8 @@ pub(in crate::studio) fn project_runtime(
     let model_route = crate::studio::model_route::route_record(state, child)
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?
         .map(|(record, route)| pl_protocol::ThreadModelRouteSnapshot {
-            provider_id: route.provider.into_string(),
-            model: route.model,
+            account_id: route.account_id.into_string(),
+            model_id: route.model_id,
             effort: route.effort.map(|effort| effort.as_str().to_owned()),
             revision: record.revision,
             available: state.model_available,
@@ -210,7 +210,7 @@ fn fold_effect_accounting_in_place(
         match update.request_metadata.as_ref() {
             Some(metadata) => {
                 let request = pl_model::runtime::model_request_receipt(metadata)?;
-                summary.model = request.binding.requested_model;
+                summary.model = request.binding.model_id;
                 summary.context_window = request.binding.context_window;
                 summary.max_context_window = request.binding.max_context_window;
                 summary.auto_compact_limit = request.binding.auto_compact_limit;
@@ -279,13 +279,11 @@ fn fold_effect_accounting_in_place(
             continue;
         };
         if record.payload.format() == "pl.studio.auxiliary-billing" {
-            if record.payload.version() != 1 {
-                return Err(ProjectionError::UnsupportedOutput(
-                    "unsupported auxiliary billing version".into(),
-                ));
-            }
-            let receipt: super::AuxiliaryBillingReceipt =
-                serde_json::from_str(record.payload.content())?;
+            let receipt = super::billing::decode_auxiliary_receipt_for_projection(
+                record.payload.version(),
+                record.payload.content(),
+            )
+            .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
             let latest = summary.latest_context_tokens;
             add_accounting(summary, &receipt.billing.accounting)?;
             summary.latest_context_tokens = latest;

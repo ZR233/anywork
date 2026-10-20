@@ -613,8 +613,8 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         model_route: value
             .model_route
             .map(|route| BridgeThreadModelRouteSnapshot {
-                provider_id: route.provider_id,
-                model: route.model,
+                account_id: route.account_id,
+                model_id: route.model_id,
                 effort: route.effort,
                 revision: route.revision,
                 available: route.available,
@@ -707,7 +707,7 @@ fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
 fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     BridgeThreadRuntimeUsage {
         has_incomplete_usage: value.has_incomplete_usage,
-        model: value.model,
+        model_id: value.model_id,
         context_window: value.context_window,
         max_context_window: value.max_context_window,
         auto_compact_limit: value.auto_compact_limit,
@@ -757,8 +757,8 @@ fn prompt_prefix_changed_reason(
         PromptPrefixChangedReason::PromptScopeChanged => {
             BridgePromptPrefixChangedReason::PromptScopeChanged
         }
-        PromptPrefixChangedReason::ProviderChanged => {
-            BridgePromptPrefixChangedReason::ProviderChanged
+        PromptPrefixChangedReason::AccountChanged => {
+            BridgePromptPrefixChangedReason::AccountChanged
         }
         PromptPrefixChangedReason::ModelChanged => BridgePromptPrefixChangedReason::ModelChanged,
         PromptPrefixChangedReason::BaseInstructionsChanged => {

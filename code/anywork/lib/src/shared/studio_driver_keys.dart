@@ -18,6 +18,9 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> openThread(String id) =>
       ValueKey<String>('studio-open-thread-$id');
   static const sidebar = ValueKey<String>('studio-sidebar');
+  static const sidebarResize = ValueKey<String>(
+    StudioDriverKeyValues.sidebarResize,
+  );
   static const timeline = ValueKey<String>(
     StudioDriverKeyValues.timelineScrollable,
   );
@@ -25,8 +28,8 @@ abstract final class StudioDriverKeys {
       ValueKey<String>(StudioDriverKeyValues.timelineRow(id));
 
   /// 分页与回到实时的稳定操作入口。
-  static const timelineLoadOlder = ValueKey<String>(
-    StudioDriverKeyValues.timelineLoadOlder,
+  static const timelineLoadingOlder = ValueKey<String>(
+    StudioDriverKeyValues.timelineLoadingOlder,
   );
   static const timelineRetryOlder = ValueKey<String>(
     StudioDriverKeyValues.timelineRetryOlder,
@@ -102,7 +105,7 @@ abstract final class StudioDriverKeys {
   static const reasoningEffortLabel = ValueKey<String>(
     StudioDriverKeyValues.reasoningEffortLabel,
   );
-  static const providerUsageCheck = ValueKey<String>('provider-usage-check');
+  static const accountUsageCheck = ValueKey<String>('account-usage-check');
   static const skillsDiscover = ValueKey<String>('skills-discover');
   static const mcpRefresh = ValueKey<String>('mcp-refresh');
   static const mcpResetAll = ValueKey<String>('mcp-reset-all');
@@ -197,52 +200,62 @@ abstract final class StudioDriverKeys {
   static const statisticsSummary = ValueKey<String>('statistics-summary');
   static const statisticsHistory = ValueKey<String>('statistics-history');
   static const statisticsFilter = ValueKey<String>('statistics-filter');
+  static const statisticsEffortFilter = ValueKey<String>(
+    'statistics-effort-filter',
+  );
   static const statisticsMismatchOnly = ValueKey<String>(
     'statistics-mismatch-only',
   );
 
+  /// 顶层汇总身份 (accountId, 配置 modelId)；effort 是组内细分，不进入顶层 key。
   static ValueKey<String> statisticsSummaryRow(
-    String providerInstanceId,
-    String model,
-    String? reasoningEffort,
+    String accountId,
+    String modelId,
   ) => ValueKey<String>(
-    'statistics-summary-row:${jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort])}',
+    'statistics-summary-row:${jsonEncode(<Object?>[accountId, modelId])}',
+  );
+
+  /// 组内 effort 细分行；`null` 与显式 `none` 由元组编码区分。
+  static ValueKey<String> statisticsSummaryEffortRow(
+    String accountId,
+    String modelId,
+    String? effort,
+  ) => ValueKey<String>(
+    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort])}',
   );
 
   static ValueKey<String> statisticsHistoryRow(
-    String providerInstanceId,
-    String model,
-    String? reasoningEffort,
+    String accountId,
+    String modelId,
+    String? effort,
     int sampleIndex,
   ) => ValueKey<String>(
-    'statistics-history-row:${jsonEncode(<Object?>[providerInstanceId, model, reasoningEffort, sampleIndex])}',
+    'statistics-history-row:${jsonEncode(<Object?>[accountId, modelId, effort, sampleIndex])}',
   );
-  static const providerEditor = ValueKey<String>('provider-editor');
-  static const providerEdit = ValueKey<String>('provider-edit');
-  static const providerSave = ValueKey<String>('provider-save');
-  static const providerPricing = ValueKey<String>('provider-pricing');
-  static const providerEditorScroll = ValueKey<String>(
-    'provider-editor-scroll',
-  );
-  static const providerAdd = ValueKey<String>('provider-add');
-  static const providerPreset = ValueKey<String>('provider-preset');
-  static const providerBaseUrl = ValueKey<String>('provider-base-url');
-  static const providerApiKey = ValueKey<String>('provider-api-key');
-  static const providerModelAdd = ValueKey<String>('provider-model-add');
-  static ValueKey<String> providerManualModelDelete(
-    String providerId,
+  static const accountEditor = ValueKey<String>('account-editor');
+  static const accountEdit = ValueKey<String>('account-edit');
+  static const accountSave = ValueKey<String>('account-save');
+  static const accountPricing = ValueKey<String>('account-pricing');
+  static const accountEditorScroll = ValueKey<String>('account-editor-scroll');
+  static const accountAdd = ValueKey<String>('account-add');
+  static const accountTemplate = ValueKey<String>('account-template');
+  static const accountBaseUrl = ValueKey<String>('account-base-url');
+  static const accountApiKey = ValueKey<String>('account-api-key');
+  static const accountModelAdd = ValueKey<String>('account-model-add');
+  static ValueKey<String> accountManualModelDelete(
+    String accountId,
     String modelId,
-  ) => ValueKey<String>('settings.provider.$providerId.model.$modelId.delete');
-  static const providerManualModelDeleteConfirm = ValueKey<String>(
-    'settings.provider.model.delete.confirm',
+  ) => ValueKey<String>('settings.account.$accountId.model.$modelId.delete');
+  static const accountManualModelDeleteConfirm = ValueKey<String>(
+    'settings.account.model.delete.confirm',
   );
   static ValueKey<String> customModelId(int index) =>
-      ValueKey<String>('provider-model-$index-id');
+      ValueKey<String>('account-model-$index-id');
   static ValueKey<String> customModelAdvanced(int index) =>
-      ValueKey<String>('provider-model-$index-advanced');
+      ValueKey<String>('account-model-$index-advanced');
   static ValueKey<String> customModelDisplayName(int index) =>
-      ValueKey<String>('provider-model-$index-display-name');
-  static const providerCancel = ValueKey<String>('provider-cancel');
+      ValueKey<String>('account-model-$index-display-name');
+  static const accountCancel = ValueKey<String>('account-cancel');
   static const toolApprove = ValueKey<String>('tool-approve');
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');
@@ -417,21 +430,19 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> settingsRoleModelOption(
     String role,
-    String providerId,
+    String accountId,
     String model,
   ) => ValueKey<String>(
-    'settings-role-${jsonEncode(<String>[role, providerId, model])}',
+    'settings-role-${jsonEncode(<String>[role, accountId, model])}',
   );
 
-  static ValueKey<String> modelOption(String providerId, String model) =>
-      ValueKey<String>('model-${jsonEncode(<String>[providerId, model])}');
+  static ValueKey<String> modelOption(String accountId, String model) =>
+      ValueKey<String>('model-${jsonEncode(<String>[accountId, model])}');
 
-  static ValueKey<String> modelCapabilityTags(
-    String providerId,
-    String model,
-  ) => ValueKey<String>(
-    'model-${jsonEncode(<String>[providerId, model])}-capabilities',
-  );
+  static ValueKey<String> modelCapabilityTags(String accountId, String model) =>
+      ValueKey<String>(
+        'model-${jsonEncode(<String>[accountId, model])}-capabilities',
+      );
 
   static ValueKey<String> attachmentDraft(String id) =>
       ValueKey<String>('attachment-draft-$id');
@@ -568,43 +579,41 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> agentTaskSummary(String id) =>
       ValueKey<String>('agent-task-summary-$id');
 
-  static ValueKey<String> providerRow(String id) =>
-      ValueKey<String>('provider-row-$id');
+  static ValueKey<String> accountRow(String id) =>
+      ValueKey<String>('account-row-$id');
 
-  static ValueKey<String> providerConnectionMode(String providerId) =>
-      ValueKey<String>('provider-$providerId-connection-mode');
+  static ValueKey<String> accountConnectionMode(String accountId) =>
+      ValueKey<String>('account-$accountId-connection-mode');
 
-  static ValueKey<String> providerConnectionModeOption(
-    String providerId,
+  static ValueKey<String> accountConnectionModeOption(
+    String accountId,
     String mode,
-  ) => ValueKey<String>('provider-$providerId-connection-mode-$mode');
+  ) => ValueKey<String>('account-$accountId-connection-mode-$mode');
 
-  static ValueKey<String> providerModelConnectionMode(
-    String providerId,
+  static ValueKey<String> accountModelConnectionMode(
+    String accountId,
     String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-connection-mode');
+  ) => ValueKey<String>('account-$accountId-model-$model-connection-mode');
 
-  static ValueKey<String> providerModelConnectionModeOption(
-    String providerId,
+  static ValueKey<String> accountModelConnectionModeOption(
+    String accountId,
     String model,
     String mode,
-  ) => ValueKey<String>(
-    'provider-$providerId-model-$model-connection-mode-$mode',
-  );
-
-  static ValueKey<String> providerModelAutoCompactInput(
-    String providerId,
-    String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-auto-compact-input');
-
-  static ValueKey<String> providerModelAutoCompactSlider(
-    String providerId,
-    String model,
   ) =>
-      ValueKey<String>('provider-$providerId-model-$model-auto-compact-slider');
+      ValueKey<String>('account-$accountId-model-$model-connection-mode-$mode');
 
-  static ValueKey<String> providerModelAutoCompactReset(
-    String providerId,
+  static ValueKey<String> accountModelAutoCompactInput(
+    String accountId,
     String model,
-  ) => ValueKey<String>('provider-$providerId-model-$model-auto-compact-reset');
+  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-input');
+
+  static ValueKey<String> accountModelAutoCompactSlider(
+    String accountId,
+    String model,
+  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-slider');
+
+  static ValueKey<String> accountModelAutoCompactReset(
+    String accountId,
+    String model,
+  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-reset');
 }

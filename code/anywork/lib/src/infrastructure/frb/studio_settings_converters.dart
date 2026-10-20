@@ -68,19 +68,19 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     frb.SettingsFieldInput.deepSeekWebSearchEnabled(value: value),
   DeepSeekWebFetchEnabledCommand(:final value) =>
     frb.SettingsFieldInput.deepSeekWebFetchEnabled(value: value),
-  ModeModelCommand(:final modeId, :final providerId, :final model) =>
+  ModeModelCommand(:final modeId, :final accountId, :final modelId) =>
     frb.SettingsFieldInput.modeModel(
       modeId: modeId,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
     ),
   ModeReasoningEffortCommand(:final modeId, :final effort) =>
     frb.SettingsFieldInput.modeReasoningEffort(modeId: modeId, effort: effort),
-  RoleModelCommand(:final role, :final providerId, :final model) =>
+  RoleModelCommand(:final role, :final accountId, :final modelId) =>
     frb.SettingsFieldInput.roleModel(
       role: role,
-      providerId: providerId,
-      model: model,
+      accountId: accountId,
+      modelId: modelId,
     ),
   RoleReasoningEffortCommand(:final role, :final effort) =>
     frb.SettingsFieldInput.roleReasoningEffort(role: role, effort: effort),
@@ -149,9 +149,9 @@ ModelCatalogStatusView _modelCatalogStatusFromFrb(
   },
 );
 
-ProviderSettingsView _providerSettingsFromFrb(
-  frb.BridgeProviderSettingsDto value, {
-  frb.BridgeModelCatalogProviderDto? catalog,
+AccountSettingsView _accountSettingsFromFrb(
+  frb.BridgeAccountSettingsDto value, {
+  frb.BridgeModelCatalogAccountDto? catalog,
 }) {
   final connectionModes = {
     for (final mode in value.modelConnectionModes)
@@ -159,7 +159,7 @@ ProviderSettingsView _providerSettingsFromFrb(
   };
   final autoCompactLimits = {
     for (final limit in value.modelAutoCompactLimits)
-      limit.modelId: ProviderModelAutoCompactView(
+      limit.modelId: AccountModelAutoCompactView(
         modelId: limit.modelId,
         defaultLimit: limit.defaultLimit?.toInt(),
         overrideLimit: limit.overrideLimit?.toInt(),
@@ -169,16 +169,17 @@ ProviderSettingsView _providerSettingsFromFrb(
   };
 
   final catalogModels =
-      catalog?.effectiveModels.map(_providerModelFromCatalog).toList() ??
-      const <ProviderModelView>[];
-  final models = catalog == null ? const <ProviderModelView>[] : catalogModels;
-  return ProviderSettingsView(
+      catalog?.effectiveModels.map(accountModelFromCatalog).toList() ??
+      const <AccountModelView>[];
+  final models = catalog == null ? const <AccountModelView>[] : catalogModels;
+  return AccountSettingsView(
     modelCatalog: catalog == null
         ? const ModelCatalogStatusView()
         : _modelCatalogStatusFromFrb(catalog.modelCatalog),
     pricingEnabled: value.pricingEnabled,
-    id: value.id,
-    templateKind: value.templateKind,
+    id: value.accountId,
+    templateId: value.templateId,
+    protocol: value.protocol,
     name: value.name,
     subtitle: '${value.name} Platform',
     baseUrl: value.baseUrl,
@@ -186,14 +187,14 @@ ProviderSettingsView _providerSettingsFromFrb(
     hasBearerToken: value.hasBearerToken,
     credentialRequired: value.credentialRequired,
     usageQueryRevision: value.usageQueryRevision.toInt(),
-    defaultModel: value.defaultModel,
+    defaultModelId: value.defaultModelId,
     models: models,
     modelConnectionModes: connectionModes,
     autoCompactLimits: autoCompactLimits,
     status: value.hasBearerToken || !value.credentialRequired
         ? 'ready'
         : 'missingCredential',
-    usageLabel: value.defaultModel,
+    usageLabel: value.defaultModelId,
     modelCount: '${models.length}',
     updatedAt: 'Loaded',
     catalogId: value.catalogId ?? '',
@@ -209,8 +210,8 @@ ProviderSettingsView _providerSettingsFromFrb(
 RoleSettingsView _roleSettingsFromFrb(frb.BridgeRoleSettingsDto value) {
   return RoleSettingsView(
     key: value.key,
-    providerId: value.providerId,
-    model: value.model,
+    accountId: value.accountId,
+    modelId: value.modelId,
     effort: value.effort,
   );
 }
@@ -220,8 +221,8 @@ ModeModelRouteView _modeModelRouteFromFrb(
 ) {
   return ModeModelRouteView(
     modeId: ThreadModeId.fromId(value.modeId),
-    providerId: value.providerId,
-    model: value.model,
+    accountId: value.accountId,
+    modelId: value.modelId,
     effort: value.effort,
   );
 }

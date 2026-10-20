@@ -929,8 +929,8 @@ impl StudioRuntime {
             return Ok(());
         };
         let selector = pl_model::config::ModelRouteConfig {
-            provider: pl_model::config::ProviderId::new(route.provider_id.clone())?,
-            model: route.model.clone(),
+            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
+            model_id: route.model_id.clone(),
             effort: route
                 .effort
                 .clone()

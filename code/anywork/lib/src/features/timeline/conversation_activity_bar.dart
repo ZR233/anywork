@@ -90,7 +90,7 @@ class _ConversationActivityBarState extends State<ConversationActivityBar> {
   void dispose() {
     // 活动条消失（活动结束/切走会话/面板被移除）必须与收起等价：否则 controller 会为
     // 一个已经结束的活动保留展开标记与尾随刷新，Driver 的 `expanded` 诊断也会残留为 true。
-    // 这里只写 controller 的私有标记与只读诊断，不改 provider，因此可以在卸载期安全调用。
+    // 这里只写 controller 的私有标记与只读诊断，不改 account，因此可以在卸载期安全调用。
     if (_expandedIdentity != null) {
       _expandedIdentity = null;
       widget.onCollapse?.call();

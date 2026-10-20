@@ -14,7 +14,7 @@ export 'src/models/model_catalog.dart';
 export 'src/models/mode_editor_models.dart';
 export 'src/models/persistence_models.dart';
 export 'src/models/product_topic_models.dart';
-export 'src/models/provider_models.dart';
+export 'src/models/account_models.dart';
 export 'src/models/recovery_models.dart';
 export 'src/models/remote_models.dart';
 export 'src/models/runtime_models.dart';

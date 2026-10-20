@@ -163,8 +163,8 @@ Future<void> _run(
     checks['effortLabelBefore'] = effortLabelBefore;
     final efforts = await _effortOptions(
       session,
-      _string(modeRouteBefore?['providerId']),
-      _string(modeRouteBefore?['model']),
+      _string(modeRouteBefore?['accountId']),
+      _string(modeRouteBefore?['modelId']),
     );
     checks['effortOptions'] = efforts;
     // 目标强度取自"当前显示文案"而不是 canonical：草稿意图可能已经存在，选同一个值
@@ -313,11 +313,11 @@ Future<bool> _exists(
 
 /// 当前路由模型声明的思考强度候选。
 ///
-/// 候选来自 Driver 的诊断投影（`driver-diagnostics` 的 providers.details），而不是从
+/// 候选来自 Driver 的诊断投影（`driver-diagnostics` 的 accounts.details），而不是从
 /// 渲染文本猜测：模型声明是 canonical 事实，菜单行只是它的展示。
 Future<List<String>> _effortOptions(
   FlutterDriverSession session,
-  String providerId,
+  String accountId,
   String model,
 ) async {
   final raw = await session.requestData(
@@ -328,14 +328,14 @@ Future<List<String>> _effortOptions(
   if (decoded is! Map) {
     throw StateError('driver-diagnostics 不是 JSON 对象');
   }
-  final providers = decoded['providers'];
-  final details = providers is Map ? providers['details'] : null;
+  final accounts = decoded['accounts'];
+  final details = accounts is Map ? accounts['details'] : null;
   if (details is! List) {
-    throw StateError('driver-diagnostics 未提供 provider 详情');
+    throw StateError('driver-diagnostics 未提供 account 详情');
   }
-  for (final provider in details) {
-    if (provider is! Map || provider['id'] != providerId) continue;
-    final models = provider['models'];
+  for (final account in details) {
+    if (account is! Map || account['id'] != accountId) continue;
+    final models = account['models'];
     if (models is! List) continue;
     for (final candidate in models) {
       if (candidate is! Map || candidate['modelId'] != model) continue;
@@ -344,7 +344,7 @@ Future<List<String>> _effortOptions(
       return efforts.map((value) => '$value').toList();
     }
   }
-  throw StateError('driver-diagnostics 未提供 $providerId/$model 的强度候选');
+  throw StateError('driver-diagnostics 未提供 $accountId/$model 的强度候选');
 }
 
 Map<String, Object?>? _routeFor(Object? routes, String modeId) {

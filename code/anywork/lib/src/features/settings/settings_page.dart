@@ -16,7 +16,7 @@ import 'settings_lsp_tab.dart';
 import 'settings_mcp_tab.dart';
 import 'mode_editor/mode_editor_dialogs.dart';
 import 'mode_editor/mode_editor_page.dart';
-import 'settings_provider_tab.dart';
+import 'settings_account_tab.dart';
 import 'settings_scope.dart';
 import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
@@ -32,7 +32,7 @@ class SettingsPage extends StatelessWidget {
 }
 
 /// Owns the tab controller independently from the reactive settings projection.
-/// A model/provider save refreshes canonical content without recreating the
+/// A model/account save refreshes canonical content without recreating the
 /// navigation controller or restarting the whole settings page animation.
 class _SettingsPageShell extends StatelessWidget {
   const _SettingsPageShell();
@@ -76,7 +76,7 @@ class _SettingsPageBody extends ConsumerWidget {
 /// 把设置壳的 [DefaultTabController] 当前索引同步到 [settingsVisibleTabProvider]。
 ///
 /// 设置壳保活已访问过的 tab；可见性只决定各数据页的显示观察，不接线 topic lease。
-/// provider 写入延到微任务，避免在 build/通知阶段直接改 provider。
+/// account 写入延到微任务，避免在 build/通知阶段直接改 account。
 class _SettingsTabVisibilitySync extends ConsumerStatefulWidget {
   const _SettingsTabVisibilitySync({required this.child});
 
@@ -124,13 +124,13 @@ class _SettingsTabVisibilitySyncState
 
 /// Each settings tab subscribes to the smallest projection it can render.
 /// The retained settings shell therefore survives catalog/config events and a
-/// model click only rebuilds the provider tab that displays that catalog.
+/// model click only rebuilds the account tab that displays that catalog.
 class _ProvidersSettingsTab extends StatelessWidget {
   const _ProvidersSettingsTab();
 
   @override
   Widget build(BuildContext context) {
-    return ProvidersTab(tabIndex: _SettingsTab.providers.index);
+    return AccountsTab(tabIndex: _SettingsTab.accounts.index);
   }
 }
 
@@ -187,7 +187,7 @@ class _GeneralSettingsTab extends ConsumerWidget {
 }
 
 const _settingsTabs = [
-  _SettingsTabInfo(Icons.cloud_outlined, _SettingsTab.providers),
+  _SettingsTabInfo(Icons.cloud_outlined, _SettingsTab.accounts),
   _SettingsTabInfo(Icons.notes_outlined, _SettingsTab.instructions),
   _SettingsTabInfo(Icons.account_tree_outlined, _SettingsTab.workModes),
   _SettingsTabInfo(Icons.extension_outlined, _SettingsTab.skills),
@@ -208,7 +208,7 @@ class _SettingsTabInfo {
 
   String label(BuildContext context) {
     return switch (tab) {
-      _SettingsTab.providers => context.l10n.settingsProvidersTab,
+      _SettingsTab.accounts => context.l10n.settingsAccountsTab,
       _SettingsTab.instructions => context.l10n.settingsInstructionsTab,
       _SettingsTab.workModes => context.l10n.modeEditorTitle,
       _SettingsTab.skills => context.l10n.settingsSkillsTab,
@@ -224,7 +224,7 @@ class _SettingsTabInfo {
 }
 
 enum _SettingsTab {
-  providers,
+  accounts,
   instructions,
   workModes,
   skills,

@@ -28,16 +28,16 @@ class SettingsStore extends ReadModel<SettingsStoreState> {
 
   /// 静态供应商目录的字符串 revision 不是配置/目录 int 时钟。
   /// 只用于幂等丢弃同一次目录加载，不参与双时钟比较。
-  void applyProviderCatalog(ProviderCatalogView next) {
+  void applyAccountCatalog(AccountCatalogView next) {
     if (!next.isUsable) return;
-    if (state.providerCatalogLoaded &&
-        next.revision == state.providerCatalogRevision) {
+    if (state.accountCatalogLoaded &&
+        next.revision == state.accountCatalogRevision) {
       return;
     }
     state = state.copyWith(
-      providerCatalog: next,
-      providerCatalogLoaded: true,
-      providerCatalogRevision: next.revision,
+      accountCatalog: next,
+      accountCatalogLoaded: true,
+      accountCatalogRevision: next.revision,
     );
   }
 
@@ -100,9 +100,9 @@ class SettingsStoreState {
     this.agentProfilesLoaded = false,
     this.agentProfilesRevision = 0,
     this.agentProfilesSync = const DomainSyncStatus(),
-    this.providerCatalog = const ProviderCatalogView.empty(),
-    this.providerCatalogLoaded = false,
-    this.providerCatalogRevision = '',
+    this.accountCatalog = const AccountCatalogView.empty(),
+    this.accountCatalogLoaded = false,
+    this.accountCatalogRevision = '',
     this.commands = const {},
   });
 
@@ -117,9 +117,9 @@ class SettingsStoreState {
   final bool agentProfilesLoaded;
   final int agentProfilesRevision;
   final DomainSyncStatus agentProfilesSync;
-  final ProviderCatalogView providerCatalog;
-  final bool providerCatalogLoaded;
-  final String providerCatalogRevision;
+  final AccountCatalogView accountCatalog;
+  final bool accountCatalogLoaded;
+  final String accountCatalogRevision;
   final Map<String, CommandStatus> commands;
 
   bool get loaded => canonical != null;
@@ -136,9 +136,9 @@ class SettingsStoreState {
     bool? agentProfilesLoaded,
     int? agentProfilesRevision,
     DomainSyncStatus? agentProfilesSync,
-    ProviderCatalogView? providerCatalog,
-    bool? providerCatalogLoaded,
-    String? providerCatalogRevision,
+    AccountCatalogView? accountCatalog,
+    bool? accountCatalogLoaded,
+    String? accountCatalogRevision,
     Map<String, CommandStatus>? commands,
   }) {
     return SettingsStoreState(
@@ -154,11 +154,10 @@ class SettingsStoreState {
       agentProfilesRevision:
           agentProfilesRevision ?? this.agentProfilesRevision,
       agentProfilesSync: agentProfilesSync ?? this.agentProfilesSync,
-      providerCatalog: providerCatalog ?? this.providerCatalog,
-      providerCatalogLoaded:
-          providerCatalogLoaded ?? this.providerCatalogLoaded,
-      providerCatalogRevision:
-          providerCatalogRevision ?? this.providerCatalogRevision,
+      accountCatalog: accountCatalog ?? this.accountCatalog,
+      accountCatalogLoaded: accountCatalogLoaded ?? this.accountCatalogLoaded,
+      accountCatalogRevision:
+          accountCatalogRevision ?? this.accountCatalogRevision,
       commands: commands ?? this.commands,
     );
   }
@@ -176,11 +175,11 @@ class SettingsStoreState {
           agentProfilesLoaded == other.agentProfilesLoaded &&
           agentProfilesRevision == other.agentProfilesRevision &&
           agentProfilesSync == other.agentProfilesSync &&
-          providerCatalogLoaded == other.providerCatalogLoaded &&
-          providerCatalogRevision == other.providerCatalogRevision &&
+          accountCatalogLoaded == other.accountCatalogLoaded &&
+          accountCatalogRevision == other.accountCatalogRevision &&
           identical(canonical, other.canonical) &&
           identical(agentProfiles, other.agentProfiles) &&
-          identical(providerCatalog, other.providerCatalog) &&
+          identical(accountCatalog, other.accountCatalog) &&
           commandMapsEqual(commands, other.commands);
 
   @override
@@ -194,16 +193,16 @@ class SettingsStoreState {
     agentProfilesLoaded,
     agentProfilesRevision,
     agentProfilesSync,
-    providerCatalogLoaded,
-    providerCatalogRevision,
+    accountCatalogLoaded,
+    accountCatalogRevision,
     identityHashCode(canonical),
     identityHashCode(agentProfiles),
-    identityHashCode(providerCatalog),
+    identityHashCode(accountCatalog),
     commandMapHash(commands),
   );
 }
 
-/// 配置水位前进只替换配置字段，目录水位前进只替换 provider 模型目录。
+/// 配置水位前进只替换配置字段，目录水位前进只替换 account 模型目录。
 ///
 /// 配置水位与目录水位独立比较。未加载的一路不会被另一路快照夹带的水位标记为已消费。
 SettingsStoreState mergeSettingsState(

@@ -243,8 +243,8 @@ pub struct ThreadRuntimeLiveUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadModelRouteSnapshot {
-    pub provider_id: String,
-    pub model: String,
+    pub account_id: String,
+    pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     pub revision: u64,
@@ -258,7 +258,7 @@ pub struct ThreadModelRouteSnapshot {
 pub struct ThreadRuntimeUsage {
     #[serde(default)]
     pub has_incomplete_usage: bool,
-    pub model: String,
+    pub model_id: String,
     /// Effective context window of the newest request binding; `None` stays unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,

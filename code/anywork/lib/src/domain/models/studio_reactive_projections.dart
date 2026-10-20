@@ -9,7 +9,7 @@ import 'studio_state.dart';
 class StudioContextProjection {
   const StudioContextProjection({
     required this.threadId,
-    required this.model,
+    required this.modelId,
     required this.contextTokens,
     required this.contextWindow,
     required this.maxContextWindow,
@@ -43,7 +43,7 @@ class StudioContextProjection {
     final live = runtime.liveUsage;
     return StudioContextProjection(
       threadId: threadId,
-      model: runtime.model,
+      modelId: runtime.modelId,
       contextTokens: live?.latestContextTokens ?? runtime.contextTokens,
       contextWindow: runtime.contextWindow,
       maxContextWindow: runtime.maxContextWindow,
@@ -65,7 +65,7 @@ class StudioContextProjection {
   }
 
   final String? threadId;
-  final String model;
+  final String modelId;
   final int contextTokens;
   final int contextWindow;
 
@@ -96,7 +96,7 @@ class StudioContextProjection {
     return identical(this, other) ||
         other is StudioContextProjection &&
             threadId == other.threadId &&
-            model == other.model &&
+            modelId == other.modelId &&
             contextTokens == other.contextTokens &&
             contextWindow == other.contextWindow &&
             maxContextWindow == other.maxContextWindow &&
@@ -119,7 +119,7 @@ class StudioContextProjection {
   @override
   int get hashCode => Object.hash(
     threadId,
-    model,
+    modelId,
     contextTokens,
     contextWindow,
     maxContextWindow,
@@ -173,7 +173,7 @@ class StudioThroughputProjection {
 class StudioStatusProjection {
   const StudioStatusProjection({
     required this.thread,
-    required this.providers,
+    required this.accounts,
     required this.roles,
     required this.isBusy,
   });
@@ -181,14 +181,14 @@ class StudioStatusProjection {
   factory StudioStatusProjection.fromState(StudioState state) {
     return StudioStatusProjection(
       thread: state.selectedThread,
-      providers: state.providers,
+      accounts: state.accounts,
       roles: state.roles,
       isBusy: state.isBusy,
     );
   }
 
   final StudioThread? thread;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<RoleSettingsView> roles;
   final bool isBusy;
 
@@ -197,7 +197,7 @@ class StudioStatusProjection {
     return identical(this, other) ||
         other is StudioStatusProjection &&
             _threadEquals(thread, other.thread) &&
-            _listEqualsBy(providers, other.providers, _providerEquals) &&
+            _listEqualsBy(accounts, other.accounts, _accountEquals) &&
             _listEqualsBy(roles, other.roles, _roleEquals) &&
             isBusy == other.isBusy;
   }
@@ -205,7 +205,7 @@ class StudioStatusProjection {
   @override
   int get hashCode => Object.hash(
     _threadHash(thread),
-    Object.hashAll(providers.map(_providerHash)),
+    Object.hashAll(accounts.map(_accountHash)),
     Object.hashAll(roles.map(_roleHash)),
     isBusy,
   );
@@ -246,16 +246,16 @@ class StudioComposerDiagnosticsProjection {
 
 /// Provider usage has its own topic/revision. It must not be invalidated by a
 /// Thread runtime event merely because both facts live in StudioState.
-class StudioProviderUsageProjection {
-  const StudioProviderUsageProjection({
+class StudioAccountUsageProjection {
+  const StudioAccountUsageProjection({
     required this.revision,
     required this.configFingerprint,
     required this.usages,
   });
 
-  factory StudioProviderUsageProjection.fromState(StudioState state) {
-    final snapshot = state.providerUsageState;
-    return StudioProviderUsageProjection(
+  factory StudioAccountUsageProjection.fromState(StudioState state) {
+    final snapshot = state.accountUsageState;
+    return StudioAccountUsageProjection(
       revision: snapshot.revision,
       configFingerprint: snapshot.configFingerprint,
       usages: snapshot.usages,
@@ -264,27 +264,27 @@ class StudioProviderUsageProjection {
 
   final int revision;
   final String configFingerprint;
-  final List<ProviderUsageView> usages;
+  final List<AccountUsageView> usages;
 
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||
-        other is StudioProviderUsageProjection &&
+        other is StudioAccountUsageProjection &&
             revision == other.revision &&
             configFingerprint == other.configFingerprint &&
-            _listEqualsBy(usages, other.usages, _providerUsageEquals);
+            _listEqualsBy(usages, other.usages, _accountUsageEquals);
   }
 
   @override
   int get hashCode => Object.hash(
     revision,
     configFingerprint,
-    Object.hashAll(usages.map(_providerUsageHash)),
+    Object.hashAll(usages.map(_accountUsageHash)),
   );
 }
 
 /// Composer-only projection used by the interaction dock and by the legacy
-/// controls provider. It keeps stable route/workflow/turn facts but excludes
+/// controls account. It keeps stable route/workflow/turn facts but excludes
 /// live usage counters, timeline rows and history state.
 class StudioComposerProjection {
   const StudioComposerProjection({
@@ -294,7 +294,7 @@ class StudioComposerProjection {
     required this.loadError,
     required this.composer,
     required this.composerMode,
-    required this.providers,
+    required this.accounts,
     required this.modeModelRoutes,
     required this.roles,
     required this.activeInteraction,
@@ -318,7 +318,7 @@ class StudioComposerProjection {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      providers: state.providers,
+      accounts: state.accounts,
       modeModelRoutes: state.modeModelRoutes,
       roles: state.roles,
       activeInteraction: state.activeInteraction,
@@ -337,7 +337,7 @@ class StudioComposerProjection {
       loadError: workspace.loadError,
       composer: workspace.composer,
       composerMode: workspace.composerMode,
-      providers: workspace.providers,
+      accounts: workspace.accounts,
       modeModelRoutes: workspace.modeModelRoutes,
       roles: workspace.roles,
       activeInteraction: workspace.activeInteraction,
@@ -354,7 +354,7 @@ class StudioComposerProjection {
   final String? loadError;
   final ComposerThreadState composer;
   final AgentComposerMode composerMode;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
   final PendingInteraction? activeInteraction;
@@ -381,7 +381,7 @@ class StudioComposerProjection {
       loadError: loadError,
       todo: null,
       runtime: ThreadRuntimeView(
-        model: modelRoute?.model ?? '',
+        modelId: modelRoute?.modelId ?? '',
         contextTokens: 0,
         contextWindow: 0,
         totalTokens: 0,
@@ -397,7 +397,7 @@ class StudioComposerProjection {
       activeInteraction: activeInteraction,
       composer: composer,
       composerMode: composerMode,
-      providers: providers,
+      accounts: accounts,
       modeModelRoutes: modeModelRoutes,
       roles: roles,
       agents: const [],
@@ -414,7 +414,7 @@ class StudioComposerProjection {
             loadError == other.loadError &&
             composer == other.composer &&
             composerMode == other.composerMode &&
-            _listEqualsBy(providers, other.providers, _providerEquals) &&
+            _listEqualsBy(accounts, other.accounts, _accountEquals) &&
             _listEqualsBy(
               modeModelRoutes,
               other.modeModelRoutes,
@@ -436,7 +436,7 @@ class StudioComposerProjection {
     loadError,
     composer,
     composerMode,
-    Object.hashAll(providers.map(_providerHash)),
+    Object.hashAll(accounts.map(_accountHash)),
     Object.hashAll(modeModelRoutes.map(_modeRouteHash)),
     Object.hashAll(roles.map(_roleHash)),
     _interactionHash(activeInteraction),
@@ -520,27 +520,27 @@ int? _threadHash(StudioThread? thread) {
 
 bool _roleEquals(RoleSettingsView left, RoleSettingsView right) =>
     left.key == right.key &&
-    left.providerId == right.providerId &&
-    left.model == right.model &&
+    left.accountId == right.accountId &&
+    left.modelId == right.modelId &&
     left.effort == right.effort;
 
 int _roleHash(RoleSettingsView role) =>
-    Object.hash(role.key, role.providerId, role.model, role.effort);
+    Object.hash(role.key, role.accountId, role.modelId, role.effort);
 
 bool _modeRouteEquals(ModeModelRouteView left, ModeModelRouteView right) =>
     left.modeId == right.modeId &&
-    left.providerId == right.providerId &&
-    left.model == right.model &&
+    left.accountId == right.accountId &&
+    left.modelId == right.modelId &&
     left.effort == right.effort;
 
 int _modeRouteHash(ModeModelRouteView route) =>
-    Object.hash(route.modeId, route.providerId, route.model, route.effort);
+    Object.hash(route.modeId, route.accountId, route.modelId, route.effort);
 
-bool _providerEquals(ProviderSettingsView left, ProviderSettingsView right) {
+bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
   return left.pricingEnabled == right.pricingEnabled &&
       _catalogStatusEquals(left.modelCatalog, right.modelCatalog) &&
       left.id == right.id &&
-      left.templateKind == right.templateKind &&
+      left.templateId == right.templateId &&
       left.name == right.name &&
       left.subtitle == right.subtitle &&
       left.baseUrl == right.baseUrl &&
@@ -548,8 +548,8 @@ bool _providerEquals(ProviderSettingsView left, ProviderSettingsView right) {
       left.hasBearerToken == right.hasBearerToken &&
       left.usageQueryRevision == right.usageQueryRevision &&
       left.credentialRequired == right.credentialRequired &&
-      left.defaultModel == right.defaultModel &&
-      _listEqualsBy(left.models, right.models, _providerModelEquals) &&
+      left.defaultModelId == right.defaultModelId &&
+      _listEqualsBy(left.models, right.models, _accountModelEquals) &&
       _stringMapEquals(left.modelConnectionModes, right.modelConnectionModes) &&
       _autoCompactMapEquals(left.autoCompactLimits, right.autoCompactLimits) &&
       left.status == right.status &&
@@ -569,39 +569,39 @@ bool _providerEquals(ProviderSettingsView left, ProviderSettingsView right) {
       left.iconKey == right.iconKey;
 }
 
-int _providerHash(ProviderSettingsView provider) => Object.hashAll([
-  provider.pricingEnabled,
-  _catalogStatusHash(provider.modelCatalog),
-  provider.id,
-  provider.templateKind,
-  provider.name,
-  provider.subtitle,
-  provider.baseUrl,
-  provider.bearerToken,
-  provider.hasBearerToken,
-  provider.usageQueryRevision,
-  provider.credentialRequired,
-  provider.defaultModel,
-  Object.hashAll(provider.models.map(_providerModelHash)),
-  _stringMapHash(provider.modelConnectionModes),
-  _autoCompactMapHash(provider.autoCompactLimits),
-  provider.status,
-  provider.usageLabel,
-  provider.modelCount,
-  provider.updatedAt,
-  provider.catalogId,
-  provider.credentialLabel,
-  provider.credentialEnv,
-  provider.capabilitySource,
-  provider.hostedWebSearch,
-  provider.hostedWebSearchDialect,
-  provider.standaloneWebSearch,
-  provider.promptCacheDialect,
-  provider.responsesProgrammaticToolCalling,
-  provider.iconKey,
+int _accountHash(AccountSettingsView account) => Object.hashAll([
+  account.pricingEnabled,
+  _catalogStatusHash(account.modelCatalog),
+  account.id,
+  account.templateId,
+  account.name,
+  account.subtitle,
+  account.baseUrl,
+  account.bearerToken,
+  account.hasBearerToken,
+  account.usageQueryRevision,
+  account.credentialRequired,
+  account.defaultModelId,
+  Object.hashAll(account.models.map(_accountModelHash)),
+  _stringMapHash(account.modelConnectionModes),
+  _autoCompactMapHash(account.autoCompactLimits),
+  account.status,
+  account.usageLabel,
+  account.modelCount,
+  account.updatedAt,
+  account.catalogId,
+  account.credentialLabel,
+  account.credentialEnv,
+  account.capabilitySource,
+  account.hostedWebSearch,
+  account.hostedWebSearchDialect,
+  account.standaloneWebSearch,
+  account.promptCacheDialect,
+  account.responsesProgrammaticToolCalling,
+  account.iconKey,
 ]);
 
-bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
+bool _accountModelEquals(AccountModelView left, AccountModelView right) =>
     left.modelId == right.modelId &&
     left.displayName == right.displayName &&
     _listEqualsBy(
@@ -628,13 +628,13 @@ bool _providerModelEquals(ProviderModelView left, ProviderModelView right) =>
     left.priceSource == right.priceSource &&
     _listEqualsBy(left.priceTiers, right.priceTiers, _priceTierEquals) &&
     left.baseInstructions == right.baseInstructions &&
-    left.wireProtocol == right.wireProtocol &&
+    left.wireApi == right.wireApi &&
     listEquals(left.supportedConnectionModes, right.supportedConnectionModes) &&
     left.defaultConnectionMode == right.defaultConnectionMode &&
     left.connectionMode == right.connectionMode &&
     left.origin == right.origin;
 
-int _providerModelHash(ProviderModelView model) => Object.hashAll([
+int _accountModelHash(AccountModelView model) => Object.hashAll([
   model.modelId,
   model.displayName,
   Object.hashAll(model.typeSupport.map(_modelTypeSupportHash)),
@@ -653,7 +653,7 @@ int _providerModelHash(ProviderModelView model) => Object.hashAll([
   model.priceSource,
   Object.hashAll(model.priceTiers.map(_priceTierHash)),
   model.baseInstructions,
-  model.wireProtocol,
+  model.wireApi,
   Object.hashAll(model.supportedConnectionModes),
   model.defaultConnectionMode,
   model.connectionMode,
@@ -694,17 +694,14 @@ int _inputCapabilityHash(ModelInputCapabilityView capability) => Object.hash(
   Object.hashAll(capability.mediaTypes),
 );
 
-bool _priceTierEquals(
-  ProviderPriceTierView left,
-  ProviderPriceTierView right,
-) =>
+bool _priceTierEquals(ModelPriceTierView left, ModelPriceTierView right) =>
     left.label == right.label &&
     left.input == right.input &&
     left.output == right.output &&
     left.cacheRead == right.cacheRead &&
     left.cacheWrite == right.cacheWrite;
 
-int _priceTierHash(ProviderPriceTierView tier) => Object.hash(
+int _priceTierHash(ModelPriceTierView tier) => Object.hash(
   tier.label,
   tier.input,
   tier.output,
@@ -737,8 +734,8 @@ int _catalogStatusHash(ModelCatalogStatusView status) => Object.hash(
 );
 
 bool _autoCompactEquals(
-  ProviderModelAutoCompactView left,
-  ProviderModelAutoCompactView right,
+  AccountModelAutoCompactView left,
+  AccountModelAutoCompactView right,
 ) =>
     left.modelId == right.modelId &&
     left.defaultLimit == right.defaultLimit &&
@@ -746,7 +743,7 @@ bool _autoCompactEquals(
     left.effectiveLimit == right.effectiveLimit &&
     left.safeLimit == right.safeLimit;
 
-int _autoCompactHash(ProviderModelAutoCompactView value) => Object.hash(
+int _autoCompactHash(AccountModelAutoCompactView value) => Object.hash(
   value.modelId,
   value.defaultLimit,
   value.overrideLimit,
@@ -763,8 +760,8 @@ bool _stringMapEquals(Map<String, String> left, Map<String, String> right) {
 }
 
 bool _autoCompactMapEquals(
-  Map<String, ProviderModelAutoCompactView> left,
-  Map<String, ProviderModelAutoCompactView> right,
+  Map<String, AccountModelAutoCompactView> left,
+  Map<String, AccountModelAutoCompactView> right,
 ) {
   if (left.length != right.length) return false;
   for (final entry in left.entries) {
@@ -777,7 +774,7 @@ bool _autoCompactMapEquals(
 int _stringMapHash(Map<String, String> value) =>
     Object.hashAll(_sortedStringEntries(value).map(_stringEntryHash));
 
-int _autoCompactMapHash(Map<String, ProviderModelAutoCompactView> value) =>
+int _autoCompactMapHash(Map<String, AccountModelAutoCompactView> value) =>
     Object.hashAll(_sortedStringEntries(value).map(_autoCompactEntryHash));
 
 List<MapEntry<String, T>> _sortedStringEntries<T>(Map<String, T> value) {
@@ -790,41 +787,41 @@ int _stringEntryHash(MapEntry<String, String> entry) =>
     Object.hash(entry.key, entry.value);
 
 int _autoCompactEntryHash(
-  MapEntry<String, ProviderModelAutoCompactView> entry,
+  MapEntry<String, AccountModelAutoCompactView> entry,
 ) => Object.hash(entry.key, _autoCompactHash(entry.value));
 
-bool _providerUsageEquals(ProviderUsageView left, ProviderUsageView right) =>
-    left.providerId == right.providerId &&
+bool _accountUsageEquals(AccountUsageView left, AccountUsageView right) =>
+    left.accountId == right.accountId &&
     left.revision == right.revision &&
     left.updatedAt == right.updatedAt &&
-    _providerUsageStateEquals(left.state, right.state);
+    _accountUsageStateEquals(left.state, right.state);
 
-int _providerUsageHash(ProviderUsageView usage) => Object.hash(
-  usage.providerId,
+int _accountUsageHash(AccountUsageView usage) => Object.hash(
+  usage.accountId,
   usage.revision,
   usage.updatedAt,
-  _providerUsageStateHash(usage.state),
+  _accountUsageStateHash(usage.state),
 );
 
-bool _providerUsageStateEquals(
-  ProviderUsageStateView left,
-  ProviderUsageStateView right,
+bool _accountUsageStateEquals(
+  AccountUsageStateView left,
+  AccountUsageStateView right,
 ) {
   if (left.runtimeType != right.runtimeType) return false;
   return switch ((left, right)) {
-    (UnsupportedProviderUsageView(), UnsupportedProviderUsageView()) => true,
+    (UnsupportedAccountUsageView(), UnsupportedAccountUsageView()) => true,
     (
-      MissingCredentialProviderUsageView(message: final leftMessage),
-      MissingCredentialProviderUsageView(message: final rightMessage),
+      MissingCredentialAccountUsageView(message: final leftMessage),
+      MissingCredentialAccountUsageView(message: final rightMessage),
     ) =>
       leftMessage == rightMessage,
     (
-      FailedProviderUsageView(
+      FailedAccountUsageView(
         code: final leftCode,
         message: final leftMessage,
         retryable: final leftRetryable,
       ),
-      FailedProviderUsageView(
+      FailedAccountUsageView(
         code: final rightCode,
         message: final rightMessage,
         retryable: final rightRetryable,
@@ -834,46 +831,46 @@ bool _providerUsageStateEquals(
           leftMessage == rightMessage &&
           leftRetryable == rightRetryable,
     (
-      ReadyProviderUsageView(data: final leftData),
-      ReadyProviderUsageView(data: final rightData),
+      ReadyAccountUsageView(data: final leftData),
+      ReadyAccountUsageView(data: final rightData),
     ) =>
-      _providerUsageDataEquals(leftData, rightData),
+      _accountUsageDataEquals(leftData, rightData),
     _ => false,
   };
 }
 
-int _providerUsageStateHash(ProviderUsageStateView state) {
+int _accountUsageStateHash(AccountUsageStateView state) {
   return switch (state) {
-    UnsupportedProviderUsageView() => Object.hash(
-      UnsupportedProviderUsageView,
+    UnsupportedAccountUsageView() => Object.hash(
+      UnsupportedAccountUsageView,
       0,
     ),
-    MissingCredentialProviderUsageView(message: final message) => Object.hash(
-      MissingCredentialProviderUsageView,
+    MissingCredentialAccountUsageView(message: final message) => Object.hash(
+      MissingCredentialAccountUsageView,
       message,
     ),
-    FailedProviderUsageView(
+    FailedAccountUsageView(
       code: final code,
       message: final message,
       retryable: final retryable,
     ) =>
-      Object.hash(FailedProviderUsageView, code, message, retryable),
-    ReadyProviderUsageView(data: final data) => Object.hash(
-      ReadyProviderUsageView,
-      _providerUsageDataHash(data),
+      Object.hash(FailedAccountUsageView, code, message, retryable),
+    ReadyAccountUsageView(data: final data) => Object.hash(
+      ReadyAccountUsageView,
+      _accountUsageDataHash(data),
     ),
   };
 }
 
-bool _providerUsageDataEquals(
-  ProviderUsageDataView left,
-  ProviderUsageDataView right,
+bool _accountUsageDataEquals(
+  AccountUsageDataView left,
+  AccountUsageDataView right,
 ) {
   if (left.runtimeType != right.runtimeType) return false;
   return switch ((left, right)) {
     (
-      DeepSeekBalanceProviderUsageView(balance: final leftBalance),
-      DeepSeekBalanceProviderUsageView(balance: final rightBalance),
+      DeepSeekBalanceAccountUsageView(balance: final leftBalance),
+      DeepSeekBalanceAccountUsageView(balance: final rightBalance),
     ) =>
       leftBalance.isAvailable == rightBalance.isAvailable &&
           _listEqualsBy(
@@ -882,8 +879,8 @@ bool _providerUsageDataEquals(
             _deepSeekBalanceEquals,
           ),
     (
-      ZhipuCodingPlanProviderUsageView(codingPlan: final leftPlan),
-      ZhipuCodingPlanProviderUsageView(codingPlan: final rightPlan),
+      ZhipuCodingPlanAccountUsageView(codingPlan: final leftPlan),
+      ZhipuCodingPlanAccountUsageView(codingPlan: final rightPlan),
     ) =>
       leftPlan.level == rightPlan.level &&
           _listEqualsBy(leftPlan.limits, rightPlan.limits, _zhipuLimitEquals),
@@ -891,15 +888,15 @@ bool _providerUsageDataEquals(
   };
 }
 
-int _providerUsageDataHash(ProviderUsageDataView data) {
+int _accountUsageDataHash(AccountUsageDataView data) {
   return switch (data) {
-    DeepSeekBalanceProviderUsageView(balance: final balance) => Object.hash(
-      DeepSeekBalanceProviderUsageView,
+    DeepSeekBalanceAccountUsageView(balance: final balance) => Object.hash(
+      DeepSeekBalanceAccountUsageView,
       balance.isAvailable,
       Object.hashAll(balance.balances.map(_deepSeekBalanceHash)),
     ),
-    ZhipuCodingPlanProviderUsageView(codingPlan: final plan) => Object.hash(
-      ZhipuCodingPlanProviderUsageView,
+    ZhipuCodingPlanAccountUsageView(codingPlan: final plan) => Object.hash(
+      ZhipuCodingPlanAccountUsageView,
       plan.level,
       Object.hashAll(plan.limits.map(_zhipuLimitHash)),
     ),

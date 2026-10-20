@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/domain/models/agent_workspace_view.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
@@ -468,6 +469,57 @@ void main() {
       expect(transport.opens, opensBefore);
     },
   );
+
+  test('workspace 模型诊断按已解析 route 的 accountId 与 modelId 选账号，不按裸 model id 猜', () {
+    Map<String, dynamic> workspaceJsonFor(ThreadModelRouteView? route) {
+      final json = jsonDecode(
+        StudioDriverState.snapshotJson(
+          observed: StudioDriverFacts(
+            workspace: _identityWorkspace(route: route),
+          ),
+        ),
+      ) as Map<String, dynamic>;
+      return json['workspace'] as Map<String, dynamic>;
+    }
+
+    // 两个账号共用同一 modelId；只有 route 能说明当前模型属于哪个账号。
+    final routed = workspaceJsonFor(_sharedModelRoute(accountId: 'acct-b'));
+    expect(routed['modelAccount'], {
+      'id': 'acct-b',
+      'hasBearerToken': true,
+      'credentialEnv': 'ACCT_B_KEY',
+    });
+    expect(routed['modelCapabilities'], ['text', 'image']);
+
+    // 路由暂不可用仍保留身份：可用性不是身份选择依据。
+    final unavailable = workspaceJsonFor(
+      _sharedModelRoute(accountId: 'acct-b', available: false),
+    );
+    expect(
+      (unavailable['modelAccount'] as Map<String, dynamic>)['id'],
+      'acct-b',
+    );
+    expect(unavailable['modelCapabilities'], ['text', 'image']);
+
+    // 路由缺失：保持 unknown，不按裸 model id 猜任意账号。
+    final unrouted = workspaceJsonFor(null);
+    expect(unrouted['modelAccount'], isNull);
+    expect(unrouted['modelCapabilities'], isEmpty);
+
+    // 未知账号：保持 unknown。
+    final unknownAccount = workspaceJsonFor(
+      _sharedModelRoute(accountId: 'acct-missing'),
+    );
+    expect(unknownAccount['modelAccount'], isNull);
+    expect(unknownAccount['modelCapabilities'], isEmpty);
+
+    // 路由指向的账号不含该模型：保持 unknown，不借用另一账号的同名模型。
+    final crossAccount = workspaceJsonFor(
+      _sharedModelRoute(accountId: 'acct-a'),
+    );
+    expect(crossAccount['modelAccount'], isNull);
+    expect(crossAccount['modelCapabilities'], isEmpty);
+  });
 }
 
 StudioThread _factsThread() => StudioThread(
@@ -478,6 +530,99 @@ StudioThread _factsThread() => StudioThread(
   updatedAt: DateTime.utc(2026),
   workspacePath: '/tmp/thread',
 );
+
+ThreadModelRouteView _sharedModelRoute({
+  required String accountId,
+  bool available = true,
+}) => ThreadModelRouteView(
+  accountId: accountId,
+  modelId: 'shared-model',
+  effort: 'high',
+  revision: 3,
+  available: available,
+);
+
+/// 同名模型同时存在于两个账号：能力与凭据环境不同，展示诊断只能按已解析的
+/// `(accountId, modelId)` 路由取账号，不能按裸 model id 取第一个命中。
+AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
+  final thread = _factsThread();
+  return AgentWorkspaceView(
+    thread: thread,
+    rootThread: thread,
+    syncState: AgentWorkspaceSyncState.ready,
+    loadError: null,
+    todo: null,
+    runtime: ThreadRuntimeView(
+      modelId: 'shared-model',
+      contextTokens: 0,
+      contextWindow: 128000,
+      totalTokens: 0,
+      costLabel: '',
+      activeSkills: const [],
+      activeMcpServers: const [],
+      activeLspServers: const [],
+      modelRoute: route,
+    ),
+    turn: null,
+    lastTurn: null,
+    activeInteraction: null,
+    composer: const ComposerThreadState.idle(),
+    composerMode: AgentComposerMode.editable,
+    accounts: const [
+      AccountSettingsView(
+        id: 'acct-a',
+        name: 'Account A',
+        baseUrl: 'http://a.invalid',
+        credentialEnv: 'ACCT_A_KEY',
+        defaultModelId: 'a-only',
+        models: [
+          AccountModelView(
+            modelId: 'a-only',
+            displayName: 'A Only',
+            reasoningEfforts: ['medium'],
+            inputCapabilities: [
+              ModelInputCapabilityView(
+                modality: ModelModalityView.text,
+                sources: [ModelInputSourceView.local],
+              ),
+            ],
+          ),
+        ],
+        status: 'ready',
+        usageLabel: '',
+      ),
+      AccountSettingsView(
+        id: 'acct-b',
+        name: 'Account B',
+        baseUrl: 'http://b.invalid',
+        hasBearerToken: true,
+        credentialEnv: 'ACCT_B_KEY',
+        defaultModelId: 'shared-model',
+        models: [
+          AccountModelView(
+            modelId: 'shared-model',
+            displayName: 'Shared Model',
+            reasoningEfforts: ['high'],
+            inputCapabilities: [
+              ModelInputCapabilityView(
+                modality: ModelModalityView.text,
+                sources: [ModelInputSourceView.local],
+              ),
+              ModelInputCapabilityView(
+                modality: ModelModalityView.image,
+                sources: [ModelInputSourceView.local],
+              ),
+            ],
+          ),
+        ],
+        status: 'ready',
+        usageLabel: '',
+      ),
+    ],
+    roles: const [],
+    agents: const [],
+  );
+}
 
 /// 受控最小 content connection：只交付一份首帧基线，尾部保持静默。
 final class _FactsConnection implements StudioTimelineConnection {

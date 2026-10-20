@@ -328,6 +328,38 @@ void main() {
     },
   );
 
+  test('关闭后迟到的首帧、页与详情统一返回 typed Cancelled', () async {
+    final barrier = Completer<void>();
+    final bridge = _GeneratedTimeline(_baseline())..readBarrier = barrier;
+    final connection = FrbTimelineConnection(bridge);
+    final cancelled = throwsA(
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'code',
+        StudioFailureCode.cancelled,
+      ),
+    );
+    final reads = [
+      expectLater(connection.initial(), cancelled),
+      expectLater(connection.page(), cancelled),
+      expectLater(
+        connection.readDetail(
+          itemId: 'item-text',
+          query: const StudioTimelineDetailQuery(
+            field: ThreadTextFieldView(),
+            revision: 8,
+          ),
+        ),
+        cancelled,
+      ),
+    ];
+    connection.requestClose();
+    barrier.complete();
+    await Future.wait(reads);
+    await connection.close();
+    expect(bridge.disposeCalls, 1);
+  });
+
   test(
     'failed native join retains opaque and permits supervisor close retry',
     () async {
@@ -602,6 +634,7 @@ class _GeneratedTimeline implements wire.BridgeTimeline {
   final detailRequests =
       <({String itemId, dto.BridgeTimelineDetailQuery query})>[];
   Completer<void>? closeBarrier;
+  Completer<void>? readBarrier;
   Object? closeFailure;
   Object? initialFailure;
   Object? pageFailure;
@@ -616,6 +649,7 @@ class _GeneratedTimeline implements wire.BridgeTimeline {
   Future<dto.BridgeTimelineBaseline> initial() async {
     initialCalls++;
     calls.add('initial');
+    await readBarrier?.future;
     if (initialFailure case final failure?) throw failure;
     return baseline;
   }
@@ -636,6 +670,7 @@ class _GeneratedTimeline implements wire.BridgeTimeline {
   @override
   Future<dto.BridgeTimelinePage> page({String? before, int? limit}) async {
     pageRequests.add((before: before, limit: limit));
+    await readBarrier?.future;
     if (pageFailure case final failure?) throw failure;
     return dto.BridgeTimelinePage(
       items: [_wireItem(id: 'item-older', terminal: true, saved: true)],
@@ -650,6 +685,7 @@ class _GeneratedTimeline implements wire.BridgeTimeline {
     required dto.BridgeTimelineDetailQuery query,
   }) async {
     detailRequests.add((itemId: itemId, query: query));
+    await readBarrier?.future;
     if (detailFailure case final failure?) throw failure;
     return dto.BridgeTimelineDetailChunk(
       itemId: 'item-text',

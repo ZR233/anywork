@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/studio/handlers/accounts.dart';
 import 'api/studio/handlers/agent_profiles.dart';
 import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/chat.dart';
@@ -12,7 +13,6 @@ import 'api/studio/handlers/lifecycle.dart';
 import 'api/studio/handlers/mode_editor.dart';
 import 'api/studio/handlers/persistence.dart';
 import 'api/studio/handlers/prompt.dart';
-import 'api/studio/handlers/providers.dart';
 import 'api/studio/handlers/settings.dart';
 import 'api/studio/handlers/snapshot.dart';
 import 'api/studio/handlers/ssh.dart';
@@ -150,6 +150,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AccountInput dco_decode_account_input(dynamic raw);
+
+  @protected
+  AccountModelAutoCompactInput dco_decode_account_model_auto_compact_input(
+    dynamic raw,
+  );
+
+  @protected
+  AccountModelConnectionInput dco_decode_account_model_connection_input(
+    dynamic raw,
+  );
+
+  @protected
+  AccountModelInput dco_decode_account_model_input(dynamic raw);
+
+  @protected
+  AccountSecretInput dco_decode_account_secret_input(dynamic raw);
+
+  @protected
+  AccountSettingsInput dco_decode_account_settings_input(dynamic raw);
+
+  @protected
+  AccountUsageDto dco_decode_account_usage_dto(dynamic raw);
+
+  @protected
   ArchiveThreadResult dco_decode_archive_thread_result(dynamic raw);
 
   @protected
@@ -161,11 +186,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  AccountSettingsInput dco_decode_box_autoadd_account_settings_input(
+    dynamic raw,
+  );
+
+  @protected
   AuthenticateSshServerRequest
   dco_decode_box_autoadd_authenticate_ssh_server_request(dynamic raw);
 
   @protected
   bool dco_decode_box_autoadd_bool(dynamic raw);
+
+  @protected
+  BridgeAccountUsageData dco_decode_box_autoadd_bridge_account_usage_data(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAccountUsageStateData
+  dco_decode_box_autoadd_bridge_account_usage_state_data(dynamic raw);
+
+  @protected
+  BridgeAccountUsageStateSnapshot
+  dco_decode_box_autoadd_bridge_account_usage_state_snapshot(dynamic raw);
 
   @protected
   BridgeAgentDirectoryData dco_decode_box_autoadd_bridge_agent_directory_data(
@@ -344,19 +387,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgePromptPrefixChangedReason
   dco_decode_box_autoadd_bridge_prompt_prefix_changed_reason(dynamic raw);
-
-  @protected
-  BridgeProviderUsageData dco_decode_box_autoadd_bridge_provider_usage_data(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeProviderUsageStateData
-  dco_decode_box_autoadd_bridge_provider_usage_state_data(dynamic raw);
-
-  @protected
-  BridgeProviderUsageStateSnapshot
-  dco_decode_box_autoadd_bridge_provider_usage_state_snapshot(dynamic raw);
 
   @protected
   BridgeQueuedAgent dco_decode_box_autoadd_bridge_queued_agent(dynamic raw);
@@ -681,12 +711,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProjectDto dco_decode_box_autoadd_project_dto(dynamic raw);
 
   @protected
-  ProviderSettingsInput dco_decode_box_autoadd_provider_settings_input(
-    dynamic raw,
-  );
-
-  @protected
-  RemoveProviderInput dco_decode_box_autoadd_remove_provider_input(dynamic raw);
+  RemoveAccountInput dco_decode_box_autoadd_remove_account_input(dynamic raw);
 
   @protected
   SaveSshServerRequest dco_decode_box_autoadd_save_ssh_server_request(
@@ -783,6 +808,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
 
   @protected
+  BridgeAccountCatalogSnapshot dco_decode_bridge_account_catalog_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAccountSettingsDto dco_decode_bridge_account_settings_dto(dynamic raw);
+
+  @protected
+  BridgeAccountTemplateDescriptor dco_decode_bridge_account_template_descriptor(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAccountUsageData dco_decode_bridge_account_usage_data(dynamic raw);
+
+  @protected
+  BridgeAccountUsageState dco_decode_bridge_account_usage_state(dynamic raw);
+
+  @protected
+  BridgeAccountUsageStateData dco_decode_bridge_account_usage_state_data(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAccountUsageStateSnapshot
+  dco_decode_bridge_account_usage_state_snapshot(dynamic raw);
+
+  @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
 
   @protected
@@ -873,6 +926,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCommandEffectPoint dco_decode_bridge_command_effect_point(dynamic raw);
+
+  @protected
+  BridgeConnectionModeDescriptor dco_decode_bridge_connection_mode_descriptor(
+    dynamic raw,
+  );
 
   @protected
   BridgeContentField dco_decode_bridge_content_field(dynamic raw);
@@ -1032,6 +1090,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeModelCapabilities dco_decode_bridge_model_capabilities(dynamic raw);
 
   @protected
+  BridgeModelCatalogAccountDto dco_decode_bridge_model_catalog_account_dto(
+    dynamic raw,
+  );
+
+  @protected
   BridgeModelCatalogCacheWarning dco_decode_bridge_model_catalog_cache_warning(
     dynamic raw,
   );
@@ -1043,11 +1106,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelCatalogError dco_decode_bridge_model_catalog_error(dynamic raw);
-
-  @protected
-  BridgeModelCatalogProviderDto dco_decode_bridge_model_catalog_provider_dto(
-    dynamic raw,
-  );
 
   @protected
   BridgeModelCatalogSnapshotDto dco_decode_bridge_model_catalog_snapshot_dto(
@@ -1094,6 +1152,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelOrigin dco_decode_bridge_model_origin(dynamic raw);
+
+  @protected
+  BridgeModelPerformanceEffortSummary
+  dco_decode_bridge_model_performance_effort_summary(dynamic raw);
 
   @protected
   BridgeModelPerformanceSample dco_decode_bridge_model_performance_sample(
@@ -1201,44 +1263,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_bridge_prompt_prefix_changed_reason(dynamic raw);
 
   @protected
-  BridgeProviderCatalogSnapshot dco_decode_bridge_provider_catalog_snapshot(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeProviderConnectionModeDescriptor
-  dco_decode_bridge_provider_connection_mode_descriptor(dynamic raw);
-
-  @protected
-  BridgeProviderPresetDescriptor dco_decode_bridge_provider_preset_descriptor(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeProviderServiceCapabilitiesDescriptor
-  dco_decode_bridge_provider_service_capabilities_descriptor(dynamic raw);
-
-  @protected
-  BridgeProviderSettingsDto dco_decode_bridge_provider_settings_dto(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeProviderUsageData dco_decode_bridge_provider_usage_data(dynamic raw);
-
-  @protected
-  BridgeProviderUsageState dco_decode_bridge_provider_usage_state(dynamic raw);
-
-  @protected
-  BridgeProviderUsageStateData dco_decode_bridge_provider_usage_state_data(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeProviderUsageStateSnapshot
-  dco_decode_bridge_provider_usage_state_snapshot(dynamic raw);
-
-  @protected
   BridgePurposeCostSnapshot dco_decode_bridge_purpose_cost_snapshot(
     dynamic raw,
   );
@@ -1301,6 +1325,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeRuntimeTimestamp dco_decode_bridge_runtime_timestamp(dynamic raw);
+
+  @protected
+  BridgeServiceCapabilitiesDescriptor
+  dco_decode_bridge_service_capabilities_descriptor(dynamic raw);
 
   @protected
   BridgeSessionCostSnapshot dco_decode_bridge_session_cost_snapshot(
@@ -1850,8 +1878,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeWaitingToolAgent dco_decode_bridge_waiting_tool_agent(dynamic raw);
 
   @protected
-  BridgeWebSearchProviderCapabilitiesDescriptor
-  dco_decode_bridge_web_search_provider_capabilities_descriptor(dynamic raw);
+  BridgeWebSearchServiceCapabilitiesDescriptor
+  dco_decode_bridge_web_search_service_capabilities_descriptor(dynamic raw);
 
   @protected
   BridgeWebSearchSettingsDto dco_decode_bridge_web_search_settings_dto(
@@ -1924,6 +1952,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<AccountModelAutoCompactInput>
+  dco_decode_list_account_model_auto_compact_input(dynamic raw);
+
+  @protected
+  List<AccountModelConnectionInput>
+  dco_decode_list_account_model_connection_input(dynamic raw);
+
+  @protected
+  List<AccountModelInput> dco_decode_list_account_model_input(dynamic raw);
+
+  @protected
+  List<AccountUsageDto> dco_decode_list_account_usage_dto(dynamic raw);
+
+  @protected
+  List<BridgeAccountSettingsDto> dco_decode_list_bridge_account_settings_dto(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAccountTemplateDescriptor>
+  dco_decode_list_bridge_account_template_descriptor(dynamic raw);
+
+  @protected
   List<BridgeActiveTurn> dco_decode_list_bridge_active_turn(dynamic raw);
 
   @protected
@@ -1947,6 +1998,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeAttachmentDraftSource>
   dco_decode_list_bridge_attachment_draft_source(dynamic raw);
+
+  @protected
+  List<BridgeConnectionModeDescriptor>
+  dco_decode_list_bridge_connection_mode_descriptor(dynamic raw);
 
   @protected
   List<BridgeCustomModelSettingsDto>
@@ -1976,12 +2031,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_model_auto_compact_settings_dto(dynamic raw);
 
   @protected
-  List<BridgeModelCatalogDescriptor>
-  dco_decode_list_bridge_model_catalog_descriptor(dynamic raw);
+  List<BridgeModelCatalogAccountDto>
+  dco_decode_list_bridge_model_catalog_account_dto(dynamic raw);
 
   @protected
-  List<BridgeModelCatalogProviderDto>
-  dco_decode_list_bridge_model_catalog_provider_dto(dynamic raw);
+  List<BridgeModelCatalogDescriptor>
+  dco_decode_list_bridge_model_catalog_descriptor(dynamic raw);
 
   @protected
   List<BridgeModelConnectionSettingsDto>
@@ -2005,6 +2060,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeModelModality> dco_decode_list_bridge_model_modality(dynamic raw);
 
   @protected
+  List<BridgeModelPerformanceEffortSummary>
+  dco_decode_list_bridge_model_performance_effort_summary(dynamic raw);
+
+  @protected
   List<BridgeModelPerformanceSample>
   dco_decode_list_bridge_model_performance_sample(dynamic raw);
 
@@ -2024,19 +2083,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeModelTypeSupport> dco_decode_list_bridge_model_type_support(
-    dynamic raw,
-  );
-
-  @protected
-  List<BridgeProviderConnectionModeDescriptor>
-  dco_decode_list_bridge_provider_connection_mode_descriptor(dynamic raw);
-
-  @protected
-  List<BridgeProviderPresetDescriptor>
-  dco_decode_list_bridge_provider_preset_descriptor(dynamic raw);
-
-  @protected
-  List<BridgeProviderSettingsDto> dco_decode_list_bridge_provider_settings_dto(
     dynamic raw,
   );
 
@@ -2192,20 +2238,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ProjectDto> dco_decode_list_project_dto(dynamic raw);
-
-  @protected
-  List<ProviderModelAutoCompactInput>
-  dco_decode_list_provider_model_auto_compact_input(dynamic raw);
-
-  @protected
-  List<ProviderModelConnectionInput>
-  dco_decode_list_provider_model_connection_input(dynamic raw);
-
-  @protected
-  List<ProviderModelInput> dco_decode_list_provider_model_input(dynamic raw);
-
-  @protected
-  List<ProviderUsageDto> dco_decode_list_provider_usage_dto(dynamic raw);
 
   @protected
   List<RemoteDirectoryEntryDto> dco_decode_list_remote_directory_entry_dto(
@@ -2424,31 +2456,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProjectDto dco_decode_project_dto(dynamic raw);
 
   @protected
-  ProviderInput dco_decode_provider_input(dynamic raw);
-
-  @protected
-  ProviderModelAutoCompactInput dco_decode_provider_model_auto_compact_input(
-    dynamic raw,
-  );
-
-  @protected
-  ProviderModelConnectionInput dco_decode_provider_model_connection_input(
-    dynamic raw,
-  );
-
-  @protected
-  ProviderModelInput dco_decode_provider_model_input(dynamic raw);
-
-  @protected
-  ProviderSecretInput dco_decode_provider_secret_input(dynamic raw);
-
-  @protected
-  ProviderSettingsInput dco_decode_provider_settings_input(dynamic raw);
-
-  @protected
-  ProviderUsageDto dco_decode_provider_usage_dto(dynamic raw);
-
-  @protected
   RemoteDirectoryEntryDto dco_decode_remote_directory_entry_dto(dynamic raw);
 
   @protected
@@ -2457,7 +2464,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  RemoveProviderInput dco_decode_remove_provider_input(dynamic raw);
+  RemoveAccountInput dco_decode_remove_account_input(dynamic raw);
 
   @protected
   RuntimeSnapshot dco_decode_runtime_snapshot(dynamic raw);
@@ -2608,6 +2615,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AccountInput sse_decode_account_input(SseDeserializer deserializer);
+
+  @protected
+  AccountModelAutoCompactInput sse_decode_account_model_auto_compact_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AccountModelConnectionInput sse_decode_account_model_connection_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AccountModelInput sse_decode_account_model_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AccountSecretInput sse_decode_account_secret_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AccountSettingsInput sse_decode_account_settings_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AccountUsageDto sse_decode_account_usage_dto(SseDeserializer deserializer);
+
+  @protected
   ArchiveThreadResult sse_decode_archive_thread_result(
     SseDeserializer deserializer,
   );
@@ -2621,6 +2659,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  AccountSettingsInput sse_decode_box_autoadd_account_settings_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AuthenticateSshServerRequest
   sse_decode_box_autoadd_authenticate_ssh_server_request(
     SseDeserializer deserializer,
@@ -2628,6 +2671,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  BridgeAccountUsageData sse_decode_box_autoadd_bridge_account_usage_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageStateData
+  sse_decode_box_autoadd_bridge_account_usage_state_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageStateSnapshot
+  sse_decode_box_autoadd_bridge_account_usage_state_snapshot(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAgentDirectoryData sse_decode_box_autoadd_bridge_agent_directory_data(
@@ -2862,23 +2922,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgePromptPrefixChangedReason
   sse_decode_box_autoadd_bridge_prompt_prefix_changed_reason(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageData sse_decode_box_autoadd_bridge_provider_usage_data(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageStateData
-  sse_decode_box_autoadd_bridge_provider_usage_state_data(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageStateSnapshot
-  sse_decode_box_autoadd_bridge_provider_usage_state_snapshot(
     SseDeserializer deserializer,
   );
 
@@ -3287,12 +3330,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProjectDto sse_decode_box_autoadd_project_dto(SseDeserializer deserializer);
 
   @protected
-  ProviderSettingsInput sse_decode_box_autoadd_provider_settings_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  RemoveProviderInput sse_decode_box_autoadd_remove_provider_input(
+  RemoveAccountInput sse_decode_box_autoadd_remove_account_input(
     SseDeserializer deserializer,
   );
 
@@ -3415,6 +3453,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer);
 
   @protected
+  BridgeAccountCatalogSnapshot sse_decode_bridge_account_catalog_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountSettingsDto sse_decode_bridge_account_settings_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountTemplateDescriptor sse_decode_bridge_account_template_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageData sse_decode_bridge_account_usage_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageState sse_decode_bridge_account_usage_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageStateData sse_decode_bridge_account_usage_state_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAccountUsageStateSnapshot
+  sse_decode_bridge_account_usage_state_snapshot(SseDeserializer deserializer);
+
+  @protected
   BridgeActiveTurn sse_decode_bridge_active_turn(SseDeserializer deserializer);
 
   @protected
@@ -3529,6 +3601,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCommandEffectPoint sse_decode_bridge_command_effect_point(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeConnectionModeDescriptor sse_decode_bridge_connection_mode_descriptor(
     SseDeserializer deserializer,
   );
 
@@ -3748,6 +3825,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelCatalogAccountDto sse_decode_bridge_model_catalog_account_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelCatalogCacheWarning sse_decode_bridge_model_catalog_cache_warning(
     SseDeserializer deserializer,
   );
@@ -3759,11 +3841,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelCatalogError sse_decode_bridge_model_catalog_error(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeModelCatalogProviderDto sse_decode_bridge_model_catalog_provider_dto(
     SseDeserializer deserializer,
   );
 
@@ -3822,6 +3899,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelOrigin sse_decode_bridge_model_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelPerformanceEffortSummary
+  sse_decode_bridge_model_performance_effort_summary(
     SseDeserializer deserializer,
   );
 
@@ -3951,52 +4034,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_bridge_prompt_prefix_changed_reason(SseDeserializer deserializer);
 
   @protected
-  BridgeProviderCatalogSnapshot sse_decode_bridge_provider_catalog_snapshot(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderConnectionModeDescriptor
-  sse_decode_bridge_provider_connection_mode_descriptor(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderPresetDescriptor sse_decode_bridge_provider_preset_descriptor(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderServiceCapabilitiesDescriptor
-  sse_decode_bridge_provider_service_capabilities_descriptor(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderSettingsDto sse_decode_bridge_provider_settings_dto(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageData sse_decode_bridge_provider_usage_data(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageState sse_decode_bridge_provider_usage_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageStateData sse_decode_bridge_provider_usage_state_data(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeProviderUsageStateSnapshot
-  sse_decode_bridge_provider_usage_state_snapshot(SseDeserializer deserializer);
-
-  @protected
   BridgePurposeCostSnapshot sse_decode_bridge_purpose_cost_snapshot(
     SseDeserializer deserializer,
   );
@@ -4081,6 +4118,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeRuntimeTimestamp sse_decode_bridge_runtime_timestamp(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeServiceCapabilitiesDescriptor
+  sse_decode_bridge_service_capabilities_descriptor(
     SseDeserializer deserializer,
   );
 
@@ -4752,8 +4795,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeWebSearchProviderCapabilitiesDescriptor
-  sse_decode_bridge_web_search_provider_capabilities_descriptor(
+  BridgeWebSearchServiceCapabilitiesDescriptor
+  sse_decode_bridge_web_search_service_capabilities_descriptor(
     SseDeserializer deserializer,
   );
 
@@ -4844,6 +4887,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<AccountModelAutoCompactInput>
+  sse_decode_list_account_model_auto_compact_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<AccountModelConnectionInput>
+  sse_decode_list_account_model_connection_input(SseDeserializer deserializer);
+
+  @protected
+  List<AccountModelInput> sse_decode_list_account_model_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<AccountUsageDto> sse_decode_list_account_usage_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAccountSettingsDto> sse_decode_list_bridge_account_settings_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAccountTemplateDescriptor>
+  sse_decode_list_bridge_account_template_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeActiveTurn> sse_decode_list_bridge_active_turn(
     SseDeserializer deserializer,
   );
@@ -4871,6 +4945,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeAttachmentDraftSource>
   sse_decode_list_bridge_attachment_draft_source(SseDeserializer deserializer);
+
+  @protected
+  List<BridgeConnectionModeDescriptor>
+  sse_decode_list_bridge_connection_mode_descriptor(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<BridgeCustomModelSettingsDto>
@@ -4908,14 +4988,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeModelCatalogDescriptor>
-  sse_decode_list_bridge_model_catalog_descriptor(SseDeserializer deserializer);
-
-  @protected
-  List<BridgeModelCatalogProviderDto>
-  sse_decode_list_bridge_model_catalog_provider_dto(
+  List<BridgeModelCatalogAccountDto>
+  sse_decode_list_bridge_model_catalog_account_dto(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<BridgeModelCatalogDescriptor>
+  sse_decode_list_bridge_model_catalog_descriptor(SseDeserializer deserializer);
 
   @protected
   List<BridgeModelConnectionSettingsDto>
@@ -4943,6 +5023,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeModelPerformanceEffortSummary>
+  sse_decode_list_bridge_model_performance_effort_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeModelPerformanceSample>
   sse_decode_list_bridge_model_performance_sample(SseDeserializer deserializer);
 
@@ -4964,23 +5050,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeModelTypeSupport> sse_decode_list_bridge_model_type_support(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<BridgeProviderConnectionModeDescriptor>
-  sse_decode_list_bridge_provider_connection_mode_descriptor(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<BridgeProviderPresetDescriptor>
-  sse_decode_list_bridge_provider_preset_descriptor(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<BridgeProviderSettingsDto> sse_decode_list_bridge_provider_settings_dto(
     SseDeserializer deserializer,
   );
 
@@ -5168,26 +5237,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ProjectDto> sse_decode_list_project_dto(SseDeserializer deserializer);
-
-  @protected
-  List<ProviderModelAutoCompactInput>
-  sse_decode_list_provider_model_auto_compact_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<ProviderModelConnectionInput>
-  sse_decode_list_provider_model_connection_input(SseDeserializer deserializer);
-
-  @protected
-  List<ProviderModelInput> sse_decode_list_provider_model_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<ProviderUsageDto> sse_decode_list_provider_usage_dto(
-    SseDeserializer deserializer,
-  );
 
   @protected
   List<RemoteDirectoryEntryDto> sse_decode_list_remote_directory_entry_dto(
@@ -5462,37 +5511,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProjectDto sse_decode_project_dto(SseDeserializer deserializer);
 
   @protected
-  ProviderInput sse_decode_provider_input(SseDeserializer deserializer);
-
-  @protected
-  ProviderModelAutoCompactInput sse_decode_provider_model_auto_compact_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ProviderModelConnectionInput sse_decode_provider_model_connection_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ProviderModelInput sse_decode_provider_model_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ProviderSecretInput sse_decode_provider_secret_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ProviderSettingsInput sse_decode_provider_settings_input(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  ProviderUsageDto sse_decode_provider_usage_dto(SseDeserializer deserializer);
-
-  @protected
   RemoteDirectoryEntryDto sse_decode_remote_directory_entry_dto(
     SseDeserializer deserializer,
   );
@@ -5503,7 +5521,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  RemoveProviderInput sse_decode_remove_provider_input(
+  RemoveAccountInput sse_decode_remove_account_input(
     SseDeserializer deserializer,
   );
 
@@ -5690,6 +5708,45 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_account_input(AccountInput self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_account_model_auto_compact_input(
+    AccountModelAutoCompactInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_account_model_connection_input(
+    AccountModelConnectionInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_account_model_input(
+    AccountModelInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_account_secret_input(
+    AccountSecretInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_account_settings_input(
+    AccountSettingsInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_account_usage_dto(
+    AccountUsageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_archive_thread_result(
     ArchiveThreadResult self,
     SseSerializer serializer,
@@ -5705,6 +5762,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_account_settings_input(
+    AccountSettingsInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_authenticate_ssh_server_request(
     AuthenticateSshServerRequest self,
     SseSerializer serializer,
@@ -5712,6 +5775,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_bridge_account_usage_data(
+    BridgeAccountUsageData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_account_usage_state_data(
+    BridgeAccountUsageStateData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_account_usage_state_snapshot(
+    BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_bridge_agent_directory_data(
@@ -5974,24 +6055,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_prompt_prefix_changed_reason(
     BridgePromptPrefixChangedReason self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_provider_usage_data(
-    BridgeProviderUsageData self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_provider_usage_state_data(
-    BridgeProviderUsageStateData self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_provider_usage_state_snapshot(
-    BridgeProviderUsageStateSnapshot self,
     SseSerializer serializer,
   );
 
@@ -6452,14 +6515,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_provider_settings_input(
-    ProviderSettingsInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_remove_provider_input(
-    RemoveProviderInput self,
+  void sse_encode_box_autoadd_remove_account_input(
+    RemoveAccountInput self,
     SseSerializer serializer,
   );
 
@@ -6594,6 +6651,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_bridge_account_catalog_snapshot(
+    BridgeAccountCatalogSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_settings_dto(
+    BridgeAccountSettingsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_template_descriptor(
+    BridgeAccountTemplateDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_usage_data(
+    BridgeAccountUsageData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_usage_state(
+    BridgeAccountUsageState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_usage_state_data(
+    BridgeAccountUsageStateData self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_account_usage_state_snapshot(
+    BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_bridge_active_turn(
@@ -6742,6 +6841,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_command_effect_point(
     BridgeCommandEffectPoint self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_connection_mode_descriptor(
+    BridgeConnectionModeDescriptor self,
     SseSerializer serializer,
   );
 
@@ -7007,6 +7112,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_model_catalog_account_dto(
+    BridgeModelCatalogAccountDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_model_catalog_cache_warning(
     BridgeModelCatalogCacheWarning self,
     SseSerializer serializer,
@@ -7021,12 +7132,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_model_catalog_error(
     BridgeModelCatalogError self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_model_catalog_provider_dto(
-    BridgeModelCatalogProviderDto self,
     SseSerializer serializer,
   );
 
@@ -7099,6 +7204,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_model_origin(
     BridgeModelOrigin self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_performance_effort_summary(
+    BridgeModelPerformanceEffortSummary self,
     SseSerializer serializer,
   );
 
@@ -7259,60 +7370,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_provider_catalog_snapshot(
-    BridgeProviderCatalogSnapshot self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_connection_mode_descriptor(
-    BridgeProviderConnectionModeDescriptor self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_preset_descriptor(
-    BridgeProviderPresetDescriptor self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_service_capabilities_descriptor(
-    BridgeProviderServiceCapabilitiesDescriptor self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_settings_dto(
-    BridgeProviderSettingsDto self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_usage_data(
-    BridgeProviderUsageData self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_usage_state(
-    BridgeProviderUsageState self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_usage_state_data(
-    BridgeProviderUsageStateData self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_provider_usage_state_snapshot(
-    BridgeProviderUsageStateSnapshot self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_bridge_purpose_cost_snapshot(
     BridgePurposeCostSnapshot self,
     SseSerializer serializer,
@@ -7417,6 +7474,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_runtime_timestamp(
     BridgeRuntimeTimestamp self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_service_capabilities_descriptor(
+    BridgeServiceCapabilitiesDescriptor self,
     SseSerializer serializer,
   );
 
@@ -8237,8 +8300,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_web_search_provider_capabilities_descriptor(
-    BridgeWebSearchProviderCapabilitiesDescriptor self,
+  void sse_encode_bridge_web_search_service_capabilities_descriptor(
+    BridgeWebSearchServiceCapabilitiesDescriptor self,
     SseSerializer serializer,
   );
 
@@ -8345,6 +8408,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_account_model_auto_compact_input(
+    List<AccountModelAutoCompactInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_account_model_connection_input(
+    List<AccountModelConnectionInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_account_model_input(
+    List<AccountModelInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_account_usage_dto(
+    List<AccountUsageDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_account_settings_dto(
+    List<BridgeAccountSettingsDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_account_template_descriptor(
+    List<BridgeAccountTemplateDescriptor> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_active_turn(
     List<BridgeActiveTurn> self,
     SseSerializer serializer,
@@ -8377,6 +8476,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_attachment_draft_source(
     List<BridgeAttachmentDraftSource> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_connection_mode_descriptor(
+    List<BridgeConnectionModeDescriptor> self,
     SseSerializer serializer,
   );
 
@@ -8423,14 +8528,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_model_catalog_descriptor(
-    List<BridgeModelCatalogDescriptor> self,
+  void sse_encode_list_bridge_model_catalog_account_dto(
+    List<BridgeModelCatalogAccountDto> self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_list_bridge_model_catalog_provider_dto(
-    List<BridgeModelCatalogProviderDto> self,
+  void sse_encode_list_bridge_model_catalog_descriptor(
+    List<BridgeModelCatalogDescriptor> self,
     SseSerializer serializer,
   );
 
@@ -8465,6 +8570,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_model_performance_effort_summary(
+    List<BridgeModelPerformanceEffortSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_model_performance_sample(
     List<BridgeModelPerformanceSample> self,
     SseSerializer serializer,
@@ -8491,24 +8602,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_model_type_support(
     List<BridgeModelTypeSupport> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_bridge_provider_connection_mode_descriptor(
-    List<BridgeProviderConnectionModeDescriptor> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_bridge_provider_preset_descriptor(
-    List<BridgeProviderPresetDescriptor> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_bridge_provider_settings_dto(
-    List<BridgeProviderSettingsDto> self,
     SseSerializer serializer,
   );
 
@@ -8731,30 +8824,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_project_dto(
     List<ProjectDto> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_provider_model_auto_compact_input(
-    List<ProviderModelAutoCompactInput> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_provider_model_connection_input(
-    List<ProviderModelConnectionInput> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_provider_model_input(
-    List<ProviderModelInput> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_provider_usage_dto(
-    List<ProviderUsageDto> self,
     SseSerializer serializer,
   );
 
@@ -9059,45 +9128,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_project_dto(ProjectDto self, SseSerializer serializer);
 
   @protected
-  void sse_encode_provider_input(ProviderInput self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_provider_model_auto_compact_input(
-    ProviderModelAutoCompactInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_provider_model_connection_input(
-    ProviderModelConnectionInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_provider_model_input(
-    ProviderModelInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_provider_secret_input(
-    ProviderSecretInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_provider_settings_input(
-    ProviderSettingsInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_provider_usage_dto(
-    ProviderUsageDto self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_remote_directory_entry_dto(
     RemoteDirectoryEntryDto self,
     SseSerializer serializer,
@@ -9110,8 +9140,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_remove_provider_input(
-    RemoveProviderInput self,
+  void sse_encode_remove_account_input(
+    RemoveAccountInput self,
     SseSerializer serializer,
   );
 

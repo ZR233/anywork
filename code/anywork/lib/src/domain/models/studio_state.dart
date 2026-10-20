@@ -11,7 +11,7 @@ class _StudioStateUnset {
 
 const _studioStateUnset = _StudioStateUnset();
 const _emptySessionRuntime = ThreadRuntimeView(
-  model: '',
+  modelId: '',
   contextTokens: 0,
   contextWindow: 0,
   totalTokens: 0,
@@ -32,7 +32,7 @@ class StudioState {
     required this.lspState,
     required this.skillsByProject,
     this.threadModeCatalog = const ThreadModeCatalogView(),
-    required this.providerUsageState,
+    required this.accountUsageState,
     this.modelPerformance = const ModelPerformanceSnapshotView(),
     required this.updaterState,
     this.persistenceState = const PersistenceStateSnapshot.ready(),
@@ -81,7 +81,7 @@ class StudioState {
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
-  final ProviderUsageStateSnapshot providerUsageState;
+  final AccountUsageStateSnapshot accountUsageState;
   final ModelPerformanceSnapshotView modelPerformance;
   final UpdaterStateSnapshot updaterState;
   final PersistenceStateSnapshot persistenceState;
@@ -119,10 +119,10 @@ class StudioState {
   Map<String, StudioAgentView> get agentsByThread => {
     for (final agent in agentDirectory.values) agent.threadId: agent,
   };
-  List<ProviderSettingsView> get providers => settingsState.providers;
-  String? get defaultProviderId => settingsState.defaultProviderId;
+  List<AccountSettingsView> get accounts => settingsState.accounts;
+  String? get defaultAccountId => settingsState.defaultAccountId;
   List<ModeModelRouteView> get modeModelRoutes => settingsState.modeModelRoutes;
-  List<ProviderUsageView> get providerUsages => providerUsageState.usages;
+  List<AccountUsageView> get accountUsages => accountUsageState.usages;
   SessionCostsStateView? get selectedSessionCostState {
     final rootId = selectedRootThread?.id;
     return rootId == null ? null : sessionCostsByRoot[rootId];
@@ -307,7 +307,7 @@ class StudioState {
       composerMode: thread.isAgent
           ? AgentComposerMode.runtimeDriven
           : AgentComposerMode.editable,
-      providers: providers,
+      accounts: accounts,
       modeModelRoutes: modeModelRoutes,
       roles: roles,
       agents: selectedAgents,
@@ -361,7 +361,7 @@ class StudioState {
     LspStateSnapshot? lspState,
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
-    ProviderUsageStateSnapshot? providerUsageState,
+    AccountUsageStateSnapshot? accountUsageState,
     ModelPerformanceSnapshotView? modelPerformance,
     UpdaterStateSnapshot? updaterState,
     PersistenceStateSnapshot? persistenceState,
@@ -399,7 +399,7 @@ class StudioState {
       lspState: lspState ?? this.lspState,
       skillsByProject: skillsByProject ?? this.skillsByProject,
       threadModeCatalog: threadModeCatalog ?? this.threadModeCatalog,
-      providerUsageState: providerUsageState ?? this.providerUsageState,
+      accountUsageState: accountUsageState ?? this.accountUsageState,
       modelPerformance: modelPerformance ?? this.modelPerformance,
       updaterState: updaterState ?? this.updaterState,
       persistenceState: persistenceState ?? this.persistenceState,

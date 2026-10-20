@@ -24,8 +24,8 @@ const _answers = <String, String>{
   'resume': 'realtime continued after cancel',
 };
 
-/// 本 journey 既定 provider-error 输入：发送后的新用户消息正文必须逐字等于它。
-const _providerErrorPrompt = 'Realtime provider error';
+/// 本 journey 既定 account-error 输入：发送后的新用户消息正文必须逐字等于它。
+const _accountErrorPrompt = 'Realtime account error';
 
 const _activeToolStatuses = <String>{
   'queued',
@@ -150,7 +150,7 @@ const _runtimePublishScope =
     'passively by the Driver-only recorder: at least two actual live publishes '
     'of one Turn/attempt with strictly increasing observation sequence and '
     'publication revision, followed by one explicit cleared publication. It is '
-    'not a provider raw-event, transfer-latency or frame-rate proof.';
+    'not a account raw-event, transfer-latency or frame-rate proof.';
 
 Future<void> main(List<String> args) async {
   if (args.length != 4) {
@@ -394,8 +394,8 @@ class RealtimeJourney {
     'in-flight tool stdout is asserted from the typed timeline output/progressBytes/itemRevision fields when the integrated Driver build projects them; a running tool is otherwise evidenced by its live status and screenshot, with its output verified only after delivery',
     'exec is a background tool: the scripted model only reports completion after it observed the task with the supported wait tool, so the model Turn terminal is recorded separately from the delivered command result and from the durable settled projection',
     'the parallel scenario waits on both command receipts; a single settled model step may consume both delivered results, so one answer is accepted for the batch',
-    'first-content latency is measured from the Driver wall clock, not a provider TTFT field',
-    'the provider fixture reports its own provider output bytes; those bytes are never an FRB transfer measurement',
+    'first-content latency is measured from the Driver wall clock, not a account TTFT field',
+    'the account fixture reports its own account output bytes; those bytes are never an FRB transfer measurement',
   ];
 
   File get stageFile => File('${coord.path}/realtime-stage');
@@ -440,7 +440,7 @@ class RealtimeJourney {
     final workspace = state['workspace'] as Map?;
     final route = workspace?['modelRoute'] as Map?;
     if (route != null && workspace?['isBusy'] == true) {
-      // The fixture binding stays valid across calls, provider errors and cancel.
+      // The fixture binding stays valid across calls, account errors and cancel.
       // A transfer checkpoint must never turn it into an unavailable GUI route.
       checks['modelBindingAvailableDuringCalls'] =
           checks['modelBindingAvailableDuringCalls'] != false &&
@@ -519,7 +519,7 @@ class RealtimeJourney {
     String label,
   ) {
     // A new turn identity is the only reliable signal that this submission was
-    // accepted: a provider error or a cancelled stream can leave the busy flag
+    // accepted: a account error or a cancelled stream can leave the busy flag
     // false before the next poll, so requiring `isBusy` here would miss the
     // turn entirely. Completion is handled separately by `awaitTerminal`.
     return waitFor(
@@ -995,7 +995,7 @@ class RealtimeJourney {
     // once the conversation settled with the delivered output of both commands.
     // A single settled answer may consume both delivered results: the runtime
     // can batch delivered results into one model step, so the check does not
-    // require one provider request per command.
+    // require one account request per command.
     final settled = await waitFor(
       (snapshot) =>
           bothDelivered(snapshot) &&
@@ -1334,7 +1334,7 @@ class RealtimeJourney {
       'dragSteps': steps.length,
     };
     await _writeRequiredJson(
-      'realtime-provider-error-history-enter.json',
+      'realtime-account-error-history-enter.json',
       <String, Object?>{
         'beforeHistory': before,
         'expansion': expansion,
@@ -1343,7 +1343,7 @@ class RealtimeJourney {
       },
     );
     await observe('provider_error_history_entered', current);
-    await shot('provider-error-history-entered');
+    await shot('account-error-history-entered');
     // 真实进入 History、同一 Thread，并且真的离开底端（阈值沿用 200）；空内容或
     // 贴底都不能算离底。
     if (!entered ||
@@ -1479,8 +1479,8 @@ class RealtimeJourney {
     // History 直接发送：先由真实用户意图进入 History（不显式回实时、不分页、不写
     // pixels），随后用同一 composer 发送这一条既定输入。新代次必须由发送自身建立。
     final history = await _enterHistoryForDirectSend();
-    final context = await submitPrompt(_providerErrorPrompt, 'provider_error');
-    final running = await awaitNewTurn(context, 'provider_error');
+    final context = await submitPrompt(_accountErrorPrompt, 'account_error');
+    final running = await awaitNewTurn(context, 'account_error');
     final afterLive = await _awaitDirectSendLive(
       threadId: history.threadId,
       historyGeneration: history.generation,
@@ -1491,7 +1491,7 @@ class RealtimeJourney {
     final newUserItemId = await _awaitNewUserIdentity(
       threadId: history.threadId,
       previousUserId: history.before['lastUserItemId'] as String?,
-      expectedText: _providerErrorPrompt,
+      expectedText: _accountErrorPrompt,
     );
     // 只有真实观察到这些事实才置真：同一 Thread、Live、新代次、非 preparing、
     // 几何绑定新代次且 offset 0，并且新用户/Turn 身份确实出现。
@@ -1513,8 +1513,8 @@ class RealtimeJourney {
         'expansion': history.expansion,
         'history': history.history,
         'tap': <String, Object?>{
-          'label': 'provider_error',
-          'prompt': _providerErrorPrompt,
+          'label': 'account_error',
+          'prompt': _accountErrorPrompt,
           'composerInputKey': 'composer-input',
           'composerSubmitKey': 'composer-submit',
           'submittedAt': context.submittedAt,
@@ -1550,19 +1550,19 @@ class RealtimeJourney {
     final failed = await waitFor(
       (snapshot) =>
           turnId(snapshot) == turn && turnStatus(snapshot) == 'failed',
-      'provider_error',
+      'account_error',
       timeout: const Duration(seconds: 60),
     );
     final terminalAt = DateTime.now().millisecondsSinceEpoch;
-    await observe('provider_error', failed);
-    await shot('provider-error');
-    timings['providerError'] = {
+    await observe('account_error', failed);
+    await shot('account-error');
+    timings['accountError'] = {
       'submittedAt': context.submittedAt,
       'terminalAt': terminalAt,
       'terminalStatus': 'failed',
       'durableSettledAt': null,
     };
-    checks['providerErrorSurfaced'] = true;
+    checks['accountErrorSurfaced'] = true;
   }
 
   Future<void> _cancel() async {

@@ -1137,7 +1137,12 @@ class WaitEventsJourney {
       'expanded': group.expanded,
       'memberIds': group.memberIds,
     };
-    if (group.kind != 'single' && !group.expanded) {
+    _requireWaitJoinedWithAdjacentTools(timeline, itemId, label, group);
+    if (group.kind == 'activity') {
+      if (group.expanded) {
+        await _collapseActivityGroup(group.id, itemId, label);
+      }
+      await _captureCollapsedActivityIfNeeded(label);
       final summary = 'timeline-activity-summary-${group.id}';
       final summaryFinder = find.byValueKey(summary);
       await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
@@ -1153,8 +1158,167 @@ class WaitEventsJourney {
         '${label}_presentation_expanded',
         timeout: const Duration(seconds: 10),
       );
+      await _captureExpandedActivityIfNeeded(label);
     }
     checks['${label}PresentationLocated'] = true;
+  }
+
+  void _requireWaitJoinedWithAdjacentTools(
+    TimelineObservation timeline,
+    String itemId,
+    String label,
+    TimelinePresentationObservation group,
+  ) {
+    if (group.kind != 'activity') {
+      throw StateError(
+        '$label wait $itemId is presented as ${group.kind} instead of an activity group: ${group.memberIds}',
+      );
+    }
+    if (!group.memberIds.contains(itemId)) {
+      throw StateError(
+        '$label activity ${group.id} lost wait identity $itemId: ${group.memberIds}',
+      );
+    }
+    final wait = timeline.item(itemId);
+    if (wait == null) {
+      throw StateError('$label wait $itemId is missing from canonical items');
+    }
+    final expected = _expectedVisibleActivityRun(timeline, wait);
+    if (!expected.contains(itemId)) {
+      throw StateError(
+        '$label visible activity run for $itemId is empty or lost the wait: $expected',
+      );
+    }
+    final missing = [
+      for (final id in expected)
+        if (!group.memberIds.contains(id)) id,
+    ];
+    if (missing.isNotEmpty) {
+      throw StateError(
+        '$label activity ${group.id} is missing visible same-turn neighbors $missing; expected $expected actual ${group.memberIds}',
+      );
+    }
+    final extras = [
+      for (final id in group.memberIds)
+        if (!expected.contains(id)) id,
+    ];
+    if (extras.isNotEmpty) {
+      throw StateError(
+        '$label activity ${group.id} joined unexpected members $extras; expected $expected actual ${group.memberIds}',
+      );
+    }
+    checks['${label}WaitJoinedAdjacentTools'] = true;
+    observations['${label}VisibleActivityRun'] = expected;
+    observations['${label}AdjacentJoinableNeighbors'] = [
+      for (final id in expected)
+        if (id != itemId) id,
+    ];
+  }
+
+  /// Canonical `itemIds` include hidden inference/file/healthy-turn rows.
+  /// Visible same-turn activity neighbors skip those bookkeeping items and
+  /// stop at body, userInput/plan, image groups, failed turns, or another turn.
+  List<String> _expectedVisibleActivityRun(
+    TimelineObservation timeline,
+    TimelineItemObservation wait,
+  ) {
+    final waitIndex = timeline.itemIds.indexOf(wait.id);
+    if (waitIndex < 0) {
+      throw StateError('wait ${wait.id} is missing from canonical itemIds');
+    }
+    final before = <String>[];
+    for (var index = waitIndex - 1; index >= 0; index--) {
+      final item = timeline.item(timeline.itemIds[index]);
+      if (item == null) {
+        throw StateError(
+          'canonical item ${timeline.itemIds[index]} is missing from items',
+        );
+      }
+      if (!_timelineItemIsVisible(item)) continue;
+      if (!_isSameTurnActivityNeighbor(item)) break;
+      before.add(item.id);
+    }
+    final after = <String>[];
+    for (var index = waitIndex + 1; index < timeline.itemIds.length; index++) {
+      final item = timeline.item(timeline.itemIds[index]);
+      if (item == null) {
+        throw StateError(
+          'canonical item ${timeline.itemIds[index]} is missing from items',
+        );
+      }
+      if (!_timelineItemIsVisible(item)) continue;
+      if (!_isSameTurnActivityNeighbor(item)) break;
+      after.add(item.id);
+    }
+    return [...before.reversed, wait.id, ...after];
+  }
+
+  bool _timelineItemIsVisible(TimelineItemObservation item) {
+    return switch (item.kind) {
+      'inference' || 'file' => false,
+      'turn' => item.terminal && item.text.trim().isNotEmpty,
+      _ => true,
+    };
+  }
+
+  bool _isSameTurnActivityNeighbor(TimelineItemObservation item) {
+    if (item.kind == 'userMessage' ||
+        item.kind == 'parentAgentMessage' ||
+        item.kind == 'agentMessage' ||
+        item.kind == 'raw' ||
+        item.kind == 'turn') {
+      return false;
+    }
+    if (item.userInput != null) return false;
+    if (_isImageActivity(item)) return false;
+    if (item.kind == 'reasoning') return true;
+    if (item.kind == 'toolCall' && item.tool != null) return true;
+    return false;
+  }
+
+  bool _isImageActivity(TimelineItemObservation item) {
+    if (item.kind != 'toolCall') return false;
+    if (item.tool?.name == 'view_image') return true;
+    return item.tool?.attachments.any(
+          (attachment) => attachment.modality == 'image',
+        ) ??
+        false;
+  }
+
+  Future<void> _captureCollapsedActivityIfNeeded(String label) async {
+    if (checks['activityGroupCollapsedCaptured'] == true) return;
+    await capture('activity-group-collapsed');
+    checks['activityGroupCollapsedCaptured'] = true;
+    observations['activityGroupCollapsedFrom'] = label;
+  }
+
+  Future<void> _captureExpandedActivityIfNeeded(String label) async {
+    if (checks['activityGroupExpandedCaptured'] == true) return;
+    await capture('activity-group-expanded');
+    checks['activityGroupExpandedCaptured'] = true;
+    observations['activityGroupExpandedFrom'] = label;
+  }
+
+  Future<void> _collapseActivityGroup(
+    String groupId,
+    String itemId,
+    String label,
+  ) async {
+    final summary = 'timeline-activity-summary-$groupId';
+    final summaryFinder = find.byValueKey(summary);
+    await driver.waitFor(summaryFinder, timeout: const Duration(seconds: 10));
+    final summaryHeader = _headerOf(summaryFinder);
+    await _scrollHeaderIntoView(summaryHeader);
+    await driver.rawTap(summaryHeader);
+    await waitFor(
+      (snapshot) {
+        final current = TimelineObservation.optional(snapshot);
+        if (current == null) return false;
+        return !current.presentationFor(itemId).expanded;
+      },
+      '${label}_presentation_collapsed_for_screenshot',
+      timeout: const Duration(seconds: 10),
+    );
   }
 
   /// ListTile ancestor of a summary text key such as
@@ -1173,11 +1337,46 @@ class WaitEventsJourney {
       dyScroll: -80,
       timeout: const Duration(seconds: 15),
     );
+    await _scrollNestedUntilVisible(header);
     final top = await driver.getTopLeft(header);
     final bottom = await driver.getBottomRight(header);
     if (bottom.dy - top.dy <= 0) {
       throw StateError('header geometry is empty after scrolling: $header');
     }
+  }
+
+  /// Group contents use a nested 320px scrollable. Outer timeline scrolling
+  /// cannot reveal a wait card that remains clipped inside the group.
+  Future<void> _scrollNestedUntilVisible(SerializableFinder item) async {
+    final nested = find.ancestor(
+      of: item,
+      matching: find.byType('Scrollable'),
+      firstMatchOnly: true,
+    );
+    // Groups with <=5 members keep a nested 320px scrollable. Larger lazy
+    // lists are out of this fixture; missing ancestor is a layout precondition,
+    // not a retry/fallback.
+    try {
+      await driver.waitFor(nested, timeout: const Duration(seconds: 2));
+    } on DriverError catch (error) {
+      if (_isMissingFinder(error)) return;
+      throw StateError('nested group Scrollable lookup failed: $error');
+    } catch (error) {
+      throw StateError('nested group Scrollable lookup failed: $error');
+    }
+    await driver.scrollUntilVisible(
+      nested,
+      item,
+      dyScroll: -80,
+      timeout: const Duration(seconds: 15),
+    );
+  }
+
+  bool _isMissingFinder(DriverError error) {
+    final message = error.message.toLowerCase();
+    return message.contains('timeout') ||
+        message.contains('not found') ||
+        message.contains('no matching');
   }
 
   Future<void> _tryTapWaitCard(String itemId, String label) async {

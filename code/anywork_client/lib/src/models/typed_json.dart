@@ -3,7 +3,7 @@ import 'dart:convert';
 /// Decodes a tool argument payload or structured detail text as a tolerant
 /// string-keyed JSON object.
 ///
-/// Tool arguments and StudioError details cross a provider boundary as text
+/// Tool arguments and StudioError details cross a account boundary as text
 /// and may be malformed while streaming. Display projections and failure
 /// details use one policy everywhere: non-objects, empty input, invalid JSON,
 /// and empty string values are treated as absent.

@@ -5,7 +5,7 @@ use pl_model::{
         AttachmentInput, AttachmentSource, CompletionRequest, ContentPart, Message, MessageContent,
         MessageRole, ReasoningConfig,
     },
-    config::ProviderConfig,
+    config::AccountConfig,
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
 use std::{collections::HashMap, path::PathBuf, time::Duration};
@@ -13,7 +13,7 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let provider_id = args.next().context("usage: model_observe PROVIDER MODEL TASK_FILE ARTIFACT_DIR [--image FILE | --image-url URL | --image-base64 FILE] [--followup TASK_FILE]")?;
+    let account_id = args.next().context("usage: model_observe ACCOUNT MODEL TASK_FILE ARTIFACT_DIR [--image FILE | --image-url URL | --image-base64 FILE] [--followup TASK_FILE]")?;
     let model_id = args.next().context("missing model")?;
     let mut tasks = vec![PathBuf::from(args.next().context("missing task file")?)];
     let artifacts = PathBuf::from(args.next().context("missing artifact directory")?);
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     )
     .await?;
     let result = observe(
-        &provider_id,
+        &account_id,
         &model_id,
         &mut tasks,
         args.collect(),
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
 }
 
 async fn observe(
-    provider_id: &str,
+    account_id: &str,
     model_id: &str,
     tasks: &mut Vec<PathBuf>,
     args: Vec<String>,
@@ -87,40 +87,40 @@ async fn observe(
             source,
         });
     }
-    // Decode the selected provider only: unrelated obsolete configurations must not reset user data.
+    // Decode the selected account only: unrelated obsolete configurations must not reset user data.
     let installed = pl_studio_runtime::ConfigStore::default_app()?;
     let config: toml::Value =
         toml::from_str(&tokio::fs::read_to_string(installed.paths().config_file()).await?)?;
     let selected = config
         .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get(provider_id))
-        .context("selected provider is not configured")?
+        .and_then(|v| v.get("accounts"))
+        .and_then(|v| v.get(account_id))
+        .context("selected account is not configured")?
         .clone();
-    let mut provider: ProviderConfig = selected.try_into()?;
-    let id = provider_id.to_owned();
+    let mut account: AccountConfig = selected.try_into()?;
+    let id = account_id.to_owned();
     let stored = tokio::task::spawn_blocking(move || {
-        match keyring::Entry::new("anywork", &format!("provider:{id}"))?.get_password() {
+        match keyring::Entry::new("anywork", &format!("account:{id}"))?.get_password() {
             Ok(secret) => Ok(Some(secret)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(error),
         }
     })
     .await??;
-    provider.bearer_token = stored.or(provider.bearer_token);
-    let model = provider
+    account.bearer_token = stored.or(account.bearer_token);
+    let model = account
         .effective_models(None)?
         .into_iter()
         .find(|m| m.model_id == model_id)
-        .context("model is not in the selected provider catalog")?;
+        .context("model is not in the selected account catalog")?;
     let effort = model
         .parameters
         .iter()
         .find(|p| p.name == "effort")
         .and_then(|p| p.candidates.first())
         .cloned();
-    let runtime = ModelRuntime::new_with_provider_id(provider_id, provider.to_endpoint()?, model)?
-        .with_pricing_mode(provider.pricing_mode);
+    let runtime = ModelRuntime::new_with_account_id(account_id, account.to_endpoint()?, model)?
+        .with_pricing_mode(account.pricing_mode);
     let session = ModelSession::default();
     let (tx, mut rx) = tokio::sync::broadcast::channel(4096);
     let events_path = artifacts.join("events.jsonl");
@@ -182,7 +182,7 @@ async fn observe(
                     summary: None,
                 }))
                 .build();
-            println!("Observing {provider_id}/{model_id}, turn {}", index + 1);
+            println!("Observing {account_id}/{model_id}, turn {}", index + 1);
             let response = tokio::time::timeout(
                 Duration::from_secs(180),
                 runtime.complete(
@@ -220,7 +220,7 @@ async fn observe(
     tokio::fs::write(
         artifacts.join("report.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "provider":provider_id,"model":model_id,"execution":"completed","review":"pending"
+            "account":account_id,"model":model_id,"execution":"completed","review":"pending"
         }))?,
     )
     .await?;

@@ -17,10 +17,28 @@ pub(crate) async fn load_checkpoint(
 
 /// Explicit activation or parent continuation migrates history before decoding restart state.
 /// This prepares storage only; it never installs an owner or executes the recovered Thread.
+///
+/// Model-access extensions saved by a retired format are committed as the current representation
+/// here, in the single history writer transaction, before any owner or model sees the checkpoint.
+/// Root and child recovery share this boundary, so a saved v1 route or Agent Profile never stays in
+/// the old shape just because the Thread was not opened again by its previous owner.
 pub(crate) async fn load_checkpoint_for_recovery(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
     let history = store.history_writer(&thread.id).await?;
-    store.state(&thread.id).load_after_migration(&history).await
+    let Some(checkpoint) = store
+        .state(&thread.id)
+        .load_after_migration(&history)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let migrated = history
+        .migrate_recovery_checkpoint(
+            &checkpoint,
+            crate::studio::model_route::migrate_saved_representation,
+        )
+        .await?;
+    Ok(Some(migrated))
 }

@@ -1,0 +1,433 @@
+import 'package:flutter/material.dart';
+
+import '../../domain/models/studio_models.dart';
+import '../../l10n/studio_l10n.dart';
+import '../../shared/account_brand.dart';
+import '../../shared/studio_driver_keys.dart';
+import 'settings_common.dart';
+import 'settings_account_drafts.dart';
+import 'settings_account_model_readout.dart';
+
+class AccountEditor extends StatelessWidget {
+  const AccountEditor({
+    super.key,
+    required this.formKey,
+    required this.draft,
+    required this.templates,
+    required this.saving,
+    required this.error,
+    required this.onCancel,
+    required this.onSave,
+    required this.onChangeTemplate,
+    required this.onUpdate,
+    required this.onAddCustomModel,
+    required this.onUpdateCustomModel,
+    required this.onRemoveCustomModel,
+  });
+
+  /// 账号连接与模型声明的草稿表单；阈值在详情列表即时编辑。
+  final GlobalKey<FormState> formKey;
+  final AccountDraft draft;
+  final List<AccountTemplateView> templates;
+  final bool saving;
+  final String? error;
+  final VoidCallback onCancel;
+  final VoidCallback onSave;
+  final ValueChanged<String> onChangeTemplate;
+  final ValueChanged<AccountSettingsView Function(AccountSettingsView)>
+  onUpdate;
+  final VoidCallback onAddCustomModel;
+  final void Function(int index, AccountModelView model) onUpdateCustomModel;
+  final ValueChanged<int> onRemoveCustomModel;
+
+  @override
+  Widget build(BuildContext context) {
+    final account = draft.account;
+    return Form(
+      key: formKey,
+      child: Column(
+        children: [
+          Expanded(
+            child: ListView(
+              key: StudioDriverKeys.accountEditorScroll,
+              children: [
+                SettingsHeader(
+                  title: draft.mode == AccountDraftMode.create
+                      ? context.l10n.settingsNewAccount
+                      : account.name,
+                  subtitle: account.baseUrl,
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  SettingsInlineError(message: error!),
+                ],
+                const SizedBox(height: 12),
+                SettingsSectionPanel(
+                  title: context.l10n.settingsAccountConnectionTitle,
+                  children: [
+                    SettingsResponsiveFieldGrid(
+                      children: [
+                        DropdownMenu<String>(
+                          key: StudioDriverKeys.accountTemplate,
+                          initialSelection: account.templateId,
+                          label: Text(context.l10n.settingsAccountTemplate),
+                          expandedInsets: EdgeInsets.zero,
+                          dropdownMenuEntries: [
+                            // 既有账号没有模板引用（自定义账号）时只保留下拉可渲染的
+                            // 禁用占位项：不改写其 canonical 协议，也不猜厂商。
+                            if (account.templateId == null ||
+                                !templates.any(
+                                  (template) =>
+                                      template.id == account.templateId,
+                                ))
+                              DropdownMenuEntry<String>(
+                                value: account.templateId ?? '',
+                                enabled: false,
+                                label: context.l10n.settingsCustomAccount,
+                                labelWidget: Text(
+                                  context.l10n.settingsCustomAccount,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            for (final template in templates)
+                              DropdownMenuEntry<String>(
+                                value: template.id,
+                                label: template.displayName,
+                                labelWidget: Row(
+                                  children: [
+                                    AccountBrandMark(
+                                      iconKey: template.iconKey,
+                                      fallbackName: template.displayName,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Flexible(
+                                      child: Text(
+                                        template.displayName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                          onSelected: saving
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    onChangeTemplate(value);
+                                  }
+                                },
+                        ),
+                        SettingsTextEdit(
+                          label: context.l10n.settingsDisplayName,
+                          value: account.name,
+                          enabled: !saving,
+                          onChanged: (value) =>
+                              onUpdate((item) => item.copyWith(name: value)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SettingsTextEdit(
+                      key: StudioDriverKeys.accountBaseUrl,
+                      label: context.l10n.settingsBaseUrl,
+                      value: account.baseUrl,
+                      enabled: !saving,
+                      onChanged: (value) =>
+                          onUpdate((item) => item.copyWith(baseUrl: value)),
+                    ),
+                    const SizedBox(height: 10),
+                    SettingsTextEdit(
+                      key: StudioDriverKeys.accountApiKey,
+                      label: account.hasBearerToken
+                          ? context.l10n.settingsApiKeyKeepCurrent
+                          : account.credentialRequired
+                          ? context.l10n.settingsApiKey
+                          : context.l10n.settingsApiKeyOptional,
+                      value: account.bearerToken,
+                      enabled: !saving,
+                      obscureText: true,
+                      onChanged: (value) =>
+                          onUpdate((item) => item.copyWith(bearerToken: value)),
+                    ),
+                    if (account.credentialEnv.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        account.credentialEnv,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  key: StudioDriverKeys.accountPricing,
+                  title: Text(context.l10n.settingsPricingEnabled),
+                  subtitle: Text(context.l10n.settingsPricingHelp),
+                  value: account.pricingEnabled,
+                  onChanged: saving
+                      ? null
+                      : (enabled) => onUpdate(
+                          (item) => item.copyWith(pricingEnabled: enabled),
+                        ),
+                ),
+                const SizedBox(height: 12),
+                SettingsSectionPanel(
+                  title: context.l10n.settingsAccountOnlineModelsTitle,
+                  children: [
+                    if (account.onlineModels.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(context.l10n.settingsNoOnlineModels),
+                      )
+                    else
+                      for (final model in account.onlineModels)
+                        AccountModelReadout(
+                          model: model,
+                          accountId: account.id,
+                          onConnectionModeChanged:
+                              saving ||
+                                  model.supportedConnectionModes.length <= 1
+                              ? null
+                              : (mode) => onUpdate(
+                                  (item) => item.withModelConnection(
+                                    model.modelId,
+                                    mode,
+                                  ),
+                                ),
+                        ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SettingsSectionPanel(
+                  title: context.l10n.settingsAccountDefaultModelsTitle,
+                  trailing: Text(
+                    context.l10n.settingsBundledModels(
+                      account.bundledModels.length,
+                    ),
+                  ),
+                  children: [
+                    if (account.bundledModels.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(context.l10n.settingsNoBundledModels),
+                      )
+                    else
+                      for (final model in account.bundledModels)
+                        AccountModelReadout(
+                          model: model,
+                          accountId: account.id,
+                          onConnectionModeChanged:
+                              saving ||
+                                  model.supportedConnectionModes.length <= 1
+                              ? null
+                              : (mode) => onUpdate(
+                                  (item) => item.withModelConnection(
+                                    model.modelId,
+                                    mode,
+                                  ),
+                                ),
+                        ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SettingsSectionPanel(
+                  title: context.l10n.settingsAccountCustomModelsTitle,
+                  trailing: OutlinedButton.icon(
+                    key: StudioDriverKeys.accountModelAdd,
+                    icon: const Icon(Icons.add),
+                    label: Text(context.l10n.settingsAddModel),
+                    onPressed: saving ? null : onAddCustomModel,
+                  ),
+                  children: [
+                    if (account.customModels.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(context.l10n.settingsNoCustomModels),
+                      )
+                    else
+                      for (
+                        var index = 0;
+                        index < account.customModels.length;
+                        index++
+                      )
+                        _CustomModelEditor(
+                          index: index,
+                          model: account.customModels[index],
+                          enabled: !saving,
+                          conflictingModelId: account.models.any(
+                            (candidate) =>
+                                candidate.origin != ModelOrigin.manual &&
+                                candidate.modelId ==
+                                    account.customModels[index].modelId,
+                          ),
+                          onChanged: (model) =>
+                              onUpdateCustomModel(index, model),
+                          onRemove: () => onRemoveCustomModel(index),
+                        ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    key: StudioDriverKeys.accountCancel,
+                    icon: const Icon(Icons.close),
+                    label: Text(context.l10n.settingsCancel),
+                    onPressed: saving ? null : onCancel,
+                  ),
+                  FilledButton.icon(
+                    key: StudioDriverKeys.accountSave,
+                    icon: const Icon(Icons.save_outlined),
+                    label: Text(context.l10n.settingsSave),
+                    onPressed: saving ? null : onSave,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomModelEditor extends StatelessWidget {
+  const _CustomModelEditor({
+    required this.index,
+    required this.model,
+    required this.enabled,
+    required this.conflictingModelId,
+    required this.onChanged,
+    required this.onRemove,
+  });
+  final int index;
+  final AccountModelView model;
+  final bool enabled;
+  final bool conflictingModelId;
+  final ValueChanged<AccountModelView> onChanged;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: SettingsTextEdit(
+                  key: StudioDriverKeys.customModelId(index),
+                  label: context.l10n.settingsModelId,
+                  value: model.modelId,
+                  enabled: enabled,
+                  onChanged: (value) => onChanged(
+                    model.copyWith(
+                      modelId: value,
+                      origin: ModelOrigin.manual,
+                      displayName:
+                          model.displayName == model.modelId ||
+                              model.displayName == 'Custom model'
+                          ? value
+                          : model.displayName,
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: context.l10n.settingsRemoveModel,
+                icon: const Icon(Icons.delete_outline),
+                onPressed: enabled ? onRemove : null,
+              ),
+            ],
+          ),
+          if (conflictingModelId)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                context.l10n.settingsManualModelIdConflict,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          ExpansionTile(
+            key: StudioDriverKeys.customModelAdvanced(index),
+            title: Text(context.l10n.settingsModelAdvanced),
+            children: [
+              SettingsTextEdit(
+                key: StudioDriverKeys.customModelDisplayName(index),
+                label: context.l10n.settingsDisplayName,
+                value: model.displayName,
+                enabled: enabled,
+                onChanged: (value) =>
+                    onChanged(model.copyWith(displayName: value)),
+              ),
+              DropdownMenu<String>(
+                initialSelection: model.wireApi,
+                label: Text(context.l10n.settingsProtocolType),
+                expandedInsets: EdgeInsets.zero,
+                dropdownMenuEntries: [
+                  DropdownMenuEntry<String>(
+                    value: 'chat_completions',
+                    label: context.l10n.settingsProtocolChatCompletionsHttp,
+                  ),
+                  DropdownMenuEntry<String>(
+                    value: 'responses',
+                    label: context.l10n.settingsProtocolResponsesHttp,
+                  ),
+                ],
+                onSelected: enabled
+                    ? (value) {
+                        if (value != null) {
+                          onChanged(
+                            model.copyWith(
+                              wireApi: value,
+                              supportedConnectionModes: const ['http'],
+                              defaultConnectionMode: 'http',
+                              connectionMode: 'http',
+                            ),
+                          );
+                        }
+                      }
+                    : null,
+              ),
+              SettingsTextEdit(
+                label: context.l10n.settingsContextBudget,
+                value: '${model.contextWindow ?? 32000}',
+                enabled: enabled,
+                onChanged: (value) {
+                  final count = int.tryParse(value);
+                  if (count != null) {
+                    onChanged(model.copyWith(contextWindow: count));
+                  }
+                },
+              ),
+              SettingsTextEdit(
+                label: context.l10n.settingsOutputBudget,
+                value: '${model.maxOutputTokens ?? 4096}',
+                enabled: enabled,
+                onChanged: (value) {
+                  final count = int.tryParse(value);
+                  if (count != null) {
+                    onChanged(model.copyWith(maxOutputTokens: count));
+                  }
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}

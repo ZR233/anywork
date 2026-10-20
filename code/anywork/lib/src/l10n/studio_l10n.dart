@@ -50,8 +50,23 @@ extension StudioLocalizationsX on BuildContext {
         : l10n.statusThroughputValue(value);
   }
 
-  /// Maps a canonical wire protocol to its localized display label.
-  String modelProtocolLabel(String protocol) {
+  /// Maps a canonical account protocol (vendor adapter) to its display label.
+  ///
+  /// 身份来自 canonical `protocol` 值，不按模板 ID、显示名或地址推断。
+  String protocolKindLabel(String protocol) {
+    return switch (protocol) {
+      'open_ai' => l10n.accountProtocolOpenAi,
+      'deep_seek' => l10n.accountProtocolDeepSeek,
+      'zhipu' => l10n.accountProtocolZhipu,
+      'mi_mo' => l10n.accountProtocolMiMo,
+      'xai' => l10n.accountProtocolXai,
+      'open_ai_compatible' => l10n.accountProtocolCustom,
+      _ => protocol,
+    };
+  }
+
+  /// Maps a canonical wire API to its localized display label.
+  String modelWireApiLabel(String protocol) {
     return switch (protocol) {
       'responses' => l10n.modelProtocolResponses,
       'chat_completions' => l10n.modelProtocolChatCompletions,
@@ -226,16 +241,16 @@ extension StudioLocalizationsX on BuildContext {
     };
   }
 
-  /// Maps a canonical provider status to its localized display label.
+  /// Maps a canonical account status to its localized display label.
   ///
   /// `ready` only describes configured credentials, not verified connectivity.
   /// `ready` and `missingCredential` are the only canonical statuses today;
   /// any other value is returned unchanged so unknown or future statuses are
   /// never mislabeled as a configuration state.
-  String providerStatusLabel(String status) {
+  String accountStatusLabel(String status) {
     return switch (status.trim()) {
       'ready' => l10n.settingsConfigured,
-      'missingCredential' => l10n.settingsProviderMissingCredential,
+      'missingCredential' => l10n.settingsAccountMissingCredential,
       _ => status,
     };
   }

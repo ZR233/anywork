@@ -197,12 +197,12 @@ class WebSearchSettingsCardState extends State<WebSearchSettingsCard> {
                 value: _modeLabel(context, settings.effectiveMode),
               ),
               _WebSearchStatusValue(
-                label: context.l10n.settingsWebSearchProvider,
-                value: settings.providerId ?? context.l10n.settingsNotAvailable,
+                label: context.l10n.settingsWebSearchAccount,
+                value: settings.accountId ?? context.l10n.settingsNotAvailable,
               ),
               _WebSearchStatusValue(
                 label: context.l10n.settingsWebSearchModel,
-                value: settings.model ?? context.l10n.settingsNotAvailable,
+                value: settings.modelId ?? context.l10n.settingsNotAvailable,
               ),
             ],
           ),
@@ -585,8 +585,8 @@ class _DeepSeekWebSearchSettingsCardState
                 value: _enabledLabel(context, settings.effectiveFetchEnabled),
               ),
               _WebSearchStatusValue(
-                label: context.l10n.settingsDeepSeekWebSearchProvider,
-                value: settings.providerId ?? context.l10n.settingsNotAvailable,
+                label: context.l10n.settingsDeepSeekWebSearchAccount,
+                value: settings.accountId ?? context.l10n.settingsNotAvailable,
               ),
             ],
           ),
@@ -708,7 +708,7 @@ String _availabilityLabel(BuildContext context, String availability) {
   return switch (availability) {
     'available' => context.l10n.settingsWebSearchAvailable,
     'disabled' => context.l10n.settingsWebSearchDisabled,
-    'providerUnsupported' => context.l10n.settingsWebSearchUnsupportedProvider,
+    'accountUnsupported' => context.l10n.settingsWebSearchUnsupportedAccount,
     'modelUnsupported' => context.l10n.settingsWebSearchUnsupportedModel,
     'missingCredential' => context.l10n.settingsWebSearchMissingCredential,
     _ => availability,
@@ -717,8 +717,8 @@ String _availabilityLabel(BuildContext context, String availability) {
 
 String _availabilityReason(BuildContext context, String availability) {
   return switch (availability) {
-    'providerUnsupported' =>
-      context.l10n.settingsWebSearchUnsupportedProviderReason,
+    'accountUnsupported' =>
+      context.l10n.settingsWebSearchUnsupportedAccountReason,
     'modelUnsupported' => context.l10n.settingsWebSearchUnsupportedModelReason,
     'missingCredential' =>
       context.l10n.settingsWebSearchMissingCredentialReason,

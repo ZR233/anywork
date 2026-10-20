@@ -523,6 +523,9 @@ pub const GUI_STRESS_BODY_LARGE_TOKENS_PER_SECOND: u64 = 2_500;
 pub const GUI_TIMELINE_HISTORY_PROMPT: &str = "Generate the local timeline history fixture";
 /// Timeline items one `timeline-history` reply delivers.
 pub const GUI_TIMELINE_HISTORY_ITEMS: usize = 20_000;
+/// Keeps provider output active during native history and retry interactions.
+/// The separate `stress` scenario retains its 5,000-item/s performance baseline.
+pub const GUI_TIMELINE_HISTORY_TOKENS_PER_SECOND: u64 = 1_000;
 
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
@@ -2097,7 +2100,7 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
             1,
             Reply::PacedSse {
                 events: GUI_TIMELINE_HISTORY_ITEMS,
-                tokens_per_second: STRESS_TOKENS_PER_SECOND,
+                tokens_per_second: GUI_TIMELINE_HISTORY_TOKENS_PER_SECOND,
             },
         ),
         Step::prompt(

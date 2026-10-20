@@ -1,22 +1,19 @@
 use anyhow::Result;
 
 use super::super::StudioRuntime;
-use super::super::{ProviderUsageStateSnapshot, StudioUpdateStateSnapshot};
+use super::super::{AccountUsageStateSnapshot, StudioUpdateStateSnapshot};
 
 impl StudioRuntime {
-    pub async fn read_provider_usage_state(&self) -> ProviderUsageStateSnapshot {
-        self.provider_usage.read().await
+    pub async fn read_account_usage_state(&self) -> AccountUsageStateSnapshot {
+        self.account_usage.read().await
     }
 
-    pub async fn check_provider_usage(
-        &self,
-        provider_id: &str,
-    ) -> Result<ProviderUsageStateSnapshot> {
-        self.provider_usage.check(provider_id).await
+    pub async fn check_account_usage(&self, account_id: &str) -> Result<AccountUsageStateSnapshot> {
+        self.account_usage.check(account_id).await
     }
 
-    pub async fn apply_provider_config(&self) -> Result<ProviderUsageStateSnapshot> {
-        self.provider_usage.apply_config().await
+    pub async fn apply_account_config(&self) -> Result<AccountUsageStateSnapshot> {
+        self.account_usage.apply_config().await
     }
 
     pub async fn read_update_state(&self) -> StudioUpdateStateSnapshot {

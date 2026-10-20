@@ -16,8 +16,8 @@ class BridgeAgentProfileDto {
   final String description;
   final String whenToUse;
   final String systemInstructions;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final String source;
   final String revision;
@@ -32,8 +32,8 @@ class BridgeAgentProfileDto {
     required this.description,
     required this.whenToUse,
     required this.systemInstructions,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     this.effort,
     required this.source,
     required this.revision,
@@ -50,8 +50,8 @@ class BridgeAgentProfileDto {
       description.hashCode ^
       whenToUse.hashCode ^
       systemInstructions.hashCode ^
-      providerId.hashCode ^
-      model.hashCode ^
+      accountId.hashCode ^
+      modelId.hashCode ^
       effort.hashCode ^
       source.hashCode ^
       revision.hashCode ^
@@ -70,8 +70,8 @@ class BridgeAgentProfileDto {
           description == other.description &&
           whenToUse == other.whenToUse &&
           systemInstructions == other.systemInstructions &&
-          providerId == other.providerId &&
-          model == other.model &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
           effort == other.effort &&
           source == other.source &&
           revision == other.revision &&

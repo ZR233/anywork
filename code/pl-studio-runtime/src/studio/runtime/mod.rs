@@ -7,6 +7,7 @@ use crate::studio::{ProductEventBus, StudioActiveTurn, StudioRuntimeState, Studi
 use pl_protocol::studio::StudioPromptInput;
 use pl_tool::mcp::McpRuntimeHandle;
 
+mod account_usage;
 mod attachment_drafts;
 mod background_task;
 pub(crate) mod chat_item;
@@ -21,7 +22,6 @@ mod model_performance;
 mod model_refresh;
 mod product_subscription;
 mod prompt_runner;
-mod provider_usage;
 mod rejected_tools;
 mod residency;
 mod settings_api;
@@ -42,10 +42,10 @@ mod thread_observation;
 mod thread_title;
 mod updater;
 
+pub(crate) use account_usage::AccountUsageRuntime;
+pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
 pub use lifecycle::shutdown::ShutdownExternalHook;
 pub(crate) use model_performance::ModelPerformanceOwner;
-pub(crate) use provider_usage::ProviderUsageRuntime;
-pub use provider_usage::{ProviderUsageStateData, ProviderUsageStateSnapshot};
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;
 pub use skill_catalog::{SkillSearchResult, SkillsStateSnapshot};
@@ -186,7 +186,7 @@ pub struct StudioRuntime {
     recovery_task: background_task::BackgroundTaskSlot,
     skills: SkillCatalogRuntime,
     thread_modes: crate::mode::ThreadModeManager,
-    provider_usage: ProviderUsageRuntime,
+    account_usage: AccountUsageRuntime,
     model_performance: ModelPerformanceOwner,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,

@@ -132,7 +132,7 @@ ThreadWorkspace _workspace({int revision = 1, ThreadRuntimeView? runtime}) {
     runtime:
         runtime ??
         const ThreadRuntimeView(
-          model: 'model',
+          modelId: 'model',
           contextTokens: 0,
           contextWindow: 1,
           totalTokens: 0,
@@ -150,7 +150,7 @@ ThreadRuntimeView _approvedPlanRuntime({
   String contentHash = 'hash-v3',
 }) {
   return ThreadRuntimeView(
-    model: 'model',
+    modelId: 'model',
     contextTokens: 0,
     contextWindow: 1,
     totalTokens: 0,
@@ -172,7 +172,7 @@ ThreadRuntimeView _approvedPlanRuntime({
 }
 
 ThreadRuntimeView _runtimeUsage(int completionTokens) => ThreadRuntimeView(
-  model: 'model',
+  modelId: 'model',
   contextTokens: 1,
   contextWindow: 100000,
   totalTokens: completionTokens + 1,

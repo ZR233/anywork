@@ -1,6 +1,6 @@
 import 'package:anywork_client/studio_client.dart';
 
-import '../../rust/api/studio.dart' as frb;
+import 'studio_bridge_api.dart' as frb;
 import 'studio_api.dart' show FrbStudioTransport, updaterStateFromFrb;
 
 final class FrbStudioUpdateApi implements StudioUpdateApi {

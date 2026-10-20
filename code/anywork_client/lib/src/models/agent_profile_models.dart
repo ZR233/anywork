@@ -8,8 +8,8 @@ class AgentProfileView {
     required this.description,
     required this.whenToUse,
     required this.systemInstructions,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     required this.effort,
     required this.source,
     required this.revision,
@@ -24,8 +24,8 @@ class AgentProfileView {
   final String description;
   final String whenToUse;
   final String systemInstructions;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final String source;
   final String revision;
@@ -43,8 +43,8 @@ class AgentProfileView {
           description == other.description &&
           whenToUse == other.whenToUse &&
           systemInstructions == other.systemInstructions &&
-          providerId == other.providerId &&
-          model == other.model &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
           effort == other.effort &&
           source == other.source &&
           revision == other.revision &&
@@ -60,8 +60,8 @@ class AgentProfileView {
     description,
     whenToUse,
     systemInstructions,
-    providerId,
-    model,
+    accountId,
+    modelId,
     effort,
     source,
     revision,
@@ -79,8 +79,8 @@ class AgentProfileDraft {
     required this.description,
     required this.whenToUse,
     required this.systemInstructions,
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     this.effort,
     this.enabled = true,
     this.workspaceMode = AgentWorkspaceMode.directory,
@@ -93,8 +93,8 @@ class AgentProfileDraft {
         description: profile.description,
         whenToUse: profile.whenToUse,
         systemInstructions: profile.systemInstructions,
-        providerId: profile.providerId,
-        model: profile.model,
+        accountId: profile.accountId,
+        modelId: profile.modelId,
         effort: profile.effort,
         enabled: profile.enabled,
         workspaceMode: profile.workspaceMode,
@@ -105,8 +105,8 @@ class AgentProfileDraft {
   final String description;
   final String whenToUse;
   final String systemInstructions;
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final bool enabled;
   final AgentWorkspaceMode workspaceMode;

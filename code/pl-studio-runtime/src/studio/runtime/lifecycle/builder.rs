@@ -12,7 +12,7 @@ use super::super::lsp_state::LspStateRuntime;
 use super::super::mcp_health::McpStateRuntime;
 use super::super::residency::ThreadResidency;
 use super::super::{
-    ModelPerformanceOwner, ProviderUsageRuntime, ShutdownProgressBus, SkillCatalogRuntime,
+    AccountUsageRuntime, ModelPerformanceOwner, ShutdownProgressBus, SkillCatalogRuntime,
     StudioAgentFacility, StudioExternalRuntimes, StudioUpdateRuntime,
 };
 
@@ -49,7 +49,7 @@ impl StudioRuntime {
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
-        let provider_usage = ProviderUsageRuntime::new(
+        let account_usage = AccountUsageRuntime::new(
             store.clone(),
             config_runtime.clone(),
             product_events.clone(),
@@ -151,7 +151,7 @@ impl StudioRuntime {
             recovery_task: Default::default(),
             skills,
             thread_modes,
-            provider_usage,
+            account_usage,
             model_performance,
             updater,
             activation: Default::default(),

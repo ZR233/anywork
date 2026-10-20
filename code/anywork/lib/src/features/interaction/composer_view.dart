@@ -40,7 +40,7 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
   final attachments = ref.watch(attachmentDraftsProvider);
   return StartPageComposerProjection(
     project: project,
-    providers: canonical?.providers ?? const [],
+    accounts: canonical?.accounts ?? const [],
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     settingsLoaded: settings.configLoaded,
     canSubmit:
@@ -83,14 +83,14 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     routeDisplay: ModelRouteQueries.threadRoute(
       canonical: canonicalRoute,
       command: routeCommand,
-      providers: settings.canonical?.providers ?? const [],
+      accounts: settings.canonical?.accounts ?? const [],
     ),
     routePending: routeCommand?.isPending ?? false,
     routeFailure: routeCommand?.phase == CommandPhase.failed
         ? routeCommand?.error?.message
         : null,
     workflow: session.workflow,
-    providers: settings.canonical?.providers ?? const [],
+    accounts: settings.canonical?.accounts ?? const [],
     settingsLoaded: settings.configLoaded,
     targetDiagnostic: projectId == null
         ? null
@@ -102,7 +102,7 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
 class StartPageComposerProjection {
   const StartPageComposerProjection({
     required this.project,
-    required this.providers,
+    required this.accounts,
     required this.modeModelRoutes,
     required this.settingsLoaded,
     required this.canSubmit,
@@ -115,7 +115,7 @@ class StartPageComposerProjection {
   });
 
   final StudioProject? project;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final bool settingsLoaded;
   final bool canSubmit;
@@ -163,7 +163,7 @@ class StartPageComposerProjection {
           project?.id == other.project?.id &&
           settingsLoaded == other.settingsLoaded &&
           canSubmit == other.canSubmit &&
-          identical(providers, other.providers) &&
+          identical(accounts, other.accounts) &&
           identical(modeModelRoutes, other.modeModelRoutes) &&
           identical(commands, other.commands) &&
           identical(diagnostics, other.diagnostics) &&
@@ -177,7 +177,7 @@ class StartPageComposerProjection {
     project?.id,
     settingsLoaded,
     canSubmit,
-    identityHashCode(providers),
+    identityHashCode(accounts),
     identityHashCode(modeModelRoutes),
     identityHashCode(commands),
     identityHashCode(diagnostics),
@@ -201,7 +201,7 @@ class ComposerDockView {
     required this.routePending,
     required this.routeFailure,
     required this.workflow,
-    required this.providers,
+    required this.accounts,
     required this.settingsLoaded,
     required this.targetDiagnostic,
     required this.additionalDiagnostics,
@@ -218,7 +218,7 @@ class ComposerDockView {
   final bool routePending;
   final String? routeFailure;
   final WorkflowRuntimeView? workflow;
-  final List<ProviderSettingsView> providers;
+  final List<AccountSettingsView> accounts;
   final bool settingsLoaded;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
@@ -230,7 +230,7 @@ class ComposerDockView {
       ModelRouteQueries.threadRoute(
         canonical: modelRoute,
         command: null,
-        providers: providers,
+        accounts: accounts,
       );
 
   @override
@@ -254,7 +254,7 @@ class ComposerDockView {
           workflow == other.workflow &&
           settingsLoaded == other.settingsLoaded &&
           targetDiagnostic == other.targetDiagnostic &&
-          identical(providers, other.providers) &&
+          identical(accounts, other.accounts) &&
           identical(additionalDiagnostics, other.additionalDiagnostics);
 
   @override
@@ -275,7 +275,7 @@ class ComposerDockView {
     workflow,
     settingsLoaded,
     targetDiagnostic,
-    identityHashCode(providers),
+    identityHashCode(accounts),
     identityHashCode(additionalDiagnostics),
   );
 }

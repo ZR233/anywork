@@ -150,7 +150,7 @@ pub struct AgentSessionSnapshot {
 pub enum PromptPrefixChangedReason {
     Initial,
     PromptScopeChanged,
-    ProviderChanged,
+    AccountChanged,
     ModelChanged,
     BaseInstructionsChanged,
     GlobalInstructionsChanged,
@@ -171,10 +171,10 @@ pub enum PromptPrefixChangedReason {
 pub struct ThreadPromptSnapshot {
     pub scope: String,
     pub generation: u64,
-    pub provider: String,
+    pub account_id: String,
     #[serde(default)]
-    pub provider_hash: String,
-    pub model: String,
+    pub account_hash: String,
+    pub model_id: String,
     pub fixed_prefix_hash: String,
     #[serde(default)]
     pub fixed_prefix_section_hashes: BTreeMap<String, String>,

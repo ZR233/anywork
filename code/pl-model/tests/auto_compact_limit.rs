@@ -2,11 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use pl_model::config::{
-    AgentModelConfig, AgentRoleId, ModelRouteConfig, ProviderConfig, ProviderId,
-};
+use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig};
 use pl_model::model::ModelInfo;
-use pl_model::provider::ProviderEndpoint;
+use pl_model::protocol::ProtocolEndpoint;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -17,16 +15,16 @@ fn model(model_id: &str, capacity: Option<u64>) -> ModelInfo {
     model
 }
 
-fn provider(models: Vec<ModelInfo>) -> ProviderConfig {
-    ProviderConfig::from_explicit_models(
-        ProviderEndpoint::compatible("Fixture", "https://example.test/v1"),
+fn provider(models: Vec<ModelInfo>) -> AccountConfig {
+    AccountConfig::from_explicit_models(
+        ProtocolEndpoint::compatible("Fixture", "https://example.test/v1"),
         models,
     )
 }
 
-fn config(provider: ProviderConfig) -> AgentModelConfig {
+fn config(provider: AccountConfig) -> AgentModelConfig {
     AgentModelConfig {
-        providers: [(ProviderId::new("fixture").unwrap(), provider)].into(),
+        accounts: [(AccountId::new("fixture").unwrap(), provider)].into(),
         routes: BTreeMap::new(),
     }
 }
@@ -56,8 +54,8 @@ fn route_defaults_use_model_preset_then_ninety_percent_of_current_capacity() {
             .resolve_route(
                 AgentRoleId::new("executor").unwrap(),
                 &ModelRouteConfig {
-                    provider: ProviderId::new("fixture").unwrap(),
-                    model: model_id.into(),
+                    account_id: AccountId::new("fixture").unwrap(),
+                    model_id: model_id.into(),
                     effort: None,
                 },
             )
@@ -150,7 +148,7 @@ fn desired_configuration_omits_defaults_and_preserves_overrides_across_round_tri
     let mut original = provider(vec![model("selected", Some(400_000))]);
     let empty = serde_json::to_value(&original).unwrap();
     assert!(empty["catalog"].get("auto_compact_overrides").is_none());
-    let legacy: ProviderConfig = serde_json::from_value(empty).unwrap();
+    let legacy: AccountConfig = serde_json::from_value(empty).unwrap();
     assert_eq!(legacy, original);
     original
         .set_model_auto_compact_override("selected", Some(123_456))
@@ -160,13 +158,13 @@ fn desired_configuration_omits_defaults_and_preserves_overrides_across_round_tri
         stored["catalog"]["auto_compact_overrides"],
         json!({"selected": 123456})
     );
-    let restored: ProviderConfig = serde_json::from_value(stored.clone()).unwrap();
+    let restored: AccountConfig = serde_json::from_value(stored.clone()).unwrap();
     assert_eq!(restored, original);
     config(restored).validate().unwrap();
     for invalid in [json!({"selected": 0}), json!({"missing": 123})] {
         let mut corrupted = stored.clone();
         corrupted["catalog"]["auto_compact_overrides"] = invalid;
-        let parsed: ProviderConfig = serde_json::from_value(corrupted).unwrap();
+        let parsed: AccountConfig = serde_json::from_value(corrupted).unwrap();
         assert!(config(parsed).validate().is_err());
     }
     let mut invalid_preset = model("invalid", Some(400_000));

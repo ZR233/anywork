@@ -329,7 +329,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSystemGroup => '系统';
 
   @override
-  String get settingsProvidersTab => '模型服务商';
+  String get settingsAccountsTab => '账号';
 
   @override
   String get settingsInstructionsTab => '指令';
@@ -586,7 +586,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get statusModelRouteUnavailableFallback => '当前模型路由不可用，请检查供应商和模型设置。';
+  String get statusModelRouteUnavailableFallback => '当前模型路由不可用，请检查账号和模型设置。';
 
   @override
   String get statusModelSwitchWhileRunning =>
@@ -725,7 +725,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsTitle => '统计';
 
   @override
-  String get settingsStatisticsSubtitle => '按模型服务商实例、实际模型与思考强度汇总最近成功调用。';
+  String get settingsStatisticsSubtitle => '按账号、配置模型与组内思考强度汇总最近成功调用。';
 
   @override
   String get settingsStatisticsSummaryTitle => '模型性能';
@@ -770,7 +770,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsMismatchEmpty => '当前筛选条件下没有模型不一致记录。';
 
   @override
-  String get statisticsModel => '模型服务商 / 模型';
+  String get statisticsModel => '账号 / 模型';
 
   @override
   String get statisticsHistoryModelHeader => '模型';
@@ -1317,82 +1317,82 @@ class AppLocalizationsZh extends AppLocalizations {
   String get planReceiptApproveReply => '批准实施该计划';
 
   @override
-  String get settingsProvidersTitle => '模型服务商';
+  String get settingsAccountsTitle => '账号';
 
   @override
-  String get settingsProvidersSubtitle => '模型服务、凭据、模型和用量';
+  String get settingsAccountsSubtitle => '账号、凭据、模型和用量';
 
   @override
   String get settingsRefreshUsage => '刷新用量';
 
   @override
-  String get settingsAddProvider => '添加模型服务商';
+  String get settingsAddAccount => '添加账号';
 
   @override
-  String get settingsSearchProviders => '搜索模型服务商';
+  String get settingsSearchAccounts => '搜索账号';
 
   @override
-  String get settingsNoProvidersMatchTitle => '没有匹配的模型服务商';
+  String get settingsNoAccountsMatchTitle => '没有匹配的账号';
 
   @override
-  String get settingsNoProvidersMatchMessage => '清空搜索以查看所有已配置的模型服务商。';
+  String get settingsNoAccountsMatchMessage => '清空搜索以查看所有已配置的账号。';
 
   @override
-  String get settingsNoProvidersTitle => '没有模型服务商';
+  String get settingsNoAccountsTitle => '没有账号';
 
   @override
-  String get settingsNoProvidersMessage => '添加模型服务商后可配置凭据和模型。';
+  String get settingsNoAccountsMessage => '添加账号后可配置凭据和模型。';
 
   @override
-  String get settingsDefaultProvider => '默认模型服务商';
+  String get settingsDefaultAccount => '默认账号';
 
   @override
-  String get settingsSetAsDefaultProvider => '设为默认';
+  String get settingsSetAsDefaultAccount => '设为默认';
 
   @override
   String get settingsOpenDetails => '打开详情';
 
   @override
-  String get settingsProviderActions => '模型服务商操作';
+  String get settingsAccountActions => '账号操作';
 
   @override
-  String get settingsEditProvider => '编辑模型服务商';
+  String get settingsEditAccount => '编辑账号';
 
   @override
-  String get settingsDeleteProvider => '删除模型服务商';
+  String get settingsDeleteAccount => '删除账号';
 
   @override
-  String get settingsNoProviderSelected => '未选择模型服务商';
+  String get settingsNoAccountSelected => '未选择账号';
 
   @override
-  String get settingsProviderTitle => '模型服务商信息';
+  String get settingsAccountTitle => '账号信息';
 
   @override
-  String get settingsProviderModelsTitle => '模型';
+  String get settingsAccountModelsTitle => '模型';
 
   @override
-  String get settingsProviderConnectionTitle => '连接';
+  String get settingsAccountConnectionTitle => '连接';
 
   @override
-  String get settingsProviderDefaultModelsTitle => '默认目录（尚未同步）';
+  String get settingsAccountDefaultModelsTitle => '默认目录（尚未同步）';
 
   @override
-  String get settingsProviderCustomModelsTitle => '手动模型';
+  String get settingsAccountCustomModelsTitle => '手动模型';
 
   @override
-  String get settingsProviderOnlineModelsTitle => '在线模型';
+  String get settingsAccountOnlineModelsTitle => '在线模型';
 
   @override
-  String get settingsNewProvider => '新建模型服务商';
+  String get settingsNewAccount => '新建账号';
 
   @override
-  String get settingsProviderKey => '服务商标识';
+  String get settingsAccountId => '账号 ID';
 
   @override
-  String get settingsTemplate => '模板';
+  String get settingsAccountTemplate => '账号模板';
 
   @override
-  String get settingsCustomProvider => '自定义模型服务商';
+  String get settingsCustomAccount => '自定义账号';
 
   @override
   String get settingsDefaultModel => '默认模型';
@@ -1554,11 +1554,11 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsUsageQueryFailed => '用量查询失败';
 
   @override
-  String get settingsUsageApiKeyMissing => '未配置模型服务商 API 密钥';
+  String get settingsUsageApiKeyMissing => '未配置账号 API 密钥';
 
   @override
-  String settingsUsageUnsupportedForProvider(String providerName) {
-    return '$providerName 不支持用量查询';
+  String settingsUsageUnsupportedForAccount(String accountName) {
+    return '$accountName 不支持用量查询';
   }
 
   @override
@@ -1809,7 +1809,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsWebSearchEffectiveMode => '有效模式';
 
   @override
-  String get settingsWebSearchProvider => 'OpenAI 模型服务商';
+  String get settingsWebSearchAccount => 'OpenAI 账号';
 
   @override
   String get settingsWebSearchModel => '搜索模型';
@@ -1872,18 +1872,17 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsWebSearchMissingCredential => '缺少凭证';
 
   @override
-  String get settingsWebSearchUnsupportedProvider => '模型服务商不支持';
+  String get settingsWebSearchUnsupportedAccount => '账号不支持';
 
   @override
   String get settingsWebSearchUnsupportedModel => '模型不支持';
 
   @override
   String get settingsWebSearchMissingCredentialReason =>
-      '没有从 OpenAI 预设创建且凭证有效的模型服务商，远程网页搜索已完全禁用。';
+      '没有从 OpenAI 账号模板创建且凭证有效的账号，远程网页搜索已完全禁用。';
 
   @override
-  String get settingsWebSearchUnsupportedProviderReason =>
-      '当前模型服务商未提供这一路网页搜索后端。';
+  String get settingsWebSearchUnsupportedAccountReason => '当前账号未提供这一路网页搜索后端。';
 
   @override
   String get settingsWebSearchUnsupportedModelReason => '当前路由无法提供函数工具或托管网页搜索。';
@@ -1905,7 +1904,7 @@ class AppLocalizationsZh extends AppLocalizations {
       '先由其它可用搜索优先处理；仅当其它搜索未配置、不可用或调用失败时，才由 DeepSeek 联网搜索兜底；搜索与抓取均按请求次数计费。';
 
   @override
-  String get settingsDeepSeekWebSearchProvider => 'DeepSeek 模型服务商';
+  String get settingsDeepSeekWebSearchAccount => 'DeepSeek 账号';
 
   @override
   String get settingsDeepSeekWebSearchConfigured => '搜索已配置';
@@ -2131,7 +2130,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsAgentProfileInstructionsField => '系统指令';
 
   @override
-  String get settingsAgentProfileProviderField => '模型服务商';
+  String get settingsAgentProfileAccountField => '账号';
 
   @override
   String get settingsAgentProfileEffortDefault => '使用模型默认值';
@@ -2179,7 +2178,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsCapabilitySourceField => '能力来源';
 
   @override
-  String get settingsCapabilitySourcePreset => '跟随预设默认';
+  String get settingsCapabilitySourceTemplate => '跟随模板默认';
 
   @override
   String get settingsCapabilitySourceExplicit => '显式覆盖';
@@ -2595,13 +2594,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get toolStatusCancelling => '正在取消';
 
   @override
-  String get settingsProviderCatalogUnavailable => '无法获取模型服务商目录。';
+  String get settingsAccountCatalogUnavailable => '无法获取账号目录。';
 
   @override
-  String get settingsProviderPresetUnavailable => '无法获取模型服务商预设。';
+  String get settingsAccountTemplateUnavailable => '无法获取账号模板。';
 
   @override
-  String get settingsProviderMissingCredential => '缺少凭据';
+  String get settingsAccountMissingCredential => '缺少凭据';
 
   @override
   String get settingsSshStateDisconnected => '未连接';
@@ -2715,7 +2714,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelCatalogCached => '上次成功的模型列表';
 
   @override
-  String get settingsModelCatalogOnline => '供应商返回的模型列表';
+  String get settingsModelCatalogOnline => '该账号返回的模型列表';
 
   @override
   String get settingsModelCatalogChecked => '上次检查';
@@ -2727,7 +2726,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelCatalogCacheWarning => '无法加载已保存的模型列表，当前使用内置列表。';
 
   @override
-  String get settingsModelCatalogEmpty => '当前没有可用模型。';
+  String get settingsModelCatalogEmpty => '该账号没有模型。';
 
   @override
   String get settingsModelCatalogRestartHint => '重启应用可重新同步。';
@@ -2787,7 +2786,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modelContextWindowUnknown => '上下文大小未知';
 
   @override
-  String get modelTextFilterEmpty => '没有符合文本条件的模型，请在模型服务商设置中查看参数';
+  String get modelTextFilterEmpty => '没有符合文本条件的模型，请在账号设置中查看参数';
 
   @override
   String get modeEditorTitle => '工作模式';
@@ -3384,6 +3383,36 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modeDeletedBadge => '已删除';
+
+  @override
+  String get settingsAccountProtocol => '账号协议';
+
+  @override
+  String get statisticsGroupTotal => '本组汇总';
+
+  @override
+  String get statisticsAllEfforts => '全部强度';
+
+  @override
+  String get statisticsEffortBreakdownTitle => '组内思考强度';
+
+  @override
+  String get accountProtocolOpenAi => 'OpenAI';
+
+  @override
+  String get accountProtocolDeepSeek => 'DeepSeek';
+
+  @override
+  String get accountProtocolZhipu => '智谱';
+
+  @override
+  String get accountProtocolMiMo => 'MiMo';
+
+  @override
+  String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolCustom => '自定义（OpenAI 兼容）';
 
   @override
   String get timelineWaitToolsTitle => '等待工具完成';

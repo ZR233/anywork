@@ -2292,10 +2292,10 @@ mod storage_fault_tests {
     )> {
         let receipt = pl_model::runtime::ModelResponseReceipt {
             binding: pl_model::runtime::ModelCallBinding {
-                provider_instance_id: "fixture".into(),
-                requested_model: "fixture-model".into(),
-                adapter: pl_model::provider::ProviderAdapterKind::OpenAiCompatible,
-                protocol: pl_model::provider::ProviderWireProtocol::ChatCompletions,
+                account_id: "fixture".into(),
+                model_id: "fixture-model".into(),
+                protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
+                wire_api: pl_model::protocol::WireApi::ChatCompletions,
                 isolation: "test".into(),
                 purpose: "test".into(),
                 context_window: None,
@@ -2327,7 +2327,8 @@ mod storage_fault_tests {
         }
         let frame = OpaquePayload::new(
             "pl.model.assistant",
-            2,
+            // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
+            3,
             serde_json::to_string(&Frame {
                 receipt: &receipt,
                 bindings: Vec::new(),

@@ -344,6 +344,6 @@ pub(super) fn approval_policy_key(
 ) -> String {
     crate::hash::canonical_json_hash(&serde_json::json!({
         "mode": config.runtime.permission_mode,
-        "reviewer": (config.runtime.permission_mode == crate::approval::PermissionMode::AutoReview).then(|| serde_json::json!({"provider": route.provider_id, "endpoint": route.endpoint, "model": route.model, "effort": route.effort, "pricing": route.pricing_mode})),
+        "reviewer": (config.runtime.permission_mode == crate::approval::PermissionMode::AutoReview).then(|| serde_json::json!({"provider": route.account_id, "endpoint": route.endpoint, "model": route.model, "effort": route.effort, "pricing": route.pricing_mode})),
     }))
 }

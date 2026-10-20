@@ -31,8 +31,8 @@ pub async fn start_new_thread(
     project_id: String,
     input: BridgeStudioPromptInput,
     mode: String,
-    provider_id: String,
-    model: String,
+    account_id: String,
+    model_id: String,
     effort: Option<String>,
     workspace_mode: Option<String>,
 ) -> Result<StartNewThreadResponse, BridgeError> {
@@ -57,8 +57,8 @@ pub async fn start_new_thread(
                 input: input.into(),
                 mode: mode.label().to_string(),
                 route: pl_protocol::studio::NewThreadModelRoute {
-                    provider_id,
-                    model,
+                    account_id,
+                    model_id,
                     effort,
                 },
                 workspace_mode,
@@ -145,8 +145,8 @@ pub async fn set_thread_mode(
 pub async fn set_thread_model_route(
     operation_id: String,
     thread_id: String,
-    provider_id: String,
-    model: String,
+    account_id: String,
+    model_id: String,
     effort: Option<String>,
     expected_model_route_revision: u64,
     expected_settings_revision: u64,
@@ -160,8 +160,8 @@ pub async fn set_thread_model_route(
                 operation_id,
                 expected_model_route_revision,
                 expected_settings_revision,
-                provider_id,
-                model,
+                account_id,
+                model_id,
                 effort,
             },
         )

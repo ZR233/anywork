@@ -5,7 +5,7 @@
 use tokio::sync::watch;
 
 use crate::{
-    PersistenceStateSnapshot, ProviderUsageStateSnapshot, SkillsStateSnapshot,
+    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
     StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
@@ -99,11 +99,11 @@ impl ProductEventBus {
         Some(self.emit(StudioProductEventKind::ThreadModeCatalogChanged(state)))
     }
 
-    pub fn emit_provider_usage_state(
+    pub fn emit_account_usage_state(
         &self,
-        state: ProviderUsageStateSnapshot,
+        state: AccountUsageStateSnapshot,
     ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ProviderUsageStateChanged(state))
+        self.emit(StudioProductEventKind::AccountUsageStateChanged(state))
     }
 
     pub fn emit_model_performance_state(

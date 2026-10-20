@@ -668,11 +668,11 @@ abstract class AppLocalizations {
   /// **'System'**
   String get settingsSystemGroup;
 
-  /// No description provided for @settingsProvidersTab.
+  /// No description provided for @settingsAccountsTab.
   ///
   /// In en, this message translates to:
-  /// **'Providers'**
-  String get settingsProvidersTab;
+  /// **'Accounts'**
+  String get settingsAccountsTab;
 
   /// No description provided for @settingsInstructionsTab.
   ///
@@ -1163,7 +1163,7 @@ abstract class AppLocalizations {
   /// No description provided for @statusModelRouteUnavailableFallback.
   ///
   /// In en, this message translates to:
-  /// **'The current model route is unavailable. Check the provider and model settings.'**
+  /// **'The current model route is unavailable. Check the account and model settings.'**
   String get statusModelRouteUnavailableFallback;
 
   /// No description provided for @statusModelSwitchWhileRunning.
@@ -1427,7 +1427,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStatisticsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Recent successful model calls, grouped by provider instance, actual model, and reasoning effort.'**
+  /// **'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.'**
   String get settingsStatisticsSubtitle;
 
   /// No description provided for @settingsStatisticsSummaryTitle.
@@ -1517,7 +1517,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsModel.
   ///
   /// In en, this message translates to:
-  /// **'Provider / model'**
+  /// **'Account / model'**
   String get statisticsModel;
 
   /// No description provided for @statisticsHistoryModelHeader.
@@ -2484,17 +2484,17 @@ abstract class AppLocalizations {
   /// **'Approved this plan for execution'**
   String get planReceiptApproveReply;
 
-  /// No description provided for @settingsProvidersTitle.
+  /// No description provided for @settingsAccountsTitle.
   ///
   /// In en, this message translates to:
-  /// **'Providers'**
-  String get settingsProvidersTitle;
+  /// **'Accounts'**
+  String get settingsAccountsTitle;
 
-  /// No description provided for @settingsProvidersSubtitle.
+  /// No description provided for @settingsAccountsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Model providers, credentials, models, and usage'**
-  String get settingsProvidersSubtitle;
+  /// **'Accounts, credentials, models, and usage'**
+  String get settingsAccountsSubtitle;
 
   /// No description provided for @settingsRefreshUsage.
   ///
@@ -2502,53 +2502,53 @@ abstract class AppLocalizations {
   /// **'Refresh usage'**
   String get settingsRefreshUsage;
 
-  /// No description provided for @settingsAddProvider.
+  /// No description provided for @settingsAddAccount.
   ///
   /// In en, this message translates to:
-  /// **'Add provider'**
-  String get settingsAddProvider;
+  /// **'Add account'**
+  String get settingsAddAccount;
 
-  /// No description provided for @settingsSearchProviders.
+  /// No description provided for @settingsSearchAccounts.
   ///
   /// In en, this message translates to:
-  /// **'Search providers'**
-  String get settingsSearchProviders;
+  /// **'Search accounts'**
+  String get settingsSearchAccounts;
 
-  /// No description provided for @settingsNoProvidersMatchTitle.
+  /// No description provided for @settingsNoAccountsMatchTitle.
   ///
   /// In en, this message translates to:
-  /// **'No providers match this filter'**
-  String get settingsNoProvidersMatchTitle;
+  /// **'No accounts match this filter'**
+  String get settingsNoAccountsMatchTitle;
 
-  /// No description provided for @settingsNoProvidersMatchMessage.
+  /// No description provided for @settingsNoAccountsMatchMessage.
   ///
   /// In en, this message translates to:
-  /// **'Clear the search to see all configured providers.'**
-  String get settingsNoProvidersMatchMessage;
+  /// **'Clear the search to see all configured accounts.'**
+  String get settingsNoAccountsMatchMessage;
 
-  /// No description provided for @settingsNoProvidersTitle.
+  /// No description provided for @settingsNoAccountsTitle.
   ///
   /// In en, this message translates to:
-  /// **'No providers found'**
-  String get settingsNoProvidersTitle;
+  /// **'No accounts found'**
+  String get settingsNoAccountsTitle;
 
-  /// No description provided for @settingsNoProvidersMessage.
+  /// No description provided for @settingsNoAccountsMessage.
   ///
   /// In en, this message translates to:
-  /// **'Add a provider to configure credentials and models.'**
-  String get settingsNoProvidersMessage;
+  /// **'Add an account to configure credentials and models.'**
+  String get settingsNoAccountsMessage;
 
-  /// No description provided for @settingsDefaultProvider.
+  /// No description provided for @settingsDefaultAccount.
   ///
   /// In en, this message translates to:
-  /// **'Default provider'**
-  String get settingsDefaultProvider;
+  /// **'Default account'**
+  String get settingsDefaultAccount;
 
-  /// No description provided for @settingsSetAsDefaultProvider.
+  /// No description provided for @settingsSetAsDefaultAccount.
   ///
   /// In en, this message translates to:
   /// **'Set as default'**
-  String get settingsSetAsDefaultProvider;
+  String get settingsSetAsDefaultAccount;
 
   /// No description provided for @settingsOpenDetails.
   ///
@@ -2556,89 +2556,89 @@ abstract class AppLocalizations {
   /// **'Open details'**
   String get settingsOpenDetails;
 
-  /// No description provided for @settingsProviderActions.
+  /// No description provided for @settingsAccountActions.
   ///
   /// In en, this message translates to:
-  /// **'Provider actions'**
-  String get settingsProviderActions;
+  /// **'Account actions'**
+  String get settingsAccountActions;
 
-  /// No description provided for @settingsEditProvider.
+  /// No description provided for @settingsEditAccount.
   ///
   /// In en, this message translates to:
-  /// **'Edit provider'**
-  String get settingsEditProvider;
+  /// **'Edit account'**
+  String get settingsEditAccount;
 
-  /// No description provided for @settingsDeleteProvider.
+  /// No description provided for @settingsDeleteAccount.
   ///
   /// In en, this message translates to:
-  /// **'Delete provider'**
-  String get settingsDeleteProvider;
+  /// **'Delete account'**
+  String get settingsDeleteAccount;
 
-  /// No description provided for @settingsNoProviderSelected.
+  /// No description provided for @settingsNoAccountSelected.
   ///
   /// In en, this message translates to:
-  /// **'No provider selected'**
-  String get settingsNoProviderSelected;
+  /// **'No account selected'**
+  String get settingsNoAccountSelected;
 
-  /// No description provided for @settingsProviderTitle.
+  /// No description provided for @settingsAccountTitle.
   ///
   /// In en, this message translates to:
-  /// **'Provider'**
-  String get settingsProviderTitle;
+  /// **'Account'**
+  String get settingsAccountTitle;
 
-  /// No description provided for @settingsProviderModelsTitle.
+  /// No description provided for @settingsAccountModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Models'**
-  String get settingsProviderModelsTitle;
+  String get settingsAccountModelsTitle;
 
-  /// No description provided for @settingsProviderConnectionTitle.
+  /// No description provided for @settingsAccountConnectionTitle.
   ///
   /// In en, this message translates to:
   /// **'Connection'**
-  String get settingsProviderConnectionTitle;
+  String get settingsAccountConnectionTitle;
 
-  /// No description provided for @settingsProviderDefaultModelsTitle.
+  /// No description provided for @settingsAccountDefaultModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Default catalog (not yet synced)'**
-  String get settingsProviderDefaultModelsTitle;
+  String get settingsAccountDefaultModelsTitle;
 
-  /// No description provided for @settingsProviderCustomModelsTitle.
+  /// No description provided for @settingsAccountCustomModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Manual models'**
-  String get settingsProviderCustomModelsTitle;
+  String get settingsAccountCustomModelsTitle;
 
-  /// No description provided for @settingsProviderOnlineModelsTitle.
+  /// No description provided for @settingsAccountOnlineModelsTitle.
   ///
   /// In en, this message translates to:
   /// **'Online models'**
-  String get settingsProviderOnlineModelsTitle;
+  String get settingsAccountOnlineModelsTitle;
 
-  /// No description provided for @settingsNewProvider.
+  /// No description provided for @settingsNewAccount.
   ///
   /// In en, this message translates to:
-  /// **'New provider'**
-  String get settingsNewProvider;
+  /// **'New account'**
+  String get settingsNewAccount;
 
-  /// No description provided for @settingsProviderKey.
+  /// No description provided for @settingsAccountId.
   ///
   /// In en, this message translates to:
-  /// **'Provider key'**
-  String get settingsProviderKey;
+  /// **'Account ID'**
+  String get settingsAccountId;
 
-  /// No description provided for @settingsTemplate.
+  /// No description provided for @settingsAccountTemplate.
   ///
   /// In en, this message translates to:
-  /// **'Template'**
-  String get settingsTemplate;
+  /// **'Account template'**
+  String get settingsAccountTemplate;
 
-  /// No description provided for @settingsCustomProvider.
+  /// No description provided for @settingsCustomAccount.
   ///
   /// In en, this message translates to:
-  /// **'Custom provider'**
-  String get settingsCustomProvider;
+  /// **'Custom account'**
+  String get settingsCustomAccount;
 
   /// No description provided for @settingsDefaultModel.
   ///
@@ -2943,14 +2943,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsUsageApiKeyMissing.
   ///
   /// In en, this message translates to:
-  /// **'Provider API key is not configured'**
+  /// **'Account API key is not configured'**
   String get settingsUsageApiKeyMissing;
 
-  /// No description provided for @settingsUsageUnsupportedForProvider.
+  /// No description provided for @settingsUsageUnsupportedForAccount.
   ///
   /// In en, this message translates to:
-  /// **'Usage is not supported for {providerName}'**
-  String settingsUsageUnsupportedForProvider(String providerName);
+  /// **'Usage is not supported for {accountName}'**
+  String settingsUsageUnsupportedForAccount(String accountName);
 
   /// No description provided for @settingsUsageNotChecked.
   ///
@@ -3420,11 +3420,11 @@ abstract class AppLocalizations {
   /// **'Effective mode'**
   String get settingsWebSearchEffectiveMode;
 
-  /// No description provided for @settingsWebSearchProvider.
+  /// No description provided for @settingsWebSearchAccount.
   ///
   /// In en, this message translates to:
-  /// **'OpenAI provider'**
-  String get settingsWebSearchProvider;
+  /// **'OpenAI account'**
+  String get settingsWebSearchAccount;
 
   /// No description provided for @settingsWebSearchModel.
   ///
@@ -3546,11 +3546,11 @@ abstract class AppLocalizations {
   /// **'Missing credential'**
   String get settingsWebSearchMissingCredential;
 
-  /// No description provided for @settingsWebSearchUnsupportedProvider.
+  /// No description provided for @settingsWebSearchUnsupportedAccount.
   ///
   /// In en, this message translates to:
-  /// **'Unsupported provider'**
-  String get settingsWebSearchUnsupportedProvider;
+  /// **'Unsupported account'**
+  String get settingsWebSearchUnsupportedAccount;
 
   /// No description provided for @settingsWebSearchUnsupportedModel.
   ///
@@ -3561,14 +3561,14 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWebSearchMissingCredentialReason.
   ///
   /// In en, this message translates to:
-  /// **'No credentialed provider originating from the OpenAI preset is available. Remote web search is fully disabled.'**
+  /// **'No credentialed account originating from the OpenAI template is available. Remote web search is fully disabled.'**
   String get settingsWebSearchMissingCredentialReason;
 
-  /// No description provided for @settingsWebSearchUnsupportedProviderReason.
+  /// No description provided for @settingsWebSearchUnsupportedAccountReason.
   ///
   /// In en, this message translates to:
-  /// **'The current provider does not expose this web search backend.'**
-  String get settingsWebSearchUnsupportedProviderReason;
+  /// **'The current account does not expose this web search backend.'**
+  String get settingsWebSearchUnsupportedAccountReason;
 
   /// No description provided for @settingsWebSearchUnsupportedModelReason.
   ///
@@ -3606,11 +3606,11 @@ abstract class AppLocalizations {
   /// **'Other available web search is tried first; DeepSeek web search is used only as a billed fallback when other search is unconfigured, unavailable, or fails. Search and fetch are billed per request.'**
   String get settingsDeepSeekWebSearchSubtitle;
 
-  /// No description provided for @settingsDeepSeekWebSearchProvider.
+  /// No description provided for @settingsDeepSeekWebSearchAccount.
   ///
   /// In en, this message translates to:
-  /// **'DeepSeek provider'**
-  String get settingsDeepSeekWebSearchProvider;
+  /// **'DeepSeek account'**
+  String get settingsDeepSeekWebSearchAccount;
 
   /// No description provided for @settingsDeepSeekWebSearchConfigured.
   ///
@@ -3996,11 +3996,11 @@ abstract class AppLocalizations {
   /// **'System instructions'**
   String get settingsAgentProfileInstructionsField;
 
-  /// No description provided for @settingsAgentProfileProviderField.
+  /// No description provided for @settingsAgentProfileAccountField.
   ///
   /// In en, this message translates to:
-  /// **'Provider'**
-  String get settingsAgentProfileProviderField;
+  /// **'Account'**
+  String get settingsAgentProfileAccountField;
 
   /// No description provided for @settingsAgentProfileEffortDefault.
   ///
@@ -4086,11 +4086,11 @@ abstract class AppLocalizations {
   /// **'Capability source'**
   String get settingsCapabilitySourceField;
 
-  /// No description provided for @settingsCapabilitySourcePreset.
+  /// No description provided for @settingsCapabilitySourceTemplate.
   ///
   /// In en, this message translates to:
-  /// **'Follow preset defaults'**
-  String get settingsCapabilitySourcePreset;
+  /// **'Follow template defaults'**
+  String get settingsCapabilitySourceTemplate;
 
   /// No description provided for @settingsCapabilitySourceExplicit.
   ///
@@ -4884,23 +4884,23 @@ abstract class AppLocalizations {
   /// **'Cancelling'**
   String get toolStatusCancelling;
 
-  /// No description provided for @settingsProviderCatalogUnavailable.
+  /// No description provided for @settingsAccountCatalogUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Provider catalog is unavailable.'**
-  String get settingsProviderCatalogUnavailable;
+  /// **'Account catalog is unavailable.'**
+  String get settingsAccountCatalogUnavailable;
 
-  /// No description provided for @settingsProviderPresetUnavailable.
+  /// No description provided for @settingsAccountTemplateUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Provider preset is unavailable.'**
-  String get settingsProviderPresetUnavailable;
+  /// **'Account template is unavailable.'**
+  String get settingsAccountTemplateUnavailable;
 
-  /// No description provided for @settingsProviderMissingCredential.
+  /// No description provided for @settingsAccountMissingCredential.
   ///
   /// In en, this message translates to:
   /// **'Missing credential'**
-  String get settingsProviderMissingCredential;
+  String get settingsAccountMissingCredential;
 
   /// No description provided for @settingsSshStateDisconnected.
   ///
@@ -5127,7 +5127,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelCatalogOnline.
   ///
   /// In en, this message translates to:
-  /// **'Models from this provider'**
+  /// **'Models from this account'**
   String get settingsModelCatalogOnline;
 
   /// No description provided for @settingsModelCatalogChecked.
@@ -5151,7 +5151,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelCatalogEmpty.
   ///
   /// In en, this message translates to:
-  /// **'This provider has no models.'**
+  /// **'This account has no models.'**
   String get settingsModelCatalogEmpty;
 
   /// No description provided for @settingsModelCatalogRestartHint.
@@ -5259,7 +5259,7 @@ abstract class AppLocalizations {
   /// No description provided for @modelTextFilterEmpty.
   ///
   /// In en, this message translates to:
-  /// **'No matching text models. Check model parameters in provider settings.'**
+  /// **'No matching text models. Check model parameters in account settings.'**
   String get modelTextFilterEmpty;
 
   /// No description provided for @modeEditorTitle.
@@ -6389,6 +6389,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Deleted'**
   String get modeDeletedBadge;
+
+  /// No description provided for @settingsAccountProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Account protocol'**
+  String get settingsAccountProtocol;
+
+  /// No description provided for @statisticsGroupTotal.
+  ///
+  /// In en, this message translates to:
+  /// **'Group total'**
+  String get statisticsGroupTotal;
+
+  /// No description provided for @statisticsAllEfforts.
+  ///
+  /// In en, this message translates to:
+  /// **'All effort levels'**
+  String get statisticsAllEfforts;
+
+  /// No description provided for @statisticsEffortBreakdownTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Effort breakdown'**
+  String get statisticsEffortBreakdownTitle;
+
+  /// No description provided for @accountProtocolOpenAi.
+  ///
+  /// In en, this message translates to:
+  /// **'OpenAI'**
+  String get accountProtocolOpenAi;
+
+  /// No description provided for @accountProtocolDeepSeek.
+  ///
+  /// In en, this message translates to:
+  /// **'DeepSeek'**
+  String get accountProtocolDeepSeek;
+
+  /// No description provided for @accountProtocolZhipu.
+  ///
+  /// In en, this message translates to:
+  /// **'Zhipu'**
+  String get accountProtocolZhipu;
+
+  /// No description provided for @accountProtocolMiMo.
+  ///
+  /// In en, this message translates to:
+  /// **'MiMo'**
+  String get accountProtocolMiMo;
+
+  /// No description provided for @accountProtocolXai.
+  ///
+  /// In en, this message translates to:
+  /// **'xAI'**
+  String get accountProtocolXai;
+
+  /// No description provided for @accountProtocolCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom (OpenAI compatible)'**
+  String get accountProtocolCustom;
 
   /// No description provided for @timelineWaitToolsTitle.
   ///

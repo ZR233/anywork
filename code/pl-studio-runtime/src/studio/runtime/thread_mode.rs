@@ -117,7 +117,7 @@ impl StudioRuntime {
             .is_some_and(|saved| saved.route == route_selector);
         let append = same_route
             && route.endpoint.instruction_update_strategy(&route.model)
-                == pl_model::provider::InstructionUpdateStrategy::AppendFullSnapshot;
+                == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot;
         let mut records = if append {
             state.context.records.to_vec()
         } else {

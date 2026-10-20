@@ -1,5 +1,5 @@
-//! Stable provider cache hints, independent of execution and diagnostic identities.
-use crate::provider::ProviderWireProtocol;
+//! Stable account cache hints, independent of execution and diagnostic identities.
+use crate::protocol::WireApi;
 use sha2::{Digest, Sha256};
 
 /// Derives a deterministic cache hint from stable model input identity and host isolation.
@@ -9,7 +9,7 @@ pub fn derive_prompt_cache_key(
     isolation: &str,
     thread_id: &str,
     model: &str,
-    protocol: ProviderWireProtocol,
+    protocol: WireApi,
 ) -> String {
     let mut hash = Sha256::new();
     for part in [
@@ -18,8 +18,8 @@ pub fn derive_prompt_cache_key(
         thread_id,
         model,
         match protocol {
-            ProviderWireProtocol::Responses => "responses",
-            ProviderWireProtocol::ChatCompletions => "chatCompletions",
+            WireApi::Responses => "responses",
+            WireApi::ChatCompletions => "chatCompletions",
         },
     ] {
         hash.update((part.len() as u64).to_le_bytes());
@@ -30,9 +30,11 @@ pub fn derive_prompt_cache_key(
 
 /// Creates an account/deployment isolation namespace without exposing endpoint credentials.
 /// Only configured connection material participates; execution IDs and generated transport headers do not.
+/// The stable account ID is part of the namespace, so renaming the surrounding API cannot turn the
+/// same account into a different physical binding.
 pub fn binding_cache_namespace(
-    provider_id: &str,
-    endpoint: &crate::provider::ProviderEndpoint,
+    account_id: &str,
+    endpoint: &crate::protocol::ProtocolEndpoint,
 ) -> String {
     let mut hash = Sha256::new();
     let mut field = |value: &[u8]| {
@@ -40,7 +42,7 @@ pub fn binding_cache_namespace(
         hash.update(value);
     };
     field(b"pl-model/cache-isolation/v1");
-    field(provider_id.as_bytes());
+    field(account_id.as_bytes());
     field(endpoint.base_url.as_bytes());
     field(
         endpoint

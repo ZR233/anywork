@@ -23,33 +23,35 @@ impl HistoryStore {
         Ok(result)
     }
 
-    /// Commits the Mode representation upgrade before a recovered owner can be observed.
-    /// Migration preserves the checkpoint watermark, context and workflow history. The
-    /// original checkpoint is compared inside the writer transaction, so a concurrent
-    /// commit or another recovery can never be overwritten by a stale candidate.
-    pub(crate) async fn migrate_mode_checkpoint(
+    /// Commits a representation upgrade of saved extensions before a recovered owner can be observed.
+    ///
+    /// `migrate` may only rewrite extension payload encodings (for example a retired Mode, model route
+    /// or Agent Profile format). It cannot change business state: the checkpoint watermark, context,
+    /// usage, workflow and history fence stay as saved, and the extension revisions keep their values.
+    /// The original checkpoint is compared inside the writer transaction, so a concurrent commit or
+    /// another recovery can never be overwritten by a stale candidate; without a representation
+    /// change nothing is written at all.
+    pub(crate) async fn migrate_recovery_checkpoint(
         &self,
         original: &ThreadCheckpoint,
-        modes: &crate::mode::ThreadModeManager,
+        migrate: impl FnOnce(&mut pl_core::thread::ThreadSnapshot) -> Result<()>,
     ) -> Result<ThreadCheckpoint> {
         ensure!(
             original.thread_id == self.state.thread_id,
             "checkpoint belongs to another Thread"
         );
         let mut migrated = original.clone();
-        crate::mode::migrate_mode_snapshot(&mut migrated.state, modes)?;
-        if migrated.state.extensions.get("studio.mode")
-            == original.state.extensions.get("studio.mode")
-        {
+        migrate(&mut migrated.state)?;
+        if migrated.state.extensions == original.state.extensions {
             return Ok(migrated);
         }
         let tx = begin_write(&self.writer().await?.db).await?;
         let current = read(&tx, &self.state.thread_id)
             .await?
-            .context("Mode recovery checkpoint is absent")?;
+            .context("recovery checkpoint is absent")?;
         ensure!(
             serde_json::to_vec(&current)? == serde_json::to_vec(original)?,
-            "checkpoint changed during Mode recovery; original data preserved"
+            "checkpoint changed during recovery migration; original data preserved"
         );
         write(&tx, &migrated, None).await?;
         tx.commit().await?;

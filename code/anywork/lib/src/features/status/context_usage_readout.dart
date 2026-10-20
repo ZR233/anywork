@@ -119,7 +119,7 @@ class _ContextDetail extends StatelessWidget {
         StatusDetailPanel(
           title: context.l10n.statusModelLabel,
           children: [
-            _ModelIdentityLine(model: projection.model),
+            _ModelIdentityLine(modelId: projection.modelId),
             StatusDetailRow(
               label: context.l10n.statusAutoCompactLimitLabel,
               value: formatTokenCount(limit),
@@ -344,9 +344,9 @@ class _ContextProgressBar extends StatelessWidget {
 
 /// 模型身份一行：长名称换行而不是裁切，未知时保留占位。
 class _ModelIdentityLine extends StatelessWidget {
-  const _ModelIdentityLine({required this.model});
+  const _ModelIdentityLine({required this.modelId});
 
-  final String model;
+  final String modelId;
 
   @override
   Widget build(BuildContext context) {
@@ -357,7 +357,7 @@ class _ModelIdentityLine extends StatelessWidget {
     );
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
-      child: Text(model.isEmpty ? tokenCountUnknown : model, style: style),
+      child: Text(modelId.isEmpty ? tokenCountUnknown : modelId, style: style),
     );
   }
 }

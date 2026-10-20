@@ -1,7 +1,7 @@
 use pl_model::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
     model::{ModelInfo, ModelTransportProfile},
-    provider::ProviderEndpoint,
+    protocol::ProtocolEndpoint,
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
 use pl_protocol::trace::{AgentEvent, InMemoryTraceEventSink, TracePartKind};
@@ -31,9 +31,9 @@ fn runtime(base: String, native: bool) -> ModelRuntime {
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     model.capabilities.web_search = true;
-    let mut endpoint = ProviderEndpoint::compatible("fixture", base);
+    let mut endpoint = ProtocolEndpoint::compatible("fixture", base);
     endpoint.service_capabilities.remote_compaction = native;
-    ModelRuntime::new(endpoint, model).unwrap()
+    ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap()
 }
 
 type Chunk = (Vec<u8>, tokio::sync::oneshot::Sender<()>);

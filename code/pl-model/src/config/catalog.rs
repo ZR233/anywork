@@ -1,22 +1,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pl_protocol::{
-    CredentialDescriptorDto, ModelCapabilitiesDto, ModelCatalogDescriptor, ModelInputCapabilityDto,
-    ModelInputSourceDto, ModelModalityDto, ModelReasoningDescriptor, ModelTransportDescriptor,
-    PROVIDER_CATALOG_SCHEMA_VERSION, ProviderCatalogSnapshot, ProviderConnectionModeDescriptor,
-    ProviderPresetDescriptor, ProviderServiceCapabilitiesDescriptor, PureError, Result,
-    WebSearchProviderCapabilitiesDescriptor,
+    ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
+    AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
+    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
+    ModelModalityDto, ModelReasoningDescriptor, ModelTransportDescriptor, PureError, Result,
+    WebSearchServiceCapabilitiesDescriptor,
 };
 
-use super::{ModelCatalogId, ModelDescriptor, ProviderConfig, ProviderPresetId};
-use super::{ProviderModelEntry, ProviderModelOrigin};
+use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
+use super::{AccountModelEntry, AccountModelOrigin};
 use crate::model::{
     ModelInfo, ModelModality, bundled_model_definition, default_models, mimo_default_model_ids,
     zhipu_default_model_ids, zhipu_responses_default_model_ids, zhipu_responses_models,
 };
-use crate::provider::{
-    ProviderConnectionMode, ProviderEndpoint, ProviderServiceCapabilities, ProviderWireProtocol,
-    provider_transport_profile_revision,
+use crate::protocol::{
+    ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, WireApi,
+    wire_transport_profile_revision,
 };
 
 const MIMO_API_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
@@ -36,29 +36,29 @@ pub struct ModelCatalog {
     pub discovery: Option<ModelCatalogDiscovery>,
 }
 
-/// 可由宿主直接实例化的内置 Provider 预设。
+/// 可由宿主直接实例化的内置 Account 预设。
 #[derive(Debug, Clone, PartialEq)]
-pub struct ProviderPreset {
-    pub id: ProviderPresetId,
+pub struct AccountTemplate {
+    pub id: AccountTemplateId,
     pub display_name: String,
     pub description: Option<String>,
-    pub provider: ProviderConfig,
+    pub account: AccountConfig,
     pub credential_label: String,
     pub credential_env: Option<String>,
     pub model_catalog: ModelCatalogId,
-    pub suggested_model: String,
+    pub suggested_model_id: String,
     pub icon_key: Option<String>,
-    pub service_capabilities: ProviderServiceCapabilities,
+    pub service_capabilities: ProtocolServiceCapabilities,
 }
 
-/// PL 内置 Provider 与模型目录注册表。
+/// PL 内置 Account 与模型目录注册表。
 #[derive(Debug, Clone, PartialEq)]
-pub struct ProviderCatalogRegistry {
-    pub presets: Vec<ProviderPreset>,
+pub struct AccountCatalogRegistry {
+    pub templates: Vec<AccountTemplate>,
     pub model_catalogs: BTreeMap<ModelCatalogId, ModelCatalog>,
 }
 
-impl ProviderCatalogRegistry {
+impl AccountCatalogRegistry {
     /// 构造当前二进制内置的完整目录。
     pub fn builtin() -> Result<Self> {
         let openai = bundled_model_definition("openai")?;
@@ -95,66 +95,66 @@ impl ProviderCatalogRegistry {
         .map(|catalog| (catalog.id.clone(), catalog))
         .collect();
 
-        let mut presets = vec![
-            preset(
+        let mut templates = vec![
+            template(
                 "openai",
-                ProviderEndpoint::openai(None),
+                ProtocolEndpoint::openai(None),
                 &openai.suggested_model,
                 "openai",
                 "OPENAI_API_KEY",
                 "OpenAI models served through the Responses API.",
                 "openai",
             ),
-            preset(
+            template(
                 "deepseek",
-                ProviderEndpoint::deepseek(None),
+                ProtocolEndpoint::deepseek(None),
                 &deepseek.suggested_model,
                 "deepseek",
                 "DEEPSEEK_API_KEY",
                 "DeepSeek reasoning and coding models.",
                 "deepseek",
             ),
-            preset(
+            template(
                 "xai",
-                ProviderEndpoint::xai(None),
+                ProtocolEndpoint::xai(None),
                 &xai.suggested_model,
                 "xai",
                 "XAI_API_KEY",
                 "xAI Grok models served through the Responses API.",
                 "xai",
             ),
-            preset(
+            template(
                 "zhipu",
-                ProviderEndpoint::zhipu(None),
+                ProtocolEndpoint::zhipu(None),
                 "glm-5.3",
                 "zhipu",
                 "ZAI_API_KEY",
                 "Zhipu BigModel API.",
                 "zhipu",
             ),
-            preset(
+            template(
                 "zhipu-coding-plan",
-                ProviderEndpoint::zhipu_coding_plan(None),
+                ProtocolEndpoint::zhipu_coding_plan(None),
                 "glm-5.3",
                 "zhipu-responses",
                 "ZAI_API_KEY",
                 "Zhipu Coding Plan Responses API.",
                 "zhipu",
             ),
-            preset(
+            template(
                 "mimo-api",
-                ProviderEndpoint::compatible("MiMo API", MIMO_API_BASE_URL)
-                    .with_adapter(crate::provider::ProviderAdapterKind::MiMo),
+                ProtocolEndpoint::compatible("MiMo API", MIMO_API_BASE_URL)
+                    .with_protocol(crate::protocol::ProtocolKind::MiMo),
                 "mimo-v2.5-pro",
                 "mimo",
                 "MIMO_API_KEY",
                 "Xiaomi MiMo public API.",
                 "mimo",
             ),
-            preset(
+            template(
                 "mimo-token-plan",
-                ProviderEndpoint::compatible("MiMo Token Plan", MIMO_TOKEN_PLAN_BASE_URL)
-                    .with_adapter(crate::provider::ProviderAdapterKind::MiMo),
+                ProtocolEndpoint::compatible("MiMo Token Plan", MIMO_TOKEN_PLAN_BASE_URL)
+                    .with_protocol(crate::protocol::ProtocolKind::MiMo),
                 "mimo-v2.5-pro",
                 "mimo",
                 "MIMO_TOKEN_PLAN_API_KEY",
@@ -163,9 +163,9 @@ impl ProviderCatalogRegistry {
             ),
         ];
 
-        let mut compatible = preset(
+        let mut compatible = template(
             "openai-compatible",
-            ProviderEndpoint::compatible("OpenAI API 兼容", "http://localhost:11434/v1"),
+            ProtocolEndpoint::compatible("OpenAI API 兼容", "http://localhost:11434/v1"),
             "",
             "openai-compatible",
             "",
@@ -177,37 +177,37 @@ impl ProviderCatalogRegistry {
         // openai-compatible 是自定义供应商入口，不属于任何品牌：
         // 不携带 icon_key，UI 对这类供应商回退到名称首字母。
         compatible.icon_key = None;
-        compatible.provider.bearer_token_env = None;
-        compatible.provider.catalog = super::ProviderModelCatalogConfig::Explicit {
+        compatible.account.bearer_token_env = None;
+        compatible.account.catalog = super::AccountModelCatalogConfig::Explicit {
             models: Vec::new(),
             connection_overrides: BTreeMap::new(),
             auto_compact_overrides: BTreeMap::new(),
         };
-        presets.push(compatible);
+        templates.push(compatible);
 
         Ok(Self {
-            presets,
+            templates,
             model_catalogs,
         })
     }
 
-    /// 校验 preset、catalog、transport 与 suggested model 的引用完整性。
+    /// 校验 template、catalog、transport 与 suggested model 的引用完整性。
     pub fn validate(&self) -> Result<()> {
-        let mut preset_ids = BTreeSet::new();
-        for preset in &self.presets {
-            if !preset_ids.insert(preset.id.as_str()) {
+        let mut template_ids = BTreeSet::new();
+        for template in &self.templates {
+            if !template_ids.insert(template.id.as_str()) {
                 return Err(PureError::ConfigError(format!(
-                    "duplicate provider preset: {}",
-                    preset.id
+                    "duplicate account template: {}",
+                    template.id
                 )));
             }
             let catalog = self
                 .model_catalogs
-                .get(&preset.model_catalog)
+                .get(&template.model_catalog)
                 .ok_or_else(|| {
                     PureError::ConfigError(format!(
-                        "provider preset {} references missing catalog: {}",
-                        preset.id, preset.model_catalog
+                        "account template {} references missing catalog: {}",
+                        template.id, template.model_catalog
                     ))
                 })?;
             for model in &catalog.models {
@@ -217,15 +217,15 @@ impl ProviderCatalogRegistry {
                     .validate(&model.model_id)
                     .map_err(|error| PureError::ConfigError(error.to_string()))?;
             }
-            if !preset.suggested_model.is_empty()
+            if !template.suggested_model_id.is_empty()
                 && !catalog
                     .models
                     .iter()
-                    .any(|model| model.model_id == preset.suggested_model)
+                    .any(|model| model.model_id == template.suggested_model_id)
             {
                 return Err(PureError::ConfigError(format!(
-                    "provider preset {} references missing suggested model: {}",
-                    preset.id, preset.suggested_model
+                    "account template {} references missing suggested model: {}",
+                    template.id, template.suggested_model_id
                 )));
             }
         }
@@ -238,9 +238,13 @@ impl ProviderCatalogRegistry {
     }
 
     /// 生成供 Web 与 Flutter 共用的无 secret 快照。
-    pub fn snapshot(&self) -> Result<ProviderCatalogSnapshot> {
+    pub fn snapshot(&self) -> Result<AccountCatalogSnapshot> {
         self.validate()?;
-        let presets = self.presets.iter().map(preset_descriptor).collect();
+        let templates = self
+            .templates
+            .iter()
+            .map(account_template_descriptor)
+            .collect();
         let model_catalogs = self
             .model_catalogs
             .iter()
@@ -253,9 +257,9 @@ impl ProviderCatalogRegistry {
                             .models
                             .iter()
                             .map(|model| {
-                                model_descriptor(&ProviderModelEntry {
+                                model_descriptor(&AccountModelEntry {
                                     model: model.clone(),
-                                    origin: ProviderModelOrigin::Bundled,
+                                    origin: AccountModelOrigin::Bundled,
                                 })
                             })
                             .collect(),
@@ -263,10 +267,10 @@ impl ProviderCatalogRegistry {
                 )
             })
             .collect();
-        let mut snapshot = ProviderCatalogSnapshot {
-            schema_version: PROVIDER_CATALOG_SCHEMA_VERSION,
+        let mut snapshot = AccountCatalogSnapshot {
+            schema_version: ACCOUNT_CATALOG_SCHEMA_VERSION,
             revision: String::new(),
-            presets,
+            templates,
             model_catalogs,
         };
         let mut canonical = serde_json::to_vec(&snapshot)
@@ -276,11 +280,8 @@ impl ProviderCatalogRegistry {
                 for mode in &model.binding.transport.supported_connection_modes {
                     canonical.push(0);
                     canonical.extend_from_slice(
-                        provider_transport_profile_revision(
-                            model.binding.transport.protocol,
-                            *mode,
-                        )
-                        .as_bytes(),
+                        wire_transport_profile_revision(model.binding.transport.protocol, *mode)
+                            .as_bytes(),
                     );
                 }
             }
@@ -290,14 +291,14 @@ impl ProviderCatalogRegistry {
     }
 }
 
-/// 返回当前 PL 内置 Provider 目录。
-pub fn builtin_provider_catalog() -> Result<ProviderCatalogRegistry> {
-    ProviderCatalogRegistry::builtin()
+/// 返回当前 PL 内置 Account 目录。
+pub fn builtin_account_catalog() -> Result<AccountCatalogRegistry> {
+    AccountCatalogRegistry::builtin()
 }
 
 /// 返回一个内置模型目录的副本。
 pub fn builtin_model_catalog(id: &ModelCatalogId) -> Result<ModelCatalog> {
-    ProviderCatalogRegistry::builtin()?
+    AccountCatalogRegistry::builtin()?
         .model_catalog(id)
         .cloned()
         .ok_or_else(|| PureError::ConfigError(format!("unknown model catalog: {id}")))
@@ -337,63 +338,63 @@ fn zhipu_responses_catalog() -> ModelCatalog {
     }
 }
 
-fn preset(
+fn template(
     id: &str,
-    info: ProviderEndpoint,
-    suggested_model: &str,
+    info: ProtocolEndpoint,
+    suggested_model_id: &str,
     catalog: &str,
     credential_env: &str,
     description: &str,
     icon_key: &str,
-) -> ProviderPreset {
+) -> AccountTemplate {
     let service_capabilities = info.service_capabilities.clone();
     let display_name = info.name.clone();
     let model_catalog = ModelCatalogId::new(catalog).expect("static model catalog id is valid");
-    let preset_id = ProviderPresetId::new(id).expect("static provider preset id is valid");
-    let mut provider =
-        ProviderConfig::from_bundled_catalog(info, model_catalog.clone(), Vec::new())
-            .with_preset(preset_id.clone());
-    provider.bearer_token_env = Some(credential_env.to_string());
-    ProviderPreset {
-        id: preset_id.clone(),
+    let template_id = AccountTemplateId::new(id).expect("static account template id is valid");
+    let mut account = AccountConfig::from_bundled_catalog(info, model_catalog.clone(), Vec::new())
+        .with_template(template_id.clone());
+    account.bearer_token_env = Some(credential_env.to_string());
+    AccountTemplate {
+        id: template_id.clone(),
         display_name,
         description: Some(description.to_string()),
-        provider,
+        account,
         credential_label: "API Key".to_string(),
         credential_env: Some(credential_env.to_string()),
         model_catalog,
-        suggested_model: suggested_model.to_string(),
+        suggested_model_id: suggested_model_id.to_string(),
         icon_key: Some(icon_key.to_string()),
         service_capabilities,
     }
 }
 
-fn preset_descriptor(preset: &ProviderPreset) -> ProviderPresetDescriptor {
-    ProviderPresetDescriptor {
-        id: preset.id.to_string(),
-        display_name: preset.display_name.clone(),
-        description: preset.description.clone(),
-        base_url: preset.provider.base_url.clone(),
+fn account_template_descriptor(template: &AccountTemplate) -> AccountTemplateDescriptor {
+    AccountTemplateDescriptor {
+        id: template.id.to_string(),
+        display_name: template.display_name.clone(),
+        description: template.description.clone(),
+        base_url: template.account.base_url.clone(),
         credential: CredentialDescriptorDto {
-            label: preset.credential_label.clone(),
-            env_var: preset.credential_env.clone(),
+            label: template.credential_label.clone(),
+            env_var: template.credential_env.clone(),
         },
-        model_catalog_id: preset.model_catalog.to_string(),
-        suggested_model: preset.suggested_model.clone(),
-        icon_key: preset.icon_key.clone(),
-        pricing_enabled: preset.provider.pricing_mode == pl_protocol::PricingMode::Catalog,
-        service_capabilities: provider_service_capabilities_descriptor(
-            &preset.service_capabilities,
+        model_catalog_id: template.model_catalog.to_string(),
+        protocol: template.account.protocol.as_str().to_string(),
+        suggested_model_id: template.suggested_model_id.clone(),
+        icon_key: template.icon_key.clone(),
+        pricing_enabled: template.account.pricing_mode == pl_protocol::PricingMode::Catalog,
+        service_capabilities: account_service_capabilities_descriptor(
+            &template.service_capabilities,
         ),
     }
 }
 
 /// 将运行时服务能力投影为无凭证公共 DTO。
-pub fn provider_service_capabilities_descriptor(
-    capabilities: &ProviderServiceCapabilities,
-) -> ProviderServiceCapabilitiesDescriptor {
-    ProviderServiceCapabilitiesDescriptor {
-        web_search: WebSearchProviderCapabilitiesDescriptor {
+pub fn account_service_capabilities_descriptor(
+    capabilities: &ProtocolServiceCapabilities,
+) -> AccountServiceCapabilitiesDescriptor {
+    AccountServiceCapabilitiesDescriptor {
+        web_search: WebSearchServiceCapabilitiesDescriptor {
             hosted_responses: capabilities.web_search.hosted_responses,
             hosted_dialect: capabilities.web_search.hosted_dialect.as_str().to_string(),
             standalone: capabilities
@@ -406,20 +407,20 @@ pub fn provider_service_capabilities_descriptor(
     }
 }
 
-fn connection_mode_descriptor(mode: ProviderConnectionMode) -> ProviderConnectionModeDescriptor {
-    ProviderConnectionModeDescriptor {
+fn connection_mode_descriptor(mode: ConnectionMode) -> ConnectionModeDescriptor {
+    ConnectionModeDescriptor {
         id: connection_mode_label(mode).to_string(),
         display_name: match mode {
-            ProviderConnectionMode::WebSocket => "WebSocket".to_string(),
-            ProviderConnectionMode::Http => "HTTP".to_string(),
+            ConnectionMode::WebSocket => "WebSocket".to_string(),
+            ConnectionMode::Http => "HTTP".to_string(),
         },
     }
 }
 
-fn connection_mode_label(mode: ProviderConnectionMode) -> &'static str {
+fn connection_mode_label(mode: ConnectionMode) -> &'static str {
     match mode {
-        ProviderConnectionMode::WebSocket => "web_socket",
-        ProviderConnectionMode::Http => "http",
+        ConnectionMode::WebSocket => "web_socket",
+        ConnectionMode::Http => "http",
     }
 }
 
@@ -427,7 +428,7 @@ fn connection_mode_label(mode: ProviderConnectionMode) -> &'static str {
 ///
 /// This projection must not be used to resolve routes or write configuration: it omits
 /// runtime binding details. Unknown budgets and pricing remain `None`.
-pub fn model_descriptor(entry: &ProviderModelEntry) -> ModelDescriptor {
+pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
     let model = &entry.model;
     let capabilities = &model.capabilities;
     let reasoning = model
@@ -443,12 +444,12 @@ pub fn model_descriptor(entry: &ProviderModelEntry) -> ModelDescriptor {
         });
     let pricing = model.pricing.catalog_pricing();
     ModelDescriptor {
-        id: model.model_id.clone(),
+        model_id: model.model_id.clone(),
         type_support: vec![model.type_support(crate::model::ModelType::Text)],
         origin: match entry.origin {
-            ProviderModelOrigin::Bundled => pl_protocol::ModelOriginDto::Bundled,
-            ProviderModelOrigin::Online => pl_protocol::ModelOriginDto::Online,
-            ProviderModelOrigin::Manual => pl_protocol::ModelOriginDto::Manual,
+            AccountModelOrigin::Bundled => pl_protocol::ModelOriginDto::Bundled,
+            AccountModelOrigin::Online => pl_protocol::ModelOriginDto::Online,
+            AccountModelOrigin::Manual => pl_protocol::ModelOriginDto::Manual,
         },
         display_name: model.display_name.clone(),
         description: model.description.clone(),
@@ -495,10 +496,10 @@ pub fn model_descriptor(entry: &ProviderModelEntry) -> ModelDescriptor {
     }
 }
 
-fn protocol_label(protocol: ProviderWireProtocol) -> &'static str {
+fn protocol_label(protocol: WireApi) -> &'static str {
     match protocol {
-        ProviderWireProtocol::Responses => "responses",
-        ProviderWireProtocol::ChatCompletions => "chat_completions",
+        WireApi::Responses => "responses",
+        WireApi::ChatCompletions => "chat_completions",
     }
 }
 

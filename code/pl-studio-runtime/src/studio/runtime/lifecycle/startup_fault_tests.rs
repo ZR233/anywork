@@ -70,7 +70,7 @@ async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Res
             "cache" => {
                 let store = crate::StudioStore::open(paths.database()).await?;
                 store
-                    .save_setting("observed:providerUsage:v2", "invalid json")
+                    .save_setting("observed:accountUsage:v2", "invalid json")
                     .await?;
                 store.close().await?;
                 paths.settings_file()
@@ -217,10 +217,10 @@ async fn conflicting_model_id_migration_preserves_original_through_startup() -> 
     let mut config = crate::config::StudioConfig::default_config()?;
     let provider = config
         .models
-        .providers
-        .get_mut(&pl_model::config::ProviderId::new("deepseek")?)
+        .accounts
+        .get_mut(&pl_model::config::AccountId::new("deepseek")?)
         .expect("default provider");
-    if let pl_model::config::ProviderModelCatalogConfig::Bundled {
+    if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut provider.catalog
     {
@@ -230,7 +230,7 @@ async fn conflicting_model_id_migration_preserves_original_through_startup() -> 
     let path = home.join("config.toml");
     let mut value: toml::Value = toml::from_str(&std::fs::read_to_string(&path)?)?;
     value["schema_version"] = 21.into();
-    value["models"]["providers"]["deepseek"]["catalog"]["additional_models"][0]
+    value["models"]["accounts"]["deepseek"]["catalog"]["additional_models"][0]
         .as_table_mut()
         .expect("model table")
         .insert("slug".into(), "conflicting-id".into());

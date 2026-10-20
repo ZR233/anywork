@@ -358,6 +358,7 @@ fn run_frb_codegen(workspace_root: &Path, app_dir: &Path) -> Result<()> {
     let rust_root = app_dir.join("rust");
     let rust_output = rust_root.join("src").join("frb_generated.rs");
     let dart_output = app_dir.join("lib").join("src").join("rust");
+    reset_frb_generated_dart_tree(&dart_output)?;
     let args = vec![
         OsString::from("generate"),
         OsString::from("--rust-root"),
@@ -380,6 +381,30 @@ fn run_frb_codegen(workspace_root: &Path, app_dir: &Path) -> Result<()> {
             app_dir.display()
         )
     })
+}
+
+/// `lib/src/rust/` 是 FRB 独占的生成目录，不存放手写 barrel 或转发函数。
+///
+/// 官方生成器只写出本次模块集合对应的文件，不会删除已删除 Rust 模块的产物，因此统一生成入口
+/// 先重建整个子树，再由官方生成器写出完整输出集合；旧的 `providers.dart` 一类孤儿和退役的
+/// `api/studio.dart` 手写 barrel 随本次生成消失。Freezed/Riverpod/l10n 继续由各自入口与既有
+/// orphan 规则处理，不是这里的清理范围。
+fn reset_frb_generated_dart_tree(dart_output: &Path) -> Result<()> {
+    match fs::symlink_metadata(dart_output) {
+        // `symlink_metadata` 不跟随链接：链接或普通文件都不是本入口拥有的生成目录，拒绝删除。
+        Ok(metadata) if !metadata.is_dir() => bail!(
+            "refusing to rebuild {}: not a plain generated directory",
+            dart_output.display()
+        ),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect {}", dart_output.display()));
+        }
+    }
+    fs::remove_dir_all(dart_output)
+        .with_context(|| format!("failed to rebuild {}", dart_output.display()))
 }
 
 fn codegen_rust_path(path: &Path) -> OsString {

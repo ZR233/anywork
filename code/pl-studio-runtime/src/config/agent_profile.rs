@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PureError, Result};
 
-use super::{ConfigPaths, ModelRouteConfig, ProviderId, ReasoningEffort, StudioConfig, StudioRole};
+use super::{AccountId, ConfigPaths, ModelRouteConfig, ReasoningEffort, StudioConfig, StudioRole};
 
 const SYSTEM_PROFILE_REVISION: &str = "studio-system-agent-v2";
 const SYSTEM_PROFILE_IDS: [&str; 4] = ["explorer", "executor", "worktree_executor", "reviewer"];
@@ -21,8 +21,8 @@ pub struct UserAgentProfile {
     pub description: String,
     pub when_to_use: String,
     pub system_instructions: String,
-    pub provider: ProviderId,
-    pub model: String,
+    pub account_id: AccountId,
+    pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffort>,
     #[serde(default)]
@@ -119,7 +119,7 @@ impl AgentProfileCatalog {
 /// Resolves a frozen Profile against one configuration snapshot without changing stored routes.
 ///
 /// # Errors
-/// Returns missing provider/model bindings or invalid route parameters.
+/// Returns missing account/model bindings or invalid route parameters.
 pub fn resolve_profile_route(
     config: &crate::config::StudioConfig,
     profile: &pl_protocol::AgentProfileSnapshot,
@@ -129,8 +129,8 @@ pub fn resolve_profile_route(
     models.routes.insert(
         role.clone(),
         pl_model::config::ModelRouteConfig {
-            provider: pl_model::config::ProviderId::new(profile.provider_id.clone())?,
-            model: profile.model.clone(),
+            account_id: pl_model::config::AccountId::new(profile.account_id.clone())?,
+            model_id: profile.model_id.clone(),
             effort: profile
                 .effort
                 .as_ref()
@@ -234,8 +234,8 @@ fn system_profile(role: StudioRole, config: &StudioConfig) -> Result<AgentProfil
         description: description.to_string(),
         when_to_use: when_to_use.to_string(),
         system_instructions: instructions.to_string(),
-        provider_id: route.provider.as_str().to_string(),
-        model: route.model.clone(),
+        account_id: route.account_id.as_str().to_string(),
+        model_id: route.model_id.clone(),
         effort: route
             .effort
             .as_ref()
@@ -271,14 +271,7 @@ fn load_user_profile(
         )));
     }
     let content = fs::read_to_string(path)?;
-    let profile: UserAgentProfile = toml::from_str(&content)
-        .map_err(|_| PureError::ConfigError(format!("invalid Agent Profile TOML: {profile_id}")))?;
-    validate_user_profile_fields(profile_id, &profile)?;
-    config.models.route_availability(&ModelRouteConfig {
-        provider: profile.provider.clone(),
-        model: profile.model.clone(),
-        effort: profile.effort.clone(),
-    })?;
+    let profile = validate_profile_content(profile_id, &content, config)?;
     if !profile.enabled && !include_disabled {
         return Ok(None);
     }
@@ -288,8 +281,8 @@ fn load_user_profile(
         description: profile.description,
         when_to_use: profile.when_to_use,
         system_instructions: profile.system_instructions,
-        provider_id: profile.provider.as_str().to_string(),
-        model: profile.model,
+        account_id: profile.account_id.as_str().to_string(),
+        model_id: profile.model_id,
         effort: profile.effort.map(|effort| effort.as_str().to_string()),
         source: path.to_string_lossy().into_owned(),
         revision: pl_core::context::content_hash(content.as_bytes()),
@@ -299,6 +292,29 @@ fn load_user_profile(
         workspace_mode: profile.workspace_mode,
     };
     Ok(Some(with_content_hash(snapshot)))
+}
+
+/// 校验一份 Profile 正文；迁移候选与正常运行共用同一条规则。
+pub(super) fn validate_profile_content(
+    profile_id: &str,
+    content: &str,
+    config: &StudioConfig,
+) -> Result<UserAgentProfile> {
+    validate_profile_id(profile_id)?;
+    if StudioRole::from_key(profile_id).is_some() {
+        return Err(PureError::ConfigError(format!(
+            "user Agent Profile cannot replace immutable system profile `{profile_id}`"
+        )));
+    }
+    let profile: UserAgentProfile = toml::from_str(content)
+        .map_err(|_| PureError::ConfigError(format!("invalid Agent Profile TOML: {profile_id}")))?;
+    validate_user_profile_fields(profile_id, &profile)?;
+    config.models.route_availability(&ModelRouteConfig {
+        account_id: profile.account_id.clone(),
+        model_id: profile.model_id.clone(),
+        effort: profile.effort.clone(),
+    })?;
+    Ok(profile)
 }
 
 fn validate_user_profile(
@@ -312,8 +328,8 @@ fn validate_user_profile(
         .resolve_route(
             pl_model::config::AgentRoleId::new(profile_id)?,
             &ModelRouteConfig {
-                provider: profile.provider.clone(),
-                model: profile.model.clone(),
+                account_id: profile.account_id.clone(),
+                model_id: profile.model_id.clone(),
                 effort: profile.effort.clone(),
             },
         )
@@ -326,7 +342,7 @@ fn validate_user_profile_fields(profile_id: &str, profile: &UserAgentProfile) ->
         ("description", profile.description.as_str()),
         ("when_to_use", profile.when_to_use.as_str()),
         ("system_instructions", profile.system_instructions.as_str()),
-        ("model", profile.model.as_str()),
+        ("model", profile.model_id.as_str()),
     ] {
         if value.trim().is_empty() {
             return Err(PureError::ConfigError(format!(

@@ -78,13 +78,15 @@ SSH 远端 backend 始终拒绝 workspace 越界与符号链接入口，full-acc
 
 ## 4.4 凭据暴露面
 
-- provider API token 保存在系统凭据库，配置只声明非敏感参数与环境变量名（见 [20](./20-config.md)）；
+- 账号 API token 保存在系统凭据库，配置只声明非敏感参数与环境变量名（见 [20](./20-config.md)）；
   UI 默认不回显完整 token，日志与事件 payload 不输出 token，错误
   信息禁止拼接敏感字段。
 - SSH password 与 Askpass 回答只存在于系统凭据库或当前进程 secret lease，不进入 SQLite、
   transport DTO、日志、helper argv/env 或远端协议；Askpass secret 只进入本地 OpenSSH 子进程
   环境。
-- 系统 OpenSSH 继续使用用户的 known_hosts、ssh config 与 agent；本地 provider token 不得通过
+- 账号升级只在版本迁移边界读取旧凭据关联并复制到新关联。系统存储不可访问或持久回读失败时
+  停止迁移，不以进程内 secret lease 冒充已持久复制；保留旧项，目标存在不同值时拒绝覆盖。
+- 系统 OpenSSH 继续使用用户的 known_hosts、ssh config 与 agent；本地账号 token 不得通过
   SSH 转发，远端 Git 使用远端原生凭据或用户显式配置的 agent forwarding。
 
 ## 4.5 桌面 WebView 边界

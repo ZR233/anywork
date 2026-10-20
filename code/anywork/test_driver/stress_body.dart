@@ -17,7 +17,7 @@ import 'stress_sessions.dart' show selectedThread, settled, waitForSnapshot;
 /// The fixture appends every increment to one stable item/part, so this journey
 /// is recorded separately from the multi-item stress journey even though it
 /// carries the same event count and nominal rate. It records only GUI-observed
-/// timing and raw frame data: the synthetic provider's own byte count lives in
+/// timing and raw frame data: the synthetic account's own byte count lives in
 /// the fixture report and is never treated as an FRB transfer measurement.
 ///
 /// 断言只读当前展示事实：`timeline`（身份/revision/省略声明/逐字段详情引用）与
@@ -142,7 +142,7 @@ Future<void> main(List<String> args) async {
   final checks = <String, Object?>{};
   final findings = <String, Object?>{};
   final pendingEvidence = <String>[
-    'the fixture provider bytes come from the synthetic provider stream and are '
+    'the fixture account bytes come from the synthetic account stream and are '
         'never an FRB transfer measurement',
     'per-item and per-page preview budgets are backend limits: the text each '
         'displayed item carries grows with the pages this journey actually '
@@ -414,7 +414,7 @@ Future<void> main(List<String> args) async {
     final reopenedDetail = reopenedBody?.detail('text');
     final generationAdvanced =
         reopenedTimeline.generation != settledTimeline.generation;
-    // 重开最新小页：offset 0、几何贴底、Live 模式、没有准备中的代次；不恢复像素。
+    // 重开从最新端开始并按视口补齐：offset 0、Live 模式，不恢复像素。
     //
     // 标准反向列表的底端就是 offset 0：此时 `extentBefore` 为 0、`extentAfter` 是
     // 全部可滚动内容。用 `extentAfter ≈ 0` 判“贴底”属于非反向 ListView 的语义，
@@ -426,7 +426,7 @@ Future<void> main(List<String> args) async {
         (reopenedScroll.pixels ?? 1).abs() <= 0.5 &&
         (reopenedScroll.extentBefore ?? 1).abs() <= 0.5 &&
         !reopenedTimeline.preparingLive &&
-        reopenedTimeline.itemCount <= 32;
+        timelineViewportSettled(reopened);
     // 同身份正文仍在展示范围内：身份 + 真实总长一致，行内预览不因重开被替换成
     // 另一份正文。
     final stableBodyOnReopen =
@@ -1321,7 +1321,7 @@ Future<Map<String, Object?>> _copyThroughDetailViewer(
   return evidence;
 }
 
-/// The exact body the scripted provider streams: every increment is
+/// The exact body the scripted account streams: every increment is
 /// `body-%05d ` (plus the large-scenario `W` pad), reconstructed here so the
 /// clipboard comparison never trusts the delivered domain text.
 String _canonicalBody(bool largeBody) {

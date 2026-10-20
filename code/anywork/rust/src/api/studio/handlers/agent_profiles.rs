@@ -46,8 +46,8 @@ pub async fn save_user_agent_profile(
     description: String,
     when_to_use: String,
     system_instructions: String,
-    provider_id: String,
-    model: String,
+    account_id: String,
+    model_id: String,
     effort: Option<String>,
     workspace_mode: BridgeAgentWorkspaceMode,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
@@ -58,8 +58,8 @@ pub async fn save_user_agent_profile(
         description,
         when_to_use,
         system_instructions,
-        provider: pl_studio_runtime::ProviderId::new(provider_id)?,
-        model,
+        account_id: pl_studio_runtime::AccountId::new(account_id)?,
+        model_id,
         effort: effort
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())

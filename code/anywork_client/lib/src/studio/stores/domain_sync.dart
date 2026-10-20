@@ -57,15 +57,15 @@ enum CommandPhase { pending, failed, succeeded }
 
 class CommandTarget {
   const CommandTarget({
-    this.providerId,
-    this.model,
+    this.accountId,
+    this.modelId,
     this.effort,
     this.enabled,
     this.label,
   });
 
-  final String? providerId;
-  final String? model;
+  final String? accountId;
+  final String? modelId;
   final String? effort;
   final bool? enabled;
   final String? label;
@@ -74,14 +74,14 @@ class CommandTarget {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is CommandTarget &&
-          providerId == other.providerId &&
-          model == other.model &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
           effort == other.effort &&
           enabled == other.enabled &&
           label == other.label;
 
   @override
-  int get hashCode => Object.hash(providerId, model, effort, enabled, label);
+  int get hashCode => Object.hash(accountId, modelId, effort, enabled, label);
 }
 
 class CommandStatus {

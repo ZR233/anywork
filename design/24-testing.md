@@ -7,7 +7,7 @@
 连接关闭通过现有示例及原生人工验收观察，使用明确阶段同步取得旧实现失败与修复后通过
 的证据。主要核对存活实例、请求、任务、句柄与进程数量回落，常驻内存只作为辅助趋势。
 跨宿主工具验收按实际执行宿主生成命令语法；远程 Linux 工作区使用 POSIX 命令，不能根据
-启动验收程序的本机系统选择 PowerShell。独立模拟供应商通过 `--posix-exec` 显式接收该边界。
+启动验收程序的本机系统选择 PowerShell。独立模拟账号通过 `--posix-exec` 显式接收该边界。
 模式验收同时核对往返切换不创建工作流，以及真正的新根用户输入才创建初态；core 公开接口
 验证准备钩子只在发起输入尚未消费时取得冻结输入，后续工具步骤不重复启动任务。
 
@@ -30,7 +30,7 @@ Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Ri
 也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。
 
 `pl-core` 仅使用测试侧的脚本化模型、工具和按锚点查询的临时历史后端，证明 Thread 的执行、
-并发、取消、恢复、effect、Session 页／尾部／详情及可选持久化契约，不依赖模型供应商适配。
+并发、取消、恢复、effect、Session 页／尾部／详情及可选持久化契约，不依赖模型账号适配。
 内容测试覆盖新旧 revision 保存确认竞争、pending/history 无空洞合并、首帧／登记交接、
 尾部连续增量与慢消费者重同步、缓存淘汰非删除、查询错误、详情版本与 UTF-8 游标、
 取消和所有等待者关闭；不再保留几何窗口／对端裁剪／focus 回执的实现断言。effect window 只按 durable
@@ -38,7 +38,7 @@ Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Ri
 [15](./15-session-storage.md) §15.3）。该水位由存储后端在自己的 pressure 报告里以 typed
 durable receipt 给出，owner 在每次提交后的内存安全边界折入并释放已覆盖批次，core 侧因此不需要
 额外的 lease、显式 flush 或独立上报状态。`pl-model` 从单模型运行时与 Thread model
-适配公开入口经过本地模拟供应商测试请求、协议流、会话、计量与失败语义，并在适用
+适配公开入口经过本地模拟账号测试请求、协议流、会话、计量与失败语义，并在适用
 场景中贯通真实 core。SQLite 测试使用临时真实数据库，不能由模拟模型代替。
 
 统一等待的公开 API 证明订阅前后已就绪、任一任务或未消费消息唤醒、固定截止点与就绪竞争、
@@ -47,11 +47,13 @@ durable receipt 给出，owner 在每次提交后的内存安全边界折入并�
 消费一次，测试同时核对未完成任务和消费水位，而不是仅断言“返回了”。
 
 原生等待观察使用隔离模拟供应商与真实 bridge，覆盖工具与计时器先后就绪、子代理消息提前
-唤醒、正常超时及停止；Driver 取证活动条折叠／展开、历史结果卡、长名称、窄窗口与减少动画。
+唤醒、正常超时及停止；Driver 取证活动条折叠／展开、活动组内等待结果、长名称、窄窗口与减少动画。
+展示 lease 的适配契约证明思考、普通工具与 wait/sleep 同组，正文、独立交互和跨 Turn 仍分隔；
+原生旅程同时核对原始等待成员及其所属活动组，确认折叠不单列等待、展开后仍能读取组内详情。
 截图必须由人工实际查看，并结合 typed 快照、请求／日志与所属进程回收判定，不能把 fixture
 成功或截图文件存在当作视觉验收，也不能外推为真实供应商或其他宿主平台通过。
 等待旅程可沿用原生验收的显式环境保留选项：仅在成功关闭并回收所属进程后保留完整的合成环境，
-供独立原生构建复核历史等候卡、键盘与可访问性。重开仍消费同一 canonical 历史；保留环境不代表
+供独立原生构建复核历史活动组内的等待、键盘与可访问性。重开仍消费同一 canonical 历史；保留环境不代表
 人工通过，也不写入用户数据根或保留运行中的模拟服务。
 
 存储暂停用例区分两类收束：队列/字节预算的短暂压力在安全间隙自动恢复；保存真正失败后同一个
@@ -90,13 +92,13 @@ Studio 专项场景还通过真实 SQLite 写库拒绝验证两个在途工具�
 | 层级 | 被测边界 | 应证明的行为 | 证据与门禁范围 |
 | --- | --- | --- | --- |
 | 纯 Dart Client | 公共 Client API 与可控 transport | 唯一 reducer、attempt 所有权、receipt/观察顺序、草稿冻结、预算、原子观察与幂等 close | `anywork_client` 测试进入正式门禁；不加载 Flutter/native |
-| 应用 adapter | FRB DTO/句柄适配、Riverpod 只读观察、AppGraph 注入 | 内容基线、增量缺口、页／详情、晚到句柄、取消/关闭、双实例隔离、provider 只取消自己的观察 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
+| 应用 adapter | FRB DTO/句柄适配、Riverpod 只读观察、AppGraph 注入 | 内容基线、增量缺口、页／详情、晚到句柄、取消/关闭、双实例隔离、account 只取消自己的观察 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
 | 真实宿主 Flutter 路由 | 启动、Settings/标签/返回、Connector/View | 当前内容连接与草稿身份保留、提交期间继续输入、旧 intent 不覆盖新值 | 通过 Driver 与人工旅程取证；受控宿主的自动路由契约测试归应用 adapter 层 |
 | FRB/native | 实际 Rust 动态库、sink、句柄与退出 | 真实 open→initial→next、控制回执、单一内容出口、关闭唤醒、join 与进程回收 | 原生 fixture 与 typed 诊断单独记录；纯 Dart fake 不覆盖此层 |
 | 平台与可见交互 | 实际宿主窗口、滚动/菜单/输入及退出 | Timeline Live/History、键盘/ESC/Tab、流式逐帧观感、原生资源收束 | 人工验收按 Linux/Windows 分开；未运行的平台标记未验证 |
 
 `cargo xtask verify-client` 是 CI 的正式门禁，与 Rust 检查、`verify-gui` 和生成一致性各负其责。
-它锁定解析两份依赖快照，检查 Client SDK-only 依赖、import 与 provider 生命周期边界，运行
+它锁定解析两份依赖快照，检查 Client SDK-only 依赖、import 与 account 生命周期边界，运行
 Client 格式/静态检查和纯 Dart tests，再以 `flutter test --no-pub` 执行应用 `test/client`。
 缺少 package、lockfile 或任一必需测试集必须失败，不能跳过后记为通过；统一入口与工作目录
 约束由 [AGENTS.md](../AGENTS.md) 和仓库工具维护，不从 SDK 安装目录运行项目命令。
@@ -120,20 +122,20 @@ Client 自动用例使用屏障、可控 Future 和 fake clock 组织交错，�
   unresolved 报告，不能以清空 Map 冒充句柄和任务已回收。
 
 Rust 可靠历史、SQLite 故障与 writer 的已有公开 API/专项测试继续复用，不因 Client fake
-通过而重复声明已覆盖 native 保存。界面几何、真实系统剪贴板、真实供应商和跨平台行为仍按
+通过而重复声明已覆盖 native 保存。界面几何、真实系统剪贴板、真实账号和跨平台行为仍按
 后续人工验收取证。
 
-## 24.2 模拟供应商
+## 24.2 模拟账号
 
 同一个本地服务支持自动化和 GUI 人工验收：仅监听 loopback 动态端口，按固定提示词、
 协议及期望轮次返回固定 HTTP/SSE 或 WebSocket 事件流。它验证实际请求的重要字段；
 未登记的请求、错序、多余调用和错误协议明确失败，不回退到成功文本，也不访问真实
-供应商。OpenAI 已实现的 Responses HTTP/WS 与兼容 Chat 使用共享协议样本；DeepSeek
+账号。OpenAI 已实现的 Responses HTTP/WS 与兼容 Chat 使用共享协议样本；DeepSeek
 和智谱只为原生选项、媒体、上传、搜索方言及使用量差异添加独立样本。DeepSeek Search & Fetch
 工具接口（`/v1/tools/search` 与 `/v1/tools/fetch`）不进入会话 transport，由独立端点样本证明
 其请求、鉴权与解析，并供 GUI 人工验收观察 `queries` 扇出与抓取。
 
-模拟只证明当前实现与约定样本的行为，不证明供应商线上接口的最新兼容性。真实接口
+模拟只证明当前实现与约定样本的行为，不证明厂商线上接口的最新兼容性。真实接口
 保持显式人工观察，采集证据后由人判断，不参与确定性提交门禁。
 
 Timeline 大历史验收使用单必需步骤的 `timeline-history` 模拟场景，共享现有 `stress`
@@ -145,6 +147,16 @@ Timeline 大历史验收使用单必需步骤的 `timeline-history` 模拟场景
 loopback 约束，不直接灌写 SQLite，不新增生产读取／写入测试后门，也不加入默认 CI。
 fixture 只提供数据；冷开小页、深游标分页、响应预算及进程峰值仍须通过实际 HTTP／FRB
 与持久化读取分别取证，不以模拟数据生成成功代替产品验收。
+该历史场景以每秒 1,000 条保持真实输出窗口，覆盖忙时切 History／回实时、未提交预览
+缺口的原生 Busy、完成后通过界面重试以及冻结正文不变；`stress` 保留每秒 5,000 条基线。
+同一 retained home 可用 `run-gui --driver --profile` 冷开，再运行
+`cargo dart test_driver/timeline_adaptive_journey.dart VM_URL BASELINE_SNAPSHOT OUTPUT_DIR`：
+以已有截图快照的项目／会话身份为目标，覆盖六尺寸、侧栏拖动／方向键／Home 和未发送草稿
+增高，核对同代次 Live、身份、真实视口与正常退出；方向键按住后失焦也须提交，宽度验证
+采用 canonical 设置并等待现有 mutation 结束，不能仅凭本地草稿几何通过。
+宿主须继承该 GUI 的显示与授权环境。
+长历史协调器复用 `run-gui --native-launch`；Driver 的实际 PID 必须与原生退出报告一致，
+确认本体 code 0、无 signal／取消及遗留子进程，不能把 Flutter 启动器的固定成功码当作本体退出。
 预览预算回归同时覆盖长正文与大量空／短字段，确认字段声明和稳定身份不是免费结构，
 不可缩结构超限明确失败，预算截页保留真实下一游标。core 统一准入计量、实际 wire 编码
 字节、冷读 canonical 解码峰值与 RSS 分开记录，不把前者当作后几者的精确上界；计量
@@ -268,7 +280,7 @@ Driver-only 注入而非真实 `dlopen` 失败。订阅故障由专用 Driver �
 进度流错误与取消挂起必须成为 typed `progress` diagnostic 并使退出为非零，绝不伪 `Stopped`。
 `ANYWORK_HOME/studio` 不可写时（普通文件占位）`recordDartError` 须回落到隔离 `TMPDIR`，证据
 复制并机器校验 stage/correlation/stack（Dart logger 无 pid 字段，PID 取场景记录的 OS PID）。
-人工验收结论独立于脚本退出状态，默认待评审；模拟供应商、Linux 单平台结果不外推为真实供应商
+人工验收结论独立于脚本退出状态，默认待评审；模拟账号、Linux 单平台结果不外推为真实账号
 兼容或跨平台通过；Windows 以 `notrun` 记录，不是 Linux 缺口。
 
 Windows 托盘隐藏属于独立于 `shutdown`（当前 Linux 原生）的窗口壳层验收：人工/原生证据必须
@@ -282,10 +294,10 @@ OpenAI cache 选项、文本与推理流、function/custom/programmatic 工具�
 DeepSeek 上传与搜索方言、智谱 Chat 与 Coding Plan、远程压缩、使用量/价格、错误与取消、
 重试及 `pl-core` Thread 装配。`pl-core/tests/` 核对模型工具轮次、取消、checkpoint
 恢复及 SQLite 持久化。独立的 Studio `/alpha/search` 编排、GUI 操作、非图片媒体、
-真实供应商后端和其他 crate 的权限/进程/迁移不在这两库的模拟自动测试证明范围内；
+真实账号后端和其他 crate 的权限/进程/迁移不在这两库的模拟自动测试证明范围内；
 增减协议能力时应同步维护场景和缺口。
 
-`pl-model/tests/deepseek_tools.rs` 通过公开的 `pl_model::provider::deepseek::tools` 域和真实
+`pl-model/tests/deepseek_tools.rs` 通过公开的 `pl_model::protocol::deepseek::tools` 域和真实
 loopback HTTP 服务核对 DeepSeek Search & Fetch 工具接口：两个端点的 base_url path 前缀保真、
 `/v1` 别名归一化与 `/anthropic` 结尾的明确拒绝、非法 base_url 拒绝、`Authorization: Bearer`
 鉴权且不再发送 `x-api-key` / `anthropic-version`、请求体只含 `query`/`count`/`need_content`
@@ -293,17 +305,17 @@ loopback HTTP 服务核对 DeepSeek Search & Fetch 工具接口：两个端点�
 `summary` 等未使用字段、合法空结果成功、`MalformedResults`、fetch 正文成功与 `MissingContent`；
 非 JSON / 畸形 JSON / 非 UTF-8 正文的无损留存、`error.message` 有界截断、重定向不被跟随、
 取消与整体超时，以及缺凭据 / 非法参数 / 空 query / 超长 query / 超范围 count / 非法 fetch url
-时不发出请求；能力门控用例核对 canonical preset 声明 `DeepSeekToolsApi`、非 canonical
-PresetDefaults 撤销与 Explicit opt-in。完整能力用例消费 canonical DeepSeek preset 的 standalone
+时不发出请求；能力门控用例核对 canonical template 声明 `DeepSeekToolsApi`、非 canonical
+TemplateDefaults 撤销与 Explicit opt-in。完整能力用例消费 canonical DeepSeek template 的 standalone
 capability 并对临时 HTTP 环境执行 search 与 fetch。确定性样本只证明客户端请求与解析行为，
-不证明供应商线上接口的最新兼容性；真实供应商保持显式人工观察。
+不证明厂商线上接口的最新兼容性；真实账号保持显式人工观察。
 
 `pl-tool` 的 `queries` 扇出、并发中止、位次合并、URL 去重与来源上限不在上述测试范围内；
-该 crate 不新增自动化用例，由模拟供应商人工验收与静态审查覆盖，缺口在交付说明中记录。
+该 crate 不新增自动化用例，由模拟账号人工验收与静态审查覆盖，缺口在交付说明中记录。
 `pl-studio-runtime` 的配置迁移专项测试覆盖 schema 18 至 21→22：旧方言 token 改写且其它字段逐项
 保留、无旧 token 的 20 配置等价迁移、未知未来版本仍 fail-closed 且不重写文件、迁移失败不落盘。
 
-完整回放用例通过无数据库的真实 Thread 和模拟供应商验证 commentary、final、原生 phase、
+完整回放用例通过无数据库的真实 Thread 和模拟账号验证 commentary、final、原生 phase、
 工具原文、HTTP/WS/Chat 前缀以及 checkpoint 恢复；摘要和原生压缩必须消费相同材料。
 存储专项用例验证冻结回放的事务保存、失败重试及恢复，不用写入后的展示状态补造历史。
 
@@ -314,7 +326,7 @@ WebSocket 和 Chat，核对实际请求、消息身份与顺序、无重复工�
 进程回收证据，人工判定独立记录；模拟 usage 不证明真实缓存命中率。
 
 Responses WebSocket 的确定性恢复验证从两库公开入口贯通实际网络与 Thread 装配：模拟
-供应商提供可控断开、关闭码、错误事件、响应挂起及握手拒绝，不自行决定客户端恢复。
+账号提供可控断开、关闭码、错误事件、响应挂起及握手拒绝，不自行决定客户端恢复。
 场景验证完整的逻辑请求预算、HTTP 支持约束与粘性回退、完整输入重放、continuation 隔离、
 已报告 usage/远端副作用保护，以及取消与收包任务收束。idle 和退避使用受控时间与明确同步
 点，避免数分钟真实等待或概率性交错。
@@ -324,7 +336,7 @@ Flutter Driver，模型明确选择 Responses WebSocket。人工证据包含失�
 同一轮次的重试与恢复提示、退避期间停止、下一轮正常执行及历史重开；请求记录核对冻结输入、
 取消后无额外恢复请求与失败观察未进入后续模型输入。脚本检查和人工截图结论分别记录，未观察
 的证据保持待评审，不以普通 HTTP 场景或演示 UI 代替 WebSocket 验收。
-这些证据只证明实际运行宿主及脚本协议，不等同线上供应商或跨平台通过。
+这些证据只证明实际运行宿主及脚本协议，不等同线上账号或跨平台通过。
 
 HTTP 生命周期公开 API 回归使用真实分片 TCP/SSE 和受控时钟，验证持续读取超过 300 秒、
 大事件尚未解码时按字节读取更新空闲时限、真正空闲超时、超限事件、错误响应读取上限和
@@ -350,27 +362,27 @@ HTTP 失败样本继续复用，WS/HTTP 失败终态对相同 usage 与错误样
 ## 24.3 GUI 人工证据
 
 普通问答历史的 `question-history` 隔离场景通过真实 bridge 和 Flutter Driver 发起结构化提问、
-选择预设回答并提交多行自由文本及合成敏感值；模拟供应商严格匹配实际回答 continuation。
+选择预设回答并提交多行自由文本及合成敏感值；模拟账号严格匹配实际回答 continuation。
 证据核对默认折叠的已回答回执、展开后的原问题与逐题答案、敏感值隐藏、窄窗口换行及历史
 重开后内容和身份保持。待回答会话跨重开后作答的可靠投影、空答案不冒充隐藏回答及旧 v2
 补齐，由历史保存与迁移专项回归补充保护；脚本检查、人工截图判定及进程回收分别记录。
 
 压缩阈值的公开 API 证明以合成模型覆盖预设优先、缺省按解析上下文 90% 推导、未知或非正
-安全容量不自动压缩、覆盖夹紧、恢复默认、provider/model 隔离和大整数计算。配置验证保留
+安全容量不自动压缩、覆盖夹紧、恢复默认、account_id/model_id 隔离和大整数计算。配置验证保留
 缺键为默认、空集合省略与已有覆盖往返的边界；在线发现用例验证显式声明和缺省推导不混淆。
 不将内置模型名单与默认数值逐项镜像成测试清单。Client/adapter 契约证明可空预设和默认的
-完整投影、provider 自动保存只改变目标模型、并发修改/CAS 重试保留兄弟字段、旧 ACK 不清新意图。
+完整投影、account 自动保存只改变目标模型、并发修改/CAS 重试保留兄弟字段、旧 ACK 不清新意图。
 双水位回归同时验证同 model_id 目录更新重算预算、未知容量关闭压缩、撤下与重现保留覆盖，以及
 默认暂时等于覆盖时只读投影不消费存量选择；旧配置响应不得回滚更新的目录预算。
-原生供应商设置人工旅程另核对模型列表内输入、拖动和恢复默认的自动生效、无效输入不落盘、
+原生账号设置人工旅程另核对模型列表内输入、拖动和恢复默认的自动生效、无效输入不落盘、
 失败反馈、未知容量及超限生效夹紧；截图检查宽窄窗口、键盘焦点、输入法与滚动，确认无需进入
 编辑页或刷新。快照、配置、日志与进程回收共同证明真实 bridge 路径，不由 demo 或 fake 代替。
 通用 `gui` 隔离场景提供派生默认、显式预设和未知容量三种模型元数据，默认推理路由不变，
-以便在同一真实供应商详情列表观察差异与模型间覆盖隔离，不创建用户系统凭据关联。
+以便在同一真实账号详情列表观察差异与模型间覆盖隔离，不创建用户系统凭据关联。
 
 GUI 验收编排由独立工程工具 `pl-studio-acceptance` 拥有；xtask 只在选择验收命令时
 按需编译并启动该工具，原样透传参数，不维护场景或选项的第二份定义。验收工具直接使用
-Studio canonical 配置及现有模拟供应商场景，数据库锁与证据检查不进入普通 xtask 依赖图。
+Studio canonical 配置及现有模拟账号场景，数据库锁与证据检查不进入普通 xtask 依赖图。
 两工具共用 `pl-dev-support` 的路径及进程支持；迁移不得改变交互输入、退出错误传播、
 取消或进程树回收语义。验收工具使用正常 workspace 构建缓存并尊重显式目标目录配置，
 不继承 xtask 入口专用的构建目录参数。场景仍保持全部现有能力，不通过删场景精简依赖。
@@ -387,15 +399,15 @@ Windows 与 Linux 的验收启动均使用同一平台命令解析规则。窗�
 隔离 GUI 进程的唯一可见主窗口，不激活其他窗口；成功、失败与中途退出均恢复原始尺寸。
 脚本点击以目标实际可命中且位置稳定为前置条件，不能把控件已构建当作对话框遮罩已退场；
 输入命令在点击后的焦点更新完成后执行，超时后不继续派发迟到点击。
-需要真实供应商时直接使用用户已有配置启动原生 GUI，不覆盖或复制用户凭据。
+需要真实账号时直接使用用户已有配置启动原生 GUI，不覆盖或复制用户凭据。
 
-统计场景复用隔离的本地虚拟供应商与真实 Bridge，通过 Flutter Driver 提交固定的快速
+统计场景复用隔离的本地虚拟账号与真实 Bridge，通过 Flutter Driver 提交固定的快速
 响应和定速流式响应，并从设置页检查已记录的成功调用与可计算的性能汇总。定速流的
 输出词元、首个非空输出事件和终止事件必须落在同一 inference 计时样本内；验收同时核对
 实时状态栏与历史汇总采用相同的有效 decode 口径，不把缺失/零计时显示成高速度。在隔离的
 `calls.sqlite` 上短暂持有写锁，检查写入未完成时的状态及释放后的自动刷新；同一隔离
 home 重启后再次读取。取证保存设置页截图、快照、调用库计数和脱敏日志，结论仍由
-人工填写。统计读写缺口不得误判为没有调用；不把模拟服务商验收外推为线上供应商兼容。
+人工填写。统计读写缺口不得误判为没有调用；不把模拟账号验收外推为线上账号兼容。
 实时 projection 的 live output/decode 两个字段按成对样本判定：只注入其中一个字段时，
 状态栏不得将它与上一份 authoritative 字段混算；应成对采用 authoritative 或保持未知。
 状态栏还必须验证 canonical 显示保持：首次得到有效聚合样本后，新 turn/attempt 的 partial、
@@ -411,7 +423,7 @@ Riverpod adapter 还须证明真实 Client 状态事件的细粒度交付：速�
 与许可，不关闭业务会话或丢失草稿。优先复用既有 adapter／生命周期测试，禁止为速度另建
 绕过 canonical reducer 的事件流。
 
-压力场景在 Flutter profile/AOT 模式及优化 Rust bridge 下按固定提示词从本地供应商以约 5,000 token/s 返回约 20,000 个混合消息事件；
+压力场景在 Flutter profile/AOT 模式及优化 Rust bridge 下按固定提示词从本地账号以约 5,000 token/s 返回约 20,000 个混合消息事件；
 采集请求耗时、事件完成数、GUI 帧/操作探针、窗口大小、截图、快照、未处理错误和进程回收；
 内存证据按同一场景对 GUI 原生进程采样驻留内存（进程身份由 Driver 暴露），记录峰值与稳态。
 该值是 Rust bridge 与 Flutter 引擎的同一进程合计，只用于同一场景的前后对比；不据此推断单层
@@ -467,9 +479,9 @@ Thread／展示代次、标准外层位置、成员尺寸、所属展示组最�
 层输入优先、图片数量与状态、重试、缩略图、多图换行、放大和历史重开；不依赖像素校正
 通过。现有 fixture 不覆盖的入口以定向 Driver 补充，未观察到的行为不得称已验收。
 
-realtime 场景同时观察有效模型绑定在调用中及全部调用结束后保持可用，覆盖供应商错误、
-取消和继续调用，防止持久化检查点中的非持久模型状态覆盖实时路由。真实供应商的同类
-问题另记录成功响应、调用前后路由状态与 GUI 截图，不能以模拟供应商通过代替真实 API 验证。
+realtime 场景同时观察有效模型绑定在调用中及全部调用结束后保持可用，覆盖账号错误、
+取消和继续调用，防止持久化检查点中的非持久模型状态覆盖实时路由。真实账号的同类
+问题另记录成功响应、调用前后路由状态与 GUI 截图，不能以模拟账号通过代替真实 API 验证。
 本地宿主目录执行沿用 [安全边界](./04-security.md#41-权限模式) 的现役固定 `full-access`
 策略：在 harness 自有、workspace 外的隔离目录执行真实命令，核对命令实际输出的工作目录、
 交付结果、执行终态与持久化收束；工作目录不能只从请求参数推断。该步骤无需用户审批动作，
@@ -487,11 +499,11 @@ Driver-only 记录器取得实际 Client 发布事实：同一 Turn／attempt �
 尾部水位、重复快照或执行状态变化不能代替内容增长，也不能为采样而放慢 fixture。
 
 在线模型目录的 pl-model 公开 API 证明覆盖查询地址/鉴权、两种 typed envelope、缺失与显式空
-参数语义、富声明驱动实际请求、完整名单替换以及 provider 内精确 ID 的价格关联；默认文件只
+参数语义、富声明驱动实际请求、完整名单替换以及 account 内精确 ID 的价格关联；默认文件只
 验证声明与引用规则，不镜像生产名单。网络错误、限额、取消和条件响应必须有实际终态。
 来源与成员资格同样是公开 API 证明的一部分：在线名单之外的内置模型不出现、无观察时回退
 `bundled` 来源、手动成员保留且来源为 `manual`、各模型家族均进入有效目录，
-未知在线价格不冒充零价。跨供应商同 ID 的字段按声明顺序合并，缺失、false、空值与 304
+未知在线价格不冒充零价。跨账号同 ID 的字段按声明顺序合并，缺失、false、空值与 304
 保持各自语义；参数 wire 和价格仍隔离在各路由。无筛选查询保留完整目录，文本查询根据最终
 合并的文本输入、文本输出与正数解析上下文筛选，价格未知和工具能力不影响资格。脱敏真实报文
 回归覆盖 camelCase reasoning 声明、候选顺序与独立默认值、矛盾声明拒绝和默认值不能恢复
@@ -514,7 +526,7 @@ fixture。目录故障、空名单和库存变更（重启后生效）不得改�
 
 Timeline 页、尾部订阅与详情按 [26](./26-timeline-content.md) 验证。静态审查只证明连接，
 Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，实际 bridge fixture 才证明
-端到端收敛；真实供应商另验，不互相冒充。
+端到端收敛；真实账号另验，不互相冒充。
 
 - 同一内容源：页查询合并 pending/history，tail initial 与登记无缝，状态流不携带正文；
   HTTP/FRB 使用同一转换，不通过聚合回读或纯 SQL overlay 修补缺失。
@@ -525,7 +537,7 @@ Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，
 - 单一展示集合：AppGraph lease 持有 stock controller；历史只前插，Message 身份不因
   组首成员／页边界变化。无服务端几何窗口、整表 syncWindow、像素锚点或隐藏备用列表。
 - 生命周期：A→B→A、Settings 往返、无 Widget 观察者、查询失败、关闭失败与重试均验证；
-  provider 只取消观察，旧代次控制器在子树释放后销毁，预算不提前归还。
+  account 只取消观察，旧代次控制器在子树释放后销毁，预算不提前归还。
 - 边界：SDK Client 不引 Flutter，features 不直连 FRB／transport／SQL，生成文件 canonical；
   旧 window/focus/load/expand 回执入口、死事件和兼容别名确实删除。
 - 内容与选择：真实工具结果、长 Markdown、推理、图片、交互与失败均可读；详情不是
@@ -547,9 +559,9 @@ Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，
 迁移中断重试及日志时间/容量淘汰。日志故障或清理不能改变累计用量和会话恢复结果。
 原生 GUI 人工验收覆盖历史回看、重开、压缩后继续及统计展示，并明确实际宿主平台。
 
-存储压缩人工场景通过真实 bridge 和模拟供应商连续完成两次自动压缩，检查原始用户输入与
+存储压缩人工场景通过真实 bridge 和模拟账号连续完成两次自动压缩，检查原始用户输入与
 两次回复仍可完整回看，当前上下文与压缩回执只保留最新有效集合。该场景与计划跨重启恢复、
-统计重启场景组合验证保存边界，不将模拟结果外推为真实供应商兼容性。
+统计重启场景组合验证保存边界，不将模拟结果外推为真实厂商兼容性。
 
 ## 上下文连续实施验收
 
@@ -565,7 +577,7 @@ Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，
 ## 24.4 实时新鲜度矩阵
 
 实时验收必须维护一张覆盖 Thread runtime、turn/activity/storage、timeline、composer、产品
-settings、provider usage/model performance/session costs、MCP/LSP/Skills/Profiles、persistence
+settings、account usage/model performance/session costs、MCP/LSP/Skills/Profiles、persistence
 queue、updater、recovery 与 lifecycle 的矩阵。每行记录可见字段、生产 owner、事件/快照、Dart
 reducer/read model、资源版本域、selector/projection、Client 逻辑需求与页面观察、隐藏后的资源
 保留/释放及重进基线、
@@ -577,10 +589,10 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 | 领域 | 可见字段/页面 | 生产触发与事件 | Dart mirror owner | selector/projection | Client 需求/页面观察 | 验收判据 |
 | --- | --- | --- | --- | --- | --- | --- |
 | Thread runtime | context、total/input/output/cache/reasoning tokens、context window、throughput、model、workflow/run、plan（状态与当前计划文档） | runtime snapshot/update、live usage | Client RuntimeChannel ordered reducer | runtime/status/context/throughput | Client selected Thread owner；Settings 保留 | paced stream 同页多次变化 |
-| Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | turn/activity/storage notifications | 同一 Client RuntimeChannel reducer | turn/activity/storage | Session 逻辑寿命，独立于 provider | 阶段变化和保存故障即时可见 |
+| Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | turn/activity/storage notifications | 同一 Client RuntimeChannel reducer | turn/activity/storage | Session 逻辑寿命，独立于 account | 阶段变化和保存故障即时可见 |
 | Timeline | 流式正文、旧页、详情、图片/工具预览 | Session tail initial/next、page、detail | Client 有界 tail；展示 lease 的唯一 Message 集合 | Connector/View props | threadId/attempt/展示代次 | History 冻结；显式回实时；迟到回包不污染新代次 |
 | Composer | 文本、attachments、preview、pending/failure | Client DraftStore + admission result | Client canonical draft reducer | composer Connector/View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |
-| Product settings | providers/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Client SettingsReadModel；catalog 独立版本 | settings/provider | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
+| Product settings | accounts/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Client SettingsReadModel；catalog 独立版本 | settings/account | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
 | Usage/statistics/costs | quota、model performance、session costs | scoped product topics | Client scoped reducers | usage/statistics/costs | 可见需求由 Client 管理，observer 可取消 | 隐藏取消观察；需求重开取基线 |
 | Resources | MCP/LSP/Skills/Profiles/updater/persistence/recovery | scoped topic/command | Client resource read models | resource projections | Client topic owner/current interest | 连接、失败、恢复即时可见 |
 | Lifecycle | startup/shutdown/subscription diagnostics | startup/exit progress | AppGraph/Client lifecycle | startup/exit views | process owner | cancel/release/no stale frame；unresolved 保留 |
@@ -595,7 +607,7 @@ canonical throughput 查询测试证明成对选择与 unknown 语义，adapter 
 
 Driver snapshot 只暴露必要 typed 诊断，不暴露图片 bytes、凭据、raw payload 或内部数据库。
 粘贴回归使用 Driver-only `ClipboardImageReader` override：先断言当前 composer 出现准入 draft
-metadata，再断言同一 draft 的 preview-ready 更新，覆盖删除、失败、提交和并发切换。供应商列表
+metadata，再断言同一 draft 的 preview-ready 更新，覆盖删除、失败、提交和并发切换。账号列表
 断言不含 fixture model_id、模型胶囊或 `+N`，同时详情/编辑/选择器仍保留模型数量和能力。
 topic 弹层保持打开时须更新，隐藏后自己的观察释放；最后一个 Client 逻辑需求释放时才关闭该
 topic。Settings 隐藏不能关闭当前会话、清草稿或扫描附件。重进原子取得当前值，重开资源再取
@@ -606,17 +618,27 @@ failure 或 unknown 及资源释放。
 应用 `test/client` 是唯一进入 `verify-client` 的 Flutter 测试目录；其他 widget/integration、
 `test_driver`、真实宿主的启动路由与实时 UI 仍通过 `manual-gui`/Driver 和人工取证覆盖，不加入自动门禁，
 也不建立第二套实时状态事实源。真实系统剪贴板 PNG 另在当前宿主人工验收并记录截图、snapshot、
-日志和进程回收；模拟或纯 Dart 通过不外推真实供应商兼容、native FRB 或跨平台通过。
+日志和进程回收；模拟或纯 Dart 通过不外推真实厂商兼容、native FRB 或跨平台通过。
 
-## 24.6 供应商、额度与 MCP 隔离验收
+## 24.6 账号、额度与 MCP 隔离验收
 
-供应商自动额度需求按 [25.7.1](./25-frontend-state.md#2571-供应商用量需求) 验证。Client/adapter
+账号架构迁移的确定性证明覆盖：同名模型跨账号隔离、各厂商目录和 wire 解释、稳定账号 ID、
+配置/Profile/凭据跨版本保全、迁移提交失败及重启接续、已有 v2 扩展和调用库保留。迁移不能
+以恢复默认或清空数据取得绿色；不把当前目录或价格回填为历史事实。统计顶层复合键与组内
+effort 细分由公开 Client/adapter 行为及迁移专项测试验证，真实 GUI 另核对展示和保存。
+
+线上验收使用用户已有账号配置和真实凭据，限定代表性账号/Wire API 的有界短调用、后续历史
+调用和账号模型统计；允许使用受保护的配置/Profile 副本隔离运行，不改原历史或密钥。模拟与
+线上结果分别记录，没有可用凭据的厂商明确列为未执行。截图、快照与日志须人工核对并脱敏，
+同时核对 Driver、GUI 和所属显示/fixture 进程真实回收，不能只依据启动或命令退出成功。
+
+账号自动额度需求按 [25.7.1](./25-frontend-state.md#2571-账号用量需求) 验证。Client/adapter
 公开行为证明覆盖首次可见自动加载、按实例并行和去重、隐藏/重现、查询身份失效、删除与旧响应
 拒绝、失败不串卡及应用实例隔离；表单保存不得依赖额度完成。优先增强既有证明并记录确定性
 红绿结果，不在 Studio 新增常规 Rust 测试或以 fake 代替真实后端。
 
-隔离原生观察使用可控 loopback 模型、额度和通用 MCP 服务：进入供应商标签后不点击刷新，
-核对各实例请求已进入，慢/401 实例未结束时快实例已显示成功；同时完成供应商保存、再次
+隔离原生观察使用可控 loopback 模型、额度和通用 MCP 服务：进入账号标签后不点击刷新，
+核对各实例请求已进入，慢/401 实例未结束时快实例已显示成功；同时完成账号保存、再次
 新增/编辑/取消、其它标签操作及新 Thread 创建。释放慢请求后各领域独立收敛，设置默认、
 名称、筛选与模型目录观察不得使所有实例重查。补查隐藏期间新增/改 key 的实例，并验证
 迟到响应不复活删除项或覆盖新查询身份。

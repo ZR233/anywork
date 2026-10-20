@@ -220,7 +220,7 @@ class BridgePlanRuntimeSnapshot {
 enum BridgePromptPrefixChangedReason {
   initial,
   promptScopeChanged,
-  providerChanged,
+  accountChanged,
   modelChanged,
   baseInstructionsChanged,
   globalInstructionsChanged,
@@ -428,16 +428,16 @@ class BridgeThreadMcpServerDescriptor {
 }
 
 class BridgeThreadModelRouteSnapshot {
-  final String providerId;
-  final String model;
+  final String accountId;
+  final String modelId;
   final String? effort;
   final BigInt revision;
   final bool available;
   final String? unavailableReason;
 
   const BridgeThreadModelRouteSnapshot({
-    required this.providerId,
-    required this.model,
+    required this.accountId,
+    required this.modelId,
     this.effort,
     required this.revision,
     required this.available,
@@ -446,8 +446,8 @@ class BridgeThreadModelRouteSnapshot {
 
   @override
   int get hashCode =>
-      providerId.hashCode ^
-      model.hashCode ^
+      accountId.hashCode ^
+      modelId.hashCode ^
       effort.hashCode ^
       revision.hashCode ^
       available.hashCode ^
@@ -458,8 +458,8 @@ class BridgeThreadModelRouteSnapshot {
       identical(this, other) ||
       other is BridgeThreadModelRouteSnapshot &&
           runtimeType == other.runtimeType &&
-          providerId == other.providerId &&
-          model == other.model &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
           effort == other.effort &&
           revision == other.revision &&
           available == other.available &&
@@ -664,7 +664,7 @@ class BridgeThreadRuntimeSnapshot {
 
 class BridgeThreadRuntimeUsage {
   final bool hasIncompleteUsage;
-  final String model;
+  final String modelId;
   final BigInt? contextWindow;
   final BigInt? maxContextWindow;
   final BigInt? autoCompactLimit;
@@ -687,7 +687,7 @@ class BridgeThreadRuntimeUsage {
 
   const BridgeThreadRuntimeUsage({
     required this.hasIncompleteUsage,
-    required this.model,
+    required this.modelId,
     this.contextWindow,
     this.maxContextWindow,
     this.autoCompactLimit,
@@ -712,7 +712,7 @@ class BridgeThreadRuntimeUsage {
   @override
   int get hashCode =>
       hasIncompleteUsage.hashCode ^
-      model.hashCode ^
+      modelId.hashCode ^
       contextWindow.hashCode ^
       maxContextWindow.hashCode ^
       autoCompactLimit.hashCode ^
@@ -739,7 +739,7 @@ class BridgeThreadRuntimeUsage {
       other is BridgeThreadRuntimeUsage &&
           runtimeType == other.runtimeType &&
           hasIncompleteUsage == other.hasIncompleteUsage &&
-          model == other.model &&
+          modelId == other.modelId &&
           contextWindow == other.contextWindow &&
           maxContextWindow == other.maxContextWindow &&
           autoCompactLimit == other.autoCompactLimit &&

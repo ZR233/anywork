@@ -4,7 +4,7 @@ use super::runtime::{
     BridgeRefreshingResource, BridgeStaleResource, BridgeStoppedResource,
     BridgeStudioRecoveryIssueDto, BridgeUninitializedResource, RuntimeSnapshot,
 };
-use super::settings::{BridgeModelCatalogProviderDto, BridgeStudioSettingsDto};
+use super::settings::{BridgeModelCatalogAccountDto, BridgeStudioSettingsDto};
 use super::thread_stream::{BridgeRuntimeCostAmount, BridgeThread};
 use super::updater::BridgeUpdaterStateSnapshot;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub struct BridgeStudioStateSnapshot {
     pub lsp: BridgeLspStateSnapshot,
     pub skills_by_project: Vec<BridgeSkillsStateSnapshot>,
     pub thread_mode_catalog: BridgeThreadModeCatalogSnapshot,
-    pub provider_usage: BridgeProviderUsageStateSnapshot,
+    pub account_usage: BridgeAccountUsageStateSnapshot,
     pub model_performance: BridgeModelPerformanceSnapshot,
     pub session_costs: Vec<BridgeSessionCostsState>,
     pub updater: BridgeUpdaterStateSnapshot,
@@ -81,10 +81,26 @@ pub struct BridgePurposeCostSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelPerformanceSummary {
-    pub provider_instance_id: String,
-    pub provider_display_name: String,
-    pub model: String,
-    pub reasoning_effort: Option<String>,
+    pub account_id: String,
+    pub account_display_name: String,
+    pub model_id: String,
+    pub sample_count: u64,
+    pub completion_tokens: u64,
+    pub total_ttft_millis: u64,
+    pub total_decode_millis: u64,
+    pub total_response_millis: u64,
+    pub tokens_per_second: f64,
+    pub average_ttft_millis: f64,
+    pub average_response_millis: f64,
+    /// 该 (accountId, modelId) 组内的推理强度二级细分。
+    pub effort_breakdowns: Vec<BridgeModelPerformanceEffortSummary>,
+}
+
+/// 顶层汇总组内的推理强度细分；指标口径与顶层一致。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelPerformanceEffortSummary {
+    pub effort: Option<String>,
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
@@ -99,14 +115,14 @@ pub struct BridgeModelPerformanceSummary {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelPerformanceSample {
     pub completed_at: i64,
-    pub provider_instance_id: String,
-    pub provider_display_name: String,
-    pub model: String,
-    pub configured_model: Option<String>,
+    pub account_id: String,
+    pub account_display_name: String,
+    /// 冻结的目录配置模型；旧记录无法证明时保持 `None`。
+    pub model_id: Option<String>,
     pub sent_model: Option<String>,
     pub reported_model: Option<String>,
     pub model_match_state: BridgeModelMatchState,
-    pub reasoning_effort: Option<String>,
+    pub effort: Option<String>,
     pub completion_tokens: u64,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,
@@ -432,7 +448,7 @@ pub enum BridgeModelCatalogStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeModelCatalogStateData {
-    pub providers: Vec<BridgeModelCatalogProviderDto>,
+    pub accounts: Vec<BridgeModelCatalogAccountDto>,
 }
 
 /// Direct command response. The two clocks stay independent even though a
@@ -457,7 +473,7 @@ pub struct BridgeSettingsConfigSnapshotDto {
 pub struct BridgeModelCatalogSnapshotDto {
     pub revision: u64,
     pub updated_at: i64,
-    pub providers: Vec<BridgeModelCatalogProviderDto>,
+    pub accounts: Vec<BridgeModelCatalogAccountDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -617,24 +633,24 @@ pub struct BridgeThreadModeDescriptor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeProviderUsageStateSnapshot {
+pub enum BridgeAccountUsageStateSnapshot {
     Uninitialized(BridgeUninitializedResource),
     Loading(BridgeLoadingResource),
     Ready {
         resource: BridgeReadyResource,
-        value: BridgeProviderUsageStateData,
+        value: BridgeAccountUsageStateData,
     },
     Refreshing {
         resource: BridgeRefreshingResource,
-        value: BridgeProviderUsageStateData,
+        value: BridgeAccountUsageStateData,
     },
     Stale {
         resource: BridgeStaleResource,
-        value: BridgeProviderUsageStateData,
+        value: BridgeAccountUsageStateData,
     },
     Degraded {
         resource: BridgeDegradedResource,
-        value: BridgeProviderUsageStateData,
+        value: BridgeAccountUsageStateData,
     },
     Failed(BridgeFailedResource),
     Stopped(BridgeStoppedResource),
@@ -642,9 +658,9 @@ pub enum BridgeProviderUsageStateSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BridgeProviderUsageStateData {
+pub struct BridgeAccountUsageStateData {
     pub config_fingerprint: String,
-    pub usages: Vec<ProviderUsageDto>,
+    pub usages: Vec<AccountUsageDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,28 +698,28 @@ pub struct ArchiveThreadResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderUsagesResponse {
-    pub usages: Vec<ProviderUsageDto>,
+pub struct AccountUsagesResponse {
+    pub usages: Vec<AccountUsageDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderUsageDto {
-    pub provider_id: String,
+pub struct AccountUsageDto {
+    pub account_id: String,
     pub revision: u64,
     pub updated_at: i64,
-    pub state: BridgeProviderUsageState,
+    pub state: BridgeAccountUsageState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeProviderUsageState {
+pub enum BridgeAccountUsageState {
     Unsupported,
     MissingCredential {
         message: String,
     },
     Ready {
-        data: BridgeProviderUsageData,
+        data: BridgeAccountUsageData,
     },
     Failed {
         error: super::runtime::BridgeStateError,
@@ -712,7 +728,7 @@ pub enum BridgeProviderUsageState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeProviderUsageData {
+pub enum BridgeAccountUsageData {
     DeepSeekBalance(DeepSeekBalanceDto),
     ZhipuCodingPlan(ZhipuCodingPlanUsageDto),
 }

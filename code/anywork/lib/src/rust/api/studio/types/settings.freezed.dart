@@ -13,6 +13,304 @@ part of 'settings.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$AccountSecretInput {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSecretInput);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountSecretInput()';
+}
+
+
+}
+
+/// @nodoc
+class $AccountSecretInputCopyWith<$Res>  {
+$AccountSecretInputCopyWith(AccountSecretInput _, $Res Function(AccountSecretInput) __);
+}
+
+
+/// Adds pattern-matching-related methods to [AccountSecretInput].
+extension AccountSecretInputPatterns on AccountSecretInput {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AccountSecretInput_Preserve value)?  preserve,TResult Function( AccountSecretInput_Replace value)?  replace,TResult Function( AccountSecretInput_Clear value)?  clear,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve() when preserve != null:
+return preserve(_that);case AccountSecretInput_Replace() when replace != null:
+return replace(_that);case AccountSecretInput_Clear() when clear != null:
+return clear(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AccountSecretInput_Preserve value)  preserve,required TResult Function( AccountSecretInput_Replace value)  replace,required TResult Function( AccountSecretInput_Clear value)  clear,}){
+final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve():
+return preserve(_that);case AccountSecretInput_Replace():
+return replace(_that);case AccountSecretInput_Clear():
+return clear(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AccountSecretInput_Preserve value)?  preserve,TResult? Function( AccountSecretInput_Replace value)?  replace,TResult? Function( AccountSecretInput_Clear value)?  clear,}){
+final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve() when preserve != null:
+return preserve(_that);case AccountSecretInput_Replace() when replace != null:
+return replace(_that);case AccountSecretInput_Clear() when clear != null:
+return clear(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  preserve,TResult Function( String value)?  replace,TResult Function()?  clear,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve() when preserve != null:
+return preserve();case AccountSecretInput_Replace() when replace != null:
+return replace(_that.value);case AccountSecretInput_Clear() when clear != null:
+return clear();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  preserve,required TResult Function( String value)  replace,required TResult Function()  clear,}) {final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve():
+return preserve();case AccountSecretInput_Replace():
+return replace(_that.value);case AccountSecretInput_Clear():
+return clear();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  preserve,TResult? Function( String value)?  replace,TResult? Function()?  clear,}) {final _that = this;
+switch (_that) {
+case AccountSecretInput_Preserve() when preserve != null:
+return preserve();case AccountSecretInput_Replace() when replace != null:
+return replace(_that.value);case AccountSecretInput_Clear() when clear != null:
+return clear();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class AccountSecretInput_Preserve extends AccountSecretInput {
+  const AccountSecretInput_Preserve(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSecretInput_Preserve);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountSecretInput.preserve()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class AccountSecretInput_Replace extends AccountSecretInput {
+  const AccountSecretInput_Replace({required this.value}): super._();
+
+
+ final  String value;
+
+/// Create a copy of AccountSecretInput
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountSecretInput_ReplaceCopyWith<AccountSecretInput_Replace> get copyWith => _$AccountSecretInput_ReplaceCopyWithImpl<AccountSecretInput_Replace>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSecretInput_Replace&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'AccountSecretInput.replace(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountSecretInput_ReplaceCopyWith<$Res> implements $AccountSecretInputCopyWith<$Res> {
+  factory $AccountSecretInput_ReplaceCopyWith(AccountSecretInput_Replace value, $Res Function(AccountSecretInput_Replace) _then) = _$AccountSecretInput_ReplaceCopyWithImpl;
+@useResult
+$Res call({
+ String value
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountSecretInput_ReplaceCopyWithImpl<$Res>
+    implements $AccountSecretInput_ReplaceCopyWith<$Res> {
+  _$AccountSecretInput_ReplaceCopyWithImpl(this._self, this._then);
+
+  final AccountSecretInput_Replace _self;
+  final $Res Function(AccountSecretInput_Replace) _then;
+
+/// Create a copy of AccountSecretInput
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(AccountSecretInput_Replace(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class AccountSecretInput_Clear extends AccountSecretInput {
+  const AccountSecretInput_Clear(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSecretInput_Clear);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'AccountSecretInput.clear()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
 mixin _$BridgeModelCatalogError {
 
 
@@ -1247,304 +1545,6 @@ String toString() {
 
 
 /// @nodoc
-mixin _$ProviderSecretInput {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is ProviderSecretInput);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'ProviderSecretInput()';
-}
-
-
-}
-
-/// @nodoc
-class $ProviderSecretInputCopyWith<$Res>  {
-$ProviderSecretInputCopyWith(ProviderSecretInput _, $Res Function(ProviderSecretInput) __);
-}
-
-
-/// Adds pattern-matching-related methods to [ProviderSecretInput].
-extension ProviderSecretInputPatterns on ProviderSecretInput {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ProviderSecretInput_Preserve value)?  preserve,TResult Function( ProviderSecretInput_Replace value)?  replace,TResult Function( ProviderSecretInput_Clear value)?  clear,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve() when preserve != null:
-return preserve(_that);case ProviderSecretInput_Replace() when replace != null:
-return replace(_that);case ProviderSecretInput_Clear() when clear != null:
-return clear(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ProviderSecretInput_Preserve value)  preserve,required TResult Function( ProviderSecretInput_Replace value)  replace,required TResult Function( ProviderSecretInput_Clear value)  clear,}){
-final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve():
-return preserve(_that);case ProviderSecretInput_Replace():
-return replace(_that);case ProviderSecretInput_Clear():
-return clear(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ProviderSecretInput_Preserve value)?  preserve,TResult? Function( ProviderSecretInput_Replace value)?  replace,TResult? Function( ProviderSecretInput_Clear value)?  clear,}){
-final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve() when preserve != null:
-return preserve(_that);case ProviderSecretInput_Replace() when replace != null:
-return replace(_that);case ProviderSecretInput_Clear() when clear != null:
-return clear(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  preserve,TResult Function( String value)?  replace,TResult Function()?  clear,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve() when preserve != null:
-return preserve();case ProviderSecretInput_Replace() when replace != null:
-return replace(_that.value);case ProviderSecretInput_Clear() when clear != null:
-return clear();case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  preserve,required TResult Function( String value)  replace,required TResult Function()  clear,}) {final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve():
-return preserve();case ProviderSecretInput_Replace():
-return replace(_that.value);case ProviderSecretInput_Clear():
-return clear();}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  preserve,TResult? Function( String value)?  replace,TResult? Function()?  clear,}) {final _that = this;
-switch (_that) {
-case ProviderSecretInput_Preserve() when preserve != null:
-return preserve();case ProviderSecretInput_Replace() when replace != null:
-return replace(_that.value);case ProviderSecretInput_Clear() when clear != null:
-return clear();case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class ProviderSecretInput_Preserve extends ProviderSecretInput {
-  const ProviderSecretInput_Preserve(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is ProviderSecretInput_Preserve);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'ProviderSecretInput.preserve()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class ProviderSecretInput_Replace extends ProviderSecretInput {
-  const ProviderSecretInput_Replace({required this.value}): super._();
-
-
- final  String value;
-
-/// Create a copy of ProviderSecretInput
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$ProviderSecretInput_ReplaceCopyWith<ProviderSecretInput_Replace> get copyWith => _$ProviderSecretInput_ReplaceCopyWithImpl<ProviderSecretInput_Replace>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is ProviderSecretInput_Replace&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,value);
-}
-
-@override
-String toString() {
-    return 'ProviderSecretInput.replace(value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $ProviderSecretInput_ReplaceCopyWith<$Res> implements $ProviderSecretInputCopyWith<$Res> {
-  factory $ProviderSecretInput_ReplaceCopyWith(ProviderSecretInput_Replace value, $Res Function(ProviderSecretInput_Replace) _then) = _$ProviderSecretInput_ReplaceCopyWithImpl;
-@useResult
-$Res call({
- String value
-});
-
-
-
-
-}
-/// @nodoc
-class _$ProviderSecretInput_ReplaceCopyWithImpl<$Res>
-    implements $ProviderSecretInput_ReplaceCopyWith<$Res> {
-  _$ProviderSecretInput_ReplaceCopyWithImpl(this._self, this._then);
-
-  final ProviderSecretInput_Replace _self;
-  final $Res Function(ProviderSecretInput_Replace) _then;
-
-/// Create a copy of ProviderSecretInput
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
-  return _then(ProviderSecretInput_Replace(
-value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class ProviderSecretInput_Clear extends ProviderSecretInput {
-  const ProviderSecretInput_Clear(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is ProviderSecretInput_Clear);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'ProviderSecretInput.clear()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
 mixin _$SettingsFieldInput {
 
 
@@ -1748,7 +1748,7 @@ return roleReasoningEffort(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  instructionBaseOverride,TResult Function( String value)?  instructionDeveloper,TResult Function( String value)?  instructionUser,TResult Function( BigInt value)?  projectDocMaxBytes,TResult Function( List<String> value)?  projectDocFallbackFilenames,TResult Function( bool value)?  skillsEnabled,TResult Function( bool value)?  skillsAutoLearn,TResult Function( bool value)?  skillsSystemEnabled,TResult Function( String value)?  skillsProjectDir,TResult Function( String value)?  skillsUserDir,TResult Function( List<String> value)?  skillsExternalDirs,TResult Function( List<String> value)?  skillsDisabled,TResult Function( int value)?  skillsAutoLearnMinToolCalls,TResult Function( String id,  bool value)?  mcpServerEnabled,TResult Function( String id,  String transport)?  mcpServerTransport,TResult Function( String id,  String endpoint)?  mcpServerEndpoint,TResult Function( bool value)?  generalFollowActiveTurn,TResult Function( bool value)?  generalCompactTimeline,TResult Function( int? value)?  generalSidebarWidth,TResult Function( List<String> value)?  generalPinnedThreadIds,TResult Function( List<String> value)?  generalPinnedProjectIds,TResult Function( String value)?  webSearchMode,TResult Function( String? value)?  webSearchContextSize,TResult Function( List<String> value)?  webSearchAllowedDomains,TResult Function( String? value)?  webSearchCountry,TResult Function( String? value)?  webSearchRegion,TResult Function( String? value)?  webSearchCity,TResult Function( String? value)?  webSearchTimezone,TResult Function( bool value)?  deepSeekWebSearchEnabled,TResult Function( bool value)?  deepSeekWebFetchEnabled,TResult Function( String modeId,  String providerId,  String model)?  modeModel,TResult Function( String modeId,  String? effort)?  modeReasoningEffort,TResult Function( String role,  String providerId,  String model)?  roleModel,TResult Function( String role,  String? effort)?  roleReasoningEffort,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  instructionBaseOverride,TResult Function( String value)?  instructionDeveloper,TResult Function( String value)?  instructionUser,TResult Function( BigInt value)?  projectDocMaxBytes,TResult Function( List<String> value)?  projectDocFallbackFilenames,TResult Function( bool value)?  skillsEnabled,TResult Function( bool value)?  skillsAutoLearn,TResult Function( bool value)?  skillsSystemEnabled,TResult Function( String value)?  skillsProjectDir,TResult Function( String value)?  skillsUserDir,TResult Function( List<String> value)?  skillsExternalDirs,TResult Function( List<String> value)?  skillsDisabled,TResult Function( int value)?  skillsAutoLearnMinToolCalls,TResult Function( String id,  bool value)?  mcpServerEnabled,TResult Function( String id,  String transport)?  mcpServerTransport,TResult Function( String id,  String endpoint)?  mcpServerEndpoint,TResult Function( bool value)?  generalFollowActiveTurn,TResult Function( bool value)?  generalCompactTimeline,TResult Function( int? value)?  generalSidebarWidth,TResult Function( List<String> value)?  generalPinnedThreadIds,TResult Function( List<String> value)?  generalPinnedProjectIds,TResult Function( String value)?  webSearchMode,TResult Function( String? value)?  webSearchContextSize,TResult Function( List<String> value)?  webSearchAllowedDomains,TResult Function( String? value)?  webSearchCountry,TResult Function( String? value)?  webSearchRegion,TResult Function( String? value)?  webSearchCity,TResult Function( String? value)?  webSearchTimezone,TResult Function( bool value)?  deepSeekWebSearchEnabled,TResult Function( bool value)?  deepSeekWebFetchEnabled,TResult Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult Function( String modeId,  String? effort)?  modeReasoningEffort,TResult Function( String role,  String accountId,  String modelId)?  roleModel,TResult Function( String role,  String? effort)?  roleReasoningEffort,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper() when instructionDeveloper != null:
@@ -1781,9 +1781,9 @@ return webSearchCity(_that.value);case SettingsFieldInput_WebSearchTimezone() wh
 return webSearchTimezone(_that.value);case SettingsFieldInput_DeepSeekWebSearchEnabled() when deepSeekWebSearchEnabled != null:
 return deepSeekWebSearchEnabled(_that.value);case SettingsFieldInput_DeepSeekWebFetchEnabled() when deepSeekWebFetchEnabled != null:
 return deepSeekWebFetchEnabled(_that.value);case SettingsFieldInput_ModeModel() when modeModel != null:
-return modeModel(_that.modeId,_that.providerId,_that.model);case SettingsFieldInput_ModeReasoningEffort() when modeReasoningEffort != null:
+return modeModel(_that.modeId,_that.accountId,_that.modelId);case SettingsFieldInput_ModeReasoningEffort() when modeReasoningEffort != null:
 return modeReasoningEffort(_that.modeId,_that.effort);case SettingsFieldInput_RoleModel() when roleModel != null:
-return roleModel(_that.role,_that.providerId,_that.model);case SettingsFieldInput_RoleReasoningEffort() when roleReasoningEffort != null:
+return roleModel(_that.role,_that.accountId,_that.modelId);case SettingsFieldInput_RoleReasoningEffort() when roleReasoningEffort != null:
 return roleReasoningEffort(_that.role,_that.effort);case _:
   return orElse();
 
@@ -1802,7 +1802,7 @@ return roleReasoningEffort(_that.role,_that.effort);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  instructionBaseOverride,required TResult Function( String value)  instructionDeveloper,required TResult Function( String value)  instructionUser,required TResult Function( BigInt value)  projectDocMaxBytes,required TResult Function( List<String> value)  projectDocFallbackFilenames,required TResult Function( bool value)  skillsEnabled,required TResult Function( bool value)  skillsAutoLearn,required TResult Function( bool value)  skillsSystemEnabled,required TResult Function( String value)  skillsProjectDir,required TResult Function( String value)  skillsUserDir,required TResult Function( List<String> value)  skillsExternalDirs,required TResult Function( List<String> value)  skillsDisabled,required TResult Function( int value)  skillsAutoLearnMinToolCalls,required TResult Function( String id,  bool value)  mcpServerEnabled,required TResult Function( String id,  String transport)  mcpServerTransport,required TResult Function( String id,  String endpoint)  mcpServerEndpoint,required TResult Function( bool value)  generalFollowActiveTurn,required TResult Function( bool value)  generalCompactTimeline,required TResult Function( int? value)  generalSidebarWidth,required TResult Function( List<String> value)  generalPinnedThreadIds,required TResult Function( List<String> value)  generalPinnedProjectIds,required TResult Function( String value)  webSearchMode,required TResult Function( String? value)  webSearchContextSize,required TResult Function( List<String> value)  webSearchAllowedDomains,required TResult Function( String? value)  webSearchCountry,required TResult Function( String? value)  webSearchRegion,required TResult Function( String? value)  webSearchCity,required TResult Function( String? value)  webSearchTimezone,required TResult Function( bool value)  deepSeekWebSearchEnabled,required TResult Function( bool value)  deepSeekWebFetchEnabled,required TResult Function( String modeId,  String providerId,  String model)  modeModel,required TResult Function( String modeId,  String? effort)  modeReasoningEffort,required TResult Function( String role,  String providerId,  String model)  roleModel,required TResult Function( String role,  String? effort)  roleReasoningEffort,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  instructionBaseOverride,required TResult Function( String value)  instructionDeveloper,required TResult Function( String value)  instructionUser,required TResult Function( BigInt value)  projectDocMaxBytes,required TResult Function( List<String> value)  projectDocFallbackFilenames,required TResult Function( bool value)  skillsEnabled,required TResult Function( bool value)  skillsAutoLearn,required TResult Function( bool value)  skillsSystemEnabled,required TResult Function( String value)  skillsProjectDir,required TResult Function( String value)  skillsUserDir,required TResult Function( List<String> value)  skillsExternalDirs,required TResult Function( List<String> value)  skillsDisabled,required TResult Function( int value)  skillsAutoLearnMinToolCalls,required TResult Function( String id,  bool value)  mcpServerEnabled,required TResult Function( String id,  String transport)  mcpServerTransport,required TResult Function( String id,  String endpoint)  mcpServerEndpoint,required TResult Function( bool value)  generalFollowActiveTurn,required TResult Function( bool value)  generalCompactTimeline,required TResult Function( int? value)  generalSidebarWidth,required TResult Function( List<String> value)  generalPinnedThreadIds,required TResult Function( List<String> value)  generalPinnedProjectIds,required TResult Function( String value)  webSearchMode,required TResult Function( String? value)  webSearchContextSize,required TResult Function( List<String> value)  webSearchAllowedDomains,required TResult Function( String? value)  webSearchCountry,required TResult Function( String? value)  webSearchRegion,required TResult Function( String? value)  webSearchCity,required TResult Function( String? value)  webSearchTimezone,required TResult Function( bool value)  deepSeekWebSearchEnabled,required TResult Function( bool value)  deepSeekWebFetchEnabled,required TResult Function( String modeId,  String accountId,  String modelId)  modeModel,required TResult Function( String modeId,  String? effort)  modeReasoningEffort,required TResult Function( String role,  String accountId,  String modelId)  roleModel,required TResult Function( String role,  String? effort)  roleReasoningEffort,}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride():
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper():
@@ -1835,9 +1835,9 @@ return webSearchCity(_that.value);case SettingsFieldInput_WebSearchTimezone():
 return webSearchTimezone(_that.value);case SettingsFieldInput_DeepSeekWebSearchEnabled():
 return deepSeekWebSearchEnabled(_that.value);case SettingsFieldInput_DeepSeekWebFetchEnabled():
 return deepSeekWebFetchEnabled(_that.value);case SettingsFieldInput_ModeModel():
-return modeModel(_that.modeId,_that.providerId,_that.model);case SettingsFieldInput_ModeReasoningEffort():
+return modeModel(_that.modeId,_that.accountId,_that.modelId);case SettingsFieldInput_ModeReasoningEffort():
 return modeReasoningEffort(_that.modeId,_that.effort);case SettingsFieldInput_RoleModel():
-return roleModel(_that.role,_that.providerId,_that.model);case SettingsFieldInput_RoleReasoningEffort():
+return roleModel(_that.role,_that.accountId,_that.modelId);case SettingsFieldInput_RoleReasoningEffort():
 return roleReasoningEffort(_that.role,_that.effort);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -1852,7 +1852,7 @@ return roleReasoningEffort(_that.role,_that.effort);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  instructionBaseOverride,TResult? Function( String value)?  instructionDeveloper,TResult? Function( String value)?  instructionUser,TResult? Function( BigInt value)?  projectDocMaxBytes,TResult? Function( List<String> value)?  projectDocFallbackFilenames,TResult? Function( bool value)?  skillsEnabled,TResult? Function( bool value)?  skillsAutoLearn,TResult? Function( bool value)?  skillsSystemEnabled,TResult? Function( String value)?  skillsProjectDir,TResult? Function( String value)?  skillsUserDir,TResult? Function( List<String> value)?  skillsExternalDirs,TResult? Function( List<String> value)?  skillsDisabled,TResult? Function( int value)?  skillsAutoLearnMinToolCalls,TResult? Function( String id,  bool value)?  mcpServerEnabled,TResult? Function( String id,  String transport)?  mcpServerTransport,TResult? Function( String id,  String endpoint)?  mcpServerEndpoint,TResult? Function( bool value)?  generalFollowActiveTurn,TResult? Function( bool value)?  generalCompactTimeline,TResult? Function( int? value)?  generalSidebarWidth,TResult? Function( List<String> value)?  generalPinnedThreadIds,TResult? Function( List<String> value)?  generalPinnedProjectIds,TResult? Function( String value)?  webSearchMode,TResult? Function( String? value)?  webSearchContextSize,TResult? Function( List<String> value)?  webSearchAllowedDomains,TResult? Function( String? value)?  webSearchCountry,TResult? Function( String? value)?  webSearchRegion,TResult? Function( String? value)?  webSearchCity,TResult? Function( String? value)?  webSearchTimezone,TResult? Function( bool value)?  deepSeekWebSearchEnabled,TResult? Function( bool value)?  deepSeekWebFetchEnabled,TResult? Function( String modeId,  String providerId,  String model)?  modeModel,TResult? Function( String modeId,  String? effort)?  modeReasoningEffort,TResult? Function( String role,  String providerId,  String model)?  roleModel,TResult? Function( String role,  String? effort)?  roleReasoningEffort,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  instructionBaseOverride,TResult? Function( String value)?  instructionDeveloper,TResult? Function( String value)?  instructionUser,TResult? Function( BigInt value)?  projectDocMaxBytes,TResult? Function( List<String> value)?  projectDocFallbackFilenames,TResult? Function( bool value)?  skillsEnabled,TResult? Function( bool value)?  skillsAutoLearn,TResult? Function( bool value)?  skillsSystemEnabled,TResult? Function( String value)?  skillsProjectDir,TResult? Function( String value)?  skillsUserDir,TResult? Function( List<String> value)?  skillsExternalDirs,TResult? Function( List<String> value)?  skillsDisabled,TResult? Function( int value)?  skillsAutoLearnMinToolCalls,TResult? Function( String id,  bool value)?  mcpServerEnabled,TResult? Function( String id,  String transport)?  mcpServerTransport,TResult? Function( String id,  String endpoint)?  mcpServerEndpoint,TResult? Function( bool value)?  generalFollowActiveTurn,TResult? Function( bool value)?  generalCompactTimeline,TResult? Function( int? value)?  generalSidebarWidth,TResult? Function( List<String> value)?  generalPinnedThreadIds,TResult? Function( List<String> value)?  generalPinnedProjectIds,TResult? Function( String value)?  webSearchMode,TResult? Function( String? value)?  webSearchContextSize,TResult? Function( List<String> value)?  webSearchAllowedDomains,TResult? Function( String? value)?  webSearchCountry,TResult? Function( String? value)?  webSearchRegion,TResult? Function( String? value)?  webSearchCity,TResult? Function( String? value)?  webSearchTimezone,TResult? Function( bool value)?  deepSeekWebSearchEnabled,TResult? Function( bool value)?  deepSeekWebFetchEnabled,TResult? Function( String modeId,  String accountId,  String modelId)?  modeModel,TResult? Function( String modeId,  String? effort)?  modeReasoningEffort,TResult? Function( String role,  String accountId,  String modelId)?  roleModel,TResult? Function( String role,  String? effort)?  roleReasoningEffort,}) {final _that = this;
 switch (_that) {
 case SettingsFieldInput_InstructionBaseOverride() when instructionBaseOverride != null:
 return instructionBaseOverride(_that.value);case SettingsFieldInput_InstructionDeveloper() when instructionDeveloper != null:
@@ -1885,9 +1885,9 @@ return webSearchCity(_that.value);case SettingsFieldInput_WebSearchTimezone() wh
 return webSearchTimezone(_that.value);case SettingsFieldInput_DeepSeekWebSearchEnabled() when deepSeekWebSearchEnabled != null:
 return deepSeekWebSearchEnabled(_that.value);case SettingsFieldInput_DeepSeekWebFetchEnabled() when deepSeekWebFetchEnabled != null:
 return deepSeekWebFetchEnabled(_that.value);case SettingsFieldInput_ModeModel() when modeModel != null:
-return modeModel(_that.modeId,_that.providerId,_that.model);case SettingsFieldInput_ModeReasoningEffort() when modeReasoningEffort != null:
+return modeModel(_that.modeId,_that.accountId,_that.modelId);case SettingsFieldInput_ModeReasoningEffort() when modeReasoningEffort != null:
 return modeReasoningEffort(_that.modeId,_that.effort);case SettingsFieldInput_RoleModel() when roleModel != null:
-return roleModel(_that.role,_that.providerId,_that.model);case SettingsFieldInput_RoleReasoningEffort() when roleReasoningEffort != null:
+return roleModel(_that.role,_that.accountId,_that.modelId);case SettingsFieldInput_RoleReasoningEffort() when roleReasoningEffort != null:
 return roleReasoningEffort(_that.role,_that.effort);case _:
   return null;
 
@@ -3982,12 +3982,12 @@ as bool,
 
 
 class SettingsFieldInput_ModeModel extends SettingsFieldInput {
-  const SettingsFieldInput_ModeModel({required this.modeId, required this.providerId, required this.model}): super._();
+  const SettingsFieldInput_ModeModel({required this.modeId, required this.accountId, required this.modelId}): super._();
 
 
  final  String modeId;
- final  String providerId;
- final  String model;
+ final  String accountId;
+ final  String modelId;
 
 /// Create a copy of SettingsFieldInput
 /// with the given fields replaced by the non-null parameter values.
@@ -3999,18 +3999,18 @@ $SettingsFieldInput_ModeModelCopyWith<SettingsFieldInput_ModeModel> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_ModeModel&&(identical(other.modeId, modeId) || other.modeId == modeId)&&(identical(other.providerId, providerId) || other.providerId == providerId)&&(identical(other.model, model) || other.model == model));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_ModeModel&&(identical(other.modeId, modeId) || other.modeId == modeId)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.modelId, modelId) || other.modelId == modelId));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,modeId,providerId,model);
+    return Object.hash(runtimeType,modeId,accountId,modelId);
 }
 
 @override
 String toString() {
-    return 'SettingsFieldInput.modeModel(modeId: $modeId, providerId: $providerId, model: $model)';
+    return 'SettingsFieldInput.modeModel(modeId: $modeId, accountId: $accountId, modelId: $modelId)';
 }
 
 
@@ -4021,7 +4021,7 @@ abstract mixin class $SettingsFieldInput_ModeModelCopyWith<$Res> implements $Set
   factory $SettingsFieldInput_ModeModelCopyWith(SettingsFieldInput_ModeModel value, $Res Function(SettingsFieldInput_ModeModel) _then) = _$SettingsFieldInput_ModeModelCopyWithImpl;
 @useResult
 $Res call({
- String modeId, String providerId, String model
+ String modeId, String accountId, String modelId
 });
 
 
@@ -4038,11 +4038,11 @@ class _$SettingsFieldInput_ModeModelCopyWithImpl<$Res>
 
 /// Create a copy of SettingsFieldInput
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? modeId = null,Object? providerId = null,Object? model = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? modeId = null,Object? accountId = null,Object? modelId = null,}) {
   return _then(SettingsFieldInput_ModeModel(
 modeId: null == modeId ? _self.modeId : modeId // ignore: cast_nullable_to_non_nullable
-as String,providerId: null == providerId ? _self.providerId : providerId // ignore: cast_nullable_to_non_nullable
-as String,model: null == model ? _self.model : model // ignore: cast_nullable_to_non_nullable
+as String,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as String,modelId: null == modelId ? _self.modelId : modelId // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }
@@ -4124,12 +4124,12 @@ as String?,
 
 
 class SettingsFieldInput_RoleModel extends SettingsFieldInput {
-  const SettingsFieldInput_RoleModel({required this.role, required this.providerId, required this.model}): super._();
+  const SettingsFieldInput_RoleModel({required this.role, required this.accountId, required this.modelId}): super._();
 
 
  final  String role;
- final  String providerId;
- final  String model;
+ final  String accountId;
+ final  String modelId;
 
 /// Create a copy of SettingsFieldInput
 /// with the given fields replaced by the non-null parameter values.
@@ -4141,18 +4141,18 @@ $SettingsFieldInput_RoleModelCopyWith<SettingsFieldInput_RoleModel> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_RoleModel&&(identical(other.role, role) || other.role == role)&&(identical(other.providerId, providerId) || other.providerId == providerId)&&(identical(other.model, model) || other.model == model));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsFieldInput_RoleModel&&(identical(other.role, role) || other.role == role)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.modelId, modelId) || other.modelId == modelId));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,role,providerId,model);
+    return Object.hash(runtimeType,role,accountId,modelId);
 }
 
 @override
 String toString() {
-    return 'SettingsFieldInput.roleModel(role: $role, providerId: $providerId, model: $model)';
+    return 'SettingsFieldInput.roleModel(role: $role, accountId: $accountId, modelId: $modelId)';
 }
 
 
@@ -4163,7 +4163,7 @@ abstract mixin class $SettingsFieldInput_RoleModelCopyWith<$Res> implements $Set
   factory $SettingsFieldInput_RoleModelCopyWith(SettingsFieldInput_RoleModel value, $Res Function(SettingsFieldInput_RoleModel) _then) = _$SettingsFieldInput_RoleModelCopyWithImpl;
 @useResult
 $Res call({
- String role, String providerId, String model
+ String role, String accountId, String modelId
 });
 
 
@@ -4180,11 +4180,11 @@ class _$SettingsFieldInput_RoleModelCopyWithImpl<$Res>
 
 /// Create a copy of SettingsFieldInput
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? role = null,Object? providerId = null,Object? model = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? role = null,Object? accountId = null,Object? modelId = null,}) {
   return _then(SettingsFieldInput_RoleModel(
 role: null == role ? _self.role : role // ignore: cast_nullable_to_non_nullable
-as String,providerId: null == providerId ? _self.providerId : providerId // ignore: cast_nullable_to_non_nullable
-as String,model: null == model ? _self.model : model // ignore: cast_nullable_to_non_nullable
+as String,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as String,modelId: null == modelId ? _self.modelId : modelId // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }

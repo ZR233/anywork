@@ -11,6 +11,104 @@ use pl_core::chat::{
 };
 use timeline_support::*;
 
+#[tokio::test]
+async fn an_evicted_terminal_preview_is_not_replaced_by_same_revision_saved_streaming() {
+    let mut durable = item(1, 7, "same", false);
+    durable.saved = true;
+    let session = Session::new(Stored::with([durable]));
+    session.publish_preview(item(1, 7, "same", true)).unwrap();
+    for order in 2..=151 {
+        session
+            .publish_preview(item(order, 1, "other", false))
+            .unwrap();
+    }
+    let boundary = ChatCursor::new(2, "item-2");
+    assert!(matches!(
+        session
+            .page(ChatPageRequest::before(boundary.clone()))
+            .await,
+        Err(ChatError::ReadInvalidated)
+    ));
+    session.publish(item(1, 7, "same", true)).unwrap();
+    let recovered = session
+        .page(ChatPageRequest::before(boundary))
+        .await
+        .unwrap();
+    assert_eq!(recovered.items.len(), 1);
+    assert!(recovered.items[0].is_terminal());
+}
+
+#[tokio::test]
+async fn evicted_uncommitted_previews_never_turn_a_page_into_sparse_eof() {
+    for terminal in [false, true] {
+        let session = Session::new(Stored::with([item(1, 1, "durable input", true)]));
+        session.initialize_order_allocator().await.unwrap();
+        for order in 2..=151 {
+            let id = format!("item-{order}");
+            assert_eq!(session.reserve_order(&id).await.unwrap(), order);
+            session
+                .publish_preview(item(order, 1, "streaming", terminal))
+                .unwrap();
+        }
+        let mut tail = session.subscribe_tail().await.unwrap();
+        let baseline = tail.initial().unwrap();
+        assert!(baseline.has_older);
+        let page = session
+            .page(ChatPageRequest::before(ChatCursor::new(56, "item-56")))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.iter().map(|item| item.order).collect::<Vec<_>>(),
+            vec![52, 53, 54, 55]
+        );
+        assert!(page.has_older, "the missing preview range is not EOF");
+        let boundary = page.before.unwrap();
+        assert!(matches!(
+            session
+                .page(ChatPageRequest::before(boundary.clone()))
+                .await,
+            Err(ChatError::ReadInvalidated)
+        ));
+        // Reliable effect admission makes the range readable before its writer ACK.
+        for order in 2..=151 {
+            session.publish(item(order, 1, "streaming", true)).unwrap();
+        }
+        let recovered = session
+            .page(ChatPageRequest::before(boundary))
+            .await
+            .unwrap();
+        assert_eq!(recovered.items.first().unwrap().order, 20);
+        assert_eq!(recovered.items.last().unwrap().order, 51);
+        assert!(recovered.has_older);
+    }
+}
+
+#[tokio::test]
+async fn unpublished_reservations_do_not_block_history_and_withdrawal_releases_preview_gaps() {
+    let session = Session::new(Stored::with([item(1, 1, "durable input", true)]));
+    session.reserve_order("never-published").await.unwrap();
+    assert_eq!(
+        session
+            .page(ChatPageRequest::latest())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    for order in 3..=152 {
+        let id = format!("preview-{order}");
+        assert_eq!(session.reserve_order(&id).await.unwrap(), order);
+        session
+            .publish_preview(identified(&id, order, 1, "streaming", false))
+            .unwrap();
+    }
+    session.drop_previews_with_prefix("preview-");
+    let page = session.page(ChatPageRequest::latest()).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert!(!page.has_older);
+}
+
 /// 读取窗口内有一次真实撤回时，此前捕获的引用就作废——即使同一身份随后以新 order/revision 重新发布。
 ///
 /// 捕获的引用是撤回**之前**的正文，与新事实无关；新事实靠 post-SQL 的当前候选独立进入页，
