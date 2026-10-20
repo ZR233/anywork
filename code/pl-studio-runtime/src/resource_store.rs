@@ -4,7 +4,7 @@ mod remote;
 pub use remote::RemoteCommandOutputArchive;
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -212,6 +212,24 @@ fn unavailable(source: ResourceStoreError) -> ResourceReadError {
     ResourceReadError::Unavailable {
         source: Box::new(source),
     }
+}
+
+fn retain_command_capture_file(
+    root: &Path,
+    mut source: File,
+) -> Result<ResourceReference, ResourceStoreError> {
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(ResourceStoreError::Read)?;
+    retain_input(
+        root,
+        ResourceInput {
+            reader: source,
+            source_path: None,
+        },
+        "application/octet-stream".to_owned(),
+        Some(MAX_COMMAND_ARCHIVE_BYTES),
+    )
 }
 
 fn retain(

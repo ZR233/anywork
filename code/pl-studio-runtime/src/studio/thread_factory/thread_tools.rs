@@ -29,6 +29,7 @@ pub(super) struct PreparedThreadTools {
     pub hosted: Vec<pl_model::runtime::HostedTool>,
     pub environment: pl_tool::environment::ExecutionEnvironment,
     pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub workspace: ToolWorkspace,
 }
 
 pub(super) enum CatalogPreparation {
@@ -47,8 +48,10 @@ pub(super) enum CatalogPreparation {
 impl StudioThreadFactory {
     pub(super) async fn prepare_thread_tools(
         &self,
-        assembly: ThreadToolAssembly<'_>,
+        mut assembly: ThreadToolAssembly<'_>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
+        assembly.workspace =
+            super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         let binding = super::tool_bindings::ToolBinding {
             lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
@@ -156,6 +159,7 @@ impl StudioThreadFactory {
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
+        super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
         let environment = remote
             .as_ref()
             .map(|host| host.execution_environment.clone())
@@ -197,6 +201,13 @@ impl StudioThreadFactory {
                 binding,
                 store,
                 helper_source,
+                host_scratch: self
+                    .services
+                    .store
+                    .session_scratch_dir_for(&project.id, thread_id)
+                    .map_err(|error| {
+                        resource_error("resolve host session transfer scratch", error)
+                    })?,
                 capabilities: {
                     let mut capabilities = config.runtime.tool_capabilities.clone();
                     capabilities.ask_user &= thread_id == root_thread_id;
@@ -310,10 +321,10 @@ impl StudioThreadFactory {
         if config.runtime.tool_capabilities.lsp {
             let paths = match &remote {
                 Some(host) => pl_tool::lsp::LspPathBinding::Remote {
-                    workspace,
+                    workspace: workspace.clone(),
                     files: Arc::new(host.files.clone()),
                 },
-                None => pl_tool::lsp::LspPathBinding::Local(workspace),
+                None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
             };
             tools = tools.with_lsp(self.services.lsp_runtime.clone(), paths)?;
         }
@@ -334,6 +345,7 @@ impl StudioThreadFactory {
             hosted: search.hosted,
             environment,
             remote,
+            workspace,
         })
     }
 }

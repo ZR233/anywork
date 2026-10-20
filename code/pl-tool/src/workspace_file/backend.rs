@@ -66,6 +66,13 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
         &self,
         request: WorkspaceFileListRequest,
     ) -> impl Future<Output = Result<WorkspaceFileListResult>> + Send;
+
+    /// Recursively creates a workspace-relative directory using the same confinement as writes.
+    fn create_directory(
+        &self,
+        path: String,
+        cwd: Option<String>,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// 为 host-provided workspace backend 统一施加冻结的 Agent 文件写策略。
@@ -118,6 +125,12 @@ where
 
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
         self.backend.list(request).await
+    }
+
+    async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
+        self.workspace
+            .ensure_relative_path_writable(cwd.as_deref(), &path)?;
+        self.backend.create_directory(path, cwd).await
     }
 }
 

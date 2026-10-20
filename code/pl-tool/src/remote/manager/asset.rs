@@ -154,9 +154,12 @@ pub(super) async fn upload_helper(
     {
         return Ok(path);
     }
-    let temporary = format!("{path}.tmp");
+    // mktemp creates a unique same-directory temp with private permissions.
+    // Failure or cancellation only removes this attempt's temp; concurrent
+    // uploads keep their own files and a published helper is never truncated.
+    let expected = bytes.len();
     let script = format!(
-        "umask 077; mkdir -p {directory} && cat > {temporary} && chmod 700 {temporary} && mv -f {temporary} {path}"
+        "umask 077; mkdir -p {directory} && temporary=$(mktemp {directory}/{HELPER_NAME}.XXXXXX) && trap 'rm -f -- \"$temporary\"' EXIT INT TERM HUP && cat > \"$temporary\" && received=$(wc -c < \"$temporary\") && test \"$received\" -eq {expected} && chmod 700 \"$temporary\" && if test -x {path}; then :; elif mv \"$temporary\" {path}; then trap - EXIT INT TERM HUP; elif test -x {path}; then :; else exit 1; fi && test -x {path}"
     );
     let mut prepared = ssh_command(profile, ssh_config, password).await?;
     prepared

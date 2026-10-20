@@ -158,6 +158,12 @@ pub(in crate::studio) async fn prepare_workspace(
                 branch: branch.clone(),
                 base_commit: base_commit.clone(),
             };
+            prepare_repository_worktree_pool(
+                ssh_manager,
+                request.project.ssh_alias.as_deref(),
+                &repository_root,
+            )
+            .await?;
             worktrees
                 .record(durable.clone())
                 .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -317,6 +323,8 @@ where
         branch,
         base_commit: base_commit.clone(),
     };
+    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
+        .await?;
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -435,6 +443,8 @@ pub(in crate::studio) async fn recreate_child_worktree(
         branch: branch.clone(),
         base_commit: receipt.base_commit.clone(),
     };
+    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
+        .await?;
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -535,6 +545,35 @@ async fn settle_failed_create(
             error = %persist_error,
             "failed to settle durable worktree lease after create failure"
         );
+    }
+}
+
+async fn prepare_repository_worktree_pool(
+    ssh_manager: &Arc<pl_tool::remote::SshManager>,
+    ssh_alias: Option<&str>,
+    repository_root: &Path,
+) -> Result<()> {
+    match ssh_alias {
+        Some(server) => {
+            let host = ssh_manager
+                .open_workspace_host(server, workspace_path_text(repository_root, true)?)
+                .await
+                .map_err(|error| lifecycle_error(error.to_string()))?;
+            pl_tool::workspace::prepare_worktree_pool(&host.files)
+                .await
+                .map_err(|error| lifecycle_error(error.to_string()))
+        }
+        None => {
+            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+                repository_root.to_path_buf(),
+                false,
+            )
+            .await
+            .map_err(|error| lifecycle_error(error.to_string()))?;
+            pl_tool::workspace::prepare_worktree_pool(&backend)
+                .await
+                .map_err(|error| lifecycle_error(error.to_string()))
+        }
     }
 }
 

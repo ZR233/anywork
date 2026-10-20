@@ -45,29 +45,39 @@ fn write_file(path: &Path, content: &[u8], mode: RemoteWriteMode) -> io::Result<
             file.write_all(content)?;
             file.sync_all()?;
         }
-        RemoteWriteMode::Overwrite => {
-            let permissions = match std::fs::metadata(path) {
-                Ok(metadata) => Some(metadata.permissions()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error),
-            };
-            let mut builder = tempfile::Builder::new();
-            builder.prefix(".pure-write-");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                builder.permissions(std::fs::Permissions::from_mode(0o666));
-            }
-            let mut temporary = builder.tempfile_in(parent)?;
-            temporary.write_all(content)?;
-            if let Some(permissions) = permissions {
-                temporary.as_file().set_permissions(permissions)?;
-            }
-            temporary.as_file().sync_all()?;
-            temporary.persist(path).map_err(|error| error.error)?;
-        }
+        RemoteWriteMode::Overwrite => overwrite_atomic(path, parent, content)?,
     }
     #[cfg(unix)]
     std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn overwrite_atomic(path: &Path, parent: &Path, content: &[u8]) -> io::Result<()> {
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".pure-write-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
+    let write = (|| {
+        temporary.write_all(content)?;
+        if let Some(permissions) = permissions {
+            temporary.as_file().set_permissions(permissions)?;
+        }
+        temporary.as_file().sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write {
+        let _ = temporary.close();
+        return Err(error);
+    }
+    temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }

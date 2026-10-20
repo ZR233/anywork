@@ -1,4 +1,5 @@
 //! Archive remote output only after a complete remote transfer into local staging.
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pl_core::{context::ResourceReference, tool::opaque::ToolError};
@@ -11,17 +12,24 @@ use super::{FileResourceStore, ResourceStoreError, retention_failure, retention_
 pub struct RemoteCommandOutputArchive {
     store: FileResourceStore,
     files: Arc<RemoteWorkspaceFileBackend>,
+    host_scratch: PathBuf,
 }
 
 impl FileResourceStore {
-    /// Binds the exact remote workspace lease that produced the command capture.
+    /// Binds the remote workspace lease and this Thread's host transfer scratch.
+    ///
+    /// Staging lives in the host-owned Thread scratch directory supplied by the factory, never
+    /// under `thread-resources` and never guessed from a parent directory. That scratch is
+    /// transfer space, not a model-writable workspace path.
     pub fn remote_command_archive(
         &self,
         files: Arc<RemoteWorkspaceFileBackend>,
+        host_scratch: PathBuf,
     ) -> RemoteCommandOutputArchive {
         RemoteCommandOutputArchive {
             store: self.clone(),
             files,
+            host_scratch,
         }
     }
 }
@@ -37,19 +45,19 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
             .to_str()
             .ok_or_else(|| ToolError::new(ResourceStoreError::Identity))?
             .replace('\\', "/");
-        let root = self.store.root.clone();
+        let scratch = self.host_scratch.clone();
         let staging = tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&*root)
-                .and_then(|()| tempfile::NamedTempFile::new_in(&*root))
+            std::fs::create_dir_all(&scratch)
+                .and_then(|()| tempfile::tempfile_in(&scratch))
                 .map_err(|source| ResourceStoreError::Io {
-                    path: (*root).clone(),
+                    path: scratch,
                     source,
                 })
         })
         .await
         .map_err(ToolError::new)?
         .map_err(retention_failure)?;
-        let local = staging.as_file().try_clone().map_err(retention_io_fault)?;
+        let local = staging.try_clone().map_err(retention_io_fault)?;
         let mut writer = tokio::fs::File::from_std(local);
         // Bound the transfer by the authoritative remote length before staging any byte, so a runaway
         // capture is refused without a full download. A local staging write failure is a storage
@@ -60,10 +68,13 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
             .map_err(remote_download_failure)?;
         writer.sync_all().await.map_err(retention_io_fault)?;
         drop(writer);
-        self.store
-            .retain_command_capture(staging.path())
-            .await
-            .map_err(retention_failure)
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            super::retain_command_capture_file(&store.root, staging)
+        })
+        .await
+        .map_err(ToolError::new)?
+        .map_err(retention_failure)
     }
 }
 

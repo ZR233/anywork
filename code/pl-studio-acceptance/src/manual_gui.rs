@@ -5515,20 +5515,26 @@ struct HistoryLockTurnItems {
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
 fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
-    let sessions = home.join("v2/sessions");
+    let projects = home.join("v2/projects");
     let mut candidates = Vec::new();
-    if sessions.is_dir() {
-        for entry in fs::read_dir(&sessions)? {
-            let database = entry?.path().join("history.sqlite");
-            if database.is_file() {
-                candidates.push(database);
+    if projects.is_dir() {
+        for project in fs::read_dir(&projects)? {
+            let sessions = project?.path().join("sessions");
+            if !sessions.is_dir() {
+                continue;
+            }
+            for session in fs::read_dir(&sessions)? {
+                let database = session?.path().join("history.sqlite");
+                if database.is_file() {
+                    candidates.push(database);
+                }
             }
         }
     }
     ensure!(
         candidates.len() == 1,
         "expected exactly one per-session history.sqlite under {}, found {}",
-        sessions.display(),
+        projects.display(),
         candidates.len()
     );
     Ok(candidates.remove(0))

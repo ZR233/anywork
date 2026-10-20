@@ -277,6 +277,15 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         files.truncate(request.max_files);
         Ok(WorkspaceFileListResult { files, truncated })
     }
+
+    async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
+        let path = self.resolve_for_write(cwd.as_deref(), &path).await?;
+        if let Some(workspace) = &self.workspace {
+            workspace.ensure_path_writable(&path)?;
+        }
+        tokio::fs::create_dir_all(&path).await?;
+        Ok(())
+    }
 }
 
 async fn collect_entries(

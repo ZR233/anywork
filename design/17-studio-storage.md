@@ -18,14 +18,21 @@ Studio home（`~/.anywork/`）的布局为：
 ~/.anywork/
 ├── config.toml                     # account/model/Skill 配置
 ├── agents/<agent-id>.toml          # 用户 Agent Profile
+├── modes/<mode-id>.json            # 自定义 Mode 定义，沿用用户级配置边界
 ├── v2/
 │   ├── settings.toml               # 本版本 UI 与产品设置
 │   ├── workspaces.toml             # 本版本 Project/Workspace 定义
 │   ├── catalog.toml                # 本版本新会话目录摘要
 │   ├── model-catalogs/<account-key>/<query-key>/model.json # 各账号最后成功模型声明
-│   ├── sessions/<storage-key>/     # 每个新 Thread 一个目录（storage-key = id 的 sha256）
-│   │   ├── history.sqlite          # 历史、最新上下文与 checkpoint 同事务
-│   │   └── blobs/                  # 可靠附件正文，旧 checkpoint 子目录迁移后回收
+│   ├── projects/<project-key>/     # project-key = 稳定 Project id 的 sha256
+│   │   ├── project.toml            # 版本化项目身份与归属清单
+│   │   └── sessions/<thread-key>/  # thread-key = 稳定 Thread id 的 sha256
+│   │       ├── session.toml        # 会话身份、父子归属与固定工作区绑定
+│   │       ├── history.sqlite      # 历史、当前配置/上下文与 checkpoint 同事务
+│   │       ├── attachments.toml    # 会话附件目录，持久路径相对于本会话
+│   │       ├── blobs/              # 可靠附件正文，旧 checkpoint 子目录迁移后回收
+│   │       ├── thread-resources/   # 内容寻址的可靠工具输出和媒体
+│   │       └── scratch/            # 宿主自有传输和处理暂存，不供模型直接操作
 │   ├── calls/
 │   │   ├── calls.sqlite            # 有界调试索引与轻量统计投影
 │   │   └── logs/                   # 版本化滚动 JSONL 调试日志
@@ -34,17 +41,22 @@ Studio home（`~/.anywork/`）的布局为：
 │   ├── session-migration.json
 │   ├── layout-publication.json     # 仅布局切换在途时存在
 │   └── session-archive/
+├── startup-recovery.toml           # 可接续的整体启动恢复记录
+├── startup-backups/                # 不可覆盖的整体启动备份
 └── studio/                         # 产品库与进程级资源
-    ├── v2/studio.sqlite            # 本版本产品库
+    ├── v2/
+    │   ├── studio.sqlite           # 本版本产品库
+    │   └── attachment-drafts/      # 尚未归属 Thread 的附件草稿
     ├── studio.sqlite               # 旧版本产品库，保留但不读取
     ├── runtime.lock                # 跨进程独占锁
-    ├── attachment-drafts/          # 临时附件草稿
     └── skills/.system/             # 构建期预置系统 Skill
 ```
 
 canonical 会话、调用与迁移目录位于 `~/.anywork/v2/`；产品库位于
 `~/.anywork/studio/v2/`，进程级锁与 Skill 仍位于 `studio/`。
-`<storage-key>` 是 Thread id 的 SHA-256 十六进制摘要，不是原始 id。
+`<project-key>` 与 `<thread-key>` 分别是 Project id、Thread id 的 SHA-256 十六进制摘要，
+不是显示名称、工作目录或原始 id。项目改名不移动数据；本地、SSH 及不同 SSH 别名的同路径
+项目按各自稳定 Project 身份隔离。root、child 与 reviewer 各有独立的 Thread 目录。
 `<account-key>` 与 `<query-key>` 是账号和查询身份的安全摘要，不作为可逆凭据表示；账号 ID
 原值不变时保留已有账号目录摘要，不因术语迁移另起缓存命名空间。
 旧共享库 `studio/sessions.sqlite`、旧逐产品 `studio/calls.sqlite`、旧全局
@@ -89,6 +101,40 @@ inode），不含程序位置、版本或构建模式；指向同一目录的符
 `workspaces.toml` 保存 Project/Workspace 定义和稳定引用；物理 worktree ownership 使用版本化
 lease 记录，保留 `prepared | active | preserved | cleanupRequested | cleaned`、owner Thread、
 repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责，不能互相推导。
+
+项目和会话清单只描述版本、稳定身份与固定归属，作为目录自描述和绑定校验，不是第二套可编辑
+配置。项目名称、会话标题、归档与列表排序等可变摘要仍归全局轻量索引；当前模型 route、Mode、
+指令快照、Plan 与会话笔记仍归 checkpoint/扩展。清单不复制 account secret 或历史正文。
+新建资源在发布目录事实前准备清单，校验失败不得发布错误归属；冷读不为补清单创建历史库。
+旧 v2 的 `state.toml`、`state.prev.toml` 可随原会话目录暂留为迁移源，仅在既有按需 checkpoint
+转换边界读取并在验证后回收；它们不是新会话的第二套配置或正常保存格式。
+
+### 执行侧会话文件
+
+模型可操作的临时文件位于实际 workspace 内，而非上述宿主数据库目录：
+
+```text
+<workspace>/.anywork/sessions/<thread-key>/
+├── scratch/                       # 临时脚本、中间文件和探针
+├── artifacts/                     # 尚未放到用户指定位置的输出
+└── commands/<call-key>/output.log  # 命令原始 capture；call-key 为安全身份摘要
+```
+
+所有执行环境使用同一身份映射和相对布局；共享 checkout 的 Thread 也不共用临时目录。
+SSH 的路径属于远端 workspace，不能拿本地 home 路径代替。会话宿主的 `scratch/` 是文件
+传输暂存，执行侧 `scratch/` 是模型任务中间文件，两者不承担可靠历史的保存责任。
+命令与媒体在可靠资源归档后才发布稳定引用，执行侧文件消失不应破坏历史读取。
+
+执行目录不是代码交付位置。最终代码、正式文档写入用户要求的项目目录；非项目交付物须报告
+实际路径。默认不在仓库根、`/tmp` 或任意其他会话目录写中间产物。运行时提供准确路径事实，
+提示词与 Skill 示例消费这些事实，不从旧对话或进程 cwd 猜测。
+
+`sessions/`、`worktrees/` 运行池在各自目录内以不覆盖方式建立忽略全部池内容的 `.gitignore`。
+同池并发首次创建应按安全的普通文件后置条件收敛，不依赖错误文案；目录、链接或无法确认
+类型的入口不能当作已准备完成。文件工具原有 Create 的不覆盖/已存在报错语义不因此改变。
+已有忽略文件保留，不改用户仓库根规则或全局 Git 配置；项目 Skill 与 AGENTS 等可共享文件
+不被新的全局忽略规则隐藏。不扫描、搬迁或清除项目内旧 `target/pure/`、未知文件和隔离旧版本
+数据。关闭/归档只回收已确认 ownership 的资源；不按 TTL 删除活跃 scratch、可靠历史或附件。
 
 ## 17.2 启动与按需激活
 
@@ -413,6 +459,40 @@ typed 账单和调用记录只转换已知账号字段，不改写厂商不透�
 旧数据不可作为新会话缺失条目的补全来源。只有全局 account 等非会话配置按配置契约升级；
 配置和 OS 凭据关联优先安全迁移；无法恢复的数据错误按 17.2 完整备份后重建，凭据始终保留
 （见 [20](./20-config.md)）。
+
+### v2 平铺会话到项目布局的迁移
+
+已有 `v2/sessions/<thread-key>/` 必须保全迁往对应项目目录，不构成再次断代。迁移在持有
+home 独占锁、校验 catalog/workspaces 后、会话 writer 与服务发布前执行；迁移计划只由现有
+目录身份生成，不打开全部历史库、不激活模型或工具。未归属 catalog 的遗留目录原位保留并
+诊断，未物化 Thread 不伪造历史库。
+
+版本化布局记录位于 `v2/migrations/`，逐项记录准备、移动与验证事实。整目录原子移动保留
+SQLite 主库、WAL/SHM、旧 checkpoint、可靠正文和未知普通文件；必要小清单的转换使用现有
+原子写入能力。附件目录中的已知旧绝对路径只在迁移边界校验所属源根后改为会话相对引用，
+正常路径不继续兼容旧绝对存储位置；不改写历史正文、工具参数或提示词中的任意路径字符串。
+
+中断后接续同一布局记录，已完成步骤幂等，正常读写只消费已发布的新布局。目标存在但不能由
+本次记录证明归属时不得合并或覆盖；目标及小清单验证成功前不回收源资源。未知布局版本、
+坏清单、目标冲突、symlink/reparse 越界、权限、容量或文件占用等迁移失败保持可重试现场并
+停止初始化，不把布局迁移错误当作整体启动恢复的依据，不备份后清空来代替迁移。
+迁移错误保留原始原因；权限、容量和占用仍属于环境故障，不能为抑制重置而丢弃其分类。
+可恢复的布局数据转换失败使用启动迁移故障分类，与账号配置及 Mode 定义迁移一样停止并
+保留现场；布局迁移中的底层 I/O 环境故障仍按环境类别报告。物理布局升级不替代按需的
+检查点表示升级：恢复继续由同一 history writer 保全转换账号路由、冻结 Profile 与 Mode
+定义快照，保持扩展 revision、历史水位和业务状态，不因目录已移动就跳过这些转换。
+迁移记录的源/目标键和项目、Thread 归属必须与稳定身份及当前目录一致；完成标记必须可验证，
+不能仅凭文件存在跳过记录校验。建立目标目录前先校验已有祖先的链接边界，失败不能先在
+归属外创建目录。附件转换验证的是本条迁移记录指定的会话源根，不是任意同名 `blobs/`。
+原子移动前先在源会话物化可校验的固定归属证明；rename 成功而记录尚未推进时，只有目标
+保有匹配证明且源已不存在才允许接续，不能仅凭目标目录存在接管。已验证条目及完成标记
+恢复时还核对源已不存在、目标为安全普通目录；该检查只读目录元信息，不逐库打开或重新
+扫描历史正文与附件。附件缺失、非普通文件或长度与清单不符均保留现场并拒绝完成，不能
+用重定位、空内容或忽略完整性差异来使迁移通过。
+读取附件清单、检查每条 blob 之前，校验从受信根到目标的全部已有路径组件；仅检查末级
+文件的元数据不能证明 `blobs/` 或其分片父目录没有链接越界。该校验按清单中实际引用逐项
+进行，不递归扫描未引用文件。
+新项目目录和布局记录纳入已有安装状态判定及 v2 整体备份边界；重复启动不得重置迁移水位。
 
 ## 17.8 数据库和发布验收
 

@@ -46,6 +46,10 @@ Keep `SKILL.md` concise. Put additional context in:
 
 Do not create extra README, changelog, quick-reference, or process notes unless they are directly used by the skill.
 
+## Working Files and Outputs
+
+Use the current `studio.session-files` host fact for temporary scripts, intermediate files, and unfinished outputs. Do not put one-off screenshots, logs, credentials, VM URLs, or session-specific absolute paths into a Skill bundle. Examples should accept an output path or refer to the current session fact rather than hard-code a machine's temporary directory. Keep only reusable scripts and knowledge in `scripts/` or `assets/`; final deliverables still follow the user's requested location.
+
 ## Editing Workflow
 
 1. Use `skills_list` to inspect existing skills.

@@ -263,11 +263,18 @@ impl StudioRuntime {
             if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
                 continue;
             }
-            if let Some(fact) = self.thread_factory.skill_catalog_fact(&id, &snapshot)
-                && let Err(error) = thread.queue_runtime_facts(vec![fact]).await
+            let mut facts = Vec::new();
+            if let Some(fact) = self.thread_factory.session_files_fact(&id, &snapshot) {
+                facts.push(fact);
+            }
+            if let Some(fact) = self.thread_factory.skill_catalog_fact(&id, &snapshot) {
+                facts.push(fact);
+            }
+            if !facts.is_empty()
+                && let Err(error) = thread.queue_runtime_facts(facts).await
                 && !matches!(error, pl_core::thread::ThreadError::Closed)
             {
-                tracing::warn!(thread_id = %id, %error, "could not queue refreshed Skill catalog facts");
+                tracing::warn!(thread_id = %id, %error, "could not queue refreshed host facts");
             }
             if snapshot.lifecycle != ThreadLifecycle::Open {
                 continue;
@@ -412,11 +419,16 @@ impl StudioRuntime {
             .await?;
         self.publish_tool_binding(id, thread, snapshot.extension_sequence, binding)
             .await?;
-        if let Some(fact) = self
-            .thread_factory
-            .skill_catalog_fact(id, &thread.snapshot())
-        {
-            thread.queue_runtime_facts(vec![fact]).await?;
+        let snapshot = thread.snapshot();
+        let mut facts = Vec::new();
+        if let Some(fact) = self.thread_factory.session_files_fact(id, &snapshot) {
+            facts.push(fact);
+        }
+        if let Some(fact) = self.thread_factory.skill_catalog_fact(id, &snapshot) {
+            facts.push(fact);
+        }
+        if !facts.is_empty() {
+            thread.queue_runtime_facts(facts).await?;
         }
         Ok(())
     }

@@ -73,7 +73,12 @@ impl StudioChildResources for StudioThreadFactory {
         let workspace =
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
                 .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
-        let store = FileResourceStore::new(self.services.store.session_resources_dir(&request.id));
+        let store = FileResourceStore::new(
+            self.services
+                .store
+                .session_resources_dir_for(&parent.project_id, &request.id)
+                .map_err(|error| resource_error("resolve child session resources", error))?,
+        );
         let mut prepared_tools = self
             .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
                 thread_id: &request.id,
@@ -197,6 +202,11 @@ impl StudioChildResources for StudioThreadFactory {
             checkpoint: None,
             tools: Vec::new(),
             initial_context,
+            initial_runtime_facts: super::session_files::session_files_fact(
+                &prepared_tools.workspace,
+            )
+            .into_iter()
+            .collect(),
             initial_extensions,
             resources: ResourceAccess::new(store),
             capacity: Default::default(),
