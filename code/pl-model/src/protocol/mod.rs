@@ -5,6 +5,7 @@ pub mod compatible;
 pub mod deepseek;
 pub mod discovery;
 pub(crate) mod files;
+pub mod images;
 pub mod mimo;
 pub mod openai;
 pub mod xai;
@@ -73,6 +74,70 @@ pub struct WebSearchServiceCapabilities {
     pub standalone: Option<StandaloneWebSearchDialect>,
 }
 
+/// 协议 endpoint 可提供的图像生成协议方言。
+///
+/// 该类型描述服务能力，不代表 endpoint 身份；任何兼容 endpoint 都可显式声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageGenerationDialect {
+    /// OpenAI 兼容的 `/images/generations` 内联图像接口。
+    OpenAiImages,
+}
+
+impl ImageGenerationDialect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiImages => "open_ai_images",
+        }
+    }
+
+    /// 方言声明的请求路径，直接追加到 endpoint `base_url` 之后。
+    ///
+    /// 路径不包含版本前缀：版本前缀只来自用户配置的 `base_url`。
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::OpenAiImages => "/images/generations",
+        }
+    }
+}
+
+impl std::str::FromStr for ImageGenerationDialect {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "open_ai_images" => Ok(Self::OpenAiImages),
+            value => Err(format!("unsupported image generation dialect: {value}")),
+        }
+    }
+}
+
+/// 协议 endpoint 可提供的图像生成服务能力。
+///
+/// 生图模型不是对话模型：`model_prefixes` 是生图库存的唯一声明来源，
+/// `preferred_models` 只决定同一 endpoint 内的确定性选择顺序。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageGenerationCapabilities {
+    pub dialect: ImageGenerationDialect,
+    /// 生图模型 slug 前缀，大小写敏感。
+    pub model_prefixes: Vec<String>,
+    /// 有序首选生图模型 slug；留空交给版本择优。
+    pub preferred_models: Vec<String>,
+}
+
+impl ImageGenerationCapabilities {
+    /// OpenAI 官方 Images 能力的 canonical 声明。
+    ///
+    /// 首选序有意留空：选择交给候选名单的版本择优，避免把某个旧 slug 固化为默认。
+    pub fn openai_images() -> Self {
+        Self {
+            dialect: ImageGenerationDialect::OpenAiImages,
+            model_prefixes: vec!["gpt-image-".to_string()],
+            preferred_models: Vec::new(),
+        }
+    }
+}
+
 /// 与具体产品无关的 endpoint 外部服务能力。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolServiceCapabilities {
@@ -82,6 +147,8 @@ pub struct ProtocolServiceCapabilities {
     pub remote_compaction: bool,
     #[serde(default)]
     pub web_search: WebSearchServiceCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation: Option<ImageGenerationCapabilities>,
     #[serde(default)]
     pub prompt_cache: PromptCacheServiceCapabilities,
     #[serde(default)]
@@ -199,6 +266,7 @@ impl ProtocolServiceCapabilities {
                 hosted_dialect: HostedWebSearchDialect::OpenAiResponses,
                 standalone: Some(StandaloneWebSearchDialect::OpenAiSearchApi),
             },
+            image_generation: None,
             prompt_cache: PromptCacheServiceCapabilities {
                 dialect: PromptCacheDialect::OpenAiPromptCacheKey,
             },
@@ -376,6 +444,9 @@ impl ProtocolEndpoint {
     pub fn openai(base_url: Option<String>) -> Self {
         let custom_endpoint = base_url.is_some();
         let mut service_capabilities = ProtocolServiceCapabilities::openai_web_search();
+        // 覆盖 base_url 保留图像生成能力：Images 路径追加在该前缀之后，与
+        // standalone Web Search 的继承语义一致。
+        service_capabilities.image_generation = Some(ImageGenerationCapabilities::openai_images());
         if custom_endpoint {
             service_capabilities.remote_compaction = false;
             service_capabilities.responses_tools = ResponsesHostedToolCapabilities::default();

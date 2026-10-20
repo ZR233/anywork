@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::{AccountId, AccountTemplateId, ModelCatalogId, builtin_model_catalog};
 use crate::model::ModelInfo;
 use crate::protocol::{
-    ApplyPatchToolType, ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities,
-    StandaloneWebSearchDialect, ToolWirePolicy,
+    ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
+    ProtocolServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy,
 };
 
 /// Account 模型目录来源。
@@ -64,6 +64,17 @@ pub struct AccountModelEntry {
     pub model: ModelInfo,
     pub origin: AccountModelOrigin,
     pub context: pl_protocol::ModelContextResolution,
+}
+
+/// 一个 account 当前可用的图像生成服务。
+///
+/// `models` 只来自该 account 的有效目录成员（在线、手工或内置来源），不用模型名推断补齐。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageGenerationService {
+    /// 声明的服务能力（方言、前缀与首选序）。
+    pub capabilities: ImageGenerationCapabilities,
+    /// 命中所声明前缀的模型 slug，按字典序去重；可为空。
+    pub models: Vec<String>,
 }
 
 impl AccountModelEntry {
@@ -229,7 +240,15 @@ impl AccountConfig {
     }
 
     /// 解析 template 默认值或实例显式覆盖后的服务能力。
+    ///
+    /// 这是服务能力的唯一解析入口：声明不一致在此处失败，调用方不会拿到无效声明。
     pub fn service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
+        let capabilities = self.resolve_service_capabilities()?;
+        validate_image_generation_declaration(capabilities.image_generation.as_ref())?;
+        Ok(capabilities)
+    }
+
+    fn resolve_service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
         match &self.capabilities {
             AccountCapabilitySelection::Explicit(capabilities) => Ok(capabilities.clone()),
             AccountCapabilitySelection::TemplateDefaults => match self.template_id() {
@@ -266,6 +285,36 @@ impl AccountConfig {
                 None => Ok(ProtocolServiceCapabilities::default()),
             },
         }
+    }
+
+    /// 返回该 account 的图像生成服务及其可用模型；未声明能力时返回 `None`。
+    ///
+    /// 候选只来自当前有效目录中命中声明前缀的模型，来源不限；目录为空时返回空名单，
+    /// 由调用方按不可用处理，不能凭模型名或配置补造名单。
+    ///
+    /// # Errors
+    /// 服务能力或目录声明不一致时返回配置定义错误。
+    pub fn image_generation_service(&self) -> Result<Option<ImageGenerationService>> {
+        let Some(capabilities) = self.service_capabilities()?.image_generation else {
+            return Ok(None);
+        };
+        let models = self
+            .effective_catalog(None)?
+            .into_iter()
+            .map(|entry| entry.model.model_id)
+            .filter(|slug| {
+                capabilities
+                    .model_prefixes
+                    .iter()
+                    .any(|prefix| slug.starts_with(prefix.as_str()))
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(Some(ImageGenerationService {
+            capabilities,
+            models,
+        }))
     }
 
     /// 返回实例绑定的内置 template；自定义 account 返回 `None`。
@@ -880,4 +929,40 @@ fn apply_connection_overrides(
         entry.model.binding.transport.default_connection_mode = *mode;
     }
     Ok(entries)
+}
+
+/// 校验图像生成能力声明。
+///
+/// 声明只描述 endpoint 的外部服务能力：前缀必须非空且不含空串，首选序的每个 slug 必须
+/// 命中某个声明前缀。生图模型是否真实存在由当前目录候选决定，不在这里补齐或拒绝。
+fn validate_image_generation_declaration(
+    declaration: Option<&ImageGenerationCapabilities>,
+) -> Result<()> {
+    let Some(declaration) = declaration else {
+        return Ok(());
+    };
+    if declaration.model_prefixes.is_empty() {
+        return Err(PureError::ConfigError(
+            "account image generation declaration requires at least one model prefix".into(),
+        ));
+    }
+    for prefix in &declaration.model_prefixes {
+        if prefix.trim().is_empty() {
+            return Err(PureError::ConfigError(
+                "account image generation declaration contains an empty model prefix".into(),
+            ));
+        }
+    }
+    for slug in &declaration.preferred_models {
+        if !declaration
+            .model_prefixes
+            .iter()
+            .any(|prefix| slug.starts_with(prefix.as_str()))
+        {
+            return Err(PureError::ConfigError(format!(
+                "account image generation preferred model does not match a declared prefix: {slug}"
+            )));
+        }
+    }
+    Ok(())
 }

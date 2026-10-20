@@ -23,7 +23,7 @@ pub use children::{
     ChildThreadRequest, ConfiguredChildFactory, StudioChildFactory, StudioChildResources,
 };
 mod mcp;
-mod media;
+pub(crate) mod media;
 mod tools;
 use std::{
     collections::{BTreeMap, BTreeSet},

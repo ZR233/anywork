@@ -125,6 +125,8 @@ composer pending interaction 队列只服务待处理交互，resolved 后不留
 页、尾部订阅和重开都从同一 Session 内容源恢复回执；局部展开不写回业务事实。敏感值
 只接受后端脱敏投影，详情、摘要、复制和辅助语义均不得泄漏原值。
 
+图片展示工具产生独立的图片卡片呈现项（presentation）：它只派生展示属性（所属调用、typed 附件、参数中的展示文案），图片字节仍由 Thread 附件缓存按身份读取；呈现层不缓存字节，也不因卡片存在而改写工具条目本身。
+
 Client 只持有有界尾部基线及 typed 查询状态，当前 AppGraph 展示 lease 将内容投影为唯一
 InMemoryChatController 消息集合；活动、图片与重连的 GUI 分组只持有逐条 canonical 预览，
 不改变后端逐条保存。组内定向观察与展开意图由当前 lease 所有，不成为第二份正文缓存。

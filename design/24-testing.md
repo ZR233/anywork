@@ -25,6 +25,10 @@ Driver 旅程、native FRB 或平台 UI 验收。其他 Flutter widget/integrati
 测试与 Driver 场景不因本次重构加入自动门禁。Client 所有权与接口见
 [25](./25-frontend-state.md)，内容传输见 [07](./07-streaming.md)。
 
+Timeline 行派生规则（`view_image` 的图片行、展示工具的图片卡片行、普通工具活动组）属于应用
+适配契约：`test/client` 断言工具条目到行类型的映射、typed 附件与展示字段的传递，不重复验证
+图片解码、布局细节或像素，那些由 Driver 人工证据覆盖。
+
 Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Riverpod 的 canonical
 事实收敛放在应用 adapter 测试集；不在 Flutter 应用侧重复维护这些纯 Client 契约，
 也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。
@@ -55,6 +59,8 @@ durable receipt 给出，owner 在每次提交后的内存安全边界折入并�
 等待旅程可沿用原生验收的显式环境保留选项：仅在成功关闭并回收所属进程后保留完整的合成环境，
 供独立原生构建复核历史活动组内的等待、键盘与可访问性。重开仍消费同一 canonical 历史；保留环境不代表
 人工通过，也不写入用户数据根或保留运行中的模拟服务。
+
+图像生成能力同样经 `pl-model` 公开入口验证：协议 endpoint 服务能力声明与在线名单派生、后端选择、Images 请求与响应协议使用本地模拟 HTTP 服务端，覆盖错误状态、超限与不跟随重定向。真实供应商生图证据属于 GUI 人工验收，不进入自动门禁。
 
 存储暂停用例区分两类收束：队列/字节预算的短暂压力在安全间隙自动恢复；保存真正失败后同一个
 Turn 停在准入点，没有显式 `resume_storage(generation)` 就不会开始下一次模型/工具工作，代数过期

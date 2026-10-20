@@ -117,6 +117,8 @@ final class TimelinePresentationController {
     TimelineMessagePayload payload,
   ) =>
       group.kind != TimelinePresentationKind.single &&
+      // 展示工具卡片按 owning 调用独立存在：不与相邻同类调用合并，也不并入活动组。
+      group.kind != TimelinePresentationKind.imageCard &&
       group.kind == _kindOf(payload) &&
       group.first.item.threadId == payload.item.threadId &&
       group.first.item.turnId == payload.item.turnId &&
@@ -143,6 +145,11 @@ final class TimelinePresentationController {
         anchor: payload,
       ),
       TimelinePresentationKind.images => TimelineImageReadGroup(
+        id: id,
+        serial: serial,
+        anchor: payload,
+      ),
+      TimelinePresentationKind.imageCard => TimelineImageCardGroup(
         id: id,
         serial: serial,
         anchor: payload,

@@ -1,11 +1,12 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{AccountConfig, AccountId, AccountModelKey, AgentRoleId};
+use super::{AccountConfig, AccountId, AccountModelKey, AgentRoleId, ImageGenerationService};
 use crate::model::ModelInfo;
-use crate::protocol::{ConnectionMode, ProtocolEndpoint};
+use crate::protocol::{ConnectionMode, ImageGenerationDialect, ProtocolEndpoint};
 
 /// 模型推理强度的产品无关字符串值。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,7 +113,67 @@ impl ResolvedModelRoute {
     }
 }
 
+/// 一次图像生成调用的 account 后端。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageGenerationBackend {
+    /// 提供该能力的 account 标识。
+    pub account_id: AccountId,
+    /// 该 account 解析出的运行时 endpoint，已含凭据与 header。
+    pub endpoint: ProtocolEndpoint,
+    /// 本次选择的生图模型 slug。
+    pub model: String,
+    /// 服务能力声明的方言。
+    pub dialect: ImageGenerationDialect,
+}
+
+/// 图像生成后端选择结果。
+///
+/// `any_declared` 区分「没有任何 account 声明该能力」与「已声明但当前不可用」，
+/// 让上层在不注册工具时不把配置事实误报为运行故障。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageGenerationSelection {
+    /// 确定选择的可用后端；没有可用后端时为 `None`。
+    pub backend: Option<ImageGenerationBackend>,
+    /// 至少一个 account 声明了图像生成能力。
+    pub any_declared: bool,
+}
+
 impl AgentModelConfig {
+    /// 选择确定性的图像生成后端。
+    ///
+    /// account 按 [`AccountId`] 字典序遍历；未声明能力、目录候选未命中声明前缀或凭据
+    /// 不可解析的 account 依次跳过。命中后模型先取声明首选序中第一个存在于候选名单者
+    /// （显式 pin），否则按版本择优。选择不按名称推断能力、价格或尺寸支持。
+    ///
+    /// # Errors
+    /// 服务能力、目录声明或端点构造失败时返回配置定义错误。
+    pub fn image_generation_backend(&self) -> Result<ImageGenerationSelection> {
+        let mut any_declared = false;
+        for (account_id, account) in &self.accounts {
+            let Some(service) = account.image_generation_service()? else {
+                continue;
+            };
+            any_declared = true;
+            if service.models.is_empty() || account.resolved_bearer_token().is_none() {
+                continue;
+            }
+            let model = image_generation_model(&service);
+            return Ok(ImageGenerationSelection {
+                backend: Some(ImageGenerationBackend {
+                    account_id: account_id.clone(),
+                    endpoint: account.to_endpoint()?,
+                    model,
+                    dialect: service.capabilities.dialect,
+                }),
+                any_declared,
+            });
+        }
+        Ok(ImageGenerationSelection {
+            backend: None,
+            any_declared,
+        })
+    }
+
     /// Check declaration integrity without discarding persisted choices removed by an endpoint.
     /// Malformed accounts, profiles, duplicate declarations, missing accounts and empty routes
     /// still fail. Call `route_availability` separately; edits must use strict `validate`.
@@ -332,4 +393,81 @@ impl AgentModelConfig {
             effort: route.effort.clone(),
         })
     }
+}
+
+/// 从已声明的候选名单中选择一次调用使用的生图模型。
+///
+/// 声明首选序中存在于候选名单的第一个模型胜出（显式 pin）；否则版本择优：命中前缀之后的
+/// `N[.M[.P]]` 版本高者优先，同版本优先无变体后缀者，再按 slug 字典序；无法解析版本的候选
+/// 排在最后。结果只由候选名单与声明决定，不按名称推断能力。
+fn image_generation_model(service: &ImageGenerationService) -> String {
+    if let Some(pinned) = service
+        .capabilities
+        .preferred_models
+        .iter()
+        .find(|slug| service.models.iter().any(|model| model == *slug))
+    {
+        return pinned.clone();
+    }
+    let mut candidates = service.models.iter().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        match (
+            version_rank(left, &service.capabilities.model_prefixes),
+            version_rank(right, &service.capabilities.model_prefixes),
+        ) {
+            (Some((left_version, left_variant)), Some((right_version, right_variant))) => {
+                right_version
+                    .cmp(&left_version)
+                    .then_with(|| left_variant.cmp(&right_variant))
+                    .then_with(|| left.cmp(right))
+            }
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left.cmp(right),
+        }
+    });
+    candidates
+        .first()
+        .map(|slug| (*slug).clone())
+        .expect("candidate models were checked to be non-empty")
+}
+
+/// 解析命中前缀之后的 `N[.M[.P]]` 版本，并报告是否带变体后缀。
+///
+/// 返回 `None` 表示前缀之后没有可解析的版本数字；这类候选在版本择优中排在最后。
+fn version_rank(slug: &str, prefixes: &[String]) -> Option<((u32, u32, u32), bool)> {
+    // 最长命中前缀优先：重叠前缀不能把版本数字吃掉。
+    let prefix = prefixes
+        .iter()
+        .filter(|prefix| slug.starts_with(prefix.as_str()))
+        .max_by_key(|prefix| prefix.len())?;
+    let remainder = &slug[prefix.len()..];
+    let mut version = [0u32; 3];
+    let mut component = 0usize;
+    let mut digits = String::new();
+    let mut parsed = 0usize;
+    for character in remainder.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+            parsed += character.len_utf8();
+        } else if character == '.' && !digits.is_empty() && component < 2 {
+            version[component] = digits.parse().ok()?;
+            component += 1;
+            digits.clear();
+            parsed += 1;
+        } else {
+            break;
+        }
+    }
+    if !digits.is_empty() {
+        version[component] = digits.parse().ok()?;
+        component += 1;
+    }
+    if component == 0 {
+        return None;
+    }
+    let bare = remainder[parsed..]
+        .trim_start_matches(['-', '_', '.'])
+        .is_empty();
+    Some(((version[0], version[1], version[2]), !bare))
 }
