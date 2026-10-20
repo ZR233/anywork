@@ -96,7 +96,8 @@ pub struct ThreadCompaction {
 impl ThreadModel {
     /// Estimates a frozen model-owned encoding without opening or advancing a physical session.
     /// `previous` must be a usage origin whose retained prefix and tool plan core has validated.
-    /// Native history adds observed output and new text; unmeasurable additions stay unknown.
+    /// Native history retains measured input/output and adds known new text. Unmeasurable
+    /// additions contribute no guessed tokens, so this is only evidence to trigger reduction.
     /// # Errors
     /// Rejects invalid history, unsupported declarations and unavailable retained media.
     pub async fn estimate_input(
@@ -127,7 +128,7 @@ impl ThreadModel {
             .runtime
             .prepare_request(encoded)
             .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-        let tokens = crate::completion::estimate_text_input_tokens(&encoded).or_else(|| {
+        let observed = (|| {
             // Core verifies the immutable input prefix and tool plan before supplying this
             // observation. Native assistant output is counted by its reported output usage.
             let previous = previous.filter(|previous| {
@@ -146,14 +147,21 @@ impl ThreadModel {
                     ContextContent::Text { text } => {
                         total.checked_add(u64::try_from(text.chars().count()).ok()?)
                     }
-                    ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
+                    ContextContent::Resource { .. } | ContextContent::Opaque { .. } => Some(total),
                 })?;
             previous
                 .usage
                 .input_tokens?
-                .checked_add(previous.usage.output_tokens?)?
+                .checked_add(previous.usage.output_tokens.unwrap_or(0))?
                 .checked_add(characters.div_ceil(4))
-        });
+        })();
+        let tokens = match (
+            crate::completion::estimate_text_input_tokens(&encoded),
+            observed,
+        ) {
+            (Some(text), Some(observed)) => Some(text.max(observed)),
+            (text, observed) => text.or(observed),
+        };
         Ok(tokens.map(|tokens| pl_core::model::TokenEstimate {
             tokens,
             accuracy: pl_core::model::EstimateAccuracy::Approximate,

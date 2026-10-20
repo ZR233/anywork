@@ -316,7 +316,8 @@ pub struct ThreadSnapshot {
     /// reused after its request body has left memory.
     #[serde(default)]
     pub attempt_ids: std::collections::BTreeMap<String, String>,
-    /// Usage observed for the newest attempt, so the next Turn still sees the previous request.
+    /// Newest attempt with measured input usage, retained across unmeasured failures.
+    /// Its origin is replaced together with the counters; accounting remains in attempt effects.
     #[serde(default)]
     pub last_attempt_usage: Option<crate::model::ModelUsage>,
     #[serde(default)]
@@ -505,25 +506,19 @@ impl ThreadSnapshot {
         self.context_replacements = Default::default();
         self.delivery_repairs = Default::default();
 
-        let newest_usage = self
-            .attempts
-            .last()
-            .and_then(RequestAttempt::usage)
-            .cloned();
-        if newest_usage.is_some() {
-            self.last_attempt_usage = newest_usage;
-            if let Some(attempt) = self.attempts.last()
-                && let Some(facts) = &attempt.facts
-            {
-                self.last_attempt_usage_origin =
-                    facts.usage_binding.clone().map(|binding| ModelUsageOrigin {
-                        binding,
-                        input_revision: attempt.input_revision,
-                        context_revision: self.context.revision,
-                        input_record_count: facts.input_record_count,
-                        input_hash: facts.input_hash.clone(),
-                    });
-            }
+        if let Some(attempt) = self.attempts.last()
+            && let Some(facts) = &attempt.facts
+            && let Some(usage) = attempt.usage().filter(|usage| usage.input_tokens.is_some())
+        {
+            self.last_attempt_usage = Some(usage.clone());
+            self.last_attempt_usage_origin =
+                facts.usage_binding.clone().map(|binding| ModelUsageOrigin {
+                    binding,
+                    input_revision: attempt.input_revision,
+                    context_revision: self.context.revision,
+                    input_record_count: facts.input_record_count,
+                    input_hash: facts.input_hash.clone(),
+                });
         }
 
         retain_arc_slice(&mut self.turns, |turn| turn.state == TurnState::Running);

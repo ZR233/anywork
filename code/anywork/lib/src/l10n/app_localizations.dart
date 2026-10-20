@@ -4485,13 +4485,13 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactHelp.
   ///
   /// In en, this message translates to:
-  /// **'Effective value is the smaller of the selected threshold and 90% of the context window.'**
+  /// **'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.'**
   String get settingsModelAutoCompactHelp;
 
   /// No description provided for @settingsModelAutoCompactUnknownCapacity.
   ///
   /// In en, this message translates to:
-  /// **'Context capacity is unknown, so compaction stays off.'**
+  /// **'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.'**
   String get settingsModelAutoCompactUnknownCapacity;
 
   /// No description provided for @settingsModelAutoCompactAboveSafe.

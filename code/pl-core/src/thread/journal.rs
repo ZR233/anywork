@@ -467,9 +467,13 @@ pub(crate) fn replay_legacy(
                 .attempts
                 .last()
                 .and_then(RequestAttempt::usage)
+                .filter(|usage| usage.input_tokens.is_some())
                 .cloned();
             if usage.is_some() {
                 state.last_attempt_usage = usage;
+                // Journal effects do not carry the frozen prefix/tool-plan proof. Keep their
+                // counters observable without pairing them with an earlier request's origin.
+                state.last_attempt_usage_origin = None;
             }
         }
         if let Some(declarations) = &commit.discovered_tools {

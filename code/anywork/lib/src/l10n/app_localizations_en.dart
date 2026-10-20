@@ -2496,11 +2496,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactHelp =>
-      'Effective value is the smaller of the selected threshold and 90% of the context window.';
+      'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity =>
-      'Context capacity is unknown, so compaction stays off.';
+      'Context capacity is unknown, so an automatic compaction threshold cannot be calculated.';
 
   @override
   String settingsModelAutoCompactAboveSafe(String value) {

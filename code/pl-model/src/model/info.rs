@@ -537,23 +537,30 @@ impl ModelInfo {
         self.type_support(model_type).exclusions.is_empty()
     }
 
-    /// 模型预设优先，否则使用当前上下文容量的 90%；两者都未知时保持未知。
+    /// Input capacity after reserving the maximum output sent with an ordinary request.
+    /// An unknown output limit reserves no guessed budget; an exhausted window has zero capacity.
+    pub fn input_token_budget(&self) -> Option<u64> {
+        self.resolved_context_window()
+            .map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or(0)))
+    }
+
+    /// 模型预设优先，否则使用安全输入上限；两者都未知时保持未知。
     pub fn default_auto_compact_token_limit(&self) -> Option<u64> {
         self.auto_compact_token_limit
             .or_else(|| self.safe_auto_compact_token_limit())
     }
 
-    /// 上下文容量 90% 的安全上限；上下文未知时返回 `None`，保持不自动压缩。
+    /// 同时预留上下文 10% 和请求最大输出预算；无正输入容量时保持不自动压缩。
     pub fn safe_auto_compact_token_limit(&self) -> Option<u64> {
         let context = self.resolved_context_window()?;
         // 用 u128 精确计算 floor(context * 90 / 100)，避免大 u64 相乘溢出。
-        let limit = ((u128::from(context) * 90) / 100) as u64;
+        let limit = (((u128::from(context) * 90) / 100) as u64).min(self.input_token_budget()?);
         (limit > 0).then_some(limit)
     }
 
     /// 在给定用户覆盖值下解析实际生效的压缩阈值。
     ///
-    /// 生效值取「用户覆盖值或模型默认值」与上下文 90% 安全上限的较小值；
+    /// 生效值取「用户覆盖值或模型默认值」与安全输入上限的较小值；
     /// 上下文未知时返回 `None`。用户覆盖不能绕过安全上限。
     pub fn resolved_auto_compact_limit_with(&self, override_limit: Option<u64>) -> Option<u64> {
         let safe = self.safe_auto_compact_token_limit()?;

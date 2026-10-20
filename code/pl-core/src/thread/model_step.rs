@@ -219,6 +219,23 @@ impl Owner {
         self.publish_snapshot();
     }
 
+    /// Reduces an already-admitted request after a typed service capacity refusal.
+    pub(super) async fn recover_context(&mut self, input: &StepInput) -> Result<bool, ThreadError> {
+        let result = async {
+            self.enter_model_execution(ModelExecutionPhase::Admitting);
+            self.ensure_model_admission(&input.cancellation).await?;
+            let before = self.state.context.revision;
+            let plan = self.tools.freeze();
+            self.enter_model_execution(ModelExecutionPhase::PreparingContext);
+            self.prepare_context(input, &plan, &[], true).await?;
+            Ok(self.state.context.revision != before)
+        }
+        .await;
+        self.state.model_execution = None;
+        self.publish_snapshot();
+        result
+    }
+
     async fn run_step(
         &mut self,
         input: StepInput,

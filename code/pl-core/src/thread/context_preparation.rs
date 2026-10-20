@@ -10,7 +10,7 @@ pub struct ContextPreparationRequest {
     /// The Turn's initiating input while it is still pending admission.
     /// Later steps and steering do not turn a consumed input into a new initiation.
     pub turn_input: Option<input::ThreadInput>,
-    /// One capacity-recovery pass before a main request has been admitted.
+    /// One capacity-recovery pass for a refused local preparation or an admitted service request.
     pub force_compaction: bool,
     pub committed_context: ContextSnapshot,
     pub current_facts: Arc<[RuntimeFact]>,

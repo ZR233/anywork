@@ -2376,10 +2376,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactInvalid => '请输入正整数词元数。';
 
   @override
-  String get settingsModelAutoCompactHelp => '实际生效取所选阈值与上下文容量 90% 中较小者。';
+  String get settingsModelAutoCompactHelp => '实际阈值不超过上下文容量的 90%，并预留最大输出预算。';
 
   @override
-  String get settingsModelAutoCompactUnknownCapacity => '上下文容量未知，暂不自动压缩。';
+  String get settingsModelAutoCompactUnknownCapacity => '上下文容量未知，无法计算自动压缩阈值。';
 
   @override
   String settingsModelAutoCompactAboveSafe(String value) {

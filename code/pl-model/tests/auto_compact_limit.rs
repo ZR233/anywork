@@ -12,6 +12,7 @@ fn model(model_id: &str, capacity: Option<u64>) -> ModelInfo {
     let mut model = ModelInfo::compatible(model_id);
     model.context_window = capacity;
     model.max_context_window = capacity;
+    model.max_output_tokens = None;
     model
 }
 
@@ -30,18 +31,21 @@ fn config(provider: AccountConfig) -> AgentModelConfig {
 }
 
 #[test]
-fn route_defaults_use_model_preset_then_ninety_percent_of_current_capacity() {
+fn route_defaults_reserve_output_within_the_current_capacity() {
     let mut preset = model("preset", Some(400_000));
     preset.auto_compact_token_limit = Some(150_000);
     let mut current_window = model("current", Some(100_000));
     current_window.max_context_window = Some(400_000);
     let mut maximum_only = model("maximum", None);
     maximum_only.max_context_window = Some(200_000);
+    let mut reserved = model("reserved", Some(400_000));
+    reserved.max_output_tokens = Some(128_000);
     let config = config(provider(vec![
         preset,
         model("derived", Some(400_000)),
         current_window,
         maximum_only,
+        reserved,
     ]));
     config.validate().unwrap();
     for (model_id, expected) in [
@@ -49,6 +53,7 @@ fn route_defaults_use_model_preset_then_ninety_percent_of_current_capacity() {
         ("derived", 360_000),
         ("current", 90_000),
         ("maximum", 180_000),
+        ("reserved", 272_000),
     ] {
         let route = config
             .resolve_route(
@@ -82,12 +87,18 @@ fn unknown_or_floor_zero_capacity_never_enables_compaction() {
         large.resolved_auto_compact_limit_with(Some(u64::MAX)),
         Some(safe)
     );
+    let mut no_input_budget = model("no-input-budget", Some(100));
+    for output in [100, 101] {
+        no_input_budget.max_output_tokens = Some(output);
+        assert_eq!(no_input_budget.resolved_auto_compact_limit(), None);
+    }
 }
 
 #[test]
 fn overrides_clamp_restore_and_remain_isolated_without_mutating_model_presets() {
     let mut preset = model("first", Some(400_000));
     preset.auto_compact_token_limit = Some(150_000);
+    preset.max_output_tokens = Some(200_000);
     let mut first = provider(vec![preset, model("second", Some(400_000))]);
     let second_provider = first.clone();
     first
@@ -97,7 +108,7 @@ fn overrides_clamp_restore_and_remain_isolated_without_mutating_model_presets() 
     assert_eq!(declared[0].auto_compact_token_limit, Some(150_000));
     assert_eq!(
         first.resolved_auto_compact_limit(&declared[0]),
-        Some(360_000)
+        Some(200_000)
     );
     assert_eq!(
         first.resolved_auto_compact_limit(&declared[1]),

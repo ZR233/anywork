@@ -230,6 +230,7 @@ void main() {
         reasoningEfforts: [],
         contextWindow: 2000,
         maxContextWindow: 4000,
+        maxOutputTokens: 500,
       );
       state = mergeSettingsProjection(
         state,
@@ -238,8 +239,8 @@ void main() {
       );
       expect(state.settingsRevision, 1);
       expect(currentAccount().name, 'Fixture');
-      expect(alphaLimit().defaultLimit, 1800);
-      expect(alphaLimit().safeLimit, 1800);
+      expect(alphaLimit().defaultLimit, 1500);
+      expect(alphaLimit().safeLimit, 1500);
       expect(alphaLimit().overrideLimit, 150);
       expect(alphaLimit().effectiveLimit, 150);
 

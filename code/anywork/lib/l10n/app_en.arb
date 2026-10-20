@@ -1293,8 +1293,8 @@
   "settingsModelAutoCompactUsingDefault": "Using default",
   "settingsModelAutoCompactInputLabel": "Threshold (tokens)",
   "settingsModelAutoCompactInvalid": "Enter a positive integer token count.",
-  "settingsModelAutoCompactHelp": "Effective value is the smaller of the selected threshold and 90% of the context window.",
-  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so compaction stays off.",
+  "settingsModelAutoCompactHelp": "The effective threshold is capped at 90% of the context window and reserves the maximum output budget.",
+  "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so an automatic compaction threshold cannot be calculated.",
   "settingsModelAutoCompactAboveSafe": "Above the safe limit; {value} takes effect.",
   "@settingsModelAutoCompactAboveSafe": {
     "placeholders": {

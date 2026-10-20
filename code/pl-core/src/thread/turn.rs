@@ -222,6 +222,7 @@ impl Owner {
         let mut content = input.content;
         let mut step = 0_u32;
         let mut corrections = 0_u8;
+        let mut recovered_capacity = false;
         let mut correction_source = None;
         loop {
             let completed = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
@@ -236,6 +237,31 @@ impl Owner {
                 None => self.step(step_input).await,
             };
             let output = match result {
+                Err(ThreadError::Model(ref error))
+                    if error.kind == crate::model::ModelFailureKind::ContextLimit
+                        && !recovered_capacity
+                        && !input.max_model_steps.reached(completed)
+                        && self.state.attempts.last().is_some_and(|attempt| {
+                            attempt.attempt_id == format!("{}:{step}", input.attempt_prefix)
+                                && attempt.status == AttemptStatus::Failed
+                        }) =>
+                {
+                    recovered_capacity = true;
+                    let next = StepInput {
+                        turn_id: input.turn_id.clone(),
+                        attempt_id: format!("{}:{completed}", input.attempt_prefix),
+                        content: Vec::new(),
+                        cancellation: input.cancellation.clone(),
+                    };
+                    // The failed attempt already admitted its input. Reduce committed history,
+                    // then let the next identified attempt proceed without consuming it again.
+                    if !self.recover_context(&next).await? {
+                        return Err(ThreadError::Model(error.clone()));
+                    }
+                    content = Vec::new();
+                    step = completed;
+                    continue;
+                }
                 Err(ThreadError::ModelOutput(ModelOutputViolation::SoloBatch { ref tool_ids }))
                     if corrections < 2 && !input.max_model_steps.reached(completed) =>
                 {

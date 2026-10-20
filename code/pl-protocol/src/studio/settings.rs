@@ -171,8 +171,8 @@ pub struct StudioModelConnectionSettings {
 /// account 实例中某模型的上下文压缩阈值三层视图。
 ///
 /// `default_limit` 为模型默认元信息；`override_limit` 为用户覆盖（`None` 表示使用默认）；
-/// `effective_limit` 为实际生效值 `min(覆盖或默认, 上下文 90%)`，上下文未知时为 `None`；
-/// `safe_limit` 为上下文 90% 安全上限，上下文未知时为 `None`。
+/// `effective_limit` 为实际生效值 `min(覆盖或默认, 安全输入上限)`，上下文未知时为 `None`；
+/// `safe_limit` 同时预留上下文 10% 和最大输出预算，上下文未知时为 `None`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelAutoCompactSettings {

@@ -172,7 +172,7 @@ impl CoreModelSession for ThreadModelSession {
             .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
         if estimate
-            .zip(self.runtime.model().resolved_context_window())
+            .zip(self.runtime.model().input_token_budget())
             .is_some_and(|(tokens, window)| tokens >= window)
         {
             return Err(failure(

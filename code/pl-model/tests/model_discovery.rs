@@ -923,24 +923,27 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
     };
     use pl_protocol::{PricingOutcome, UnpricedReason};
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
-    for (adapter, body, effort_path, declares_image) in [
+    for (adapter, body, effort_path, declares_image, expected_limit) in [
         (
             ProtocolKind::DeepSeek,
             json!({"data":[{"id":"future-model","name":"Future","context_window":64000,"max_output_tokens":8000,"input_modalities":["text","image"],"output_modalities":["text"],"effort":{"supported_levels":["gentle","new-ultra"],"default_level":"new-ultra"},"pricing":{"input":0},"supports_function_calling":true}]}),
             "reasoning_effort",
             true,
+            56_000,
         ),
         (
             ProtocolKind::OpenAi,
             json!({"models":[{"slug":"future-model","display_name":"Future","description":"independent metadata","context_window":64000,"max_context_window":128000,"auto_compact_token_limit":12000,"supported_reasoning_levels":[{"effort":"gentle","description":"less"},{"effort":"new-ultra","description":"more"}],"default_reasoning_level":"new-ultra","base_instructions":"DO NOT IMPORT","shell_type":"powershell","supports_temperature":false}]}),
             "reasoning",
             true,
+            12_000,
         ),
         (
             ProtocolKind::Xai,
             json!({"data":[{"id":"future-model","context_length":64000,"input_modalities":["text","image"],"output_modalities":["text"],"capabilities":{"reasoning_effort":["gentle","new-ultra"],"default_reasoning_effort":"new-ultra"}}]}),
             "reasoning",
             false,
+            57_600,
         ),
     ] {
         let models = discover(body, adapter).await;
@@ -962,10 +965,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert_eq!(descriptor.context_window, Some(64000));
         let preset = (adapter == ProtocolKind::OpenAi).then_some(12_000);
         assert_eq!(descriptor.auto_compact_token_limit, preset);
-        assert_eq!(
-            model.resolved_auto_compact_limit(),
-            Some(preset.unwrap_or(57_600))
-        );
+        assert_eq!(model.resolved_auto_compact_limit(), Some(expected_limit));
         assert_eq!(descriptor.pricing, None);
         let reasoning = descriptor.reasoning.unwrap();
         assert_eq!(reasoning.candidates, ["gentle", "new-ultra"]);
@@ -1590,7 +1590,10 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let narrowed = updated(query.execute(Some(&cache(&raised))).await.unwrap());
     assert_eq!(narrowed[0].context_window, Some(300_000));
     assert_eq!(narrowed[0].max_context_window, Some(300_000));
-    assert_eq!(narrowed[0].resolved_auto_compact_limit(), Some(270_000));
+    assert_eq!(
+        narrowed[0].resolved_auto_compact_limit(),
+        Some(300_000 - builtin.max_output_tokens.unwrap())
+    );
 
     // 在线明确关闭 reasoning：清除继承的 effort 候选；随后的 id-only 响应不复活内置候选。
     let closed = updated(query.execute(Some(&cache(&narrowed))).await.unwrap());

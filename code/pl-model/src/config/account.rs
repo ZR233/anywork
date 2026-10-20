@@ -432,7 +432,7 @@ impl AccountConfig {
 
     /// 解析某模型（含 account 实例覆盖）的实际生效压缩阈值。
     ///
-    /// 生效值取「用户覆盖或模型默认」与上下文 90% 安全上限的较小值；上下文未知返回 `None`。
+    /// 生效值取「用户覆盖或模型默认」与预留输出后的安全输入上限的较小值；上下文未知返回 `None`。
     pub fn resolved_auto_compact_limit(&self, model: &ModelInfo) -> Option<u64> {
         let override_limit = self.auto_compact_overrides().get(&model.model_id).copied();
         model.resolved_auto_compact_limit_with(override_limit)

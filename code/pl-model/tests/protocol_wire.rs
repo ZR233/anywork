@@ -3572,6 +3572,61 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
 }
 
 #[tokio::test]
+async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
+    for (protocol, transport, reply) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+            Reply::HttpError {
+                status: 400,
+                code: "context_length_exceeded".into(),
+                message: "input exceeds context window".into(),
+            },
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+            Reply::WebSocket(vec![
+                json!({"type":"error","status":400,"error":{"code":"context_length_exceeded","message":"input exceeds context window"}}),
+            ]),
+        ),
+    ] {
+        let fixture =
+            FixtureServer::start(vec![Step::prompt(protocol, "oversized input", 0, reply)])
+                .await
+                .unwrap();
+        let runtime = ModelRuntime::new(
+            ProviderEndpoint::compatible("fixture", fixture.base_url()),
+            model("capacity-model", transport),
+        )
+        .unwrap();
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+            .open_session()
+            .await
+            .unwrap();
+        let thread = ThreadHandle::start("capacity-error".into(), session).unwrap();
+        let error = thread
+            .run_turn(replay_turn("oversized input", CancellationToken::new()))
+            .await
+            .unwrap_err();
+        let pl_core::thread::ThreadError::Model(error) = error else {
+            panic!("expected model error");
+        };
+        assert_eq!(error.kind, pl_core::model::ModelFailureKind::ContextLimit);
+        let receipt = pl_model::runtime::model_failure_receipt(&error)
+            .unwrap()
+            .unwrap();
+        let failure = receipt.provider_failure.unwrap();
+        assert_eq!(failure.code.as_deref(), Some("context_length_exceeded"));
+        assert_eq!(failure.http_status, Some(400));
+        assert_eq!(error.usage.input_tokens, None);
+        assert!(thread.snapshot().model_execution.is_none());
+        thread.close().await.unwrap();
+        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage() {
     use pl_core::thread::{ModelUsageOrigin, context_preparation::PreviousContextUsage};
     use pl_core::{
@@ -3579,6 +3634,17 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
         model::{ModelRequest, ModelUsage, ToolCallMode},
     };
     use pl_model::runtime::ThreadModel;
+    #[derive(Debug)]
+    struct PreviewImage(Arc<[u8]>);
+    impl pl_core::context::ResourceReader for PreviewImage {
+        async fn read(
+            &self,
+            _: pl_core::context::ResourceReference,
+            _: CancellationToken,
+        ) -> Result<Arc<[u8]>, pl_core::context::ResourceReadError> {
+            Ok(self.0.clone())
+        }
+    }
     let checkpoint_item = json!({"type":"compaction","encrypted_content":"capacity-native"});
     let fixture = FixtureServer::start(vec![
         Step::prompt(Protocol::ResponsesHttp, "old-input", 0, Reply::Sse(responses_text("retained output", "capacity-output", "capacity-model"))),
@@ -3586,15 +3652,23 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
     ]).await.unwrap();
     let mut endpoint = ProtocolEndpoint::compatible("capacity", fixture.base_url());
     endpoint.service_capabilities.remote_compaction = true;
-    let source = ThreadModel::new(
-        ModelRuntime::new_with_account_id(
-            "fixture",
-            endpoint,
-            model("capacity-model", ModelTransportProfile::responses_http()),
-        )
-        .unwrap(),
-        None,
-    );
+    let mut info = model("capacity-model", ModelTransportProfile::responses_http());
+    info.capabilities
+        .input
+        .push(pl_model::model::ModelInputCapability::media(
+            pl_model::model::ModelModality::Image,
+            vec![pl_model::model::ModelInputSource::Local],
+        ));
+    info.binding
+        .request
+        .media
+        .push(pl_model::model::ModelMediaInputProfile {
+            modality: pl_model::model::ModelModality::Image,
+            wire: pl_model::model::MediaWireFormat::ResponsesInputImage,
+            first_send: vec![pl_model::model::MediaRepresentation::DataUrl],
+            replay: vec![pl_model::model::MediaRepresentation::DataUrl],
+        });
+    let source = ThreadModel::new(ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(), None);
     let mut session = ModelFactory::new(source.clone())
         .open_session()
         .await
@@ -3689,6 +3763,64 @@ async fn native_capacity_preview_counts_new_input_and_requires_bound_prior_usage
             .unwrap()
             .tokens,
         122
+    );
+    previous.usage.output_tokens = None;
+    assert_eq!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens,
+        102
+    );
+    // A retained resource descriptor must not erase the measured prefix's capacity signal.
+    Arc::make_mut(&mut request.context.records)
+        .last_mut()
+        .unwrap()
+        .content
+        .push(ContextContent::Resource {
+            reference: pl_core::context::ResourceReference::new(
+                "new-resource".into(),
+                format!("sha256:{}", "0".repeat(64)),
+                16,
+                "image/png".into(),
+            )
+            .unwrap(),
+        });
+    assert!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            >= 100
+    );
+    let bytes = tiny_png();
+    let reference = pl_core::context::ResourceReference::new(
+        "new-image".into(),
+        pl_core::context::content_hash(&bytes),
+        bytes.len() as u64,
+        "image/png".into(),
+    )
+    .unwrap();
+    request.resources = Some(pl_core::context::ResourceAccess::new(PreviewImage(
+        bytes.into(),
+    )));
+    Arc::make_mut(&mut request.context.records)
+        .last_mut()
+        .unwrap()
+        .content
+        .push(pl_model::runtime::attachment_content(reference, AttachmentModality::Image).unwrap());
+    assert!(
+        source
+            .estimate_input(&request, Some(&previous))
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            >= 100
     );
     previous.origin.binding.route_identity = Some("another-route".into());
     assert!(

@@ -158,7 +158,9 @@ function-fallback 包装属于模型协议，model 解包为原始文本交给�
 模型输出准入先校验请求身份、上下文 revision、工具目录和调用身份，再校验 Solo 批次；
 整批准入成功前不执行任何工具。准入错误保留具体类型与拒绝的原始 attempt。只有 Solo
 混批允许通用 Turn 循环追加框架纠正上下文后重新生成，每 Turn 最多两次，计入原有步骤
-预算；其他一致性错误不自动恢复。纠正以新 attempt 关联被拒绝 attempt，从 canonical 已
+预算；其他一致性错误不自动恢复。服务端已执行请求明确返回 ContextLimit 时，Turn 在
+剩余步骤预算内最多进行一次宿主强制压缩，成功改变上下文后用新 attempt 继续；失败请求
+和用量保留，已受理输入与已完成工具不重放。纠正以新 attempt 关联被拒绝 attempt，从 canonical 已
 提交历史准备，拒绝的 provider continuation 不成为已提交上下文；取消、关闭和持久化失败
 不能被纠正覆盖。
 

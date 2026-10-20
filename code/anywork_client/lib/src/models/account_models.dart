@@ -101,7 +101,7 @@ class AccountModelView {
   final int? contextWindow;
   final int? maxContextWindow;
 
-  /// 原始模型目录预设；没有预设时按解析上下文容量的 90% 推导。
+  /// 原始模型目录预设；没有预设时按安全输入上限推导。
   final int? autoCompactTokenLimit;
   final int? maxOutputTokens;
   final List<ModelInputCapabilityView> inputCapabilities;
@@ -194,6 +194,7 @@ class AccountModelAutoCompactView {
   factory AccountModelAutoCompactView.forModel(AccountModelView model) {
     final safeLimit = safeLimitForContext(
       model.contextWindow ?? model.maxContextWindow,
+      maxOutputTokens: model.maxOutputTokens,
     );
     final defaultLimit = model.autoCompactTokenLimit ?? safeLimit;
     return AccountModelAutoCompactView(
@@ -205,16 +206,18 @@ class AccountModelAutoCompactView {
     );
   }
 
-  /// 上下文容量 90% 的安全上限；容量未知或非正时返回 `null`（保持不自动压缩）。
+  /// 取上下文 90% 与预留输出后输入容量的较小值；无正输入容量时返回 `null`。
   ///
   /// 用商余数计算，避免 `contextWindow * 90` 在大容量下的整数溢出。
-  static int? safeLimitForContext(int? contextWindow) {
+  static int? safeLimitForContext(int? contextWindow, {int? maxOutputTokens}) {
     if (contextWindow == null || contextWindow <= 0) {
       return null;
     }
     final quotient = contextWindow ~/ 100;
     final remainder = contextWindow % 100;
-    final limit = quotient * 90 + (remainder * 90) ~/ 100;
+    final margin = quotient * 90 + (remainder * 90) ~/ 100;
+    final inputBudget = contextWindow - (maxOutputTokens ?? 0);
+    final limit = margin < inputBudget ? margin : inputBudget;
     return limit > 0 ? limit : null;
   }
 
