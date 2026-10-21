@@ -249,6 +249,9 @@ class _TimelineMessageBlock extends StatelessWidget {
 }
 
 /// 一条成员预览的详情入口：技能行复用同一入口访问原调用与被省略的正文。
+///
+/// 每个被截断字段占一行活动行，没有字段可读时用同一行的说明如实报告，两种形态都不额外
+/// 渲染“预览被截断”的解释段落（design/19 §19.9、design/26 §26.2）。
 Widget? _payloadDetailNotice(
   BuildContext context,
   TimelineMessagePayload payload, {
@@ -260,7 +263,7 @@ Widget? _payloadDetailNotice(
       if (detail.truncated) detail,
   ];
   if (truncated.isEmpty) {
-    // 省略量已声明但没有任何字段引用：如实显示“预览被截断”，
+    // 省略量已声明但没有任何字段引用：用不可点击的说明行如实报告原文不可得，
     // 不把省略当成原文不存在，也不伪造可读入口。
     if (!payload.hasOmittedBody) return null;
     return _TimelineTruncationNotice(itemId: payload.item.id);

@@ -98,7 +98,6 @@
   "threadUnopenedBody": "当前仅选中该会话。打开后会读取当前状态与历史；在你发送消息之前不会恢复任何执行。",
   "threadOpenAction": "打开会话",
   "timelineItemBodyLoad": "加载完整内容",
-  "timelineItemBodyTruncated": "本页显示的是超大条目的截断预览。",
   "timelineItemBodyLoading": "正在加载完整内容…",
   "timelineItemBodyPending": "完整内容尚未写入历史，请稍后重试。",
   "timelineItemBodyRetry": "重试",

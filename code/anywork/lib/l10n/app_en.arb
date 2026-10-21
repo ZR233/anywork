@@ -119,7 +119,6 @@
   "threadUnopenedBody": "This session is only selected. Open it to load its current state and history; nothing resumes until you send a message.",
   "threadOpenAction": "Open session",
   "timelineItemBodyLoad": "Load full content",
-  "timelineItemBodyTruncated": "This page shows a truncated preview of a large item.",
   "timelineItemBodyLoading": "Loading full content…",
   "timelineItemBodyPending": "Full content is not durable yet; retry shortly.",
   "timelineItemBodyRetry": "Retry",

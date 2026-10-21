@@ -212,9 +212,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineItemBodyLoad => '加载完整内容';
 
   @override
-  String get timelineItemBodyTruncated => '本页显示的是超大条目的截断预览。';
-
-  @override
   String get timelineItemBodyLoading => '正在加载完整内容…';
 
   @override

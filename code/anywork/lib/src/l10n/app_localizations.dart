@@ -458,12 +458,6 @@ abstract class AppLocalizations {
   /// **'Load full content'**
   String get timelineItemBodyLoad;
 
-  /// No description provided for @timelineItemBodyTruncated.
-  ///
-  /// In en, this message translates to:
-  /// **'This page shows a truncated preview of a large item.'**
-  String get timelineItemBodyTruncated;
-
   /// No description provided for @timelineItemBodyLoading.
   ///
   /// In en, this message translates to:
