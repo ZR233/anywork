@@ -1322,12 +1322,6 @@ abstract class AppLocalizations {
   /// **'This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.'**
   String get statusModelSwitchWhileRunning;
 
-  /// No description provided for @statusModelSwitchWhileWorkflowActive.
-  ///
-  /// In en, this message translates to:
-  /// **'The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.'**
-  String get statusModelSwitchWhileWorkflowActive;
-
   /// No description provided for @statusModelSwitchWhileInactive.
   ///
   /// In en, this message translates to:

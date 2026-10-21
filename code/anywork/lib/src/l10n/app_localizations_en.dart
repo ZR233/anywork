@@ -705,10 +705,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.';
 
   @override
-  String get statusModelSwitchWhileWorkflowActive =>
-      'The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.';
-
-  @override
   String get statusModelSwitchWhileInactive =>
       'This session is closing, closed, or unavailable due to an error. Restore it before changing the model.';
 

@@ -410,7 +410,6 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.thread.id != widget.thread.id ||
         oldWidget.thread.status != widget.thread.status ||
-        oldWidget.view.hasActiveWorkflow != widget.view.hasActiveWorkflow ||
         oldWidget.view.displayRoute != widget.view.displayRoute) {
       _modelNotice = null;
     }
@@ -425,10 +424,9 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
         ? null
         : modelForRoute(view.accounts, route.accountId, route.modelId);
     final blockedReason = switch (thread.status) {
-      ThreadStatusView.idle =>
-        view.hasActiveWorkflow
-            ? context.l10n.statusModelSwitchWhileWorkflowActive
-            : null,
+      // Turn 真正结束后的 canonical idle 即可换路由：workflow run/阶段保持 active
+      // 不再阻塞，新路由在下一次输入生效，也不重置 workflow/Plan（design/19 §19.2）。
+      ThreadStatusView.idle => null,
       ThreadStatusView.closing ||
       ThreadStatusView.closed ||
       ThreadStatusView.faulted => context.l10n.statusModelSwitchWhileInactive,
