@@ -79,7 +79,13 @@ class _TimelineMessageBlock extends StatelessWidget {
         children: [
           Flexible(
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: isPrompt ? 560 : 700),
+              // 回复正文使用阅读列内的可用宽度，不再叠加更窄的独立上限；
+              // 用户与父代理消息保持右对齐的紧凑气泡（design/19 §19.7）。
+              constraints: BoxConstraints(
+                maxWidth: isPrompt
+                    ? StudioLayout.conversationPromptWidth
+                    : double.infinity,
+              ),
               child: Column(
                 crossAxisAlignment: isPrompt
                     ? CrossAxisAlignment.end
