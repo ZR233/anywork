@@ -221,10 +221,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineItemBodyLoad => 'Load full content';
 
   @override
-  String get timelineItemBodyTruncated =>
-      'This page shows a truncated preview of a large item.';
-
-  @override
   String get timelineItemBodyLoading => 'Loading full content…';
 
   @override
