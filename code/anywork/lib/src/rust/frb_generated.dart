@@ -106,7 +106,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1182657510;
+  int get rustContentHash => 1906812624;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -146,8 +146,8 @@ abstract class RustLibApi extends BaseApi {
     required BridgeStudioUpdateOperation that,
   });
 
-  Future<bool>
-  crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishHandoff({
+  Future<void>
+  crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishPreparation({
     required BridgeStudioUpdateOperation that,
   });
 
@@ -293,12 +293,6 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiStudioHandlersLifecycleInitApp();
 
-  Future<BridgeStudioUpdateOperation>
-  crateApiStudioHandlersUpdaterInstallStudioUpdate({
-    required BigInt expectedRevision,
-    required String version,
-  });
-
   Future<BridgeInterruptTurnCommandReply>
   crateApiStudioHandlersPromptInterruptTurn({
     required String operationId,
@@ -330,6 +324,12 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<BigInt> crateApiStudioHandlersLifecyclePrepareStartupAttempt();
+
+  Future<BridgeStudioUpdateOperation>
+  crateApiStudioHandlersUpdaterPrepareStudioUpdate({
+    required BigInt expectedRevision,
+    required String version,
+  });
 
   Future<BridgeWorkflowPreviewSnapshot>
   crateApiStudioHandlersModeEditorPreviewThreadModeWorkflow({
@@ -573,9 +573,10 @@ abstract class RustLibApi extends BaseApi {
     required BigInt expectedSettingsRevision,
   });
 
-  Future<BridgeShutdownReport> crateApiStudioHandlersLifecycleShutdownRuntime({
+  Future<BridgeExitReport> crateApiStudioHandlersLifecycleShutdownRuntime({
     required int remainingMs,
     required List<BridgeShutdownIssue> externalIssues,
+    required BridgeExitIntent intent,
   });
 
   Stream<BridgeNewThreadStartEvent> crateApiStudioHandlersThreadStartNewThread({
@@ -914,8 +915,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<bool>
-  crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishHandoff({
+  Future<void>
+  crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishPreparation({
     required BridgeStudioUpdateOperation that,
   }) {
     return handler.executeNormal(
@@ -934,11 +935,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_bool,
+          decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta:
-            kCrateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishHandoffConstMeta,
+            kCrateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishPreparationConstMeta,
         argValues: [that],
         apiImpl: this,
       ),
@@ -946,9 +947,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   TaskConstMeta
-  get kCrateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishHandoffConstMeta =>
+  get kCrateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishPreparationConstMeta =>
       const TaskConstMeta(
-        debugName: "BridgeStudioUpdateOperation_finish_handoff",
+        debugName: "BridgeStudioUpdateOperation_finish_preparation",
         argNames: ["that"],
       );
 
@@ -2133,44 +2134,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
-  Future<BridgeStudioUpdateOperation>
-  crateApiStudioHandlersUpdaterInstallStudioUpdate({
-    required BigInt expectedRevision,
-    required String version,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_u_64(expectedRevision, serializer);
-          sse_encode_String(version, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 42,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeStudioUpdateOperation,
-          decodeErrorData: sse_decode_bridge_error,
-        ),
-        constMeta: kCrateApiStudioHandlersUpdaterInstallStudioUpdateConstMeta,
-        argValues: [expectedRevision, version],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta
-  get kCrateApiStudioHandlersUpdaterInstallStudioUpdateConstMeta =>
-      const TaskConstMeta(
-        debugName: "install_studio_update",
-        argNames: ["expectedRevision", "version"],
-      );
-
-  @override
   Future<BridgeInterruptTurnCommandReply>
   crateApiStudioHandlersPromptInterruptTurn({
     required String operationId,
@@ -2187,7 +2150,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2217,7 +2180,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2251,7 +2214,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2282,7 +2245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2313,7 +2276,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2345,7 +2308,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2378,7 +2341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 48,
             port: port_,
           );
         },
@@ -2406,7 +2369,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2425,6 +2388,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta
   get kCrateApiStudioHandlersLifecyclePrepareStartupAttemptConstMeta =>
       const TaskConstMeta(debugName: "prepare_startup_attempt", argNames: []);
+
+  @override
+  Future<BridgeStudioUpdateOperation>
+  crateApiStudioHandlersUpdaterPrepareStudioUpdate({
+    required BigInt expectedRevision,
+    required String version,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_u_64(expectedRevision, serializer);
+          sse_encode_String(version, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 50,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeStudioUpdateOperation,
+          decodeErrorData: sse_decode_bridge_error,
+        ),
+        constMeta: kCrateApiStudioHandlersUpdaterPrepareStudioUpdateConstMeta,
+        argValues: [expectedRevision, version],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiStudioHandlersUpdaterPrepareStudioUpdateConstMeta =>
+      const TaskConstMeta(
+        debugName: "prepare_studio_update",
+        argNames: ["expectedRevision", "version"],
+      );
 
   @override
   Future<BridgeWorkflowPreviewSnapshot>
@@ -4121,9 +4122,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<BridgeShutdownReport> crateApiStudioHandlersLifecycleShutdownRuntime({
+  Future<BridgeExitReport> crateApiStudioHandlersLifecycleShutdownRuntime({
     required int remainingMs,
     required List<BridgeShutdownIssue> externalIssues,
+    required BridgeExitIntent intent,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -4131,6 +4133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_u_32(remainingMs, serializer);
           sse_encode_list_bridge_shutdown_issue(externalIssues, serializer);
+          sse_encode_bridge_exit_intent(intent, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4139,11 +4142,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_bridge_shutdown_report,
+          decodeSuccessData: sse_decode_bridge_exit_report,
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersLifecycleShutdownRuntimeConstMeta,
-        argValues: [remainingMs, externalIssues],
+        argValues: [remainingMs, externalIssues, intent],
         apiImpl: this,
       ),
     );
@@ -4152,7 +4155,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiStudioHandlersLifecycleShutdownRuntimeConstMeta =>
       const TaskConstMeta(
         debugName: "shutdown_runtime",
-        argNames: ["remainingMs", "externalIssues"],
+        argNames: ["remainingMs", "externalIssues", "intent"],
       );
 
   @override
@@ -6711,6 +6714,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeErrorCode dco_decode_bridge_error_code(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BridgeErrorCode.values[raw as int];
+  }
+
+  @protected
+  BridgeExitIntent dco_decode_bridge_exit_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeExitIntent.values[raw as int];
+  }
+
+  @protected
+  BridgeExitReport dco_decode_bridge_exit_report(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BridgeExitReport(
+      shutdown: dco_decode_bridge_shutdown_report(arr[0]),
+      updateHandoff: dco_decode_bridge_update_handoff(arr[1]),
+    );
   }
 
   @protected
@@ -10865,6 +10886,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       revision: dco_decode_u_64(arr[0]),
       checkedAt: dco_decode_i_64(arr[1]),
     );
+  }
+
+  @protected
+  BridgeUpdateHandoff dco_decode_bridge_update_handoff(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeUpdateHandoff_NotRequested();
+      case 1:
+        return BridgeUpdateHandoff_Launched(version: dco_decode_String(raw[1]));
+      case 2:
+        return BridgeUpdateHandoff_Failed(
+          error: dco_decode_box_autoadd_bridge_state_error(raw[1]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -15457,6 +15495,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return BridgeErrorCode.values[inner];
+  }
+
+  @protected
+  BridgeExitIntent sse_decode_bridge_exit_intent(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeExitIntent.values[inner];
+  }
+
+  @protected
+  BridgeExitReport sse_decode_bridge_exit_report(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_shutdown = sse_decode_bridge_shutdown_report(deserializer);
+    var var_updateHandoff = sse_decode_bridge_update_handoff(deserializer);
+    return BridgeExitReport(
+      shutdown: var_shutdown,
+      updateHandoff: var_updateHandoff,
+    );
   }
 
   @protected
@@ -20828,6 +20884,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeUpdateHandoff sse_decode_bridge_update_handoff(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return BridgeUpdateHandoff_NotRequested();
+      case 1:
+        var var_version = sse_decode_String(deserializer);
+        return BridgeUpdateHandoff_Launched(version: var_version);
+      case 2:
+        var var_error = sse_decode_box_autoadd_bridge_state_error(deserializer);
+        return BridgeUpdateHandoff_Failed(error: var_error);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
   BridgeUpdaterStateSnapshot sse_decode_bridge_updater_state_snapshot(
     SseDeserializer deserializer,
   ) {
@@ -26136,6 +26213,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_exit_intent(
+    BridgeExitIntent self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_exit_report(
+    BridgeExitReport self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_shutdown_report(self.shutdown, serializer);
+    sse_encode_bridge_update_handoff(self.updateHandoff, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_failed_resource(
     BridgeFailedResource self,
     SseSerializer serializer,
@@ -30332,6 +30428,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_update_handoff(
+    BridgeUpdateHandoff self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeUpdateHandoff_NotRequested():
+        sse_encode_i_32(0, serializer);
+      case BridgeUpdateHandoff_Launched(version: final version):
+        sse_encode_i_32(1, serializer);
+        sse_encode_String(version, serializer);
+      case BridgeUpdateHandoff_Failed(error: final error):
+        sse_encode_i_32(2, serializer);
+        sse_encode_box_autoadd_bridge_state_error(error, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_bridge_updater_state_snapshot(
     BridgeUpdaterStateSnapshot self,
     SseSerializer serializer,
@@ -32832,17 +32946,16 @@ class BridgeStudioUpdateOperationImpl extends RustOpaque
 
   /// Cancels this operation and reports the *real* stop result.
   ///
-  /// Both the cancellation request error (`CancellationTooLate` when the installer is already
-  /// launching) and any task failure are surfaced instead of being swallowed, so a caller cannot
-  /// receive a false "cancelled" acknowledgement while the operation keeps running.
+  /// Cancellation signals preparation only; its task and progress owner must both confirm
+  /// completion before a caller receives the acknowledgement.
   Future<void> cancel() => RustLib.instance.api
       .crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationCancel(
         that: this,
       );
 
-  /// Completes the actual process handoff; true tells the old GUI to exit.
-  Future<bool> finishHandoff() => RustLib.instance.api
-      .crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishHandoff(
+  /// 等待准备任务和进度流真实完成；调用方随后才可进入统一退出。
+  Future<void> finishPreparation() => RustLib.instance.api
+      .crateApiStudioHandlersUpdaterBridgeStudioUpdateOperationFinishPreparation(
         that: this,
       );
 

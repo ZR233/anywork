@@ -65,9 +65,6 @@ class AnyworkClient {
       api: updateApi ?? const _DisabledUpdateApi(),
       updater: updater,
       enabled: updatesEnabled,
-      runtimeBusy: () => threadDirectory.state.window.threads.any(
-        (thread) => thread.status.isActive,
-      ),
       budget: this.budget,
     );
     workspace = WorkspaceController(
@@ -786,7 +783,7 @@ final class _DisabledUpdateApi implements StudioUpdateApi {
   @override
   Future<void> cancelAutomaticUpdate() async {}
   @override
-  Future<StudioUpdateOperation> startInstall({
+  Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,
     required String version,
   }) async => _disabled();

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork_client/studio_client.dart'
+    show StudioUpdateRequest, StudioUpdateRequestPhase;
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
@@ -8,16 +10,15 @@ import '../../presentation/providers/studio_update_controller.dart';
 import '../update/studio_update_actions.dart';
 
 class StudioUpdateSettingsRow extends ConsumerWidget {
-  const StudioUpdateSettingsRow({super.key, required this.runtimeBusy});
-
-  final bool runtimeBusy;
+  const StudioUpdateSettingsRow({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final updateState = ref.watch(studioUpdateControllerProvider);
+    final request = ref.watch(studioUpdateRequestProvider);
     final currentVersion = ref.watch(studioVersionProvider);
     final theme = Theme.of(context);
-    final action = _action(context, ref, updateState);
+    final action = _action(context, ref, updateState, request);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Column(
@@ -50,13 +51,21 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
                         color: context.colors.onSurfaceVariant,
                       ),
                     ),
-                    if (runtimeBusy && _hasUpdate(updateState)) ...[
+                    if (request.phase == StudioUpdateRequestPhase.preparing ||
+                        request.phase == StudioUpdateRequestPhase.cancelling ||
+                        request.phase ==
+                            StudioUpdateRequestPhase.cancelled) ...[
                       const SizedBox(height: 4),
                       Text(
-                        context.l10n.settingsStudioUpdateBusy,
-                        style: context.text.bodySmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
+                        switch (request.phase) {
+                          StudioUpdateRequestPhase.cancelling =>
+                            context.l10n.settingsStudioUpdateCancelling,
+                          StudioUpdateRequestPhase.cancelled =>
+                            context.l10n.settingsStudioUpdateCancelled,
+                          _ => context.l10n.settingsStudioUpdatePreparing,
+                        },
+                        key: const ValueKey('studio-update-request'),
+                        style: context.text.bodySmall,
                       ),
                     ],
                     if (_error(updateState) != null) ...[
@@ -64,6 +73,17 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
                       Text(
                         _errorText(context, updateState),
                         key: const ValueKey('studio-update-error'),
+                        style: context.text.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ],
+                    if (request.error case final error?) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        context.l10n.settingsStudioUpdateFailed(
+                          error.toString(),
+                        ),
                         style: context.text.bodySmall?.copyWith(
                           color: theme.colorScheme.error,
                         ),
@@ -91,15 +111,19 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     UpdaterStateSnapshot state,
+    StudioUpdateRequest request,
   ) {
     final controller = readStudioUpdateActions(ref);
-    if (state is CheckingUpdaterStateSnapshot) {
+    if (state is CheckingUpdaterStateSnapshot ||
+        request.phase == StudioUpdateRequestPhase.checking) {
       return const SizedBox.square(
         dimension: 22,
         child: CircularProgressIndicator(strokeWidth: 2),
       );
     }
-    if (state is DownloadingUpdaterStateSnapshot ||
+    if (request.phase == StudioUpdateRequestPhase.preparing ||
+        request.phase == StudioUpdateRequestPhase.cancelling ||
+        state is DownloadingUpdaterStateSnapshot ||
         state is VerifyingUpdaterStateSnapshot) {
       return Wrap(
         spacing: 8,
@@ -109,9 +133,22 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
             dimension: 22,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
+          FilledButton(
+            key: const ValueKey('studio-update-install'),
+            onPressed: request.pending
+                ? null
+                : () => _runAction(context, controller.install),
+            child: Text(
+              request.pending
+                  ? context.l10n.settingsStudioUpdatePreparing
+                  : context.l10n.settingsStudioUpdateWhenReady,
+            ),
+          ),
           TextButton(
             key: const ValueKey('studio-update-cancel'),
-            onPressed: () => _runAction(context, controller.cancelInstall),
+            onPressed: request.phase == StudioUpdateRequestPhase.cancelling
+                ? null
+                : () => _runAction(context, controller.cancelInstall),
             child: Text(context.l10n.settingsCancel),
           ),
         ],
@@ -133,7 +170,7 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
           ),
           FilledButton(
             key: const ValueKey('studio-update-install'),
-            onPressed: runtimeBusy
+            onPressed: request.pending
                 ? null
                 : () => _runAction(context, controller.install),
             child: Text(
@@ -209,8 +246,8 @@ class StudioUpdateSettingsRow extends ConsumerWidget {
 
   String _errorText(BuildContext context, UpdaterStateSnapshot state) {
     final error = _error(state);
-    if (error?.code == 'runtimeBusy') {
-      return context.l10n.settingsStudioUpdateBusy;
+    if (error?.code == 'cancelled') {
+      return context.l10n.settingsStudioUpdateCancelled;
     }
     return context.l10n.settingsStudioUpdateFailed(error?.message ?? '');
   }

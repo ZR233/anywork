@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1182657510;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1906812624;
 
 // Section: executor
 
@@ -233,13 +233,13 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
                     })().await)
                 } })
 }
-fn wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_finish_handoff_impl(
+fn wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_finish_preparation_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
 ) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec,_,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "BridgeStudioUpdateOperation_finish_handoff", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec,_,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "BridgeStudioUpdateOperation_finish_preparation", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeStudioUpdateOperation>>>::sse_decode(&mut deserializer);deserializer.end(); move |context| async move {
@@ -253,7 +253,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::studio::handlers::updater::BridgeStudioUpdateOperation::finish_handoff(&*api_that_guard).await?;   std::result::Result::Ok(output_ok)
+ let output_ok = crate::api::studio::handlers::updater::BridgeStudioUpdateOperation::finish_preparation(&*api_that_guard).await?;   std::result::Result::Ok(output_ok)
                     })().await)
                 } })
 }
@@ -1498,48 +1498,6 @@ fn wire__crate__api__studio__handlers__lifecycle__init_app_impl(
         },
     )
 }
-fn wire__crate__api__studio__handlers__updater__install_studio_update_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "install_studio_update",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_expected_revision = <u64>::sse_decode(&mut deserializer);
-            let api_version = <String>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
-                    (move || async move {
-                        let output_ok =
-                            crate::api::studio::handlers::updater::install_studio_update(
-                                api_expected_revision,
-                                api_version,
-                            )
-                            .await?;
-                        std::result::Result::Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
 fn wire__crate__api__studio__handlers__prompt__interrupt_turn_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1839,6 +1797,48 @@ fn wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(
                         let output_ok =
                             crate::api::studio::handlers::lifecycle::prepare_startup_attempt()
                                 .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "prepare_studio_update",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_expected_revision = <u64>::sse_decode(&mut deserializer);
+            let api_version = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::studio::handlers::updater::prepare_studio_update(
+                                api_expected_revision,
+                                api_version,
+                            )
+                            .await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -3704,6 +3704,9 @@ fn wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(
                 <Vec<crate::api::studio::types::shutdown::BridgeShutdownIssue>>::sse_decode(
                     &mut deserializer,
                 );
+            let api_intent = <crate::api::studio::types::shutdown::BridgeExitIntent>::sse_decode(
+                &mut deserializer,
+            );
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
@@ -3711,6 +3714,7 @@ fn wire__crate__api__studio__handlers__lifecycle__shutdown_runtime_impl(
                         let output_ok = crate::api::studio::handlers::lifecycle::shutdown_runtime(
                             api_remaining_ms,
                             api_external_issues,
+                            api_intent,
                         )
                         .await?;
                         std::result::Result::Ok(output_ok)
@@ -5718,6 +5722,32 @@ impl SseDecode for crate::api::studio::types::error::BridgeErrorCode {
             15 => crate::api::studio::types::error::BridgeErrorCode::Update,
             16 => crate::api::studio::types::error::BridgeErrorCode::Internal,
             _ => unreachable!("Invalid variant for BridgeErrorCode: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::shutdown::BridgeExitIntent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::shutdown::BridgeExitIntent::Exit,
+            1 => crate::api::studio::types::shutdown::BridgeExitIntent::UpdateRestart,
+            _ => unreachable!("Invalid variant for BridgeExitIntent: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::shutdown::BridgeExitReport {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_shutdown =
+            <crate::api::studio::types::shutdown::BridgeShutdownReport>::sse_decode(deserializer);
+        let mut var_updateHandoff =
+            <crate::api::studio::types::shutdown::BridgeUpdateHandoff>::sse_decode(deserializer);
+        return crate::api::studio::types::shutdown::BridgeExitReport {
+            shutdown: var_shutdown,
+            update_handoff: var_updateHandoff,
         };
     }
 }
@@ -11691,6 +11721,36 @@ impl SseDecode for crate::api::studio::types::updater::BridgeUpToDateUpdaterStat
     }
 }
 
+impl SseDecode for crate::api::studio::types::shutdown::BridgeUpdateHandoff {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::studio::types::shutdown::BridgeUpdateHandoff::NotRequested;
+            }
+            1 => {
+                let mut var_version = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::shutdown::BridgeUpdateHandoff::Launched {
+                    version: var_version,
+                };
+            }
+            2 => {
+                let mut var_error =
+                    <crate::api::studio::types::runtime::BridgeStateError>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::shutdown::BridgeUpdateHandoff::Failed {
+                    error: var_error,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::updater::BridgeUpdaterStateSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -14674,7 +14734,7 @@ fn pde_ffi_dispatcher_primary_impl(
 4 => wire__crate__api__studio__subscription__BridgeEventSubscription_startup_stream_impl(port, ptr, rust_vec_len, data_len),
 5 => wire__crate__api__studio__subscription__BridgeEventSubscription_thread_stream_impl(port, ptr, rust_vec_len, data_len),
 6 => wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_cancel_impl(port, ptr, rust_vec_len, data_len),
-7 => wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_finish_handoff_impl(port, ptr, rust_vec_len, data_len),
+7 => wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_finish_preparation_impl(port, ptr, rust_vec_len, data_len),
 8 => wire__crate__api__studio__handlers__updater__BridgeStudioUpdateOperation_progress_stream_impl(port, ptr, rust_vec_len, data_len),
 9 => wire__crate__api__studio__handlers__chat__BridgeTimeline_close_impl(port, ptr, rust_vec_len, data_len),
 10 => wire__crate__api__studio__handlers__chat__BridgeTimeline_initial_impl(port, ptr, rust_vec_len, data_len),
@@ -14708,15 +14768,15 @@ fn pde_ffi_dispatcher_primary_impl(
 39 => wire__crate__api__studio__handlers__accounts__discover_skills_impl(port, ptr, rust_vec_len, data_len),
 40 => wire__crate__api__studio__handlers__lifecycle__finish_shutdown_diagnostics_impl(port, ptr, rust_vec_len, data_len),
 41 => wire__crate__api__studio__handlers__lifecycle__init_app_impl(port, ptr, rust_vec_len, data_len),
-42 => wire__crate__api__studio__handlers__updater__install_studio_update_impl(port, ptr, rust_vec_len, data_len),
-43 => wire__crate__api__studio__handlers__prompt__interrupt_turn_impl(port, ptr, rust_vec_len, data_len),
-44 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
-45 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
-46 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
-47 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
-48 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
-49 => wire__crate__api__studio__handlers__chat__open_timeline_impl(port, ptr, rust_vec_len, data_len),
-50 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
+42 => wire__crate__api__studio__handlers__prompt__interrupt_turn_impl(port, ptr, rust_vec_len, data_len),
+43 => wire__crate__api__studio__handlers__ssh__list_ssh_servers_impl(port, ptr, rust_vec_len, data_len),
+44 => wire__crate__api__studio__handlers__history__list_threads_page_impl(port, ptr, rust_vec_len, data_len),
+45 => wire__crate__api__studio__handlers__settings__load_account_catalog_impl(port, ptr, rust_vec_len, data_len),
+46 => wire__crate__api__studio__handlers__lifecycle__open_project_impl(port, ptr, rust_vec_len, data_len),
+47 => wire__crate__api__studio__handlers__ssh__open_remote_project_impl(port, ptr, rust_vec_len, data_len),
+48 => wire__crate__api__studio__handlers__chat__open_timeline_impl(port, ptr, rust_vec_len, data_len),
+49 => wire__crate__api__studio__handlers__lifecycle__prepare_startup_attempt_impl(port, ptr, rust_vec_len, data_len),
+50 => wire__crate__api__studio__handlers__updater__prepare_studio_update_impl(port, ptr, rust_vec_len, data_len),
 51 => wire__crate__api__studio__handlers__mode_editor__preview_thread_mode_workflow_impl(port, ptr, rust_vec_len, data_len),
 52 => wire__crate__api__studio__handlers__external_state__probe_lsp_server_impl(port, ptr, rust_vec_len, data_len),
 53 => wire__crate__api__studio__handlers__history__query_threads_impl(port, ptr, rust_vec_len, data_len),
@@ -16416,6 +16476,48 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::error::BridgeE
     for crate::api::studio::types::error::BridgeErrorCode
 {
     fn into_into_dart(self) -> crate::api::studio::types::error::BridgeErrorCode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::shutdown::BridgeExitIntent {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Exit => 0.into_dart(),
+            Self::UpdateRestart => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::shutdown::BridgeExitIntent
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::shutdown::BridgeExitIntent>
+    for crate::api::studio::types::shutdown::BridgeExitIntent
+{
+    fn into_into_dart(self) -> crate::api::studio::types::shutdown::BridgeExitIntent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::shutdown::BridgeExitReport {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.shutdown.into_into_dart().into_dart(),
+            self.update_handoff.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::shutdown::BridgeExitReport
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::shutdown::BridgeExitReport>
+    for crate::api::studio::types::shutdown::BridgeExitReport
+{
+    fn into_into_dart(self) -> crate::api::studio::types::shutdown::BridgeExitReport {
         self
     }
 }
@@ -23557,6 +23659,36 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::shutdown::BridgeUpdateHandoff {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::NotRequested => {
+                [0.into_dart()].into_dart()
+            }
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::Launched { version } => {
+                [1.into_dart(), version.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::Failed { error } => {
+                [2.into_dart(), error.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::shutdown::BridgeUpdateHandoff
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::shutdown::BridgeUpdateHandoff>
+    for crate::api::studio::types::shutdown::BridgeUpdateHandoff
+{
+    fn into_into_dart(self) -> crate::api::studio::types::shutdown::BridgeUpdateHandoff {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::updater::BridgeUpdaterStateSnapshot
 {
@@ -26212,6 +26344,36 @@ impl SseEncode for crate::api::studio::types::error::BridgeErrorCode {
                     unimplemented!("");
                 }
             },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::shutdown::BridgeExitIntent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::shutdown::BridgeExitIntent::Exit => 0,
+                crate::api::studio::types::shutdown::BridgeExitIntent::UpdateRestart => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::shutdown::BridgeExitReport {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::shutdown::BridgeShutdownReport>::sse_encode(
+            self.shutdown,
+            serializer,
+        );
+        <crate::api::studio::types::shutdown::BridgeUpdateHandoff>::sse_encode(
+            self.update_handoff,
             serializer,
         );
     }
@@ -30720,6 +30882,30 @@ impl SseEncode for crate::api::studio::types::updater::BridgeUpToDateUpdaterStat
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u64>::sse_encode(self.revision, serializer);
         <i64>::sse_encode(self.checked_at, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::shutdown::BridgeUpdateHandoff {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::NotRequested => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::Launched { version } => {
+                <i32>::sse_encode(1, serializer);
+                <String>::sse_encode(version, serializer);
+            }
+            crate::api::studio::types::shutdown::BridgeUpdateHandoff::Failed { error } => {
+                <i32>::sse_encode(2, serializer);
+                <crate::api::studio::types::runtime::BridgeStateError>::sse_encode(
+                    error, serializer,
+                );
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 

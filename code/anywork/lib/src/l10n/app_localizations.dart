@@ -158,6 +158,30 @@ abstract class AppLocalizations {
   /// **'Shutting down safely'**
   String get shutdownTitle;
 
+  /// No description provided for @shutdownUpdateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Installing update {version}'**
+  String shutdownUpdateTitle(String version);
+
+  /// No description provided for @shutdownUpdateSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping chats and saving data…'**
+  String get shutdownUpdateSaving;
+
+  /// No description provided for @shutdownUpdateRestartHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Installation progress will appear after saving. The app will reopen automatically.'**
+  String get shutdownUpdateRestartHint;
+
+  /// No description provided for @shutdownUpdateExitHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Installation progress will appear after saving. The app will stay closed.'**
+  String get shutdownUpdateExitHint;
+
   /// No description provided for @shutdownFinalizing.
   ///
   /// In en, this message translates to:
@@ -4218,11 +4242,29 @@ abstract class AppLocalizations {
   /// **'Update failed: {error}'**
   String settingsStudioUpdateFailed(String error);
 
-  /// No description provided for @settingsStudioUpdateBusy.
+  /// No description provided for @settingsStudioUpdatePreparing.
   ///
   /// In en, this message translates to:
-  /// **'Finish the active turn or task before installing.'**
-  String get settingsStudioUpdateBusy;
+  /// **'Preparing update…'**
+  String get settingsStudioUpdatePreparing;
+
+  /// No description provided for @settingsStudioUpdateWhenReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Install and restart when ready'**
+  String get settingsStudioUpdateWhenReady;
+
+  /// No description provided for @settingsStudioUpdateCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling update…'**
+  String get settingsStudioUpdateCancelling;
+
+  /// No description provided for @settingsStudioUpdateCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Update cancelled. You can retry anytime.'**
+  String get settingsStudioUpdateCancelled;
 
   /// No description provided for @settingsStudioUpdateCheck.
   ///
@@ -4233,7 +4275,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStudioUpdateInstall.
   ///
   /// In en, this message translates to:
-  /// **'Download and install'**
+  /// **'Download, install and restart'**
   String get settingsStudioUpdateInstall;
 
   /// No description provided for @settingsStudioUpdateRestart.

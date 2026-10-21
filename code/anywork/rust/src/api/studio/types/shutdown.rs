@@ -5,6 +5,32 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::runtime::BridgeStateError;
+
+/// The first desktop exit request fixes whether a prepared update restarts the app.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeExitIntent {
+    Exit,
+    UpdateRestart,
+}
+
+/// Installer handoff is independent of the reliable runtime shutdown result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
+pub enum BridgeUpdateHandoff {
+    NotRequested,
+    Launched { version: String },
+    Failed { error: BridgeStateError },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeExitReport {
+    pub shutdown: BridgeShutdownReport,
+    pub update_handoff: BridgeUpdateHandoff,
+}
+
 /// Shutdown result classification.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

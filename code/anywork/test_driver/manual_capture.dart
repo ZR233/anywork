@@ -35,6 +35,9 @@ Future<void> main(List<String> args) async {
       await stage('shutdown_request_failed');
       rethrow;
     }
+    await File('${output.path}/shutdown-report.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(shutdown)}\n',
+    );
     if (shutdown is! Map || shutdown['shutdown'] != 'completed') {
       await stage('shutdown_rejected');
       throw StateError('native GUI shutdown did not complete');

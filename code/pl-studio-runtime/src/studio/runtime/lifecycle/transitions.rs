@@ -4,7 +4,6 @@ use crate::studio::StudioRuntimeSnapshot;
 use crate::{StudioShutdownIssue, StudioShutdownReport};
 
 use super::super::StudioRuntime;
-use super::shutdown::ShutdownExternalHook;
 
 impl StudioRuntime {
     /// Stops all Studio runtime services (strict contract).
@@ -15,29 +14,6 @@ impl StudioRuntime {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.execute_strict_shutdown().await?;
         self.runtime_snapshot().await
-    }
-
-    /// Stops the runtime only when no turn or durable task is active, and only reaches `Clean`
-    /// after every external owner injected through `hook` has actually acknowledged.
-    ///
-    /// Holding the lifecycle lock makes the final idle check atomic with the transition away
-    /// from `Ready`; prompt submission uses the same lock, so a busy runtime keeps its
-    /// subscriptions and the hook is never invoked. When the idle check commits, the hook runs
-    /// **inside the same orchestration** (after the transition away from `Ready`, before
-    /// finalization) to cancel/await bridge-owned owners, concurrently with the runtime stages
-    /// under the same first deadline; its issues become the same finalize success precondition, so
-    /// a subscription that does not stop keeps the runtime `Failed` and never releases the
-    /// instance lock or publishes `Stopped`.
-    pub async fn shutdown_runtime_if_idle(
-        &self,
-        hook: Option<ShutdownExternalHook>,
-    ) -> Result<Option<StudioRuntimeSnapshot>> {
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        if self.is_busy_for_update().await? {
-            return Ok(None);
-        }
-        self.execute_strict_shutdown_with_hook(hook).await?;
-        Ok(Some(self.runtime_snapshot().await?))
     }
 
     /// Application-exit shutdown: returns a typed report and accepts `Degraded`.

@@ -40,6 +40,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get shutdownTitle => 'Shutting down safely';
 
   @override
+  String shutdownUpdateTitle(String version) {
+    return 'Installing update $version';
+  }
+
+  @override
+  String get shutdownUpdateSaving => 'Stopping chats and saving data…';
+
+  @override
+  String get shutdownUpdateRestartHint =>
+      'Installation progress will appear after saving. The app will reopen automatically.';
+
+  @override
+  String get shutdownUpdateExitHint =>
+      'Installation progress will appear after saving. The app will stay closed.';
+
+  @override
   String get shutdownFinalizing => 'Finishing up';
 
   @override
@@ -2353,14 +2369,23 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsStudioUpdateBusy =>
-      'Finish the active turn or task before installing.';
+  String get settingsStudioUpdatePreparing => 'Preparing update…';
+
+  @override
+  String get settingsStudioUpdateWhenReady => 'Install and restart when ready';
+
+  @override
+  String get settingsStudioUpdateCancelling => 'Cancelling update…';
+
+  @override
+  String get settingsStudioUpdateCancelled =>
+      'Update cancelled. You can retry anytime.';
 
   @override
   String get settingsStudioUpdateCheck => 'Check for updates';
 
   @override
-  String get settingsStudioUpdateInstall => 'Download and install';
+  String get settingsStudioUpdateInstall => 'Download, install and restart';
 
   @override
   String get settingsStudioUpdateRestart => 'Install and restart';

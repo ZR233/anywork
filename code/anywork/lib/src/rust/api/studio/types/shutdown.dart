@@ -7,10 +7,33 @@ import '../../../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
+
+import 'runtime.dart';
 part 'shutdown.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `is_clean`, `not_started`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+/// The first desktop exit request fixes whether a prepared update restarts the app.
+enum BridgeExitIntent { exit, updateRestart }
+
+class BridgeExitReport {
+  final BridgeShutdownReport shutdown;
+  final BridgeUpdateHandoff updateHandoff;
+
+  const BridgeExitReport({required this.shutdown, required this.updateHandoff});
+
+  @override
+  int get hashCode => shutdown.hashCode ^ updateHandoff.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeExitReport &&
+          runtimeType == other.runtimeType &&
+          shutdown == other.shutdown &&
+          updateHandoff == other.updateHandoff;
+}
 
 @freezed
 sealed class BridgePendingPersistence with _$BridgePendingPersistence {
@@ -86,4 +109,16 @@ class BridgeShutdownReport {
           outcome == other.outcome &&
           issues == other.issues &&
           persistence == other.persistence;
+}
+
+@freezed
+sealed class BridgeUpdateHandoff with _$BridgeUpdateHandoff {
+  const BridgeUpdateHandoff._();
+
+  const factory BridgeUpdateHandoff.notRequested() =
+      BridgeUpdateHandoff_NotRequested;
+  const factory BridgeUpdateHandoff.launched({required String version}) =
+      BridgeUpdateHandoff_Launched;
+  const factory BridgeUpdateHandoff.failed({required BridgeStateError error}) =
+      BridgeUpdateHandoff_Failed;
 }

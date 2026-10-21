@@ -17,7 +17,7 @@ UpdaterStateSnapshot _available(int revision) => AvailableUpdaterStateSnapshot(
 );
 
 final class _UpdateApi implements StudioUpdateApi {
-  final Completer<StudioUpdateOperation> opened = Completer();
+  Completer<StudioUpdateOperation> opened = Completer();
   UpdaterStateSnapshot snapshot = _available(7);
   int automaticStarts = 0;
   int automaticCancels = 0;
@@ -48,7 +48,7 @@ final class _UpdateApi implements StudioUpdateApi {
   }
 
   @override
-  Future<StudioUpdateOperation> startInstall({
+  Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,
     required String version,
   }) {
@@ -66,7 +66,7 @@ final class _UpdateOperation implements StudioUpdateOperation {
   late final StreamController<UpdaterStateSnapshot> frames;
   final Completer<void> listened = Completer();
   final Completer<void> handoffRequested = Completer();
-  final Completer<bool> handoff = Completer();
+  final Completer<void> handoff = Completer();
   final Completer<void> disposed = Completer();
   final Object? cancelFailure;
   int disposeCalls = 0;
@@ -86,10 +86,11 @@ final class _UpdateOperation implements StudioUpdateOperation {
         unawaited(frames.close());
       }
     }
+    if (!handoff.isCompleted) handoff.complete();
   }
 
   @override
-  Future<bool> finishHandoff() {
+  Future<void> finishPreparation() {
     if (!handoffRequested.isCompleted) handoffRequested.complete();
     return handoff.future;
   }
@@ -105,15 +106,189 @@ StudioUpdateClient _client(
   _UpdateApi api,
   UpdaterStore store, {
   ResourceBudget? budget,
-}) => StudioUpdateClient(
-  api: api,
-  updater: store,
-  enabled: true,
-  runtimeBusy: () => false,
-  budget: budget,
-);
+}) =>
+    StudioUpdateClient(api: api, updater: store, enabled: true, budget: budget);
 
 void main() {
+  test('a confirmed pre-admission rejection can be retried without leaking an owner', () async {
+    final api = _UpdateApi();
+    final budget = ResourceBudget();
+    final client = _client(
+      api,
+      UpdaterStore()..apply(_available(7)),
+      budget: budget,
+    );
+    final rejected = client.install();
+    final failure = expectLater(
+      rejected,
+      throwsA(isA<StudioUpdatePreparationRejected>()),
+    );
+    api.opened.completeError(
+      const StudioUpdatePreparationRejected('Update state changed'),
+    );
+    await failure;
+    expect(budget.usage, isEmpty);
+    expect(client.unresolvedResources, isEmpty);
+    api.opened = Completer();
+    final retry = client.install();
+    expect(api.installCalls, 2);
+    final operation = _UpdateOperation();
+    api.opened.complete(operation);
+    await operation.listened.future;
+    operation.frames.add(
+      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+    );
+    await operation.frames.close();
+    await operation.handoffRequested.future;
+    operation.handoff.complete();
+    expect((await retry).readyVersion, _update.version);
+    expect((await client.close()).complete, isTrue);
+  });
+  test(
+    'request feedback is immediate, repeated clicks share one preparation',
+    () async {
+      final api = _UpdateApi();
+      final client = _client(api, UpdaterStore()..apply(_available(7)));
+      final observed = <StudioUpdateRequestPhase>[];
+      final observation = client.request.watch(
+        (value) => observed.add(value.phase),
+      );
+      final first = client.install();
+      expect(client.request.value.phase, StudioUpdateRequestPhase.preparing);
+      expect(client.install(), same(first));
+      expect(api.installCalls, 1);
+      final operation = _UpdateOperation();
+      api.opened.complete(operation);
+      await operation.listened.future;
+      operation.frames.add(
+        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      );
+      await operation.frames.close();
+      await operation.handoffRequested.future;
+      expect(
+        client.request.value.pending,
+        isTrue,
+        reason: 'Ready alone is not a resource completion ACK',
+      );
+      expect(operation.disposeCalls, 0);
+      operation.handoff.complete();
+      expect((await first).readyVersion, _update.version);
+      expect(observed, [
+        StudioUpdateRequestPhase.preparing,
+        StudioUpdateRequestPhase.ready,
+      ]);
+      observation.cancel();
+      expect((await client.close()).complete, isTrue);
+    },
+  );
+
+  test('cancel before the native handle arrives cancels its owner and clears restart intent', () async {
+    final api = _UpdateApi();
+    final client = _client(api, UpdaterStore()..apply(_available(7)));
+    final install = client.install();
+    final cancelled = client.cancelInstall();
+    expect(client.request.value.phase, StudioUpdateRequestPhase.cancelling);
+    final operation = _UpdateOperation();
+    api.opened.complete(operation);
+    await cancelled;
+    expect((await install).readyVersion, isNull);
+    expect(operation.cancelCalls, 1);
+    expect(operation.disposeCalls, 1);
+    expect(client.request.value.phase, StudioUpdateRequestPhase.cancelled);
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test(
+    'cancel racing Ready cannot restart, even when the verified cache survives',
+    () async {
+      final api = _UpdateApi();
+      final client = _client(api, UpdaterStore()..apply(_available(7)));
+      final install = client.install();
+      final operation = _UpdateOperation();
+      api.opened.complete(operation);
+      await operation.listened.future;
+      operation.frames.add(
+        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      );
+      await operation.frames.close();
+      await operation.handoffRequested.future;
+      await client.cancelInstall();
+      expect((await install).readyVersion, isNull);
+      expect(client.state, isA<ReadyUpdaterStateSnapshot>());
+      expect(client.request.value.phase, StudioUpdateRequestPhase.cancelled);
+      expect((await client.close()).complete, isTrue);
+    },
+  );
+
+  test(
+    'download failure ends preparation without an exit and releases resources',
+    () async {
+      final api = _UpdateApi();
+      final budget = ResourceBudget();
+      final client = _client(
+        api,
+        UpdaterStore()..apply(_available(7)),
+        budget: budget,
+      );
+      final install = client.install();
+      final operation = _UpdateOperation();
+      api.opened.complete(operation);
+      await operation.listened.future;
+      operation.frames.add(
+        InstallFailedUpdaterStateSnapshot(
+          revision: 8,
+          failedAt: _now,
+          update: _update,
+          error: const UpdaterErrorView(
+            code: 'network',
+            message: 'offline',
+            retryable: true,
+          ),
+        ),
+      );
+      await operation.frames.close();
+      await operation.handoffRequested.future;
+      operation.handoff.complete();
+      expect((await install).readyVersion, isNull);
+      expect(client.request.value.phase, StudioUpdateRequestPhase.failed);
+      expect(client.state, isA<InstallFailedUpdaterStateSnapshot>());
+      expect(budget.usage, isEmpty);
+      expect((await client.close()).complete, isTrue);
+    },
+  );
+
+  test('manual update joins an existing background download', () async {
+    final api = _UpdateApi();
+    final store = UpdaterStore()
+      ..apply(
+        DownloadingUpdaterStateSnapshot(
+          revision: 7,
+          updatedAt: _now,
+          update: _update,
+          downloaded: 1,
+          total: 100,
+        ),
+      );
+    final client = _client(api, store);
+    final pending = client.install();
+    expect(
+      api.installCalls,
+      1,
+      reason: 'An ongoing background download must accept the restart intent',
+    );
+    final operation = _UpdateOperation();
+    api.opened.complete(operation);
+    await operation.listened.future;
+    operation.frames.add(
+      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+    );
+    await operation.frames.close();
+    await operation.handoffRequested.future;
+    operation.handoff.complete();
+    expect((await pending).readyVersion, _update.version);
+    expect((await client.close()).complete, isTrue);
+  });
+
   test(
     'close joins a coalesced check failure and releases its RPC budget',
     () async {
@@ -256,19 +431,15 @@ void main() {
       await operation.listened.future;
       observer.cancel();
       operation.frames.add(
-        InstallerLaunchedUpdaterStateSnapshot(
-          revision: 8,
-          launchedAt: _now,
-          update: _update,
-        ),
+        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
       );
       await operation.frames.close();
       await operation.handoffRequested.future;
       expect(complete, isFalse);
       expect(operation.disposeCalls, 0);
-      expect(store.state.value, isA<InstallerLaunchedUpdaterStateSnapshot>());
-      operation.handoff.complete(true);
-      expect((await result).exitRequired, isTrue);
+      expect(store.state.value, isA<ReadyUpdaterStateSnapshot>());
+      operation.handoff.complete();
+      expect((await result).readyVersion, _update.version);
       expect(operation.disposeCalls, 1);
       expect((await client.close()).complete, isTrue);
     },
@@ -290,7 +461,7 @@ void main() {
     final operation = _UpdateOperation();
     api.opened.complete(operation);
     await operation.disposed.future;
-    expect((await install).exitRequired, isFalse);
+    expect((await install).readyVersion, isNull);
     expect(operation.cancelCalls, 1);
     expect(operation.disposeCalls, 1);
     expect(budget.used(ResourceKind.pendingOperation), 0);
@@ -309,11 +480,7 @@ void main() {
     await operation.listened.future;
     final failure = expectLater(install, throwsStateError);
     operation.frames.add(
-      InstallerLaunchedUpdaterStateSnapshot(
-        revision: 8,
-        launchedAt: _now,
-        update: _update,
-      ),
+      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
     );
     await operation.frames.close();
     await operation.handoffRequested.future;

@@ -28,17 +28,22 @@ final class FrbStudioUpdateApi implements StudioUpdateApi {
   Future<void> cancelAutomaticUpdate() => frb.cancelStudioBackgroundUpdate();
 
   @override
-  Future<StudioUpdateOperation> startInstall({
+  Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,
     required String version,
   }) async {
     await FrbStudioTransport.ensureReady();
-    return _FrbStudioUpdateOperation(
-      await frb.installStudioUpdate(
-        expectedRevision: BigInt.from(expectedRevision),
-        version: version,
-      ),
-    );
+    try {
+      return _FrbStudioUpdateOperation(
+        await frb.prepareStudioUpdate(
+          expectedRevision: BigInt.from(expectedRevision),
+          version: version,
+        ),
+      );
+    } on frb.BridgeError catch (error) {
+      // This typed response is only returned before native operation admission.
+      throw StudioUpdatePreparationRejected(error.message);
+    }
   }
 }
 
@@ -53,7 +58,7 @@ final class _FrbStudioUpdateOperation implements StudioUpdateOperation {
   @override
   Future<void> cancel() => _handle.cancel();
   @override
-  Future<bool> finishHandoff() => _handle.finishHandoff();
+  Future<void> finishPreparation() => _handle.finishPreparation();
 
   @override
   void dispose() {

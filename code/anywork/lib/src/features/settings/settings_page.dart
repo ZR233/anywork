@@ -161,7 +161,6 @@ class _GeneralSettingsTab extends ConsumerWidget {
       settings: view.settings,
       webSearch: view.webSearch,
       deepSeekWebSearch: view.deepSeekWebSearch,
-      runtimeBusy: view.runtimeBusy,
       onCommand: (command) async {
         await commands.applySettingsField(command);
       },
