@@ -274,6 +274,8 @@ final class TimelinePresentationObservation {
     required this.kind,
     required this.ordinal,
     required this.memberIds,
+    required this.visibleMemberIds,
+    required this.skillPairs,
     required this.expanded,
   });
   factory TimelinePresentationObservation.parse(Map<String, dynamic> map) {
@@ -281,11 +283,30 @@ final class TimelinePresentationObservation {
     if (ids is! List || ids.any((value) => value is! String)) {
       throw StateError('Invalid presentation member identities: $map');
     }
+    final visible = map['visibleMemberIds'];
+    if (visible is! List || visible.any((value) => value is! String)) {
+      throw StateError('Invalid presentation visible member identities: $map');
+    }
+    final pairs = map['skillPairs'];
+    if (pairs is! Map) {
+      throw StateError('Presentation skillPairs is missing: $map');
+    }
+    final skillPairs = <String, String>{};
+    for (final entry in pairs.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! String) {
+        throw StateError('Invalid presentation skill pair: $map');
+      }
+      skillPairs[key] = value;
+    }
     return TimelinePresentationObservation(
       id: _string(map, 'id', 'presentation'),
       kind: _string(map, 'kind', 'presentation'),
       ordinal: _int(map, 'ordinal', 'presentation'),
       memberIds: List<String>.unmodifiable(ids.cast<String>()),
+      visibleMemberIds: List<String>.unmodifiable(visible.cast<String>()),
+      skillPairs: Map<String, String>.unmodifiable(skillPairs),
       expanded: _bool(map, 'expanded', 'presentation'),
     );
   }
@@ -293,6 +314,15 @@ final class TimelinePresentationObservation {
   final String kind;
   final int ordinal;
   final List<String> memberIds;
+
+  /// 当前组内可见活动行的成员身份，按 canonical 顺序。
+  ///
+  /// 与 [memberIds] 的差异只有一处派生：成功主技能读取接管的原调用不再单独成行；
+  /// 原始成员仍按自己的身份保留（design/26 §26.8）。
+  final List<String> visibleMemberIds;
+
+  /// 可见技能行接管的原调用：技能成员身份 → `skill_view` 调用条目身份。
+  final Map<String, String> skillPairs;
   final bool expanded;
 }
 

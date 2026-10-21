@@ -47,20 +47,36 @@ final class TimelineDisplayFacts {
 }
 
 /// GUI groups have their own identity; members still denote individual canonical records.
+///
+/// `memberIds` 始终是全部 canonical 成员，视觉去重只体现在 [visibleMemberIds] 与
+/// [skillPairs]：被技能行接管的原调用仍可按自己的身份查询，同时诊断能说清当前只有一条
+/// 可见技能行（design/26 §26.8、§26.9）。
 final class TimelinePresentationFacts {
   TimelinePresentationFacts({
     required this.id,
     required this.kind,
     required this.ordinal,
     required List<String> memberIds,
+    required List<String> visibleMemberIds,
+    required Map<String, String> skillPairs,
     required this.expanded,
     required this.activeCount,
     required this.issueCount,
-  }) : memberIds = List.unmodifiable(memberIds);
+  }) : memberIds = List.unmodifiable(memberIds),
+       visibleMemberIds = List.unmodifiable(visibleMemberIds),
+       skillPairs = Map.unmodifiable(skillPairs);
+
   final String id;
   final String kind;
   final int ordinal;
   final List<String> memberIds;
+
+  /// 当前组内可见活动行的成员身份，按 canonical 顺序。
+  final List<String> visibleMemberIds;
+
+  /// 可见技能行接管的原调用：技能成员身份 → `skill_view` 调用条目身份。
+  final Map<String, String> skillPairs;
+
   final bool expanded;
   final int activeCount;
   final int issueCount;
@@ -805,6 +821,8 @@ abstract final class StudioDriverState {
             'kind': item.kind,
             'ordinal': item.ordinal,
             'memberIds': item.memberIds,
+            'visibleMemberIds': item.visibleMemberIds,
+            'skillPairs': item.skillPairs,
             'expanded': item.expanded,
             'activeCount': item.activeCount,
             'issueCount': item.issueCount,

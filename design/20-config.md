@@ -378,7 +378,8 @@ account 或模型设置入口，本次布局调整不改变全局配置 schema �
 `active_skills` 与 `active_mcp_servers` 只声明启动时预选项，不作为真实发现来源：MCP
 server 的用户启用意图来源为 `[mcp.servers.<id>].enabled`，真实可用性由进程内 registry
 探测，不写回配置；真实 skills 能力由 `[skills]` 配置和项目目录驱动，当前 Thread 的
-activeSkills 由后端持久化的 Thread 级激活记录派生（见 [10](./10-skills.md)）。
+activeSkills 由后端持久化的 Thread 级激活扩展派生，其压缩重置与恢复契约见
+[10](./10-skills.md) §10.6，不由启动声明或历史 Item 重新激活。
 
 ## 20.8 MCP 配置
 

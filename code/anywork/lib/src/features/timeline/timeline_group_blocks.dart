@@ -123,6 +123,9 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
               icon: switch (item.kind) {
                 TimelinePresentationKind.images => Icons.image_outlined,
                 TimelinePresentationKind.recovery => Icons.sync,
+                // 纯技能组用技能图标；含思考的组仍以思考语义为先。
+                _ when item.thinkingCount == 0 && item.toolCount == 0 =>
+                  Icons.extension_outlined,
                 _ =>
                   item.thinkingCount > 0
                       ? Icons.psychology_alt_outlined
@@ -161,6 +164,7 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
     if (item.kind != TimelinePresentationKind.activity ||
         item.thinkingCount != 1 ||
         item.toolCount != 0 ||
+        item.skillCount != 0 ||
         item.length != 1) {
       return true;
     }
@@ -186,14 +190,34 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
           : '';
       return [count, status].where((part) => part.isNotEmpty).join(' · ');
     }
-    if (item.thinkingCount > 0 && item.toolCount == 0) {
+    if (item.thinkingCount > 0 && item.toolCount == 0 && item.skillCount == 0) {
       // 纯思考组只汇总各思考成员的有效耗时，不把工具、等待或条目间隔计入。
       return _reasoningGroupLabel(context, item);
     }
-    final title = item.thinkingCount > 0
+    // 可见工具与技能分别计数：同一次加载只算一次，不重复计成两种活动。
+    // 技能计数复用状态栏已有的 `statusSkillsCount`（已带复数形态），避免为一个数字
+    // 新增 ARB 条目与生成依赖；分组标题仍复用既有“思考/工具活动”措辞。
+    final counts = [
+      if (item.toolCount > 0) _toolCountPhrase(context, item),
+      if (item.skillCount > 0) context.l10n.statusSkillsCount(item.skillCount),
+    ];
+    final onlySkills =
+        item.toolCount == 0 && item.thinkingCount == 0 && counts.isNotEmpty;
+    // 纯技能组直接说明技能数量，既不显示“0 个工具”，也不冒充纯思考。
+    if (onlySkills) return counts.join(' · ');
+    // 含技能的混合组同样是“思考与工具”活动组，不落到纯思考措辞；纯思考已在上面返回。
+    final title = item.thinkingCount == 0
+        ? context.l10n.timelineToolGroupTitle
+        : item.toolCount > 0 || item.skillCount > 0
         ? context.l10n.timelineActivityTitle
-        : context.l10n.timelineToolGroupTitle;
-    final detail = switch ((item.issueCount > 0, item.runningToolCount > 0)) {
+        : context.l10n.timelineReasoningFallback;
+    if (counts.isEmpty) return title;
+    return '$title · ${counts.join(' · ')}';
+  }
+
+  /// 工具侧的计数文案：运行中与需要注意仍是同一段短语的一部分。
+  String _toolCountPhrase(BuildContext context, TimelinePresentationItem item) {
+    return switch ((item.issueCount > 0, item.runningToolCount > 0)) {
       (true, true) => context.l10n.timelineToolGroupSummaryRunningWithIssues(
         item.toolCount,
         item.runningToolCount,
@@ -209,7 +233,6 @@ class _TimelineGroupBlockState extends State<_TimelineGroupBlock> {
       ),
       (false, false) => context.l10n.timelineToolGroupSummary(item.toolCount),
     };
-    return '$title · $detail';
   }
 }
 
@@ -259,15 +282,27 @@ class _TimelineGroupContents extends StatelessWidget {
   final String threadId;
 
   Widget _member(BuildContext context, int index) {
-    final id = item.memberIds[index];
+    final id = item.visibleMemberIds[index];
+    final paired = item.pairedToolId(id);
+    // 技能行接管原调用：这里只构建一条技能行，原调用的详情仍从它的展开区读取。
+    if (item.payload(id)?.item.skill != null) {
+      return _SkillActivity(
+        key: ValueKey('timeline-skill-activity-$id'),
+        skill: item.member(id),
+        tool: paired == null ? null : item.member(paired),
+        lease: lease,
+        threadId: threadId,
+      );
+    }
     // 只有活动组成员共享紧凑节奏；重连分组仍按普通条目间距阅读。
     final activity = item.kind == TimelinePresentationKind.activity;
     // 单成员纯思考组：外层组摘要已承担折叠身份与展开意图，成员不再重复一行标题。
     final embeddedReasoning =
         activity &&
+        item.skillCount == 0 &&
         item.thinkingCount == 1 &&
         item.toolCount == 0 &&
-        item.length == 1;
+        item.visibleMemberIds.length == 1;
     return ValueListenableBuilder<TimelineMessagePayload>(
       key: ValueKey(id),
       valueListenable: item.member(id),
@@ -289,7 +324,10 @@ class _TimelineGroupContents extends StatelessWidget {
       Padding(
         key: const ValueKey('timeline-activity-details'),
         padding: EdgeInsets.zero,
-        child: item.length <= 5
+        // 短组按成员自然高度铺开：`ConstrainedBox(maxHeight: 320)` 只是上限，不是固定高度，
+        // 因此 10 条以内的紧凑成员不会在引导线下留出空白。超过 10 条仍用有界惰性列表，
+        // 长详情也仍在该 320 上限内滚动。
+        child: item.visibleMemberIds.length <= 10
             ? ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 320),
                 child: SingleChildScrollView(
@@ -297,7 +335,8 @@ class _TimelineGroupContents extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      for (var i = 0; i < item.length; i++) _member(context, i),
+                      for (var i = 0; i < item.visibleMemberIds.length; i++)
+                        _member(context, i),
                     ],
                   ),
                 ),
@@ -307,7 +346,7 @@ class _TimelineGroupContents extends StatelessWidget {
                 child: Scrollbar(
                   child: ListView.builder(
                     primary: false,
-                    itemCount: item.length,
+                    itemCount: item.visibleMemberIds.length,
                     itemBuilder: _member,
                   ),
                 ),

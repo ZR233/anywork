@@ -3,6 +3,7 @@ mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
 mod shutdown;
+mod skill_activity;
 mod wait_events;
 mod web_search;
 mod websocket_recovery;
@@ -755,6 +756,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "provider-usage"
             | "shutdown"
             | "timeline-history"
+            | "skill-activity"
             | "wait-events"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
@@ -882,6 +884,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "call-lifecycle-recovery"
             | "shutdown"
             | "timeline-history"
+            | "skill-activity"
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
@@ -1100,6 +1103,23 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             keep_isolated_environment(working, &home, &output, Some(&project))?;
         }
         return result;
+    }
+
+    if options.scenario == "skill-activity" {
+        return skill_activity::run(
+            &skill_activity::SkillActivityScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
     }
 
     if matches!(
