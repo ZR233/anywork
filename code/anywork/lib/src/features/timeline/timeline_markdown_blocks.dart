@@ -97,13 +97,14 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             ),
           ),
           table: TableStyle(
-            // VS Code 表格：无表头背景、无外圆角，浅色细网格做清楚分隔。
+            // 原生列宽分配在阅读列内折行，短列保留内容宽度，长代码也能断行。
+            overflow: TableOverflow.wrap,
             borderColor: scheme.outlineVariant,
-            headerBackground: Colors.transparent,
+            headerBackground: scheme.surfaceContainerLow,
             headerTextStyle: const TextStyle(fontWeight: FontWeight.w600),
             cellPadding: const EdgeInsets.symmetric(
               horizontal: 10,
-              vertical: 5,
+              vertical: 8,
             ),
           ),
         ),
@@ -219,6 +220,7 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
               : textTheme.bodyMedium;
           return StudioCodeBlock(
             text: code,
+            horizontalScroll: false,
             margin: EdgeInsets.zero,
             padding: const EdgeInsets.all(16),
             backgroundColor: codeBackground,

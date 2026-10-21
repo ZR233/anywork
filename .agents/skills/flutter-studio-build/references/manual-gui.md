@@ -14,6 +14,12 @@
   使用外部 helper 模式的 Linux Studio/Server 入口按根 `AGENTS.md` 预先安装 remote helper；
   桌面 xtask 入口使用 bundle 内的 `data/remote-helper/`，不能以 PATH 中的程序代替资源校验。
 
+Markdown 排版定向复核可运行 `cargo xtask manual-gui --scenario markdown-layout`，
+通过真实输入框发送 `展示长 Markdown 表格、引用与代码排版样例`。模拟供应商逐行流式返回
+长表格、中文、行内代码、路径、链接、引用和缩进代码块；原文保存在 fixture 的
+`assets/markdown-layout.md`，可用于核对真实选择与复制。此场景沿用交互式记录与 `done`
+收束，不进入自动门禁；截图、快照与临时探针仍只保存在忽略的证据目录。
+
 ## Linux SSH：补齐终端和显示环境
 
 先检查事实，不根据控制端环境猜测：

@@ -67,6 +67,8 @@ mod stdio_peer;
 mod lsp_stdio;
 pub use lsp_stdio::{LspStdioOptions, run_lsp_stdio};
 
+pub mod markdown_layout;
+
 mod tool_peer;
 pub use tool_peer::{ToolPeerOptions, run_tool_peer};
 
@@ -89,8 +91,9 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 22] = [
+pub const GUI_SCENARIOS: [&str; 23] = [
     "gui",
+    "markdown-layout",
     "single-instance",
     "storage-compaction",
     "stress",
