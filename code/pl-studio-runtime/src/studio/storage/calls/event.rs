@@ -36,13 +36,54 @@ pub(super) struct CallUsageRecord {
     pub(super) total_tokens: Option<u64>,
 }
 
+/// 当前统计口径的标识；旧记录没有该字段，解码后为 0，不会被当作当前口径样本。
+///
+/// 口径从 decode 分母切换到含首字等待的总响应分母时递增一次。原始调用日志保留可读，
+/// 只有派生统计以此为门槛，避免旧日志回填复活旧口径。
+pub(super) const THROUGHPUT_EPOCH: u32 = 1;
+
 /// 一次成功调用的耗时事实；缺失的计时不会被折叠成零样本。
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CallTimingRecord {
-    pub(super) ttft_millis: u64,
-    pub(super) decode_millis: u64,
-    pub(super) response_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ttft_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) decode_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) response_millis: Option<u64>,
+}
+
+impl CallTimingRecord {
+    /// 投影一次计时的原始事实。
+    pub(super) fn measured(timing: pl_protocol::InferenceTiming) -> Self {
+        Self {
+            ttft_millis: timing.ttft_millis,
+            decode_millis: timing.decode_millis,
+            response_millis: Some(timing.response_millis),
+        }
+    }
+
+    /// 旧调用结构的耗时列；它们只作诊断，不进入速度样本。
+    pub(super) fn legacy(
+        ttft_millis: Option<u64>,
+        decode_millis: Option<u64>,
+        response_millis: Option<u64>,
+    ) -> Self {
+        Self {
+            ttft_millis,
+            decode_millis,
+            response_millis,
+        }
+    }
+
+    fn protocol_timing(self) -> pl_protocol::InferenceTiming {
+        pl_protocol::InferenceTiming {
+            ttft_millis: self.ttft_millis,
+            decode_millis: self.decode_millis,
+            response_millis: self.response_millis.unwrap_or(0),
+        }
+    }
 }
 
 /// 一行版本化 JSONL 日志记录；也是队列事件的载荷。
@@ -88,6 +129,9 @@ pub(super) struct CallLogRecord {
     pub(super) has_unpriced_usage: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) timing: Option<CallTimingRecord>,
+    /// 写出该记录时的统计口径；缺失或低于当前值时只作为原始调用日志保留。
+    #[serde(default)]
+    pub(super) throughput_epoch: u32,
     /// 正文超过单条上限，字段被显式丢弃；读取端据此区分截断与完整记录。
     #[serde(default, skip_serializing_if = "is_false")]
     pub(super) truncated: bool,
@@ -99,10 +143,15 @@ pub(super) struct CallLogRecord {
 }
 
 impl CallLogRecord {
+    /// 该记录是否由当前统计口径写出；旧口径记录只保留为原始调用日志。
+    pub(super) fn is_current_throughput_epoch(&self) -> bool {
+        self.throughput_epoch == THROUGHPUT_EPOCH
+    }
+
     /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
     /// validation rejects them for performance statistics.
     pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
-        if self.status != CallStatus::Committed.as_str() {
+        if self.status != CallStatus::Committed.as_str() || !self.is_current_throughput_epoch() {
             return None;
         }
         let usage = self.usage.as_ref()?;
@@ -114,12 +163,7 @@ impl CallLogRecord {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.total_tokens,
         };
-        let timing = self.timing?;
-        let timing = pl_protocol::InferenceTiming {
-            ttft_millis: timing.ttft_millis,
-            decode_millis: timing.decode_millis,
-            total_millis: timing.response_millis,
-        };
+        let timing = self.timing?.protocol_timing();
         timing
             .throughput_output_tokens(&report)
             .map(|output_tokens| (output_tokens, timing))
@@ -151,6 +195,7 @@ impl CallLogRecord {
             cost: None,
             has_unpriced_usage: self.has_unpriced_usage,
             timing: None,
+            throughput_epoch: self.throughput_epoch,
             truncated: true,
             input_revision: self.input_revision,
             diagnostic: None,
@@ -215,6 +260,8 @@ struct RawCallLogRecord {
     #[serde(default)]
     timing: Option<CallTimingRecord>,
     #[serde(default)]
+    throughput_epoch: u32,
+    #[serde(default)]
     truncated: bool,
     #[serde(default)]
     input_revision: Option<u64>,
@@ -266,6 +313,7 @@ impl RawCallLogRecord {
             cost: self.cost,
             has_unpriced_usage: self.has_unpriced_usage,
             timing: self.timing,
+            throughput_epoch: self.throughput_epoch,
             truncated: self.truncated,
             input_revision: self.input_revision,
             diagnostic: self.diagnostic,
@@ -319,6 +367,7 @@ pub(super) fn attempt_record(
         cost: None,
         has_unpriced_usage: false,
         timing: None,
+        throughput_epoch: 0,
         truncated,
         input_revision: Some(attempt.input_revision),
         diagnostic: Some(diagnostic),
@@ -343,11 +392,7 @@ pub(super) fn billing_record(
         None => (None, None),
     };
     let cost = billing.accounting.estimated_costs().into_iter().next();
-    let timing = billing.timing.map(|timing| CallTimingRecord {
-        ttft_millis: timing.ttft_millis,
-        decode_millis: timing.decode_millis,
-        response_millis: timing.total_millis,
-    });
+    let timing = billing.timing.map(CallTimingRecord::measured);
     CallLogRecord {
         version: CALL_LOG_RECORD_VERSION,
         kind: CALL_LOG_KIND_BILLING.to_owned(),
@@ -379,6 +424,7 @@ pub(super) fn billing_record(
         cost,
         has_unpriced_usage: billing.accounting.has_unpriced_usage(),
         timing,
+        throughput_epoch: THROUGHPUT_EPOCH,
         truncated: false,
         input_revision: None,
         diagnostic: None,

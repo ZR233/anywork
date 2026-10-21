@@ -1,9 +1,10 @@
 //! `calls.sqlite` 的当前 schema、启动清理与 旧调用结构 → 当前结构 的保源迁移。
 //!
-//! 迁移只做加法并保持可重入：先把旧 `model_calls` 的累计费用保全为摘要、把成功调用保全为性能样本，
-//! 再把保留期内的正文按批转换成 JSONL 日志记录（按 `(thread_id, call_id, kind)` 幂等去重），最后
-//! 才删除旧表并清理无引用的 blobs 目录。任何一步失败都不会前移 `schema_version`，源数据因此保留，
-//! 下次打开可继续。旧版本（v1）的数据根不在本模块触碰范围内。
+//! 迁移只做加法并保持可重入：先把旧 `model_calls` 的累计费用保全为摘要，再把保留期内的正文按批
+//! 转换成 JSONL 日志记录（按 `(thread_id, call_id, kind)` 幂等去重），最后才删除旧表并清理无引用的
+//! blobs 目录。旧结构的耗时列不构成当前统计口径的样本，因此旧性能统计直接丢弃、不迁移；原始日志、
+//! 账单与费用保留。任何一步失败都不会前移 `schema_version`，源数据因此保留，下次打开可继续；旧版本
+//! （v1）的数据根不在本模块触碰范围内。
 
 use super::*;
 
@@ -80,10 +81,13 @@ pub(super) async fn initialize(
         .await?;
     let Some(row) = row else {
         db.execute_raw(statement(
-            "INSERT INTO calls_meta(id,schema_version,database_id,pending_cleanup) VALUES(1,?,?,0)",
+            "INSERT INTO calls_meta(
+                id,schema_version,database_id,pending_cleanup,throughput_epoch)
+             VALUES(1,?,?,0,?)",
             vec![
                 CALLS_SCHEMA_VERSION.into(),
                 crate::studio::new_id("calls-db").into(),
+                i64::from(event::THROUGHPUT_EPOCH).into(),
             ],
         ))
         .await?;
@@ -114,7 +118,43 @@ pub(super) async fn initialize(
         .await?;
         tx.commit().await?;
     }
+    reset_legacy_throughput_samples(db).await?;
     retry_pending_cleanup(db, root_dir).await?;
+    Ok(())
+}
+
+/// 一次性丢弃旧统计口径的性能样本，不换算、不回填。
+///
+/// 口径切换只作废派生的速度投影：累计费用、执行幂等身份、原始调用日志与会话历史都保持原样。
+/// 标记存在 `calls_meta.throughput_epoch`，因此重启、日志重建和后续升级都不会重复清空，
+/// 也不会把旧 JSONL 重新投影成旧口径样本。
+async fn reset_legacy_throughput_samples(db: &DatabaseConnection) -> Result<()> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT throughput_epoch FROM calls_meta WHERE id=1",
+            vec![],
+        ))
+        .await?;
+    let epoch = row
+        .map(|row| row.try_get::<i64>("", "throughput_epoch"))
+        .transpose()?
+        .unwrap_or(0);
+    if epoch >= i64::from(event::THROUGHPUT_EPOCH) {
+        return Ok(());
+    }
+    let tx = db.begin().await?;
+    tx.execute_unprepared("DELETE FROM performance_samples")
+        .await?;
+    tx.execute_raw(statement(
+        "UPDATE calls_meta SET throughput_epoch=? WHERE id=1",
+        vec![i64::from(event::THROUGHPUT_EPOCH).into()],
+    ))
+    .await?;
+    tx.commit().await?;
+    tracing::info!(
+        epoch = event::THROUGHPUT_EPOCH,
+        "discarded previous throughput samples after the statistics epoch change"
+    );
     Ok(())
 }
 
@@ -157,7 +197,8 @@ async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             schema_version INTEGER NOT NULL,
             database_id TEXT NOT NULL,
-            pending_cleanup INTEGER NOT NULL DEFAULT 0
+            pending_cleanup INTEGER NOT NULL DEFAULT 0,
+            throughput_epoch INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS legacy_auxiliary_usage (thread_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS call_watermarks (
@@ -219,6 +260,7 @@ async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
             ("schema_version", "INTEGER NOT NULL DEFAULT 0"),
             ("database_id", "TEXT"),
             ("pending_cleanup", "INTEGER NOT NULL DEFAULT 0"),
+            ("throughput_epoch", "INTEGER NOT NULL DEFAULT 0"),
         ],
     )
     .await?;
@@ -299,7 +341,8 @@ async fn migrate_from_legacy(db: &DatabaseConnection, log: &mut CallLog) -> Resu
     );
     if table_exists(db, "model_calls").await? {
         ensure_columns(db, "model_calls", LEGACY_MODEL_COLUMNS).await?;
-        // 顺序固定：先保全累计摘要，再保全性能样本，最后转换保留期正文到日志。
+        // 顺序固定：先保全累计摘要，再转换保留期正文到日志。旧结构的耗时列不构成当前
+        // 统计口径的速度样本，因此不再投影旧性能统计。
         summary::migrate_from_legacy(db).await?;
         db.execute_unprepared("INSERT OR REPLACE INTO legacy_auxiliary_usage(thread_id,payload)
             SELECT thread_id,json_object('inferenceCount',COUNT(*),'promptTokens',COALESCE(SUM(input_tokens),0),
@@ -308,7 +351,6 @@ async fn migrate_from_legacy(db: &DatabaseConnection, log: &mut CallLog) -> Resu
                 'totalTokens',COALESCE(SUM(total_tokens),0),'hasIncompleteUsage',json('true'),'cacheIncomplete',json('true'),
                 'hasUnpricedUsage',json(CASE WHEN MAX(has_unpriced_usage)>0 THEN 'true' ELSE 'false' END))
             FROM model_calls WHERE terminal=1 AND purpose IN ('title','review') GROUP BY thread_id").await?;
-        performance::migrate_from_legacy(db).await?;
         convert_legacy_rows(db, log).await?;
     }
     if table_exists(db, "tool_calls").await? {
@@ -438,11 +480,12 @@ pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
         row.try_get::<Option<i64>>("", "response_millis")?,
     ) {
         (None, None, None) => None,
-        (ttft, decode, response) => Some(event::CallTimingRecord {
-            ttft_millis: ttft.and_then(non_negative).unwrap_or(0),
-            decode_millis: decode.and_then(non_negative).unwrap_or(0),
-            response_millis: response.and_then(non_negative).unwrap_or(0),
-        }),
+        // 旧结构的耗时列不可证明属于当前统计口径，因此只保留为诊断事实。
+        (ttft, decode, response) => Some(event::CallTimingRecord::legacy(
+            ttft.and_then(non_negative),
+            decode.and_then(non_negative),
+            response.and_then(non_negative),
+        )),
     };
     Ok(CallLogRecord {
         version: event::CALL_LOG_RECORD_VERSION,
@@ -477,6 +520,8 @@ pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
         cost,
         has_unpriced_usage: row.try_get::<i64>("", "has_unpriced_usage")? != 0,
         timing,
+        // 旧调用结构没有当前口径的计时事实，不能成为速度样本。
+        throughput_epoch: 0,
         truncated: false,
         input_revision: None,
         diagnostic: None,
@@ -607,7 +652,8 @@ pub(super) async fn seed_version_for_test(
             id INTEGER PRIMARY KEY CHECK (id = 1),
             schema_version INTEGER NOT NULL,
             database_id TEXT NOT NULL,
-            pending_cleanup INTEGER NOT NULL DEFAULT 0
+            pending_cleanup INTEGER NOT NULL DEFAULT 0,
+            throughput_epoch INTEGER NOT NULL DEFAULT 0
         );",
     )
     .await?;
@@ -919,10 +965,11 @@ mod storage_fault_tests {
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
-                ttft_millis: 2700,
-                decode_millis: 278,
-                response_millis: 2978,
+                ttft_millis: Some(2_700),
+                decode_millis: Some(278),
+                response_millis: Some(2_978),
             }),
+            throughput_epoch: event::THROUGHPUT_EPOCH,
             ..Default::default()
         };
         let (line, _) = event::encode_record(&record)?;
@@ -994,7 +1041,8 @@ mod storage_fault_tests {
             store.session_cost_rollups().await?[0].estimated_costs[0].amount,
             4.0
         );
-        assert_eq!(store.recent_performance_samples(100).await?.len(), 1);
+        // 旧结构的调用只进入原始日志；它没有当前口径的计时事实，因此不产生速度样本。
+        assert!(store.recent_performance_samples(100).await?.is_empty());
         let rows = store
             .writer
             .db
@@ -1003,7 +1051,7 @@ mod storage_fault_tests {
         assert_eq!(rows.len(), 2);
         store.stop_best_effort();
         let reopened = CallsStore::open(&path).await?;
-        assert_eq!(reopened.recent_performance_samples(100).await?.len(), 1);
+        assert!(reopened.recent_performance_samples(100).await?.is_empty());
         reopened.stop_best_effort();
         Ok(())
     }

@@ -1583,7 +1583,7 @@ abstract class AppLocalizations {
   /// No description provided for @statusLastConfirmedAgentTokenSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Last confirmed token speed'**
+  /// **'Last confirmed output speed (includes the first-token wait)'**
   String get statusLastConfirmedAgentTokenSpeed;
 
   /// No description provided for @settingsStatisticsTitle.
@@ -1775,7 +1775,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Speed'**
+  /// **'Output TPS (incl. first token)'**
   String get statisticsSpeed;
 
   /// No description provided for @statisticsSamples.
@@ -1793,13 +1793,13 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsAverageTtft.
   ///
   /// In en, this message translates to:
-  /// **'Average TTFT'**
+  /// **'Average first token'**
   String get statisticsAverageTtft;
 
   /// No description provided for @statisticsAverageResponse.
   ///
   /// In en, this message translates to:
-  /// **'Average response'**
+  /// **'Average total response'**
   String get statisticsAverageResponse;
 
   /// No description provided for @statisticsCompletedAt.
@@ -1811,14 +1811,26 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsDecode.
   ///
   /// In en, this message translates to:
-  /// **'Decode'**
+  /// **'After first token'**
   String get statisticsDecode;
 
   /// No description provided for @statisticsTotalResponse.
   ///
   /// In en, this message translates to:
-  /// **'Total'**
+  /// **'Total response'**
   String get statisticsTotalResponse;
+
+  /// No description provided for @statisticsTtftSampleCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} first-token samples'**
+  String statisticsTtftSampleCount(int count);
+
+  /// No description provided for @settingsStatisticsThroughputNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.'**
+  String get settingsStatisticsThroughputNote;
 
   /// No description provided for @statusTurnQueued.
   ///

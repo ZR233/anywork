@@ -21,7 +21,7 @@ class DriverRuntimeObservation {
     this.reasoningTokens,
     this.liveOutputTokens,
     this.turnOutputTokens,
-    this.decodeMillis,
+    this.responseMillis,
     this.tokensPerSecond,
   });
 
@@ -41,7 +41,7 @@ class DriverRuntimeObservation {
   final int? reasoningTokens;
   final int? liveOutputTokens;
   final int? turnOutputTokens;
-  final int? decodeMillis;
+  final int? responseMillis;
   final double? tokensPerSecond;
 
   bool get isLive => usageState == DriverRuntimeUsageState.live;
@@ -63,7 +63,7 @@ class DriverRuntimeObservation {
     'reasoningTokens': reasoningTokens,
     'liveOutputTokens': liveOutputTokens,
     'turnOutputTokens': turnOutputTokens,
-    'decodeMillis': decodeMillis,
+    'responseMillis': responseMillis,
     'tokensPerSecond': tokensPerSecond,
   };
 }
@@ -105,7 +105,7 @@ DriverRuntimeObservation driverRuntimeObservation(
     turnOutputTokens: metricsAvailable
         ? _int(runtime['turnOutputTokens'])
         : null,
-    decodeMillis: metricsAvailable ? _int(runtime['decodeMillis']) : null,
+    responseMillis: metricsAvailable ? _int(runtime['responseMillis']) : null,
     tokensPerSecond: metricsAvailable
         ? _double(runtime['tokensPerSecond'])
         : null,
@@ -387,7 +387,7 @@ final class DriverRuntimePublishFact {
     required this.attemptId,
     required this.observationSequence,
     required this.completionTokens,
-    required this.decodeMillis,
+    required this.responseMillis,
     required this.latestContextTokens,
     required this.clearedPreviousLive,
   });
@@ -429,9 +429,9 @@ final class DriverRuntimePublishFact {
               'completionTokens',
               'facts[$index].liveUsage',
             ),
-      decodeMillis: usageMap == null
+      responseMillis: usageMap == null
           ? null
-          : _optionalInt(usageMap, 'decodeMillis', 'facts[$index].liveUsage'),
+          : _optionalInt(usageMap, 'responseMillis', 'facts[$index].liveUsage'),
       latestContextTokens: usageMap == null
           ? null
           : _optionalInt(
@@ -470,7 +470,7 @@ final class DriverRuntimePublishFact {
   final String? attemptId;
   final int? observationSequence;
   final int? completionTokens;
-  final int? decodeMillis;
+  final int? responseMillis;
   final int? latestContextTokens;
   final DriverRuntimeClearedReference? clearedPreviousLive;
 
@@ -491,7 +491,7 @@ final class DriverRuntimePublishFact {
         ? null
         : <String, Object?>{
             'completionTokens': completionTokens,
-            'decodeMillis': decodeMillis,
+            'responseMillis': responseMillis,
             'latestContextTokens': latestContextTokens,
           },
     'clearedPreviousLive': clearedPreviousLive?.toJson(),

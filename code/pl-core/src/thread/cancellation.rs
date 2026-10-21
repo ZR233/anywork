@@ -49,6 +49,29 @@ impl InterruptHandle {
             .closing
     }
 
+    /// Snapshot of the resident generation's token, if one is active.
+    ///
+    /// The lock is released before the caller awaits anything: waiting for the token's cancellation
+    /// while holding the interrupt lock would block every other entry point. A clone is enough
+    /// because a cancelled token is cancelled for every clone.
+    pub(super) fn active_token(&self) -> Option<CancellationToken> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active
+            .clone()
+    }
+
+    /// Whether an external stop already cancelled the resident generation.
+    ///
+    /// Cancelling the input's own token and [`super::ThreadHandle::interrupt`] both cancel this
+    /// token without recording an interrupted Turn, so publishing consults the token itself instead
+    /// of only the interrupted/closing state.
+    pub(super) fn active_cancelled(&self) -> bool {
+        self.active_token()
+            .is_some_and(|token| token.is_cancelled())
+    }
+
     pub(super) fn interrupt(&self) -> bool {
         let token = self
             .0

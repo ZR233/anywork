@@ -161,15 +161,15 @@ class StudioThroughputProjection {
   const StudioThroughputProjection({
     required this.threadId,
     required this.completionTokens,
-    required this.decodeMillis,
+    required this.responseMillis,
   });
 
   final String? threadId;
   final int completionTokens;
-  final int decodeMillis;
+  final int responseMillis;
 
-  double? get tokensPerSecond => completionTokens > 0 && decodeMillis > 0
-      ? completionTokens * 1000 / decodeMillis
+  double? get tokensPerSecond => completionTokens > 0 && responseMillis > 0
+      ? completionTokens * 1000 / responseMillis
       : null;
 
   @override
@@ -178,11 +178,11 @@ class StudioThroughputProjection {
         other is StudioThroughputProjection &&
             threadId == other.threadId &&
             completionTokens == other.completionTokens &&
-            decodeMillis == other.decodeMillis;
+            responseMillis == other.responseMillis;
   }
 
   @override
-  int get hashCode => Object.hash(threadId, completionTokens, decodeMillis);
+  int get hashCode => Object.hash(threadId, completionTokens, responseMillis);
 }
 
 /// Stable status inputs. Runtime/context/throughput are intentionally not part

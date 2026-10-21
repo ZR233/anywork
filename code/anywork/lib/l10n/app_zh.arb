@@ -313,7 +313,7 @@
   "sessionZedOpenFailed": "打开 Zed 失败",
   "sessionTerminalOpenFailed": "打开终端失败",
   "sessionOpenServerMissing": "该项目的 SSH 别名已不在 ~/.ssh/config 中",
-  "statusLastConfirmedAgentTokenSpeed": "最近已确认速度",
+  "statusLastConfirmedAgentTokenSpeed": "最近已确认输出速度（含首字等待）",
   "settingsStatisticsTitle": "统计",
   "settingsStatisticsSubtitle": "按账号、配置模型与组内思考强度汇总最近成功调用。",
   "settingsStatisticsSummaryTitle": "模型性能",
@@ -345,14 +345,23 @@
   "statisticsModelUnavailable": "无",
   "statisticsReasoningEffort": "思考强度",
   "statisticsReasoningEffortUnspecified": "未指定/未记录",
-  "statisticsSpeed": "速度",
+  "statisticsSpeed": "输出 TPS（含首字等待）",
   "statisticsSamples": "样本数",
   "statisticsOutputTokens": "输出词元数",
-  "statisticsAverageTtft": "平均 TTFT",
-  "statisticsAverageResponse": "平均响应时间",
+  "statisticsAverageTtft": "平均首字",
+  "statisticsAverageResponse": "平均总响应",
   "statisticsCompletedAt": "完成时间",
-  "statisticsDecode": "解码",
-  "statisticsTotalResponse": "总响应",
+  "statisticsDecode": "首字后耗时",
+  "statisticsTotalResponse": "总响应耗时",
+  "statisticsTtftSampleCount": "{count} 个首字样本",
+  "@statisticsTtftSampleCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsStatisticsThroughputNote": "输出 TPS = 供应商确认的输出词元 × 1000 ÷ 总响应耗时（含首字等待）。总响应从产生结果的请求开始到归一化终态到达为止，不含失败重试、退避、工具执行与终态后的收集或保存；首字是首个非空文本、推理或工具输入增量，输出可含推理词元且不重复相加。首字后耗时只是诊断，不是硬件解码时间。旧统计口径的样本已丢弃，原始调用与账单保留。",
   "statusTurnQueued": "排队中",
   "statusTurnPreparing": "准备上下文",
   "statusTurnResponding": "回复中",

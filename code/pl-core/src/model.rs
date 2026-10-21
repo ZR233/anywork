@@ -1047,6 +1047,14 @@ pub struct ModelProgress {
     /// boundary: authoritative accounting is folded from the terminal attempt outcome instead.
     #[serde(skip)]
     usage: Option<ModelUsageObservation>,
+    /// The current generation's live measurement was withdrawn.
+    ///
+    /// A failed, cancelled or exhausted attempt produces no speed sample, so its live usage and
+    /// response time stay unusable until [`ModelProgressSender::begin_recovery`] starts the next
+    /// generation. Content, failed observations and terminal receipts are not affected: this flag
+    /// only stops the withdrawn measurement from being republished.
+    #[serde(skip)]
+    usage_closed: bool,
 }
 
 /// Whether an observed usage value is still a best-effort preview or a terminal fact.
@@ -1072,7 +1080,8 @@ pub struct ModelUsageObservation {
     pub turn_id: String,
     pub attempt_id: String,
     pub completion_tokens: Option<u64>,
-    pub decode_millis: Option<u64>,
+    /// 本次观察代次起点的单调总响应耗时；透明重试换代时从零重新计时。
+    pub response_millis: Option<u64>,
     pub latest_context_tokens: Option<u64>,
     pub state: ModelUsageObservationState,
     pub observation_sequence: u64,
@@ -1084,11 +1093,22 @@ impl ModelUsageObservation {
             turn_id: turn_id.to_owned(),
             attempt_id: attempt_id.to_owned(),
             completion_tokens: None,
-            decode_millis: None,
+            response_millis: None,
             latest_context_tokens: None,
             state: ModelUsageObservationState::Live,
             observation_sequence: 0,
         }
+    }
+
+    /// 丢弃上一代次的用量与计时，同时保持观察序号与版本单调。
+    ///
+    /// 每个代次都有独立的单调时钟起点，因此不能沿用上一代次的高水位；序号只前进不后退，
+    /// 消费方仍然能按序号识别这次换代后的新观察。
+    fn begin_next_generation(&mut self) {
+        self.completion_tokens = None;
+        self.response_millis = None;
+        self.latest_context_tokens = None;
+        self.observation_sequence = self.observation_sequence.saturating_add(1);
     }
 }
 
@@ -1168,7 +1188,7 @@ impl ModelProgress {
             version,
             parts: ModelParts::from_vec(parts),
             observation: ModelObservation::default(),
-            usage: None,
+            ..Self::default()
         }
     }
 
@@ -1193,6 +1213,44 @@ impl ModelProgress {
     /// Current non-persistent usage observation, if this progress belongs to a live Thread attempt.
     pub fn usage_observation(&self) -> Option<&ModelUsageObservation> {
         self.usage.as_ref()
+    }
+
+    /// Removes the live measurement from this snapshot, keeping content and observations.
+    ///
+    /// The Thread owner publishes cancelled or closing attempts through this so a consumer never
+    /// receives a speed sample for an attempt that is being stopped; the withdrawn pair makes the
+    /// readout fall back to the canonical sample instead of pairing pre-failure tokens with a
+    /// failure timestamp.
+    pub fn withdraw_live_usage(&mut self) {
+        self.clear_live_measurement();
+    }
+
+    /// Clears the measured pair in place without touching content or failure observations.
+    fn clear_live_measurement(&mut self) {
+        let Some(observation) = self.usage.as_mut() else {
+            return;
+        };
+        observation.completion_tokens = None;
+        observation.response_millis = None;
+        observation.latest_context_tokens = None;
+        observation.observation_sequence = observation.observation_sequence.saturating_add(1);
+    }
+
+    /// Returns this replacement as a member of an already closed generation.
+    ///
+    /// The withdrawn measurement stays withdrawn, and the replacement cannot rewind the version or
+    /// the observation sequence the closed generation already published; only
+    /// [`ModelProgressSender::begin_recovery`] opens the next generation.
+    fn into_closed_generation(mut self, closed: &Self) -> Self {
+        self.usage_closed = true;
+        self.withdraw_live_usage();
+        self.version = self.version.max(closed.version.saturating_add(1));
+        if let (Some(replacement), Some(withdrawn)) = (self.usage.as_mut(), closed.usage.as_ref()) {
+            replacement.observation_sequence = replacement
+                .observation_sequence
+                .max(withdrawn.observation_sequence.saturating_add(1));
+        }
+        self
     }
 
     /// Reports whether no part has been observed yet.
@@ -1744,6 +1802,8 @@ impl ModelProgressSender {
 
     /// Atomically retires the current observation and starts its next generation.
     /// The bounded latest snapshot retains every failed boundary, even without a live consumer.
+    /// The retired generation's live usage preview is cleared as well: the retried attempt measures
+    /// its own response time and token counts from empty.
     ///
     /// # Errors
     /// Refuses exhausted or unbounded recovery policies; it never drops earlier observations.
@@ -1771,6 +1831,12 @@ impl ModelProgressSender {
                 retry: observation.generation,
                 max_retries,
             });
+            // 新代次从自己的单调时钟起点重新计时；旧代次的用量与时延不得参与新样本。
+            if let Some(usage) = progress.usage.as_mut() {
+                usage.begin_next_generation();
+            }
+            // 新代次重新拥有自己的 live 计时与用量：上一代次被撤销的测量不阻止它发布。
+            progress.usage_closed = false;
             progress.version = progress.version.saturating_add(1);
         });
         result
@@ -1864,8 +1930,26 @@ impl ModelProgressSender {
     ///
     /// A slow consumer therefore observes the latest authoritative text rather than a replayed
     /// delta queue, and publishing cannot advance a Thread context or grant execution authority.
-    pub fn publish(&self, progress: ModelProgress) {
-        self.sender.send_replace(progress);
+    ///
+    /// A replacement never reopens a closed generation: once the live measurement was withdrawn,
+    /// only [`Self::begin_recovery`] gives the next generation its own preview, so seeding a fresh
+    /// [`ModelProgress::live`] cannot resurrect the withdrawn pair. The version and the observation
+    /// sequence therefore stay monotonic across the replacement instead of restarting at the
+    /// replacement's own zero.
+    ///
+    /// The decision is taken inside the same watch write that installs the replacement, so it is
+    /// linearized against [`Self::close_live_usage`] and [`Self::begin_recovery`]: whichever of them
+    /// holds the write first, the latch this call reads is the one that is still current when the
+    /// replacement becomes visible.
+    pub fn publish(&self, replacement: ModelProgress) {
+        self.sender.send_modify(move |current| {
+            let next = if current.usage_closed {
+                replacement.into_closed_generation(current)
+            } else {
+                replacement
+            };
+            *current = next;
+        });
     }
 
     /// Publishes provider-confirmed partial usage without inventing missing counters.
@@ -1880,6 +1964,9 @@ impl ModelProgressSender {
         latest_context_tokens: Option<u64>,
     ) {
         self.sender.send_if_modified(|progress| {
+            if progress.usage_closed {
+                return false;
+            }
             let Some(observation) = progress.usage.as_mut() else {
                 return false;
             };
@@ -1909,20 +1996,48 @@ impl ModelProgressSender {
         });
     }
 
-    /// Publishes elapsed decode time measured by the invocation's monotonic timer.
-    pub fn observe_decode_millis(&self, decode_millis: u64) {
+    /// Publishes the elapsed response time measured by the invocation's monotonic timer.
+    ///
+    /// Monotonic within one observation generation; [`Self::begin_recovery`] restarts it for the
+    /// retried attempt, so a long abandoned attempt cannot block the new one's timing.
+    pub fn observe_response_millis(&self, response_millis: u64) {
         self.sender.send_if_modified(|progress| {
+            if progress.usage_closed {
+                return false;
+            }
             let Some(observation) = progress.usage.as_mut() else {
                 return false;
             };
             if observation
-                .decode_millis
-                .is_some_and(|current| decode_millis <= current)
+                .response_millis
+                .is_some_and(|current| response_millis <= current)
             {
                 return false;
             }
-            observation.decode_millis = Some(decode_millis);
+            observation.response_millis = Some(response_millis);
             observation.observation_sequence = observation.observation_sequence.saturating_add(1);
+            progress.version = progress.version.saturating_add(1);
+            true
+        });
+    }
+
+    /// Withdraws the current generation's live usage and response time as one group.
+    ///
+    /// Failing, cancelled and exhausted attempts call this before any snapshot carrying their
+    /// terminal clock is published, so a consumer sees an unusable pair (and falls back to the
+    /// canonical sample) instead of pre-failure tokens paired with the failure timestamp. Content,
+    /// failed observations and the terminal receipt are untouched, and the withdrawal lasts until
+    /// [`Self::begin_recovery`] starts the next generation.
+    pub fn close_live_usage(&self) {
+        self.sender.send_if_modified(|progress| {
+            if progress.usage_closed {
+                return false;
+            }
+            progress.usage_closed = true;
+            if progress.usage.is_none() {
+                return false;
+            }
+            progress.clear_live_measurement();
             progress.version = progress.version.saturating_add(1);
             true
         });

@@ -804,7 +804,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sessionOpenServerMissing => '该项目的 SSH 别名已不在 ~/.ssh/config 中';
 
   @override
-  String get statusLastConfirmedAgentTokenSpeed => '最近已确认速度';
+  String get statusLastConfirmedAgentTokenSpeed => '最近已确认输出速度（含首字等待）';
 
   @override
   String get settingsStatisticsTitle => '统计';
@@ -900,7 +900,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsReasoningEffortUnspecified => '未指定/未记录';
 
   @override
-  String get statisticsSpeed => '速度';
+  String get statisticsSpeed => '输出 TPS（含首字等待）';
 
   @override
   String get statisticsSamples => '样本数';
@@ -909,19 +909,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsOutputTokens => '输出词元数';
 
   @override
-  String get statisticsAverageTtft => '平均 TTFT';
+  String get statisticsAverageTtft => '平均首字';
 
   @override
-  String get statisticsAverageResponse => '平均响应时间';
+  String get statisticsAverageResponse => '平均总响应';
 
   @override
   String get statisticsCompletedAt => '完成时间';
 
   @override
-  String get statisticsDecode => '解码';
+  String get statisticsDecode => '首字后耗时';
 
   @override
-  String get statisticsTotalResponse => '总响应';
+  String get statisticsTotalResponse => '总响应耗时';
+
+  @override
+  String statisticsTtftSampleCount(int count) {
+    return '$count 个首字样本';
+  }
+
+  @override
+  String get settingsStatisticsThroughputNote =>
+      '输出 TPS = 供应商确认的输出词元 × 1000 ÷ 总响应耗时（含首字等待）。总响应从产生结果的请求开始到归一化终态到达为止，不含失败重试、退避、工具执行与终态后的收集或保存；首字是首个非空文本、推理或工具输入增量，输出可含推理词元且不重复相加。首字后耗时只是诊断，不是硬件解码时间。旧统计口径的样本已丢弃，原始调用与账单保留。';
 
   @override
   String get statusTurnQueued => '排队中';

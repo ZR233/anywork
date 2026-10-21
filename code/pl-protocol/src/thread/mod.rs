@@ -190,8 +190,9 @@ pub struct ThreadRuntimeSnapshot {
     pub live_usage: Option<ThreadRuntimeLiveUsage>,
     #[serde(default)]
     pub turn_completion_tokens: u64,
+    /// 与 `turn_completion_tokens` 成对的总响应耗时；缺失计时保持 0 且不参与速度汇总。
     #[serde(default)]
-    pub turn_decode_millis: u64,
+    pub turn_response_millis: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo: Option<TodoListSnapshot>,
     #[serde(default)]
@@ -232,8 +233,9 @@ pub struct ThreadRuntimeLiveUsage {
     pub attempt_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_tokens: Option<u64>,
+    /// 本次 attempt 起点的单调总响应耗时；透明重试换代时从头重新计时。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decode_millis: Option<u64>,
+    pub response_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_context_tokens: Option<u64>,
     pub state: ThreadRuntimeUsageState,

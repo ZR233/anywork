@@ -575,7 +575,7 @@ Future<Map<String, dynamic>> _waitForStatistics(
             (_sampleCount(data) > 0 &&
                 (data['history'] as List).any(
                   (row) =>
-                      row['tokens'] >= 25 && (row['decodeMillis'] ?? 0) > 0,
+                      row['tokens'] >= 25 && (row['responseMillis'] ?? 0) > 0,
                 )))) {
       return data;
     }
@@ -599,6 +599,31 @@ void _verifyPopulated(Map<String, dynamic> data, int minimum) {
             item['responseMillis'] > 0,
       )) {
     throw StateError('statistics summary, history, or paced sample missing');
+  }
+  // 实时状态栏与历史汇总必须使用同一个“含首字等待”的分母：历史行的速度由
+  // 输出词元 ÷ 总响应耗时复算得到，而不是参考另一套 decode 口径。
+  var consistentThroughput = false;
+  for (final row in (data['history'] as List).whereType<Map>()) {
+    final tokens = row['tokens'];
+    final responseMillis = row['responseMillis'];
+    final tokensPerSecond = row['tokensPerSecond'];
+    if (row['modelId'] != 'fixture-model' ||
+        tokens is! num ||
+        tokens < 25 ||
+        responseMillis is! num ||
+        responseMillis <= 0 ||
+        tokensPerSecond is! num) {
+      continue;
+    }
+    final expected = tokens * 1000 / responseMillis;
+    if ((tokensPerSecond - expected).abs() <= expected * 0.01) {
+      consistentThroughput = true;
+    }
+  }
+  if (!consistentThroughput) {
+    throw StateError(
+      'paced history throughput does not use the total response denominator',
+    );
   }
 }
 
@@ -644,7 +669,7 @@ Future<void> _captureState(
       'history': (data['history'] as List).length,
       'models': [for (final row in data['summaries'] as List) row['modelId']],
       'metrics': [
-        for (final row in data['history'] as List) {'modelId': row['modelId'], 'tokens': row['tokens'], 'decodeMillis': row['decodeMillis'], 'responseMillis': row['responseMillis']},
+        for (final row in data['history'] as List) {'modelId': row['modelId'], 'tokens': row['tokens'], 'ttftMillis': row['ttftMillis'], 'decodeMillis': row['decodeMillis'], 'responseMillis': row['responseMillis'], 'tokensPerSecond': row['tokensPerSecond']},
       ],
     })}\n',
   );
@@ -680,13 +705,13 @@ Future<void> _captureThroughput(
     throw StateError('canonical throughput pair missing for $threadId');
   }
   final outputTokens = throughput['outputTokens'];
-  final decodeMillis = throughput['decodeMillis'];
+  final responseMillis = throughput['responseMillis'];
   final tokensPerSecond = throughput['tokensPerSecond'];
   if (outputTokens is! num ||
-      decodeMillis is! num ||
+      responseMillis is! num ||
       tokensPerSecond is! num ||
       outputTokens <= 0 ||
-      decodeMillis <= 0 ||
+      responseMillis <= 0 ||
       !tokensPerSecond.isFinite ||
       tokensPerSecond <= 0) {
     throw StateError('incomplete canonical throughput pair: $throughput');
@@ -695,7 +720,7 @@ Future<void> _captureThroughput(
     final previous = expected['throughput'];
     if (previous is! Map ||
         previous['outputTokens'] != outputTokens ||
-        previous['decodeMillis'] != decodeMillis ||
+        previous['responseMillis'] != responseMillis ||
         previous['tokensPerSecond'] != tokensPerSecond) {
       throw StateError(
         'restart throughput diverged from first sample: $previous vs $throughput',
@@ -707,7 +732,7 @@ Future<void> _captureThroughput(
     'throughput': throughput,
     'tokensPerSecond': tokensPerSecond,
     'turnOutputTokens': runtime is Map ? runtime['turnOutputTokens'] : null,
-    'decodeMillis': runtime is Map ? runtime['decodeMillis'] : null,
+    'responseMillis': runtime is Map ? runtime['responseMillis'] : null,
   };
   await File(
     '${output.path}/$name.json',
@@ -736,10 +761,10 @@ Future<Map<String, dynamic>> _waitForSelectedThroughput(
         workspace['threadId'] == threadId &&
         throughput is Map &&
         throughput['outputTokens'] is num &&
-        throughput['decodeMillis'] is num &&
+        throughput['responseMillis'] is num &&
         throughput['tokensPerSecond'] is num &&
         throughput['outputTokens'] > 0 &&
-        throughput['decodeMillis'] > 0 &&
+        throughput['responseMillis'] > 0 &&
         (throughput['tokensPerSecond'] as num).isFinite &&
         throughput['tokensPerSecond'] > 0) {
       return last;

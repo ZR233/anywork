@@ -3820,7 +3820,7 @@ fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
         let (rows, committed, samples): (i64, i64, i64) = sea_orm::sqlx::query_as(
             "SELECT (SELECT COUNT(*) FROM call_log_index WHERE kind='attempt'),
                     COUNT(*),
-                    COALESCE(SUM(CASE WHEN decode_millis>0 AND output_tokens IS NOT NULL THEN 1 ELSE 0 END),0)
+                    COALESCE(SUM(CASE WHEN response_millis>0 AND output_tokens IS NOT NULL THEN 1 ELSE 0 END),0)
              FROM performance_samples",
         )
         .fetch_one(&mut connection)

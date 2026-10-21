@@ -262,6 +262,8 @@ Future<String> _handleDriverData(String? message) async {
               'samples': summary.sampleCount,
               'tokens': summary.completionTokens,
               'tokensPerSecond': summary.tokensPerSecond,
+              'ttftSampleCount': summary.ttftSampleCount,
+              'averageTtftMillis': summary.averageTtftMillis,
               'effortBreakdowns': [
                 for (final effort in summary.effortBreakdowns)
                   {
@@ -269,6 +271,8 @@ Future<String> _handleDriverData(String? message) async {
                     'samples': effort.sampleCount,
                     'tokens': effort.completionTokens,
                     'tokensPerSecond': effort.tokensPerSecond,
+                    'ttftSampleCount': effort.ttftSampleCount,
+                    'averageTtftMillis': effort.averageTtftMillis,
                   },
               ],
             },
@@ -1088,14 +1092,14 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final outputTokens = defaultProneCount(runtime?.completionTokens);
   final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
   final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
-  final liveDecodeMillis = explicitUsageCount(observedUsage?.decodeMillis);
+  final liveResponseMillis = explicitUsageCount(observedUsage?.responseMillis);
   final throughputSource = runtime == null
       ? null
       : ModelRouteQueries.throughputSource(runtime);
   // Preserve source counters for diagnostics, but only derive throughput from
-  // a complete output/decode pair chosen by the canonical Client query.
+  // a complete output/response pair chosen by the canonical Client query.
   final turnOutputTokens = throughputSource?.outputTokens;
-  final decodeMillis = throughputSource?.decodeMillis;
+  final responseMillis = throughputSource?.responseMillis;
   final tokensPerSecond = throughputSource?.tokensPerSecond;
   return <String, Object?>{
     'schemaVersion': 1,
@@ -1121,9 +1125,9 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'outputTokens': outputTokens,
       'reasoningTokens': reasoningTokens,
       'liveOutputTokens': liveOutputTokens,
-      'liveDecodeMillis': liveDecodeMillis,
+      'liveResponseMillis': liveResponseMillis,
       'turnOutputTokens': turnOutputTokens,
-      'decodeMillis': decodeMillis,
+      'responseMillis': responseMillis,
       'tokensPerSecond': tokensPerSecond,
       // Keep throughput as an explicit typed group only when both source
       // counters are known; an unknown group is represented by null.
@@ -1131,7 +1135,7 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
           ? null
           : <String, Object?>{
               'outputTokens': turnOutputTokens,
-              'decodeMillis': decodeMillis,
+              'responseMillis': responseMillis,
               'tokensPerSecond': tokensPerSecond,
             },
     },

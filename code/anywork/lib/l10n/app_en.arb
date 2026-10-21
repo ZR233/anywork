@@ -396,7 +396,7 @@
   "sessionZedOpenFailed": "Failed to open Zed",
   "sessionTerminalOpenFailed": "Failed to open terminal",
   "sessionOpenServerMissing": "The SSH alias for this project is no longer in ~/.ssh/config",
-  "statusLastConfirmedAgentTokenSpeed": "Last confirmed token speed",
+  "statusLastConfirmedAgentTokenSpeed": "Last confirmed output speed (includes the first-token wait)",
   "settingsStatisticsTitle": "Statistics",
   "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with an in-group effort breakdown.",
   "settingsStatisticsSummaryTitle": "Model performance",
@@ -428,14 +428,23 @@
   "statisticsModelUnavailable": "Unavailable",
   "statisticsReasoningEffort": "Reasoning effort",
   "statisticsReasoningEffortUnspecified": "Unspecified / not recorded",
-  "statisticsSpeed": "Speed",
+  "statisticsSpeed": "Output TPS (incl. first token)",
   "statisticsSamples": "Samples",
   "statisticsOutputTokens": "Output tokens",
-  "statisticsAverageTtft": "Average TTFT",
-  "statisticsAverageResponse": "Average response",
+  "statisticsAverageTtft": "Average first token",
+  "statisticsAverageResponse": "Average total response",
   "statisticsCompletedAt": "Completed",
-  "statisticsDecode": "Decode",
-  "statisticsTotalResponse": "Total",
+  "statisticsDecode": "After first token",
+  "statisticsTotalResponse": "Total response",
+  "statisticsTtftSampleCount": "{count} first-token samples",
+  "@statisticsTtftSampleCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsStatisticsThroughputNote": "Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.",
   "statusTurnQueued": "Queued",
   "statusTurnPreparing": "Preparing context",
   "statusTurnResponding": "Responding",

@@ -7621,10 +7621,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sampleCount: dco_decode_u_64(arr[1]),
       completionTokens: dco_decode_u_64(arr[2]),
       totalTtftMillis: dco_decode_u_64(arr[3]),
-      totalDecodeMillis: dco_decode_u_64(arr[4]),
+      ttftSampleCount: dco_decode_u_64(arr[4]),
       totalResponseMillis: dco_decode_u_64(arr[5]),
       tokensPerSecond: dco_decode_f_64(arr[6]),
-      averageTtftMillis: dco_decode_f_64(arr[7]),
+      averageTtftMillis: dco_decode_opt_box_autoadd_f_64(arr[7]),
       averageResponseMillis: dco_decode_f_64(arr[8]),
     );
   }
@@ -7688,10 +7688,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sampleCount: dco_decode_u_64(arr[3]),
       completionTokens: dco_decode_u_64(arr[4]),
       totalTtftMillis: dco_decode_u_64(arr[5]),
-      totalDecodeMillis: dco_decode_u_64(arr[6]),
+      ttftSampleCount: dco_decode_u_64(arr[6]),
       totalResponseMillis: dco_decode_u_64(arr[7]),
       tokensPerSecond: dco_decode_f_64(arr[8]),
-      averageTtftMillis: dco_decode_f_64(arr[9]),
+      averageTtftMillis: dco_decode_opt_box_autoadd_f_64(arr[9]),
       averageResponseMillis: dco_decode_f_64(arr[10]),
       effortBreakdowns: dco_decode_list_bridge_model_performance_effort_summary(
         arr[11],
@@ -9915,7 +9915,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       turnId: dco_decode_String(arr[0]),
       attemptId: dco_decode_String(arr[1]),
       completionTokens: dco_decode_opt_box_autoadd_u_64(arr[2]),
-      decodeMillis: dco_decode_opt_box_autoadd_u_64(arr[3]),
+      responseMillis: dco_decode_opt_box_autoadd_u_64(arr[3]),
       latestContextTokens: dco_decode_opt_box_autoadd_u_64(arr[4]),
       state: dco_decode_bridge_thread_runtime_usage_state(arr[5]),
       observationSequence: dco_decode_u_64(arr[6]),
@@ -9940,7 +9940,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         arr[3],
       ),
       turnCompletionTokens: dco_decode_u_64(arr[4]),
-      turnDecodeMillis: dco_decode_u_64(arr[5]),
+      turnResponseMillis: dco_decode_u_64(arr[5]),
       todo: dco_decode_opt_box_autoadd_bridge_todo_list_snapshot(arr[6]),
       activeSkills: dco_decode_list_String(arr[7]),
       activeMcpServers: dco_decode_list_String(arr[8]),
@@ -16649,17 +16649,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_sampleCount = sse_decode_u_64(deserializer);
     var var_completionTokens = sse_decode_u_64(deserializer);
     var var_totalTtftMillis = sse_decode_u_64(deserializer);
-    var var_totalDecodeMillis = sse_decode_u_64(deserializer);
+    var var_ttftSampleCount = sse_decode_u_64(deserializer);
     var var_totalResponseMillis = sse_decode_u_64(deserializer);
     var var_tokensPerSecond = sse_decode_f_64(deserializer);
-    var var_averageTtftMillis = sse_decode_f_64(deserializer);
+    var var_averageTtftMillis = sse_decode_opt_box_autoadd_f_64(deserializer);
     var var_averageResponseMillis = sse_decode_f_64(deserializer);
     return BridgeModelPerformanceEffortSummary(
       effort: var_effort,
       sampleCount: var_sampleCount,
       completionTokens: var_completionTokens,
       totalTtftMillis: var_totalTtftMillis,
-      totalDecodeMillis: var_totalDecodeMillis,
+      ttftSampleCount: var_ttftSampleCount,
       totalResponseMillis: var_totalResponseMillis,
       tokensPerSecond: var_tokensPerSecond,
       averageTtftMillis: var_averageTtftMillis,
@@ -16740,10 +16740,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_sampleCount = sse_decode_u_64(deserializer);
     var var_completionTokens = sse_decode_u_64(deserializer);
     var var_totalTtftMillis = sse_decode_u_64(deserializer);
-    var var_totalDecodeMillis = sse_decode_u_64(deserializer);
+    var var_ttftSampleCount = sse_decode_u_64(deserializer);
     var var_totalResponseMillis = sse_decode_u_64(deserializer);
     var var_tokensPerSecond = sse_decode_f_64(deserializer);
-    var var_averageTtftMillis = sse_decode_f_64(deserializer);
+    var var_averageTtftMillis = sse_decode_opt_box_autoadd_f_64(deserializer);
     var var_averageResponseMillis = sse_decode_f_64(deserializer);
     var var_effortBreakdowns =
         sse_decode_list_bridge_model_performance_effort_summary(deserializer);
@@ -16754,7 +16754,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sampleCount: var_sampleCount,
       completionTokens: var_completionTokens,
       totalTtftMillis: var_totalTtftMillis,
-      totalDecodeMillis: var_totalDecodeMillis,
+      ttftSampleCount: var_ttftSampleCount,
       totalResponseMillis: var_totalResponseMillis,
       tokensPerSecond: var_tokensPerSecond,
       averageTtftMillis: var_averageTtftMillis,
@@ -19631,7 +19631,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_turnId = sse_decode_String(deserializer);
     var var_attemptId = sse_decode_String(deserializer);
     var var_completionTokens = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_decodeMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_responseMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_latestContextTokens = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_state = sse_decode_bridge_thread_runtime_usage_state(deserializer);
     var var_observationSequence = sse_decode_u_64(deserializer);
@@ -19639,7 +19639,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       turnId: var_turnId,
       attemptId: var_attemptId,
       completionTokens: var_completionTokens,
-      decodeMillis: var_decodeMillis,
+      responseMillis: var_responseMillis,
       latestContextTokens: var_latestContextTokens,
       state: var_state,
       observationSequence: var_observationSequence,
@@ -19662,7 +19662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           deserializer,
         );
     var var_turnCompletionTokens = sse_decode_u_64(deserializer);
-    var var_turnDecodeMillis = sse_decode_u_64(deserializer);
+    var var_turnResponseMillis = sse_decode_u_64(deserializer);
     var var_todo = sse_decode_opt_box_autoadd_bridge_todo_list_snapshot(
       deserializer,
     );
@@ -19688,7 +19688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       usage: var_usage,
       liveUsage: var_liveUsage,
       turnCompletionTokens: var_turnCompletionTokens,
-      turnDecodeMillis: var_turnDecodeMillis,
+      turnResponseMillis: var_turnResponseMillis,
       todo: var_todo,
       activeSkills: var_activeSkills,
       activeMcpServers: var_activeMcpServers,
@@ -27111,10 +27111,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.sampleCount, serializer);
     sse_encode_u_64(self.completionTokens, serializer);
     sse_encode_u_64(self.totalTtftMillis, serializer);
-    sse_encode_u_64(self.totalDecodeMillis, serializer);
+    sse_encode_u_64(self.ttftSampleCount, serializer);
     sse_encode_u_64(self.totalResponseMillis, serializer);
     sse_encode_f_64(self.tokensPerSecond, serializer);
-    sse_encode_f_64(self.averageTtftMillis, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.averageTtftMillis, serializer);
     sse_encode_f_64(self.averageResponseMillis, serializer);
   }
 
@@ -27169,10 +27169,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.sampleCount, serializer);
     sse_encode_u_64(self.completionTokens, serializer);
     sse_encode_u_64(self.totalTtftMillis, serializer);
-    sse_encode_u_64(self.totalDecodeMillis, serializer);
+    sse_encode_u_64(self.ttftSampleCount, serializer);
     sse_encode_u_64(self.totalResponseMillis, serializer);
     sse_encode_f_64(self.tokensPerSecond, serializer);
-    sse_encode_f_64(self.averageTtftMillis, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.averageTtftMillis, serializer);
     sse_encode_f_64(self.averageResponseMillis, serializer);
     sse_encode_list_bridge_model_performance_effort_summary(
       self.effortBreakdowns,
@@ -29422,7 +29422,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.turnId, serializer);
     sse_encode_String(self.attemptId, serializer);
     sse_encode_opt_box_autoadd_u_64(self.completionTokens, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.decodeMillis, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.responseMillis, serializer);
     sse_encode_opt_box_autoadd_u_64(self.latestContextTokens, serializer);
     sse_encode_bridge_thread_runtime_usage_state(self.state, serializer);
     sse_encode_u_64(self.observationSequence, serializer);
@@ -29445,7 +29445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_u_64(self.turnCompletionTokens, serializer);
-    sse_encode_u_64(self.turnDecodeMillis, serializer);
+    sse_encode_u_64(self.turnResponseMillis, serializer);
     sse_encode_opt_box_autoadd_bridge_todo_list_snapshot(self.todo, serializer);
     sse_encode_list_String(self.activeSkills, serializer);
     sse_encode_list_String(self.activeMcpServers, serializer);

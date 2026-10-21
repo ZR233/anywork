@@ -58,6 +58,16 @@ impl ModelInvocationContext {
         self
     }
 
+    /// Withdraws this generation's live usage and response time as one group.
+    ///
+    /// Used by every outer failure, cancellation and exhausted-retry path that never produced a
+    /// `Failed` event, so no published snapshot can pair pre-failure tokens with a failure clock.
+    fn close_live_usage(&self) {
+        if let Some(progress) = &self.progress {
+            progress.close_live_usage();
+        }
+    }
+
     pub(super) fn prompt_cache_key(&self) -> Option<String> {
         self.prompt_cache_key.clone()
     }
@@ -226,30 +236,37 @@ impl InferenceTimer {
         );
     }
 
-    fn decode_millis(&self) -> Option<u64> {
-        let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        if ttft_millis == Self::UNSET {
-            return None;
-        }
+    /// 本 attempt 起点到当前时刻（已到终态则到终态）的单调总响应耗时。
+    fn response_millis(&self) -> u64 {
         let terminal_millis = self.terminal_millis.load(Ordering::Acquire);
-        let elapsed = if terminal_millis == Self::UNSET {
+        if terminal_millis == Self::UNSET {
             duration_millis(self.started_at.elapsed())
         } else {
             terminal_millis
-        };
-        elapsed.checked_sub(ttft_millis)
+        }
     }
 
+    /// 归一化终态到达后的耗时事实；未观察到首个增量只让首字相关字段保持未知。
+    ///
+    /// 总响应耗时始终是消费方确认的终态边界，因此它不依赖首字；仅当首字晚于已记录的终态值
+    /// 这类不一致边界出现时，才把首字整组视为未知，而不是伪造负的首字后耗时。
     fn finish(&self) -> Option<InferenceTiming> {
-        let total_millis = self.terminal_millis.load(Ordering::Acquire);
-        let ttft_millis = self.first_token_millis.load(Ordering::Acquire);
-        if total_millis == Self::UNSET || ttft_millis == Self::UNSET {
+        let response_millis = self.terminal_millis.load(Ordering::Acquire);
+        if response_millis == Self::UNSET {
             return None;
         }
+        let first_token_millis = self.first_token_millis.load(Ordering::Acquire);
+        let (ttft_millis, decode_millis) = match response_millis
+            .checked_sub(first_token_millis)
+            .filter(|_| first_token_millis != Self::UNSET)
+        {
+            Some(decode_millis) => (Some(first_token_millis), Some(decode_millis)),
+            None => (None, None),
+        };
         Some(InferenceTiming {
             ttft_millis,
-            decode_millis: total_millis.checked_sub(ttft_millis)?,
-            total_millis,
+            decode_millis,
+            response_millis,
         })
     }
 }
@@ -446,6 +463,7 @@ impl InvocationRunner {
                 .as_ref()
                 .is_some_and(|token| token.is_cancelled())
             {
+                context.close_live_usage();
                 return Err(CompletionFailure::cancelled(
                     PureError::LlmError("model invocation cancelled".into()),
                     Box::default(),
@@ -519,6 +537,9 @@ impl InvocationRunner {
                     return Ok(response);
                 }
                 Err(mut error) => {
+                    // 失败/取消的尝试不产生任何可确认的速度：在把它交给任何终态发布者或重试
+                    // 换代之前，先整组撤销 live 用量与耗时，已收到的内容与回执不受影响。
+                    context.close_live_usage();
                     error.accounting = Box::new(self.model.pricing.account(
                         error.accounting.usage,
                         self.pricing_mode,
@@ -661,6 +682,7 @@ impl InvocationRunner {
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
                     _ = token.cancelled() => {
+                        context.close_live_usage();
                         let mut cancelled = CompletionFailure::cancelled(
                             PureError::LlmError("model invocation cancelled".into()),
                             error.accounting,
@@ -765,10 +787,13 @@ impl InvocationRunner {
                             }
                             if let Ok(event) = &event {
                                 inference_timer.observe(event);
-                                if let Some(decode_millis) = inference_timer.decode_millis() {
-                                    progress.observe_decode_millis(decode_millis);
-                            }
+                                // 终态事件先撤销 live 用量，再考虑发布耗时：失败尝试绝不能
+                                // 先发布一个「失败前的词元 + 失败时钟」的完整 pair。
                                 progress.observe(event)?;
+                                progress.observe_response_millis(inference_timer.response_millis());
+                            } else {
+                                // 传输层直接以错误结束这次流，没有经过 Failed 事件。
+                                progress.close_live_usage();
                             }
                             event
                         }

@@ -115,19 +115,19 @@ final class StatusLspServersProvider
 String _$statusLspServersHash() => r'd636fc36cb4cc890efe9f1427cbdb9554f75b235';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
-/// part of this value, so decode updates cannot rebuild the chrome.
+/// part of this value, so response-timing updates cannot rebuild the chrome.
 
 @ProviderFor(statusBarView)
 final statusBarViewProvider = StatusBarViewFamily._();
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
-/// part of this value, so decode updates cannot rebuild the chrome.
+/// part of this value, so response-timing updates cannot rebuild the chrome.
 
 final class StatusBarViewProvider
     extends $FunctionalProvider<StatusBarView?, StatusBarView?, StatusBarView?>
     with $Provider<StatusBarView?> {
   /// Stable status-bar fields for one Thread. Throughput and context are not
-  /// part of this value, so decode updates cannot rebuild the chrome.
+  /// part of this value, so response-timing updates cannot rebuild the chrome.
   StatusBarViewProvider._({
     required StatusBarViewFamily super.from,
     required String super.argument,
@@ -182,7 +182,7 @@ final class StatusBarViewProvider
 String _$statusBarViewHash() => r'b7e6631120bec41224595f16765fe95172dd4ead';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
-/// part of this value, so decode updates cannot rebuild the chrome.
+/// part of this value, so response-timing updates cannot rebuild the chrome.
 
 final class StatusBarViewFamily extends $Family
     with $FunctionalFamilyOverride<StatusBarView?, String> {
@@ -196,7 +196,7 @@ final class StatusBarViewFamily extends $Family
       );
 
   /// Stable status-bar fields for one Thread. Throughput and context are not
-  /// part of this value, so decode updates cannot rebuild the chrome.
+  /// part of this value, so response-timing updates cannot rebuild the chrome.
 
   StatusBarViewProvider call(String threadId) =>
       StatusBarViewProvider._(argument: threadId, from: this);
@@ -434,7 +434,7 @@ final class StatusThroughputProjectionProvider
 }
 
 String _$statusThroughputProjectionHash() =>
-    r'ab6fa928badd2d980a621834f5cc2bb6ed5750c8';
+    r'38a779c462f23a2478b5976f08cfbee9f9b3d967';
 
 final class StatusThroughputProjectionFamily extends $Family
     with $FunctionalFamilyOverride<StudioThroughputProjection?, String> {
