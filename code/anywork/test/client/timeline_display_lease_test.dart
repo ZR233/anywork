@@ -479,6 +479,100 @@ void main() {
         details: const [],
       );
 
+  /// 一次 `skill_view` 调用：它的 tool call 身份是技能激活的 typed 来源。
+  StudioTimelineItem skillCall(
+    String id,
+    int order, {
+    String name = 'skill_view',
+    String arguments = '{"name":"pdf"}',
+    String result = '{"name":"pdf","instructions":"..."}',
+    bool succeeded = true,
+    ThreadToolLifecycleView? lifecycle,
+    String turnId = 'turn',
+    int revision = 1,
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: turnId,
+      ordinal: order,
+      revision: revision,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: name,
+          arguments: arguments,
+        ),
+        lifecycle:
+            lifecycle ??
+            (succeeded
+                ? SucceededThreadToolView(
+                    DateTime.utc(2026),
+                    ThreadToolOutputView(
+                      result: result,
+                      attachments: const [],
+                      outputArtifacts: const [],
+                    ),
+                  )
+                : const RunningThreadToolView('')),
+      ),
+    ),
+    saved: false,
+    lifecycle: lifecycle != null || succeeded
+        ? StudioTimelineLifecycle.terminal
+        : StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  /// 一条终态技能激活：来源是同 Turn 的 tool call 或用户手势。
+  StudioTimelineItem skillActivation(
+    String id,
+    int order, {
+    String name = 'pdf',
+    String? toolCallId,
+    String gestureId = 'gesture-1',
+    String turnId = 'turn',
+    String source = 'project',
+    int revision = 1,
+    SkillResourceBaseView resourceBase = const SkillResourceBaseView(
+      SkillResourceBaseKind.directory,
+      '.agents/skills/pdf',
+    ),
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: turnId,
+      ordinal: order,
+      revision: revision,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadSkillItemStateView(
+        name: name,
+        source: source,
+        providerId: 'project',
+        resourceBase: resourceBase,
+        cause: toolCallId == null
+            ? SkillActivationCauseView(
+                SkillActivationCauseKind.userGesture,
+                gestureId,
+              )
+            : SkillActivationCauseView(
+                SkillActivationCauseKind.tool,
+                toolCallId,
+              ),
+        activatedAt: DateTime.utc(2026),
+      ),
+    ),
+    saved: true,
+    lifecycle: StudioTimelineLifecycle.terminal,
+    omittedBytes: 0,
+    details: const [],
+  );
+
   test(
     'consecutive thoughts/tools and image reads become separate custom items',
     () {
@@ -558,6 +652,558 @@ void main() {
     expect(sleep.state, ThreadWaitStateView.waiting);
     expect(sleep.intent, isA<ThreadWaitTimerIntentView>());
     expect((sleep.intent as ThreadWaitTimerIntentView).durationMs, 3000);
+  });
+
+  test(
+    'a successful skill read joins the same-turn thought/tool activity group',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [
+            activity('thinking', 1),
+            skillCall('skill-view-1', 2),
+            skillActivation('skill-1', 3, toolCallId: 'skill-view-1'),
+            activity('command', 4, toolName: 'run_command'),
+          ],
+        ),
+      );
+      final groups = display.controller.messages
+          .map(timelinePresentationOf)
+          .toList();
+      expect(groups, hasLength(1), reason: '技能不单独划分活动组边界');
+      final group = groups.single!;
+      expect(group.kind, TimelinePresentationKind.activity);
+      expect(group.memberIds, [
+        'thinking',
+        'skill-view-1',
+        'skill-1',
+        'command',
+      ]);
+      expect(display.loadedCount, 4, reason: '配对只是一条可见行，两份 canonical 成员都仍可寻址');
+      expect(display.presentationFor('skill-1'), same(group));
+      expect(display.presentationFor('skill-view-1'), same(group));
+      expect(group.memberIds, [
+        'thinking',
+        'skill-view-1',
+        'skill-1',
+        'command',
+      ], reason: 'canonical 成员、顺序与身份不因视觉去重被删改');
+      expect(group.visibleMemberIds, ['thinking', 'skill-1', 'command']);
+      expect(group.pairedToolId('skill-1'), 'skill-view-1');
+      expect(group.memberIsVisible('skill-view-1'), isFalse);
+      expect(group.skillCount, 1);
+      expect(group.toolCount, 1, reason: '同一次加载不重复计成工具与技能两种活动');
+      expect(group.runningToolCount, 1);
+    },
+  );
+
+  test('a later page converges the skill row with its own original call', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        items: [
+          skillActivation('skill-1', 20, toolCallId: 'skill-view-1'),
+          activity('command', 30, toolName: 'run_command'),
+        ],
+        before: 'older',
+        hasOlder: true,
+      ),
+    );
+    expect(
+      display.prependOlder(
+        StudioTimelinePage(
+          items: [skillCall('skill-view-1', 10)],
+          before: null,
+          hasOlder: false,
+        ),
+      ),
+      1,
+    );
+    final groups = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    expect(groups, hasLength(1));
+    expect(groups.single!.memberIds, ['skill-view-1', 'skill-1', 'command']);
+    expect(groups.single!.visibleMemberIds, ['skill-1', 'command']);
+    expect(groups.single!.pairedToolId('skill-1'), 'skill-view-1');
+    expect(groups.single!.skillCount, 1);
+    expect(groups.single!.toolCount, 1);
+  });
+
+  test('repeated loads of one skill stay separate by call identity', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          skillCall('skill-view-1', 1),
+          skillActivation('skill-1', 2, toolCallId: 'skill-view-1'),
+          skillCall('skill-view-2', 3),
+          skillActivation('skill-2', 4, toolCallId: 'skill-view-2'),
+        ],
+      ),
+    );
+    final group = timelinePresentationOf(display.controller.messages.single)!;
+    expect(group.kind, TimelinePresentationKind.activity);
+    expect(group.memberIds, [
+      'skill-view-1',
+      'skill-1',
+      'skill-view-2',
+      'skill-2',
+    ]);
+    expect(group.visibleMemberIds, [
+      'skill-1',
+      'skill-2',
+    ], reason: '同名技能的重复加载各占一行，各自配对到自己的调用');
+    expect(group.pairedToolId('skill-1'), 'skill-view-1');
+    expect(group.pairedToolId('skill-2'), 'skill-view-2');
+    expect(group.skillCount, 2);
+    expect(group.toolCount, 0);
+  });
+
+  test(
+    'a half pair keeps the loaded side readable and converges when filled',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [
+            activity('thinking', 1),
+            skillActivation('skill-1', 2, toolCallId: 'skill-view-1'),
+          ],
+        ),
+      );
+      final group = display.presentationFor('skill-1')!;
+      expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+      expect(group.pairedToolId('skill-1'), isNull);
+      expect(group.skillCount, 1);
+      expect(group.toolCount, 0);
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'sub',
+            from: 1,
+            to: 2,
+            priority: StudioTimelinePriority.immediate,
+            changes: [StudioTimelineAdd(skillCall('skill-view-1', 3))],
+          ),
+        ),
+        isTrue,
+      );
+      expect(display.presentationFor('skill-view-1'), same(group));
+      expect(group.memberIds, ['thinking', 'skill-1', 'skill-view-1']);
+      expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+      expect(group.pairedToolId('skill-1'), 'skill-view-1');
+      expect(group.skillCount, 1);
+      expect(group.toolCount, 0);
+    },
+  );
+
+  test('a loaded tool stays its own row until the activation side arrives', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [skillCall('skill-view-1', 1)],
+      ),
+    );
+    final group = display.presentationFor('skill-view-1')!;
+    expect(group.visibleMemberIds, ['skill-view-1']);
+    expect(group.pairedToolId('skill-view-1'), isNull);
+    expect(group.skillCount, 0);
+    expect(group.toolCount, 1);
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            StudioTimelineAdd(
+              skillActivation('skill-1', 2, toolCallId: 'skill-view-1'),
+            ),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    expect(group.visibleMemberIds, ['skill-1']);
+    expect(group.pairedToolId('skill-1'), 'skill-view-1');
+    expect(group.skillCount, 1);
+    expect(group.toolCount, 0);
+  });
+
+  test('only a successful skill_view call of the same turn is paired', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          // 运行中的技能读取没有任何激活事实：保留真实工具行。
+          skillCall('skill-view-running', 1, succeeded: false),
+          // 支持文件读取不是主技能加载：即使身份巧合也不配对。
+          skillCall('support-read', 2, name: 'read_file'),
+          skillActivation('skill-support', 3, toolCallId: 'support-read'),
+          // 用户手势来源不猜测与工具调用配对。
+          skillCall('gesture-call', 4),
+          skillActivation('skill-gesture', 5, gestureId: 'gesture-call'),
+          // 不同 Turn 的成功调用不跨 Turn 配对。
+          skillCall('other-turn-call', 6, turnId: 'turn-b'),
+          skillActivation(
+            'skill-other-turn',
+            7,
+            toolCallId: 'other-turn-call',
+            turnId: 'turn-b',
+          ),
+        ],
+      ),
+    );
+    final groups = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    final first = groups.first!;
+    expect(first.memberIds, [
+      'skill-view-running',
+      'support-read',
+      'skill-support',
+      'gesture-call',
+      'skill-gesture',
+    ]);
+    expect(first.visibleMemberIds, [
+      'skill-view-running',
+      'support-read',
+      'skill-support',
+      'gesture-call',
+      'skill-gesture',
+    ]);
+    expect(first.pairedToolId('skill-support'), isNull);
+    expect(first.pairedToolId('skill-gesture'), isNull);
+    expect(first.skillCount, 2);
+    expect(first.toolCount, 3);
+    final second = groups.last!;
+    expect(second.memberIds, ['other-turn-call', 'skill-other-turn']);
+    expect(second.visibleMemberIds, ['skill-other-turn']);
+    expect(second.pairedToolId('skill-other-turn'), 'other-turn-call');
+  });
+
+  test('removing the activation side restores the real tool row', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 10),
+          skillCall('skill-view-1', 20),
+          skillActivation('skill-1', 30, toolCallId: 'skill-view-1'),
+        ],
+      ),
+    );
+    final group = display.presentationFor('skill-1')!;
+    final groupId = group.id;
+    expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [const StudioTimelineRemove('skill-1')],
+        ),
+      ),
+      isTrue,
+    );
+    expect(display.presentationFor('skill-view-1'), same(group));
+    expect(group.id, groupId);
+    expect(group.visibleMemberIds, ['thinking', 'skill-view-1']);
+    expect(group.skillCount, 0);
+    expect(group.toolCount, 1);
+  });
+
+  test('a body split leaves a half pair readable on both sides', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 10),
+          skillCall('skill-view-1', 20),
+          skillActivation('skill-1', 30, toolCallId: 'skill-view-1'),
+        ],
+      ),
+    );
+    expect(display.presentationFor('skill-1')!.visibleMemberIds, [
+      'thinking',
+      'skill-1',
+    ]);
+    // 正文划分活动边界：技能与其调用分到两组的半对仍各自可读。
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [StudioTimelineAdd(item('answer', 25))],
+        ),
+      ),
+      isTrue,
+    );
+    final afterSplit = display.controller.messages
+        .map(timelinePresentationOf)
+        .toList();
+    expect(afterSplit.map((g) => g!.kind), [
+      TimelinePresentationKind.activity,
+      TimelinePresentationKind.single,
+      TimelinePresentationKind.activity,
+    ]);
+    expect(afterSplit.first!.visibleMemberIds, ['thinking', 'skill-view-1']);
+    expect(afterSplit.first!.toolCount, 1);
+    expect(afterSplit.first!.skillCount, 0);
+    expect(afterSplit.last!.visibleMemberIds, ['skill-1']);
+    expect(afterSplit.last!.pairedToolId('skill-1'), isNull);
+    expect(afterSplit.last!.skillCount, 1);
+    expect(afterSplit.last!.toolCount, 0);
+  });
+
+  test('a running skill read joins the skill line only after commit', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          skillActivation('skill-1', 2, toolCallId: 'skill-view-1'),
+          skillCall('skill-view-1', 3, succeeded: false),
+        ],
+      ),
+    );
+    final group = display.presentationFor('skill-1')!;
+    expect(group.visibleMemberIds, ['thinking', 'skill-1', 'skill-view-1']);
+    expect(group.pairedToolId('skill-1'), isNull);
+    expect(group.toolCount, 1);
+    expect(group.skillCount, 1);
+    final member = group.member('skill-view-1');
+    // 监听器里只记录它看到的派生事实，断言在派发结束后进行。
+    final seen = <String>[];
+    member.addListener(() {
+      seen.add(
+        [
+          member.value.item.status,
+          group.visibleMemberIds.join('|'),
+          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.pairedToolId('skill-1') ?? 'unpaired',
+          'tools=${group.toolCount}',
+          'running=${group.runningToolCount}',
+          'skills=${group.skillCount}',
+          identical(display.presentationFor('skill-view-1'), group)
+              ? 'same-owner'
+              : 'other-owner',
+        ].join(','),
+      );
+    });
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            StudioTimelineAdd(skillCall('skill-view-1', 3, revision: 2)),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    expect(seen, [
+      'succeeded,thinking|skill-1,hidden,skill-view-1,tools=0,running=0,'
+          'skills=1,same-owner',
+    ]);
+    expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+  });
+
+  test('a failed original call releases its skill line before commit', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          skillCall('skill-view-1', 2),
+          skillActivation('skill-1', 3, toolCallId: 'skill-view-1'),
+        ],
+      ),
+    );
+    final group = display.presentationFor('skill-1')!;
+    expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+    expect(group.pairedToolId('skill-1'), 'skill-view-1');
+    final member = group.member('skill-view-1');
+    final seen = <String>[];
+    member.addListener(() {
+      seen.add(
+        [
+          member.value.item.status,
+          group.visibleMemberIds.join('|'),
+          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.pairedToolId('skill-1') ?? 'unpaired',
+          'tools=${group.toolCount}',
+          'skills=${group.skillCount}',
+          identical(display.presentationFor('skill-1'), group)
+              ? 'same-owner'
+              : 'other-owner',
+        ].join(','),
+      );
+    });
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            StudioTimelineAdd(
+              skillCall(
+                'skill-view-1',
+                2,
+                revision: 2,
+                lifecycle: FailedThreadToolView(
+                  DateTime.utc(2026),
+                  const ThreadToolFailureView(
+                    kind: ThreadToolFailureKindView.execution,
+                    message: 'skill load failed',
+                  ),
+                  null,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    expect(seen, [
+      'failed,thinking|skill-view-1|skill-1,visible,unpaired,tools=1,'
+          'skills=1,same-owner',
+    ]);
+    expect(group.visibleMemberIds, ['thinking', 'skill-view-1', 'skill-1']);
+  });
+
+  test('a skill whose cause stops naming its call releases its own pair', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          skillCall('skill-view-1', 2),
+          skillActivation('skill-1', 3, toolCallId: 'skill-view-1'),
+        ],
+      ),
+    );
+    final group = display.presentationFor('skill-1')!;
+    expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+    expect(group.pairedToolId('skill-1'), 'skill-view-1');
+    final member = group.member('skill-1');
+    final seen = <String>[];
+    member.addListener(() {
+      seen.add(
+        [
+          (member.value.item.state as ThreadSkillItemStateView).cause.kind.name,
+          group.visibleMemberIds.join('|'),
+          group.memberIsVisible('skill-view-1') ? 'visible' : 'hidden',
+          group.pairedToolId('skill-1') ?? 'unpaired',
+          'tools=${group.toolCount}',
+          'skills=${group.skillCount}',
+          identical(display.presentationFor('skill-1'), group)
+              ? 'same-owner'
+              : 'other-owner',
+        ].join(','),
+      );
+    });
+    void replaceCause(StudioTimelineItem item) {
+      final from = display.appliedVersion!;
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'sub',
+            from: from,
+            to: from + 1,
+            priority: StudioTimelinePriority.immediate,
+            changes: [StudioTimelineAdd(item)],
+          ),
+        ),
+        isTrue,
+      );
+    }
+
+    // 来源改成用户手势：该技能不再接管任何调用，原调用重新成为真实工具行。
+    replaceCause(
+      skillActivation('skill-1', 3, gestureId: 'gesture-9', revision: 2),
+    );
+    // 来源再改成空身份：仍不是可配对调用。
+    replaceCause(skillActivation('skill-1', 3, toolCallId: '', revision: 3));
+    // 来源恢复为原调用身份：重新配对，调用让位给技能行。
+    replaceCause(
+      skillActivation('skill-1', 3, toolCallId: 'skill-view-1', revision: 4),
+    );
+    expect(seen, [
+      'userGesture,thinking|skill-view-1|skill-1,visible,unpaired,tools=1,'
+          'skills=1,same-owner',
+      'tool,thinking|skill-view-1|skill-1,visible,unpaired,tools=1,skills=1,'
+          'same-owner',
+      'tool,thinking|skill-1,hidden,skill-view-1,tools=0,skills=1,same-owner',
+    ]);
+    expect(group.visibleMemberIds, ['thinking', 'skill-1']);
+    expect(group.pairedToolId('skill-1'), 'skill-view-1');
   });
 
   test(

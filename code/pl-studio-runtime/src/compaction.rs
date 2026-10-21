@@ -24,9 +24,16 @@ use pl_core::thread::{
     context_preparation::{
         ContextPreparation, ContextPreparationHook, ContextPreparationRequest, ContextPreparer,
     },
-    extensions::ExtensionMutation,
+    extensions::{ExtensionMutation, ExtensionRecord},
 };
 use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
+use std::collections::BTreeMap;
+
+/// Thread-scoped activation record format written by the Skill tool's main-document load.
+///
+/// The runtime snapshot derives `activeSkills` from exactly the extensions carrying this format,
+/// so clearing that set is the only way to empty the current Skill collection.
+const SKILL_VIEW_FORMAT: &str = "pl.tool.skill-view";
 
 /// Binds the policy to the same frozen route as the main model session.
 pub(crate) fn preparer(
@@ -240,6 +247,11 @@ impl ContextPreparationHook for StudioCompaction {
             .extensions
             .get(LATEST_RECEIPT)
             .map(|record| record.revision);
+        // A committed summary replaces the context that carried the loaded Skill bodies, so the
+        // activation extensions it consumed are cleared in the same candidate batch. The deletes
+        // ride only on the successful replacement: an unreached, failed, cancelled or rejected
+        // preparation keeps its activation set, and historical Skill Items stay durable.
+        let skill_clears = skill_activation_clears(&request.extensions);
         let mut model_request = request.model;
         model_request.context = request.committed_context;
         model_request.attempt_id = id.clone();
@@ -289,6 +301,7 @@ impl ContextPreparationHook for StudioCompaction {
                             .mutations
                             .clone()
                             .into_iter()
+                            .chain(skill_clears)
                             .chain(std::iter::once(mutation))
                             .collect(),
                     },
@@ -321,6 +334,25 @@ impl ContextPreparationHook for StudioCompaction {
             }
         }
     }
+}
+
+/// Clears every Skill activation record the runtime snapshot currently counts.
+///
+/// Identity is the observed record id and its exact revision, so the batch only commits while the
+/// prepared request is still current; a concurrent activation narrows the CAS and fails the
+/// preparation instead of deleting a newer load. Historical Skill and tool Items, the Skill
+/// catalog and call permissions are untouched, and later successful loads accumulate again.
+fn skill_activation_clears(
+    extensions: &BTreeMap<String, ExtensionRecord>,
+) -> Vec<ExtensionMutation> {
+    extensions
+        .iter()
+        .filter(|(_, record)| record.payload.format() == SKILL_VIEW_FORMAT)
+        .map(|(id, record)| ExtensionMutation::Delete {
+            id: id.clone(),
+            expected_revision: record.revision,
+        })
+        .collect()
 }
 
 /// Rewind and old checkpoints may carry obsolete instructions. The current extension is the

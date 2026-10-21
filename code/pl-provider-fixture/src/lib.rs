@@ -29,6 +29,7 @@ mod context_replay_recovery;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
+mod skill_activity;
 mod wait_events;
 mod web_search;
 pub use context_replay_recovery::{
@@ -45,6 +46,18 @@ pub use question_history::{
     GUI_QUESTION_HISTORY_STYLE_ANSWER, GUI_QUESTION_HISTORY_STYLE_ID,
     GUI_QUESTION_HISTORY_TOKEN_ANSWER, GUI_QUESTION_HISTORY_TOKEN_ID,
     gui_question_history_answers_json, gui_question_history_script,
+};
+pub use skill_activity::{
+    ANSWER_FIRST as SKILL_ACTIVITY_ANSWER_FIRST, ANSWER_MIXED as SKILL_ACTIVITY_ANSWER_MIXED,
+    ANSWER_RELOAD as SKILL_ACTIVITY_ANSWER_RELOAD, ANSWER_REOPEN as SKILL_ACTIVITY_ANSWER_REOPEN,
+    BODY_MARKER_LONG as SKILL_ACTIVITY_BODY_LONG, BODY_MARKER_SHORT as SKILL_ACTIVITY_BODY_SHORT,
+    COMPACTION_PROMPT as SKILL_ACTIVITY_COMPACTION_PROMPT,
+    EXEC_MARKER as SKILL_ACTIVITY_EXEC_MARKER, PROMPT_CANCEL as SKILL_ACTIVITY_PROMPT_CANCEL,
+    PROMPT_FIRST as SKILL_ACTIVITY_PROMPT_FIRST, PROMPT_MIXED as SKILL_ACTIVITY_PROMPT_MIXED,
+    PROMPT_RELOAD as SKILL_ACTIVITY_PROMPT_RELOAD, PROMPT_REOPEN as SKILL_ACTIVITY_PROMPT_REOPEN,
+    SKILL_LONG as SKILL_ACTIVITY_LONG_NAME, SKILL_MISSING as SKILL_ACTIVITY_MISSING_NAME,
+    SKILL_SHORT as SKILL_ACTIVITY_SHORT_NAME, SUPPORT_FILE as SKILL_ACTIVITY_SUPPORT_FILE,
+    SUPPORT_MARKER as SKILL_ACTIVITY_SUPPORT_MARKER, script as skill_activity_script,
 };
 pub use wait_events::{
     CHILD_REPORT_TEXT, MARK_ALREADY_READY, MARK_CANCEL, MARK_CANCEL_PREPARE, MARK_CANCEL_QUERY,
@@ -91,11 +104,12 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 23] = [
+pub const GUI_SCENARIOS: [&str; 24] = [
     "gui",
     "markdown-layout",
     "single-instance",
     "storage-compaction",
+    "skill-activity",
     "stress",
     "stress-body",
     "stress-body-large",

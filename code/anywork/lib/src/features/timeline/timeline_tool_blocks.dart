@@ -316,9 +316,13 @@ void _collectWebLinks(Object? value, Set<String> links) {
 /// 参数、结果、错误、退出码、拒绝原因与附件诊断按需展开，完整字段仍由详情查看器
 /// 读取；成功 workflow mutation 的内部 snapshot 继续隐藏（design/19 §19.9）。
 class _ToolDetails extends StatefulWidget {
-  const _ToolDetails({required this.item});
+  const _ToolDetails({required this.item, this.inline = false});
 
   final _ToolItem item;
+
+  /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
+  /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
+  final bool inline;
 
   @override
   State<_ToolDetails> createState() => _ToolDetailsState();
@@ -340,11 +344,53 @@ class _ToolDetailsState extends State<_ToolDetails> {
     final showError =
         error != null && error.isNotEmpty && output?.trim() != error.trim();
     final diagnostics = _toolDiagnostics(context, item, tool);
-    final expandable =
-        diagnostics.isNotEmpty ||
-        (arguments != null && arguments.trim().isNotEmpty) ||
-        (output != null && output.trim().isNotEmpty) ||
-        showError;
+    final children = <Widget>[
+      if (diagnostics.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            diagnostics.join('\n'),
+            maxLines: 6,
+            overflow: TextOverflow.ellipsis,
+            style: context.text.bodySmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              height: 1.4,
+              fontFamily: studioCodeFontFamily,
+            ),
+          ),
+        ),
+      if (arguments != null && arguments.trim().isNotEmpty)
+        StudioCodeBlock(
+          text: _prettyToolPayload(arguments),
+          language: context.l10n.timelineToolArguments,
+          maxHeight: 200,
+          margin: const EdgeInsets.only(top: 8),
+        ),
+      if (output != null && output.trim().isNotEmpty)
+        StudioCodeBlock(
+          text: _prettyToolPayload(output),
+          language: context.l10n.timelineToolOutput,
+          maxHeight: 280,
+          margin: const EdgeInsets.only(top: 8),
+        ),
+      if (showError)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            error,
+            style: context.text.bodySmall?.copyWith(
+              color: context.colors.error,
+            ),
+          ),
+        ),
+    ];
+    if (widget.inline) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      );
+    }
+    final expandable = children.isNotEmpty;
     final tile = ExpansionTile(
       key: ValueKey('timeline-tool-details:${item.id}'),
       initiallyExpanded: _expanded,
@@ -361,46 +407,7 @@ class _ToolDetailsState extends State<_ToolDetails> {
       minTileHeight: 28,
       showTrailingIcon: false,
       title: _toolRow(context, expandable: expandable),
-      children: [
-        if (diagnostics.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Text(
-              diagnostics.join('\n'),
-              maxLines: 6,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
-                height: 1.4,
-                fontFamily: studioCodeFontFamily,
-              ),
-            ),
-          ),
-        if (arguments != null && arguments.trim().isNotEmpty)
-          StudioCodeBlock(
-            text: _prettyToolPayload(arguments),
-            language: context.l10n.timelineToolArguments,
-            maxHeight: 200,
-            margin: const EdgeInsets.only(top: 8),
-          ),
-        if (output != null && output.trim().isNotEmpty)
-          StudioCodeBlock(
-            text: _prettyToolPayload(output),
-            language: context.l10n.timelineToolOutput,
-            maxHeight: 280,
-            margin: const EdgeInsets.only(top: 8),
-          ),
-        if (showError)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(
-              error,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.error,
-              ),
-            ),
-          ),
-      ],
+      children: children,
     );
     if (tool?.name != 'view_image') return tile;
     return KeyedSubtree(
