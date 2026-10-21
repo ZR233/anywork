@@ -5,6 +5,22 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.24.0](https://github.com/ZR233/anywork/compare/v6.23.0...v6.24.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 实时/Turn 速度耗时字段由 decodeMillis/turnDecodeMillis 改为 responseMillis/turnResponseMillis；InferenceTiming 总响应使用 responseMillis，首字与首字后耗时及平均首字可空，汇总新增独立 ttftSampleCount。
+* **studio:** Studio 更新安装接口替换为准备操作及完成确认，退出接口改为类型化意图并返回独立关停报告与安装交接结果；调用方需使用新接口。
+
+### Bug Fixes
+
+* **studio:** 优化 Timeline 长 Markdown 内容换行与排版 ([#123](https://github.com/ZR233/anywork/issues/123)) ([1952c66](https://github.com/ZR233/anywork/commit/1952c66efe57271ebb419a4084c97ee27ac844cb))
+* **studio:** 允许停止执行后在活动工作流中切换模型 ([#126](https://github.com/ZR233/anywork/issues/126)) ([f611370](https://github.com/ZR233/anywork/commit/f61137081e588dfd2060b9dfce634287d009eb1d))
+* **studio:** 统一技能活动展示并重置压缩后的技能状态 ([#129](https://github.com/ZR233/anywork/issues/129)) ([e979186](https://github.com/ZR233/anywork/commit/e979186b2fcf2b55f6a5a34abce57dc3999b25ad))
+* **studio:** 统一更新退出流程并完善进度反馈 ([#127](https://github.com/ZR233/anywork/issues/127)) ([acf728e](https://github.com/ZR233/anywork/commit/acf728e75f62a5ffddbb119bdf6b62dcd5491a06))
+* **studio:** 统一词元吞吐与响应计时语义 ([#128](https://github.com/ZR233/anywork/issues/128)) ([ce8f226](https://github.com/ZR233/anywork/commit/ce8f2268a07b35543fd68e392691e56495a57612))
+
 ## [6.23.0](https://github.com/ZR233/anywork/compare/v6.22.0...v6.23.0) (2026-10-20)
 
 
