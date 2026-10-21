@@ -42,6 +42,7 @@ void main() {
         final messenger =
             TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
         var arms = 0;
+        var shown = 0;
         int? exitCode;
         messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, (
           call,
@@ -50,6 +51,7 @@ void main() {
             arms++;
             return 30000;
           }
+          if (call.method == 'showMainWindow') shown++;
           if (call.method == 'finishExit') {
             exitCode = (call.arguments as Map)['exitCode'] as int;
           }
@@ -92,6 +94,11 @@ void main() {
         );
         expect(competing, same(first));
         await transport.entered.future;
+        expect(
+          shown,
+          1,
+          reason: 'An update exit must reveal its notice even from the tray',
+        );
         expect(transport.intent, firstIntent);
         transport.result.complete(
           const StudioExitReport(

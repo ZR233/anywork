@@ -340,6 +340,12 @@ class StudioExitCoordinator {
   Future<void> _drive() async {
     var budget = await _armAndComputeBudget();
     if (_updateNotice) {
+      // Tray exit may start with a hidden window; reveal the existing host so
+      // the update notice is visible without extending the first exit deadline.
+      await _runBounded(
+        StudioHostLifecycle.showMainWindow,
+        _remainingDiagnosticsDuration(),
+      );
       // Render the update notice before a fast cached handoff can end the GUI.
       // A hidden screen cannot hold the fixed native exit deadline open.
       await SchedulerBinding.instance.endOfFrame.timeout(
