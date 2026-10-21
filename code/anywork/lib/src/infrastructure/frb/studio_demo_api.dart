@@ -536,9 +536,9 @@ class DemoStudioTransport extends StudioTransport
       sampleCount: 2,
       completionTokens: 300,
       totalTtftMillis: 760,
-      totalDecodeMillis: 2000,
+      ttftSampleCount: 2,
       totalResponseMillis: 2760,
-      tokensPerSecond: 150,
+      tokensPerSecond: 300 * 1000 / 2760,
       averageTtftMillis: 380,
       averageResponseMillis: 1380,
       effortBreakdowns: [
@@ -547,9 +547,9 @@ class DemoStudioTransport extends StudioTransport
           sampleCount: 1,
           completionTokens: 150,
           totalTtftMillis: 410,
-          totalDecodeMillis: 1000,
+          ttftSampleCount: 1,
           totalResponseMillis: 1410,
-          tokensPerSecond: 150,
+          tokensPerSecond: 150 * 1000 / 1410,
           averageTtftMillis: 410,
           averageResponseMillis: 1410,
         ),
@@ -558,9 +558,9 @@ class DemoStudioTransport extends StudioTransport
           sampleCount: 1,
           completionTokens: 150,
           totalTtftMillis: 350,
-          totalDecodeMillis: 1000,
+          ttftSampleCount: 1,
           totalResponseMillis: 1350,
-          tokensPerSecond: 150,
+          tokensPerSecond: 150 * 1000 / 1350,
           averageTtftMillis: 350,
           averageResponseMillis: 1350,
         ),
@@ -573,9 +573,9 @@ class DemoStudioTransport extends StudioTransport
       sampleCount: 1,
       completionTokens: 216,
       totalTtftMillis: 620,
-      totalDecodeMillis: 2500,
+      ttftSampleCount: 1,
       totalResponseMillis: 3120,
-      tokensPerSecond: 86.4,
+      tokensPerSecond: 216 * 1000 / 3120,
       averageTtftMillis: 620,
       averageResponseMillis: 3120,
       effortBreakdowns: [
@@ -584,9 +584,9 @@ class DemoStudioTransport extends StudioTransport
           sampleCount: 1,
           completionTokens: 216,
           totalTtftMillis: 620,
-          totalDecodeMillis: 2500,
+          ttftSampleCount: 1,
           totalResponseMillis: 3120,
-          tokensPerSecond: 86.4,
+          tokensPerSecond: 216 * 1000 / 3120,
           averageTtftMillis: 620,
           averageResponseMillis: 3120,
         ),
@@ -609,7 +609,7 @@ class DemoStudioTransport extends StudioTransport
           ttftMillis: 620,
           decodeMillis: 2500,
           totalResponseMillis: 3120,
-          tokensPerSecond: 86.4,
+          tokensPerSecond: 216 * 1000 / 3120,
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(seconds: 34)),
@@ -624,7 +624,7 @@ class DemoStudioTransport extends StudioTransport
           ttftMillis: 410,
           decodeMillis: 1000,
           totalResponseMillis: 1410,
-          tokensPerSecond: 150,
+          tokensPerSecond: 150 * 1000 / 1410,
         ),
         ModelPerformanceSampleView(
           completedAt: now.subtract(const Duration(minutes: 2)),
@@ -638,7 +638,7 @@ class DemoStudioTransport extends StudioTransport
           ttftMillis: 350,
           decodeMillis: 1000,
           totalResponseMillis: 1350,
-          tokensPerSecond: 150,
+          tokensPerSecond: 150 * 1000 / 1350,
         ),
         // 旧记录没有配置模型证据：保持历史身份未知，不从当前目录补写。
         ModelPerformanceSampleView(
@@ -651,7 +651,7 @@ class DemoStudioTransport extends StudioTransport
           ttftMillis: 500,
           decodeMillis: 900,
           totalResponseMillis: 1400,
-          tokensPerSecond: 100,
+          tokensPerSecond: 90 * 1000 / 1400,
         ),
       ],
     );
@@ -975,7 +975,7 @@ class DemoStudioTransport extends StudioTransport
         activeMcpServers: ['dart'],
         activeLspServers: ['rust-analyzer'],
         turnCompletionTokens: 150,
-        turnDecodeMillis: 1000,
+        turnResponseMillis: 1000,
       ),
     );
   }
@@ -1021,7 +1021,7 @@ class DemoStudioTransport extends StudioTransport
         activeMcpServers: const ['dart'],
         activeLspServers: const [],
         turnCompletionTokens: 216,
-        turnDecodeMillis: 2500,
+        turnResponseMillis: 2500,
       ),
     );
   }

@@ -7028,17 +7028,17 @@ impl SseDecode for crate::api::studio::types::response::BridgeModelPerformanceEf
         let mut var_sampleCount = <u64>::sse_decode(deserializer);
         let mut var_completionTokens = <u64>::sse_decode(deserializer);
         let mut var_totalTtftMillis = <u64>::sse_decode(deserializer);
-        let mut var_totalDecodeMillis = <u64>::sse_decode(deserializer);
+        let mut var_ttftSampleCount = <u64>::sse_decode(deserializer);
         let mut var_totalResponseMillis = <u64>::sse_decode(deserializer);
         let mut var_tokensPerSecond = <f64>::sse_decode(deserializer);
-        let mut var_averageTtftMillis = <f64>::sse_decode(deserializer);
+        let mut var_averageTtftMillis = <Option<f64>>::sse_decode(deserializer);
         let mut var_averageResponseMillis = <f64>::sse_decode(deserializer);
         return crate::api::studio::types::response::BridgeModelPerformanceEffortSummary {
             effort: var_effort,
             sample_count: var_sampleCount,
             completion_tokens: var_completionTokens,
             total_ttft_millis: var_totalTtftMillis,
-            total_decode_millis: var_totalDecodeMillis,
+            ttft_sample_count: var_ttftSampleCount,
             total_response_millis: var_totalResponseMillis,
             tokens_per_second: var_tokensPerSecond,
             average_ttft_millis: var_averageTtftMillis,
@@ -7117,10 +7117,10 @@ impl SseDecode for crate::api::studio::types::response::BridgeModelPerformanceSu
         let mut var_sampleCount = <u64>::sse_decode(deserializer);
         let mut var_completionTokens = <u64>::sse_decode(deserializer);
         let mut var_totalTtftMillis = <u64>::sse_decode(deserializer);
-        let mut var_totalDecodeMillis = <u64>::sse_decode(deserializer);
+        let mut var_ttftSampleCount = <u64>::sse_decode(deserializer);
         let mut var_totalResponseMillis = <u64>::sse_decode(deserializer);
         let mut var_tokensPerSecond = <f64>::sse_decode(deserializer);
-        let mut var_averageTtftMillis = <f64>::sse_decode(deserializer);
+        let mut var_averageTtftMillis = <Option<f64>>::sse_decode(deserializer);
         let mut var_averageResponseMillis = <f64>::sse_decode(deserializer);
         let mut var_effortBreakdowns = <Vec<
             crate::api::studio::types::response::BridgeModelPerformanceEffortSummary,
@@ -7132,7 +7132,7 @@ impl SseDecode for crate::api::studio::types::response::BridgeModelPerformanceSu
             sample_count: var_sampleCount,
             completion_tokens: var_completionTokens,
             total_ttft_millis: var_totalTtftMillis,
-            total_decode_millis: var_totalDecodeMillis,
+            ttft_sample_count: var_ttftSampleCount,
             total_response_millis: var_totalResponseMillis,
             tokens_per_second: var_tokensPerSecond,
             average_ttft_millis: var_averageTtftMillis,
@@ -10280,7 +10280,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         let mut var_turnId = <String>::sse_decode(deserializer);
         let mut var_attemptId = <String>::sse_decode(deserializer);
         let mut var_completionTokens = <Option<u64>>::sse_decode(deserializer);
-        let mut var_decodeMillis = <Option<u64>>::sse_decode(deserializer);
+        let mut var_responseMillis = <Option<u64>>::sse_decode(deserializer);
         let mut var_latestContextTokens = <Option<u64>>::sse_decode(deserializer);
         let mut var_state =
             <crate::api::studio::types::thread_stream::BridgeThreadRuntimeUsageState>::sse_decode(
@@ -10291,7 +10291,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
             turn_id: var_turnId,
             attempt_id: var_attemptId,
             completion_tokens: var_completionTokens,
-            decode_millis: var_decodeMillis,
+            response_millis: var_responseMillis,
             latest_context_tokens: var_latestContextTokens,
             state: var_state,
             observation_sequence: var_observationSequence,
@@ -10314,7 +10314,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
             crate::api::studio::types::thread_stream::BridgeThreadRuntimeLiveUsage,
         >>::sse_decode(deserializer);
         let mut var_turnCompletionTokens = <u64>::sse_decode(deserializer);
-        let mut var_turnDecodeMillis = <u64>::sse_decode(deserializer);
+        let mut var_turnResponseMillis = <u64>::sse_decode(deserializer);
         let mut var_todo =
             <Option<crate::api::studio::types::thread_stream::BridgeTodoListSnapshot>>::sse_decode(
                 deserializer,
@@ -10339,7 +10339,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
             usage: var_usage,
             live_usage: var_liveUsage,
             turn_completion_tokens: var_turnCompletionTokens,
-            turn_decode_millis: var_turnDecodeMillis,
+            turn_response_millis: var_turnResponseMillis,
             todo: var_todo,
             active_skills: var_activeSkills,
             active_mcp_servers: var_activeMcpServers,
@@ -18031,7 +18031,7 @@ impl flutter_rust_bridge::IntoDart
             self.sample_count.into_into_dart().into_dart(),
             self.completion_tokens.into_into_dart().into_dart(),
             self.total_ttft_millis.into_into_dart().into_dart(),
-            self.total_decode_millis.into_into_dart().into_dart(),
+            self.ttft_sample_count.into_into_dart().into_dart(),
             self.total_response_millis.into_into_dart().into_dart(),
             self.tokens_per_second.into_into_dart().into_dart(),
             self.average_ttft_millis.into_into_dart().into_dart(),
@@ -18133,7 +18133,7 @@ impl flutter_rust_bridge::IntoDart
             self.sample_count.into_into_dart().into_dart(),
             self.completion_tokens.into_into_dart().into_dart(),
             self.total_ttft_millis.into_into_dart().into_dart(),
-            self.total_decode_millis.into_into_dart().into_dart(),
+            self.ttft_sample_count.into_into_dart().into_dart(),
             self.total_response_millis.into_into_dart().into_dart(),
             self.tokens_per_second.into_into_dart().into_dart(),
             self.average_ttft_millis.into_into_dart().into_dart(),
@@ -21758,7 +21758,7 @@ impl flutter_rust_bridge::IntoDart
             self.turn_id.into_into_dart().into_dart(),
             self.attempt_id.into_into_dart().into_dart(),
             self.completion_tokens.into_into_dart().into_dart(),
-            self.decode_millis.into_into_dart().into_dart(),
+            self.response_millis.into_into_dart().into_dart(),
             self.latest_context_tokens.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.observation_sequence.into_into_dart().into_dart(),
@@ -21792,7 +21792,7 @@ impl flutter_rust_bridge::IntoDart
             self.usage.into_into_dart().into_dart(),
             self.live_usage.into_into_dart().into_dart(),
             self.turn_completion_tokens.into_into_dart().into_dart(),
-            self.turn_decode_millis.into_into_dart().into_dart(),
+            self.turn_response_millis.into_into_dart().into_dart(),
             self.todo.into_into_dart().into_dart(),
             self.active_skills.into_into_dart().into_dart(),
             self.active_mcp_servers.into_into_dart().into_dart(),
@@ -27286,10 +27286,10 @@ impl SseEncode for crate::api::studio::types::response::BridgeModelPerformanceEf
         <u64>::sse_encode(self.sample_count, serializer);
         <u64>::sse_encode(self.completion_tokens, serializer);
         <u64>::sse_encode(self.total_ttft_millis, serializer);
-        <u64>::sse_encode(self.total_decode_millis, serializer);
+        <u64>::sse_encode(self.ttft_sample_count, serializer);
         <u64>::sse_encode(self.total_response_millis, serializer);
         <f64>::sse_encode(self.tokens_per_second, serializer);
-        <f64>::sse_encode(self.average_ttft_millis, serializer);
+        <Option<f64>>::sse_encode(self.average_ttft_millis, serializer);
         <f64>::sse_encode(self.average_response_millis, serializer);
     }
 }
@@ -27344,10 +27344,10 @@ impl SseEncode for crate::api::studio::types::response::BridgeModelPerformanceSu
         <u64>::sse_encode(self.sample_count, serializer);
         <u64>::sse_encode(self.completion_tokens, serializer);
         <u64>::sse_encode(self.total_ttft_millis, serializer);
-        <u64>::sse_encode(self.total_decode_millis, serializer);
+        <u64>::sse_encode(self.ttft_sample_count, serializer);
         <u64>::sse_encode(self.total_response_millis, serializer);
         <f64>::sse_encode(self.tokens_per_second, serializer);
-        <f64>::sse_encode(self.average_ttft_millis, serializer);
+        <Option<f64>>::sse_encode(self.average_ttft_millis, serializer);
         <f64>::sse_encode(self.average_response_millis, serializer);
         <Vec<crate::api::studio::types::response::BridgeModelPerformanceEffortSummary>>::sse_encode(
             self.effort_breakdowns,
@@ -29696,7 +29696,7 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         <String>::sse_encode(self.turn_id, serializer);
         <String>::sse_encode(self.attempt_id, serializer);
         <Option<u64>>::sse_encode(self.completion_tokens, serializer);
-        <Option<u64>>::sse_encode(self.decode_millis, serializer);
+        <Option<u64>>::sse_encode(self.response_millis, serializer);
         <Option<u64>>::sse_encode(self.latest_context_tokens, serializer);
         <crate::api::studio::types::thread_stream::BridgeThreadRuntimeUsageState>::sse_encode(
             self.state, serializer,
@@ -29715,7 +29715,7 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadRuntime
         );
         <Option<crate::api::studio::types::thread_stream::BridgeThreadRuntimeLiveUsage>>::sse_encode(self.live_usage, serializer);
         <u64>::sse_encode(self.turn_completion_tokens, serializer);
-        <u64>::sse_encode(self.turn_decode_millis, serializer);
+        <u64>::sse_encode(self.turn_response_millis, serializer);
         <Option<crate::api::studio::types::thread_stream::BridgeTodoListSnapshot>>::sse_encode(
             self.todo, serializer,
         );

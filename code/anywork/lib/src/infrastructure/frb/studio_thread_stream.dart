@@ -770,7 +770,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
             turnId: value.liveUsage!.turnId,
             attemptId: value.liveUsage!.attemptId,
             completionTokens: value.liveUsage!.completionTokens?.toInt(),
-            decodeMillis: value.liveUsage!.decodeMillis?.toInt(),
+            responseMillis: value.liveUsage!.responseMillis?.toInt(),
             latestContextTokens: value.liveUsage!.latestContextTokens?.toInt(),
             state:
                 value.liveUsage!.state == frb.BridgeThreadRuntimeUsageState.live
@@ -808,7 +808,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     promptCachePolicy: usage.promptCachePolicy,
     prefixChangedReason: usage.prefixChangedReason?.name,
     turnCompletionTokens: value.turnCompletionTokens.toInt(),
-    turnDecodeMillis: value.turnDecodeMillis.toInt(),
+    turnResponseMillis: value.turnResponseMillis.toInt(),
     costLabel: costLabel,
     activeSkills: value.activeSkills,
     activeMcpServers: value.activeMcpServers,

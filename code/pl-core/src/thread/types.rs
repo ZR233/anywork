@@ -463,13 +463,16 @@ pub struct UsageSummary {
     pub estimated_cache_savings: Vec<UsageCost>,
     /// Output tokens accumulated for `turn_id`.
     ///
-    /// A product with decode timing may retain the last sampled Turn until the next Turn's first
+    /// A product with response timing may retain the last sampled Turn until the next Turn's first
     /// complete throughput sample, instead of discarding it when an untimed request starts.
     #[serde(default)]
     pub turn_completion_tokens: u64,
-    /// Decode time paired with `turn_completion_tokens`; a product without timing leaves it zero.
+    /// Total response time paired with `turn_completion_tokens`.
+    ///
+    /// It is the throughput denominator, so a product without timing leaves it zero and the pair
+    /// stays unusable instead of contributing a one-sided numerator.
     #[serde(default)]
-    pub turn_decode_millis: u64,
+    pub turn_response_millis: u64,
     /// Turn whose per-turn counters are currently accumulated.
     #[serde(default)]
     pub turn_id: String,

@@ -623,7 +623,7 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         usage: runtime_usage(value.usage),
         live_usage: value.live_usage.map(runtime_live_usage),
         turn_completion_tokens: value.turn_completion_tokens,
-        turn_decode_millis: value.turn_decode_millis,
+        turn_response_millis: value.turn_response_millis,
         todo: value.todo.map(todo),
         active_skills: value.active_skills,
         active_mcp_servers: value.active_mcp_servers,
@@ -641,7 +641,7 @@ fn runtime_live_usage(value: ThreadRuntimeLiveUsage) -> BridgeThreadRuntimeLiveU
         turn_id: value.turn_id,
         attempt_id: value.attempt_id,
         completion_tokens: value.completion_tokens,
-        decode_millis: value.decode_millis,
+        response_millis: value.response_millis,
         latest_context_tokens: value.latest_context_tokens,
         state: match value.state {
             ThreadRuntimeUsageState::Live => BridgeThreadRuntimeUsageState::Live,

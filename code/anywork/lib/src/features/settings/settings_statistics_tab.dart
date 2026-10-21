@@ -151,6 +151,19 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                   },
                 ),
               ],
+              // 口径说明放在页面末尾：既解释公式与耗时边界，也不挤占顶部筛选与汇总的
+              // 可视区域。
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 20),
+                  child: Text(
+                    context.l10n.settingsStatisticsThroughputNote,
+                    style: context.text.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
@@ -281,7 +294,15 @@ class _SummarySection extends StatelessWidget {
                       DataCell(
                         Text(formatTokenCount(summary.completionTokens)),
                       ),
-                      DataCell(Text(_formatMillis(summary.averageTtftMillis))),
+                      DataCell(
+                        Text(
+                          _formatAverageTtft(
+                            context,
+                            summary.averageTtftMillis,
+                            summary.ttftSampleCount,
+                          ),
+                        ),
+                      ),
                       DataCell(
                         Text(_formatMillis(summary.averageResponseMillis)),
                       ),
@@ -316,7 +337,15 @@ class _SummarySection extends StatelessWidget {
                         DataCell(
                           Text(formatTokenCount(effort.completionTokens)),
                         ),
-                        DataCell(Text(_formatMillis(effort.averageTtftMillis))),
+                        DataCell(
+                          Text(
+                            _formatAverageTtft(
+                              context,
+                              effort.averageTtftMillis,
+                              effort.ttftSampleCount,
+                            ),
+                          ),
+                        ),
                         DataCell(
                           Text(_formatMillis(effort.averageResponseMillis)),
                         ),
@@ -368,7 +397,11 @@ class _CompactSummaryCard extends StatelessWidget {
           ),
           SettingsMetric(
             context.l10n.statisticsAverageTtft,
-            _formatMillis(summary.averageTtftMillis),
+            _formatAverageTtft(
+              context,
+              summary.averageTtftMillis,
+              summary.ttftSampleCount,
+            ),
           ),
           SettingsMetric(
             context.l10n.statisticsAverageResponse,
@@ -895,6 +928,19 @@ class _EmptyState extends StatelessWidget {
 String _formatMillis(double millis) {
   if (millis < 1_000) return '${millis.round()} ms';
   return '${(millis / 1_000).toStringAsFixed(1)} s';
+}
+
+/// 平均首字只在真正测得首字的样本上求平均，并同时给出独立样本数。
+String _formatAverageTtft(
+  BuildContext context,
+  double? averageMillis,
+  int sampleCount,
+) {
+  if (averageMillis == null || sampleCount == 0) {
+    return context.l10n.statisticsMetricNotCollected;
+  }
+  return '${_formatMillis(averageMillis)} · '
+      '${context.l10n.statisticsTtftSampleCount(sampleCount)}';
 }
 
 String _formatSampleMillis(BuildContext context, int? millis) {

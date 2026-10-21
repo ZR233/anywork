@@ -126,7 +126,7 @@ void main() {
         runtime: initial.runtime.copyWith(
           contextTokens: 100,
           turnCompletionTokens: 25,
-          turnDecodeMillis: 1000,
+          turnResponseMillis: 1000,
           activeSkills: const ['skill-a'],
           activeMcpServers: const ['mcp-a'],
           activeLspServers: const ['lsp-a'],
@@ -205,7 +205,7 @@ void main() {
             turnId: 'turn-2',
             attemptId: 'attempt-2',
             completionTokens: 20,
-            decodeMillis: 500,
+            responseMillis: 500,
             state: ThreadRuntimeUsageState.live,
             observationSequence: 2,
           ),

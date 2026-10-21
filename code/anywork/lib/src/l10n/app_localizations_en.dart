@@ -835,7 +835,8 @@ class AppLocalizationsEn extends AppLocalizations {
       'The SSH alias for this project is no longer in ~/.ssh/config';
 
   @override
-  String get statusLastConfirmedAgentTokenSpeed => 'Last confirmed token speed';
+  String get statusLastConfirmedAgentTokenSpeed =>
+      'Last confirmed output speed (includes the first-token wait)';
 
   @override
   String get settingsStatisticsTitle => 'Statistics';
@@ -938,7 +939,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Unspecified / not recorded';
 
   @override
-  String get statisticsSpeed => 'Speed';
+  String get statisticsSpeed => 'Output TPS (incl. first token)';
 
   @override
   String get statisticsSamples => 'Samples';
@@ -947,19 +948,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsOutputTokens => 'Output tokens';
 
   @override
-  String get statisticsAverageTtft => 'Average TTFT';
+  String get statisticsAverageTtft => 'Average first token';
 
   @override
-  String get statisticsAverageResponse => 'Average response';
+  String get statisticsAverageResponse => 'Average total response';
 
   @override
   String get statisticsCompletedAt => 'Completed';
 
   @override
-  String get statisticsDecode => 'Decode';
+  String get statisticsDecode => 'After first token';
 
   @override
-  String get statisticsTotalResponse => 'Total';
+  String get statisticsTotalResponse => 'Total response';
+
+  @override
+  String statisticsTtftSampleCount(int count) {
+    return '$count first-token samples';
+  }
+
+  @override
+  String get settingsStatisticsThroughputNote =>
+      'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.';
 
   @override
   String get statusTurnQueued => 'Queued';

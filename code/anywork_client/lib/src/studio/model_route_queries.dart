@@ -271,6 +271,8 @@ abstract final class ModelRouteQueries {
     runtime: runtime,
   );
 
+  /// 输出吞吐含首字等待：`输出词元 × 1000 ÷ 总响应毫秒`。
+  ///
   /// A complete live pair replaces the display. Otherwise the canonical Turn
   /// pair is adopted as a whole. The two samples are never mixed.
   static double? throughput(ThreadRuntimeView runtime) {
@@ -278,27 +280,29 @@ abstract final class ModelRouteQueries {
   }
 
   /// Live pair first, otherwise the canonical Turn pair. Never cross samples.
-  static ({int outputTokens, int decodeMillis, double tokensPerSecond})?
+  ///
+  /// 两侧都使用含首字等待的总响应耗时；decode 不再作为分母，未知首字也不阻止计算。
+  static ({int outputTokens, int responseMillis, double tokensPerSecond})?
   throughputSource(ThreadRuntimeView runtime) {
     final live = runtime.liveUsage;
     return _completeThroughputPair(
           live?.completionTokens,
-          live?.decodeMillis,
+          live?.responseMillis,
         ) ??
         _completeThroughputPair(
           runtime.turnCompletionTokens,
-          runtime.turnDecodeMillis,
+          runtime.turnResponseMillis,
         );
   }
 
-  static ({int outputTokens, int decodeMillis, double tokensPerSecond})?
+  static ({int outputTokens, int responseMillis, double tokensPerSecond})?
   _completeThroughputPair(int? tokens, int? millis) {
     if (tokens == null || tokens <= 0 || millis == null || millis <= 0) {
       return null;
     }
     return (
       outputTokens: tokens,
-      decodeMillis: millis,
+      responseMillis: millis,
       tokensPerSecond: tokens * 1000 / millis,
     );
   }

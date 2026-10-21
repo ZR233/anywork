@@ -548,7 +548,7 @@ class BridgeThreadRuntimeLiveUsage {
   final String turnId;
   final String attemptId;
   final BigInt? completionTokens;
-  final BigInt? decodeMillis;
+  final BigInt? responseMillis;
   final BigInt? latestContextTokens;
   final BridgeThreadRuntimeUsageState state;
   final BigInt observationSequence;
@@ -557,7 +557,7 @@ class BridgeThreadRuntimeLiveUsage {
     required this.turnId,
     required this.attemptId,
     this.completionTokens,
-    this.decodeMillis,
+    this.responseMillis,
     this.latestContextTokens,
     required this.state,
     required this.observationSequence,
@@ -568,7 +568,7 @@ class BridgeThreadRuntimeLiveUsage {
       turnId.hashCode ^
       attemptId.hashCode ^
       completionTokens.hashCode ^
-      decodeMillis.hashCode ^
+      responseMillis.hashCode ^
       latestContextTokens.hashCode ^
       state.hashCode ^
       observationSequence.hashCode;
@@ -581,7 +581,7 @@ class BridgeThreadRuntimeLiveUsage {
           turnId == other.turnId &&
           attemptId == other.attemptId &&
           completionTokens == other.completionTokens &&
-          decodeMillis == other.decodeMillis &&
+          responseMillis == other.responseMillis &&
           latestContextTokens == other.latestContextTokens &&
           state == other.state &&
           observationSequence == other.observationSequence;
@@ -593,7 +593,7 @@ class BridgeThreadRuntimeSnapshot {
   final BridgeThreadRuntimeUsage usage;
   final BridgeThreadRuntimeLiveUsage? liveUsage;
   final BigInt turnCompletionTokens;
-  final BigInt turnDecodeMillis;
+  final BigInt turnResponseMillis;
   final BridgeTodoListSnapshot? todo;
   final List<String> activeSkills;
   final List<String> activeMcpServers;
@@ -610,7 +610,7 @@ class BridgeThreadRuntimeSnapshot {
     required this.usage,
     this.liveUsage,
     required this.turnCompletionTokens,
-    required this.turnDecodeMillis,
+    required this.turnResponseMillis,
     this.todo,
     required this.activeSkills,
     required this.activeMcpServers,
@@ -629,7 +629,7 @@ class BridgeThreadRuntimeSnapshot {
       usage.hashCode ^
       liveUsage.hashCode ^
       turnCompletionTokens.hashCode ^
-      turnDecodeMillis.hashCode ^
+      turnResponseMillis.hashCode ^
       todo.hashCode ^
       activeSkills.hashCode ^
       activeMcpServers.hashCode ^
@@ -650,7 +650,7 @@ class BridgeThreadRuntimeSnapshot {
           usage == other.usage &&
           liveUsage == other.liveUsage &&
           turnCompletionTokens == other.turnCompletionTokens &&
-          turnDecodeMillis == other.turnDecodeMillis &&
+          turnResponseMillis == other.turnResponseMillis &&
           todo == other.todo &&
           activeSkills == other.activeSkills &&
           activeMcpServers == other.activeMcpServers &&
