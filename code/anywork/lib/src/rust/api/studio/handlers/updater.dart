@@ -10,7 +10,7 @@ import '../types/updater.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel_update_operations_excluding`, `broadcast_cancel_update_operations`, `into_issues`, `is_quiescent`, `is_quiescent`, `is_settled`, `is_settled`, `observe_update_operations`, `owned_completion`, `prune_settled`, `register_update_operation`, `runtime_error`, `sink_ended`, `task_ended`, `update_issue_with_correlation`, `update_issue`, `update_operations`, `wait`
+// These functions are ignored because they are not marked as `pub`: `broadcast_cancel_update_operations`, `collect_cancel_update_operations`, `into_issues`, `is_quiescent`, `is_quiescent`, `is_settled`, `is_settled`, `observe_update_operations`, `owned_completion`, `prune_settled`, `register_update_operation`, `sink_ended`, `task_ended`, `update_issue_with_correlation`, `update_issue`, `update_operations`, `wait`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStudioUpdateOperationInner`, `OperationCompletionFacts`, `OwnerTask`, `PendingUpdateOperations`, `UpdateObservation`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `drop`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
@@ -29,10 +29,10 @@ Future<void> startStudioBackgroundUpdate() => RustLib.instance.api
 Future<void> cancelStudioBackgroundUpdate() => RustLib.instance.api
     .crateApiStudioHandlersUpdaterCancelStudioBackgroundUpdate();
 
-Future<BridgeStudioUpdateOperation> installStudioUpdate({
+Future<BridgeStudioUpdateOperation> prepareStudioUpdate({
   required BigInt expectedRevision,
   required String version,
-}) => RustLib.instance.api.crateApiStudioHandlersUpdaterInstallStudioUpdate(
+}) => RustLib.instance.api.crateApiStudioHandlersUpdaterPrepareStudioUpdate(
   expectedRevision: expectedRevision,
   version: version,
 );
@@ -41,13 +41,12 @@ Future<BridgeStudioUpdateOperation> installStudioUpdate({
 abstract class BridgeStudioUpdateOperation implements RustOpaqueInterface {
   /// Cancels this operation and reports the *real* stop result.
   ///
-  /// Both the cancellation request error (`CancellationTooLate` when the installer is already
-  /// launching) and any task failure are surfaced instead of being swallowed, so a caller cannot
-  /// receive a false "cancelled" acknowledgement while the operation keeps running.
+  /// Cancellation signals preparation only; its task and progress owner must both confirm
+  /// completion before a caller receives the acknowledgement.
   Future<void> cancel();
 
-  /// Completes the actual process handoff; true tells the old GUI to exit.
-  Future<bool> finishHandoff();
+  /// 等待准备任务和进度流真实完成；调用方随后才可进入统一退出。
+  Future<void> finishPreparation();
 
   Stream<BridgeUpdaterStateSnapshot> progressStream();
 }

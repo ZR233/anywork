@@ -10,13 +10,29 @@ import 'stores/updater_store.dart';
 
 /// A command result for host actions, independent of the canonical update state.
 final class StudioUpdateInstallResult {
-  const StudioUpdateInstallResult({
-    this.exitRequired = false,
-    this.shutdownFailureMessage,
-  });
+  const StudioUpdateInstallResult({this.readyVersion});
+  final String? readyVersion;
+}
 
-  final bool exitRequired;
-  final String? shutdownFailureMessage;
+enum StudioUpdateRequestPhase {
+  idle,
+  checking,
+  preparing,
+  cancelling,
+  cancelled,
+  ready,
+  failed,
+}
+
+/// Client request feedback; download and installation facts remain canonical.
+final class StudioUpdateRequest {
+  const StudioUpdateRequest(this.phase, {this.error});
+  final StudioUpdateRequestPhase phase;
+  final Object? error;
+  bool get pending =>
+      phase == StudioUpdateRequestPhase.checking ||
+      phase == StudioUpdateRequestPhase.preparing ||
+      phase == StudioUpdateRequestPhase.cancelling;
 }
 
 /// Application-owned update operations. Observers cannot start or dispose them.
@@ -26,7 +42,6 @@ final class StudioUpdateClient {
     required this.api,
     required this.updater,
     required this.enabled,
-    required this.runtimeBusy,
     ResourceBudget? budget,
     this.onBackgroundError,
   }) : budget = budget ?? ResourceBudget();
@@ -34,9 +49,11 @@ final class StudioUpdateClient {
   final StudioUpdateApi api;
   final UpdaterStore updater;
   final bool enabled;
-  final bool Function() runtimeBusy;
   final ResourceBudget budget;
   final void Function(Object, StackTrace)? onBackgroundError;
+  final request = LatestValue<StudioUpdateRequest>(
+    const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
+  );
   final Map<int, _UpdateAttempt> _attempts = {};
   final Map<int, _UpdateRpc> _rpcs = {};
   final Map<String, Object> _cleanupFailures = {};
@@ -171,34 +188,47 @@ final class StudioUpdateClient {
   Future<void> check() {
     if (_closed || !enabled || _isInstalling(state)) return Future.value();
     if (_checkTask case final pending?) return pending;
-    late final Future<void> task;
-    task = _check().whenComplete(() {
-      if (identical(_checkTask, task)) _checkTask = null;
-    });
-    _checkTask = task;
-    return task;
-  }
-
-  Future<void> _check() async {
-    final snapshot = await _rpc('check', api.check);
-    if (!_closed) updater.apply(snapshot);
+    final completed = Completer<void>();
+    _checkTask = completed.future;
+    request.publish(
+      const StudioUpdateRequest(StudioUpdateRequestPhase.checking),
+    );
+    unawaited(() async {
+      try {
+        final snapshot = await _rpc('check', api.check);
+        if (!_closed) {
+          updater.apply(snapshot);
+          request.publish(
+            const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
+          );
+        }
+        completed.complete();
+      } catch (error, stack) {
+        if (!_closed)
+          request.publish(
+            StudioUpdateRequest(StudioUpdateRequestPhase.failed, error: error),
+          );
+        completed.completeError(error, stack);
+      } finally {
+        _checkTask = null;
+      }
+    }());
+    return completed.future;
   }
 
   Future<StudioUpdateInstallResult> install() {
     if (_installTask case final pending?) return pending;
     final snapshot = state;
     final update = snapshot.update;
-    if (_closed || !enabled || update == null || _isInstalling(snapshot)) {
+    if (_closed ||
+        !enabled ||
+        update == null ||
+        snapshot is InstallerLaunchedUpdaterStateSnapshot) {
       return Future.value(const StudioUpdateInstallResult());
     }
     if (_attempts.isNotEmpty) {
       return Future.error(
         StateError('A prior update operation still needs cleanup'),
-      );
-    }
-    if (runtimeBusy()) {
-      return Future.error(
-        StateError('Studio runtime has an active turn or task'),
       );
     }
     final ResourcePermit permit;
@@ -216,15 +246,29 @@ final class StudioUpdateClient {
     final attempt = _UpdateAttempt(++_sequence, permit);
     _attempts[attempt.id] = attempt;
     _active = attempt;
-    late final Future<StudioUpdateInstallResult> task;
-    task = _install(attempt, snapshot.revision, update.version).whenComplete(
-      () {
+    final completed = Completer<StudioUpdateInstallResult>();
+    final task = completed.future;
+    _installTask = task;
+    attempt.task = task;
+    request.publish(
+      const StudioUpdateRequest(StudioUpdateRequestPhase.preparing),
+    );
+    unawaited(() async {
+      try {
+        completed.complete(
+          await _install(attempt, snapshot.revision, update.version),
+        );
+      } catch (error, stack) {
+        if (!_closed)
+          request.publish(
+            StudioUpdateRequest(StudioUpdateRequestPhase.failed, error: error),
+          );
+        completed.completeError(error, stack);
+      } finally {
         if (identical(_installTask, task)) _installTask = null;
         if (identical(_active, attempt)) _active = null;
-      },
-    );
-    attempt.task = task;
-    _installTask = task;
+      }
+    }());
     return task;
   }
 
@@ -234,63 +278,62 @@ final class StudioUpdateClient {
     String version,
   ) async {
     try {
-      final operation = await api.startInstall(
+      final operation = await api.startPreparation(
         expectedRevision: revision,
         version: version,
       );
       attempt.operation = operation;
       attempt.opened.complete(operation);
-      if (_closed) {
+      if (_closed || attempt.cancelRequested) {
         await _cancelAttempt(attempt);
         return const StudioUpdateInstallResult();
       }
       attempt.permit.mark(ResourcePhase.active);
-      UpdaterStateSnapshot? terminal;
       await for (final snapshot in operation.events) {
-        terminal = snapshot;
-        updater.apply(snapshot);
+        if (!_closed) updater.apply(snapshot);
       }
-      if (terminal is InstallerLaunchedUpdaterStateSnapshot) {
-        final handoff = await operation.finishHandoff();
-        attempt.joined = true;
-        return StudioUpdateInstallResult(exitRequired: handoff);
+      await operation.finishPreparation();
+      attempt.joined = true;
+      if (_closed || attempt.cancelRequested)
+        return const StudioUpdateInstallResult();
+      if (state is ReadyUpdaterStateSnapshot &&
+          state.update?.version == version) {
+        request.publish(
+          const StudioUpdateRequest(StudioUpdateRequestPhase.ready),
+        );
+        return StudioUpdateInstallResult(readyVersion: version);
       }
-      await _cancelAttempt(attempt);
+      final failure = state;
+      request.publish(
+        StudioUpdateRequest(
+          failure is InstallFailedUpdaterStateSnapshot &&
+                  failure.error.code == 'cancelled'
+              ? StudioUpdateRequestPhase.cancelled
+              : StudioUpdateRequestPhase.failed,
+        ),
+      );
       return const StudioUpdateInstallResult();
     } catch (error, stack) {
-      if (attempt.operation == null) {
-        // An install request may have crossed the bridge before its reply was
-        // lost. A missing Dart handle never proves that no native task exists.
+      if (attempt.operation == null &&
+          error is! StudioUpdatePreparationRejected) {
+        // A lost reply cannot prove that the native owner was never created.
         attempt.cleanupFailure = error;
-      }
-      if (_closed) Error.throwWithStackTrace(error, stack);
-      // This resync is restricted to a failed observation/command path. Normal
-      // success is delivered by the operation and the updater owner topic.
-      final snapshot = await api.read();
-      updater.apply(snapshot);
-      if (snapshot is InstallFailedUpdaterStateSnapshot &&
-          snapshot.error.code == 'runtimeShutdownFailed') {
-        if (attempt.operation != null) {
-          try {
-            await _cancelAttempt(attempt);
-          } catch (cleanupError) {
-            attempt.cleanupFailure = cleanupError;
-          }
+      } else if (attempt.operation != null) {
+        try {
+          await _cancelAttempt(attempt);
+        } catch (cleanupError) {
+          attempt.cleanupFailure = cleanupError;
         }
-        return StudioUpdateInstallResult(
-          shutdownFailureMessage: snapshot.error.message,
-        );
       }
-      final operation = attempt.operation;
-      if (operation != null) {
-        final handoff = await operation.finishHandoff();
-        attempt.joined = true;
-        if (handoff) return const StudioUpdateInstallResult(exitRequired: true);
+      if (!_closed) {
+        // Failed command/observation only: canonical resync never invents Ready.
+        try {
+          updater.apply(await api.read());
+        } catch (_) {
+          /* Preserve the original failure. */
+        }
       }
-      if (snapshot is! InstallFailedUpdaterStateSnapshot) {
-        Error.throwWithStackTrace(error, stack);
-      }
-      return const StudioUpdateInstallResult();
+      Error.throwWithStackTrace(error, stack);
     } finally {
       if (!attempt.opened.isCompleted) attempt.opened.complete(null);
       if ((attempt.operation == null && attempt.cleanupFailure == null) ||
@@ -303,6 +346,11 @@ final class StudioUpdateClient {
           'Update completion was not confirmed',
         );
         attempt.permit.mark(ResourcePhase.unresolved);
+      }
+      if (!_closed && attempt.cancelRequested && attempt.joined) {
+        request.publish(
+          const StudioUpdateRequest(StudioUpdateRequestPhase.cancelled),
+        );
       }
     }
   }
@@ -334,9 +382,32 @@ final class StudioUpdateClient {
     if (_closed) return;
     final active = _active;
     if (active != null) {
+      active.cancelRequested = true;
+      request.publish(
+        const StudioUpdateRequest(StudioUpdateRequestPhase.cancelling),
+      );
       await _cancelAttempt(active);
+      if (!_closed)
+        request.publish(
+          const StudioUpdateRequest(StudioUpdateRequestPhase.cancelled),
+        );
     } else if (enabled) {
-      await _rpc('automatic-cancel', api.cancelAutomaticUpdate);
+      request.publish(
+        const StudioUpdateRequest(StudioUpdateRequestPhase.cancelling),
+      );
+      try {
+        await _rpc('automatic-cancel', api.cancelAutomaticUpdate);
+        if (!_closed)
+          request.publish(
+            const StudioUpdateRequest(StudioUpdateRequestPhase.cancelled),
+          );
+      } catch (error) {
+        if (!_closed)
+          request.publish(
+            StudioUpdateRequest(StudioUpdateRequestPhase.failed, error: error),
+          );
+        rethrow;
+      }
     }
   }
 
@@ -501,6 +572,7 @@ final class _UpdateAttempt {
   Future<void>? cancelTask;
   Object? cleanupFailure;
   bool joined = false;
+  bool cancelRequested = false;
 }
 
 bool _isInstalling(UpdaterStateSnapshot state) =>

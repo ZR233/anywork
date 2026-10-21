@@ -46,7 +46,7 @@ final class StudioShutdownProgressStateProvider
 }
 
 String _$studioShutdownProgressStateHash() =>
-    r'c2a71b6a47697d372205acd894cccd231610bb76';
+    r'4ab7f80d7a10cbbacc7fb977d010178967171db3';
 
 /// 当前关机进度或失败状态；两者均为空表示未在关机。
 

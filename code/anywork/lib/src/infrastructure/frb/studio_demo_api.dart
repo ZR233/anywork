@@ -187,9 +187,10 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<StudioShutdownReport> shutdownRuntime({
+  Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    StudioExitIntent intent = StudioExitIntent.exit,
   }) async {
     for (final phase in StudioShutdownPhase.values) {
       if (shutdownPhaseDelay > Duration.zero) {
@@ -213,16 +214,20 @@ class DemoStudioTransport extends StudioTransport
     // Demo 的确定性结局：所有阶段成功且持久化已排空。外部（Dart）取消 issue 是本次关闭
     // 的最终成功前置条件，只要存在就如实为 Degraded，绝不伪 Clean。
     if (externalIssues.isEmpty) {
-      return const StudioShutdownReport(
-        outcome: StudioShutdownOutcome.clean,
-        issues: [],
-        persistence: DrainedStudioPendingPersistence(),
+      return const StudioExitReport(
+        shutdown: StudioShutdownReport(
+          outcome: StudioShutdownOutcome.clean,
+          issues: [],
+          persistence: DrainedStudioPendingPersistence(),
+        ),
       );
     }
-    return StudioShutdownReport(
-      outcome: StudioShutdownOutcome.degraded,
-      issues: externalIssues,
-      persistence: const DrainedStudioPendingPersistence(),
+    return StudioExitReport(
+      shutdown: StudioShutdownReport(
+        outcome: StudioShutdownOutcome.degraded,
+        issues: externalIssues,
+        persistence: const DrainedStudioPendingPersistence(),
+      ),
     );
   }
 

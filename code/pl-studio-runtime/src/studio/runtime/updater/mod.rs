@@ -104,12 +104,14 @@ impl StudioUpdateRuntime {
     ) -> Result<StudioUpdate> {
         let state = self.read().await;
         anyhow::ensure!(
-            state.revision() == expected_revision,
+            state.revision() >= expected_revision,
             "update revision conflict: expected {expected_revision}, actual {}",
             state.revision()
         );
         let update = match &state {
             StudioUpdateStateSnapshot::Available(value) => value.update(),
+            StudioUpdateStateSnapshot::Downloading(value) => value.update(),
+            StudioUpdateStateSnapshot::Verifying(value) => value.update(),
             StudioUpdateStateSnapshot::Ready(value) => value.update(),
             StudioUpdateStateSnapshot::InstallFailed(value) => value.update(),
             _ => anyhow::bail!("cached update is not available for installation"),
@@ -145,10 +147,6 @@ impl StudioUpdateRuntime {
                 expected_revision: current.revision(),
                 updated_at: now,
             },
-            StudioUpdateEvent::InstallerLaunched => StudioUpdateCommand::MarkInstallerLaunched {
-                expected_revision: current.revision(),
-                launched_at: now,
-            },
             StudioUpdateEvent::Failed { code, message } => StudioUpdateCommand::FailInstall {
                 expected_revision: current.revision(),
                 failed_at: now,
@@ -157,16 +155,11 @@ impl StudioUpdateRuntime {
                     message: message.clone(),
                     retryable: code == StudioUpdateErrorCode::Network.as_str()
                         || code == StudioUpdateErrorCode::Io.as_str()
-                        || code == StudioUpdateErrorCode::RuntimeBusy.as_str()
                         || code == StudioUpdateErrorCode::Cancelled.as_str(),
                 },
             },
         };
         self.apply(command).await
-    }
-
-    pub(crate) fn updater(&self) -> StudioUpdater {
-        self.updater.clone()
     }
 
     pub(crate) async fn lock_install(
@@ -200,25 +193,33 @@ impl StudioUpdateRuntime {
         &self,
         update: StudioUpdate,
         cancellation: crate::StudioUpdateCancellation,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<StudioUpdateStateSnapshot>>,
     ) -> Result<()> {
-        let _command = match self.lock_install(&update).await {
-            Ok(command) => command,
-            Err(error) => {
-                // 尚未创建下载或投影任务的命令拒绝，不属于资源所有者失效。
-                tracing::debug!(error = %error, "background update preparation was superseded");
-                return Ok(());
+        let _command = self.lock_install(&update).await?;
+        let current = self.read().await;
+        if matches!(current, StudioUpdateStateSnapshot::Ready(_)) {
+            if let Some(progress) = progress {
+                let _ = progress.send(current);
             }
-        };
+            return Ok(());
+        }
         *self.prepared.lock().await = PreparedUpdate::None;
         let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let owner = self.clone();
         let target = update.clone();
         let projection_cancellation = cancellation.clone();
+        let projection_progress = progress.clone();
         let projection = tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
-                if let Err(error) = owner.apply_install_event(&target, &event).await {
-                    let _ = projection_cancellation.cancel();
-                    return Err(error);
+                let snapshot = match owner.apply_install_event(&target, &event).await {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        projection_cancellation.cancel();
+                        return Err(error);
+                    }
+                };
+                if let Some(progress) = &projection_progress {
+                    let _ = progress.send(snapshot);
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -248,33 +249,57 @@ impl StudioUpdateRuntime {
             }
         };
         let current = self.read().await;
-        self.apply(StudioUpdateCommand::MarkReady {
-            expected_revision: current.revision(),
-            ready_at: unix_seconds(),
-        })
-        .await?;
+        // Publish Ready only after this owner holds the verified file lease.
         *self.prepared.lock().await = PreparedUpdate::Ready(prepared);
+        let ready = self
+            .apply(StudioUpdateCommand::MarkReady {
+                expected_revision: current.revision(),
+                ready_at: unix_seconds(),
+            })
+            .await?;
+        if let Some(progress) = progress {
+            let _ = progress.send(ready);
+        }
         Ok(())
     }
 
-    pub(crate) async fn launch_ready_on_exit(&self) -> Result<()> {
+    pub(crate) async fn launch_ready_on_exit(
+        &self,
+        mode: crate::StudioUpdateLaunch,
+    ) -> Result<Option<String>> {
         let _command = self
             .command_lock
             .try_lock()
             .context("update command is still running at exit")?;
-        if !matches!(self.read().await, StudioUpdateStateSnapshot::Ready(_)) {
-            return Ok(());
-        }
+        let state = self.read().await;
+        let version = match &state {
+            StudioUpdateStateSnapshot::Ready(value) => value.update().version.clone(),
+            StudioUpdateStateSnapshot::InstallerLaunched(value) => {
+                return Ok(Some(value.update().version.clone()));
+            }
+            _ => return Ok(None),
+        };
         let mut prepared = self.prepared.lock().await;
         match &mut *prepared {
             PreparedUpdate::Ready(installer) => {
-                installer.launch(crate::StudioUpdateLaunch::OnExit)?;
+                installer.launch(mode)?;
                 *prepared = PreparedUpdate::Launched;
             }
             PreparedUpdate::Launched => {}
             PreparedUpdate::None => anyhow::bail!("ready update has no verified installer lease"),
         }
-        Ok(())
+        drop(prepared);
+        // The OS handoff wins even if its display projection fails afterwards.
+        if let Err(error) = self
+            .apply(StudioUpdateCommand::MarkInstallerLaunched {
+                expected_revision: state.revision(),
+                launched_at: unix_seconds(),
+            })
+            .await
+        {
+            tracing::error!(%error, "installer launched but updater projection failed");
+        }
+        Ok(Some(version))
     }
 
     async fn apply(&self, command: StudioUpdateCommand) -> Result<StudioUpdateStateSnapshot> {

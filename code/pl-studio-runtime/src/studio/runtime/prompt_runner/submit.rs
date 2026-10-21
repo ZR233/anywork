@@ -31,7 +31,7 @@ impl StudioRuntime {
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
-        // Serialize turn registration with the updater's final idle check.
+        // Serialize turn registration with the shared shutdown admission fence.
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.submit_prompt_with_lifecycle_lock(request).await
     }

@@ -9,6 +9,11 @@
   "sidebarLoadingMore": "Loading more sessions…",
   "sidebarLoadError": "Failed to load more sessions",
   "shutdownTitle": "Shutting down safely",
+  "shutdownUpdateTitle": "Installing update {version}",
+  "@shutdownUpdateTitle": {"placeholders": {"version": {"type": "String"}}},
+  "shutdownUpdateSaving": "Stopping chats and saving data…",
+  "shutdownUpdateRestartHint": "Installation progress will appear after saving. The app will reopen automatically.",
+  "shutdownUpdateExitHint": "Installation progress will appear after saving. The app will stay closed.",
   "shutdownFinalizing": "Finishing up",
   "shutdownFinalizingHint": "Necessary diagnostics were recorded; the app will exit automatically.",
   "shutdownPhaseStoppingSubscriptions": "Stopping subscriptions",
@@ -1264,9 +1269,12 @@
       }
     }
   },
-  "settingsStudioUpdateBusy": "Finish the active turn or task before installing.",
+  "settingsStudioUpdatePreparing": "Preparing update…",
+  "settingsStudioUpdateWhenReady": "Install and restart when ready",
+  "settingsStudioUpdateCancelling": "Cancelling update…",
+  "settingsStudioUpdateCancelled": "Update cancelled. You can retry anytime.",
   "settingsStudioUpdateCheck": "Check for updates",
-  "settingsStudioUpdateInstall": "Download and install",
+  "settingsStudioUpdateInstall": "Download, install and restart",
   "settingsStudioUpdateRestart": "Install and restart",
   "settingsStudioUpdateReady": "Version {version} is downloaded and will install when you close anywork.",
   "@settingsStudioUpdateReady": {

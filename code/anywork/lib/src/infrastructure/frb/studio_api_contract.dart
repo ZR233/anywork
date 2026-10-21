@@ -240,7 +240,7 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   static Future<void>? _initFuture;
-  static Future<StudioShutdownReport>? _shutdownFuture;
+  static Future<StudioExitReport>? _shutdownFuture;
   // 早期退出封闭的单一 one-shot 结果：首次调用锚定，重复 close / dispose / driver 复用，
   // 绝不重复并行封闭，也绝不延长单一期限。
   static Future<_BeginExitOutcome>? _beginExitOutcome;
@@ -616,21 +616,23 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   /// 共享同一退出 future：重复调用（重复退出请求、dispose、driver）复用同一次收束，
   /// 绝不复位或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束
   /// 得到的 typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
-  static Future<StudioShutdownReport> shutdownAndDispose({
+  static Future<StudioExitReport> shutdownAndDispose({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    StudioExitIntent intent = StudioExitIntent.exit,
   }) {
     final running = _shutdownFuture;
     if (running != null) return running;
     _closing = true;
-    final attempt = _runShutdownAndDispose(remainingMs, externalIssues);
+    final attempt = _runShutdownAndDispose(remainingMs, externalIssues, intent);
     _shutdownFuture = attempt;
     return attempt;
   }
 
-  static Future<StudioShutdownReport> _runShutdownAndDispose(
+  static Future<StudioExitReport> _runShutdownAndDispose(
     int remainingMs,
     List<StudioShutdownIssue> externalIssues,
+    StudioExitIntent intent,
   ) async {
     final stopwatch = Stopwatch()..start();
     // 早期退出封闭是同一 coordinator 的第一步：直接消费者（不经 runStudioShutdown）也必须在
@@ -639,7 +641,7 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
     // 并入 externalIssues 的同一 issue（同 correlation）不再重复添加。
     final beginExit = await _runBeginRuntimeExit(remainingMs);
     final beginExitIssue = beginExit.issue;
-    final mergedExternalIssues = beginExitIssue == null
+    var mergedExternalIssues = beginExitIssue == null
         ? externalIssues
         : <StudioShutdownIssue>[
             ...externalIssues,
@@ -673,25 +675,46 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
     // 本次请求之前完成（见 runStudioShutdown / cancelDartSubscriptions），此处绝不再取消，
     // 避免两份关闭事实。即使 Dart 取消已耗尽预算，仍以 remainingMs=0 立即向已初始化的
     // runtime 广播封闭，绝不整段跳过；bridge 上限 28s、原生 hard deadline 照常。
+    if (!initSettled) {
+      // Initialization is an owner too. Pass its unresolved fact before native
+      // finalization so an installer cannot launch before this owner confirms.
+      mergedExternalIssues = [
+        ...mergedExternalIssues,
+        ..._unresolvedInitReport().issues,
+      ];
+    }
     final rustBudget = _remainingAfter(remainingMs, stopwatch);
     StudioShutdownReport report;
+    StudioUpdateHandoff updateHandoff = const NoStudioUpdateHandoff();
     var bridgeConsulted = false;
     if (_rustInitialized) {
       bridgeConsulted = true;
       try {
         // 用真实 Rust 报告判定是否安装 runtime，而不是本地标志；外部 issue 随请求交给
         // runtime 与 bridge 自身取消结果一并裁决 Clean/Stopped/实例锁释放。
-        report = _shutdownReportFromFrb(
-          await _bridgeCall(
-            () => frb.shutdownRuntime(
-              remainingMs: rustBudget,
-              externalIssues: [
-                for (final issue in mergedExternalIssues)
-                  _bridgeIssueFromStudio(issue),
-              ],
-            ),
+        final exitReport = await _bridgeCall(
+          () => frb.shutdownRuntime(
+            remainingMs: rustBudget,
+            intent: switch (intent) {
+              StudioExitIntent.exit => frb_shutdown.BridgeExitIntent.exit,
+              StudioExitIntent.updateRestart =>
+                frb_shutdown.BridgeExitIntent.updateRestart,
+            },
+            externalIssues: [
+              for (final issue in mergedExternalIssues)
+                _bridgeIssueFromStudio(issue),
+            ],
           ),
         );
+        report = _shutdownReportFromFrb(exitReport.shutdown);
+        updateHandoff = switch (exitReport.updateHandoff) {
+          frb_shutdown.BridgeUpdateHandoff_NotRequested() =>
+            const NoStudioUpdateHandoff(),
+          frb_shutdown.BridgeUpdateHandoff_Launched(:final version) =>
+            LaunchedStudioUpdateHandoff(version: version),
+          frb_shutdown.BridgeUpdateHandoff_Failed(:final error) =>
+            FailedStudioUpdateHandoff(code: error.code, message: error.message),
+        };
       } on Object catch (error, stackTrace) {
         // 同一次失败只生成一次 correlation：report issue 与同步诊断共用同一编号。
         final correlationId = _correlationOf(error);
@@ -750,7 +773,7 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
         initCompleted &&
         report.allowsCleanExit &&
         _dartSubscriptionsSettled;
-    return report;
+    return StudioExitReport(shutdown: report, updateHandoff: updateHandoff);
   }
 
   static int _remainingAfter(int remainingMs, Stopwatch watch) {
@@ -1661,12 +1684,14 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<StudioShutdownReport> shutdownRuntime({
+  Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    StudioExitIntent intent = StudioExitIntent.exit,
   }) => shutdownAndDispose(
     remainingMs: remainingMs,
     externalIssues: externalIssues,
+    intent: intent,
   );
 
   @override

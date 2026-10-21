@@ -1,6 +1,6 @@
 //! 统一关机阶段编排与退出期限。
 //!
-//! 严格关闭（进程内 server / 更新前的空闲关闭）与应用退出共用同一套阶段编排，只按
+//! 严格关闭（进程内 server）与应用退出共用同一套阶段编排，只按
 //! `ShutdownBudget` 与调用契约区分：严格路径要求真实 `Clean`，退出路径接受 `Degraded`
 //! 并按剩余期限终止。任何阶段失败都不阻断其余彼此独立的安全清理。
 //!
@@ -57,18 +57,6 @@ impl ShutdownLatch {
         self.committed.load(Ordering::SeqCst)
     }
 }
-
-/// Adapter hook invoked inside the single strict orchestration to collect external
-/// (bridge / Dart) owner acknowledgements.
-///
-/// It runs only after the runtime has committed to shutdown — the atomic idle check passed and
-/// mutation is fenced — and before finalization. The returned issues are folded into the same
-/// finalize success precondition, so a subscription/update owner that does not confirm keeps the
-/// runtime `Failed`: the strict path never publishes `Stopped` and never releases the instance
-/// lock. Keeping the hook inside the orchestration is what makes the idle check atomic with the
-/// cancellation (no cancel-before-check and no post-`Stopped` merge).
-pub type ShutdownExternalHook =
-    Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Vec<StudioShutdownIssue>> + Send>;
 
 /// 同一次退出关闭运行的共享完成句柄。
 ///
@@ -136,7 +124,7 @@ impl ShutdownRun {
                 )));
                 return;
             };
-            let outcome = AssertUnwindSafe(runtime.execute_shutdown(budget, external_issues, None))
+            let outcome = AssertUnwindSafe(runtime.execute_shutdown(budget, external_issues))
                 .catch_unwind()
                 .await;
             let value = match outcome {
@@ -838,18 +826,6 @@ async fn join_service_outcome(
     }
 }
 
-/// 有界收束注入的外部 owner ACK（bridge adapter hook），其 issue 与 runtime 阶段共享同一成功
-/// 前置条件。hook 在 runtime 已完成「封闭准入 + 广播独立取消」之后运行，并且与 runtime 阶段
-/// 并发：它只返回 issue，由调用方在同一 finalize 之前聚合，不直接持有 collector。
-async fn collect_external_hook_issues(
-    hook: Option<ShutdownExternalHook>,
-) -> Vec<StudioShutdownIssue> {
-    match hook {
-        Some(hook) => hook().await,
-        None => Vec::new(),
-    }
-}
-
 /// 报告内阶段的稳定排序权重；与完成先后无关，保证并发收束下报告顺序可复现。
 mod stage_order {
     pub(super) const AGENT_FRAMEWORK: usize = 0;
@@ -907,21 +883,8 @@ impl StudioRuntime {
     pub(in crate::studio::runtime) async fn execute_strict_shutdown(
         &self,
     ) -> Result<StudioShutdownReport> {
-        self.execute_strict_shutdown_with_hook(None).await
-    }
-
-    /// 严格关闭，可注入收集外部 owner ACK 的 adapter hook。
-    ///
-    /// hook 在 runtime 提交（空闲原子检查通过、准入封闭）之后、收尾之前于同一编排内运行，并与
-    /// runtime 阶段**并发**收束（共享同一首次绝对期限的剩余预算，谁都不会耗尽对方尚未开始的等待
-    /// 预算）；其返回的 issue 与 runtime 阶段共享同一成功前置条件，因此外部 owner 未确认时不会
-    /// 发布 `Stopped`，也不释放实例锁。
-    pub(in crate::studio::runtime) async fn execute_strict_shutdown_with_hook(
-        &self,
-        hook: Option<ShutdownExternalHook>,
-    ) -> Result<StudioShutdownReport> {
         let report = self
-            .execute_shutdown(ShutdownBudget::unbounded(), Vec::new(), hook)
+            .execute_shutdown(ShutdownBudget::unbounded(), Vec::new())
             .await;
         if report.is_clean() {
             Ok(report)
@@ -1035,7 +998,6 @@ impl StudioRuntime {
         &self,
         budget: ShutdownBudget,
         external_issues: Vec<StudioShutdownIssue>,
-        hook: Option<ShutdownExternalHook>,
     ) -> StudioShutdownReport {
         let mut collector = ShutdownCollector::new(budget);
 
@@ -1051,7 +1013,7 @@ impl StudioRuntime {
         collector.seed_external_issues(self.take_early_exit_issues());
 
         // 从未安装 / 已终态：不触发初始化、不做阶段编排。但调用方与 bridge 持有的外部 owner
-        // 仍可能未确认，必须按同一成功前置条件收束（运行注入的 adapter hook），绝不能以
+        // 仍可能未确认，必须按同一成功前置条件收束，绝不能以
         // `Clean`/`NotStarted` 掩盖未收束的 owner。
         let never_installed = current.as_ref().is_some_and(|current| {
             matches!(current.state.kind(), StudioRuntimeStateKind::Uninitialized)
@@ -1060,14 +1022,13 @@ impl StudioRuntime {
             .as_ref()
             .is_some_and(|current| current.state.is_stopped());
         if never_installed || already_stopped {
-            collector.seed_external_issues(collect_external_hook_issues(hook).await);
             return if collector.has_issues() {
                 collector.report()
             } else if never_installed {
                 // 从未安装：不触发初始化、不武装闩；没有待保存事实。
                 StudioShutdownReport::not_started()
             } else {
-                // 已经处于终态的 runtime 只有在没有任何（含 hook 收束的）issue 时才可报 Clean。
+                // 已经处于终态的 runtime 只有在没有任何issue 时才可报 Clean。
                 StudioShutdownReport {
                     outcome: StudioShutdownOutcome::Clean,
                     issues: Vec::new(),
@@ -1126,20 +1087,13 @@ impl StudioRuntime {
         }
 
         // 提交准入后**先**向所有独立 owner 广播取消，并启动/常驻保留 MCP/LSP/SSH 的 owned 关闭
-        // job。任何外部 ACK 的有界收束都必须发生在这之后：这样注入的 hook 即使卡住，也不会阻止
-        // runtime 的独立资源收到取消。真正的阶段 join 与 finalize 仍在后续同一编排内、复用同一批 job。
+        // job。真正的阶段 join 与 finalize 仍在后续同一编排内、复用同一批 job。
         self.broadcast_cancel().await;
         let services = self.ensure_service_stops().await;
 
-        // 再有界收束注入的外部 owner ACK（adapter hook）与 runtime 阶段**并发**收束：两者共享
-        // 同一首次绝对期限的剩余预算，谁都不会耗掉对方尚未开始的等待预算（此前 hook 的 join 会
-        // 抢在 runtime 独立资源之前耗尽期限）。hook 的 issue 仍进入同一成功前置条件，并在同一
-        // finalize 之前聚合，不引入第二套编排。
-        let (hook_issues, stages) = futures::join!(
-            collect_external_hook_issues(hook),
-            self.run_shutdown_stages(budget, collector.pending_hint, &services),
-        );
-        collector.seed_external_issues(hook_issues);
+        let stages = self
+            .run_shutdown_stages(budget, collector.pending_hint, &services)
+            .await;
         collector.writer_reclaimed = stages.writer_reclaimed;
         collector.persistence = stages.persistence;
         for outcome in stages.outcomes {

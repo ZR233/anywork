@@ -73,6 +73,13 @@ void main() {
     StudioExitCoordinator(
       graph.client.transport,
       _container.read(studioShutdownProgressStateProvider.notifier).update,
+      readyUpdateVersion: () =>
+          graph.client.updates.state is ReadyUpdaterStateSnapshot
+          ? graph.client.updates.state.update?.version
+          : null,
+      onBeginExit: _container
+          .read(studioShutdownProgressStateProvider.notifier)
+          .beginExit,
       // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
       // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
       closeClient: (deadline) {
@@ -163,6 +170,22 @@ Future<String> _handleDriverData(String? message) async {
       });
     case 'snapshot':
       return _driverSnapshotJson();
+    case 'updater-state':
+      // Read-only Client/canonical facts, including the request that survives routes.
+      final updater = _client.updates.state;
+      final request = _client.updates.request.value;
+      return jsonEncode({
+        'state': updater.runtimeType.toString(),
+        'revision': updater.revision,
+        'version': updater.update?.version,
+        'request': request.phase.name,
+        'pending': request.pending,
+        if (updater is DownloadingUpdaterStateSnapshot)
+          'downloaded': updater.downloaded,
+        if (updater is DownloadingUpdaterStateSnapshot) 'total': updater.total,
+        if (updater is InstallFailedUpdaterStateSnapshot)
+          'error': updater.error.code,
+      });
     case 'mode-editor-state':
       final editor = _client.modeEditor.state;
       final catalog = _client.modeCatalog.state;
@@ -406,6 +429,18 @@ Future<String> _handleDriverData(String? message) async {
       final startup = diagnostics['startup'];
       return jsonEncode({
         ...diagnostics,
+        'clientResources': [
+          for (final resource in _client.budget.usage)
+            {
+              'kind': resource.kind.name,
+              'owner': resource.owner,
+              'phase': resource.phase.name,
+            },
+        ],
+        'unresolvedClientResources': [
+          for (final resource in _client.unresolvedResources)
+            {'owner': resource.owner, 'reason': resource.reason.toString()},
+        ],
         'startup': {
           if (startup is Map<String, Object?>) ...startup,
           'phase': FrbStudioTransport.startupProgress.value.name,

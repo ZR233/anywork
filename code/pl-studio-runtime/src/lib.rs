@@ -78,12 +78,12 @@ pub use protocol::{
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, PersistenceState,
-    PersistenceStateSnapshot, ProductEventBus, ProjectRecord, ShutdownExternalHook,
-    SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry,
-    StudioDatabaseError, StudioHostKind, StudioInstance, StudioInstanceLease,
-    StudioProductTopicSubscription, StudioRecoveryIssue, StudioRecoveryIssueAction,
-    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
-    StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
+    PersistenceStateSnapshot, ProductEventBus, ProjectRecord, SkillSearchResult,
+    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
+    StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
+    StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
+    StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
     StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadPreparationObserver,

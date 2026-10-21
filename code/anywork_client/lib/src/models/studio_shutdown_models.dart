@@ -4,6 +4,38 @@
 /// 其余为 `degraded`。界面绝不把 degraded 或超时折叠成正常退出。
 enum StudioShutdownOutcome { notStarted, clean, degraded }
 
+/// The first exit request fixes installation and restart behavior.
+enum StudioExitIntent { exit, updateRestart }
+
+sealed class StudioUpdateHandoff {
+  const StudioUpdateHandoff();
+}
+
+final class NoStudioUpdateHandoff extends StudioUpdateHandoff {
+  const NoStudioUpdateHandoff();
+}
+
+final class LaunchedStudioUpdateHandoff extends StudioUpdateHandoff {
+  const LaunchedStudioUpdateHandoff({required this.version});
+  final String version;
+}
+
+final class FailedStudioUpdateHandoff extends StudioUpdateHandoff {
+  const FailedStudioUpdateHandoff({required this.code, required this.message});
+  final String code;
+  final String message;
+}
+
+/// Reliable shutdown and installer launch are independent results.
+final class StudioExitReport {
+  const StudioExitReport({
+    required this.shutdown,
+    this.updateHandoff = const NoStudioUpdateHandoff(),
+  });
+  final StudioShutdownReport shutdown;
+  final StudioUpdateHandoff updateHandoff;
+}
+
 /// 待保存事实的真实进度。
 ///
 /// 无法确定时必须为 [UnknownStudioPendingPersistence]；绝不用 [Drained] 掩盖未知。

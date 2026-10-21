@@ -298,14 +298,11 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
     let retryable = matches!(
         code,
         StudioUpdateErrorCode::Network
-            | StudioUpdateErrorCode::RuntimeBusy
             | StudioUpdateErrorCode::InstallInProgress
             | StudioUpdateErrorCode::Io
     );
     let studio_code = match code {
-        StudioUpdateErrorCode::RuntimeBusy | StudioUpdateErrorCode::InstallInProgress => {
-            StudioErrorCode::Busy
-        }
+        StudioUpdateErrorCode::InstallInProgress => StudioErrorCode::Busy,
         StudioUpdateErrorCode::Cancelled => StudioErrorCode::Cancelled,
         StudioUpdateErrorCode::CancellationTooLate => StudioErrorCode::CancellationTooLate,
         StudioUpdateErrorCode::Network => StudioErrorCode::Unavailable,
@@ -316,7 +313,6 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
         | StudioUpdateErrorCode::HashMismatch
         | StudioUpdateErrorCode::SignatureInvalid
         | StudioUpdateErrorCode::InstallerLaunchFailed
-        | StudioUpdateErrorCode::RuntimeShutdownFailed
         | StudioUpdateErrorCode::Io => StudioErrorCode::Update,
     };
     StudioError::new(

@@ -40,6 +40,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shutdownTitle => '正在安全退出';
 
   @override
+  String shutdownUpdateTitle(String version) {
+    return '正在安装 $version 更新';
+  }
+
+  @override
+  String get shutdownUpdateSaving => '正在停止会话并保存数据…';
+
+  @override
+  String get shutdownUpdateRestartHint => '保存完成后将显示安装进度，并自动重新打开应用。';
+
+  @override
+  String get shutdownUpdateExitHint => '保存完成后将显示安装进度，安装后保持关闭。';
+
+  @override
   String get shutdownFinalizing => '正在结束';
 
   @override
@@ -2238,13 +2252,22 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsStudioUpdateBusy => '请先等待当前轮次或任务结束，再安装更新。';
+  String get settingsStudioUpdatePreparing => '正在准备更新…';
+
+  @override
+  String get settingsStudioUpdateWhenReady => '下载完成后安装并重启';
+
+  @override
+  String get settingsStudioUpdateCancelling => '正在取消更新…';
+
+  @override
+  String get settingsStudioUpdateCancelled => '已取消更新，可随时重试。';
 
   @override
   String get settingsStudioUpdateCheck => '检查更新';
 
   @override
-  String get settingsStudioUpdateInstall => '下载并安装';
+  String get settingsStudioUpdateInstall => '下载并重启更新';
 
   @override
   String get settingsStudioUpdateRestart => '安装并重启';

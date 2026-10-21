@@ -11,7 +11,7 @@ import '../types/shutdown.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attempt_active`, `begin_shutdown`, `begin_start`, `bridge_early_issues_slot`, `bridge_issue`, `bridge_startup_stage`, `disarm`, `fail_start`, `finish_start`, `lock`, `new`, `new`, `prepare`, `publish_stage`, `publish_startup_stage`, `record_bridge_early_issues`, `record_shutdown_report`, `remaining_ms_u32`, `shutdown_runtime_for_update`, `startup_attempt_active`, `subscribe_startup_attempt`, `subscribe`, `take_bridge_early_issues`
+// These functions are ignored because they are not marked as `pub`: `attempt_active`, `begin_shutdown`, `begin_start`, `bridge_early_issues_slot`, `bridge_issue`, `bridge_startup_stage`, `disarm`, `fail_start`, `finish_start`, `handoff_failure`, `lock`, `new`, `new`, `prepare`, `publish_stage`, `publish_startup_stage`, `record_bridge_early_issues`, `record_shutdown_report`, `remaining_ms_u32`, `startup_attempt_active`, `subscribe_startup_attempt`, `subscribe`, `take_bridge_early_issues`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `StartClaim`, `StartupDemote`, `StartupFrame`, `StartupOwner`, `StartupPhase`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
@@ -84,12 +84,14 @@ Future<void> beginRuntimeExit({required int remainingMs}) => RustLib
 /// **same** runtime shutdown orchestration as success preconditions, so the runtime itself refuses
 /// `Clean`, never publishes `Stopped` and never releases the instance lock when any owner is
 /// unresolved. There is no post-hoc report merge and no second cleanup path.
-Future<BridgeShutdownReport> shutdownRuntime({
+Future<BridgeExitReport> shutdownRuntime({
   required int remainingMs,
   required List<BridgeShutdownIssue> externalIssues,
+  required BridgeExitIntent intent,
 }) => RustLib.instance.api.crateApiStudioHandlersLifecycleShutdownRuntime(
   remainingMs: remainingMs,
   externalIssues: externalIssues,
+  intent: intent,
 );
 
 /// Finalizes diagnostics independent of runtime initialization.
