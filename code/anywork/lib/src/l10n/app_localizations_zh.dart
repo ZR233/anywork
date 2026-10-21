@@ -668,10 +668,6 @@ class AppLocalizationsZh extends AppLocalizations {
       '会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。';
 
   @override
-  String get statusModelSwitchWhileWorkflowActive =>
-      '当前工作流尚未结束，暂时无法切换模型。请等工作流结束后重试。';
-
-  @override
   String get statusModelSwitchWhileInactive =>
       '会话正在关闭、已关闭或出现故障，无法切换模型。请恢复会话后重试。';
 
