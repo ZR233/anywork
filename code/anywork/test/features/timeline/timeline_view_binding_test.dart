@@ -754,11 +754,16 @@ void main() {
     );
     await tester.pumpAndSettle();
     final rect = tester.getRect(find.byKey(StudioDriverKeys.timeline));
-    // 轨道点击（拇指很小，靠近轨道顶端一定是 track 而不是 thumb）。
-    await tester.tapAt(Offset(rect.right - 2, rect.top + 12));
+    // 原生悬停唤回淡出的滚动条，再点击轨道（顶端不在底部 thumb 内）。
+    final trackPoint = Offset(rect.right - 2, rect.top + 12);
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(trackPoint));
+    await tester.pumpAndSettle();
+    await tester.tapAt(trackPoint, kind: PointerDeviceKind.mouse);
     await tester.pumpAndSettle();
     expect(enteredHistory, greaterThan(0), reason: '轨道点击是真实用户意图');
     expect(lease.scrollController.position.pixels, greaterThan(0.5));
+    await tester.sendEventToBinding(mouse.removePointer());
   });
 
   testWidgets('详情字段 token 由唯一 formatter 给出且不同问答 part 不撞', (tester) async {
@@ -2194,10 +2199,33 @@ void main() {
         .byWidgetPredicate((widget) => widget is RawScrollbar)
         .first;
     final barRect = tester.getRect(scrollbar);
-    await tester.tapAt(
-      Offset(barRect.right - 6, barRect.bottom - 4),
-      kind: PointerDeviceKind.mouse,
+    final endpoint = Offset(barRect.right - 6, barRect.bottom - 4);
+    // 自动淡出后先按真实鼠标悬停唤回滚动条，避免透明时点击穿透使本用例空跑。
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(endpoint));
+    await tester.pumpAndSettle();
+    final paintFinder = find.descendant(
+      of: scrollbar,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint &&
+            widget.foregroundPainter is ScrollbarPainter,
+      ),
     );
+    final painter =
+        tester.widget<CustomPaint>(paintFinder).foregroundPainter!
+            as ScrollbarPainter;
+    final box = tester.renderObject<RenderBox>(paintFinder);
+    expect(
+      painter.hitTestOnlyThumbInteractive(
+        box.globalToLocal(endpoint),
+        PointerDeviceKind.mouse,
+      ),
+      isTrue,
+      reason: '端点动作必须命中可见 thumb，而不是穿透到正文',
+    );
+    await tester.tapAt(endpoint, kind: PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.removePointer());
     await tester.pumpAndSettle();
     expect(position.pixels, 0, reason: '底端轨道动作不产生位移');
     lease.scrollController.jumpTo(200);
