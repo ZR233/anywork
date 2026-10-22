@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use pl_protocol::Result;
 use tokio::io::AsyncReadExt;
 
-use crate::file::path::{WorkspacePaths, matches_pattern};
+use crate::file::path::WorkspacePaths;
 use crate::workspace::ToolWorkspace;
-use crate::workspace::path_safety::{metadata_if_real_async, real_directory_entries_async};
 
 use super::backend::{
     WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
@@ -19,6 +18,7 @@ pub struct LocalWorkspaceFileBackend {
     paths: WorkspacePaths,
     lsp_runtime: Option<pl_lsp::runtime::LspRuntimeRegistry>,
     workspace: Option<ToolWorkspace>,
+    listings: super::listing::ListingPager,
 }
 
 impl LocalWorkspaceFileBackend {
@@ -27,6 +27,7 @@ impl LocalWorkspaceFileBackend {
             paths: WorkspacePaths::new(root, allow_workspace_escape).await?,
             lsp_runtime: None,
             workspace: None,
+            listings: Default::default(),
         })
     }
 
@@ -95,6 +96,7 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         }
         let mut backend = self.clone();
         backend.paths = self.paths.with_host_access();
+        backend.listings = Default::default();
         Some(backend)
     }
 
@@ -253,29 +255,77 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
     }
 
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        let root = self
-            .resolve_existing_or_parent(request.cwd.as_deref(), &request.path)
-            .await?;
-        if !tokio::fs::try_exists(&root).await? {
-            return Ok(WorkspaceFileListResult {
-                files: Vec::new(),
-                truncated: false,
-            });
-        }
-        let mut files = Vec::new();
-        collect_entries(
-            &self.paths,
-            &root,
-            &request.glob,
-            request.include_dirs,
-            request.max_files.saturating_add(1),
-            &mut files,
-        )
-        .await?;
-        files.sort();
-        let truncated = files.len() > request.max_files;
-        files.truncate(request.max_files);
-        Ok(WorkspaceFileListResult { files, truncated })
+        let path = request.path.clone();
+        let cwd = request.cwd.clone();
+        let implicit = request.implicit_recovery;
+        self.listings
+            .page(request, async {
+                use futures::StreamExt;
+                let root = self
+                    .resolve_existing_or_parent(cwd.as_deref(), &path)
+                    .await?;
+                if !tokio::fs::try_exists(&root).await? {
+                    return Ok(futures::stream::empty().boxed() as super::listing::Entries);
+                }
+                let paths = self.paths.clone();
+                let mut builder = ignore::WalkBuilder::new(&root);
+                builder
+                    .hidden(false)
+                    .ignore(false)
+                    .git_ignore(false)
+                    .git_global(false)
+                    .git_exclude(false)
+                    .parents(false)
+                    .follow_links(false)
+                    .filter_entry(move |entry| {
+                        !entry.file_type().is_some_and(|kind| kind.is_symlink())
+                            && !super::listing::skip_directory(
+                                &entry.path().to_string_lossy().replace('\\', "/"),
+                                implicit,
+                            )
+                    });
+                let walk = builder.build();
+                let entries = futures::stream::try_unfold(
+                    (walk, paths, root),
+                    |(mut walk, paths, root)| async move {
+                        loop {
+                            let (next, returned) = tokio::task::spawn_blocking(move || {
+                                let next = walk.next();
+                                (next, walk)
+                            })
+                            .await
+                            .map_err(|e| tool_error("list_files", e))?;
+                            walk = returned;
+                            let Some(entry) = next else {
+                                return Ok(None);
+                            };
+                            let entry = entry.map_err(|e| tool_error("list_files", e))?;
+                            if entry.path() == root {
+                                continue;
+                            }
+                            let Some(kind) = entry.file_type() else {
+                                continue;
+                            };
+                            if !kind.is_file() && !kind.is_dir() {
+                                continue;
+                            }
+                            let value = super::WorkspaceFileListEntry {
+                                path: paths.display_relative(entry.path()),
+                                is_dir: kind.is_dir(),
+                            };
+                            return Ok(Some((value, (walk, paths, root))));
+                        }
+                    },
+                )
+                .boxed();
+                Ok(entries as super::listing::Entries)
+            })
+            .await
+    }
+
+    async fn close_listing(&self, cursor: String) -> Result<()> {
+        self.listings.close(&cursor);
+        Ok(())
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
@@ -286,86 +336,4 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         tokio::fs::create_dir_all(&path).await?;
         Ok(())
     }
-}
-
-async fn collect_entries(
-    paths: &WorkspacePaths,
-    root: &Path,
-    glob: &str,
-    include_dirs: bool,
-    limit: usize,
-    output: &mut Vec<String>,
-) -> Result<()> {
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        if output.len() >= limit {
-            break;
-        }
-        let Some(metadata) = traversal_metadata(&path).await? else {
-            continue;
-        };
-        if metadata.is_dir() {
-            if is_skipped_dir(&path) {
-                continue;
-            }
-            let display = paths.display_relative(&path);
-            if include_dirs && path != root && matches_list_entry(root, &path, &display, glob, true)
-            {
-                output.push(format!("{display}/"));
-            }
-            for entry in real_directory_entries_async(&path)
-                .await
-                .map_err(|error| tool_error("file", error))?
-            {
-                stack.push(entry);
-            }
-        } else if metadata.is_file() {
-            let display = paths.display_relative(&path);
-            if matches_list_entry(root, &path, &display, glob, false) {
-                output.push(display);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn matches_list_entry(root: &Path, path: &Path, display: &str, glob: &str, is_dir: bool) -> bool {
-    if matches_entry_candidate(display, glob) {
-        return true;
-    }
-    if is_dir && path != root && matches_entry_candidate(&format!("{display}/"), glob) {
-        return true;
-    }
-    let Some(path_relative) = display_relative_to(root, path) else {
-        return false;
-    };
-    if path_relative.is_empty() {
-        return false;
-    }
-    matches_entry_candidate(&path_relative, glob)
-        || (is_dir && matches_entry_candidate(&format!("{path_relative}/"), glob))
-}
-
-fn matches_entry_candidate(candidate: &str, glob: &str) -> bool {
-    matches_pattern(candidate, Some(glob))
-}
-
-fn display_relative_to(root: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(root).ok()?;
-    if relative.as_os_str().is_empty() {
-        return Some(String::new());
-    }
-    Some(relative.to_string_lossy().replace('\\', "/"))
-}
-
-async fn traversal_metadata(path: &Path) -> Result<Option<std::fs::Metadata>> {
-    metadata_if_real_async(path)
-        .await
-        .map_err(|error| tool_error("file", error))
-}
-
-fn is_skipped_dir(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, ".git" | "target" | "node_modules"))
 }

@@ -35,16 +35,17 @@ ACP 是外部 Agent 协议，不属于 Native 模型的 HTTP 协议族。pl-acp 
 | pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session 内容分页、尾部订阅与详情读取 |
 | pl-model | 账号配置与厂商协议/transport、模型目录、配置值对象、路由、provider 图像 API、媒体编码、缓存、usage 与核心模型会话适配 |
 | pl-acp | 外部 Agent 的 ACP 协商与认证协议、类型化请求结果及错误；不拥有产品状态或物理进程 |
-| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成与图像展示、交互、笔记、todo、完成和协作工具 |
+| pl-provider-fixture | 独立的 loopback 模型与外部平台协议 peer、严格请求校验、场景控制与环境证据，不实现被测产品业务 |
+| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成与图像展示、交互、笔记、todo、完成、协作与机器人会话工具 |
 | pl-protocol | Studio 与外围 adapter 使用的产品 wire、DTO、错误和业务状态类型 |
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |
 | pl-output / pl-patch / pl-skill-core | 输出算法、patch 规则、Skill 元数据与路径规则 |
-| pl-remote-helper | 本地进程监督、SSH 远端文件/进程协议及统一进程创建策略 |
-| pl-studio-runtime | TOML/SQLite 持久化及 core 时间线存储适配、产品条目投影、项目、Profile、Mode/workflow/Plan、子代理协调、资源租约与 root/child/恢复的唯一 Thread 装配 |
+| pl-remote-helper | 复用的进程监督、流读写、capture 写入和资源计费组件；Linux helper 只拥有物理句柄、偏移回执、未确认输出及实例租约 |
+| pl-studio-runtime | TOML/SQLite 持久化及 core 时间线存储适配、产品条目投影、项目、Profile、Mode/workflow/Plan、子代理协调、机器人原生接入与会话映射、资源租约与 root/child/恢复的唯一 Thread 装配 |
 | pl-studio-bridge / pl-studio-server | 同一 Studio 运行时的 FRB / HTTP 适配 |
 | pl-xtask | 轻量工程命令编排；按需通过子进程调用独立验收工具，不链接 Studio 运行时、模型或数据库 |
-| pl-studio-acceptance | 隔离 GUI 验收场景、canonical 配置构造、模拟账号协调、数据库故障观察与证据采集 |
+| pl-studio-acceptance | 隔离 GUI 与产品 API 人工验收、canonical 配置构造、模拟账号/平台协调、数据库故障观察与证据采集 |
 | pl-dev-support | 工程工具共享的仓库路径、命令执行及平台进程树所有权，不依赖 Studio、模型、数据库或模拟账号 |
 
 工程工具的依赖方向为 `pl-xtask → pl-dev-support`、
@@ -52,10 +53,17 @@ ACP 是外部 Agent 协议，不属于 Native 模型的 HTTP 协议族。pl-acp 
 xtask 对验收工具只有命令调用关系，不建立 Cargo 依赖；验收工具也不反向依赖 xtask。
 验收所需数据库依赖归验收工具。普通工程命令不因验收能力而编译 Studio 运行时；GUI 构建
 显式构建 bridge、验收显式构建验收工具以及全 workspace 检查仍正常编译各自所需组件。
+平台 fixture 不依赖被测 Studio 或其私有协议模块；它提供独立网络环境和证据，不代替
+生产授权、幂等、Thread 映射或发送结果判定。宿主隔离与人工验收边界见 [24](./24-testing.md)
+和 [27](./27-bots.md)。
 
 core 不提供默认工具安装、account 配置、MCP 目录、产品 working set 或旧引擎门面。工具实例通过
 不透明注册句柄向 Thread 转移所有权（见 [09](./09-tool-runtime.md)）；模型通过核心模型会话契约
 传入。共用物理服务通过明确租约共享，不共享可变 Thread 工具实例。
+
+SSH 的递归扫描、glob、候选搜索、Skill 发现、目录选择过滤与排序均归 `pl-tool` 的 host 编排。
+helper 仅返回单层目录迭代页及文件事实；本地和远程命令复用 `CommandProcessManager` 与
+`ManagedWorker` 的业务和物理边界，HTTP/2 由 `h2` 唯一实现，不维护平行帧 codec。
 
 ## 2.3 存储与投影
 

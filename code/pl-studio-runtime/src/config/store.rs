@@ -115,6 +115,10 @@ impl ConfigStore {
         self.credentials.delete_ssh(alias)
     }
 
+    pub(crate) fn bot_credentials(&self) -> crate::config::BotCredentialCapability {
+        crate::config::BotCredentialCapability::new(self.credentials.clone())
+    }
+
     /// 判断 `config.toml` 是否真实缺失。
     ///
     /// 只认路径条目本身不存在（`NotFound`）为缺失；权限、元数据或符号链接异常一律返回

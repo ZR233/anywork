@@ -85,6 +85,7 @@ impl StudioRuntime {
             persistence: self.agent_facility.product_events.persistence_state(),
             persistence_queue: self.agent_facility.product_events.persistence_queue_state(),
             agent_profiles: self.read_agent_profiles_state()?,
+            bots: self.bots.snapshot().await,
         })
     }
 

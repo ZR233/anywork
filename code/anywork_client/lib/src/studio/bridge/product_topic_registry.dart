@@ -38,6 +38,7 @@ enum BridgeSettingsScopeKind {
   skills,
   usage,
   acp,
+  bots,
 }
 
 /// 该设置作用域需要的 topics。
@@ -67,6 +68,8 @@ List<ProductTopic> bridgeSettingsScopeTopics(
     case BridgeSettingsScopeKind.acp:
       // Accounts 页可见时只租用认证观察；进入页面不启动检查。
       return const [AcpAuthTopic()];
+    case BridgeSettingsScopeKind.bots:
+      return const [BotsTopic()];
   }
 }
 
@@ -584,5 +587,6 @@ String describeBridgeProductTopic(ProductTopic topic) {
     PersistenceQueueTopic() => 'persistenceQueue',
     AgentProfilesTopic() => 'agentProfiles',
     AcpAuthTopic() => 'acpAuth',
+    BotsTopic() => 'bots',
   };
 }

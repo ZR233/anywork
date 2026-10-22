@@ -354,6 +354,10 @@ impl StudioRuntime {
                 at: crate::studio::unix_seconds(),
             })
             .map_err(|error| internal("finish_initialize", error))?;
+        self.bots
+            .load()
+            .await
+            .map_err(|error| internal("prepare_bots", anyhow::Error::from(error.studio_error())))?;
         self.start_recovery_scan().await;
         Ok(())
     }
@@ -387,6 +391,7 @@ impl StudioRuntime {
             }
             None => Ok(()),
         };
+        let bots = self.bots.shutdown().await;
         let storage = self.store.close().await;
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         for result in [
@@ -404,6 +409,7 @@ impl StudioRuntime {
         lsp.map_err(|error| internal("close_lsp", error))?;
         ssh.map_err(|error| environment("close_ssh", error))?;
         persistence.map_err(|error| environment("close_writer", error))?;
+        bots.map_err(|error| environment("close_bots", anyhow::Error::from(error.studio_error())))?;
         storage.map_err(|error| environment("close_storage", error))?;
         self.instance_lock.release();
         Ok(())

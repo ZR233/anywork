@@ -3,7 +3,7 @@
 //! 每个稳定 ID 保存名称、接入类型、可执行程序路径与 argv 列表；它不使用空 base URL、空模型
 //! 目录或假 API key 伪装 Native account，也不进入 Native 默认账号/模型路由候选。保存参数不做
 //! shell 拆分，程序路径是否可执行只在连接时校验：已保存但当前不可用的安装必须保留并在连接时
-//! 明确失败，不能凭猜测丢弃用户配置（见 design/20 §20.2、design/27）。
+//! 明确失败，不能凭猜测丢弃用户配置（见 design/20 §20.2、design/28）。
 
 use std::collections::BTreeMap;
 

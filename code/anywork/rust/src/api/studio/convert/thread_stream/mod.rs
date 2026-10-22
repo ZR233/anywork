@@ -613,6 +613,7 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         model_route: value
             .model_route
             .map(|route| BridgeThreadModelRouteSnapshot {
+                bot_id: route.bot_id,
                 account_id: route.account_id,
                 model_id: route.model_id,
                 effort: route.effort,

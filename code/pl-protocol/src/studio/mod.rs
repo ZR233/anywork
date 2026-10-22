@@ -2,6 +2,7 @@
 
 mod acp;
 mod attachment;
+mod bots;
 mod error;
 mod operation;
 mod persistence;
@@ -14,6 +15,7 @@ mod thread_preparation;
 
 pub use acp::*;
 pub use attachment::*;
+pub use bots::*;
 pub use error::*;
 pub use operation::*;
 pub use persistence::*;

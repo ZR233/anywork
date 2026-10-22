@@ -3,7 +3,7 @@
 //! 这些类型是 Studio 与外围 adapter（FRB/HTTP）之间的唯一公共契约：接入 desired 配置出现在
 //! Settings 快照，认证进展是独立版本域的资源快照。ACP 不是 HTTP 模型协议，因此这里既不复用
 //! Native account 的 endpoint/secret 结构，也不携带任何凭据、token、原始进程输出或 SDK 内部
-//! 类型；官方程序自行管理登录凭据（见 design/27）。
+//! 类型；官方程序自行管理登录凭据（见 design/28）。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

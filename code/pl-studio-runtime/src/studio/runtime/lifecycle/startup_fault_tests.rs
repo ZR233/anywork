@@ -21,6 +21,59 @@ fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPath
     paths.session_paths("project-cold", "cold")
 }
 
+#[tokio::test]
+async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread() -> Result<()> {
+    use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
+    use sea_orm::EntityTrait;
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    // Model a stop between canonical publication and its asynchronous SQLite mirror.
+    runtime
+        .store
+        .persist_directory_summaries(&DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+            id: "project-published".into(),
+            name: "Published".into(),
+            path: workspace.to_string_lossy().into_owned(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        }))
+        .await?;
+    runtime.shutdown_runtime().await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let thread = runtime
+        .create_thread("project-published", "incoming message")
+        .await?;
+    let flushed = runtime.flush_persistence().await;
+    let shutdown = runtime.shutdown_runtime().await;
+    flushed?;
+    shutdown?;
+
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let mirrored = crate::studio::entity::thread::Entity::find_by_id(&thread.id)
+        .one(runtime.store.database())
+        .await?
+        .expect("Thread mirror survived restart");
+    assert_eq!(mirrored.project_id, "project-published");
+    assert!(
+        runtime
+            .store
+            .paths()
+            .session_paths("project-published", &thread.id)?
+            .history_database()
+            .exists()
+    );
+    assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
 async fn seed(home: &Path) -> Result<StudioPaths> {
     let runtime = StudioRuntime::initialize(options(home)).await?;
     let store = runtime.store.clone();

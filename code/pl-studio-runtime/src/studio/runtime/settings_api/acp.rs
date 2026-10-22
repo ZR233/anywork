@@ -2,7 +2,7 @@
 //!
 //! 保存/删除接入属于 Settings 写路径：沿用 ConfigRuntime 的 revision CAS 与原子提交，成功即
 //! 返回 canonical 设置，绝不等待进程或登录。检查连接、登录与取消是独立的认证操作命令，返回
-//! 受理身份后由 owner 在后台推进（见 design/20 §20.2、design/27 §27.2）。
+//! 受理身份后由 owner 在后台推进（见 design/20 §20.2、design/28 §28.2）。
 
 use anyhow::Result;
 use pl_protocol::studio::{

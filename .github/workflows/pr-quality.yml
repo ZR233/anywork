@@ -155,12 +155,14 @@ jobs:
       - name: Build standalone Studio server
         run: cargo build -p pl-studio-server
 
+      - name: Install local execution worker
+        run: cargo install --path code/pl-remote-helper --locked
+
       - name: Test Studio history persistence
         run: cargo test -p pl-studio-runtime
 
   flutter-quality:
     name: Flutter
-    needs: [rust-quality, studio-server-linux]
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -182,8 +184,23 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install FRB code generator
-        run: cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            . -> target
+            . -> target/xtask
+
+      - name: Set up cargo-binstall
+        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
+        with:
+          version: 1.26.0
+
+      # FRB otherwise installs cargo-expand from source during generation.
+      - name: Install prebuilt FRB tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
 
       # 确定性 Client/adapter 与 GUI 静态门禁。原生 Driver/live 人工验收
       # 按实际宿主平台单独记录（见 AGENTS.md），不由此推断跨平台通过。

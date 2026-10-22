@@ -131,6 +131,24 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         for &field in SHARED_FIELDS {
             apply_field(&mut entry.model, definition, field);
         }
+        // Inherited capabilities follow this account's current declaration, even when the
+        // inventory was cached before a new media encoder was added. Keep explicit online
+        // input declarations authoritative and never borrow codecs across wire APIs/accounts.
+        if !winners.contains_key(&(entry.model.model_id.clone(), ModelMetadataField::Input))
+            && entry.model.binding.transport.protocol == definition.binding.transport.protocol
+        {
+            for profile in &definition.binding.request.media {
+                if entry
+                    .model
+                    .binding
+                    .request
+                    .media_profile(profile.modality)
+                    .is_none()
+                {
+                    entry.model.binding.request.media.push(profile.clone());
+                }
+            }
+        }
         apply_parameter_defaults(&mut entry.model, definition);
         let model_id = entry.model.model_id.clone();
         let fields = winners

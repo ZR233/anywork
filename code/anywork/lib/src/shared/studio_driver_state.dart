@@ -239,6 +239,7 @@ final class StudioDriverFacts {
     List<StudioRecoveryIssue> recoveryIssues = const [],
     this.project,
     this.workspace,
+    this.bots,
   }) : workspacesByThread = Map.unmodifiable(workspacesByThread),
        rootThreads = List.unmodifiable(rootThreads),
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
@@ -289,6 +290,72 @@ final class StudioDriverFacts {
   final List<StudioRecoveryIssue> recoveryIssues;
   final StudioProject? project;
   final AgentWorkspaceView? workspace;
+  final StudioDriverBotsFacts? bots;
+}
+
+final class StudioDriverBotsFacts {
+  StudioDriverBotsFacts({
+    required this.revision,
+    required List<StudioDriverBotFacts> bots,
+    required List<StudioDriverPendingCredentialFacts> pending,
+    this.registrationAttemptId,
+    this.registrationKind,
+    this.registrationBotId,
+    this.completedBotId,
+  }) : bots = List.unmodifiable(bots),
+       pending = List.unmodifiable(pending);
+
+  final int revision;
+  final List<StudioDriverBotFacts> bots;
+  final List<StudioDriverPendingCredentialFacts> pending;
+  final String? registrationAttemptId;
+  final String? registrationKind;
+  final String? registrationBotId;
+  final String? completedBotId;
+}
+
+final class StudioDriverBotFacts {
+  const StudioDriverBotFacts({
+    required this.id,
+    required this.name,
+    required this.enabled,
+    required this.credential,
+    required this.connectionKind,
+    required this.pendingKind,
+    required this.configCommitted,
+    required this.configRevision,
+    required this.trustedUserCount,
+    required this.trustedGroupCount,
+    required this.pairingCount,
+    required this.canChangeProject,
+    required this.canChangeAppId,
+  });
+
+  final String id;
+  final String name;
+  final bool enabled;
+  final String credential;
+  final String connectionKind;
+  final String? pendingKind;
+  final bool? configCommitted;
+  final int configRevision;
+  final int trustedUserCount;
+  final int trustedGroupCount;
+  final int pairingCount;
+  final bool canChangeProject;
+  final bool canChangeAppId;
+}
+
+final class StudioDriverPendingCredentialFacts {
+  const StudioDriverPendingCredentialFacts({
+    required this.botId,
+    required this.kind,
+    required this.configCommitted,
+  });
+
+  final String botId;
+  final String kind;
+  final bool? configCommitted;
 }
 
 /// Read-only Client queries and bounded UI/host diagnostics for Driver builds.
@@ -431,6 +498,7 @@ abstract final class StudioDriverState {
       ],
       // 唯一展示代次的只读事实：身份与数量来自当前 stock controller 的真实消息集合。
       'timeline': _timelineJson(facts.timeline),
+      'bots': _botsJson(facts.bots),
       // 只读滚动几何：查询时现场读取当前挂在屏幕上的标准 controller/position，
       // 没有挂载时为 null，不回放上一代快照（见 TimelineScrollDiagnostic）。
       'timelineScroll': facts.timelineScroll?.toJson(),
@@ -845,6 +913,43 @@ abstract final class StudioDriverState {
       'id': routed.account.id,
       'hasBearerToken': routed.account.hasBearerToken,
       'credentialEnv': routed.account.credentialEnv,
+    };
+  }
+
+  static Map<String, Object?>? _botsJson(StudioDriverBotsFacts? bots) {
+    if (bots == null) return null;
+    return {
+      'revision': bots.revision,
+      'bots': [
+        for (final bot in bots.bots)
+          {
+            'id': bot.id,
+            'name': bot.name,
+            'enabled': bot.enabled,
+            'credential': bot.credential,
+            'connectionKind': bot.connectionKind,
+            'pendingKind': bot.pendingKind,
+            'configCommitted': bot.configCommitted,
+            'configRevision': bot.configRevision,
+            'trustedUserCount': bot.trustedUserCount,
+            'trustedGroupCount': bot.trustedGroupCount,
+            'pairingCount': bot.pairingCount,
+            'canChangeProject': bot.canChangeProject,
+            'canChangeAppId': bot.canChangeAppId,
+          },
+      ],
+      'pending': [
+        for (final pending in bots.pending)
+          {
+            'botId': pending.botId,
+            'kind': pending.kind,
+            'configCommitted': pending.configCommitted,
+          },
+      ],
+      'registrationAttemptId': bots.registrationAttemptId,
+      'registrationKind': bots.registrationKind,
+      'registrationBotId': bots.registrationBotId,
+      'completedBotId': bots.completedBotId,
     };
   }
 

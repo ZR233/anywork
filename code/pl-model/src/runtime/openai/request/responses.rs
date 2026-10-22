@@ -321,6 +321,10 @@ enum ResponsesContent {
         #[serde(flatten)]
         source: ImageReference,
     },
+    InputFile {
+        #[serde(flatten)]
+        source: FileReference,
+    },
     OutputText {
         text: String,
     },
@@ -330,6 +334,14 @@ enum ResponsesContent {
 #[serde(untagged)]
 enum ImageReference {
     Url { image_url: String },
+    File { file_id: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum FileReference {
+    Data { filename: String, file_data: String },
+    Url { file_url: String },
     File { file_id: String },
 }
 
@@ -475,7 +487,7 @@ fn responses_content_for_message(
                 attachment_id,
                 modality,
                 media_type,
-                ..
+                filename,
             } => match modality {
                 AttachmentModality::Image => {
                     if media_plan.wire(*modality)? != MediaWireFormat::ResponsesInputImage {
@@ -502,7 +514,43 @@ fn responses_content_for_message(
                     };
                     response_content.push(ResponsesContent::InputImage { source });
                 }
-                AttachmentModality::File | AttachmentModality::Video => {
+                AttachmentModality::File => {
+                    if media_plan.wire(*modality)? != MediaWireFormat::ResponsesInputFile {
+                        return Err(protocol_error(
+                            "Chat file wire cannot be serialized by Responses",
+                        ));
+                    }
+                    let source = if let Some(file_id) =
+                        media_file_id(attachment_id, prepared_content, media_plan)
+                    {
+                        FileReference::File {
+                            file_id: file_id.to_owned(),
+                        }
+                    } else {
+                        let value = media_url(
+                            attachment_id,
+                            media_type,
+                            *modality,
+                            prepared_content,
+                            media_plan,
+                        )?;
+                        if value.starts_with("data:") {
+                            let fallback = match media_type.as_str() {
+                                "application/pdf" => "attachment.pdf",
+                                "text/plain" => "attachment.txt",
+                                _ => "attachment",
+                            };
+                            FileReference::Data {
+                                filename: filename.clone().unwrap_or_else(|| fallback.into()),
+                                file_data: value,
+                            }
+                        } else {
+                            FileReference::Url { file_url: value }
+                        }
+                    };
+                    response_content.push(ResponsesContent::InputFile { source });
+                }
+                AttachmentModality::Video => {
                     return Err(protocol_error(format!(
                         "Responses does not support {:?} attachments",
                         modality

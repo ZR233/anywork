@@ -8,6 +8,8 @@ import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
 import 'commands/account_usage_queries.dart';
+import 'commands/bots_commands.dart';
+import 'commands/bots_queries.dart';
 import 'commands/settings_commands.dart';
 import 'commands/acp_commands.dart';
 import 'commands/thread_commands.dart';
@@ -33,8 +35,9 @@ import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
 import 'stores/updater_store.dart';
 import 'stores/persistence_store.dart';
+import 'stores/bots_store.dart';
+import 'stores/bots_send_store.dart';
 import 'update_client.dart';
-import 'remote_actions.dart';
 import 'stores/domain_sync.dart' show typedCommandFailure;
 
 /// Application-instance owner. Providers borrow read models; navigation and exit
@@ -56,6 +59,8 @@ class AnyworkClient {
     accountUsageQueries = AccountUsageQueries(this);
     settingsCommands = SettingsCommands(this);
     acpCommands = AcpCommands(this);
+    botsCommands = BotsCommands(this);
+    botsQueries = BotsQueries(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
     attachments = AttachmentDraftsOwner(
@@ -105,6 +110,13 @@ class AnyworkClient {
         if (value.loaded && snapshot != null)
           observeResource('acp-auth', snapshot.revision);
       }),
+      bots.source.watch((value) {
+        if (!value.loaded) return;
+        observeResource('bots', value.revision);
+        for (final bot in value.value?.bots ?? const <BotSnapshot>[]) {
+          observeResource('bot:${bot.id}', bot.configRevision);
+        }
+      }),
     ]);
   }
 
@@ -119,6 +131,8 @@ class AnyworkClient {
   late final AccountUsageQueries accountUsageQueries;
   late final SettingsCommands settingsCommands;
   late final AcpCommands acpCommands;
+  late final BotsCommands botsCommands;
+  late final BotsQueries botsQueries;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
   late final AttachmentDraftsOwner attachments;
@@ -137,6 +151,8 @@ class AnyworkClient {
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
+  final bots = BotsStore();
+  final botsSends = BotsSendStore();
   final bootstrapState = LatestValue(const StudioBootstrapState());
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
@@ -428,6 +444,7 @@ class AnyworkClient {
       const ModelPerformanceTopic(),
       const AccountUsageTopic(),
       const PersistenceQueueTopic(),
+      const BotsTopic(),
     ]);
   }
 
@@ -657,6 +674,8 @@ class AnyworkClient {
         deadline,
       ),
       _joinOwner('acp-commands', acpCommands.close(), deadline),
+      _joinOwner('bots-commands', botsCommands.close(), deadline),
+      _joinOwner('bots-queries', botsQueries.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
       _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),
@@ -697,6 +716,7 @@ class AnyworkClient {
     }
     _canonicalObservations.clear();
     settingsCommands.closeObservations();
+    botsCommands.closeObservations();
     _applicationTopics = null;
     _selectionTopics = null;
     _releaseMirrorsIfResolved();

@@ -159,9 +159,20 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            . -> target
+            . -> target/xtask
+
+      - name: Set up cargo-binstall
+        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
+        with:
+          version: 1.26.0
 
       - name: Install pinned Zig and cargo-zigbuild
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/zig-0.16.0.tar.xz"
@@ -173,7 +184,7 @@ jobs:
           mkdir -p "$tool_dir"
           tar -xJf "$archive" --strip-components=1 -C "$tool_dir"
           echo "$tool_dir" >> "$GITHUB_PATH"
-          cargo install cargo-zigbuild --version 0.23.4 --locked
+          cargo binstall --no-confirm --force --disable-strategies compile cargo-zigbuild@0.23.4
 
       - name: Build all remote helper architectures
         env:
@@ -231,6 +242,10 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            . -> target
+            . -> target/xtask
 
       - name: Verify Rust formatting
         run: cargo fmt --all --check
@@ -248,8 +263,16 @@ jobs:
       - name: Test pl-core public API
         run: cargo test -p pl-core --features sqlite
 
-      - name: Install FRB code generator
-        run: cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
+      - name: Set up cargo-binstall
+        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
+        with:
+          version: 1.26.0
+
+      # FRB otherwise installs cargo-expand from source during generation.
+      - name: Install prebuilt FRB tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
 
       - name: Verify Flutter application
         run: cargo xtask verify-gui

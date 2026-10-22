@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/studio_host_lifecycle.dart';
 import '../../platform/error_log.dart';
-import '../../platform/studio_platform.dart';
+import '../../platform/external_url_launcher.dart';
 import '../../presentation/providers/client_provider.dart';
 
 /// Host actions borrow Client preparation; the process owns its exit coordinator.

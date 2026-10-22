@@ -35,6 +35,8 @@ The product database lives in `<home>/studio/v2/studio.sqlite`; canonical global
 - Helper executables are shared remote-user assets in `$HOME/.anywork/remote-helper/<version>/<digest>/`. Upload staging is unique and beside the final executable; ordinary atomic file writes stage beside their target. Neither location is a general-purpose task scratch directory.
 - Runtime pools contain non-overwriting `.gitignore` files. Do not overwrite user ignore rules, clear active scratch/history, or scan old `target/pure/` output as a cleanup shortcut. Directory write scopes, read-only roles, and SSH/worktree confinement still apply.
 
+Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and `state.sqlite`; App Secret uses the independent credential account `bot:<bot-id>` and never enters TOML or SQLite. The runtime talks to Feishu with native Rust HTTP/WebSocket/Protobuf only. Bot Threads use the same project-bound session layout described above.
+
 ## Format Rules
 
 - TOML with snake_case keys; the current runtime accepts `schema_version = 23`. Changing the version number alone does not migrate a configuration.
@@ -131,7 +133,7 @@ Edit a threshold directly in the account detail card's model list: valid input s
 
 ## Credentials
 
-Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
+Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). Bot App Secrets use the same service with account `bot:<bot-id>` and the Preserve/Replace/Clear transaction; a missing system keyring keeps a process-only lease marked `sessionOnly`. To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
 
 During the versioned account migration only, an old `provider:<id>` credential is copied to `account:<id>` and read back before committing configuration. A different existing target credential is a conflict, not permission to overwrite it. Original credential entries are retained, but normal execution never falls back to them. Environment-only references remain environment-only; no blank key is manufactured. Do not delete old credentials or edit migration records as a repair.
 

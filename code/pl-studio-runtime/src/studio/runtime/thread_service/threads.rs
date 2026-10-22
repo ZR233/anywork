@@ -19,6 +19,28 @@ const ARCHIVE_TREE_SETTLE_POLL_INTERVAL: std::time::Duration = std::time::Durati
 
 impl StudioRuntime {
     pub async fn create_thread(&self, project_id: &str, title: &str) -> Result<ThreadRecord> {
+        self.create_thread_with_id(crate::studio::ids::new_id("thread"), project_id, title)
+            .await
+    }
+
+    pub(crate) async fn create_thread_with_id(
+        &self,
+        thread_id: impl Into<String>,
+        project_id: &str,
+        title: &str,
+    ) -> Result<ThreadRecord> {
+        let thread_id = thread_id.into();
+        if let Some(existing) = self.find_owned_thread(&thread_id).await? {
+            anyhow::ensure!(
+                existing.project_id == project_id,
+                "bot Thread identity is bound to another project"
+            );
+            anyhow::ensure!(
+                existing.visibility == crate::studio::ThreadVisibility::Active,
+                "archived Thread cannot accept bot traffic"
+            );
+            return Ok(existing);
+        }
         let project = self
             .agent_facility
             .product_events
@@ -28,7 +50,7 @@ impl StudioRuntime {
             .find(|project| project.id == project_id)
             .context("selected Project not found")?;
         let (delta, thread) = DirectoryDelta::register_root_thread(
-            crate::studio::ids::new_id("thread"),
+            thread_id,
             project_id,
             title,
             pl_protocol::ThreadModeId::simple(),

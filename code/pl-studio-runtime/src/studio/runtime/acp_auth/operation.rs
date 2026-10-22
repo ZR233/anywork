@@ -3,7 +3,7 @@
 //! 该任务独占：官方进程、业务管道、stderr 排空、进展 watch、取消令牌与真实 join 出口。协议
 //! 结束并不等于收束完成：本任务先发布 busy 非终态 `Closing`，确认进程与管道真实停止（或等待
 //! 结果已交付）之后才发布认证终态；未确认收束时保留 owner 并由 shutdown 阶段做有界 join，
-//! 绝不用 drop/abort 冒充进程退出（见 design/27 §27.2–27.4）。
+//! 绝不用 drop/abort 冒充进程退出（见 design/28 §28.2–28.4）。
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -121,6 +121,11 @@ MCP、LSP、Mode catalog、Account usage、ACP auth、模型统计、Updater、�
 配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新
 让该订阅 lag。通道只分发 owner 已发布的事实，不持有另一套业务投影。
 
+机器人使用独立 `Bots` topic 与 `BotsStateChanged`，状态只包含轻量配置、连接、注册和
+配对信息，不携带会话正文。产品领域 revision 与各机器人 `configRevision` 分开；查询和
+发送是显式 action，成功响应进入同一 canonical reducer，不以聚合回读或 GUI 轮询补偿。
+接口、授权、注册和连接关闭契约见 [27](./27-bots.md)。
+
 订阅先登记接收者，再取得当前领域基线；期间通知按 payload 的领域 revision 合并，
 旧基线不能覆盖较新事件。会话目录基线是有 revision 和 cursor 的分页窗口，不能用 delta
 冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable

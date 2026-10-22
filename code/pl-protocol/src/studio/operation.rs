@@ -63,10 +63,22 @@ pub enum StudioOperation {
     ReadPersistenceQueue,
     SubscribeProduct,
     SubscribeThread,
+    ReadBots,
+    SaveBot,
+    StartBotRegistration,
+    CancelBotRegistration,
+    SetBotEnabled,
+    RetryBotConnection,
+    SetBotTrustedUser,
+    SetBotTrustedChat,
+    ListBotConversations,
+    ReadBotMessages,
+    SendBotMessage,
+    CreateBotConversationThread,
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 56] = [
+    pub const ALL: [Self; 68] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -123,6 +135,18 @@ impl StudioOperation {
         Self::ReadPersistenceQueue,
         Self::SubscribeProduct,
         Self::SubscribeThread,
+        Self::ReadBots,
+        Self::SaveBot,
+        Self::StartBotRegistration,
+        Self::CancelBotRegistration,
+        Self::SetBotEnabled,
+        Self::RetryBotConnection,
+        Self::SetBotTrustedUser,
+        Self::SetBotTrustedChat,
+        Self::ListBotConversations,
+        Self::ReadBotMessages,
+        Self::SendBotMessage,
+        Self::CreateBotConversationThread,
     ];
 
     pub const fn operation_id(self) -> &'static str {
@@ -183,6 +207,18 @@ impl StudioOperation {
             Self::ReadPersistenceQueue => "persistence.readQueue",
             Self::SubscribeProduct => "studio.subscribeProduct",
             Self::SubscribeThread => "thread.subscribe",
+            Self::ReadBots => "bots.read",
+            Self::SaveBot => "bots.save",
+            Self::StartBotRegistration => "bots.startRegistration",
+            Self::CancelBotRegistration => "bots.cancelRegistration",
+            Self::SetBotEnabled => "bots.setEnabled",
+            Self::RetryBotConnection => "bots.retryConnection",
+            Self::SetBotTrustedUser => "bots.setTrustedUser",
+            Self::SetBotTrustedChat => "bots.setTrustedChat",
+            Self::ListBotConversations => "bots.listConversations",
+            Self::ReadBotMessages => "bots.readMessages",
+            Self::SendBotMessage => "bots.sendMessage",
+            Self::CreateBotConversationThread => "bots.createConversationThread",
         }
     }
 }

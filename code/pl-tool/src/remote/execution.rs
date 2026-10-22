@@ -2,10 +2,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncRead;
 
 use crate::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
-use crate::shell::shell_quote_word;
 
 use super::RemoteClient;
 use super::path::relative_workspace_path;
@@ -47,11 +46,6 @@ impl ExecutionBackend for RemoteExecutionBackend {
             .saturating_add(1);
         let process_id = format!("execution-{}-{sequence}", std::process::id());
         let cwd = remote_cwd(&request.cwd, &self.canonical_root)?;
-        let command = std::iter::once(request.program.to_string_lossy().into_owned())
-            .chain(request.args)
-            .map(|part| shell_quote_word(&part))
-            .collect::<Vec<_>>()
-            .join(" ");
         let mut transport = self
             .client
             .spawn_workspace_process(
@@ -59,7 +53,9 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 RemoteSpawnRequest {
                     process_id: process_id.clone(),
                     workspace_id: self.workspace_id.clone(),
-                    command,
+                    program: request.program.to_string_lossy().into_owned(),
+                    arguments: request.args,
+                    remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
                     cwd,
                     environment: request.env,
                     capture: RemoteCapture::None,
@@ -71,7 +67,7 @@ impl ExecutionBackend for RemoteExecutionBackend {
         let cancellation = transport.cancellation();
         let stdout = transport.take_stdout().ok_or("remote stdout is missing")?;
         let stderr = transport.take_stderr().ok_or("remote stderr is missing")?;
-        let wait = collect_process_output(stdout, stderr, &mut transport);
+        let wait = collect_process_output(stdout, stderr, &mut transport, &self.client);
         tokio::pin!(wait);
         let result = match request.timeout {
             Some(timeout) => match tokio::time::timeout(timeout, &mut wait).await {
@@ -99,8 +95,13 @@ async fn collect_process_output(
     stdout: impl AsyncRead + Unpin,
     stderr: impl AsyncRead + Unpin,
     command: &mut crate::command::ManagedCommand,
+    client: &RemoteClient,
 ) -> Result<ExecutionOutput, String> {
-    let (stdout, stderr, exit) = tokio::join!(read_all(stdout), read_all(stderr), command.wait());
+    let (stdout, stderr, exit) = tokio::join!(
+        read_all(stdout, client, command.cancellation()),
+        read_all(stderr, client, command.cancellation()),
+        command.wait()
+    );
     let exit = exit?;
     if exit.capture.is_some() {
         return Err("stream-only execution returned an unexpected capture receipt".into());
@@ -112,13 +113,19 @@ async fn collect_process_output(
     })
 }
 
-async fn read_all(mut reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| format!("failed to read remote process output: {error}"))?;
-    Ok(bytes)
+async fn read_all(
+    mut reader: impl AsyncRead + Unpin,
+    client: &RemoteClient,
+    cancellation: crate::command::CommandCancellation,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = client
+        .resident_buffer(client.content_budget())
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = tokio::io::copy(&mut reader, &mut bytes).await {
+        cancellation.cancel();
+        return Err(format!("read remote command output: {error}"));
+    }
+    Ok(bytes.into_bytes())
 }
 
 fn remote_cwd(cwd: &Path, canonical_root: &str) -> Result<String, String> {

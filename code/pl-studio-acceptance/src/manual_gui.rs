@@ -1,5 +1,6 @@
 mod account_usage;
 mod acp_account;
+mod bots_fixture;
 mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
@@ -102,6 +103,10 @@ pub(crate) struct ManualGuiOptions {
     /// evidence, not an AOT/release performance measurement.
     #[arg(long)]
     pub(crate) timeline_displacement: bool,
+    /// Opt-in isolated Feishu platform peer for native bot GUI observation.
+    /// Requires `--scenario gui` and a Linux debug native environment.
+    #[arg(long)]
+    pub(crate) bots_fixture: bool,
 }
 
 #[derive(Deserialize)]
@@ -298,10 +303,12 @@ struct StatisticsDbCounts {
 struct ManualOperation {
     at_unix_ms: u128,
     action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<&'static str>,
 }
 
 enum InputEvent {
-    Action(ManualOperation),
+    Line(String),
     Done,
     Eof,
 }
@@ -714,6 +721,36 @@ impl Drop for OwnedProcess {
     }
 }
 
+/// Reclaim the optional Feishu peer, model fixture, and start-path evidence
+/// without letting a later write replace the primary error.
+fn cleanup_bots_gui_start(
+    primary: anyhow::Error,
+    bots: Option<bots_fixture::BotsFixture>,
+    mut fixture: OwnedProcess,
+    requests_file: &Path,
+    fixture_log: &Path,
+    output: &Path,
+    gui_log: Option<&Path>,
+) -> Result<()> {
+    let peer = bots_fixture::finish_optional(bots, output);
+    let model = fixture
+        .stop(requests_file)
+        .map(|_| ())
+        .map_err(|error| error.context("model fixture stop failed"));
+    drop(fixture);
+    let fixture_log_result = write_fixture_log(fixture_log, &output.join("fixture.log"));
+    let gui_log_result = gui_log.map_or(Ok(()), |path| {
+        write_sanitized_log(path, &output.join("gui.log"))
+    });
+    let mut result = Err(primary);
+    result = bots_fixture::with_cleanup(result, peer);
+    result = bots_fixture::with_cleanup(result, model);
+    bots_fixture::with_cleanup(
+        result,
+        bots_fixture::with_cleanup(fixture_log_result, gui_log_result),
+    )
+}
+
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     ensure!(
         !options.retain_environment
@@ -795,6 +832,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     // The statistics, realtime, history and plan-recovery journeys are fully
     // driven by Flutter Driver and reviewed from captured evidence, so they do
     // not require an interactive stdin.
+    bots_fixture::validate(&options)?;
     if !matches!(
         options.scenario.as_str(),
         "statistics"
@@ -1336,38 +1374,104 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
 
     let gui_log_path = working.path().join("gui.log");
     let gui_log = File::create(&gui_log_path)?;
-    let mut gui_command = Command::new("cargo");
+    let gui_stdout = match gui_log.try_clone() {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            return cleanup_bots_gui_start(
+                error.into(),
+                None,
+                fixture,
+                &requests_file,
+                &fixture_log_path,
+                &output,
+                Some(&gui_log_path),
+            );
+        }
+    };
+    let mut bots = if options.bots_fixture {
+        match bots_fixture::start(&home, &output) {
+            Ok(bots) => Some(bots),
+            Err(error) => {
+                return cleanup_bots_gui_start(
+                    error,
+                    None,
+                    fixture,
+                    &requests_file,
+                    &fixture_log_path,
+                    &output,
+                    None,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let gui_command_result = bots
+        .as_ref()
+        .map(|fixture| fixture.gui_command(&workspace, &home))
+        .transpose();
+    let mut gui_command = match gui_command_result {
+        Ok(Some(command)) => command,
+        Ok(None) => {
+            let mut command = Command::new("cargo");
+            command
+                .current_dir(&workspace)
+                .args(["xtask", "run-gui", "--driver"])
+                .env("ANYWORK_HOME", &home);
+            command
+        }
+        Err(error) => {
+            return cleanup_bots_gui_start(
+                error,
+                bots.take(),
+                fixture,
+                &requests_file,
+                &fixture_log_path,
+                &output,
+                Some(&gui_log_path),
+            );
+        }
+    };
     gui_command
-        .current_dir(&workspace)
-        .args(["xtask", "run-gui", "--driver"])
-        .env("ANYWORK_HOME", &home)
-        .stdout(Stdio::from(gui_log.try_clone()?))
+        .stdout(Stdio::from(gui_stdout))
         .stderr(Stdio::from(gui_log));
-    if options.scenario == "gui" {
-        gui_command.args(["--log-level", "info"]);
-    }
-    if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
-        gui_command.arg("--profile");
-    }
-    if options.scenario == "tool-scroll" {
-        gui_command
-            .arg("--driver-attachment")
-            .arg(app_dir.join("test_driver/fixtures/tool-image.png"));
+    if bots.is_none() {
+        if options.scenario == "gui" {
+            gui_command.args(["--log-level", "info"]);
+        }
+        if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
+            gui_command.arg("--profile");
+        }
+        if options.scenario == "tool-scroll" {
+            gui_command
+                .arg("--driver-attachment")
+                .arg(app_dir.join("test_driver/fixtures/tool-image.png"));
+        }
     }
     let mut gui = match OwnedProcess::start(&mut gui_command, false) {
         Ok(gui) => gui,
         Err(error) => {
-            let _ = fixture.stop(&requests_file);
-            drop(fixture);
-            write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
-            write_sanitized_log(&gui_log_path, &output.join("gui.log"))?;
-            return Err(error);
+            return cleanup_bots_gui_start(
+                error,
+                bots.take(),
+                fixture,
+                &requests_file,
+                &fixture_log_path,
+                &output,
+                Some(&gui_log_path),
+            );
         }
     };
     let session = (|| -> Result<()> {
         let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, &interrupt_rx)?;
         let mut probe = None;
         println!("Native GUI is ready. Evidence: {}", output.display());
+        if bots.is_some() {
+            println!(
+                "Bots fixture runbook: {}",
+                output.join("bots-fixture-runbook.md").display()
+            );
+        }
         if catalog_control.is_some() {
             println!(
                 "Model catalog runbook: {}",
@@ -1502,6 +1606,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         println!(
             "Record actions one per line: open-project, create-thread, select-model, send-prompt, inspect-response, stop-turn, open-settings, edit-settings, save-settings, other. Type done to capture and shut down; Ctrl-C cancels. Only action codes are saved."
         );
+        if bots.is_some() {
+            println!(
+                "Bots environment commands (this peer only): bots-env registration pending|slow-down|denied|expired|complete|complete-without-user; bots-env message unknown-direct|resend-direct; bots-env conversations prepare-pages. They set fixed synthetic platform inputs and are not GUI or authorization actions."
+            );
+        }
         let (input_tx, input_rx) = mpsc::channel();
         thread::spawn(move || {
             loop {
@@ -1516,14 +1625,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                         break;
                     }
                     Ok(_) => {
-                        let action = safe_action(&input);
-                        let at_unix_ms = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_or(0, |time| time.as_millis());
-                        if input_tx
-                            .send(InputEvent::Action(ManualOperation { at_unix_ms, action }))
-                            .is_err()
-                        {
+                        if input_tx.send(InputEvent::Line(input)).is_err() {
                             break;
                         }
                     }
@@ -1533,7 +1635,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         let mut operations = Vec::new();
         loop {
             match input_rx.try_recv() {
-                Ok(InputEvent::Action(operation)) => {
+                Ok(InputEvent::Line(line)) => {
+                    let operation = record_session_line(bots.as_ref(), &line)?;
                     operations.push(operation);
                     fs::write(
                         output.join("operations.json"),
@@ -1637,453 +1740,460 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         fs::copy(&probe_frames, output.join("probe-frames.json"))?;
     }
     drop(gui);
-    let runtime_log = home.join("studio/logs/studio.log");
-    if runtime_log.is_file() {
-        write_sanitized_log(&runtime_log, &output.join("startup-timing.log"))?;
-    }
-    if options.startup_fault.is_some() {
-        let backups = home.join("startup-backups");
-        ensure!(
-            backups.is_dir() && fs::read_dir(&backups)?.count() == 1,
-            "startup did not produce exactly one recovery backup"
-        );
-        ensure!(
-            !home.join("startup-recovery.toml").exists(),
-            "startup recovery did not complete"
-        );
-        fs::write(
-            output.join("startup-recovery.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "fault": options.startup_fault, "backupCount": 1, "completed": true,
-                "preservedOldVersion": fs::read(home.join("sessions/old/retained"))? == b"old session",
-            }))?,
-        )?;
-        copy_startup_evidence(&backups, &output.join("startup-backups"))?;
-    }
-    if options.model_catalog_restart {
+    let bots_cleanup = bots_fixture::finish_optional(bots.take(), &output);
+    let primary = (|| -> Result<()> {
+        let runtime_log = home.join("studio/logs/studio.log");
+        if runtime_log.is_file() {
+            write_sanitized_log(&runtime_log, &output.join("startup-timing.log"))?;
+        }
+        if options.startup_fault.is_some() {
+            let backups = home.join("startup-backups");
+            ensure!(
+                backups.is_dir() && fs::read_dir(&backups)?.count() == 1,
+                "startup did not produce exactly one recovery backup"
+            );
+            ensure!(
+                !home.join("startup-recovery.toml").exists(),
+                "startup recovery did not complete"
+            );
+            fs::write(
+                output.join("startup-recovery.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "fault": options.startup_fault, "backupCount": 1, "completed": true,
+                    "preservedOldVersion": fs::read(home.join("sessions/old/retained"))? == b"old session",
+                }))?,
+            )?;
+            copy_startup_evidence(&backups, &output.join("startup-backups"))?;
+        }
+        if options.model_catalog_restart {
+            drop(fixture);
+            write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
+            session?;
+            if options.retain_environment {
+                keep_isolated_environment(working, &home, &output, None)?;
+            }
+            return Ok(());
+        }
+        let fixture_result = fixture.stop(&requests_file);
         drop(fixture);
         write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
-        session?;
-        if options.retain_environment {
-            keep_isolated_environment(working, &home, &output, None)?;
+        model_catalog::copy_hits(
+            &catalog_hits_path,
+            &output.join("model-catalog-requests.json"),
+            catalog_control.is_some(),
+        )?;
+        if options.scenario == "gui" {
+            copy_sanitized_config(&home, &output.join("config.toml"))?;
         }
-        return Ok(());
-    }
-    let fixture_result = fixture.stop(&requests_file);
-    drop(fixture);
-    write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
-    model_catalog::copy_hits(
-        &catalog_hits_path,
-        &output.join("model-catalog-requests.json"),
-        catalog_control.is_some(),
-    )?;
-    if options.scenario == "gui" {
-        copy_sanitized_config(&home, &output.join("config.toml"))?;
-    }
-    let stress_report: Option<pl_provider_fixture::StressReport> = if stress_report_file.exists() {
-        let report = serde_json::from_slice(&fs::read(&stress_report_file)?)?;
-        fs::write(
-            output.join("stress-report.json"),
-            serde_json::to_vec_pretty(&report)?,
-        )?;
-        report
-    } else {
-        None
-    };
-    let requests = if requests_file.exists() {
-        sanitize_requests(&requests_file, &output.join("requests.json"))?;
-        Some(serde_json::from_slice::<Vec<serde_json::Value>>(
-            &fs::read(&requests_file)?,
-        )?)
-    } else {
-        None
-    };
-    let accepted = requests.as_ref().map_or(0, |rows| {
-        rows.iter()
-            .filter(|row| row.get("accepted").and_then(|value| value.as_bool()) == Some(true))
-            .count()
-    });
-    let rejected = requests.as_ref().map_or(0, |rows| {
-        rows.iter()
-            .filter(|row| row.get("accepted").and_then(|value| value.as_bool()) == Some(false))
-            .count()
-    });
-    let fixture_complete = fixture_result.as_ref().is_ok_and(|status| status.success());
-    let fixture_state = if requests.is_none() {
-        "error"
-    } else if rejected > 0 {
-        "rejected"
-    } else if fixture_complete {
-        "completed"
-    } else if accepted == 0 {
-        "pending"
-    } else {
-        "error"
-    };
-    fs::write(
-        output.join("fixture-status.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "scenario": fixture_state, "acceptedRequests": accepted, "rejectedRequests": rejected,
-            "emittedEvents": stress_report.as_ref().map(|report| report.emitted_events),
-            "elapsedMillis": stress_report.as_ref().map(|report| report.elapsed_millis),
-        }))?,
-    )?;
-    println!("Evidence: {} (human verdict pending)", output.display());
-    gui_log_result?;
-    if fixture_state == "pending" {
-        session?;
-        println!("Fixture main step was not exercised; review remains pending.");
-        return Ok(());
-    }
-    session?;
-    ensure!(
-        fixture_state == "completed",
-        "fixture {fixture_state}; verdict remains pending"
-    );
-    if options.scenario == "tool-scroll" {
-        let counts: Vec<_> = requests
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .map(|request| count_inline_images(&request["body"]))
-            .collect();
-        fs::write(
-            output.join("image-requests.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({"inlineImageCounts": counts}))?,
-        )?;
-        ensure!(
-            counts.iter().any(|count| *count >= 3),
-            "account did not receive the sent image and both tool-read images"
-        );
-    }
-    if options.scenario == "stress" {
-        // The probe must have really prepended an older page in canonical order
-        // while retaining every already-displayed identity. There is no window
-        // capacity to saturate any more: the loaded set grows with the pages this
-        // run visited, so the evidence is the real page boundaries, cursors,
-        // order and generation instead of a trim bound.
-        let paging: ProbePagingReport = serde_json::from_slice(
-            &fs::read(&probe_paging)
-                .context("GUI stress probe did not write its paging evidence")?,
-        )?;
-        ensure!(
-            paging.paged
-                && paging.page_count >= 1
-                && paging.moved_older
-                && paging.identity_retained
-                && paging.order_monotonic
-                && paging.unique_ids
-                && paging.cursor_advanced
-                && paging.generation_stable
-                && paging.mode_stable,
-            "GUI stress paging never prepended an older canonical page: {}",
-            serde_json::json!({
-                "maxPages": paging.max_pages,
-                "paged": paging.paged,
-                "pageCount": paging.page_count,
-                "finalItems": paging.final_items,
-                "movedOlder": paging.moved_older,
-                "identityRetained": paging.identity_retained,
-                "orderMonotonic": paging.order_monotonic,
-                "uniqueIds": paging.unique_ids,
-                "cursorAdvanced": paging.cursor_advanced,
-                "generationStable": paging.generation_stable,
-                "modeStable": paging.mode_stable,
-            })
-        );
-        let sessions: StressSessionsReport = serde_json::from_slice(
-            &fs::read(&stress_sessions_report)
-                .context("Flutter Driver did not complete the multi-session journey")?,
-        )?;
-        ensure!(
-            sessions.original_reopened
-                && sessions.rapid_switch_ok
-                && !sessions.original_thread_id.is_empty()
-                && sessions.original_mode == "live"
-                && sessions.original_loaded_items >= 2
-                && sessions.session_count == pl_provider_fixture::GUI_STRESS_SESSION_COUNT
-                && sessions.sessions.len() == sessions.session_count
-                && sessions.directory_count > sessions.session_count,
-            "multi-session stress journey incomplete"
-        );
-        let mut ids = HashSet::from([sessions.original_thread_id]);
-        for (index, session) in sessions.sessions.iter().enumerate() {
-            ensure!(
-                session.ordinal == index + 1
-                    && session.loaded_items >= 2
-                    && session.saved_items >= 1
-                    && session.typed_detail_refs >= 1
-                    && ids.insert(session.thread_id.clone()),
-                "multi-session stress item {} invalid: {:?}",
-                index + 1,
-                serde_json::json!({
-                    "loadedItems": session.loaded_items,
-                    "savedItems": session.saved_items,
-                    "terminalItems": session.terminal_items,
-                    "typedDetailRefs": session.typed_detail_refs,
-                })
-            );
-        }
-        // 131085 字节正文超过产品 32 KiB 展示预算：行内必须是有界预览，真实总长由
-        // 详情引用给出；完整正文只能由用户显式打开的查看器逐块读取并复制。
-        let large = &sessions.sessions[0];
-        let preview_budget = 32 * 1024;
-        ensure!(
-            large.truncated_bodies >= 1,
-            "large assistant body was not reported as a bounded preview"
-        );
-        ensure!(
-            large.assistant_text_total_bytes
-                == Some(pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS),
-            "large assistant body detail reference reports {:?} of {} bytes",
-            large.assistant_text_total_bytes,
-            pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
-        );
-        ensure!(
-            large
-                .assistant_preview_bytes
-                .is_some_and(|bytes| bytes <= preview_budget)
-                && large.assistant_preview_bytes == large.assistant_text_bytes,
-            "large assistant preview exceeded the product budget: {:?} of {:?} bytes",
-            large.assistant_preview_bytes,
-            large.assistant_text_bytes
-        );
-        let copy = large
-            .detail_copy
-            .as_ref()
-            .context("large assistant body has no detail copy evidence")?;
-        ensure!(
-            copy.pass
-                && copy.viewer_closed
-                && copy.expected_characters
-                    == pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
-                && copy.loaded_characters == copy.expected_characters
-                && copy.loaded_hash.as_deref() == Some(copy.expected_hash.as_str())
-                && copy.clipboard_characters == copy.expected_characters
-                && copy.clipboard_hash.as_deref() == Some(copy.expected_hash.as_str()),
-            "large assistant body was not read/copied completely through the viewer: {}",
-            serde_json::json!({
-                "expectedCharacters": copy.expected_characters,
-                "loadedCharacters": copy.loaded_characters,
-                "clipboardCharacters": copy.clipboard_characters,
-                "theoreticalChunks": copy.theoretical_chunks,
-                "sawPartialChunk": copy.saw_partial_chunk,
-                "viewerClosed": copy.viewer_closed,
-            })
-        );
-        // 已加载数据随访问页增长是明示取舍：这里只记录真实观测值，不断言常量内存。
-        let session_rows: Vec<serde_json::Value> = sessions
-            .sessions
-            .iter()
-            .map(|session| {
-                serde_json::json!({
-                    "ordinal": session.ordinal,
-                    "loadedItems": session.loaded_items,
-                    "mode": session.mode,
-                    "generation": session.generation,
-                    "hasOlder": session.has_older,
-                    "truncatedBodies": session.truncated_bodies,
-                    "previewTextBytes": session.preview_text_bytes,
-                    "assistantCharacters": session.assistant_characters,
-                    "assistantTextBytes": session.assistant_text_bytes,
-                    "assistantPreviewBytes": session.assistant_preview_bytes,
-                    "assistantTextTotalBytes": session.assistant_text_total_bytes,
-                })
-            })
-            .collect();
-        fs::write(
-            output.join("timeline-loading.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "note": "loaded items and preview bytes grow with the pages this run visited; \
-                         this is not a constant-memory claim",
-                "reopenedOriginal": {
-                    "mode": sessions.original_mode,
-                    "loadedItems": sessions.original_loaded_items,
-                    "hasOlder": sessions.original_has_older,
-                },
-                "paging": {
-                    "pageCount": paging.page_count,
-                    "finalItems": paging.final_items,
-                    "finalHasOlder": paging.final_has_older,
-                    "finalMode": paging.final_mode,
-                    "finalGeneration": paging.final_generation,
-                },
-                "sessions": session_rows,
-            }))?,
-        )?;
-        let report = stress_report.context("stress fixture did not emit a report")?;
-        let gui_errors = count_gui_errors(&gui_log_path)?;
-        let debug_log = output.join("gui-debug.log");
-        fs::copy(&gui_log_path, &debug_log)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&debug_log, fs::Permissions::from_mode(0o600))?;
-        }
-        fs::write(
-            output.join("gui-health.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "unhandledErrors": gui_errors, "humanVerdict": "pending"
-            }))?,
-        )?;
-        ensure!(
-            gui_errors == 0,
-            "GUI reported {gui_errors} unhandled errors during stress"
-        );
-        ensure!(
-            report.emitted_events == pl_provider_fixture::STRESS_EVENT_COUNT,
-            "stress stream incomplete: {}/{} events",
-            report.emitted_events,
-            pl_provider_fixture::STRESS_EVENT_COUNT
-        );
-        ensure!(
-            report.elapsed_millis >= 3_800,
-            "stress stream ran faster than 5,000 nominal tokens/s"
-        );
-        ensure!(
-            report.elapsed_millis <= 10_000,
-            "stress stream fell behind the 5,000 token/s fixture: {}ms for {} items",
-            report.elapsed_millis,
-            report.emitted_events
-        );
-        let finished = report
-            .finished_unix_millis
-            .context("stress stream did not finish")?;
-        let gui_finished: u128 = fs::read_to_string(&probe_finished)?
-            .trim()
-            .parse()
-            .context("GUI stress probe did not report its completion time")?;
-        let completion_lag = gui_finished.saturating_sub(finished);
-        ensure!(
-            completion_lag <= 15_000,
-            "GUI stress result lagged account completion by {completion_lag}ms"
-        );
-        let samples: Vec<serde_json::Value> = serde_json::from_slice(
-            &fs::read(&probe_report).context("GUI stress probe did not write a report")?,
-        )?;
-        let overlapping: Vec<_> = samples
-            .iter()
-            .filter(|sample| {
-                sample
-                    .get("startedUnixMillis")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|time| {
-                        u128::from(time) >= report.started_unix_millis
-                            && u128::from(time) < finished
-                    })
-            })
-            .collect();
-        let failed = overlapping
-            .iter()
-            .filter(|sample| sample.get("ok") != Some(&serde_json::Value::Bool(true)))
-            .count();
-        let slowest = overlapping
-            .iter()
-            .filter_map(|sample| {
-                sample
-                    .get("elapsedMillis")
-                    .and_then(serde_json::Value::as_u64)
-            })
-            .max()
-            .unwrap_or(0);
-        let frames: serde_json::Value = serde_json::from_slice(
-            &fs::read(&probe_frames).context("GUI stress probe did not write frame timings")?,
-        )?;
-        let all_frames = frames
-            .get("frames")
-            .and_then(serde_json::Value::as_u64)
-            .context("GUI total frame count is unavailable")?;
-        let all_slow_frames = frames
-            .get("over33Millis")
-            .and_then(serde_json::Value::as_u64)
-            .context("GUI total slow frame count is unavailable")?;
-        let all_slowest_frame = frames
-            .get("maxFrameMillis")
-            .and_then(serde_json::Value::as_f64)
-            .context("GUI longest frame is unavailable")?;
-        let frame_samples = frames
-            .get("samples")
-            .and_then(serde_json::Value::as_array)
-            .context("GUI frame timing samples are unavailable")?;
-        let stream_frames: Vec<f64> = frame_samples
-            .iter()
-            .filter(|sample| {
-                sample
-                    .get("completedUnixMillis")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|time| {
-                        u128::from(time) >= report.started_unix_millis
-                            && u128::from(time) < finished.saturating_add(1_000)
-                    })
-            })
-            .filter_map(|sample| {
-                sample
-                    .get("totalMillis")
-                    .and_then(serde_json::Value::as_f64)
-            })
-            .collect();
-        let slow_frames = stream_frames.iter().filter(|&&ms| ms > 33.333).count();
-        let slowest_frame = stream_frames.iter().copied().fold(0.0_f64, f64::max);
-        fs::write(
-            output.join("responsiveness.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "samplesDuringStream": overlapping.len(), "failed": failed,
-                "slowestSnapshotMillis": slowest,
-                "providerStreamMillis": report.elapsed_millis,
-                "guiCompletionLagMillis": completion_lag,
-                "streamAndDrainFrames": stream_frames.len(),
-                "streamAndDrainOver33Millis": slow_frames,
-                "streamAndDrainMaxFrameMillis": slowest_frame,
-                "fullSessionFrameTimings": {
-                    "frames": frames.get("frames"),
-                    "over33Millis": frames.get("over33Millis"),
-                    "maxFrameMillis": frames.get("maxFrameMillis"),
-                },
-                "verdict": "pending"
-            }))?,
-        )?;
-        ensure!(
-            stream_frames.len() >= 5,
-            "GUI did not report enough frames during the stress stream"
-        );
-        ensure!(
-            all_frames >= 20 && all_slowest_frame <= 100.0 && all_slow_frames <= all_frames / 20,
-            "GUI full stress journey stalled: max {all_slowest_frame:.1}ms, {all_slow_frames}/{all_frames} over 33ms"
-        );
-        ensure!(
-            slowest_frame <= 100.0 && slow_frames * 20 <= stream_frames.len(),
-            "GUI stream frames stalled: max {slowest_frame:.1}ms, {slow_frames}/{} over 33ms",
-            stream_frames.len()
-        );
-        ensure!(
-            overlapping.len() >= 5,
-            "GUI was not probed during stress stream"
-        );
-        ensure!(
-            failed == 0,
-            "GUI snapshot probe failed {failed} times during stress stream"
-        );
-        ensure!(
-            slowest <= 2_000,
-            "GUI snapshot stalled for {slowest}ms during stress stream"
-        );
-    }
-    if options.retain_environment {
-        let project = if options.scenario == "tool-scroll" {
-            let capture = fs::read_to_string(output.join("capture-stage.txt"))
-                .context("retained environment requires completed shutdown capture")?;
-            ensure!(
-                capture.trim() == "shutdown_completed",
-                "runtime shutdown did not complete"
-            );
-            Some(working.path().join("tool-scroll-project"))
+        let stress_report: Option<pl_provider_fixture::StressReport> =
+            if stress_report_file.exists() {
+                let report = serde_json::from_slice(&fs::read(&stress_report_file)?)?;
+                fs::write(
+                    output.join("stress-report.json"),
+                    serde_json::to_vec_pretty(&report)?,
+                )?;
+                report
+            } else {
+                None
+            };
+        let requests = if requests_file.exists() {
+            sanitize_requests(&requests_file, &output.join("requests.json"))?;
+            Some(serde_json::from_slice::<Vec<serde_json::Value>>(
+                &fs::read(&requests_file)?,
+            )?)
         } else {
             None
         };
-        keep_isolated_environment(working, &home, &output, project.as_deref())?;
-    }
+        let accepted = requests.as_ref().map_or(0, |rows| {
+            rows.iter()
+                .filter(|row| row.get("accepted").and_then(|value| value.as_bool()) == Some(true))
+                .count()
+        });
+        let rejected = requests.as_ref().map_or(0, |rows| {
+            rows.iter()
+                .filter(|row| row.get("accepted").and_then(|value| value.as_bool()) == Some(false))
+                .count()
+        });
+        let fixture_complete = fixture_result.as_ref().is_ok_and(|status| status.success());
+        let fixture_state = if requests.is_none() {
+            "error"
+        } else if rejected > 0 {
+            "rejected"
+        } else if fixture_complete {
+            "completed"
+        } else if accepted == 0 {
+            "pending"
+        } else {
+            "error"
+        };
+        fs::write(
+            output.join("fixture-status.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "scenario": fixture_state, "acceptedRequests": accepted, "rejectedRequests": rejected,
+                "emittedEvents": stress_report.as_ref().map(|report| report.emitted_events),
+                "elapsedMillis": stress_report.as_ref().map(|report| report.elapsed_millis),
+            }))?,
+        )?;
+        println!("Evidence: {} (human verdict pending)", output.display());
+        gui_log_result?;
+        if fixture_state == "pending" {
+            session?;
+            println!("Fixture main step was not exercised; review remains pending.");
+            return Ok(());
+        }
+        session?;
+        ensure!(
+            fixture_state == "completed",
+            "fixture {fixture_state}; verdict remains pending"
+        );
+        if options.scenario == "tool-scroll" {
+            let counts: Vec<_> = requests
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|request| count_inline_images(&request["body"]))
+                .collect();
+            fs::write(
+                output.join("image-requests.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({"inlineImageCounts": counts}))?,
+            )?;
+            ensure!(
+                counts.iter().any(|count| *count >= 3),
+                "account did not receive the sent image and both tool-read images"
+            );
+        }
+        if options.scenario == "stress" {
+            // The probe must have really prepended an older page in canonical order
+            // while retaining every already-displayed identity. There is no window
+            // capacity to saturate any more: the loaded set grows with the pages this
+            // run visited, so the evidence is the real page boundaries, cursors,
+            // order and generation instead of a trim bound.
+            let paging: ProbePagingReport = serde_json::from_slice(
+                &fs::read(&probe_paging)
+                    .context("GUI stress probe did not write its paging evidence")?,
+            )?;
+            ensure!(
+                paging.paged
+                    && paging.page_count >= 1
+                    && paging.moved_older
+                    && paging.identity_retained
+                    && paging.order_monotonic
+                    && paging.unique_ids
+                    && paging.cursor_advanced
+                    && paging.generation_stable
+                    && paging.mode_stable,
+                "GUI stress paging never prepended an older canonical page: {}",
+                serde_json::json!({
+                    "maxPages": paging.max_pages,
+                    "paged": paging.paged,
+                    "pageCount": paging.page_count,
+                    "finalItems": paging.final_items,
+                    "movedOlder": paging.moved_older,
+                    "identityRetained": paging.identity_retained,
+                    "orderMonotonic": paging.order_monotonic,
+                    "uniqueIds": paging.unique_ids,
+                    "cursorAdvanced": paging.cursor_advanced,
+                    "generationStable": paging.generation_stable,
+                    "modeStable": paging.mode_stable,
+                })
+            );
+            let sessions: StressSessionsReport = serde_json::from_slice(
+                &fs::read(&stress_sessions_report)
+                    .context("Flutter Driver did not complete the multi-session journey")?,
+            )?;
+            ensure!(
+                sessions.original_reopened
+                    && sessions.rapid_switch_ok
+                    && !sessions.original_thread_id.is_empty()
+                    && sessions.original_mode == "live"
+                    && sessions.original_loaded_items >= 2
+                    && sessions.session_count == pl_provider_fixture::GUI_STRESS_SESSION_COUNT
+                    && sessions.sessions.len() == sessions.session_count
+                    && sessions.directory_count > sessions.session_count,
+                "multi-session stress journey incomplete"
+            );
+            let mut ids = HashSet::from([sessions.original_thread_id]);
+            for (index, session) in sessions.sessions.iter().enumerate() {
+                ensure!(
+                    session.ordinal == index + 1
+                        && session.loaded_items >= 2
+                        && session.saved_items >= 1
+                        && session.typed_detail_refs >= 1
+                        && ids.insert(session.thread_id.clone()),
+                    "multi-session stress item {} invalid: {:?}",
+                    index + 1,
+                    serde_json::json!({
+                        "loadedItems": session.loaded_items,
+                        "savedItems": session.saved_items,
+                        "terminalItems": session.terminal_items,
+                        "typedDetailRefs": session.typed_detail_refs,
+                    })
+                );
+            }
+            // 131085 字节正文超过产品 32 KiB 展示预算：行内必须是有界预览，真实总长由
+            // 详情引用给出；完整正文只能由用户显式打开的查看器逐块读取并复制。
+            let large = &sessions.sessions[0];
+            let preview_budget = 32 * 1024;
+            ensure!(
+                large.truncated_bodies >= 1,
+                "large assistant body was not reported as a bounded preview"
+            );
+            ensure!(
+                large.assistant_text_total_bytes
+                    == Some(pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS),
+                "large assistant body detail reference reports {:?} of {} bytes",
+                large.assistant_text_total_bytes,
+                pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
+            );
+            ensure!(
+                large
+                    .assistant_preview_bytes
+                    .is_some_and(|bytes| bytes <= preview_budget)
+                    && large.assistant_preview_bytes == large.assistant_text_bytes,
+                "large assistant preview exceeded the product budget: {:?} of {:?} bytes",
+                large.assistant_preview_bytes,
+                large.assistant_text_bytes
+            );
+            let copy = large
+                .detail_copy
+                .as_ref()
+                .context("large assistant body has no detail copy evidence")?;
+            ensure!(
+                copy.pass
+                    && copy.viewer_closed
+                    && copy.expected_characters
+                        == pl_provider_fixture::GUI_STRESS_LARGE_SESSION_CHARACTERS
+                    && copy.loaded_characters == copy.expected_characters
+                    && copy.loaded_hash.as_deref() == Some(copy.expected_hash.as_str())
+                    && copy.clipboard_characters == copy.expected_characters
+                    && copy.clipboard_hash.as_deref() == Some(copy.expected_hash.as_str()),
+                "large assistant body was not read/copied completely through the viewer: {}",
+                serde_json::json!({
+                    "expectedCharacters": copy.expected_characters,
+                    "loadedCharacters": copy.loaded_characters,
+                    "clipboardCharacters": copy.clipboard_characters,
+                    "theoreticalChunks": copy.theoretical_chunks,
+                    "sawPartialChunk": copy.saw_partial_chunk,
+                    "viewerClosed": copy.viewer_closed,
+                })
+            );
+            // 已加载数据随访问页增长是明示取舍：这里只记录真实观测值，不断言常量内存。
+            let session_rows: Vec<serde_json::Value> = sessions
+                .sessions
+                .iter()
+                .map(|session| {
+                    serde_json::json!({
+                        "ordinal": session.ordinal,
+                        "loadedItems": session.loaded_items,
+                        "mode": session.mode,
+                        "generation": session.generation,
+                        "hasOlder": session.has_older,
+                        "truncatedBodies": session.truncated_bodies,
+                        "previewTextBytes": session.preview_text_bytes,
+                        "assistantCharacters": session.assistant_characters,
+                        "assistantTextBytes": session.assistant_text_bytes,
+                        "assistantPreviewBytes": session.assistant_preview_bytes,
+                        "assistantTextTotalBytes": session.assistant_text_total_bytes,
+                    })
+                })
+                .collect();
+            fs::write(
+                output.join("timeline-loading.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "note": "loaded items and preview bytes grow with the pages this run visited; \
+                             this is not a constant-memory claim",
+                    "reopenedOriginal": {
+                        "mode": sessions.original_mode,
+                        "loadedItems": sessions.original_loaded_items,
+                        "hasOlder": sessions.original_has_older,
+                    },
+                    "paging": {
+                        "pageCount": paging.page_count,
+                        "finalItems": paging.final_items,
+                        "finalHasOlder": paging.final_has_older,
+                        "finalMode": paging.final_mode,
+                        "finalGeneration": paging.final_generation,
+                    },
+                    "sessions": session_rows,
+                }))?,
+            )?;
+            let report = stress_report.context("stress fixture did not emit a report")?;
+            let gui_errors = count_gui_errors(&gui_log_path)?;
+            let debug_log = output.join("gui-debug.log");
+            fs::copy(&gui_log_path, &debug_log)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&debug_log, fs::Permissions::from_mode(0o600))?;
+            }
+            fs::write(
+                output.join("gui-health.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "unhandledErrors": gui_errors, "humanVerdict": "pending"
+                }))?,
+            )?;
+            ensure!(
+                gui_errors == 0,
+                "GUI reported {gui_errors} unhandled errors during stress"
+            );
+            ensure!(
+                report.emitted_events == pl_provider_fixture::STRESS_EVENT_COUNT,
+                "stress stream incomplete: {}/{} events",
+                report.emitted_events,
+                pl_provider_fixture::STRESS_EVENT_COUNT
+            );
+            ensure!(
+                report.elapsed_millis >= 3_800,
+                "stress stream ran faster than 5,000 nominal tokens/s"
+            );
+            ensure!(
+                report.elapsed_millis <= 10_000,
+                "stress stream fell behind the 5,000 token/s fixture: {}ms for {} items",
+                report.elapsed_millis,
+                report.emitted_events
+            );
+            let finished = report
+                .finished_unix_millis
+                .context("stress stream did not finish")?;
+            let gui_finished: u128 = fs::read_to_string(&probe_finished)?
+                .trim()
+                .parse()
+                .context("GUI stress probe did not report its completion time")?;
+            let completion_lag = gui_finished.saturating_sub(finished);
+            ensure!(
+                completion_lag <= 15_000,
+                "GUI stress result lagged account completion by {completion_lag}ms"
+            );
+            let samples: Vec<serde_json::Value> = serde_json::from_slice(
+                &fs::read(&probe_report).context("GUI stress probe did not write a report")?,
+            )?;
+            let overlapping: Vec<_> = samples
+                .iter()
+                .filter(|sample| {
+                    sample
+                        .get("startedUnixMillis")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|time| {
+                            u128::from(time) >= report.started_unix_millis
+                                && u128::from(time) < finished
+                        })
+                })
+                .collect();
+            let failed = overlapping
+                .iter()
+                .filter(|sample| sample.get("ok") != Some(&serde_json::Value::Bool(true)))
+                .count();
+            let slowest = overlapping
+                .iter()
+                .filter_map(|sample| {
+                    sample
+                        .get("elapsedMillis")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .max()
+                .unwrap_or(0);
+            let frames: serde_json::Value = serde_json::from_slice(
+                &fs::read(&probe_frames).context("GUI stress probe did not write frame timings")?,
+            )?;
+            let all_frames = frames
+                .get("frames")
+                .and_then(serde_json::Value::as_u64)
+                .context("GUI total frame count is unavailable")?;
+            let all_slow_frames = frames
+                .get("over33Millis")
+                .and_then(serde_json::Value::as_u64)
+                .context("GUI total slow frame count is unavailable")?;
+            let all_slowest_frame = frames
+                .get("maxFrameMillis")
+                .and_then(serde_json::Value::as_f64)
+                .context("GUI longest frame is unavailable")?;
+            let frame_samples = frames
+                .get("samples")
+                .and_then(serde_json::Value::as_array)
+                .context("GUI frame timing samples are unavailable")?;
+            let stream_frames: Vec<f64> = frame_samples
+                .iter()
+                .filter(|sample| {
+                    sample
+                        .get("completedUnixMillis")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|time| {
+                            u128::from(time) >= report.started_unix_millis
+                                && u128::from(time) < finished.saturating_add(1_000)
+                        })
+                })
+                .filter_map(|sample| {
+                    sample
+                        .get("totalMillis")
+                        .and_then(serde_json::Value::as_f64)
+                })
+                .collect();
+            let slow_frames = stream_frames.iter().filter(|&&ms| ms > 33.333).count();
+            let slowest_frame = stream_frames.iter().copied().fold(0.0_f64, f64::max);
+            fs::write(
+                output.join("responsiveness.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "samplesDuringStream": overlapping.len(), "failed": failed,
+                    "slowestSnapshotMillis": slowest,
+                    "providerStreamMillis": report.elapsed_millis,
+                    "guiCompletionLagMillis": completion_lag,
+                    "streamAndDrainFrames": stream_frames.len(),
+                    "streamAndDrainOver33Millis": slow_frames,
+                    "streamAndDrainMaxFrameMillis": slowest_frame,
+                    "fullSessionFrameTimings": {
+                        "frames": frames.get("frames"),
+                        "over33Millis": frames.get("over33Millis"),
+                        "maxFrameMillis": frames.get("maxFrameMillis"),
+                    },
+                    "verdict": "pending"
+                }))?,
+            )?;
+            ensure!(
+                stream_frames.len() >= 5,
+                "GUI did not report enough frames during the stress stream"
+            );
+            ensure!(
+                all_frames >= 20
+                    && all_slowest_frame <= 100.0
+                    && all_slow_frames <= all_frames / 20,
+                "GUI full stress journey stalled: max {all_slowest_frame:.1}ms, {all_slow_frames}/{all_frames} over 33ms"
+            );
+            ensure!(
+                slowest_frame <= 100.0 && slow_frames * 20 <= stream_frames.len(),
+                "GUI stream frames stalled: max {slowest_frame:.1}ms, {slow_frames}/{} over 33ms",
+                stream_frames.len()
+            );
+            ensure!(
+                overlapping.len() >= 5,
+                "GUI was not probed during stress stream"
+            );
+            ensure!(
+                failed == 0,
+                "GUI snapshot probe failed {failed} times during stress stream"
+            );
+            ensure!(
+                slowest <= 2_000,
+                "GUI snapshot stalled for {slowest}ms during stress stream"
+            );
+        }
+        if options.retain_environment {
+            let project = if options.scenario == "tool-scroll" {
+                let capture = fs::read_to_string(output.join("capture-stage.txt"))
+                    .context("retained environment requires completed shutdown capture")?;
+                ensure!(
+                    capture.trim() == "shutdown_completed",
+                    "runtime shutdown did not complete"
+                );
+                Some(working.path().join("tool-scroll-project"))
+            } else {
+                None
+            };
+            keep_isolated_environment(working, &home, &output, project.as_deref())?;
+        }
 
-    Ok(())
+        Ok(())
+    })();
+    bots_fixture::with_cleanup(primary, bots_cleanup)
 }
 
 /// timeline-history：一次真实提交、同 home 冷重启、可选原生位移矩阵。
@@ -2773,6 +2883,75 @@ fn safe_action(line: &str) -> &'static str {
         "edit-settings" => "edit-settings",
         "save-settings" => "save-settings",
         _ => "other",
+    }
+}
+
+fn record_session_line(
+    bots: Option<&bots_fixture::BotsFixture>,
+    line: &str,
+) -> Result<ManualOperation> {
+    let at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis());
+    let Some(bots) = bots else {
+        return Ok(ManualOperation {
+            at_unix_ms,
+            action: safe_action(line),
+            outcome: None,
+        });
+    };
+    match bots_fixture::classify_line(line) {
+        bots_fixture::EnvLine::GuiAction => Ok(ManualOperation {
+            at_unix_ms,
+            action: safe_action(line),
+            outcome: None,
+        }),
+        bots_fixture::EnvLine::UnknownEnv => {
+            println!(
+                "Unknown bots environment command rejected; platform scripts and synthetic samples are unchanged."
+            );
+            Ok(ManualOperation {
+                at_unix_ms,
+                action: "env-command-rejected",
+                outcome: Some("rejected"),
+            })
+        }
+        bots_fixture::EnvLine::Registration(command) => {
+            bots.apply_registration_env(command)?;
+            println!(
+                "Queued next mock registration poll ({}); this is not GUI authorization or a product pass.",
+                command.action_code()
+            );
+            Ok(ManualOperation {
+                at_unix_ms,
+                action: command.action_code(),
+                outcome: Some("script-set"),
+            })
+        }
+        bots_fixture::EnvLine::Message(command) => {
+            bots.apply_message_env(command)?;
+            println!(
+                "Queued one fixed synthetic direct message ({}) on the live platform websocket; queued for delivery is not product consumption, approval, execution, or a send pass.",
+                command.action_code()
+            );
+            Ok(ManualOperation {
+                at_unix_ms,
+                action: command.action_code(),
+                outcome: Some("event-queued"),
+            })
+        }
+        bots_fixture::EnvLine::Conversations(command) => {
+            bots.apply_conversations_env(command)?;
+            println!(
+                "Replaced the peer's synthetic conversation and history samples ({}); this is not GUI authorization or a product pass.",
+                command.action_code()
+            );
+            Ok(ManualOperation {
+                at_unix_ms,
+                action: command.action_code(),
+                outcome: Some("environment-set"),
+            })
+        }
     }
 }
 

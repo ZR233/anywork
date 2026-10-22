@@ -69,16 +69,22 @@ pub(super) fn session_files_fact(
     let files = workspace.workspace().session_files()?;
     let posix = |path: std::path::PathBuf| path.to_string_lossy().replace('\\', "/");
     let text = format!(
-        "Execution-side session files for this Thread (workspace-relative):\n\
+        "Current execution workspace root: {}. Use this current root even if older history refers to a previous workspace.\n\
+         Execution-side session files for this Thread (workspace-relative):\n\
          scratch: {}\n\
          artifacts: {}\n\
          commands: {}\n\
+         uploads: {}\n\
+         Python environment: {} (create on demand with `uv venv <path>`, then use `uv pip --python <path>`; never install into global Python).\n\
          These paths belong to the current workspace root and execution target. \
          They are not the host's internal session database, transfer cache, or \
          another Thread's directories.",
+        posix(workspace.root().to_owned()),
         posix(files.scratch()),
         posix(files.artifacts()),
         posix(files.commands()),
+        posix(files.root().join("uploads")),
+        posix(files.root().join(".venv")),
     );
     Some(pl_core::thread::RuntimeFact {
         source_id: "studio.session-files".into(),

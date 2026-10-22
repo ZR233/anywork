@@ -5,8 +5,8 @@ use pl_studio_runtime::{
 };
 
 use super::runtime::{
-    bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_lsp_state,
-    bridge_mcp_state, bridge_model_catalog_state, bridge_model_performance,
+    bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_bots_state,
+    bridge_lsp_state, bridge_mcp_state, bridge_model_catalog_state, bridge_model_performance,
     bridge_persistence_queue_state, bridge_persistence_state, bridge_project_directory,
     bridge_recovery_state, bridge_session_costs_state, bridge_settings_config_state,
     bridge_skills_state, bridge_thread_mode_catalog, bridge_update_state,
@@ -105,6 +105,9 @@ pub(crate) fn bridge_product_event(
                     },
                 ))
             }
+            StudioProductEventKind::BotsStateChanged(state) => {
+                BridgeProductEventPayload::BotsStateChanged(Box::new(bridge_bots_state(state)))
+            }
         },
     })
 }
@@ -174,6 +177,9 @@ pub(crate) fn bridge_product_baseline(
             BridgeProductBaseline::AgentProfiles(Box::new(BridgeAgentProfilesStateSnapshot {
                 state: bridge_agent_profiles(state.state),
             }))
+        }
+        StudioProductBaselineState::Bots(state) => {
+            BridgeProductBaseline::Bots(Box::new(bridge_bots_state(*state)))
         }
     };
     Ok((revision, state))

@@ -330,6 +330,10 @@ impl ConfigRuntime {
         self.store.delete_ssh_password(alias)
     }
 
+    pub(crate) fn bot_credentials(&self) -> crate::config::BotCredentialCapability {
+        self.store.bot_credentials()
+    }
+
     /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
     ///
     /// # Errors

@@ -85,15 +85,17 @@ pub async fn reconnect_ssh_server(alias: String) -> Result<SshConnectionSnapshot
 pub async fn browse_remote_directories(
     alias: String,
     path: Option<String>,
+    cursor: Option<String>,
 ) -> Result<RemoteDirectoryListingDto, BridgeError> {
     let listing = active_bridge()
         .await?
         .studio
-        .browse_remote_directories(&alias, path)
+        .browse_remote_directories(&alias, path, cursor)
         .await?;
     Ok(RemoteDirectoryListingDto {
         path: listing.path,
         parent: listing.parent,
+        next_cursor: listing.next_cursor,
         entries: listing
             .entries
             .into_iter()
@@ -105,6 +107,15 @@ pub async fn browse_remote_directories(
             })
             .collect(),
     })
+}
+
+pub async fn close_remote_directory(alias: String, cursor: String) -> Result<(), BridgeError> {
+    active_bridge()
+        .await?
+        .studio
+        .close_remote_directory(&alias, cursor)
+        .await?;
+    Ok(())
 }
 
 pub async fn open_remote_project(alias: String, path: String) -> Result<ProjectDto, BridgeError> {

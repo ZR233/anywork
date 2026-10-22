@@ -664,7 +664,7 @@ fn output_transfer_plan(
 async fn history_store(inner: &Inner) -> Result<crate::studio::storage::history::HistoryStore> {
     let opened = inner
         .history
-        .get_or_try_init(|| async { inner.store.history_writer(&inner.thread.id).await })
+        .get_or_try_init(|| async { inner.store.history(&inner.thread.id).await })
         .await?;
     Ok(opened.clone())
 }

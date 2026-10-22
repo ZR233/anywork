@@ -445,6 +445,379 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSshTab => 'SSH';
 
   @override
+  String get settingsBotsTab => '机器人';
+
+  @override
+  String get settingsBotsTitle => '飞书机器人';
+
+  @override
+  String get settingsBotsSubtitle => '本地配置、真实连接和入站授权是三件独立事实。';
+
+  @override
+  String get settingsBotsAdd => '添加机器人';
+
+  @override
+  String get settingsBotsEmptyTitle => '还没有机器人';
+
+  @override
+  String get settingsBotsEmptyBody =>
+      '可以扫码创建飞书中国版应用，或连接已有应用。Secret 只在保存前停留在内存。';
+
+  @override
+  String get settingsBotsSelectTitle => '选择机器人';
+
+  @override
+  String get settingsBotsSelectBody => '选择一台机器人查看配置、连接和授权。';
+
+  @override
+  String get settingsBotsSetupTitle => '首次配置';
+
+  @override
+  String get settingsBotsSetupClose => '关闭配置';
+
+  @override
+  String get settingsBotsRisk =>
+      '远程消息可能触发本机智能体工具。当前策略为 full-access。关联项目不是操作系统沙箱。';
+
+  @override
+  String get settingsBotsPermissions =>
+      '申请范围（preset=false）：im:message:send_as_bot、im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:chat:readonly、im:message:readonly。事件：im.message.receive_v1。声明权限不等于管理员已批准或应用已发布。';
+
+  @override
+  String get settingsBotsName => '名称';
+
+  @override
+  String get settingsBotsProject => '关联项目';
+
+  @override
+  String get settingsBotsRiskAck => '我理解远程消息可能以 full-access 运行本机工具';
+
+  @override
+  String get settingsBotsScan => '创建并连接飞书应用';
+
+  @override
+  String get settingsBotsManual => '连接已有应用';
+
+  @override
+  String get settingsBotsAppId => 'App ID';
+
+  @override
+  String get settingsBotsSecret => 'App Secret';
+
+  @override
+  String get settingsBotsSave => '保存配置';
+
+  @override
+  String get settingsBotsPendingTitle => '未完成的本地保存';
+
+  @override
+  String get settingsBotsPendingPreparing => '正在准备凭据';
+
+  @override
+  String get settingsBotsPendingUncertain => '保存需要本地核实';
+
+  @override
+  String get settingsBotsPendingCleanup => '清理未完成';
+
+  @override
+  String get settingsBotsPendingCleanupCommitted => '配置已生效，清理仍待完成';
+
+  @override
+  String get settingsBotsPendingIdle => '空闲';
+
+  @override
+  String get settingsBotsVerify => '核实原操作';
+
+  @override
+  String get settingsBotsFactConfig => '配置';
+
+  @override
+  String get settingsBotsFactConnection => '连接';
+
+  @override
+  String get settingsBotsFactAuth => '授权';
+
+  @override
+  String get settingsBotsFactMissing => '尚无可用配置';
+
+  @override
+  String get settingsBotsConnectionConnected => '已连接';
+
+  @override
+  String get settingsBotsConnectionConnecting => '连接中';
+
+  @override
+  String get settingsBotsConnectionFailed => '失败';
+
+  @override
+  String get settingsBotsConnectionIdle => '未连接';
+
+  @override
+  String get settingsBotsAuthGranted => '已有本地入站授权';
+
+  @override
+  String get settingsBotsAuthPending => '配对待批准';
+
+  @override
+  String get settingsBotsAuthNone => '尚无入站信任';
+
+  @override
+  String get settingsBotsCredentialStored => '已持久保存';
+
+  @override
+  String get settingsBotsCredentialSession => '仅当前进程';
+
+  @override
+  String get settingsBotsCredentialMissing => '缺失';
+
+  @override
+  String get settingsBotsCredentialUnavailable => '不可用';
+
+  @override
+  String settingsBotsRegistrationStatus(String status) {
+    return '注册状态：$status';
+  }
+
+  @override
+  String get settingsBotsOpenLink => '在浏览器中继续';
+
+  @override
+  String get settingsBotsOpenFeishu => '打开飞书继续';
+
+  @override
+  String get settingsBotsContinueHint => '在飞书中确认创建应用，此页会自动更新注册结果。';
+
+  @override
+  String get settingsBotsScanOnlyHint => '用手机飞书扫描二维码并确认创建应用，此页会自动更新注册结果。';
+
+  @override
+  String get settingsBotsScanHint => '也可用手机飞书扫码。若客户端未打开，请使用浏览器入口或扫码继续。';
+
+  @override
+  String get settingsBotsOpenLinkFailed => '无法打开链接。请扫码继续，或尝试浏览器入口。';
+
+  @override
+  String get settingsBotsOpenChat => '在飞书中打开聊天';
+
+  @override
+  String get settingsBotsOpenChatBrowser => '通过浏览器打开';
+
+  @override
+  String get settingsBotsPolicyDenied => '飞书访问控制策略拒绝了此应用的 API 请求。';
+
+  @override
+  String get settingsBotsPolicyDeniedHint =>
+      '应用已创建不代表 API 访问已获准。请联系所属组织管理员检查应用访问策略，确认允许后再重试连接。';
+
+  @override
+  String settingsBotsPlatformCode(String code) {
+    return '飞书错误码：$code';
+  }
+
+  @override
+  String get settingsBotsCopyLink => '复制链接';
+
+  @override
+  String get settingsBotsRegistrationBusy => '本地保存正在提交。此时取消会返回忙碌，不会显示已取消。';
+
+  @override
+  String get settingsBotsCancelRegistration => '取消注册';
+
+  @override
+  String get settingsBotsRegIdle => '空闲';
+
+  @override
+  String get settingsBotsRegPreparing => '准备中';
+
+  @override
+  String get settingsBotsRegWaiting => '等待飞书确认';
+
+  @override
+  String get settingsBotsRegSlowDown => '降频等待';
+
+  @override
+  String get settingsBotsRegCommitting => '提交中';
+
+  @override
+  String get settingsBotsRegCompleted => '已完成';
+
+  @override
+  String get settingsBotsRegDenied => '已拒绝';
+
+  @override
+  String get settingsBotsRegExpired => '已过期';
+
+  @override
+  String get settingsBotsRegCancelled => '已取消';
+
+  @override
+  String get settingsBotsRegFailed => '失败';
+
+  @override
+  String get settingsBotsQrFailed => '无法生成验证二维码。请使用当前可信链接的本地打开或复制入口。';
+
+  @override
+  String get settingsBotsAppIdLocked => '已有平台会话或持久记录后，不能原地更改 App ID。';
+
+  @override
+  String get settingsBotsProjectLocked => '已有 Thread 映射或受理输入后，不能原地更换关联项目。';
+
+  @override
+  String get settingsBotsEnabled => '启用连接';
+
+  @override
+  String get settingsBotsRetryConnection => '重试连接';
+
+  @override
+  String get settingsBotsTools => '允许项目工具';
+
+  @override
+  String get settingsBotsToolsHint =>
+      '只控制关联项目根 Thread 的四项工具。本地所有者查询/发送和原会话自动回复不受此开关额外限制。';
+
+  @override
+  String get settingsBotsTrustedUsers => '可信用户';
+
+  @override
+  String get settingsBotsTrustedChats => '授权群';
+
+  @override
+  String get settingsBotsRevoke => '撤销';
+
+  @override
+  String get settingsBotsApprove => '批准';
+
+  @override
+  String get settingsBotsPairingHint => '未知私聊不会触发模型。批准后请对方重发；旧消息不会自动执行。';
+
+  @override
+  String get settingsBotsClearPairing => '清理请求';
+
+  @override
+  String get settingsBotsClearPairingHint =>
+      '只清理这条本地配对请求，该用户当前的信任设置保持不变，旧消息也不会执行。';
+
+  @override
+  String get settingsBotsNoTrustedUsers => '还没有可信用户。手工接入初始信任列表为空。';
+
+  @override
+  String get settingsBotsNoTrustedChats => '群默认关闭。需要授权群，并且用户真正 @ 当前机器人。';
+
+  @override
+  String get settingsBotsConversations => '会话';
+
+  @override
+  String get settingsBotsRefreshConversations => '刷新';
+
+  @override
+  String get settingsBotsNewThread => '新建本机会话';
+
+  @override
+  String get settingsBotsMessages => '消息';
+
+  @override
+  String get settingsBotsSendHint => '以机器人身份发送';
+
+  @override
+  String get settingsBotsSend => '发送';
+
+  @override
+  String settingsBotsSendStatus(String status) {
+    return '发送状态：$status';
+  }
+
+  @override
+  String get settingsBotsSourceGroup => '群聊';
+
+  @override
+  String get settingsBotsSourceDirect => '私聊';
+
+  @override
+  String get settingsBotsEdit => '编辑配置';
+
+  @override
+  String get settingsBotsDismiss => '取消';
+
+  @override
+  String get settingsBotsPreserveSecret => '留空保留原有凭据，不会回显已保存的 Secret。';
+
+  @override
+  String get settingsBotsClearSecret => '移除已保存的凭据';
+
+  @override
+  String get settingsBotsOperationFailed =>
+      '操作未能完成，请核对当前状态后明确重试；结果未知的发送不可安全重放。';
+
+  @override
+  String get settingsBotsModelReady => '简洁模式的模型路由及凭据已配置；这不代表已实时验证模型连通性。';
+
+  @override
+  String get settingsBotsModelMissing =>
+      '请先在账号和模式中配置完整的简洁模式模型路由与凭据，再期待远程消息执行。保存飞书应用不会验证模型连通性。';
+
+  @override
+  String get settingsBotsManualGuide =>
+      '在飞书中国版开发者后台开启机器人和长连接事件接收，订阅 im.message.receive_v1，申请上方列出的权限，并发布应用、确认可用范围。租户管理员可能需要审核权限。在这里保存后再启用连接。';
+
+  @override
+  String get settingsBotsFirstMessageGuide =>
+      '真实连接后，请在飞书向机器人发送消息。未知发送者只会产生配对请求：在本机批准后，请对方重新发送。群执行还需要本机授权该群，并由用户真正 @ 当前机器人，@全体成员不算。';
+
+  @override
+  String get settingsBotsNewThreadWarning =>
+      '为后续消息新建本地上下文？旧历史会保留，已经受理的消息和回复仍属于原上下文，不会移动到新会话。';
+
+  @override
+  String get settingsBotsApproveGroup => '授权此群';
+
+  @override
+  String get settingsBotsNextPage => '下一页';
+
+  @override
+  String get settingsBotsRefreshMessages => '应用时间范围 / 刷新消息';
+
+  @override
+  String get settingsBotsStartTime => '起始时间（Unix 秒，可空）';
+
+  @override
+  String get settingsBotsEndTime => '结束时间（Unix 秒，可空）';
+
+  @override
+  String get settingsBotsHistoryPermissions =>
+      '仅显示应用有权访问的历史。群历史可能额外需要 im:message.group_msg，须在飞书单独开通；不会自动申请，也不会切换为用户身份兜底。';
+
+  @override
+  String get settingsBotsOpenConsole => '打开飞书开发者后台';
+
+  @override
+  String get settingsBotsOpenConsoleHint =>
+      '打开飞书中国版官方开发者后台页面。进入后请选择与当前 App ID 对应的应用并打开权限管理；权限仍须管理员审核，应用也须发布并确认可用范围，这里不会自动申请或代替授权。';
+
+  @override
+  String get settingsBotsOpenConsoleFailed => '打开开发者后台失败，请重试。';
+
+  @override
+  String get settingsBotsConnectionReconnecting => '重连中';
+
+  @override
+  String get settingsBotsSendOperation => '发送操作';
+
+  @override
+  String get settingsBotsNoReplay => '部分消息可能已经送达。结果会保留，不会自动重放发送。';
+
+  @override
+  String get settingsBotsSendSucceeded => '全部送达';
+
+  @override
+  String get settingsBotsSendPartial => '部分送达';
+
+  @override
+  String get settingsBotsSendRejected => '明确拒绝';
+
+  @override
+  String get settingsBotsSendUnknown => '结果未知';
+
+  @override
   String get settingsSshTitle => '远程开发';
 
   @override
@@ -826,12 +1199,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsStatisticsFilteredEmpty => '当前筛选条件下没有调用记录。';
-
-  @override
-  String get settingsStatisticsPendingTitle => '统计待写入';
-
-  @override
-  String get settingsStatisticsPendingBody => '近期调用仍在写入统计，当前数据可能尚未包含这些记录。';
 
   @override
   String get settingsStatisticsGapTitle => '统计存在缺口';
@@ -4169,4 +4536,37 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpAuthCommandUnavailable => '请求未能完成。';
+
+  @override
+  String get botsOverviewHint => '把会话带到飞书，随时查询、协作与传递文件。';
+
+  @override
+  String get botsPlatformFeishu => '飞书';
+
+  @override
+  String get botsModelTitle => '模型与思考';
+
+  @override
+  String get botsModelHint => '应用于这个机器人的所有聊天，从下一轮开始生效。';
+
+  @override
+  String get botsAccessTitle => '联系人与群授权';
+
+  @override
+  String get botsAccessHint => '只有已授权的联系人和群可以使用机器人。';
+
+  @override
+  String get botsConnectionSettings => '连接与设置';
+
+  @override
+  String get botsWorkspace => '专用工作目录';
+
+  @override
+  String get botsPlatformTools => '飞书消息与测试发送';
+
+  @override
+  String get botsManagedModel => '由机器人统一设置';
+
+  @override
+  String get settingsSshNextPage => '下一页';
 }

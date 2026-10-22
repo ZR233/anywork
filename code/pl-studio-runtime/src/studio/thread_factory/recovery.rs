@@ -12,9 +12,10 @@ pub(crate) async fn load_checkpoint(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
+    let history = store.history_for(&thread.project_id, &thread.id).await?;
     store
         .state_for(&thread.project_id, &thread.id)?
-        .load()
+        .load(&history)
         .await
 }
 
@@ -29,9 +30,7 @@ pub(crate) async fn load_checkpoint_for_recovery(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store
-        .history_writer_for(&thread.project_id, &thread.id)
-        .await?;
+    let history = store.history_for(&thread.project_id, &thread.id).await?;
     let Some(checkpoint) = store
         .state_for(&thread.project_id, &thread.id)?
         .load_after_migration(&history)

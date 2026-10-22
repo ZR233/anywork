@@ -95,6 +95,15 @@ struct Args {
     /// Catalog GET evidence written on shutdown; never mixed into `--requests-file`.
     #[arg(long, value_name = "PATH")]
     model_catalog_requests: Option<PathBuf>,
+    /// Run the isolated Feishu HTTP/WebSocket peer instead of the model fixture.
+    ///
+    /// Independent of [`GUI_SCENARIOS`]. Old CLI behaviour is unchanged when this
+    /// flag is absent.
+    #[arg(long)]
+    feishu: bool,
+    /// Drive an explicit Feishu peer observation and exit. Not a crate test.
+    #[arg(long, requires = "feishu")]
+    feishu_observe: bool,
 }
 
 #[tokio::main]
@@ -144,6 +153,30 @@ async fn main() -> Result<()> {
             coord_file,
         });
     }
+    if args.feishu {
+        if args.feishu_observe {
+            return pl_provider_fixture::feishu::run_feishu_observe(
+                pl_provider_fixture::feishu::FeishuObserveOptions {
+                    bind_port: args.bind_port,
+                },
+            )
+            .await;
+        }
+        let ready_file = args
+            .ready_file
+            .clone()
+            .context("--ready-file is required with --feishu")?;
+        return pl_provider_fixture::feishu::run_feishu_cli(
+            pl_provider_fixture::feishu::FeishuCliOptions {
+                ready_file,
+                requests_file: args.requests_file.clone(),
+                report_file: args.report_file.clone(),
+                status_file: args.status_file.clone(),
+                bind_port: args.bind_port,
+            },
+        )
+        .await;
+    }
     let model_catalog = match (
         args.model_catalog_control.as_ref(),
         args.model_catalog_inventory.as_deref(),
@@ -184,7 +217,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let scenario = args.scenario.as_deref().context(
-        "--scenario is required without --acp-stdio/--mcp-stdio/--lsp-stdio/--tool-peer",
+        "--scenario is required without \
+             --acp-stdio/--mcp-stdio/--lsp-stdio/--tool-peer/--feishu",
     )?;
     ensure!(
         GUI_SCENARIOS.contains(&scenario),

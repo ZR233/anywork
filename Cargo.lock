@@ -2667,6 +2667,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntapi"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2792,10 +2801,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
+]
 
 [[package]]
 name = "object"
@@ -3057,29 +3085,46 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "clap",
+ "flate2",
  "futures",
  "hex",
+ "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
 name = "pl-remote-helper"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "h2",
+ "hex",
+ "http",
  "libc",
  "pl-protocol",
  "process-wrap",
  "procfs",
+ "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "sse-stream",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "windows",
 ]
 
@@ -3098,15 +3143,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "eventsource-stream",
+ "futures",
  "pl-dev-support",
  "pl-model",
+ "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "reqwest",
  "sea-orm",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
  "windows-sys 0.61.2",
 ]
@@ -3140,6 +3190,7 @@ dependencies = [
  "base64 0.23.1",
  "downlowd",
  "dunce",
+ "flate2",
  "fs4",
  "futures",
  "hex",
@@ -3155,6 +3206,7 @@ dependencies = [
  "pl-tool",
  "pl-trace",
  "process-wrap",
+ "prost",
  "reqwest",
  "rust-embed",
  "schemars 1.2.3",
@@ -3166,6 +3218,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml",
  "tracing",
@@ -3204,14 +3257,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "bytes",
  "dunce",
+ "eventsource-stream",
  "futures",
+ "getrandom 0.4.3",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
+ "h2",
  "hex",
+ "http",
  "ignore",
  "image",
+ "libc",
  "pl-core",
  "pl-lsp",
  "pl-model",
@@ -3233,6 +3292,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "which",
  "windows",
  "windows-sys 0.61.2",
@@ -3428,6 +3488,29 @@ checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
 dependencies = [
  "bitflags 2.13.2",
  "hex",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4631,6 +4714,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sysinfo"
+version = "0.39.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2071df9448915b71c4fe6d25deaf1c22f12bd234f01540b77312bb8e41361e6"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows",
+]
+
+[[package]]
 name = "system-configuration"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5419,6 +5516,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5426,6 +5539,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"

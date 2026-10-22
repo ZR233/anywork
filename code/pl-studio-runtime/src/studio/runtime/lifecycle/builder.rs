@@ -44,6 +44,12 @@ impl StudioRuntime {
         // ThreadRepository 共用同一 write-behind 队列。
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let product_events = ProductEventBus::new(store.clone(), writer.clone());
+        let bots = crate::bots::BotRuntime::new(
+            store.paths().clone(),
+            config_runtime.clone(),
+            product_events.clone(),
+        )?;
+
         let model_performance = ModelPerformanceOwner::new(store.clone(), product_events.clone());
         let ssh_manager = std::sync::Arc::new(crate::worker_assets::ssh_manager(&helper_source));
         let worktrees =
@@ -98,6 +104,7 @@ impl StudioRuntime {
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
                 helper_source: helper_source.clone(),
+                bots: bots.clone(),
             },
         );
         let threads = crate::thread_assembler::StudioThreadAssembler::default();
@@ -125,7 +132,7 @@ impl StudioRuntime {
         let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
         thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
-        Ok(Self {
+        let mut runtime = Self {
             owner_epoch: crate::studio::ids::new_id("runtime"),
             startup_recovery: None,
             persistence_observer: Default::default(),
@@ -140,6 +147,7 @@ impl StudioRuntime {
             thread_factory,
             instance_lock: RuntimeLockOwner::new(None),
             store,
+            bots,
             residency: ThreadResidency::new(),
             shutdown_progress: ShutdownProgressBus::new(),
             config_runtime,
@@ -178,6 +186,11 @@ impl StudioRuntime {
             #[cfg(target_os = "linux")]
             helper_source,
             profiles_forwarder: Default::default(),
-        })
+            bot_host: None,
+        };
+        let keep = std::sync::Arc::new(runtime.clone());
+        runtime.bots.attach_host(std::sync::Arc::downgrade(&keep));
+        runtime.bot_host = Some(keep);
+        Ok(runtime)
     }
 }

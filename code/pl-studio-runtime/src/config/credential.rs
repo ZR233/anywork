@@ -42,13 +42,135 @@ pub(super) trait CredentialStore: Send + Sync {
     /// 与 [`Self::copy_legacy_account`] 相同的持久义务：只接受持久服务的成功写入与回读，
     /// 目标已有不同密钥时明确冲突，不使用进程内 lease 制造假成功。
     fn import_inline_secret(&self, account_id: &str, secret: &str) -> Result<LegacyCredentialCopy>;
+    /// 读取 `bot:<id>` 受保护载荷。系统不可访问且无进程 lease 时为 `Unavailable`。
+    fn read_bot_system(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<BotProtectedRead, BotCredentialIoError>;
+    /// 只读进程 lease，不访问系统凭据。
+    fn read_bot_lease(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<Option<String>, BotCredentialIoError>;
+    /// 只写入系统凭据。`Stored` 必须有系统写入与回读证据；不可访问返回 `Unavailable`，
+    /// 不把系统载荷写入独立 lease。
+    fn persist_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError>;
+    /// 只写入当前进程 lease，不宣称系统已保存。
+    fn lease_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<(), BotCredentialIoError>;
+    /// 回收系统材料。除明确 NoEntry 外保留错误，不吞 Invalid。
+    fn recycle_bot_system(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError>;
+    /// 回收进程 lease。
+    fn recycle_bot_lease(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError>;
 }
 
-#[derive(Debug, Default)]
+fn bot_account(bot_id: &str) -> String {
+    format!("bot:{bot_id}")
+}
+
+/// 机器人凭据底层 I/O 的安全分类。不携带 secret 或 keyring 原值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BotCredentialIoKind {
+    /// 系统项确实不存在。
+    Missing,
+    /// 系统凭据服务不可访问。
+    Unavailable,
+    /// 编码/长度/歧义等不可用输入，不降级为 lease。
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BotCredentialIoError {
+    pub kind: BotCredentialIoKind,
+}
+
+impl std::fmt::Display for BotCredentialIoError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            BotCredentialIoKind::Missing => write!(formatter, "bot credential material is missing"),
+            BotCredentialIoKind::Unavailable => {
+                write!(formatter, "bot credential store is unavailable")
+            }
+            BotCredentialIoKind::Invalid => {
+                write!(formatter, "bot credential material is invalid")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BotCredentialIoError {}
+
+impl From<BotCredentialIoError> for PureError {
+    fn from(error: BotCredentialIoError) -> Self {
+        PureError::ConfigError(error.to_string())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum BotProtectedRead {
+    System(String),
+    Missing,
+}
+
+impl std::fmt::Debug for BotProtectedRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System(_) => formatter
+                .debug_tuple("System")
+                .field(&"<redacted>")
+                .finish(),
+            Self::Missing => formatter.write_str("Missing"),
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BotProtectedPersist {
+    Stored,
+    SessionOnly,
+}
+
+fn classify_bot_keyring(error: KeyringError) -> BotCredentialIoError {
+    match error {
+        KeyringError::NoEntry => BotCredentialIoError {
+            kind: BotCredentialIoKind::Missing,
+        },
+        KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_) => {
+            BotCredentialIoError {
+                kind: BotCredentialIoKind::Unavailable,
+            }
+        }
+        _ => BotCredentialIoError {
+            kind: BotCredentialIoKind::Invalid,
+        },
+    }
+}
+
+#[derive(Default)]
 pub(super) struct SystemCredentialStore {
     /// Headless Linux / Xvfb environments without a D-Bus Secret Service daemon
     /// keep secrets in the current-process secret lease (`design/04` §4.4).
     fallback_lease: Mutex<BTreeMap<String, String>>,
+}
+
+impl std::fmt::Debug for SystemCredentialStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let lease_entries = self
+            .fallback_lease
+            .lock()
+            .map(|guard| guard.len())
+            .unwrap_or(0);
+        formatter
+            .debug_struct("SystemCredentialStore")
+            .field("fallback_lease_entries", &lease_entries)
+            .finish()
+    }
 }
 
 impl SystemCredentialStore {
@@ -72,23 +194,41 @@ impl SystemCredentialStore {
     }
 
     fn save_account(&self, scope: &str, id: &str, account: &str, secret: &str) -> Result<()> {
+        self.save_account_with_status(scope, id, account, secret)
+            .map(|_| ())
+    }
+
+    fn save_account_with_status(
+        &self,
+        scope: &str,
+        id: &str,
+        account: &str,
+        secret: &str,
+    ) -> Result<bool> {
         match entry_for_account(scope, id, account)?.set_password(secret) {
             Ok(()) => {
                 self.fallback_lease
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(account.to_string(), secret.to_string());
-                Ok(())
+                Ok(true)
             }
             Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
                 self.fallback_lease
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(account.to_string(), secret.to_string());
-                Ok(())
+                Ok(false)
             }
             Err(error) => Err(credential_error("write", scope, id, error)),
         }
+    }
+
+    fn lease_account(&self, account: &str, secret: &str) {
+        self.fallback_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(account.to_string(), secret.to_string());
     }
 
     fn delete_account(&self, scope: &str, id: &str, account: &str) -> Result<()> {
@@ -104,6 +244,52 @@ impl SystemCredentialStore {
                 | KeyringError::NoStorageAccess(_),
             ) => Ok(()),
             Err(error) => Err(credential_error("delete", scope, id, error)),
+        }
+    }
+
+    fn read_bot_payload(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
+        let account = bot_account(bot_id);
+        let entry = bot_entry(&account)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(BotProtectedRead::System(secret)),
+            Err(KeyringError::NoEntry) => Ok(BotProtectedRead::Missing),
+            Err(error) => Err(classify_bot_keyring(error)),
+        }
+    }
+
+    fn persist_bot_payload(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
+        let account = bot_account(bot_id);
+        let entry = bot_entry(&account)?;
+        match entry.set_password(payload) {
+            Ok(()) => match entry.get_password() {
+                Ok(actual) if actual == payload => Ok(BotProtectedPersist::Stored),
+                Ok(_) => Err(BotCredentialIoError {
+                    kind: BotCredentialIoKind::Invalid,
+                }),
+                Err(error) => Err(classify_bot_keyring(error)),
+            },
+            Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
+                Err(BotCredentialIoError {
+                    kind: BotCredentialIoKind::Unavailable,
+                })
+            }
+            Err(error) => Err(classify_bot_keyring(error)),
+        }
+    }
+
+    fn recycle_bot_payload(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
+        let account = bot_account(bot_id);
+        let entry = bot_entry(&account)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => Err(classify_bot_keyring(error)),
         }
     }
 }
@@ -199,11 +385,72 @@ impl CredentialStore for SystemCredentialStore {
     fn delete_ssh(&self, alias: &str) -> Result<()> {
         self.delete_account("SSH server", alias, &format!("ssh:{alias}"))
     }
+
+    fn persist_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
+        self.persist_bot_payload(bot_id, payload)
+    }
+
+    fn lease_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<(), BotCredentialIoError> {
+        self.lease_account(&bot_account(bot_id), payload);
+        Ok(())
+    }
+
+    fn read_bot_system(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
+        self.read_bot_payload(bot_id)
+    }
+
+    fn read_bot_lease(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<Option<String>, BotCredentialIoError> {
+        Ok(self
+            .fallback_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&bot_account(bot_id))
+            .cloned())
+    }
+
+    fn recycle_bot_system(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
+        self.recycle_bot_payload(bot_id)
+    }
+
+    fn recycle_bot_lease(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
+        self.fallback_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&bot_account(bot_id));
+        Ok(())
+    }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(super) struct MemoryCredentialStore {
     values: Mutex<BTreeMap<String, String>>,
+    leases: Mutex<BTreeMap<String, String>>,
+}
+
+impl std::fmt::Debug for MemoryCredentialStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let system_entries = self.values.lock().map(|guard| guard.len()).unwrap_or(0);
+        let lease_entries = self.leases.lock().map(|guard| guard.len()).unwrap_or(0);
+        formatter
+            .debug_struct("MemoryCredentialStore")
+            .field("system_entries", &system_entries)
+            .field("lease_entries", &lease_entries)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +554,84 @@ impl CredentialStore for MemoryCredentialStore {
         self.values.lock().unwrap().remove(&format!("ssh:{alias}"));
         Ok(())
     }
+
+    fn persist_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
+        #[cfg(test)]
+        if memory_faults::persist_unavailable() {
+            return Err(BotCredentialIoError {
+                kind: BotCredentialIoKind::Unavailable,
+            });
+        }
+        self.values
+            .lock()
+            .unwrap()
+            .insert(bot_account(bot_id), payload.to_string());
+        Ok(BotProtectedPersist::Stored)
+    }
+
+    fn lease_bot_protected(
+        &self,
+        bot_id: &str,
+        payload: &str,
+    ) -> std::result::Result<(), BotCredentialIoError> {
+        self.leases
+            .lock()
+            .unwrap()
+            .insert(bot_account(bot_id), payload.to_string());
+        Ok(())
+    }
+
+    fn read_bot_system(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
+        #[cfg(test)]
+        if memory_faults::system_unavailable() {
+            return Err(BotCredentialIoError {
+                kind: BotCredentialIoKind::Unavailable,
+            });
+        }
+        Ok(self
+            .values
+            .lock()
+            .unwrap()
+            .get(&bot_account(bot_id))
+            .cloned()
+            .map(BotProtectedRead::System)
+            .unwrap_or(BotProtectedRead::Missing))
+    }
+
+    fn read_bot_lease(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<Option<String>, BotCredentialIoError> {
+        Ok(self
+            .leases
+            .lock()
+            .unwrap()
+            .get(&bot_account(bot_id))
+            .cloned())
+    }
+
+    fn recycle_bot_system(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
+        #[cfg(test)]
+        if memory_faults::take_recycle_fail() {
+            return Err(BotCredentialIoError {
+                kind: BotCredentialIoKind::Unavailable,
+            });
+        }
+        self.values.lock().unwrap().remove(&bot_account(bot_id));
+        Ok(())
+    }
+
+    fn recycle_bot_lease(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
+        self.leases.lock().unwrap().remove(&bot_account(bot_id));
+        Ok(())
+    }
 }
 
 fn entry_for_account(scope: &str, id: &str, account: &str) -> Result<Entry> {
@@ -314,8 +639,61 @@ fn entry_for_account(scope: &str, id: &str, account: &str) -> Result<Entry> {
         .map_err(|error| credential_error("open", scope, id, error))
 }
 
+fn bot_entry(account: &str) -> std::result::Result<Entry, BotCredentialIoError> {
+    Entry::new(CREDENTIAL_SERVICE, account).map_err(classify_bot_keyring)
+}
+
 fn credential_error(action: &str, scope: &str, id: &str, error: KeyringError) -> PureError {
     PureError::Io(std::io::Error::other(format!(
         "failed to {action} system credential for {scope} {id}: {error}"
     )))
+}
+
+#[cfg(test)]
+pub(crate) mod memory_faults {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SYSTEM_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
+        static PERSIST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
+        static RECYCLE_FAILS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub fn reset() {
+        set_system_unavailable(false);
+        set_persist_unavailable(false);
+        set_recycle_fails(0);
+    }
+
+    pub fn set_system_unavailable(value: bool) {
+        SYSTEM_UNAVAILABLE.with(|cell| cell.set(value));
+    }
+
+    pub fn set_persist_unavailable(value: bool) {
+        PERSIST_UNAVAILABLE.with(|cell| cell.set(value));
+    }
+
+    pub fn set_recycle_fails(count: u32) {
+        RECYCLE_FAILS.with(|cell| cell.set(count));
+    }
+
+    pub(super) fn system_unavailable() -> bool {
+        SYSTEM_UNAVAILABLE.with(Cell::get)
+    }
+
+    pub(super) fn persist_unavailable() -> bool {
+        PERSIST_UNAVAILABLE.with(Cell::get)
+    }
+
+    pub(super) fn take_recycle_fail() -> bool {
+        RECYCLE_FAILS.with(|cell| {
+            let remaining = cell.get();
+            if remaining == 0 {
+                false
+            } else {
+                cell.set(remaining - 1);
+                true
+            }
+        })
+    }
 }

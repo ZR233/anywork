@@ -21,7 +21,7 @@ use crate::studio::{ProductEventBus, StudioStore};
 
 /// 本 runtime 生命周期内保留的已受理操作身份上限。
 ///
-/// 达到上限后拒绝新的 operation ID，绝不淘汰旧 ID 再重放其副作用（见 design/27 §27.2）。
+/// 达到上限后拒绝新的 operation ID，绝不淘汰旧 ID 再重放其副作用（见 design/28 §28.2）。
 pub(super) const MAX_ACCEPTED_STARTS: usize = 4096;
 
 /// 认证 owner 本体；`Clone` 只克隆共享句柄，不复制事实。

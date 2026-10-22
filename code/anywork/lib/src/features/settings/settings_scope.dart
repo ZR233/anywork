@@ -14,6 +14,7 @@ import '../../presentation/providers/provider_usage_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/settings_store.dart';
 import '../../presentation/providers/skills_store.dart';
+import '../../presentation/providers/bots_store.dart';
 import '../../l10n/studio_l10n.dart';
 
 export 'package:anywork_client/studio_client.dart' show BridgeSettingsScopeKind;
@@ -81,6 +82,9 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ),
         ModelPerformanceTopic() => ref.watch(
           modelPerformanceStoreProvider.select((state) => state.sync),
+        ),
+        BotsTopic() => ref.watch(
+          botsStoreProvider.select((state) => state.sync),
         ),
         ProjectDirectoryTopic() ||
         ThreadDirectoryTopic() ||

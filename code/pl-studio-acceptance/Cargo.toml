@@ -8,15 +8,20 @@ publish = false
 [dependencies]
 pl-dev-support = { workspace = true }
 pl-model = { workspace = true }
+pl-protocol = { workspace = true }
 pl-provider-fixture = { workspace = true }
 pl-studio-runtime = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+eventsource-stream = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 toml = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

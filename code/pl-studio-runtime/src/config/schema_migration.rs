@@ -952,6 +952,51 @@ effort = "high"
                 }
             }
         }
+        fn read_bot_system(
+            &self,
+            bot_id: &str,
+        ) -> std::result::Result<
+            super::super::credential::BotProtectedRead,
+            super::super::credential::BotCredentialIoError,
+        > {
+            self.inner.read_bot_system(bot_id)
+        }
+        fn read_bot_lease(
+            &self,
+            bot_id: &str,
+        ) -> std::result::Result<Option<String>, super::super::credential::BotCredentialIoError>
+        {
+            self.inner.read_bot_lease(bot_id)
+        }
+        fn persist_bot_protected(
+            &self,
+            bot_id: &str,
+            payload: &str,
+        ) -> std::result::Result<
+            super::super::credential::BotProtectedPersist,
+            super::super::credential::BotCredentialIoError,
+        > {
+            self.inner.persist_bot_protected(bot_id, payload)
+        }
+        fn lease_bot_protected(
+            &self,
+            bot_id: &str,
+            payload: &str,
+        ) -> std::result::Result<(), super::super::credential::BotCredentialIoError> {
+            self.inner.lease_bot_protected(bot_id, payload)
+        }
+        fn recycle_bot_system(
+            &self,
+            bot_id: &str,
+        ) -> std::result::Result<(), super::super::credential::BotCredentialIoError> {
+            self.inner.recycle_bot_system(bot_id)
+        }
+        fn recycle_bot_lease(
+            &self,
+            bot_id: &str,
+        ) -> std::result::Result<(), super::super::credential::BotCredentialIoError> {
+            self.inner.recycle_bot_lease(bot_id)
+        }
     }
 
     const LEGACY_INLINE_CONFIG: &str = r#"
@@ -1171,6 +1216,62 @@ catalog = "deepseek"
                 Err(PureError::Io(std::io::Error::other(
                     "credential service unavailable",
                 )))
+            }
+            fn read_bot_system(
+                &self,
+                _bot_id: &str,
+            ) -> std::result::Result<
+                super::super::credential::BotProtectedRead,
+                super::super::credential::BotCredentialIoError,
+            > {
+                Err(super::super::credential::BotCredentialIoError {
+                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
+                })
+            }
+            fn read_bot_lease(
+                &self,
+                _bot_id: &str,
+            ) -> std::result::Result<Option<String>, super::super::credential::BotCredentialIoError>
+            {
+                Ok(None)
+            }
+            fn persist_bot_protected(
+                &self,
+                _bot_id: &str,
+                _payload: &str,
+            ) -> std::result::Result<
+                super::super::credential::BotProtectedPersist,
+                super::super::credential::BotCredentialIoError,
+            > {
+                Err(super::super::credential::BotCredentialIoError {
+                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
+                })
+            }
+            fn lease_bot_protected(
+                &self,
+                _bot_id: &str,
+                _payload: &str,
+            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
+            {
+                Err(super::super::credential::BotCredentialIoError {
+                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
+                })
+            }
+            fn recycle_bot_system(
+                &self,
+                _bot_id: &str,
+            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
+            {
+                Err(super::super::credential::BotCredentialIoError {
+                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
+                })
+            }
+            fn recycle_bot_lease(
+                &self,
+                _bot_id: &str,
+            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
+            {
+                Ok(())
             }
         }
         let fixture = make_fixture(LEGACY_CONFIG, None);

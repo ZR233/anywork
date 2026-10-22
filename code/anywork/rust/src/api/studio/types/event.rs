@@ -2,10 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAgentDirectoryState,
-    BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
-    BridgeModelPerformanceSnapshot, BridgePersistenceStateSnapshot, BridgeProjectDirectoryState,
-    BridgeRecoveryStateSnapshot, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
-    BridgeThread, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeBotsStateSnapshot, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
+    BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
+    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
+    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThread,
+    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
 
 /// Flutter Bridge 的 Studio 产品事件信封。
@@ -42,6 +43,7 @@ pub enum BridgeProductEventPayload {
     PersistenceStateChanged(BridgePersistenceStateSnapshot),
     PersistenceQueueStateChanged(Box<super::response::BridgePersistenceQueueStateSnapshot>),
     AgentProfilesStateChanged(Box<super::response::BridgeAgentProfilesStateSnapshot>),
+    BotsStateChanged(Box<BridgeBotsStateSnapshot>),
 }
 
 /// Thread directory 增量事件 payload。

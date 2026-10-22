@@ -201,6 +201,7 @@ pub enum MediaWireFormat {
     ChatVideoUrl,
     ChatFileUrl,
     ResponsesInputImage,
+    ResponsesInputFile,
 }
 
 impl MediaWireFormat {
@@ -208,14 +209,14 @@ impl MediaWireFormat {
         match self {
             Self::ChatImageUrl | Self::ResponsesInputImage => ModelModality::Image,
             Self::ChatVideoUrl => ModelModality::Video,
-            Self::ChatFileUrl => ModelModality::File,
+            Self::ChatFileUrl | Self::ResponsesInputFile => ModelModality::File,
         }
     }
 
     fn protocol(self) -> WireApi {
         match self {
             Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => WireApi::ChatCompletions,
-            Self::ResponsesInputImage => WireApi::Responses,
+            Self::ResponsesInputImage | Self::ResponsesInputFile => WireApi::Responses,
         }
     }
 }

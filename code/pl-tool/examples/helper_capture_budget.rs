@@ -19,7 +19,8 @@ async fn main() -> anyhow::Result<()> {
         .stderr(Stdio::inherit())
         .spawn()?;
     let client =
-        RemoteClient::from_streams(child.stdout.take().unwrap(), child.stdin.take().unwrap());
+        RemoteClient::from_streams(child.stdout.take().unwrap(), child.stdin.take().unwrap())
+            .await?;
     let old_protocol = client
         .request(
             RemoteRequest::Hello {
@@ -60,7 +61,9 @@ async fn main() -> anyhow::Result<()> {
     let request = |id: &str, command: &str, capture| RemoteSpawnRequest {
         process_id: id.into(),
         workspace_id: workspace.workspace_id.clone(),
-        command: command.into(),
+        program: "/bin/sh".into(),
+        arguments: vec!["-c".into(), command.into()],
+        remove_environment: vec![],
         cwd: ".".into(),
         environment: BTreeMap::new(),
         capture,
@@ -71,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
             "touch must-not-start",
             RemoteCapture::File {
                 path: "tiny.log".into(),
-                limit_bytes: 1,
+                plan: capture_plan(1),
             },
         ))
         .await;
@@ -95,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
             "head -c 20000000 /dev/zero",
             RemoteCapture::File {
                 path: "stdout.log".into(),
-                limit_bytes: MAX_CAPTURE_BYTES,
+                plan: capture_plan(MAX_CAPTURE_BYTES),
             },
         ),
         (
@@ -103,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
             "python3 -c 'import os; [(os.write(1, b\"a\"*4096),os.write(2, b\"b\"*4096)) for _ in range(3000)]'",
             RemoteCapture::File {
                 path: "both.log".into(),
-                limit_bytes: MAX_CAPTURE_BYTES,
+                plan: capture_plan(MAX_CAPTURE_BYTES),
             },
         ),
         ("stream", "head -c 20000000 /dev/zero", RemoteCapture::None),
@@ -144,12 +147,22 @@ async fn main() -> anyhow::Result<()> {
             anyhow::ensure!(
                 receipt.limit_bytes == MAX_CAPTURE_BYTES && receipt.charged_bytes == disk
             );
+            anyhow::ensure!(receipt.refused_bytes > 0 && disk <= MAX_CAPTURE_BYTES);
+            let archive = std::fs::read(root.path().join(format!("{id}.log")))?;
+            let raw = archive
+                .split(|byte| *byte == b'\n')
+                .filter(|line| {
+                    !line.is_empty()
+                        && (line.iter().all(|byte| *byte == 0)
+                            || line.iter().all(|byte| *byte == b'a')
+                            || line.iter().all(|byte| *byte == b'b'))
+                })
+                .map(|line| line.len() as u64)
+                .sum::<u64>();
             anyhow::ensure!(
-                receipt.refused_bytes > 0
-                    && disk <= MAX_CAPTURE_BYTES
-                    && disk > MAX_CAPTURE_BYTES - 32768
+                raw == out + err,
+                "raw output and actual archived bytes differ"
             );
-            anyhow::ensure!(out + err > MAX_CAPTURE_BYTES - 131072 && out + err <= disk);
             if id == "both" {
                 anyhow::ensure!(out > 0 && err > 0);
             }
@@ -179,18 +192,19 @@ async fn atomic_overwrite_publishes_and_refuses_symlinks(
     let RemoteResponse::WorkspaceOpened(workspace) = opened.response else {
         anyhow::bail!("unexpected workspace response");
     };
-    client
-        .request(
-            RemoteRequest::WriteFile(RemoteWriteRequest {
-                target: RemotePathRequest {
-                    workspace_id: workspace.workspace_id.clone(),
-                    path: "atomic.txt".into(),
-                },
-                mode: RemoteWriteMode::Overwrite,
-            }),
-            b"published",
-        )
-        .await?;
+    write_file(
+        &client,
+        RemoteWriteRequest {
+            target: RemotePathRequest {
+                workspace_id: workspace.workspace_id.clone(),
+                path: "atomic.txt".into(),
+            },
+            mode: RemoteWriteMode::Overwrite,
+            total_len: 9,
+        },
+        b"published",
+    )
+    .await?;
     anyhow::ensure!(std::fs::read(root.join("atomic.txt"))? == b"published");
     let leftovers: Vec<_> = std::fs::read_dir(root)?
         .filter_map(|entry| entry.ok())
@@ -198,7 +212,7 @@ async fn atomic_overwrite_publishes_and_refuses_symlinks(
             entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".pure-write-")
+                .starts_with(".anywork-transfer-")
         })
         .collect();
     anyhow::ensure!(
@@ -208,21 +222,75 @@ async fn atomic_overwrite_publishes_and_refuses_symlinks(
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(root.join("atomic.txt"), root.join("link.txt"))?;
-        let linked = client
-            .request(
-                RemoteRequest::WriteFile(RemoteWriteRequest {
-                    target: RemotePathRequest {
-                        workspace_id: workspace.workspace_id,
-                        path: "link.txt".into(),
-                    },
-                    mode: RemoteWriteMode::Overwrite,
-                }),
-                b"via-link",
-            )
-            .await;
+        let linked = write_file(
+            &client,
+            RemoteWriteRequest {
+                target: RemotePathRequest {
+                    workspace_id: workspace.workspace_id,
+                    path: "link.txt".into(),
+                },
+                mode: RemoteWriteMode::Overwrite,
+                total_len: 8,
+            },
+            b"via-link",
+        )
+        .await;
         anyhow::ensure!(linked.is_err(), "writeAtomic must refuse symlink entries");
         anyhow::ensure!(std::fs::read(root.join("atomic.txt"))? == b"published");
     }
     println!("OK  writeAtomic publishes atomically and refuses symlink entries");
+    Ok(())
+}
+
+fn capture_plan(limit_bytes: u64) -> pl_protocol::remote::RemoteCapturePlan {
+    pl_protocol::remote::RemoteCapturePlan {
+        header: "capture fixture\n".into(),
+        stdout_prefix: "=== STDOUT ===\n".into(),
+        stderr_prefix: "=== STDERR ===\n".into(),
+        terminate_line: true,
+        limit_bytes,
+    }
+}
+async fn write_file(
+    client: &RemoteClient,
+    request: pl_protocol::remote::RemoteWriteRequest,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    let opened = client
+        .request(RemoteRequest::BeginWrite(request), &[])
+        .await?;
+    let RemoteResponse::Transfer(opened) = opened.response else {
+        anyhow::bail!("expected write handle")
+    };
+    let digest = hex::encode(Sha256::digest(bytes));
+    client
+        .request(
+            RemoteRequest::WriteChunk {
+                transfer_id: opened.transfer_id.clone(),
+                offset: 0,
+                sha256: digest.clone(),
+            },
+            bytes,
+        )
+        .await?;
+    client
+        .request(
+            RemoteRequest::CommitWrite {
+                transfer_id: opened.transfer_id.clone(),
+                length: bytes.len() as u64,
+                sha256: digest,
+            },
+            &[],
+        )
+        .await?;
+    client
+        .request(
+            RemoteRequest::CloseTransfer {
+                transfer_id: opened.transfer_id,
+            },
+            &[],
+        )
+        .await?;
     Ok(())
 }

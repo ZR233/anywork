@@ -14,6 +14,13 @@ anywork 使用独立产品身份，默认仅访问 `~/.anywork`，凭据服务�
 会话、产品库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户 Agent Profile
 单独保存到 `~/.anywork/agents/*.toml`。schema 版本以代码常量为准。
 
+机器人 desired 配置独立保存于 `<StudioHome>/v2/bots/<bot-id>/config.toml`，拥有自己的
+schema 和 `configRevision`，不在主配置里新增 Node/MCP/provider 伪配置。App Secret 使用
+独立 `bot:<bot-id>` 凭据 scope；字段、首配与在线应用边界见 [27](./27-bots.md)，物理布局
+见 [17](./17-studio-storage.md)。机器人版本演进不通过改写主配置版本号代替迁移。
+机器人配置可以保存非敏感的所选凭据版本引用，不包含凭据本身；它不改变 Provider 主配置
+不保存凭据引用的约定。所选引用、候选材料及提交待确认的恢复由机器人 owner 统一协调。
+
 配置运行时在 Studio 启动时读取配置；此后普通对话和设置查询只读内存 canonical snapshot；
 配置文件不存在时设置页展示内存中的默认配置；外部文件变化只有显式重载命令才能应用。
 支持在线模型探测的 account 只在程序启动的初始化阶段各探测一次，各实例任务并行提交、互不等待，
@@ -502,6 +509,13 @@ Account 的 API token 保存到操作系统凭据库，service 固定为 `anywor
 当前配置、日志或 UI；包含敏感内容的原始备份必须受保护。安全边界见 [04](./04-security.md)。
 迁移的系统凭据复制要求持久服务成功写入并回读；不可访问不能被解释为“原项不存在”，也不能
 用进程内 lease 的回读通过耐久校验。普通进程临时 secret 的生命周期不因此扩大为持久承诺。
+
+机器人沿用同一系统凭据服务与进程 lease，不新建独立密码库。每个 `bot:<bot-id>` 账户保存
+版本化受保护材料，机器人配置引用精确版本；读取时同时核对机器人、应用与版本，不以
+系统中任意旧值覆盖新 lease，也不以 lease 的存在冒充系统已持久保存。候选准备、引用提交
+和未引用材料回收遵循 [27.2](./27-bots.md#272-管理配置与凭据)；版本迁移保留原配置与
+凭据关联，服务不可访问不等于原值不存在，不能通过默认值或清空完成迁移。该契约不扩大
+Provider、SSH 或 MCP 的凭据格式及修改范围。
 
 MCP stdio server 的 `env` 按配置原样传给子进程，可能包含明文凭据。Streamable HTTP 的
 `bearer_token_env_var` 只保存环境变量名，运行时从 Pure 进程环境读取对应 token 并构造

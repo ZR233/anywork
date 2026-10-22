@@ -1345,19 +1345,33 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<RemoteDirectoryListing> browseRemoteDirectories(
     String alias, {
     String? path,
+    String? cursor,
   }) async {
     await _ensureReady();
     final listing = await _bridgeCall(
-      () => frb_ssh.browseRemoteDirectories(alias: alias, path: path),
+      () => frb_ssh.browseRemoteDirectories(
+        alias: alias,
+        path: path,
+        cursor: cursor,
+      ),
     );
     return RemoteDirectoryListing(
       path: listing.path,
       parent: listing.parent,
+      nextCursor: listing.nextCursor,
       entries: listing.entries
           .map(
             (entry) => RemoteDirectoryEntry(name: entry.name, path: entry.path),
           )
           .toList(growable: false),
+    );
+  }
+
+  @override
+  Future<void> closeRemoteDirectory(String alias, String cursor) async {
+    await _ensureReady();
+    await _bridgeCall(
+      () => frb_ssh.closeRemoteDirectory(alias: alias, cursor: cursor),
     );
   }
 
@@ -2396,6 +2410,207 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       await _bridgeCall(
         () => frb.resetLsp(
           input: frb.LspScopeInput.workspace(projectId: projectId),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsStateSnapshot> readBots() async {
+    await _ensureReady();
+    return _botsStateFromFrb(await _bridgeCall(frb_bots.readBots));
+  }
+
+  @override
+  Future<BotsCommandReply> saveBot(SaveBotRequest request) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.saveBot(request: _saveBotToFrb(request)),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> startBotRegistration(
+    StartBotRegistrationRequest request,
+  ) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.startBotRegistration(
+          request: frb_bots_types.BridgeStartBotRegistrationRequest(
+            operationId: request.operationId,
+            name: request.name,
+            projectId: request.projectId,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> cancelBotRegistration(
+    CancelBotRegistrationRequest request,
+  ) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.cancelBotRegistration(
+          request: frb_bots_types.BridgeCancelBotRegistrationRequest(
+            operationId: request.operationId,
+            attemptId: request.attemptId,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> setBotEnabled(SetBotEnabledRequest request) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.setBotEnabled(
+          request: frb_bots_types.BridgeSetBotEnabledRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+            expectedConfigRevision: BigInt.from(request.expectedConfigRevision),
+            enabled: request.enabled,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> retryBotConnection(
+    RetryBotConnectionRequest request,
+  ) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.retryBotConnection(
+          request: frb_bots_types.BridgeRetryBotConnectionRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> setBotTrustedUser(
+    SetBotTrustedUserRequest request,
+  ) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.setBotTrustedUser(
+          request: frb_bots_types.BridgeSetBotTrustedUserRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+            expectedConfigRevision: BigInt.from(request.expectedConfigRevision),
+            openId: request.openId,
+            trusted: request.trusted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotsCommandReply> setBotTrustedChat(
+    SetBotTrustedChatRequest request,
+  ) async {
+    await _ensureReady();
+    return _botsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.setBotTrustedChat(
+          request: frb_bots_types.BridgeSetBotTrustedChatRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+            expectedConfigRevision: BigInt.from(request.expectedConfigRevision),
+            chatId: request.chatId,
+            trusted: request.trusted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotConversationPage> listBotConversations(
+    ListBotConversationsRequest request,
+  ) async {
+    await _ensureReady();
+    return _conversationPageFromFrb(
+      await _bridgeCall(
+        () => frb_bots.listBotConversations(
+          request: frb_bots_types.BridgeListBotConversationsRequest(
+            botId: request.botId,
+            cursor: request.cursor,
+            limit: request.limit,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotMessagePage> readBotMessages(ReadBotMessagesRequest request) async {
+    await _ensureReady();
+    return _messagePageFromFrb(
+      await _bridgeCall(
+        () => frb_bots.readBotMessages(
+          request: frb_bots_types.BridgeReadBotMessagesRequest(
+            botId: request.botId,
+            chatId: request.chatId,
+            startTime: request.startTime,
+            endTime: request.endTime,
+            cursor: request.cursor,
+            limit: request.limit,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotSendResult> sendBotMessage(SendBotMessageRequest request) async {
+    await _ensureReady();
+    return _sendResultFromFrb(
+      await _bridgeCall(
+        () => frb_bots.sendBotMessage(
+          request: frb_bots_types.BridgeSendBotMessageRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+            chatId: request.chatId,
+            text: request.text,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<BotConversationThreadReply> createBotConversationThread(
+    CreateBotConversationThreadRequest request,
+  ) async {
+    await _ensureReady();
+    return _conversationThreadReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.createBotConversationThread(
+          request: frb_bots_types.BridgeCreateBotConversationThreadRequest(
+            operationId: request.operationId,
+            botId: request.botId,
+            chatId: request.chatId,
+            expectedConfigRevision: BigInt.from(request.expectedConfigRevision),
+            expectedBindingRevision: BigInt.from(
+              request.expectedBindingRevision,
+            ),
+          ),
         ),
       ),
     );

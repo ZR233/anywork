@@ -322,6 +322,92 @@ fn tiny_png() -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes() {
+    use base64::Engine;
+    use pl_model::model::{
+        MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
+        ModelMediaInputProfile, ModelModality,
+    };
+    for (protocol, transport) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+        ),
+    ] {
+        let events = responses_text("file received", "file-response", "file-model");
+        let reply = if protocol == Protocol::ResponsesWebSocket {
+            Reply::WebSocket(events)
+        } else {
+            Reply::Sse(events)
+        };
+        let fixture =
+            FixtureServer::start(vec![Step::prompt(protocol, "read retained file", 0, reply)])
+                .await
+                .unwrap();
+        let mut info = model("file-model", transport);
+        info.capabilities.input.push(ModelInputCapability::media(
+            ModelModality::File,
+            vec![ModelInputSource::Local],
+        ));
+        info.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::File,
+            wire: MediaWireFormat::ResponsesInputFile,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
+        let bytes = "中文文件正文-PR138".as_bytes();
+        let request = CompletionRequest::builder()
+            .messages(vec![Message {
+                content: MessageContent::new(vec![
+                    ContentPart::Text {
+                        text: "read retained file".into(),
+                    },
+                    ContentPart::Attachment {
+                        attachment_id: "file-1".into(),
+                        modality: AttachmentModality::File,
+                        media_type: "text/plain".into(),
+                        filename: Some("证据.txt".into()),
+                    },
+                ]),
+                ..user("")
+            }])
+            .attachments(vec![AttachmentInput {
+                attachment_id: "file-1".into(),
+                modality: AttachmentModality::File,
+                media_type: "text/plain".into(),
+                filename: Some("证据.txt".into()),
+                source: AttachmentSource::Bytes {
+                    bytes: Arc::from(bytes),
+                },
+            }])
+            .build();
+        let response = complete(&fixture, info, request, ModelSession::default()).await;
+        assert_eq!(response.content.as_deref(), Some("file received"));
+        let requests = fixture.finish().await.unwrap();
+        let part = &requests[0].body["input"][0]["content"][1];
+        assert_eq!(part["type"], "input_file");
+        assert_eq!(part["filename"], "证据.txt");
+        let encoded = part["file_data"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("data:text/plain;base64,")
+            .unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+            bytes
+        );
+        assert!(part.get("image_url").is_none());
+        assert!(part.get("file_id").is_none());
+    }
+}
+
+#[tokio::test]
 async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
     let mut events = responses_text("cross-crate answer", "thread-response", "core-fixture");
     events.last_mut().unwrap()["response"]["usage"]["total_tokens"] = json!(16);
@@ -1857,28 +1943,39 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
 
 #[tokio::test]
 async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
+    // Both streams stay paced so the total response window is measurably non-zero:
+    // the assertions below judge usage validity, not a sub-millisecond round trip
+    // that would leave `response_millis` at zero.
     let fixture = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesHttp,
             "invalid usage stream",
             0,
-            Reply::Sse(vec![
+            Reply::PacedEvents {
+                initial_delay_ms: 0,
+                step_millis: 10,
+                events: vec![
                 json!({"type":"response.created","response":{"id":"invalid-usage","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"invalid-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"invalid-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"invalid-usage","model":"fixture-model","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":9}}}),
-            ]),
+                ],
+            },
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
             "missing output stream",
             1,
-            Reply::Sse(vec![
+            Reply::PacedEvents {
+                initial_delay_ms: 0,
+                step_millis: 10,
+                events: vec![
                 json!({"type":"response.created","response":{"id":"missing-output","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"missing-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"missing-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"missing-output","model":"fixture-model","usage":{"input_tokens":4}}}),
-            ]),
+                ],
+            },
         ),
     ])
     .await

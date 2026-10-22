@@ -17,6 +17,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -43,6 +54,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -178,6 +204,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -204,6 +241,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -339,6 +391,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -365,6 +428,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -509,6 +587,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -535,6 +624,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -679,6 +783,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -705,6 +820,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -831,6 +961,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -857,6 +998,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -992,6 +1148,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -1018,6 +1185,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"
@@ -1153,6 +1335,17 @@
                 "data_url"
               ],
               "wire": "responses_input_image"
+            },
+            {
+              "first_send": [
+                "remote_url",
+                "data_url"
+              ],
+              "modality": "file",
+              "replay": [
+                "data_url"
+              ],
+              "wire": "responses_input_file"
             }
           ],
           "protocol": {
@@ -1179,6 +1372,21 @@
           {
             "limits": {},
             "modality": "image",
+            "sources": [
+              "local",
+              "remote_url"
+            ]
+          },
+          {
+            "limits": {
+              "max_bytes": 50000000,
+              "max_total_bytes": 50000000,
+              "media_types": [
+                "application/pdf",
+                "text/plain"
+              ]
+            },
+            "modality": "file",
             "sources": [
               "local",
               "remote_url"

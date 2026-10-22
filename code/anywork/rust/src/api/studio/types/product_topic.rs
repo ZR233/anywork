@@ -6,8 +6,8 @@ use super::error::BridgeError;
 use super::event::BridgeProductEventEnvelope;
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAgentDirectoryState,
-    BridgeAgentProfilesStateSnapshot, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
-    BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
+    BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
+    BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
     BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
     BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
     BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
@@ -36,6 +36,7 @@ pub enum BridgeProductTopic {
     Persistence,
     PersistenceQueue,
     AgentProfiles,
+    Bots,
 }
 
 impl BridgeProductTopic {
@@ -76,6 +77,7 @@ impl BridgeProductTopic {
             Self::Persistence => StudioProductTopic::Persistence,
             Self::PersistenceQueue => StudioProductTopic::PersistenceQueue,
             Self::AgentProfiles => StudioProductTopic::AgentProfiles,
+            Self::Bots => StudioProductTopic::Bots,
         }
     }
 }
@@ -102,6 +104,7 @@ pub enum BridgeProductBaseline {
     Persistence(BridgePersistenceStateSnapshot),
     PersistenceQueue(Box<BridgePersistenceQueueStateSnapshot>),
     AgentProfiles(Box<BridgeAgentProfilesStateSnapshot>),
+    Bots(Box<BridgeBotsStateSnapshot>),
 }
 
 /// typed topic 订阅交付的帧。

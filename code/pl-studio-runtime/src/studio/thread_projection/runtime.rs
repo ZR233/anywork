@@ -128,9 +128,12 @@ pub(in crate::studio) fn project_runtime(
     let child = state
         .extensions
         .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION);
+    let bot_id = crate::studio::model_route::bot_owner(state)
+        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
     let model_route = crate::studio::model_route::route_record(state, child)
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?
         .map(|(record, route)| pl_protocol::ThreadModelRouteSnapshot {
+            bot_id,
             account_id: route.account_id.into_string(),
             model_id: route.model_id,
             effort: route.effort.map(|effort| effort.as_str().to_owned()),

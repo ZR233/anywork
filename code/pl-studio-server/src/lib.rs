@@ -1,5 +1,6 @@
 //! Loopback HTTP/OpenAPI/SSE adapter for [`pl_studio_runtime::StudioRuntime`].
 
+mod bots;
 mod error;
 mod routes;
 mod security;

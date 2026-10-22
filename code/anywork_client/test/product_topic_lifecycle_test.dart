@@ -71,6 +71,41 @@ final class _TopicSubscription
   );
 }
 
+/// Minimal bootstrap facts so the real `bootstrap()` entry can run; every
+/// resident topic subscription still goes through the real registry.
+final class _BootstrapTopicTransport extends _TopicTransport {
+  @override
+  Future<StudioBootstrap> readBootstrap() async => StudioBootstrap(
+    ownerEpoch: 'epoch-boot',
+    projectDirectory: ProjectDirectoryState(),
+    threadDirectory: ThreadDirectoryWindow(),
+    agentDirectory: AgentDirectoryState(),
+    settingsState: SettingsStateSnapshot(),
+    recoveryState: RecoveryStateSnapshot(),
+    mcpState: McpStateSnapshot(revision: 1),
+    lspState: LspStateSnapshot(revision: 1),
+    skillsByProject: const {},
+    threadModeCatalog: const ThreadModeCatalogView(),
+    accountUsageState: AccountUsageStateSnapshot(revision: 1),
+    modelPerformance: const ModelPerformanceSnapshotView(),
+    updaterState: DisabledUpdaterStateSnapshot(
+      revision: 1,
+      updatedAt: DateTime.utc(2026),
+    ),
+    persistenceState: const PersistenceStateSnapshot.ready(),
+  );
+
+  @override
+  Future<AccountCatalogView> loadAccountCatalog() async =>
+      AccountCatalogView.empty();
+
+  /// Bootstrap 先读 Native 目录、再读 ACP 目录，然后才租用常驻 topic；
+  /// ACP 目录在这里只是空默认值，不启动官方程序、也不检查凭据。
+  @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
+      AcpAccountCatalogView.empty();
+}
+
 ProductTopicBaselineFrame _updater(int revision) => ProductTopicBaselineFrame(
   topic: const UpdaterTopic(),
   revision: revision,
@@ -339,4 +374,96 @@ void main() {
     expect(budget.used(ResourceKind.observer), 0);
     await client.close();
   });
+
+  test(
+    'bootstrap owns the resident bots topic and releases it on close',
+    () async {
+      final transport = _BootstrapTopicTransport();
+      final client = AnyworkClient(transport: transport, clientId: 'boot');
+      await client.bootstrap();
+      // The Client—not a visible page scope—is the resident bots owner, so a
+      // GUI observer or settings round trip can never be its only demand.
+      expect(client.applicationTopics, contains(const BotsTopic()));
+      _TopicSource? resident;
+      for (var attempt = 0; resident == null && attempt < 100; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+        for (final candidate in transport.sources) {
+          if (candidate.topic == const BotsTopic()) resident = candidate;
+        }
+      }
+      expect(resident, isNotNull, reason: 'the bots subscription is created');
+      final source = resident!;
+      source.emit(
+        ProductTopicBaselineFrame(
+          topic: const BotsTopic(),
+          revision: 2,
+          state: BotsBaseline(
+            BotsStateSnapshot(
+              revision: 2,
+              updatedAt: 1718000000,
+              bots: [
+                BotSnapshot(
+                  id: 'bot-boot',
+                  name: '启动机器人',
+                  projectId: 'project',
+                  appId: 'cli_boot',
+                  platform: BotPlatform.feishuChina,
+                  enabled: true,
+                  toolsEnabled: false,
+                  configRevision: 1,
+                  trustedOpenIds: const [],
+                  trustedChatIds: const [],
+                  connection: const BotConnectionDisabled(),
+                  credential: BotCredentialAvailability.missing,
+                  pairing: const [],
+                  canChangeProject: true,
+                  canChangeAppId: true,
+                  createdAt: 1718000000,
+                  updatedAt: 1718000000,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(client.bots.state.loaded, isTrue);
+      expect(client.bots.state.revision, 2);
+      expect(client.bots.state.value?.bots.single.id, 'bot-boot');
+
+      // A settings round trip adds and removes only its own scope demand; the
+      // resident owner keeps the subscription alive afterwards.
+      final scope = client.channels.acquireSettingsScope(
+        BridgeSettingsScopeKind.bots,
+        null,
+      );
+      expect(client.channels.activeTopicRefCountViews()['bots'], 2);
+      await scope.release();
+      expect(client.channels.activeTopicRefCountViews()['bots'], 1);
+
+      // Typed increments keep flowing into the canonical store.
+      source.emit(
+        ProductTopicDataFrame(
+          topic: const BotsTopic(),
+          event: ProductTopicEventEnvelope(
+            eventId: 'evt-boot-1',
+            sequence: BigInt.one,
+            createdAt: DateTime.utc(2026),
+            payload: BotsStateChangedPayload(
+              BotsStateSnapshot(
+                revision: 3,
+                updatedAt: 1718000001,
+                bots: const [],
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(client.bots.state.revision, 3);
+      expect(client.bots.state.value?.bots, isEmpty);
+
+      // Real close cancels the resident subscription through the topic owner.
+      expect((await client.close()).complete, isTrue);
+      expect(source.cancelCalls, 1);
+    },
+  );
 }

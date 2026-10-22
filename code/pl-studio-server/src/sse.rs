@@ -194,6 +194,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::Persistence => "persistence",
         StudioProductTopic::PersistenceQueue => "persistenceQueue",
         StudioProductTopic::AgentProfiles => "agentProfiles",
+        StudioProductTopic::Bots => "bots",
     }
 }
 

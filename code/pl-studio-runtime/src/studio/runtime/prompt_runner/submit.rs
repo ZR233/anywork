@@ -134,6 +134,9 @@ impl StudioRuntime {
                 .into());
             }
         }
+        // Validate the caller's observed revision before applying the bot's next-input
+        // configuration; this admission's own update is not a stale desktop request.
+        self.reconcile_bot_model(&thread_id, &thread).await?;
         if thread_record.parent_thread_id.is_none() {
             self.thread_observations
                 .reconcile_children(&thread_id)

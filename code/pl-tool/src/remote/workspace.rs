@@ -1,5 +1,8 @@
+mod directory;
 mod download;
+pub use directory::RemoteDirectoryReader;
 pub use download::RemoteDownloadError;
+use std::sync::Arc;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -7,11 +10,10 @@ use std::path::PathBuf;
 use crate::tool_error;
 use pl_protocol::Result;
 use pl_protocol::remote::{
-    RemoteCopyRequest, RemoteDirectoryListing, RemotePathRequest, RemoteReadRequest,
-    RemoteRemoveRequest, RemoteRenameRequest, RemoteRequest, RemoteResponse,
+    RemoteCopyRequest, RemotePathRequest, RemoteRemoveRequest, RemoteRenameRequest, RemoteRequest,
+    RemoteResponse,
 };
 
-use crate::file::matches_pattern;
 use crate::workspace_file::{
     WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
     WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
@@ -41,6 +43,7 @@ pub struct RemoteWorkspaceFileBackend {
     client: RemoteClient,
     workspace_id: String,
     canonical_path: String,
+    listings: crate::workspace_file::listing::ListingPager,
 }
 
 impl RemoteWorkspaceFileBackend {
@@ -53,6 +56,7 @@ impl RemoteWorkspaceFileBackend {
             workspace_id: lease.id.clone(),
             canonical_path: lease.path.clone(),
             lease,
+            listings: Default::default(),
         }
     }
     async fn request(
@@ -95,27 +99,6 @@ impl RemoteWorkspaceFileBackend {
             workspace_id: self.workspace_id.clone(),
             path: resolve_remote_path(path, cwd)?,
         })
-    }
-
-    /// 读取目录的一层 typed entry，供本地 Skills/LSP 等编排消费。
-    pub async fn list_directory_entries(&self, path: String) -> Result<RemoteDirectoryListing> {
-        let reply = self
-            .request(
-                RemoteRequest::ListDirectory(RemotePathRequest {
-                    workspace_id: self.workspace_id.clone(),
-                    path,
-                }),
-                &[],
-            )
-            .await
-            .map_err(remote_file_error)?;
-        match reply.response {
-            RemoteResponse::Directory(listing) => Ok(listing),
-            response => Err(tool_error(
-                "file",
-                format!("unexpected remote directory response: {response:?}"),
-            )),
-        }
     }
 
     /// 读取路径元数据；不存在时返回 `None`。
@@ -166,18 +149,13 @@ impl RemoteWorkspaceFileBackend {
         cwd: Option<String>,
         body: &[u8],
     ) -> Result<()> {
-        let path = self.path_request(path, cwd)?;
-        let reply = self
-            .request(
-                RemoteRequest::WriteFile(pl_protocol::remote::RemoteWriteRequest {
-                    target: path,
-                    mode: pl_protocol::remote::RemoteWriteMode::Overwrite,
-                }),
-                body,
-            )
-            .await
-            .map_err(remote_file_error)?;
-        expect_ack(reply).map_err(remote_file_error)
+        let target = self.path_request(path, cwd)?;
+        self.upload_bytes(
+            target,
+            pl_protocol::remote::RemoteWriteMode::Overwrite,
+            body,
+        )
+        .await
     }
 
     /// 删除 workspace 内文件或目录，不跟随越界链接。
@@ -235,13 +213,59 @@ impl RemoteWorkspaceFileBackend {
     ) -> Result<()> {
         let source = self.path_request(source, cwd.clone())?;
         let target = self.path_request(target, cwd)?;
+        let stat = self
+            .stat_optional(source.path.clone(), None)
+            .await?
+            .ok_or_else(|| tool_error("copy_path", "source path does not exist"))?;
+        if !stat.is_dir {
+            return self.copy_file(source.path, target.path).await;
+        }
+        if !recursive {
+            return Err(tool_error(
+                "copy_path",
+                "directory copy requires recursive=true",
+            ));
+        }
+        if target.path == source.path
+            || target
+                .path
+                .starts_with(&(source.path.trim_end_matches('/').to_owned() + "/"))
+        {
+            return Err(tool_error(
+                "copy_path",
+                "cannot copy a directory inside itself",
+            ));
+        }
+        self.create_directory(target.path.clone(), None).await?;
+        let mut stack = vec![(self.open_directory(source.path.clone()).await?, target.path)];
+        while let Some((reader, destination)) = stack.last_mut() {
+            let Some(entry) = reader.next().await? else {
+                stack.pop();
+                continue;
+            };
+            if entry.is_symlink {
+                return Err(tool_error(
+                    "copy_path",
+                    "symbolic links are not copyable through the workspace backend",
+                ));
+            }
+            let destination = format!("{}/{}", destination.trim_end_matches('/'), entry.name);
+            if entry.is_directory {
+                self.create_directory(destination.clone(), None).await?;
+                stack.push((self.open_directory(entry.path).await?, destination));
+            } else {
+                self.copy_file(entry.path, destination).await?;
+            }
+        }
+        Ok(())
+    }
+    async fn copy_file(&self, source: String, target: String) -> Result<()> {
         let reply = self
             .request(
                 RemoteRequest::CopyPath(RemoteCopyRequest {
-                    workspace_id: source.workspace_id,
-                    source: source.path,
-                    target: target.path,
-                    recursive,
+                    workspace_id: self.workspace_id.clone(),
+                    source,
+                    target,
                 }),
                 &[],
             )
@@ -285,7 +309,7 @@ pub async fn load_remote_workspace_instructions(
             .read_bytes(WorkspaceFileReadBytesRequest {
                 path: path.clone(),
                 cwd: None,
-                max_bytes: pl_protocol::remote::REMOTE_MAX_BODY_BYTES,
+                max_bytes,
             })
             .await?;
         let take = bytes.len().min(max_bytes);
@@ -315,63 +339,29 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     }
 
     async fn read_text(&self, request: WorkspaceFileReadRequest) -> Result<String> {
-        let path = self.path_request(request.path, request.cwd)?;
-        let reply = self
-            .request(
-                RemoteRequest::ReadBytes(RemoteReadRequest {
-                    workspace_id: path.workspace_id,
-                    path: path.path,
-                    max_bytes: pl_protocol::remote::REMOTE_MAX_BODY_BYTES,
-                }),
-                &[],
-            )
-            .await
+        let path = resolve_remote_path(request.path, request.cwd)?;
+        let mut bytes = self
+            .client
+            .resident_buffer(self.client.content_budget())
             .map_err(remote_file_error)?;
-        if !matches!(reply.response, RemoteResponse::Bytes) {
-            return Err(tool_error(
-                "read_file",
-                format!("unexpected remote read response: {:?}", reply.response),
-            ));
-        }
-        String::from_utf8(reply.body)
-            .map_err(|error| tool_error("read_file", format!("remote file is not UTF-8: {error}")))
+        self.copy_capture_bounded(&path, &mut bytes, self.client.content_budget() as u64)
+            .await
+            .map_err(|e| tool_error("read_file", e))?;
+        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("read_file", e))
     }
-
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
-        let path = self.path_request(request.path, request.cwd)?;
-        let reply = self
-            .request(
-                RemoteRequest::ReadBytes(RemoteReadRequest {
-                    workspace_id: path.workspace_id,
-                    path: path.path,
-                    max_bytes: request.max_bytes,
-                }),
-                &[],
-            )
-            .await
+        let path = resolve_remote_path(request.path, request.cwd)?;
+        let mut bytes = self
+            .client
+            .resident_buffer(request.max_bytes)
             .map_err(remote_file_error)?;
-        match reply.response {
-            RemoteResponse::Bytes => Ok(reply.body),
-            response => Err(tool_error(
-                "view_image",
-                format!("unexpected remote read response: {response:?}"),
-            )),
-        }
+        self.copy_capture_bounded(&path, &mut bytes, request.max_bytes as u64)
+            .await
+            .map_err(|e| tool_error("view_image", e))?;
+        Ok(bytes.into_bytes())
     }
-
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
-        let target = self.path_request(request.path, request.cwd)?;
-        let reply = self
-            .request(
-                RemoteRequest::WriteFile(pl_protocol::remote::RemoteWriteRequest {
-                    target,
-                    mode: request.mode.into(),
-                }),
-                request.content.as_bytes(),
-            )
-            .await
-            .map_err(remote_file_error)?;
-        expect_ack(reply).map_err(remote_file_error)
+        self.upload(request).await
     }
 
     async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> Result<()> {
@@ -379,41 +369,14 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     }
 
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        let root = resolve_remote_path(request.path, request.cwd)?;
-        let mut queue = VecDeque::from([root.clone()]);
-        let mut files = Vec::new();
-        while let Some(path) = queue.pop_front() {
-            let listing = self.list_directory_entries(path).await?;
-            for entry in listing.entries {
-                if entry.is_symlink {
-                    continue;
-                }
-                if entry.is_directory {
-                    if matches!(entry.name.as_str(), ".git" | "target" | "node_modules") {
-                        continue;
-                    }
-                    if request.include_dirs && matches_pattern(&entry.path, Some(&request.glob)) {
-                        files.push(format!("{}/", entry.path));
-                    }
-                    queue.push_back(entry.path);
-                } else if matches_pattern(&entry.path, Some(&request.glob)) {
-                    files.push(entry.path);
-                }
-                if files.len() > request.max_files {
-                    files.sort();
-                    files.truncate(request.max_files);
-                    return Ok(WorkspaceFileListResult {
-                        files,
-                        truncated: true,
-                    });
-                }
-            }
-        }
-        files.sort();
-        Ok(WorkspaceFileListResult {
-            files,
-            truncated: false,
-        })
+        let root = resolve_remote_path(request.path.clone(), request.cwd.clone())?;
+        let implicit = request.implicit_recovery;
+        self.listings.page(request, self.walk(root, implicit)).await
+    }
+
+    async fn close_listing(&self, cursor: String) -> Result<()> {
+        self.listings.close(&cursor);
+        Ok(())
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {

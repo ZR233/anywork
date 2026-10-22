@@ -17,6 +17,7 @@ const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
 const CATALOG_FILE_NAME: &str = "catalog.toml";
 const PROJECTS_DIR_NAME: &str = "projects";
 const SESSIONS_DIR_NAME: &str = "sessions";
+const BOTS_DIR_NAME: &str = "bots";
 const CALLS_DIR_NAME: &str = "calls";
 const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
@@ -99,6 +100,16 @@ impl StudioPaths {
         crate::config::ConfigPaths::from_config_dir(self.home.clone())
     }
 
+    /// Independent robot management root under the v2 data home.
+    pub fn bots_dir(&self) -> PathBuf {
+        self.versioned_home().join(BOTS_DIR_NAME)
+    }
+
+    /// Stable on-disk directory for one robot.
+    pub fn bot_dir(&self, bot_id: &str) -> PathBuf {
+        self.bots_dir().join(bot_id)
+    }
+
     /// Canonical project roots: `v2/projects/<project-key>/`.
     pub fn projects_dir(&self) -> PathBuf {
         self.versioned_home().join(PROJECTS_DIR_NAME)
@@ -136,7 +147,7 @@ impl StudioPaths {
     /// ACP 认证探测工作区根：产品数据根下按接入稳定 key 隔离，不使用用户项目目录。
     ///
     /// 目录只作为外部 Agent 的空 `cwd`；它不承载凭据、会话历史或供应商状态，删除它不撤销
-    /// 官方程序的登录（见 design/17、design/27）。
+    /// 官方程序的登录（见 design/17、design/28）。
     pub fn acp_probe_root(&self) -> PathBuf {
         self.data_dir.join(ACP_PROBE_DIR_NAME)
     }

@@ -1,74 +1,101 @@
 //! Manager-wide connection admission and ordered transport shutdown.
-
+use super::{RemoteClientError, SshConnection, SshConnectionState, SshManager};
 use std::sync::Arc;
-
 use tokio_util::task::task_tracker::TaskTrackerToken;
 
-use super::{RemoteClientError, SshConnectionState, SshManager};
-
 impl SshManager {
-    pub(super) async fn connection_lock(&self, server_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.connection_locks
-            .lock()
-            .await
-            .entry(server_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    }
-
-    // Caller owns server serialization, or has sealed and drained all operations.
-    pub(super) async fn close_connection(&self, server_id: &str) -> Result<(), RemoteClientError> {
-        let connection = self.connections.lock().await.get(server_id).cloned();
-        if let Some(connection) = connection {
-            connection.heartbeat.cancel();
-            if !connection.client.is_disconnected() {
-                // Only local frame flush is observed. The remote lease handles loss of SSH.
-                if let Ok(Err(error)) = tokio::time::timeout(
-                    std::time::Duration::from_millis(250),
-                    connection.client.request_shutdown(),
-                )
-                .await
-                {
-                    tracing::warn!(%server_id, %error, "SSH shutdown frame was not written");
-                }
+    pub(super) async fn close_owned_connection(
+        &self,
+        alias: &str,
+        connection: Arc<SshConnection>,
+    ) -> Result<(), RemoteClientError> {
+        // Register even an unpublished attachment before cleanup. Cancellation or a failure
+        // cannot drop the only owner; subsequent shutdown also drains this retirement list.
+        {
+            let mut retired = self.retired_connections.lock().await;
+            if !retired
+                .iter()
+                .any(|(_, current)| Arc::ptr_eq(current, &connection))
+            {
+                retired.push((alias.to_owned(), connection.clone()));
             }
-            let transport = connection.client.close().await;
+        }
+        connection.client.begin_close();
+        connection.heartbeat.cancel();
+        let transport = connection.client.close().await;
+        let process = {
             let mut process = connection.process.lock().await;
-            super::ssh::terminate_ssh_child(&mut process, server_id).await?;
-            transport?;
-            drop(process);
-            let removed = self.connections.lock().await.remove(server_id);
-            drop(removed);
+            super::ssh::terminate_ssh_child(&mut process, alias).await
+        };
+        let failures = [transport.err(), process.err()]
+            .into_iter()
+            .flatten()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        if !failures.is_empty() {
+            return Err(RemoteClientError::Protocol(format!(
+                "{alias} cleanup: {}",
+                failures.join("; ")
+            )));
+        }
+        {
+            let mut connections = self.connections.lock().await;
+            if connections
+                .get(alias)
+                .is_some_and(|current| Arc::ptr_eq(current, &connection))
+            {
+                connections.remove(alias);
+            }
+            if connections.len().saturating_mul(4) < connections.capacity() {
+                connections.shrink_to_fit();
+            }
+        }
+        {
+            let mut retired = self.retired_connections.lock().await;
+            retired.retain(|(_, current)| !Arc::ptr_eq(current, &connection));
+            if retired.is_empty() {
+                retired.shrink_to_fit();
+            }
         }
         self.workspaces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(id, _), _| id != server_id);
-        self.set_state(server_id, SshConnectionState::Disconnected)
-            .await;
+            .retain(|(server, _), entry| {
+                server != alias
+                    || entry
+                        .lease
+                        .upgrade()
+                        .is_some_and(|lease| !lease.is_connection(&connection.client))
+            });
+        let sender = self.ensure_state(alias).await;
+        let desired = self.desired_connections.read().await;
+        if !desired.contains_key(alias)
+            && !self.connections.lock().await.contains_key(alias)
+            && !self
+                .retired_connections
+                .lock()
+                .await
+                .iter()
+                .any(|(server, _)| server == alias)
+        {
+            sender.send_replace(SshConnectionState::Disconnected);
+        }
         Ok(())
     }
+
     pub(super) async fn admit_connection(&self) -> Result<TaskTrackerToken, RemoteClientError> {
         let accepting = self.admission.lock().await;
         if !*accepting {
             return Err(RemoteClientError::ManagerClosing);
         }
+        // TaskTracker::close does not reject later tracked spawns. This token keeps the
+        // tracker nonempty until an admitted caller has registered every derived owner;
+        // those owners in turn stay counted while they register their own child tasks.
         Ok(self.operations.token())
     }
 
-    /// Permanently seals connection admission and drains owned SSH connections.
-    ///
-    /// Every connection is an independent owner: their closes are issued and observed
-    /// concurrently so one hanging or failing connection never delays the others. Only a
-    /// connection confirmed closed is removed; a failed one stays owned (retained in the
-    /// registry) and is retried by a later call.
-    ///
-    /// Repeated calls reuse retained connections after a failure or canceled wait.
-    /// Dependent remote tools and services must be stopped before calling this.
-    ///
-    /// # Errors
-    /// Returns an aggregated transport or process-wait failure; every failed connection is
-    /// retained until it is confirmed closed.
+    /// Seals admission, cancels connection intents, then joins all published and retiring owners.
+    /// Independent failures do not stop other resources from closing; unconfirmed owners stay billed.
     pub async fn shutdown(&self) -> Result<(), RemoteClientError> {
         {
             let mut accepting = self.admission.lock().await;
@@ -76,44 +103,60 @@ impl SshManager {
             self.operations.close();
         }
         self.closing.cancel();
-        self.desired_connections.write().await.clear();
+        {
+            let mut desired = self.desired_connections.write().await;
+            for intent in desired.values() {
+                intent.cancelled.cancel();
+            }
+            desired.clear();
+            for connection in self.connections.lock().await.values() {
+                connection.client.begin_close();
+                connection.heartbeat.cancel();
+            }
+        }
         self.operations.wait().await;
-
-        let connections = self
+        let mut connections = self
             .connections
             .lock()
             .await
-            .keys()
-            .cloned()
+            .iter()
+            .map(|(alias, connection)| (alias.clone(), connection.clone()))
             .collect::<Vec<_>>();
-        // Admission is sealed and all operations are drained above, so no per-server
-        // serialization is needed: closing distinct connections concurrently is safe, and
-        // each `close_connection` still removes its own entry only after a confirmed close.
-        let outcomes = futures::future::join_all(
-            connections
+        for (alias, connection) in self.retired_connections.lock().await.iter() {
+            if !connections
                 .iter()
-                .map(|server_id| self.close_connection(server_id)),
-        )
-        .await;
+                .any(|(_, current)| Arc::ptr_eq(current, connection))
+            {
+                connections.push((alias.clone(), connection.clone()));
+            }
+        }
+        use futures::{StreamExt, stream::FuturesUnordered};
+        let mut closing = connections
+            .into_iter()
+            .map(|(alias, connection)| async move {
+                let result = self.close_owned_connection(&alias, connection).await;
+                (alias, result)
+            })
+            .collect::<FuturesUnordered<_>>();
         let mut failures = Vec::new();
-        for (server_id, outcome) in connections.iter().zip(outcomes) {
-            if let Err(error) = outcome {
+        while let Some((alias, result)) = closing.next().await {
+            if let Err(error) = result {
                 self.set_state(
-                    server_id,
+                    &alias,
                     SshConnectionState::Failed {
-                        code: "sshShutdownFailed".to_string(),
+                        code: "sshShutdownFailed".into(),
                         message: error.to_string(),
                     },
                 )
                 .await;
-                failures.push(format!("{server_id}: {error}"));
+                failures.push(error.to_string());
             }
         }
         if failures.is_empty() {
             Ok(())
         } else {
             Err(RemoteClientError::Protocol(format!(
-                "{} SSH connection(s) did not confirm closure: {}",
+                "{} SSH owner(s) did not confirm closure: {}",
                 failures.len(),
                 failures.join("; ")
             )))

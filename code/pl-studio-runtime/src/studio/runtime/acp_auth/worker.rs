@@ -2,7 +2,7 @@
 //!
 //! 这里只做三件事：按平台用**现有**后台进程工厂启动官方程序、交出三路 stdio、在关闭时确认
 //! 整棵进程与管道真实退出。它不是协议客户端，也不解释 stdout（stdout 只交给 ACP codec）；
-//! stderr 独立有界排空，绝不转发原始内容、绝不从中解析 URL 或状态（见 design/27 §27.1）。
+//! stderr 独立有界排空，绝不转发原始内容、绝不从中解析 URL 或状态（见 design/28 §28.1）。
 //!
 //! 收尾结果刻意分三态：[`Reclaim::Stopped`] 已确认停止、[`Reclaim::Settled`] 等待结果已交付
 //! 且失败（`ManagedWorker::wait` 只在监督者真实退出后才交付错误，之后绝不再 wait）、
@@ -103,7 +103,7 @@ pub(super) enum AcpSpawnError {
     /// 程序路径不是绝对路径、不是文件或不可执行。
     MissingExecutable,
     /// 启动步骤失败：`step` 是可公开的安全类别，`source` 只在进程内做有界诊断，
-    /// 绝不进入产品状态、日志正文或 UI（见 design/27 §27.1）。
+    /// 绝不进入产品状态、日志正文或 UI（见 design/28 §28.1）。
     Startup { step: AcpSpawnStep, source: String },
     /// 启动前已经收到取消：不派生任何进程。
     Cancelled,

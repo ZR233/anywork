@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import 'acp.dart';
 import 'agent_profile.dart';
+import 'bots.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -113,6 +114,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.agentProfilesStateChanged(
     BridgeAgentProfilesStateSnapshot field0,
   ) = BridgeProductEventPayload_AgentProfilesStateChanged;
+  const factory BridgeProductEventPayload.botsStateChanged(
+    BridgeBotsStateSnapshot field0,
+  ) = BridgeProductEventPayload_BotsStateChanged;
 }
 
 @freezed
