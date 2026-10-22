@@ -321,8 +321,6 @@
   "settingsStatisticsEmpty": "暂无调用历史。",
   "settingsStatisticsSummaryEmpty": "暂无模型性能汇总。",
   "settingsStatisticsFilteredEmpty": "当前筛选条件下没有调用记录。",
-  "settingsStatisticsPendingTitle": "统计待写入",
-  "settingsStatisticsPendingBody": "近期调用仍在写入统计，当前数据可能尚未包含这些记录。",
   "settingsStatisticsGapTitle": "统计存在缺口",
   "settingsStatisticsGapBody": "部分调用记录未能写入，汇总和历史可能不完整。",
   "settingsStatisticsReadFailedTitle": "统计读取失败",

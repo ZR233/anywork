@@ -873,13 +873,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsStatisticsFilteredEmpty => 'No calls match these filters.';
 
   @override
-  String get settingsStatisticsPendingTitle => 'Statistics pending write';
-
-  @override
-  String get settingsStatisticsPendingBody =>
-      'Recent calls are still being written to statistics and may not appear yet.';
-
-  @override
   String get settingsStatisticsGapTitle => 'Statistics have gaps';
 
   @override

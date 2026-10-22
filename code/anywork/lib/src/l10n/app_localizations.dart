@@ -1628,18 +1628,6 @@ abstract class AppLocalizations {
   /// **'No calls match these filters.'**
   String get settingsStatisticsFilteredEmpty;
 
-  /// No description provided for @settingsStatisticsPendingTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Statistics pending write'**
-  String get settingsStatisticsPendingTitle;
-
-  /// No description provided for @settingsStatisticsPendingBody.
-  ///
-  /// In en, this message translates to:
-  /// **'Recent calls are still being written to statistics and may not appear yet.'**
-  String get settingsStatisticsPendingBody;
-
   /// No description provided for @settingsStatisticsGapTitle.
   ///
   /// In en, this message translates to:
