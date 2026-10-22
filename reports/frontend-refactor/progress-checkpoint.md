@@ -1,5 +1,24 @@
 # v4 设计进度checkpoint
 
+## 第二次文档进度保存
+
+用户再次要求推送当前进度并持续完成。此次沿用已批准v4，不提交未完成的生产实现：
+
+- 推送前本地、远端任务分支与PR head均为
+  `9e00fb0ee2ab4b9ddbe3e379d545e1679d4393c6`；本次为其后续普通快进文档提交，不再重写历史。
+- 新增产品完整字段册、产品读取port/Repository state、receipt来源观察、HTTP运输和Workspace
+  合同；同步共享/Thread/产品合同与设计18/25。读取目标保留原owner/incarnation，Profiles与
+  Thread Mode采用实际提交来源水位，目录search明确依赖Project来源。
+- [9e00对应CI](https://github.com/ZR233/anywork/actions/runs/39731824372)已完成，五个job
+  全部success。该结果仅覆盖9e00已提交tree，不证明后续合同或工作区生产overlay。
+- 当前仍在完整接口冻结：目录窗口扩展、完整Turn历史、附件/创建进度、Updates操作owner、
+  剩余领域动作、所有VM/props、新文件/导出与最终验收矩阵尚未全部闭合。不将局部合同
+  定稿或文档CI成功当作全量实现准入与验收。
+- 源码输入身份仍为78a加已保全overlay，贡献基线仍为b3。提交前重新核对1043路径身份、
+  文档链接/空白与精确暂存范围；不执行编译、测试、格式化、生成或GUI。
+
+以下保留第一次文档checkpoint的授权、范围与证据，不把历史推送前身份当作当前head。
+
 ## 推送授权与范围
 
 用户追加要求“推送远端当前进度，并继续，直到计划完整完成”。本checkpoint保存当前设计、

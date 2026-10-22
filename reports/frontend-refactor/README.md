@@ -226,6 +226,16 @@ python3 reports/frontend-refactor/source_metrics.py \
   剩余公共动作与全部VM字段继续定稿。
   当前已明确来源/投影水位、无value与空集合、独立统计窗口、部分成功及UnknownOutcome；
   各文档末尾仍有待闭合的具体接口，不视为全量编码放行。
+- [产品类型册](./v4-product-type-catalog.md)展开19域业务值与Read字段闭包，包括Agent
+  全部状态、Skills真实序列化边界、Updates完整installer详情和统计稳定source identity。
+- [产品读取port与只读状态](./v4-product-read-ports-contract.md)固定物化值版本、未知与空集合、
+  19域state字段、具体feed/read打开方法及typed页/实体/定位能力；不是新通用状态管理器。
+- [Server运输接缝](./v4-server-contract.md)固定具名POST SSE、ACK/close、父feed监督读取scope
+  与typed错误；完整Turn历史与runtime纯查询替代等剩余项仍须闭合，不能用活跃摘要丢历史。
+- [receipt与观察水位](./v4-receipt-observation-contract.md)逐项固定真实来源、效果和持久化
+  证明；Profile独立源、Thread Mode binding及目录冷读/搜索相容性不再由聚合revision代替。
+- [Workspace接缝](./v4-workspace-contract.md)固定唯一选择writer、目录query/单实体读取、
+  冻结意图和项目打开步骤的独立结果；默认后继选择与命令大载荷等待补项仍明确保留。
 - [T1.A Timeline push](./t1a-timeline-contract.md)：完整新接口、原 payload 清单、2 个未确认 data、
   1 个待发槽、8 MiB 业务载荷预算、typed 错误、真实关闭、生产者—消费者迁移与局部验证。
 - [T1.A2 Dart 消费闭环](./t1a2-dart-timeline-contract.md)：Timeline Freezed 值、typed ports、

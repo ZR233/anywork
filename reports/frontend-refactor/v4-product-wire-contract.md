@@ -10,7 +10,7 @@
 | 具体产品观察 | scope参数 | Rust权威 | Dart唯一归并者 |
 | --- | --- | --- | --- |
 | ProjectDirectory | 无 | 原项目目录owner | WorkspaceRepository |
-| ThreadDirectory | DirectoryQuery | 原目录/查询owner | WorkspaceRepository的对应query window |
+| ThreadDirectory | ThreadDirectoryScope（query或单Thread元数据） | 原目录/查询owner | WorkspaceRepository的对应query/metadata镜像 |
 | AgentDirectory | 无 | 原Agent directory | WorkspaceRepository |
 | Configuration | 无 | ConfigRuntime desired配置与配置事实 | ConfigurationRepository |
 | ModelCatalog | 无 | ConfigRuntime catalog/模型策略来源 | ModelsRepository |
@@ -48,6 +48,8 @@ ProductFeedIdentity {
   feed_id:String,owner_epoch:String,incarnation:u64,resource:ProductResource
 }
 ProductProjectionStamp {owner_epoch:String,incarnation:u64,revision:u64}
+ProductReadOrigin {owner_epoch:String,incarnation:u64}
+<Resource>ReadTarget {origin:ProductReadOrigin,reference:<Resource>ReadRef}
 ProductReadScopeIdentity {
   scope_id:String,owner_epoch:String,incarnation:u64,version:ProductReadVersion
 }
@@ -73,7 +75,8 @@ new_id("product-read")创建，owner_epoch复用runtime；三者小于64 ASCII�
 canonical scope ID、实体ID、路径或查询文本重复内嵌到每个有界Data中；它们在原open/
 query binding冻结，真实业务身份在typed读取中完整返回，不能缩小已有ID合法范围。
 
-incarnation绑定实际资源投影实例，不是订阅次数。projection revision只在该观察的数据实际
+incarnation由runtime registry为实际资源投影实例分配本runtime内唯一值（包括scoped资源），
+不是订阅次数，不在owner替换后复用。projection revision只在该观察的数据实际
 变化时推进；source的canonical revision另外完整保留在下面header中。receipt只能比较其
 指定的canonical资源水位，不能用projection revision、delivery序号或本地加载完成度代替。
 变更有base_revision；只有同owner/incarnation接上前一已处理水位才归并，否则局部resync。
@@ -82,6 +85,11 @@ ProductEntityRef/CollectionRef只用于原scope内typed源索引，不是业务I
 删除/保存命令。相同成员更新保entry、改revision，移除后同业务ID重建用新entry。登记/
 opening/immutable pin/结束释放原则与Thread §11一致；引用不可取得原版为Superseded。
 不能让进程内entry成为新的持久化ID或跨重启协议。
+脱离feed封套传递的ref必须连同ProductReadOrigin：打开read输入、command reply中的读取
+目标、Dart物化缓存都不能只比entry/revision。原origin从已绑定feed stamp或真实writer
+返回的ReadTarget取得，不从port当前状态回填。R按原origin查原entry强引用，再核资源类型/
+scope/版本；旧owner替换或关闭Cancelled，不把同数字entry接到新owner。Data header已
+在stamp下可不重复origin，独立ReadTarget为每个具体资源声明具体类型，不用异构payload。
 
 ### 2.1 状态版本与业务值版本分离
 
@@ -92,7 +100,7 @@ opening/immutable pin/结束释放原则与Thread §11一致；引用不可取�
 
 每个Observed资源header的`source`类型固定为
 `ObservedHeader {brief:ObservedBrief,status:ProductSourceStatusRef}`。status仅指原八态的完整
-metadata（无业务value），由`openSourceStatus(ProductSourceStatusRef)`返回
+metadata（无业务value），由`openSourceStatus(ProductSourceStatusRef,{required ProductReadOrigin origin})`返回
 `ProductSourceStatusReadConnection`；它具有header/text/requestClose/close/retryClose，使用
 相同scope/call预算。header是原八态的具体metadata union，字符串按ReadText，错误仍为原
 code/message/retryable三字段。此能力在该资源port上提供，不建立可观察全业务的通用总线。
@@ -178,6 +186,10 @@ scope销毁不清理Repository canonical镜像，不关闭其他scope的feed；�
 
 ### 3.2 Thread目录专门规则
 
+scope完整union见[Workspace合同](./v4-workspace-contract.md)：query保原DirectoryQuery，
+thread分支只观察既有Thread元数据，承接原按Thread详情中的目录字段，不激活执行owner。
+以下排序/keyset规则用于query分支；thread分支只有该实体、cursor=None、has_more=false。
+
 DirectoryQuery保留项目、搜索、all/running/attention、归档及原父子/根关系查询语义；其
 确切字段以workspace port合同为准，不能先用无scope全量Thread数组再在Widget过滤。
 排序继续用原`(last_user_message_at ?? created_at,id)`降序，不回退到updated_at。
@@ -230,11 +242,11 @@ Option不补零。下表不重复顶层collection.total；嵌套计数只来自�
 
 | header | 除详情ref以外的全部字段 |
 | --- | --- |
-| Project/Thread/Agent目录 | source:ObservedHeader；Thread window另带has_more:Option<bool>与原opaque cursor的typed文本读取引用 |
+| Project/Thread/Agent目录 | source:ObservedHeader；Thread另带directory_revision:Option<u64>、search_project_revision:Option<u64>、has_more:Option<bool>与原opaque cursor的typed文本读取引用 |
 | Configuration | source:ObservedHeader,configuration_revision:Option<u64>,updated_at:Option<i64> |
 | ModelCatalog | source:ObservedHeader,catalog_revision:Option<u64>,updated_at:Option<i64> |
 | AccountTemplates | schema_version:u32；原revision:String通过typed读取，不当u64计数 |
-| AgentProfiles | source:ObservedHeader |
+| AgentProfiles | source:ObservedHeader,profiles_revision:Option<u64> |
 | ModeCatalog | revision:u64 |
 | AccountUsage | source:ObservedHeader |
 | PerformanceSummaries | revision:u64,updated_at:i64,statistics_pending:bool,statistics_gap:bool,read_failed:bool |
@@ -251,6 +263,9 @@ collection.total是该顶层集合唯一长度事实；其他嵌套集合用下�
 Source不可读时不得靠counts=0宣称没有项目/模型/保存问题。它们表示原状态可知的集合
 长度，不代替ObservedBrief/read_failed/gap。SessionCosts.has_cost=false是原cost=None的
 明确清除，不等于零金额；has_unpriced_usage因此是None，不默认false。
+directory_revision是原DirectoryDelta的canonical时钟；搜索还捕获/核对Project源水位，
+不能将混合时刻页盖上较新的revision。profiles_revision来自原AgentProfilesSnapshot，
+不以settings或单文件Profile版本替代。精确捕获与receipt映射见receipt观察合同。
 
 ### 4.3 typed读取形状（固定规则，不是运行期codec）
 
@@ -274,25 +289,26 @@ Source不可读时不得靠counts=0宣称没有项目/模型/保存问题。它�
 
 | scope | 固定typed列表方法及元素 |
 | --- | --- |
-| ConfigurationReadScope | accounts→AccountConfigurationRead；custom_models→CustomModelConfigurationRead；model_connections→ModelConnectionRead；auto_compact_overrides→ModelAutoCompactRead；mode_routes→ModeModelRouteRead；role_routes→RoleModelRouteRead；mcp_configs→McpConfigurationRead；strings→TextReadItem；input_capabilities→InputCapabilityRead；input_sources→ModelInputSourceReadItem |
-| ModelCatalogReadScope | accounts→AccountCatalogEntryRead；models→ModelDescriptorRead；type_support→ModelTypeSupportRead；type_exclusions→ModelTypeExclusionReadItem；connection_modes→ConnectionModeRead；input_capabilities→InputCapabilityRead；input_sources→ModelInputSourceReadItem；modalities→ModelModalityReadItem；price_tiers→ModelPriceTierRead；strings→TextReadItem |
-| AccountTemplatesReadScope | templates→AccountTemplateRead；catalogs→NamedModelCatalogRead；与ModelCatalog相同的models/type_support/type_exclusions/connection_modes/input_capabilities/input_sources/modalities/price_tiers/strings |
+| ConfigurationReadScope | accounts→AccountConfigurationRead；custom_models→CustomModelConfigurationRead；model_connections→ModelConnectionRead；auto_compact_overrides→ModelAutoCompactRead；mode_routes→ModeModelRouteRead；role_routes→RoleModelRouteRead；mcp_configs→McpConfigurationRead；strings→TextReadItem；input_capabilities→ModelInputCapabilityRead；input_sources→ModelInputSourceReadItem |
+| ModelCatalogReadScope | accounts→AccountCatalogEntryRead；models→ModelDescriptorRead；type_support→ModelTypeSupportRead；type_exclusions→ModelTypeExclusionReadItem；connection_modes→ConnectionModeRead；input_capabilities→ModelInputCapabilityRead；input_sources→ModelInputSourceReadItem；modalities→ModelModalityReadItem；price_tiers→ModelPriceTierRead；strings→TextReadItem |
+| AccountTemplatesReadScope | templates→AccountTemplateRead；catalogs→NamedModelCatalogReadItem；与ModelCatalog相同的models/type_support/type_exclusions/connection_modes/input_capabilities/input_sources/modalities/price_tiers/strings |
 | AgentProfilesReadScope | profiles→AgentProfileRead；diagnostics→ProfileDiagnosticRead |
 | ModeCatalogReadScope | modes→ThreadModeDescriptorRead；单定义读/校验/预演走modes独立typed命令，不将文档塞catalog |
 | AccountUsageReadScope | usages→AccountUsageRead；balances→BalanceRead；quota_limits→QuotaLimitRead；quota_details→QuotaDetailRead |
 | PerformanceSummariesReadScope | summaries→PerformanceSummaryRead；effort_breakdowns→PerformanceEffortRead |
 | PerformanceHistoryReadScope | samples→PerformanceSampleRead |
 | SessionCostsReadScope | purposes→PurposeCostRead；amounts→RuntimeCostRead |
-| RecoveryReadScope | issues→RecoveryIssueRead；actions→RecoveryActionReadItem；changed_files→TextReadItem |
+| RecoveryReadScope | issues→RecoveryIssueRead；changed_files→TextReadItem；action是单enum字段，不造actions列表 |
 | McpReadScope | servers→McpServerRead；active_servers→TextReadItem |
 | LspReadScope | servers→LspServerRead；strings→TextReadItem（active/extensions/language_ids各自list_id） |
 | SkillsReadScope | skills→SkillSummaryRead；strings→TextReadItem（warnings/platforms等各自list_id） |
 | PersistenceReadScope | 无列表；原错误经ReadText |
 | PersistenceQueueReadScope | threads→ThreadPersistenceRead |
 | UpdatesReadScope | 无列表；只读该版本summary及来源错误 |
-| Project/Thread/AgentDirectoryReadScope | 对应projects/threads/agents具体完整元数据；嵌套workspace赋值的writable_paths用strings，其他固定typed结构原样 |
+| Project/Thread/AgentDirectoryReadScope | 对应projects/threads/agents具体完整元数据；AgentDirectory原本没有workspace assignment，不凭内部receipt给目录加字段 |
 
-所有Read元素的原字段来源由§5和既有协议定义唯一指定；改变字段名/单位/可空性需root
+所有Read元素的完整字段与source闭包见[产品类型册](./v4-product-type-catalog.md)，§5为其
+配置/模型分域边界；改变字段名/单位/可空性需root
 同步此合同。禁止执行者为了简化reader删除某个Vec或把它改成String JSON。
 
 ### 4.4 Updates完整状态
@@ -321,12 +337,17 @@ canonical值中改成依赖本地时区的显示DateTime。UI按原本地化格�
 
 为避免下载进度使稳定文本反复失效，Data除brief与reference外固定带
 `summary:Option<UpdateSummaryReadRef>,operation:Option<UpdateOperationReadRef>,
-error:Option<UpdateErrorReadRef>`，三种ref仍为entry/revision。分别以
+error:Option<UpdateErrorReadRef>,details:Option<UpdateDetailsReadRef>`，四种ref仍为entry/revision。前三种分别以
 openSummary/openOperation/openError打开同预算的typed scope；各header完整字段为
 UpdateSummaryRead、`{operation_id:ReadText}`、`{code:ReadText,message:ReadText,retryable:bool}`。
+各open的完整签名见产品read ports§4：第一参数为对应具体ReadRef，另有required
+ProductReadOrigin origin，返回对应具名ReadConnection；不允许省略origin的重载。
 只有对应文本/值真的改变才推进该ref；Downloading计数增加不改summary ref。
 UpdatesReadScope的完整状态可供显式详情使用，但Repository归并进度只需Data已有标量，
 不能每个字节进度都重开完整scope。业务全状态和窄引用都指原updater同一canonical值。
+details以openDetails读取原完整StudioUpdate（包含installer的url/size/sha256/signature），
+保server原公开字段；FRB/UI摘要仍三字段，不能把installer并入高频摘要。完整读取形状见
+产品类型册§11，所有携带update的variant都保其完整值。
 
 ## 5. Config与Catalog真正拆域
 
@@ -337,16 +358,16 @@ UpdatesReadScope的完整状态可供显式详情使用，但Repository归并进
 ```text
 ConfigurationValue {
  default_account_id:Option<String>,accounts:Vec<AccountConfiguration>,
- mode_model_routes:Vec<StudioModeModelSettings>,roles:Vec<StudioRoleSettings>,
- permission_mode:String,instructions:StudioInstructionsSettings,skills:StudioSkillsSettings,
- mcp_servers:Vec<StudioMcpServerSettings>,general:StudioGeneralSettings,
+ mode_model_routes:Vec<ModeModelRoute>,roles:Vec<RoleModelRoute>,
+ permission_mode:String,instructions:InstructionsSettings,skills:SkillsSettings,
+ mcp_servers:Vec<McpConfiguration>,general:GeneralSettings,
  web_search:WebSearchConfiguration,deepseek_web_search:DeepSeekSearchConfiguration
 }
 AccountConfiguration {
  pricing_enabled:bool,account_id:String,template_id:Option<String>,protocol:String,name:String,
  base_url:String,has_bearer_token:bool,usage_query_revision:u64,
- custom_models:Vec<StudioCustomModelSettings>,model_connection_modes:Vec<StudioModelConnectionSettings>,
- model_auto_compact_limits:Vec<StudioModelAutoCompactSettings>,catalog_id:Option<String>
+ custom_models:Vec<CustomModelConfiguration>,model_connection_modes:Vec<ModelConnection>,
+ model_auto_compact_limits:Vec<ModelAutoCompact>,catalog_id:Option<String>
 }
 WebSearchConfiguration {
  configured_mode:String,context_size:Option<String>,allowed_domains:Vec<String>,
@@ -355,7 +376,7 @@ WebSearchConfiguration {
 DeepSeekSearchConfiguration {configured_enabled:bool,configured_fetch_enabled:bool}
 ```
 
-上述Studio*嵌套类型字段严格取`pl-protocol/src/studio/settings.rs`当前对应定义；读取所有字段，
+上述嵌套类型在产品类型册逐字段列出，来源为`pl-protocol/src/studio/settings.rs`；读取所有字段，
 不以命令可写字段的子集冒充完整配置值。has_bearer_token是无秘密的凭据存在事实，
 usage_query_revision是account查询输入身份，均只读；不能回写成desired TOML字段。
 只在相同账号的新canonical版本仍有效时合并；删除再新建同ID的query revision不能复用。
@@ -371,7 +392,7 @@ AccountCatalogEntry {
  account_id:String,credential_required:bool,capability_source:String,
  hosted_web_search:bool,hosted_web_search_dialect:String,standalone_web_search:Option<String>,
  prompt_cache_dialect:String,responses_programmatic_tool_calling:bool,default_model_id:String,
- effective_models:Vec<ModelDescriptor>,model_catalog:StudioModelCatalogStatus
+ effective_models:Vec<ModelDescriptor>,model_catalog:ModelCatalogStatus
 }
 EffectiveWebSearch {effective_mode:String,availability:String,account_id:Option<String>,model_id:Option<String>}
 EffectiveDeepSeekSearch {
@@ -446,7 +467,7 @@ query/consumer，成功后才dispose/释permit，完整issues沿生命周期合�
 
 ## 8. 仍需合同闭合
 
-- [ ] 全19具体scope header/Read DTO按本schema逐字段展开的正式类型册（尤其Updater/Agent目录）。
+- [x] 全19域业务值/Read字段闭包见产品类型册；具体Repository状态与全部read方法仍须统一端口册闭合。
 - [ ] 所有Repository/port/动作具体签名与T、receipt目标及read-only/显式mutation区别。
 - [ ] HTTP/SSE/open/ACK/close/查询与OpenAPI完整替换路径；删除旧聚合入口，不留alias。
 - [ ] 与所有VM可见需求、完整加载/dirty/保存CAS、统计与目录分页的端到端验收对应。

@@ -535,6 +535,7 @@ typed列表，每项currency:ReadText/amount:f64，不换汇、不把无计价�
 ```text
 ConfigurationValue {
   details:ConfigurationReadRef,sources:ConfigProjectionStamp,mode_revision:u64,
+  mode_binding_revision:Option<u64>,
   model_route:Option<ModelRouteBrief>,active_skill_count:u64,
   active_mcp:ThreadCapabilitySupport,active_lsp:ThreadCapabilitySupport,
   mcp_health:ThreadCapabilitySupport
@@ -548,6 +549,10 @@ Unsupported明确表示当前Thread投影未提供该能力，不等同产品MCP
 Settings、catalog或Mode文档；相容来源revision与route CAS各自独立。header保留原route的
 account/model/effort/reason；active_skills的实际名称由typed页返回。cold来源由baseline identity
 的mode=cold表达，不把冻结快照宣称持续观察当前配置。
+mode_revision是ModeManager/catalog水位，mode_binding_revision是当前studio.mode extension
+的真实revision，缺失保None。Thread setMode receipt改用thread-mode:{threadId}的binding
+水位，不再要求thread-state/core commit sequence；相同mode重选仍真实重写extension及
+重建指令。完整来源/效果表见[receipt观察合同](./v4-receipt-observation-contract.md)。
 
 ### 9.6 authoring
 
