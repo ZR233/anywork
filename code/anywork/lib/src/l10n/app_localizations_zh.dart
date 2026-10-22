@@ -4213,4 +4213,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get botsManagedModel => '由机器人统一设置';
+
+  @override
+  String get settingsSshNextPage => '下一页';
 }

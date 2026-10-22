@@ -4443,4 +4443,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get botsManagedModel => 'Managed by bot settings';
+
+  @override
+  String get settingsSshNextPage => 'Next page';
 }

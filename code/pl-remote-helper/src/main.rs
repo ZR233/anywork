@@ -10,6 +10,16 @@ fn main() -> std::process::ExitCode {
         None => bootstrap_server(),
         Some(mode) if mode == "--serve" && arguments.next().is_none() => run_server(),
         #[cfg(target_os = "linux")]
+        Some(mode) if mode == "--session-owner" => match (arguments.next(), arguments.next()) {
+            (Some(socket), None) => run_owner(socket.into()),
+            _ => Err("session owner requires one socket path".into()),
+        },
+        #[cfg(target_os = "linux")]
+        Some(mode) if mode == "--attach" => match (arguments.next(), arguments.next()) {
+            (Some(socket), None) => run_attach(socket.into()),
+            _ => Err("attachment requires one socket path".into()),
+        },
+        #[cfg(target_os = "linux")]
         Some(mode) if mode == "--emit-environment" => match (arguments.next(), arguments.next()) {
             (Some(socket), None) => {
                 environment::emit(std::path::Path::new(&socket)).map_err(Into::into)
@@ -84,4 +94,25 @@ fn run_worker(arguments: Vec<std::ffi::OsString>) -> Result<(), Box<dyn std::err
 #[cfg(not(target_os = "linux"))]
 fn run_worker(_: Vec<std::ffi::OsString>) -> Result<(), Box<dyn std::error::Error>> {
     Err("process worker requires Linux".into())
+}
+
+#[cfg(target_os = "linux")]
+fn run_owner(socket: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(pl_remote_helper::run_owner(socket));
+    runtime.shutdown_timeout(std::time::Duration::from_millis(250));
+    result?;
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+fn run_attach(socket: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(pl_remote_helper::attach_stdio(&socket));
+    runtime.shutdown_timeout(std::time::Duration::from_millis(250));
+    result?;
+    Ok(())
 }

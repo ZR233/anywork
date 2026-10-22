@@ -1712,5 +1712,6 @@
   "botsConnectionSettings": "连接与设置",
   "botsWorkspace": "专用工作目录",
   "botsPlatformTools": "飞书消息与测试发送",
-  "botsManagedModel": "由机器人统一设置"
+  "botsManagedModel": "由机器人统一设置",
+  "settingsSshNextPage": "下一页"
 }

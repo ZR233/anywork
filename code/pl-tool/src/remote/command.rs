@@ -41,10 +41,16 @@ impl RemoteCommandBackend {
         command: String,
         cwd: String,
     ) -> Result<ManagedCommand> {
+        let (program, arguments) = self
+            .client
+            .shell_argv(&command)
+            .map_err(remote_exec_error)?;
         self.spawn_remote(RemoteSpawnRequest {
             process_id,
             workspace_id: self.workspace_id.clone(),
-            command,
+            program,
+            arguments,
+            remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
             cwd,
             environment: BTreeMap::new(),
             capture: RemoteCapture::None,
@@ -62,6 +68,10 @@ impl RemoteCommandBackend {
 
 impl CommandBackend for RemoteCommandBackend {
     type Error = PureError;
+
+    fn process_capacity(&self) -> Option<usize> {
+        Some(self.client.process_capacity())
+    }
 
     fn capture_ownership(&self) -> CommandCaptureOwnership {
         CommandCaptureOwnership::Producer
@@ -97,15 +107,24 @@ impl CommandBackend for RemoteCommandBackend {
     }
 
     async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
+        let cwd = self.lease.path.trim_end_matches('/').to_owned() + "/" + &request.cwd;
+        let plan =
+            crate::command::capture_plan(&request.command, &cwd, request.capture_limit_bytes);
+        let (program, arguments) = self
+            .client
+            .shell_argv(&request.command)
+            .map_err(remote_exec_error)?;
         self.spawn_remote(RemoteSpawnRequest {
             process_id: request.process_id,
             workspace_id: self.workspace_id.clone(),
-            command: request.command,
+            program,
+            arguments,
+            remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
             cwd: request.cwd,
             environment: BTreeMap::new(),
             capture: RemoteCapture::File {
                 path: path_to_posix(request.output_target.capture_file())?,
-                limit_bytes: request.capture_limit_bytes,
+                plan,
             },
         })
         .await

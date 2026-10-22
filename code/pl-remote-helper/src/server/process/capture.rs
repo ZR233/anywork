@@ -11,6 +11,7 @@ pub(super) enum Capture {
     File {
         file: tokio::fs::File,
         receipt: RemoteCaptureReceipt,
+        plan: Box<pl_protocol::remote::RemoteCapturePlan>,
     },
 }
 
@@ -23,16 +24,12 @@ impl Capture {
     pub(super) async fn prepare(
         policy: &RemoteCapture,
         path: Option<&Path>,
-        command: &str,
-        cwd: &Path,
     ) -> Result<Self, RemoteError> {
         match (policy, path) {
             (RemoteCapture::None, None) => Ok(Self::None),
-            (RemoteCapture::File { limit_bytes, .. }, Some(path)) => {
-                let header = format!(
-                    "=== COMMAND ===\n{command}\n\n=== CWD ===\n{}\n\n",
-                    cwd.display()
-                );
+            (RemoteCapture::File { plan, .. }, Some(path)) => {
+                let limit_bytes = &plan.limit_bytes;
+                let header = &plan.header;
                 if header.len() as u64 > *limit_bytes {
                     return Err(remote_error(
                         RemoteErrorCode::OutputLimitExceeded,
@@ -55,6 +52,7 @@ impl Capture {
                     .map_err(|error| io_error("write capture header", error))?;
                 Ok(Self::File {
                     file,
+                    plan: Box::new(plan.clone()),
                     receipt: RemoteCaptureReceipt {
                         limit_bytes: *limit_bytes,
                         charged_bytes: header.len() as u64,
@@ -76,28 +74,26 @@ impl Capture {
         stream: RemoteOutputStream,
         body: &[u8],
     ) -> Result<Acceptance, RemoteError> {
-        let Self::File { file, receipt } = self else {
+        let Self::File {
+            file,
+            receipt,
+            plan,
+        } = self
+        else {
             return Ok(Acceptance::Accepted);
         };
         let label = match stream {
-            RemoteOutputStream::Stdout => b"=== STDOUT ===\n",
-            RemoteOutputStream::Stderr => b"=== STDERR ===\n",
+            RemoteOutputStream::Stdout => plan.stdout_prefix.as_bytes(),
+            RemoteOutputStream::Stderr => plan.stderr_prefix.as_bytes(),
         };
-        let cost = label.len() as u64 + body.len() as u64 + u64::from(!body.ends_with(b"\n"));
+        let cost = crate::capture::chunk_cost(label, body, plan.terminate_line);
         if receipt.refused_bytes > 0 || cost > receipt.limit_bytes - receipt.charged_bytes {
             receipt.refused_bytes = receipt.refused_bytes.saturating_add(cost);
             return Ok(Acceptance::Refused);
         }
-        async {
-            file.write_all(label).await?;
-            file.write_all(body).await?;
-            if !body.ends_with(b"\n") {
-                file.write_all(b"\n").await?;
-            }
-            Ok::<_, std::io::Error>(())
-        }
-        .await
-        .map_err(|error| io_error("capture process output", error))?;
+        crate::capture::write_chunk(file, label, body, plan.terminate_line)
+            .await
+            .map_err(|error| io_error("capture process output", error))?;
         receipt.charged_bytes += cost;
         Ok(Acceptance::Accepted)
     }

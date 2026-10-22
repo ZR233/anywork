@@ -67,6 +67,9 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
         request: WorkspaceFileListRequest,
     ) -> impl Future<Output = Result<WorkspaceFileListResult>> + Send;
 
+    /// Releases a partially consumed traversal. Unknown or already closed cursors are harmless.
+    fn close_listing(&self, cursor: String) -> impl Future<Output = Result<()>> + Send;
+
     /// Recursively creates a workspace-relative directory using the same confinement as writes.
     fn create_directory(
         &self,
@@ -127,6 +130,10 @@ where
         self.backend.list(request).await
     }
 
+    async fn close_listing(&self, cursor: String) -> Result<()> {
+        self.backend.close_listing(cursor).await
+    }
+
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
         self.workspace
             .ensure_relative_path_writable(cwd.as_deref(), &path)?;
@@ -183,6 +190,8 @@ pub struct WorkspaceFileListRequest {
     pub cwd: Option<String>,
     pub glob: String,
     pub max_files: usize,
+    pub cursor: Option<String>,
+    pub implicit_recovery: bool,
     pub include_dirs: bool,
 }
 
@@ -190,6 +199,7 @@ pub struct WorkspaceFileListRequest {
 pub struct WorkspaceFileListResult {
     pub files: Vec<String>,
     pub truncated: bool,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

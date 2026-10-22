@@ -2162,5 +2162,6 @@
   "botsConnectionSettings": "Connection and settings",
   "botsWorkspace": "Dedicated workspace",
   "botsPlatformTools": "Feishu messages and test sending",
-  "botsManagedModel": "Managed by bot settings"
+  "botsManagedModel": "Managed by bot settings",
+  "settingsSshNextPage": "Next page"
 }

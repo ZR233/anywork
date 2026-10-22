@@ -10,7 +10,7 @@ pub use self::handlers::{
     BridgeStudioUpdateOperation, BridgeTimeline, activate_project, admit_attachment_drafts,
     apply_settings_field, archive_project, archive_thread, authenticate_ssh_server,
     browse_remote_directories, cancel_bot_registration, check_account_usage, check_studio_update,
-    compact_thread, create_bot_conversation_thread, delete_ssh_server,
+    close_remote_directory, compact_thread, create_bot_conversation_thread, delete_ssh_server,
     delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics, init_app,
     interrupt_turn, list_bot_conversations, list_ssh_servers, list_threads_page,
     load_account_catalog, open_project, open_remote_project, open_timeline,

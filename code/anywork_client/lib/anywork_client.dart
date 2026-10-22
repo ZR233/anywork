@@ -12,3 +12,5 @@ export 'src/lifecycle/resource_budget.dart';
 export 'src/observation/latest_value.dart';
 export 'src/observation/read_model.dart';
 export 'transport_ports.dart';
+
+export 'src/studio/remote_actions.dart';

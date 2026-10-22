@@ -1,7 +1,7 @@
 mod backend;
 mod head_tail_buffer;
 pub(super) mod process_manager;
-mod shell;
+pub(crate) mod shell;
 #[cfg(target_os = "linux")]
 mod worker;
 

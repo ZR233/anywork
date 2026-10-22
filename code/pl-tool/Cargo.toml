@@ -9,6 +9,11 @@ default = []
 docker-tools = []
 
 [dependencies]
+getrandom = { workspace = true }
+h2 = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+eventsource-stream = { workspace = true }
 pl-skill-core = { workspace = true }
 ignore = { workspace = true }
 thiserror = { workspace = true }
@@ -20,7 +25,7 @@ tempfile = { workspace = true }
 pl-lsp = { workspace = true }
 secrecy = { workspace = true }
 futures = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 reqwest = { workspace = true }
 which = { workspace = true }
 image = { workspace = true }
@@ -42,6 +47,8 @@ schemars = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
 anyhow = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

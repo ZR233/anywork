@@ -7,9 +7,16 @@ final class RemoteActions {
   RemoteActions(this._transport);
   final StudioTransport _transport;
   final CommandLane _tasks = CommandLane();
-  Future<void> close() {
+  final Set<(String, String)> _directories = {};
+  Future<void> close() async {
     _tasks.seal();
-    return _tasks.join();
+    await _tasks.join();
+    await Future.wait(
+      _directories.toList().map((entry) async {
+        await _transport.closeRemoteDirectory(entry.$1, entry.$2);
+        _directories.remove(entry);
+      }),
+    );
   }
 
   Future<List<SshServer>> listSshServers() =>
@@ -28,5 +35,21 @@ final class RemoteActions {
   Future<RemoteDirectoryListing> browseRemoteDirectories(
     String alias, {
     String? path,
-  }) => _tasks.run(() => _transport.browseRemoteDirectories(alias, path: path));
+    String? cursor,
+  }) => _tasks.run(() async {
+    final listing = await _transport.browseRemoteDirectories(
+      alias,
+      path: path,
+      cursor: cursor,
+    );
+    if (cursor != null) _directories.remove((alias, cursor));
+    if (listing.nextCursor case final next?) _directories.add((alias, next));
+    return listing;
+  });
+
+  Future<void> closeRemoteDirectory(String alias, String cursor) =>
+      _tasks.run(() async {
+        await _transport.closeRemoteDirectory(alias, cursor);
+        _directories.remove((alias, cursor));
+      });
 }

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/anywork_client.dart' show RemoteActions;
+
 import 'package:flutter/foundation.dart' show clampDouble;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,6 +36,8 @@ class RemoteDirectoryDialog extends ConsumerStatefulWidget {
 class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
   late final TextEditingController _pathController;
   RemoteDirectoryListing? _listing;
+  late final RemoteActions _remote;
+  int _browseGeneration = 0;
   String? _error;
   bool _browsing = false;
   bool _opening = false;
@@ -55,11 +59,14 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
   void initState() {
     super.initState();
     _pathController = TextEditingController();
+    _remote = ref.read(anyworkClientProvider).remote;
     unawaited(_load(null));
   }
 
   @override
   void dispose() {
+    _browseGeneration += 1;
+    _releaseCursor(_listing?.nextCursor);
     _pathController.dispose();
     _projectName.dispose();
     super.dispose();
@@ -79,10 +86,51 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
     unawaited(_load(raw));
   }
 
-  Future<void> _load(String? path) async {
+  @override
+  void didUpdateWidget(covariant RemoteDirectoryDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.server.alias != widget.server.alias ||
+        oldWidget.active != widget.active) {
+      _browseGeneration += 1;
+      _releaseCursor(_listing?.nextCursor, alias: oldWidget.server.alias);
+      _listing = null;
+      _browsing = false;
+      if (widget.active) {
+        final path = oldWidget.server.alias == widget.server.alias
+            ? _pathController.text.trim()
+            : '';
+        unawaited(_load(path.isEmpty ? null : path));
+      }
+    }
+  }
+
+  void _releaseCursor(String? cursor, {String? alias}) {
+    if (cursor == null) return;
+    unawaited(
+      _remote
+          .closeRemoteDirectory(alias ?? widget.server.alias, cursor)
+          .catchError((Object error, StackTrace stack) {
+            FlutterError.reportError(
+              FlutterErrorDetails(
+                exception: error,
+                stack: stack,
+                context: ErrorDescription(
+                  'releasing a remote directory cursor',
+                ),
+              ),
+            );
+          }),
+    );
+  }
+
+  Future<void> _load(String? path, {String? cursor}) async {
     // 入口级串行 guard：pending 期间拒绝任何重复/冲突请求，
     // 不依赖下一帧的按钮禁用状态。
     if (_busy) return;
+    final generation = ++_browseGeneration;
+    final server = widget.server;
+    final alias = server.alias;
+    if (cursor == null) _releaseCursor(_listing?.nextCursor);
     setState(() {
       // 新请求开始后，旧 listing 不再是当前输入的已验证结果；即使请求
       // 失败，也不能让旧目录重新启用 Open。
@@ -92,12 +140,17 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
       if (path != null) _pathController.text = path;
     });
     try {
-      final listing = await ref
-          .read(anyworkClientProvider)
-          .remote
-          .browseRemoteDirectories(widget.server.alias, path: path);
-      if (!mounted) return;
+      final listing = await _remote.browseRemoteDirectories(
+        alias,
+        path: path,
+        cursor: cursor,
+      );
+      if (!mounted || generation != _browseGeneration) {
+        _releaseCursor(listing.nextCursor, alias: alias);
+        return;
+      }
       if (!listing.path.startsWith('/')) {
+        _releaseCursor(listing.nextCursor, alias: alias);
         setState(() {
           _browsing = false;
           _error = context.l10n.settingsSshPathAbsolute;
@@ -118,7 +171,7 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
         _pathController.text = listing.path;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _browseGeneration) return;
       if (isSshAuthenticationError(error) &&
           sshPasswordAuthenticationOffered(error)) {
         // 浏览失败后才提示密码：服务器未提供密码认证时改为内联错误，不弹框。
@@ -126,11 +179,11 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
         final snapshot = await showDialog<SshConnectionView>(
           context: context,
           builder: (context) => SshPasswordPromptDialog(
-            server: widget.server,
+            server: server,
             initialError: error.toString(),
           ),
         );
-        if (!mounted) return;
+        if (!mounted || generation != _browseGeneration) return;
         if (snapshot != null && snapshot.state == 'ready') {
           await _load(path);
           return;
@@ -239,6 +292,20 @@ class _RemoteDirectoryDialogState extends ConsumerState<RemoteDirectoryDialog> {
               _buildCurrentPathRow(context, listing, busy),
               const Divider(),
               _buildListingBody(listing, busy),
+              if (listing?.nextCursor != null)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const ValueKey('ssh-directory-next-page'),
+                    onPressed: busy
+                        ? null
+                        : () => unawaited(
+                            _load(listing!.path, cursor: listing.nextCursor),
+                          ),
+                    icon: const Icon(Icons.navigate_next),
+                    label: Text(context.l10n.settingsSshNextPage),
+                  ),
+                ),
               if (_hasProjectNameField) ...[
                 const SizedBox(height: 16),
                 TextField(

@@ -7,6 +7,7 @@ use crate::tool_error;
 mod backend;
 mod container;
 mod container_path;
+pub(crate) mod listing;
 mod local;
 mod ops;
 mod patch;

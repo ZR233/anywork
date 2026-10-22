@@ -7967,6 +7967,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Managed by bot settings'**
   String get botsManagedModel;
+
+  /// No description provided for @settingsSshNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next page'**
+  String get settingsSshNextPage;
 }
 
 class _AppLocalizationsDelegate

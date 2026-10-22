@@ -1239,6 +1239,7 @@ class DemoStudioTransport extends StudioTransport
   Future<RemoteDirectoryListing> browseRemoteDirectories(
     String alias, {
     String? path,
+    String? cursor,
   }) async {
     final current = path ?? '/home';
     return RemoteDirectoryListing(
@@ -1250,6 +1251,9 @@ class DemoStudioTransport extends StudioTransport
       ],
     );
   }
+
+  @override
+  Future<void> closeRemoteDirectory(String alias, String cursor) async {}
 
   @override
   Future<StudioProject> openRemoteProject(String alias, String path) async {
