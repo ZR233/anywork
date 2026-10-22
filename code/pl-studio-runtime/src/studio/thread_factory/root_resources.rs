@@ -19,7 +19,7 @@ impl StudioThreadFactory {
         thread_id: &str,
         root_id: &str,
         project: &mut crate::studio::ProjectRecord,
-    ) -> Result<(), ThreadAssemblyError> {
+    ) -> Result<Option<std::path::PathBuf>, ThreadAssemblyError> {
         if let Some(bot) = self
             .services
             .bots
@@ -36,8 +36,9 @@ impl StudioThreadFactory {
                 .to_string_lossy()
                 .into_owned();
             project.ssh_alias = None;
+            return Ok(Some(std::path::PathBuf::from(&project.path)));
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(in crate::studio) async fn prepare_root_thread(
@@ -136,18 +137,23 @@ impl StudioThreadFactory {
         let workspace_mode = thread.workspace_mode;
         let workspace_root_id = thread.root_thread_id.clone();
         let project_copy = project.clone();
+        let bot_root = bot
+            .as_ref()
+            .map(|_| std::path::PathBuf::from(&project.path));
         let worktrees = self.services.worktrees.clone();
         let (root, canonical_project_root) = tokio::task::spawn_blocking(move || {
+            let project_root = match bot_root {
+                Some(root) => root,
+                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                    &project_copy,
+                )?,
+            };
             let session_root =
                 crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                     &worktrees,
                     workspace_mode,
                     &workspace_root_id,
-                    &project_copy,
-                )?;
-            let project_root =
-                crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project_copy,
+                    project_root.clone(),
                 )?;
             Ok::<_, crate::PureError>((session_root, project_root))
         })

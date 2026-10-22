@@ -59,7 +59,7 @@ impl BotRuntime {
         tokio::task::spawn_blocking(move || {
             migrate_owned_directory(&source, &target)?;
             std::fs::create_dir_all(target.join("uploads"))?;
-            Ok::<_, std::io::Error>(root_copy)
+            std::fs::canonicalize(root_copy)
         })
         .await
         .map_err(workspace_error)?

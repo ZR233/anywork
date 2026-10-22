@@ -618,6 +618,9 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       title: context.l10n.botsModelTitle,
       children: [
         AgentRouteView(
+          // DropdownMenu owns transient selection text. Recreate it after a save
+          // settles so failed writes also display the canonical bot route.
+          key: ValueKey((bot.id, bot.configRevision, _busy)),
           role: 'bot-${bot.id}',
           selectedAccountId: route?.accountId ?? '',
           selectedModel: route?.modelId ?? '',

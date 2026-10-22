@@ -16,6 +16,8 @@ use std::{
 
 pub(in crate::studio) struct WorkspacePreparation<'a> {
     pub project: &'a ProjectRecord,
+    /// Already resolved by the owner; bot roots must not expand to an enclosing repository.
+    pub project_root: PathBuf,
     pub root_thread_id: &'a str,
     pub child_id: &'a str,
     pub mode: AgentWorkspaceMode,
@@ -46,7 +48,7 @@ pub(in crate::studio) async fn prepare_workspace(
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     request: WorkspacePreparation<'_>,
 ) -> Result<(AgentWorkspaceAssignmentSnapshot, Option<SpawnWorktreeLease>)> {
-    let project_root = resolved_project_root(request.project)?;
+    let project_root = request.project_root;
     let session_root = request.session_root;
     let child_id = request.child_id.to_owned();
     let mode = request.mode;
@@ -495,10 +497,9 @@ pub(in crate::studio) fn root_session_workspace_root(
     worktrees: &WorktreeLeaseOwner,
     workspace_mode: pl_protocol::ThreadWorkspaceMode,
     root_thread_id: &str,
-    project: &ProjectRecord,
+    project_root: PathBuf,
 ) -> Result<PathBuf> {
     use pl_protocol::ThreadWorkspaceMode;
-    let project_root = resolved_project_root(project)?;
     match workspace_mode {
         ThreadWorkspaceMode::Local => Ok(project_root),
         ThreadWorkspaceMode::Worktree => {
