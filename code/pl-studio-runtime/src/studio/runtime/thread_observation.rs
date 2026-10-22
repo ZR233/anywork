@@ -298,7 +298,7 @@ impl ThreadObservations {
                     // 该身份查询是冷读路径：没有活跃 writer 时 `history` 只是一个不做 IO 的句柄，
                     // 不建库也不升级它；有活跃 writer 时它正是这个 Thread 的同一权威句柄，读会等
                     // 本句柄 writer 完成建表与 identity meta，因此不会读到半初始化库。这里刻意不
-                    // 走 `history_writer`，避免未启动的冷读凭空登记出第二写者身份。
+                    // 另开独立 HistoryStore，避免未启动的冷读绕过本句柄的初始化锁。
                     let history = store.history(&thread_id).await.map_err(identity_error)?;
                     if let Some(identity) =
                         history.message_identity(&message_id).await.map_err(identity_error)?

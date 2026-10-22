@@ -38,8 +38,9 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 `GDK_BACKEND=x11`，并核对本次显示上的窗口及 `_NET_WM_PID`。若 Driver 截图正常但
 所属 X11 显示没有窗口，先排查显示后端，不修改产品或绕过窗口归属检查。
 
-需要固定证据目录时，给内部命令增加 `--output target/manual-gui/<本次唯一目录名>`，
-目录必须尚不存在；不要删除旧证据来复用路径。已有可用显示会话时按需要只用 `script`。
+需要固定证据目录时，给内部命令增加 `--output`，指向最新 `studio.session-files` 给出的
+本 Thread `artifacts` 下尚不存在的唯一子目录；不要删除旧证据来复用路径。已有可用显示
+会话时按需要只用 `script`。
 `script -e` 透传子命令退出状态，`xvfb-run -a` 自动分配显示号并在命令退出后回收 Xvfb。
 不要把示例虚拟屏幕大小当作实际窗口大小；窗口尺寸须从截图、Driver 或窗口信息核实。
 
@@ -74,6 +75,55 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
 类别，而不是 Authorization 或完整请求正文。通用日志投影可能只保留启动计时；扩展场景时
 核实实际失败原因也能落盘并传播退出码，不能因脱敏而把不同失败都变成不可诊断的空日志。
 
+### 飞书平台的原生组合环境
+
+需要同时观察真实 bridge GUI 与本地飞书平台时，显式运行：
+
+```bash
+cargo xtask manual-gui --scenario gui --bots-fixture
+```
+
+该模式仅用于 Linux debug 的隔离验收，自动持有模型 fixture、Feishu peer 与私有凭据环境；
+不支持的平台或不兼容场景明确拒绝，不回落到操作者 keyring 或真实飞书。SSH 下仍按前文
+补齐伪终端与 Xvfb。环境成功启动、局部编译或 CLI 负例通过均不证明首配/E2E 已通过。
+
+harness ready 后，可向其 stdin 写入以下固定环境动作；它们不是 GUI 操作或手机授权：
+
+```text
+bots-env registration pending
+bots-env registration slow-down
+bots-env registration denied
+bots-env registration expired
+bots-env registration complete
+bots-env registration complete-without-user
+```
+
+动作只设置本次 peer 后续轮询的合成回包，不改已捕获的在途响应；单步脚本消费后恢复
+Pending。`complete` 包含合成首用户身份，`complete-without-user` 不构造用户身份，仍须从
+GUI 观察其默认拒执行与本地配对流程。不要传 URL、device code、secret 或真实联系人，
+不要把模拟 `expired` 当作点击产品取消；未知动作只安全拒绝，普通动作码仍只记录。
+
+配对与分页环境另提供三个固定动作，不接受联系人、正文或凭据参数：
+
+```text
+bots-env message unknown-direct
+bots-env message resend-direct
+bots-env conversations prepare-pages
+```
+
+先等真实连接，再送 `unknown-direct`，用 Driver 确认只产生配对而未执行模型；本机批准后
+送 `resend-direct`（同合成联系人，不同消息身份），由真实界面与模型/平台记录证明续发结果。
+每个动作重复执行都是固定身份重投，不能靠反复发送来等成功；默认模型场景只消费一次主
+输入，准备新的已授权消息旅程时使用独立环境。`prepare-pages` 只在 peer 设置 25 项合成群
+目录与历史（含一个历史权限拒绝群），需通过 GUI 真实查询、翻页与错误展示判定，不写产品
+授权或账本。没有活跃 socket 的消息动作会真实报错并进入清理，不能把 `event-queued` 或
+`environment-set` 当作产品已消费、批准或发送成功。
+
+`operations.json` 中的固定环境动作及 `script-set` 只证明脚本设置，不能证明产品已消费或
+保存。人工结论仍为 pending；平台报告的资源成功只覆盖 peer listener/socket，最终还须
+核对私有 D-Bus、keyring、Flutter/DTD/GUI 的真实退出。截图前使授权过期/取消或完成脱敏，
+不能直接分享仍带二维码、验证链接的原始 capture。
+
 ## Flutter Driver 操作与取证
 
 1. 使用 Flutter Driver，不用 Computer Use 覆盖 Driver 已支持的交互。优先复用
@@ -90,13 +140,14 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
    折叠面板只点真实标题行，不点整个展开面板或静态正文的中心；展开后中心可能在空白、
    屏幕外或裁剪区。存在性、可见几何与标准组件的真实展开态分别核对，不把正文可点击当作
    成功条件，也不在已经展开时再次点击把它收起。
-4. 临时定向客户端可放在忽略的 `target/gui-acceptance/probe.dart`，无需增加永久测试。
-   该位置可通过 `../../code/anywork/test_driver/flutter_driver_session.dart` 导入会话封装。
-   从根目录运行（将 `<本次VM_URL>` 替换为实测地址）：
+4. 临时定向客户端放在最新 `studio.session-files` 给出的本 Thread `scratch`，无需增加
+   永久测试；按该脚本的实际位置计算对 `code/anywork/test_driver/flutter_driver_session.dart`
+   的相对导入，不照抄旧会话路径。从根目录运行（脚本参数是从包装命令的真实 app cwd
+   `code/anywork` 到本次 scratch 脚本的相对路径，`<本次VM_URL>` 为实测地址）：
 
    ```bash
    cargo dart --packages=.dart_tool/package_config.json \
-     ../../target/gui-acceptance/probe.dart '<本次VM_URL>'
+     '<本次scratch脚本相对于app目录的路径>' '<本次VM_URL>'
    ```
 
    包装命令实际 cwd 为 `code/anywork`；脚本的文件输出路径也须据此计算，或显式传入
@@ -112,7 +163,9 @@ daemon 必须归属本次进程树，并在正常完成、失败和取消时停�
    保存行为必须观察 bridge canonical 状态，必要时重新打开验证；仅点击当前值不能证明
    更换值后的持久化。只有一个 fixture 模型时，明确记录覆盖不足。
 6. 不把临时原始快照/界面树当作已脱敏产物；可能包含正文、配置与路径。只收集需要的字段，
-   分享前检查并脱敏；不提交截图、运行日志、VM URL 或一次性脚本到源码库。
+   分享前检查并脱敏；默认不把验收截图、运行日志、VM URL 或一次性脚本提交到源码库。
+   用户明确要求产品截图证据时，优先用 PR 附件；仅按授权保留必要的已脱敏展示资产，
+   不能把该例外扩大为提交原始 capture、日志或调试材料。
 
 ### Driver 宿主与原生文本输入
 

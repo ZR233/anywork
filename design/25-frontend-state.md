@@ -32,6 +32,12 @@ ProviderScope 借用注入的实例，只拥有自己的观察注册。
 
 ## 25.2 所有权与唯一写入
 
+机器人领域同样由 Rust owner 持有业务事实，每 AppGraph 的 Client 独立拥有 `Bots` topic、
+read model、首配/查询/发送 actions 和未完成操作。Riverpod 只观察，离开设置页不关闭物理
+机器人，不清理当前聊天资源；注册取消是显式业务动作，退出须等待其真实收束。机器人
+配置 revision、领域 revision、查询尝试和发送 operation ID 不互相替代，完整契约见
+[27](./27-bots.md)。
+
 | 事实或资源 | 权威 owner | Dart owner / 唯一写入入口 | 身份与结束条件 |
 | --- | --- | --- | --- |
 | 项目、目录、配置、catalog、服务状态 | Rust 对应领域 | 各领域 read model reducer | 各自 ResourceStamp；领域关闭或应用退出 |

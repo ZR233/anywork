@@ -484,7 +484,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     let directory = tempfile::tempdir()?;
     let database_path = directory.path().join("studio/v2/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
-    let history = store.history_writer("migration").await?;
+    let history = store.history("migration").await?;
     let original = saved_state(BTreeMap::from([
         (
             "studio.model-route".into(),
@@ -536,7 +536,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     drop(store);
 
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let history = reopened.history_writer("migration").await?;
+    let history = reopened.history("migration").await?;
     let saved = history.checkpoint().await?.context("reopened checkpoint")?;
     assert_eq!(
         saved.state.extensions["studio.model-route"]
@@ -707,7 +707,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
     let database_path = directory.path().join("studio/v2/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let history_path = store.thread_storage_dir("migration").join("history.sqlite");
-    let history = store.history_writer("migration").await?;
+    let history = store.history("migration").await?;
     let mut state = saved_state(BTreeMap::from([(
         crate::compaction::LATEST_RECEIPT.into(),
         record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
@@ -733,7 +733,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
 
     // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let upgraded = reopened.history_writer("migration").await?;
+    let upgraded = reopened.history("migration").await?;
     let thread = pl_protocol::Thread::placeholder("migration");
     let checkpoint =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
@@ -863,4 +863,180 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
     assert!(crate::compaction::decode_receipt(1, &unsafe_receipt).is_err());
     assert!(crate::compaction::decode_receipt(3, LEGACY_NATIVE_RECEIPT).is_err());
     Ok(())
+}
+
+/// 共享 history 入口必须让 checkpoint 冷读等到 writer 完成 identity，而不是另开半初始化库。
+#[tokio::test]
+async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let database_path = directory.path().join("studio/v2/studio.sqlite");
+    let store = crate::studio::StudioStore::open(&database_path).await?;
+    let thread_id = "migration";
+    let history = store.history(thread_id).await?;
+    let history_path = store.thread_storage_dir(thread_id).join("history.sqlite");
+    let thread = pl_protocol::Thread::placeholder(thread_id);
+
+    let missing = crate::studio::thread_factory::recovery::load_checkpoint(&store, &thread).await?;
+    assert!(missing.is_none(), "缺库冷读必须为空且不创建文件");
+    assert!(!tokio::fs::try_exists(&history_path).await?);
+
+    let (entered, release) = history.arm_init_gate().await;
+    let writer = history.clone();
+    let mut drive_state = SharedHistoryDrive {
+        persist: Some(tokio::spawn(async move {
+            persist(&writer, saved_state(BTreeMap::new()), true).await
+        })),
+        checkpoint: None,
+        release: Some(release),
+    };
+    let drive = drive_state
+        .run(&store, &thread, thread_id, &history_path, entered)
+        .await;
+    let cleanup = drive_state.reclaim().await;
+    let recovered = finish_shared_history_drive(drive, cleanup)?;
+    assert_eq!(recovered.thread_id, thread_id);
+    assert_eq!(recovered.state_revision, 1);
+    let foreign = store
+        .state("other-thread")
+        .load(&history)
+        .await
+        .expect_err("错 Thread 的 history 句柄必须失败闭锁");
+    assert!(
+        foreign
+            .to_string()
+            .contains("history database belongs to another Thread"),
+        "{foreign}"
+    );
+
+    drop(history);
+    drop(store);
+    let damaged = crate::studio::StudioStore::open(&database_path).await?;
+    raw_database(&history_path)
+        .await?
+        .execute_unprepared("DELETE FROM history_meta")
+        .await?;
+    let error = crate::studio::thread_factory::recovery::load_checkpoint(&damaged, &thread)
+        .await
+        .expect_err("损坏 identity 必须失败闭锁");
+    assert!(
+        error
+            .to_string()
+            .contains("history database identity row is missing"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// 本交错测试每个阶段的静态预算。超时只用于失败闭锁，同步本体仍是 oneshot。
+const SHARED_HISTORY_STAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn missed_shared_history_init(stage: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{stage} exceeded {:?}: checkpoint/reader missed shared history initialization (`StudioStore::history` must install the handle so writer and checkpoint share one init lock)",
+        SHARED_HISTORY_STAGE_BUDGET
+    )
+}
+
+async fn wait_shared_history_stage<T>(
+    stage: &'static str,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    tokio::time::timeout(SHARED_HISTORY_STAGE_BUDGET, future)
+        .await
+        .map_err(|_| missed_shared_history_init(stage))
+}
+
+async fn join_shared_history_handle<T>(
+    stage: &'static str,
+    handle: &mut Option<tokio::task::JoinHandle<Result<T>>>,
+) -> Result<T> {
+    let task = handle
+        .as_mut()
+        .with_context(|| format!("{stage} handle missing"))?;
+    let joined = wait_shared_history_stage(stage, task).await?;
+    let _ = handle.take();
+    joined.with_context(|| format!("{stage} join"))?
+}
+
+struct SharedHistoryDrive {
+    persist: Option<tokio::task::JoinHandle<Result<()>>>,
+    checkpoint: Option<tokio::task::JoinHandle<Result<Option<ThreadCheckpoint>>>>,
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl SharedHistoryDrive {
+    async fn run(
+        &mut self,
+        store: &crate::studio::StudioStore,
+        thread: &pl_protocol::Thread,
+        thread_id: &str,
+        history_path: &std::path::Path,
+        entered: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<ThreadCheckpoint> {
+        wait_shared_history_stage("writer gate arrived", entered).await??;
+        assert!(
+            tokio::fs::try_exists(history_path).await?,
+            "writer connect 已创建文件，但 identity 尚未提交"
+        );
+
+        let waiting_history = store.history(thread_id).await?;
+        let reader_waiting = waiting_history.arm_reader_before_init().await;
+        let waiting = store.clone();
+        let waiting_thread = thread.clone();
+        self.checkpoint = Some(tokio::spawn(async move {
+            crate::studio::thread_factory::recovery::load_checkpoint(&waiting, &waiting_thread)
+                .await
+        }));
+        wait_shared_history_stage("reader waiting on shared init", reader_waiting).await??;
+        self.release
+            .take()
+            .context("writer gate already released")?
+            .send(())
+            .map_err(|_| anyhow::anyhow!("writer dropped the init gate"))?;
+
+        join_shared_history_handle("persist join", &mut self.persist).await?;
+        join_shared_history_handle("checkpoint join", &mut self.checkpoint)
+            .await?
+            .context("shared checkpoint")
+    }
+
+    async fn reclaim(self) -> Result<()> {
+        if let Some(release) = self.release {
+            let _ = release.send(());
+        }
+        let persist = reclaim_shared_history_task("persist", self.persist).await;
+        let checkpoint = reclaim_shared_history_task("checkpoint", self.checkpoint).await;
+        match (persist, checkpoint) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(persist), Err(checkpoint)) => Err(persist.context(checkpoint)),
+        }
+    }
+}
+
+async fn reclaim_shared_history_task<T>(
+    name: &'static str,
+    handle: Option<tokio::task::JoinHandle<Result<T>>>,
+) -> Result<()> {
+    let Some(handle) = handle else {
+        return Ok(());
+    };
+    if !handle.is_finished() {
+        handle.abort();
+    }
+    match handle.await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(error.context(format!("{name} failed while reclaiming"))),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(anyhow::anyhow!("{name} join failed: {error}")),
+    }
+}
+
+fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Result<T> {
+    match (drive, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(drive), Ok(())) => Err(drive),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(drive), Err(cleanup)) => Err(drive.context(format!("cleanup: {cleanup:#}"))),
+    }
 }

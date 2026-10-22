@@ -457,6 +457,361 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSshTab => 'SSH';
 
   @override
+  String get settingsBotsTab => 'Bots';
+
+  @override
+  String get settingsBotsTitle => 'Feishu bots';
+
+  @override
+  String get settingsBotsSubtitle =>
+      'Local configuration, live connection, and inbound authorization are three separate facts.';
+
+  @override
+  String get settingsBotsAdd => 'Add bot';
+
+  @override
+  String get settingsBotsEmptyTitle => 'No bots yet';
+
+  @override
+  String get settingsBotsEmptyBody =>
+      'Scan to create a Feishu China app, or connect an existing app. Secrets stay in memory until you save.';
+
+  @override
+  String get settingsBotsSelectTitle => 'Select a bot';
+
+  @override
+  String get settingsBotsSelectBody =>
+      'Choose a bot to inspect configuration, connection, and authorization.';
+
+  @override
+  String get settingsBotsSetupTitle => 'First-time setup';
+
+  @override
+  String get settingsBotsSetupClose => 'Close setup';
+
+  @override
+  String get settingsBotsRisk =>
+      'Remote messages can start this computer\'s agent tools. The current policy is full-access. Linking a project is not an OS sandbox.';
+
+  @override
+  String get settingsBotsPermissions =>
+      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.';
+
+  @override
+  String get settingsBotsName => 'Name';
+
+  @override
+  String get settingsBotsProject => 'Linked project';
+
+  @override
+  String get settingsBotsRiskAck =>
+      'I understand remote messages can run local tools with full-access';
+
+  @override
+  String get settingsBotsScan => 'Scan to create app';
+
+  @override
+  String get settingsBotsManual => 'Connect existing app';
+
+  @override
+  String get settingsBotsAppId => 'App ID';
+
+  @override
+  String get settingsBotsSecret => 'App secret';
+
+  @override
+  String get settingsBotsSave => 'Save configuration';
+
+  @override
+  String get settingsBotsPendingTitle => 'Unfinished local save';
+
+  @override
+  String get settingsBotsPendingPreparing => 'Preparing credentials';
+
+  @override
+  String get settingsBotsPendingUncertain => 'Save needs local verification';
+
+  @override
+  String get settingsBotsPendingCleanup => 'Cleanup pending';
+
+  @override
+  String get settingsBotsPendingCleanupCommitted =>
+      'Config saved; cleanup still pending';
+
+  @override
+  String get settingsBotsPendingIdle => 'Idle';
+
+  @override
+  String get settingsBotsVerify => 'Verify original operation';
+
+  @override
+  String get settingsBotsFactConfig => 'Configuration';
+
+  @override
+  String get settingsBotsFactConnection => 'Connection';
+
+  @override
+  String get settingsBotsFactAuth => 'Authorization';
+
+  @override
+  String get settingsBotsFactMissing => 'No available configuration';
+
+  @override
+  String get settingsBotsConnectionConnected => 'Connected';
+
+  @override
+  String get settingsBotsConnectionConnecting => 'Connecting';
+
+  @override
+  String get settingsBotsConnectionFailed => 'Failed';
+
+  @override
+  String get settingsBotsConnectionIdle => 'Not connected';
+
+  @override
+  String get settingsBotsAuthGranted => 'Local inbound grants exist';
+
+  @override
+  String get settingsBotsAuthPending => 'Pairing pending';
+
+  @override
+  String get settingsBotsAuthNone => 'No inbound trust';
+
+  @override
+  String get settingsBotsCredentialStored => 'Stored';
+
+  @override
+  String get settingsBotsCredentialSession => 'Session only';
+
+  @override
+  String get settingsBotsCredentialMissing => 'Missing';
+
+  @override
+  String get settingsBotsCredentialUnavailable => 'Unavailable';
+
+  @override
+  String settingsBotsRegistrationStatus(String status) {
+    return 'Registration: $status';
+  }
+
+  @override
+  String get settingsBotsOpenLink => 'Open verification link';
+
+  @override
+  String get settingsBotsCopyLink => 'Copy link';
+
+  @override
+  String get settingsBotsRegistrationBusy =>
+      'Local save is committing. Cancel is busy and does not mean cancelled.';
+
+  @override
+  String get settingsBotsCancelRegistration => 'Cancel registration';
+
+  @override
+  String get settingsBotsRegIdle => 'Idle';
+
+  @override
+  String get settingsBotsRegPreparing => 'Preparing';
+
+  @override
+  String get settingsBotsRegWaiting => 'Waiting for scan';
+
+  @override
+  String get settingsBotsRegSlowDown => 'Slow down';
+
+  @override
+  String get settingsBotsRegCommitting => 'Committing';
+
+  @override
+  String get settingsBotsRegCompleted => 'Completed';
+
+  @override
+  String get settingsBotsRegDenied => 'Denied';
+
+  @override
+  String get settingsBotsRegExpired => 'Expired';
+
+  @override
+  String get settingsBotsRegCancelled => 'Cancelled';
+
+  @override
+  String get settingsBotsRegFailed => 'Failed';
+
+  @override
+  String get settingsBotsQrFailed =>
+      'Could not encode the verification QR code. Use the local open or copy action for the current trusted link.';
+
+  @override
+  String get settingsBotsAppIdLocked =>
+      'App ID cannot change after platform conversations or durable records exist.';
+
+  @override
+  String get settingsBotsProjectLocked =>
+      'Project cannot change after Thread mapping or admitted input exists.';
+
+  @override
+  String get settingsBotsEnabled => 'Enable connection';
+
+  @override
+  String get settingsBotsRetryConnection => 'Retry connection';
+
+  @override
+  String get settingsBotsTools => 'Allow project tools';
+
+  @override
+  String get settingsBotsToolsHint =>
+      'Only the four tools on the linked project root Thread. Local owner query/send and original auto-replies are not gated by this switch.';
+
+  @override
+  String get settingsBotsTrustedUsers => 'Trusted users';
+
+  @override
+  String get settingsBotsTrustedChats => 'Trusted groups';
+
+  @override
+  String get settingsBotsRevoke => 'Revoke';
+
+  @override
+  String get settingsBotsApprove => 'Approve';
+
+  @override
+  String get settingsBotsPairingHint =>
+      'Unknown DMs do not run the model. After approval, ask the user to resend; old messages are not executed.';
+
+  @override
+  String get settingsBotsClearPairing => 'Clear request';
+
+  @override
+  String get settingsBotsClearPairingHint =>
+      'Clears only this local pairing request. This user\'s current trust setting stays unchanged, and their old messages are not executed.';
+
+  @override
+  String get settingsBotsNoTrustedUsers =>
+      'No trusted users yet. Manual apps start with an empty trust list.';
+
+  @override
+  String get settingsBotsNoTrustedChats =>
+      'Groups are off by default. Authorize a group plus the real @mention of this bot.';
+
+  @override
+  String get settingsBotsConversations => 'Conversations';
+
+  @override
+  String get settingsBotsRefreshConversations => 'Refresh';
+
+  @override
+  String get settingsBotsNewThread => 'Create local session';
+
+  @override
+  String get settingsBotsMessages => 'Messages';
+
+  @override
+  String get settingsBotsSendHint => 'Send as this bot';
+
+  @override
+  String get settingsBotsSend => 'Send';
+
+  @override
+  String settingsBotsSendStatus(String status) {
+    return 'Send status: $status';
+  }
+
+  @override
+  String get settingsBotsSourceGroup => 'Platform group';
+
+  @override
+  String get settingsBotsSourceDirect => 'Observed direct chat';
+
+  @override
+  String get settingsBotsEdit => 'Edit configuration';
+
+  @override
+  String get settingsBotsDismiss => 'Cancel';
+
+  @override
+  String get settingsBotsPreserveSecret =>
+      'Leave blank to keep the existing secret. It is never displayed.';
+
+  @override
+  String get settingsBotsClearSecret => 'Remove the saved secret';
+
+  @override
+  String get settingsBotsOperationFailed =>
+      'The operation could not finish. Check the current state and retry explicitly; an unknown send is not safe to replay.';
+
+  @override
+  String get settingsBotsModelReady =>
+      'The Simple mode model route and its credential are configured. This is not a live model connectivity check.';
+
+  @override
+  String get settingsBotsModelMissing =>
+      'Configure an account and a complete Simple mode model route before expecting remote messages to run. Saving this app does not check model connectivity.';
+
+  @override
+  String get settingsBotsManualGuide =>
+      'In the Feishu China developer console, enable the bot and long-connection event delivery, subscribe to im.message.receive_v1, request the scopes listed above, then publish the app and confirm its availability. Tenant administrators may need to approve permissions. Save here, then enable the connection.';
+
+  @override
+  String get settingsBotsFirstMessageGuide =>
+      'After a real connection, send the bot a message in Feishu. An unknown sender only creates a pairing request: approve it locally and ask them to send again. Group execution needs local group authorization and a user\'s actual @mention of this bot; @all is not sufficient.';
+
+  @override
+  String get settingsBotsNewThreadWarning =>
+      'Create a new local context for future messages? Existing history is retained. Already admitted messages and replies stay with their original context and are not moved.';
+
+  @override
+  String get settingsBotsApproveGroup => 'Authorize this group';
+
+  @override
+  String get settingsBotsNextPage => 'Next page';
+
+  @override
+  String get settingsBotsRefreshMessages => 'Apply range / refresh messages';
+
+  @override
+  String get settingsBotsStartTime => 'Start time (Unix seconds; optional)';
+
+  @override
+  String get settingsBotsEndTime => 'End time (Unix seconds; optional)';
+
+  @override
+  String get settingsBotsHistoryPermissions =>
+      'Only permitted history is available. Group history may additionally require im:message.group_msg, granted separately in Feishu. This app never requests it automatically or switches to a user identity.';
+
+  @override
+  String get settingsBotsOpenConsole => 'Open Feishu developer console';
+
+  @override
+  String get settingsBotsOpenConsoleHint =>
+      'Opens the official Feishu China developer console page. There, choose the app matching the current App ID and open its permission management; permissions still require administrator approval and the app must stay published with its availability. Nothing is requested or approved automatically here.';
+
+  @override
+  String get settingsBotsOpenConsoleFailed =>
+      'Could not open the developer console. Please try again.';
+
+  @override
+  String get settingsBotsConnectionReconnecting => 'Reconnecting';
+
+  @override
+  String get settingsBotsSendOperation => 'Send operation';
+
+  @override
+  String get settingsBotsNoReplay =>
+      'Some messages may already have been delivered. This result is retained and will not be replayed automatically.';
+
+  @override
+  String get settingsBotsSendSucceeded => 'Delivered';
+
+  @override
+  String get settingsBotsSendPartial => 'Partially delivered';
+
+  @override
+  String get settingsBotsSendRejected => 'Rejected';
+
+  @override
+  String get settingsBotsSendUnknown => 'Outcome unknown';
+
+  @override
   String get settingsSshTitle => 'Remote development';
 
   @override

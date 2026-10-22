@@ -869,6 +869,7 @@ mod stage_order {
     pub(super) const PERSISTENCE_OBSERVER: usize = 14;
     pub(super) const SSH: usize = 15;
     pub(super) const AGENT_PROFILES: usize = 16;
+    pub(super) const BOTS: usize = 17;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1504,6 +1505,20 @@ impl StudioRuntime {
             "agentProfiles",
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.stop_agent_profiles_forwarder().await },
+        ));
+
+        independent.push(self.stage_branch(
+            budget,
+            stage_order::BOTS,
+            "bots",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move {
+                runtime
+                    .bots
+                    .shutdown()
+                    .await
+                    .map_err(|error| anyhow::Error::from(error.studio_error()))
+            },
         ));
 
         // 写入生产者依赖的共享完成信号：写入链在生产者收束观测结束后继续持久化；SSH 依赖同一份

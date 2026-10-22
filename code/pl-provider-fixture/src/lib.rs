@@ -70,6 +70,13 @@ pub use lsp_stdio::{LspStdioOptions, run_lsp_stdio};
 mod tool_peer;
 pub use tool_peer::{ToolPeerOptions, run_tool_peer};
 
+/// Isolated loopback Feishu HTTP/WebSocket peer for native bot acceptance.
+///
+/// Canonical namespace: [`feishu`]. This crate owns the environment only and
+/// does not import production bot adapters or decide product authorization,
+/// Thread mapping, or send-operation outcomes.
+pub mod feishu;
+
 pub use model_catalog::kick_hang_probes as model_catalog_kick_hang_probes;
 pub use model_catalog::self_check as model_catalog_self_check;
 pub use model_catalog::{

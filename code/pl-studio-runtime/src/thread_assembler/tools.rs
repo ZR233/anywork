@@ -381,6 +381,25 @@ impl StudioThreadTools {
         Ok(self)
     }
 
+    pub fn with_bot_tools(
+        mut self,
+        runtime: crate::bots::BotRuntime,
+        project_id: String,
+    ) -> Result<Self, ThreadAssemblyError> {
+        let host = std::sync::Arc::new(crate::bots::StudioBotSessionHost { runtime });
+        for kind in [
+            pl_tool::bots::BotToolKind::ListBots,
+            pl_tool::bots::BotToolKind::ListConversations,
+            pl_tool::bots::BotToolKind::ReadMessages,
+            pl_tool::bots::BotToolKind::SendMessage,
+        ] {
+            let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+            let tool = pl_tool::bots::ThreadBotTool::new(host.clone(), kind, project_id.clone());
+            self.registrations.push(tool.registration(declaration)?);
+        }
+        Ok(self)
+    }
+
     /// Binds language-service tools to the selected physical workspace without rebuilding them each Turn.
     ///
     /// # Errors

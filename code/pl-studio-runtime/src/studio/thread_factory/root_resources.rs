@@ -34,7 +34,7 @@ impl StudioThreadFactory {
             let history = self
                 .services
                 .store
-                .history_writer(id)
+                .history(id)
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history

@@ -23,6 +23,9 @@ Studio home（`~/.anywork/`）的布局为：
 │   ├── workspaces.toml             # 本版本 Project/Workspace 定义
 │   ├── catalog.toml                # 本版本新会话目录摘要
 │   ├── model-catalogs/<account-key>/<query-key>/model.json # 各账号最后成功模型声明
+│   ├── bots/<bot-id>/              # 机器人管理根；稳定 ID，不使用平台身份作路径
+│   │   ├── config.toml            # 版本化非敏感配置与独立 config revision
+│   │   └── state.sqlite           # 版本化会话映射、受理身份、配对及发送操作
 │   ├── sessions/<storage-key>/     # 每个新 Thread 一个目录（storage-key = id 的 sha256）
 │   │   ├── history.sqlite          # 历史、最新上下文与 checkpoint 同事务
 │   │   └── blobs/                  # 可靠附件正文，旧 checkpoint 子目录迁移后回收
@@ -89,6 +92,17 @@ inode），不含程序位置、版本或构建模式；指向同一目录的符
 `workspaces.toml` 保存 Project/Workspace 定义和稳定引用；物理 worktree ownership 使用版本化
 lease 记录，保留 `prepared | active | preserved | cleanupRequested | cleaned`、owner Thread、
 repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责，不能互相推导。
+
+机器人独立管理根 `v2/bots/` 位于同一 v2 备份范围，每个 `config.toml` 保存版本化 desired
+配置及独立 revision，`state.sqlite` 保存版本化会话映射、可靠受理身份和发送操作记录。
+配置中的凭据版本引用和必要的提交恢复身份不含 secret；实际版本化材料仍只在系统凭据
+或进程 lease。配置引用发布、结果待确认与未引用材料回收分别恢复，不能假定原子写入
+报错就代表目标文件从未被替换。未决提交收敛前保留所需版本并封闭该机器人准入，见
+[27.2](./27-bots.md#272-管理配置与凭据)。备份普通数据不备份系统凭据或 lease；恢复历史
+配置也不隐式回退/选择其他密钥版本，所选材料不可用时明确要求恢复凭据。
+平台消息身份不是 Studio checkpoint 的替代事实源；机器人关联的 Thread 继续保存到普通
+`sessions/`。App Secret、租户 token 和长连接票据不进入上述文件；单机器人损坏保留现场并
+局部隔离，不触发全局恢复。生命周期和发送未知结果契约见 [27](./27-bots.md)。
 
 ## 17.2 启动与按需激活
 
@@ -307,6 +321,9 @@ Thread owner
 HistoryStore 只提供顺序键／身份读取与保存，不额外维护 GUI SQL 页缓存。活跃 reader 与
 writer 复用同一数据库身份与初始化状态；新库 schema/meta 尚未完成时等待本句柄 writer，
 冷读缺失库仍为空且不创建文件。损坏继续报错，不能重试后当作空历史。
+此共享义务也覆盖 checkpoint 与恢复栅栏的读取，以及尚未打开 writer 的冷读句柄；不能
+在同一 Thread 内另开独立初始化状态绕过正在进行的首次初始化。共享句柄本身不创建库、
+不升级 schema，不以全局强引用缓存延长冷会话资源寿命。
 
 查询先保留内存未保存引用，再读短 SQL 事务，返回前重新合入最新事实；并发 commit
 重叠按身份版本收敛，不漏行或回退内容。打开尾部订阅在同一同步边界登记接收者及建立

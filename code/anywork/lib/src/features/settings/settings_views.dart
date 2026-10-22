@@ -9,6 +9,8 @@ import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../presentation/providers/settings_store.dart';
 import '../../presentation/providers/skills_store.dart';
+import '../../presentation/providers/bots_store.dart';
+import '../../presentation/providers/project_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
@@ -586,6 +588,96 @@ final settingsStatisticsViewProvider =
         sync: store.sync,
       );
     }, name: 'settingsStatisticsViewProvider');
+
+class SettingsBotsView {
+  const SettingsBotsView({
+    required this.snapshot,
+    required this.revision,
+    required this.loaded,
+    required this.sync,
+    required this.queries,
+    required this.sends,
+    required this.projects,
+    required this.modelConfigured,
+  });
+
+  final BotsStateSnapshot? snapshot;
+  final int revision;
+  final bool loaded;
+  final DomainSyncStatus sync;
+  final BotsQueryState queries;
+  final BotsSendState sends;
+  final List<StudioProject> projects;
+  final bool modelConfigured;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SettingsBotsView &&
+          revision == other.revision &&
+          loaded == other.loaded &&
+          sync == other.sync &&
+          queries == other.queries &&
+          sends == other.sends &&
+          modelConfigured == other.modelConfigured &&
+          identical(snapshot, other.snapshot) &&
+          identical(projects, other.projects);
+
+  @override
+  int get hashCode => Object.hash(
+    revision,
+    loaded,
+    sync,
+    queries,
+    sends,
+    modelConfigured,
+    identityHashCode(snapshot),
+    identityHashCode(projects),
+  );
+}
+
+final settingsBotsViewProvider = Provider.autoDispose<SettingsBotsView>((ref) {
+  final store = ref.watch(botsStoreProvider);
+  final queries = ref.watch(botsQueryStoreProvider);
+  final sends = ref.watch(botsSendStoreProvider);
+  final settings = ref.watch(
+    settingsStoreProvider.select((state) => state.canonical),
+  );
+  final route = ModelRouteQueries.modeRoute(
+    settings?.modeModelRoutes ?? const [],
+    ThreadModeId.simple,
+  );
+  final account = settings?.accounts
+      .where((account) => account.id == route?.accountId)
+      .firstOrNull;
+  final model = route == null
+      ? null
+      : ModelRouteQueries.model(
+          settings?.accounts ?? const [],
+          route.accountId,
+          route.modelId,
+        );
+  final projects = ref.watch(
+    projectStoreProvider.select(
+      (state) =>
+          state.projects?.values.toList(growable: false) ??
+          const <StudioProject>[],
+    ),
+  );
+  return SettingsBotsView(
+    snapshot: store.value,
+    revision: store.revision,
+    loaded: store.loaded,
+    sync: store.sync,
+    queries: queries,
+    sends: sends,
+    projects: projects,
+    modelConfigured:
+        model != null &&
+        account != null &&
+        (!account.credentialRequired || account.hasBearerToken),
+  );
+}, name: 'settingsBotsViewProvider');
 
 /// 单个设置命令的 in-flight 标志。UI 只显示 pending，不改用目标值。
 class SettingsCommandPendingView {

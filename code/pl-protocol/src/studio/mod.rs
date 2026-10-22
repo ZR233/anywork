@@ -1,6 +1,7 @@
 //! Studio transport-neutral command, response, event, and error protocol.
 
 mod attachment;
+mod bots;
 mod error;
 mod operation;
 mod persistence;
@@ -12,6 +13,7 @@ mod settings_update;
 mod thread_preparation;
 
 pub use attachment::*;
+pub use bots::*;
 pub use error::*;
 pub use operation::*;
 pub use persistence::*;

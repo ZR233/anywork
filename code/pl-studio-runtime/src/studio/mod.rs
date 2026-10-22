@@ -5,7 +5,7 @@ mod ids;
 mod instance;
 mod merged_page;
 pub(crate) mod model_route;
-mod paths;
+pub(crate) mod paths;
 pub(crate) mod payload_alias;
 mod persistence;
 mod product_event_bus;
@@ -26,6 +26,7 @@ pub(crate) mod workspace_receipt;
 
 pub(crate) use ids::{new_id, unix_seconds};
 pub use instance::{StudioInstance, StudioInstanceLease};
+pub(crate) use paths::StudioPaths;
 pub use persistence::*;
 pub use product_event_bus::ProductEventBus;
 pub use records::{AttachmentRecord, ProjectRecord, ThreadKind, ThreadRecord, ThreadVisibility};

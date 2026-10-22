@@ -56,5 +56,7 @@ pub mod thread_catalog;
 
 pub mod collaboration;
 
+pub mod bots;
+
 mod input;
 pub(crate) use input::{deserialize_tool_input, typed_tool_input_schema};

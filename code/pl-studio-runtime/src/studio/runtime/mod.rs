@@ -17,6 +17,8 @@ pub type ThreadPreparationObserver =
 mod account_usage;
 mod attachment_drafts;
 mod background_task;
+mod bots_api;
+mod bots_recovery;
 pub(crate) mod chat_item;
 mod command_receipts;
 mod history;
@@ -184,6 +186,7 @@ pub struct StudioRuntime {
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,
     instance_lock: super::runtime_lock::RuntimeLockOwner,
     store: StudioStore,
+    bots: crate::bots::BotRuntime,
     config_runtime: ConfigRuntime,
     external_runtimes: StudioExternalRuntimes,
     agent_facility: StudioAgentFacility,
@@ -220,6 +223,8 @@ pub struct StudioRuntime {
     /// 再在独立资源组以同一首次期限有界 join——失败 / 超时经 collector 令 `Clean` 不可达并
     /// 保留 owner（常驻槽位超时不丢句柄）。
     profiles_forwarder: background_task::BackgroundTaskSlot,
+    /// 仅用于把 Weak 宿主租约交给 bots；bots 不持有 StudioRuntime 强引用。
+    bot_host: Option<std::sync::Arc<StudioRuntime>>,
 }
 
 #[derive(Clone)]

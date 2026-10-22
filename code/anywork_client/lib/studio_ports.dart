@@ -323,6 +323,29 @@ abstract class StudioTransport
   Future<LspStateSnapshot> repairLspServer(String projectId, String serverId);
   Future<LspStateSnapshot> resetLspServer(String projectId, String serverId);
   Future<LspStateSnapshot> resetLspWorkspace(String projectId);
+
+  Future<BotsStateSnapshot> readBots();
+  Future<BotsCommandReply> saveBot(SaveBotRequest request);
+  Future<BotsCommandReply> startBotRegistration(
+    StartBotRegistrationRequest request,
+  );
+  Future<BotsCommandReply> cancelBotRegistration(
+    CancelBotRegistrationRequest request,
+  );
+  Future<BotsCommandReply> setBotEnabled(SetBotEnabledRequest request);
+  Future<BotsCommandReply> retryBotConnection(
+    RetryBotConnectionRequest request,
+  );
+  Future<BotsCommandReply> setBotTrustedUser(SetBotTrustedUserRequest request);
+  Future<BotsCommandReply> setBotTrustedChat(SetBotTrustedChatRequest request);
+  Future<BotConversationPage> listBotConversations(
+    ListBotConversationsRequest request,
+  );
+  Future<BotMessagePage> readBotMessages(ReadBotMessagesRequest request);
+  Future<BotSendResult> sendBotMessage(SendBotMessageRequest request);
+  Future<BotConversationThreadReply> createBotConversationThread(
+    CreateBotConversationThreadRequest request,
+  );
 }
 
 /// Update commands return Rust-owned canonical snapshots; application routing

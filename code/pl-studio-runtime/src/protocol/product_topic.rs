@@ -41,6 +41,7 @@ pub enum StudioProductTopic {
     Persistence,
     PersistenceQueue,
     AgentProfiles,
+    Bots,
 }
 
 /// typed topic 请求的唯一失败形态：带作用域 topic 的身份为空。
@@ -89,6 +90,7 @@ impl StudioProductTopic {
             StudioProductEventKind::PersistenceStateChanged(_) => Self::Persistence,
             StudioProductEventKind::PersistenceQueueStateChanged(_) => Self::PersistenceQueue,
             StudioProductEventKind::AgentProfilesStateChanged(_) => Self::AgentProfiles,
+            StudioProductEventKind::BotsStateChanged(_) => Self::Bots,
         }
     }
 }
@@ -130,6 +132,7 @@ pub enum StudioProductBaselineState {
     Persistence(Box<PersistenceStateSnapshot>),
     PersistenceQueue(Box<StudioPersistenceQueueStateSnapshot>),
     AgentProfiles(Box<StudioAgentProfilesStateSnapshot>),
+    Bots(Box<pl_protocol::studio::BotsStateSnapshot>),
 }
 
 impl StudioProductBaselineState {
@@ -153,6 +156,7 @@ impl StudioProductBaselineState {
             Self::Persistence(state) => state.revision,
             Self::PersistenceQueue(state) => state.revision,
             Self::AgentProfiles(state) => revision_of(&state.state),
+            Self::Bots(state) => state.revision,
         }
     }
 }

@@ -15,6 +15,7 @@ pub mod agent;
 pub mod approval;
 pub use approval::PermissionMode;
 mod account_usage;
+mod bots;
 mod compaction;
 pub mod config;
 mod config_editor;

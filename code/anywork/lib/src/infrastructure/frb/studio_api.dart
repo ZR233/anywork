@@ -32,6 +32,8 @@ import '../../rust/api/studio/types/shutdown.dart' as frb_shutdown;
 import '../../rust/api/studio/types/thread_stream/item.dart' as frb_item;
 import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
+import '../../rust/api/studio/handlers/bots.dart' as frb_bots;
+import '../../rust/api/studio/types/bots.dart' as frb_bots_types;
 import '../../rust/frb_generated.dart';
 
 part 'studio_thread_stream.dart';
@@ -42,6 +44,7 @@ part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';
 part 'studio_account_catalog_converters.dart';
+part 'studio_bots_converters.dart';
 part 'studio_demo_api.dart';
 part 'studio_demo_settings.dart';
 

@@ -23,7 +23,7 @@ The home directory can be overridden, in resolution order:
 2. `ANYWORK_HOME` environment variable (absolute, non-empty)
 3. default `<user home>/.anywork`
 
-Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories and product settings live in `<home>/v2/`. Call records use `<home>/v2/calls/calls.sqlite` and rolling logs under `logs/`. Each Thread keeps its history and current checkpoint in `<home>/v2/sessions/<thread-key>/history.sqlite`; `<thread-key>` is derived from the Thread identity. Old-version directories remain isolated. Never edit these files by hand.
+Product metadata lives in `<home>/studio/v2/studio.sqlite`; global directories and product settings live in `<home>/v2/`. Call records use `<home>/v2/calls/calls.sqlite` and rolling logs under `logs/`. Each Thread keeps its history and current checkpoint in `<home>/v2/sessions/<thread-key>/history.sqlite`; `<thread-key>` is derived from the Thread identity. Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and `state.sqlite`; App Secret uses the independent credential account `bot:<bot-id>` and never enters TOML or SQLite. The runtime talks to Feishu with native Rust HTTP/WebSocket/Protobuf only — no Node, npm, OpenClaw, or third-party Feishu SDK. Old-version directories remain isolated. Never edit these files by hand.
 
 ## Format Rules
 
@@ -121,7 +121,7 @@ Edit a threshold directly in the account detail card's model list: valid input s
 
 ## Credentials
 
-Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
+Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). Bot App Secrets use the same service with account `bot:<bot-id>` and the Preserve/Replace/Clear transaction; a missing system keyring keeps a process-only lease marked `sessionOnly`. To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
 
 During the versioned account migration only, an old `provider:<id>` credential is copied to `account:<id>` and read back before committing configuration. A different existing target credential is a conflict, not permission to overwrite it. Original credential entries are retained, but normal execution never falls back to them. Environment-only references remain environment-only; no blank key is manufactured. Do not delete old credentials or edit migration records as a repair.
 

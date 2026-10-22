@@ -2809,15 +2809,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "clap",
+ "flate2",
  "futures",
  "hex",
+ "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -2850,15 +2856,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "eventsource-stream",
+ "futures",
  "pl-dev-support",
  "pl-model",
+ "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "reqwest",
  "sea-orm",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
  "windows-sys 0.61.2",
 ]
@@ -2892,6 +2903,7 @@ dependencies = [
  "base64 0.23.1",
  "downlowd",
  "dunce",
+ "flate2",
  "fs4",
  "futures",
  "hex",
@@ -2905,6 +2917,7 @@ dependencies = [
  "pl-remote-helper",
  "pl-tool",
  "pl-trace",
+ "prost",
  "reqwest",
  "rust-embed",
  "schemars",
@@ -2916,6 +2929,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml",
  "tracing",
@@ -3169,6 +3183,29 @@ checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
 dependencies = [
  "bitflags 2.13.2",
  "hex",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -84,6 +84,18 @@ struct HistoryStoreState {
     /// return through the `writer.get()` fast path above it, so the lock is only ever contended
     /// during that first initialization.
     init: tokio::sync::RwLock<()>,
+    /// Test-only gate that parks the first writer after `connect(mode=rwc)` created the file and
+    /// before `initialize` commits schema/identity. Production never installs a waiter.
+    #[cfg(test)]
+    init_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    /// Test-only probe fired immediately before a cold reader waits on `init`.
+    #[cfg(test)]
+    reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 /// One live connection plus the database identity it validated.
@@ -191,6 +203,10 @@ impl HistoryStore {
                 writer: tokio::sync::OnceCell::new(),
                 reader: tokio::sync::OnceCell::new(),
                 init: tokio::sync::RwLock::new(()),
+                #[cfg(test)]
+                init_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                reader_before_init: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -198,6 +214,34 @@ impl HistoryStore {
     /// A weak view of this handle's shared connection state, for the per-Thread writer registry.
     pub(crate) fn shared(&self) -> HistoryStoreShare {
         HistoryStoreShare(std::sync::Arc::downgrade(&self.state))
+    }
+
+    pub(crate) fn thread_id(&self) -> &str {
+        &self.state.thread_id
+    }
+
+    /// Parks the next writer initialization after the file exists and before identity is committed.
+    ///
+    /// Returns the entered receiver and the release sender. Production never installs this gate.
+    #[cfg(test)]
+    pub(crate) async fn arm_init_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.state.init_gate.lock().await = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+
+    /// Signals once a cold reader is about to wait on the initialization lock.
+    #[cfg(test)]
+    pub(crate) async fn arm_reader_before_init(&self) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.state.reader_before_init.lock().await = Some(tx);
+        rx
     }
 
     /// The handle behind one share, or `None` once its last real holder released it.
@@ -224,6 +268,10 @@ impl HistoryStore {
         // identity are still uncommitted. Take the read side of the initialization lock before
         // touching the file, so we either run before the file exists or after it is fully
         // initialized; never against a half-initialized database.
+        #[cfg(test)]
+        if let Some(tx) = self.state.reader_before_init.lock().await.take() {
+            let _ = tx.send(());
+        }
         let _initializing = self.state.init.read().await;
         // Re-check under the guard: the writer may have published its connection while we waited.
         if let Some(writer) = self.state.writer.get() {
@@ -270,6 +318,11 @@ impl HistoryStore {
                     .context("history database path has no parent directory")?;
                 tokio::fs::create_dir_all(parent).await?;
                 let db = connect(crate::studio::paths::sqlite_url(&self.state.path)).await?;
+                #[cfg(test)]
+                if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
+                    let _ = entered.send(());
+                    let _ = release.await;
+                }
                 let database_id = initialize(&db, &self.state.thread_id).await?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
                     db,
@@ -3832,8 +3885,10 @@ mod storage_fault_tests {
         .await?;
         tokio::fs::write(directory.path().join("blobs/attachment"), b"keep").await?;
         let state = super::super::state::StateStore::new(directory.path().to_owned(), "import");
+        let history =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
         assert!(
-            state.load().await.is_err(),
+            state.load(&history).await.is_err(),
             "missing migration body must preserve source"
         );
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
@@ -3852,7 +3907,7 @@ mod storage_fault_tests {
         let future = toml::to_string(&legacy)?;
         tokio::fs::write(directory.path().join("state.toml"), &future).await?;
         assert!(
-            state.load().await.is_err(),
+            state.load(&history).await.is_err(),
             "a valid backup must not hide an unknown primary version"
         );
         assert_eq!(
@@ -3860,10 +3915,8 @@ mod storage_fault_tests {
             future
         );
         tokio::fs::write(directory.path().join("state.toml"), &original).await?;
-        let history =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
         history.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_import BEFORE INSERT ON session_checkpoint BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;").await?;
-        assert!(state.load().await.is_err());
+        assert!(state.load(&history).await.is_err());
         assert!(history.checkpoint().await?.is_none());
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
         history
@@ -3879,7 +3932,7 @@ mod storage_fault_tests {
             .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
             .await?;
         assert!(
-            state.load().await.is_err(),
+            state.load(&history).await.is_err(),
             "mismatched history fence must preserve source"
         );
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
@@ -3889,7 +3942,7 @@ mod storage_fault_tests {
             .db
             .execute_unprepared("UPDATE history_meta SET applied_write_seq=0")
             .await?;
-        let imported = state.load().await?.context("imported checkpoint")?;
+        let imported = state.load(&history).await?.context("imported checkpoint")?;
         assert_eq!(imported.state.context, checkpoint.state.context);
         assert!(imported.state.attempt_ids.contains_key("old-attempt"));
         assert_eq!(imported.state_revision, checkpoint.state_revision);
@@ -3901,7 +3954,11 @@ mod storage_fault_tests {
             b"keep"
         );
         assert_eq!(
-            state.load().await?.context("reopened")?.state_revision,
+            state
+                .load(&history)
+                .await?
+                .context("reopened")?
+                .state_revision,
             imported.state_revision
         );
         Ok(())

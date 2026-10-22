@@ -317,6 +317,9 @@ impl StudioThreadFactory {
             };
             tools = tools.with_lsp(self.services.lsp_runtime.clone(), paths)?;
         }
+        if thread_id == root_thread_id {
+            tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;
+        }
         let policies = match &preparation {
             CatalogPreparation::Refresh {
                 policy_key,

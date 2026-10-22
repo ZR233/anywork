@@ -87,7 +87,7 @@ pub(crate) enum StudioApiErrors {
     Internal(StudioError),
 }
 
-struct ApiJson<T>(T);
+pub(crate) struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -176,6 +176,7 @@ pub(crate) fn parse_product_topic(
         "persistence" => StudioProductTopic::Persistence,
         "persistenceQueue" => StudioProductTopic::PersistenceQueue,
         "agentProfiles" => StudioProductTopic::AgentProfiles,
+        "bots" => StudioProductTopic::Bots,
         other => {
             return Err(invalid(&format!("unknown product topic: {other}")));
         }
@@ -274,6 +275,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
         .routes(routes!(sse::thread_timeline_events))
+        .merge(crate::bots::bot_routes())
         .merge(attachment_upload)
 }
 

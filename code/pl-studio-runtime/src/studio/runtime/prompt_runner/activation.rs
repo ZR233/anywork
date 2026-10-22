@@ -19,6 +19,12 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
     ) -> Result<ThreadRecord> {
+        self.find_owned_thread(thread_id)
+            .await?
+            .context("selected Thread not found")
+    }
+
+    pub(crate) async fn find_owned_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
         let thread = if let Some(thread) = self
             .agent_facility
             .product_events
@@ -26,13 +32,13 @@ impl StudioRuntime {
         {
             thread
         } else {
-            self.store
-                .read_thread(thread_id)
-                .await?
-                .map(pl_protocol::Thread::from)
-                .context("selected Thread not found")?
+            match self.store.read_thread(thread_id).await {
+                Ok(Some(record)) => pl_protocol::Thread::from(record),
+                Ok(None) => return Ok(None),
+                Err(error) => return Err(error),
+            }
         };
-        Ok(ThreadRecord {
+        Ok(Some(ThreadRecord {
             id: thread.id,
             project_id: thread.project_id,
             title: thread.title,
@@ -60,6 +66,6 @@ impl StudioRuntime {
             summary: None,
             error: None,
             runtime_updated_at: None,
-        })
+        }))
     }
 }

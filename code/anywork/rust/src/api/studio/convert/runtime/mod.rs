@@ -2,6 +2,7 @@
 //!
 //! 按域拆分：`snapshot` 桥接 lifecycle 快照，`health` 桥接 MCP/LSP/agent 观测状态。
 
+mod bots;
 mod health;
 mod model_performance;
 mod observed;
@@ -10,6 +11,7 @@ mod recovery;
 mod snapshot;
 mod updater;
 
+pub(crate) use bots::*;
 pub(crate) use health::*;
 pub(crate) use model_performance::*;
 pub(crate) use observed::*;

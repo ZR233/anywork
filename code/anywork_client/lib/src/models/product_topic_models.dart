@@ -1,6 +1,7 @@
 import 'collection_equality.dart';
 
 import 'agent_profile_models.dart';
+import 'bot_models.dart';
 import 'persistence_models.dart';
 import 'runtime_models.dart';
 import 'studio_state_snapshots.dart';
@@ -190,6 +191,16 @@ final class AgentProfilesTopic extends ProductTopic {
   int get hashCode => 0x0116;
 }
 
+final class BotsTopic extends ProductTopic {
+  const BotsTopic();
+
+  @override
+  bool operator ==(Object other) => other is BotsTopic;
+
+  @override
+  int get hashCode => 0x0118;
+}
+
 /// 订阅首帧携带的 canonical 基线 payload；每个 topic 只有自己的领域状态。
 sealed class ProductTopicBaselineState {
   const ProductTopicBaselineState();
@@ -297,6 +308,12 @@ final class AgentProfilesBaseline extends ProductTopicBaselineState {
   const AgentProfilesBaseline(this.state);
 
   final AgentProfilesStateView state;
+}
+
+final class BotsBaseline extends ProductTopicBaselineState {
+  const BotsBaseline(this.state);
+
+  final BotsStateSnapshot state;
 }
 
 /// 单个 topic 订阅交付的帧。
@@ -424,6 +441,7 @@ sealed class ProductTopicEventPayload {
     PersistenceStateChangedPayload() => const PersistenceTopic(),
     PersistenceQueueStateChangedPayload() => const PersistenceQueueTopic(),
     AgentProfilesStateChangedPayload() => const AgentProfilesTopic(),
+    BotsStateChangedPayload() => const BotsTopic(),
   };
 }
 
@@ -538,6 +556,12 @@ final class AgentProfilesStateChangedPayload extends ProductTopicEventPayload {
   const AgentProfilesStateChangedPayload(this.state);
 
   final AgentProfilesStateView state;
+}
+
+final class BotsStateChangedPayload extends ProductTopicEventPayload {
+  const BotsStateChangedPayload(this.state);
+
+  final BotsStateSnapshot state;
 }
 
 /// 单个 root 会话的作用域费用状态。

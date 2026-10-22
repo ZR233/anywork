@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'agent_profile.dart';
+import 'bots.dart';
 import 'error.dart';
 import 'event.dart';
 
@@ -73,6 +74,8 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.agentProfiles(
     BridgeAgentProfilesStateSnapshot field0,
   ) = BridgeProductBaseline_AgentProfiles;
+  const factory BridgeProductBaseline.bots(BridgeBotsStateSnapshot field0) =
+      BridgeProductBaseline_Bots;
 }
 
 @freezed
@@ -110,6 +113,7 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_PersistenceQueue;
   const factory BridgeProductTopic.agentProfiles() =
       BridgeProductTopic_AgentProfiles;
+  const factory BridgeProductTopic.bots() = BridgeProductTopic_Bots;
 
   /// 校验作用域身份；空/空白 scope 直接拒绝，不落到全局。
   Future<void> validateScope() => RustLib.instance.api
