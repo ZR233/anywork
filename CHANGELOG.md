@@ -5,6 +5,20 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.25.0](https://github.com/ZR233/anywork/compare/v6.24.0...v6.25.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **remote:** unify resilient SSH operations over one HTTP/2 connection ([#140](https://github.com/ZR233/anywork/issues/140))
+
+### Bug Fixes
+
+* **remote:** unify resilient SSH operations over one HTTP/2 connection ([#140](https://github.com/ZR233/anywork/issues/140)) ([80a51e7](https://github.com/ZR233/anywork/commit/80a51e78b9e37ba90e4206c30a5afaf7af54013c))
+* **studio:** 加宽居中会话并按需显示滚动条 ([#134](https://github.com/ZR233/anywork/issues/134)) ([b3f22b8](https://github.com/ZR233/anywork/commit/b3f22b8f651816851852582a10a970fe25af3ae6))
+* **studio:** 统一 Timeline 正文读取入口为单行活动行 ([#133](https://github.com/ZR233/anywork/issues/133)) ([5d5e71a](https://github.com/ZR233/anywork/commit/5d5e71aeea4149653faf96540e66f57fea104bda))
+* **studio:** 统计页不再展示保存中状态行 ([#137](https://github.com/ZR233/anywork/issues/137)) ([436f422](https://github.com/ZR233/anywork/commit/436f42210e34aaecf633006612cb39def2f3784d))
+
 ## [6.24.0](https://github.com/ZR233/anywork/compare/v6.23.0...v6.24.0) (2026-10-21)
 
 
