@@ -110,6 +110,11 @@ inode），不含程序位置、版本或构建模式；指向同一目录的符
 lease 记录，保留 `prepared | active | preserved | cleanupRequested | cleaned`、owner Thread、
 repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责，不能互相推导。
 
+SQLite 目录镜像可能落后于已持久化的 canonical 目录。写入 Thread 镜像时，如果所属 Project
+镜像缺失，必须在同一事务中从 `workspaces.toml` 的已加载事实补齐父行，再写入 Thread；
+不能要求用户先在 GUI 打开项目。缺少 canonical Project 时仍报错，不猜测项目归属，也不
+通过关闭外键约束继续写入。已有父行保持 FIFO 目录变更顺序，不被冷摘要覆盖。
+
 机器人独立管理根 `v2/bots/` 位于同一 v2 备份范围，每个 `config.toml` 保存版本化 desired
 配置及独立 revision，`state.sqlite` 保存版本化会话映射、可靠受理身份和发送操作记录。
 配置中的凭据版本引用和必要的提交恢复身份不含 secret；实际版本化材料仍只在系统凭据

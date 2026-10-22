@@ -156,6 +156,16 @@ lease。后续明确 Clear 仍可撤销已经确定的关联。
 机器人列表。已有确定配置的操作状态仍随该机器人的快照提供，两者投影同一个操作 owner，
 不另建命令状态事实源。本地重试可按该机器人身份核实原保存操作；未确定配置前不启动
 连接，也不向项目工具暴露未完成机器人。
+租户 access token 使用[当前官方 OAuth 接口](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)
+（2026-10-14 更新）：`POST https://accounts.feishu.cn/oauth/v3/token`，以
+`application/x-www-form-urlencoded` 提交 `grant_type=client_credentials`、`client_id`
+和 `client_secret`，只使用 `client_secret_post` 一种认证方式。自建应用不传 `tenant_key`，
+不额外申请 scope，沿用应用已开通的应用身份权限。复用现有 reqwest、url 编码和 TokenLease，
+不引入第二套 OAuth 客户端、缓存或运行依赖。
+成功只消费 `access_token`、正数 `expires_in` 和 `Bearer` 类型；JWT 按完整字符串保存与传输，
+不假定旧 token 长度。HTTP 400/500 中的 OAuth 业务错误仍保留平台码，认证、未启用/未安装、
+参数错误与可重试的服务错误分别分类，不回显原始响应或凭据。不再调用旧 token 接口，
+也不在失败时自动回退。
 租户 access token 只在 Rust 内存按实际过期信息管理，同账号刷新合并；失败不猜测 token
 有效期。后续连接或清理失败不把已确定提交的配置改报为未保存。
 
@@ -525,11 +535,15 @@ Secret 不回显。窄窗口、长名称、分页和错误不得隐藏关键操�
 批准后的清理失败不能要求用户先撤销信任；原配对行保留到明确清理成功，重启后仍可操作。
 
 连接失败必须呈现平台错误码，保留原有安全消息；不得回显可能含凭据的原始响应。
+消息和机器人 OpenAPI 的非成功 HTTP 响应同样解析其业务错误码；无结构化业务码时才使用
+HTTP 分类。权限拒绝不得一概改写为缺少群历史 scope：机器人不在群、用户不可见、未开启
+机器人能力和应用权限不足各自保留原因。消息/群组继续使用官方当前的 `im/v1`，机器人
+身份使用 `bot/v3/info`；路径中的版本号并不表示这些接口已经过时。
 飞书访问控制拒绝 `21001` 按不可自动重试的权限错误处理，与临时服务不可用区分，
 对照[官方 CLI 错误分类](https://github.com/larksuite/cli/blob/main/internal/errclass/codemeta.go)。
 界面明确提示联系组织管理员检查应用访问策略，并提供开发者后台入口；注册成功、凭据
-已保存与平台允许 API 访问仍是独立事实。不得以更换端点、请求身份或忽略 token 错误绕过
-访问控制；策略获准后可由用户显式重试。
+已保存与平台允许 API 访问仍是独立事实。协议升级按官方当前契约整体迁移，不以错误触发
+端点回退、伪装请求身份或忽略 token 错误绕过访问控制；策略获准后可由用户显式重试。
 
 每 AppGraph 的 Client 持有机器人 topic/read model、请求及草稿，canonical reducer 是唯一
 writer。Riverpod 仅适配观察，Widget 只呈现与提交意图；设置往返不关闭机器人或当前聊天

@@ -186,7 +186,7 @@ pub(in crate::studio) async fn apply_directory_delta(
         upsert_project_directory_row(tx, project).await?;
     }
     for thread in &delta.thread_upserts {
-        upsert_thread_directory_row(tx, thread).await?;
+        upsert_thread_directory_row(store, tx, thread).await?;
     }
     for id in &delta.session_registrations {
         let row = entities::thread::Entity::find_by_id(id)
@@ -219,6 +219,7 @@ pub(in crate::studio) async fn apply_directory_delta(
 }
 
 async fn upsert_thread_directory_row(
+    store: &StudioStore,
     tx: &sea_orm::DatabaseTransaction,
     thread: &Thread,
 ) -> Result<()> {
@@ -232,6 +233,37 @@ async fn upsert_thread_directory_row(
         .one(tx)
         .await?;
     let Some(existing) = existing else {
+        // Canonical publication can survive a stop before its SQLite mirror. A bot can create a
+        // Thread immediately after restart, without opening the Project in the GUI first. Restore
+        // only a missing parent from the canonical directory, inside the same mirror transaction;
+        // never overwrite an existing parent with a potentially later canonical snapshot.
+        if entities::project::Entity::find_by_id(&thread.project_id)
+            .one(tx)
+            .await?
+            .is_none()
+        {
+            let project = store.workspaces().get(&thread.project_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Thread {} has no canonical Project {}",
+                    thread.id,
+                    thread.project_id
+                )
+            })?;
+            upsert_project_directory_row(
+                tx,
+                &ProjectDirectoryRecord {
+                    id: project.id,
+                    name: project.name,
+                    path: project.path,
+                    ssh_alias: project.ssh_alias,
+                    created_at: project.created_at,
+                    updated_at: project.updated_at,
+                    last_opened_at: project.last_opened_at,
+                    closed: project.closed,
+                },
+            )
+            .await?;
+        }
         let model = thread::ActiveModel {
             id: Set(thread.id.clone()),
             project_id: Set(thread.project_id.clone()),

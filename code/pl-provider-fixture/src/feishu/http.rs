@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -278,25 +278,45 @@ async fn registration_poll(state: &HttpState, form: &HashMap<String, String>) ->
 
 #[derive(Deserialize)]
 pub(crate) struct TokenBody {
-    app_id: String,
-    app_secret: String,
+    grant_type: String,
+    client_id: String,
+    client_secret: String,
 }
 
 pub(crate) async fn tenant_token(
     State(state): State<HttpState>,
-    Json(body): Json<TokenBody>,
+    Form(body): Form<TokenBody>,
 ) -> Response {
-    let path = "/open-apis/auth/v3/tenant_access_token/internal";
-    if !app_id_ok(&body.app_id) {
+    let path = "/oauth/v3/token";
+    if body.grant_type != "client_credentials" {
         record_reject(
             &state.shared,
             "POST",
             path,
             Some(CallKind::TenantToken),
-            "app_id prefix rejected".into(),
+            "grant_type rejected".into(),
         )
         .await;
-        return Json(json!({"code": 10003, "msg": "invalid app_id"})).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20036, "error": "unsupported_grant_type"})),
+        )
+            .into_response();
+    }
+    if !app_id_ok(&body.client_id) {
+        record_reject(
+            &state.shared,
+            "POST",
+            path,
+            Some(CallKind::TenantToken),
+            "client_id prefix rejected".into(),
+        )
+        .await;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20048, "error": "invalid_client"})),
+        )
+            .into_response();
     }
     if let Some(reason) = kind_blocked(&state.shared, CallKind::TenantToken).await {
         record_reject(
@@ -307,11 +327,15 @@ pub(crate) async fn tenant_token(
             reason.clone(),
         )
         .await;
-        return Json(json!({"code": 99991663, "msg": reason})).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20130, "error": "invalid_client"})),
+        )
+            .into_response();
     }
     let (ok, script, waiter) = {
         let mut inner = state.shared.lock().await;
-        let ok = credentials_match(&inner, &body.app_id, &body.app_secret);
+        let ok = credentials_match(&inner, &body.client_id, &body.client_secret);
         inner.token.in_flight += 1;
         inner.token.max_in_flight = inner.token.max_in_flight.max(inner.token.in_flight);
         inner.token.calls += 1;
@@ -328,39 +352,53 @@ pub(crate) async fn tenant_token(
             path,
             Some(CallKind::TenantToken),
             false,
-            Some("app_id/app_secret mismatch".into()),
+            Some("client_id/client_secret mismatch".into()),
         );
-        return Json(json!({"code": 10014, "msg": "app secret invalid"})).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20002, "error": "invalid_client"})),
+        )
+            .into_response();
     }
     inner.record("POST", path, Some(CallKind::TenantToken), true, None);
     let script = inner.token.script.clone();
     match script {
         TokenScript::Success { expire_seconds } => Json(json!({
             "code": 0,
-            "msg": "ok",
-            "tenant_access_token": TENANT_ACCESS_TOKEN,
-            "expire": expire_seconds
+            "access_token": TENANT_ACCESS_TOKEN,
+            "expires_in": expire_seconds,
+            "token_type": "Bearer"
         }))
         .into_response(),
         TokenScript::Hang => Json(json!({
             "code": 0,
-            "msg": "ok",
-            "tenant_access_token": TENANT_ACCESS_TOKEN,
-            "expire": 7200
+            "access_token": TENANT_ACCESS_TOKEN,
+            "expires_in": 7200,
+            "token_type": "Bearer"
         }))
         .into_response(),
-        TokenScript::AuthError => {
-            Json(json!({"code": 10014, "msg": "app secret invalid"})).into_response()
-        }
-        TokenScript::PermissionError => {
-            Json(json!({"code": 99991672, "msg": "no permission"})).into_response()
-        }
-        TokenScript::RateLimited => {
-            Json(json!({"code": 99991400, "msg": "rate limited"})).into_response()
-        }
+        TokenScript::AuthError => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20002, "error": "invalid_client"})),
+        )
+            .into_response(),
+        TokenScript::PermissionError => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code": 20069, "error": "invalid_client"})),
+        )
+            .into_response(),
+        TokenScript::RateLimited => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error": "rate_limit_exceeded"})),
+        )
+            .into_response(),
         TokenScript::HttpError { status } => (
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            Json(json!({"code": 50000, "msg": "http failure"})),
+            Json(if status == 500 {
+                json!({"code": 20050, "error": "server_error"})
+            } else {
+                json!({"error": "http_failure"})
+            }),
         )
             .into_response(),
     }
@@ -828,11 +866,14 @@ pub(crate) async fn message_list(
         .is_some_and(|group| !group.history_allowed)
     {
         inner.record("GET", path, Some(CallKind::MessageList), true, None);
-        return Json(json!({
-            "code": 230002,
-            "msg": "no permission to get history"
-        }))
-        .into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": 230027,
+                "msg": "no permission to get history"
+            })),
+        )
+            .into_response();
     }
     inner.record("GET", path, Some(CallKind::MessageList), true, None);
     let page_size = query.page_size.unwrap_or(20).clamp(1, 50) as usize;

@@ -147,6 +147,15 @@ impl FeishuHttp {
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
         if !status.is_success() {
+            #[derive(Deserialize)]
+            struct Failure {
+                code: i64,
+            }
+            if let Ok(failure) = serde_json::from_slice::<Failure>(&bytes)
+                && failure.code != 0
+            {
+                return Err(classify_open_api(failure.code, None));
+            }
             return Err(classify_http_status(status));
         }
         parse_json(&bytes, status)
@@ -157,24 +166,19 @@ impl FeishuHttp {
         app_id: &str,
         app_secret: &str,
     ) -> Result<super::token::TenantAccessToken, FeishuError> {
-        #[derive(Serialize)]
-        struct RequestBody<'a> {
-            app_id: &'a str,
-            app_secret: &'a str,
-        }
         #[derive(Deserialize)]
         struct ResponseBody {
             code: i64,
             #[serde(default)]
-            msg: Option<String>,
+            access_token: Option<String>,
             #[serde(default)]
-            tenant_access_token: Option<String>,
+            expires_in: Option<i64>,
             #[serde(default)]
-            expire: Option<i64>,
+            token_type: Option<String>,
         }
         let url = self
             .policy
-            .open_api
+            .accounts
             .join(TENANT_TOKEN_PATH.trim_start_matches('/'))
             .map_err(|error| {
                 FeishuError::new(
@@ -184,34 +188,95 @@ impl FeishuHttp {
                     None,
                 )
             })?;
+        let encoded = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "client_credentials"),
+                ("client_id", app_id),
+                ("client_secret", app_secret),
+            ])
+            .finish();
         let response = self
             .client
             .request(Method::POST, url)
-            .json(&RequestBody { app_id, app_secret })
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(encoded)
             .send()
             .await
             .map_err(transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
+        // OAuth business failures use HTTP 400/500. Decode before classifying so
+        // the platform code survives; never expose error_description or secrets.
+        let parsed: ResponseBody = match serde_json::from_slice(&bytes) {
+            Ok(parsed) => parsed,
+            Err(error) if status.is_success() => return Err(json_protocol_error(status, error)),
+            Err(_) => return Err(classify_http_status(status)),
+        };
+        if parsed.code != 0 {
+            return Err(classify_oauth(parsed.code, status));
+        }
         if !status.is_success() {
             return Err(classify_http_status(status));
         }
-        let parsed: ResponseBody = parse_json(&bytes, status)?;
-        if parsed.code != 0 {
-            return Err(classify_open_api(parsed.code, parsed.msg.as_deref()));
-        }
-        let token = parsed.tenant_access_token.filter(|value| !value.is_empty());
-        let expire = parsed.expire.filter(|value| *value > 0);
-        match (token, expire) {
-            (Some(token), Some(expire)) => Ok(super::token::TenantAccessToken { token, expire }),
+        let token = parsed.access_token.filter(|value| !value.is_empty());
+        let expires_in = parsed.expires_in.filter(|value| *value > 0);
+        let bearer = parsed
+            .token_type
+            .is_some_and(|value| value.eq_ignore_ascii_case("Bearer"));
+        match (token, expires_in, bearer) {
+            (Some(token), Some(expires_in), true) => {
+                Ok(super::token::TenantAccessToken { token, expires_in })
+            }
             _ => Err(FeishuError::new(
-                FeishuErrorKind::Auth,
-                "tenant access token missing expire or value",
-                true,
+                FeishuErrorKind::Protocol,
+                "invalid Feishu OAuth token response",
+                false,
                 Some(parsed.code.to_string()),
             )),
         }
     }
+}
+
+fn classify_oauth(code: i64, status: reqwest::StatusCode) -> FeishuError {
+    let (kind, retryable, message) = match code {
+        20002 | 20048 | 20130 | 20140 => (
+            FeishuErrorKind::Auth,
+            false,
+            "Feishu application authentication was rejected",
+        ),
+        20009 | 20069 => (
+            FeishuErrorKind::Permission,
+            false,
+            "Feishu application is not installed or enabled",
+        ),
+        20068 => (
+            FeishuErrorKind::Permission,
+            false,
+            "Feishu application scopes were denied",
+        ),
+        20001 | 20036 | 20063 | 20067 | 20070 => (
+            FeishuErrorKind::Rejected,
+            false,
+            "Feishu OAuth request parameters were rejected",
+        ),
+        20050 => (
+            FeishuErrorKind::Unavailable,
+            true,
+            "Feishu OAuth service is unavailable",
+        ),
+        21001 => (
+            FeishuErrorKind::Permission,
+            false,
+            "Feishu OAuth access control policy denied the token request",
+        ),
+        _ if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS => (
+            FeishuErrorKind::Unavailable,
+            true,
+            "Feishu OAuth service is unavailable",
+        ),
+        _ => return classify_open_api(code, None),
+    };
+    FeishuError::new(kind, message, retryable, Some(code.to_string()))
 }
 
 fn transport(error: reqwest::Error) -> FeishuError {
@@ -227,14 +292,19 @@ pub(crate) fn classify_open_api(code: i64, msg: Option<&str>) -> FeishuError {
     let _ = msg;
     let (kind, retryable) = match code {
         99991663 | 99991664 | 1000040343 => (FeishuErrorKind::Auth, false),
-        21001 | 99991672 | 230002 | 232009 => (FeishuErrorKind::Permission, false),
+        21001 | 99991672 | 230002 | 230006 | 230013 | 230018 | 230027 | 230035 | 230038
+        | 230053 | 230073 => (FeishuErrorKind::Permission, false),
         99991400 | 230001 => (FeishuErrorKind::Rejected, false),
-        99991404 => (FeishuErrorKind::NotFound, false),
-        1 | 99991429 => (FeishuErrorKind::Unavailable, true),
+        99991404 | 230019 | 230110 | 232009 => (FeishuErrorKind::NotFound, false),
+        1 | 99991429 | 230020 => (FeishuErrorKind::Unavailable, true),
         _ => (FeishuErrorKind::Unavailable, code > 0 && code < 100),
     };
     let message = match (code, kind) {
         (21001, _) => "Feishu access control policy denied the request",
+        (230002, _) => "Feishu bot is not a member of this chat",
+        (230006, _) => "Feishu application bot capability is not enabled",
+        (230013, _) => "Feishu bot is not available to this user",
+        (230053, _) => "Feishu user has stopped receiving bot messages",
         (_, FeishuErrorKind::Auth) => "Feishu authentication was rejected",
         (_, FeishuErrorKind::Permission) => "Feishu permission was denied",
         (_, FeishuErrorKind::Rejected) => "Feishu rejected the request",

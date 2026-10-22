@@ -1,4 +1,5 @@
-//! 飞书协议适配。字段与编码对照官方 Node SDK 1.76.0 与仓库 revision
+//! 飞书协议适配。租户 token 对照官方 2026-10-14 OAuth v3 文档；
+//! 注册与长连接字段及编码对照官方 Node SDK 1.76.0 与仓库 revision
 //! `b188be60134d409b61259546bcf69c731d2b0b7c`。
 //!
 //! 协议来源许可：MIT License, Copyright (c) 2022 Lark Technologies Pte. Ltd.
@@ -18,7 +19,7 @@ pub const FEISHU_ACCOUNTS_HOST: &str = "accounts.feishu.cn";
 pub const FEISHU_OPEN_API_HOST: &str = "https://open.feishu.cn";
 pub const REGISTRATION_PATH: &str = "/oauth/v1/app/registration";
 pub const WS_ENDPOINT_PATH: &str = "/callback/ws/endpoint";
-pub const TENANT_TOKEN_PATH: &str = "/open-apis/auth/v3/tenant_access_token/internal";
+pub const TENANT_TOKEN_PATH: &str = "/oauth/v3/token";
 pub const IM_CHATS_PATH: &str = "/open-apis/im/v1/chats";
 pub const IM_MESSAGES_PATH: &str = "/open-apis/im/v1/messages";
 pub const BOT_INFO_PATH: &str = "/open-apis/bot/v3/info";

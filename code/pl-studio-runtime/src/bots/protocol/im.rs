@@ -216,8 +216,7 @@ impl FeishuIm {
                 &query,
                 None::<&()>,
             )
-            .await
-            .map_err(annotate_history_permission)?;
+            .await?;
         let next = if data.has_more {
             data.page_token.filter(|value| !value.is_empty())
         } else {
@@ -276,19 +275,6 @@ impl FeishuIm {
                 )
             })?;
         Ok(SendMessageOutcome { message_id })
-    }
-}
-
-fn annotate_history_permission(error: FeishuError) -> FeishuError {
-    if error.kind() == FeishuErrorKind::Permission {
-        FeishuError::new(
-            FeishuErrorKind::Permission,
-            "group history requires im:message.group_msg or equivalent tenant scope",
-            false,
-            error.platform_code().map(str::to_string),
-        )
-    } else {
-        error
     }
 }
 

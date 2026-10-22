@@ -311,8 +311,9 @@ async fn observe_token_hang(
         let response = response?;
         let json: serde_json::Value = response.json().await?;
         ensure!(json["code"] == 0, "token hang {json}");
-        ensure!(json["tenant_access_token"] == TENANT_ACCESS_TOKEN);
-        ensure!(json["expire"] == 7200);
+        ensure!(json["access_token"] == TENANT_ACCESS_TOKEN);
+        ensure!(json["expires_in"] == 7200);
+        ensure!(json["token_type"] == "Bearer");
     }
     Ok(())
 }
@@ -557,14 +558,17 @@ fn spawn_token(client: &Client, origin: &str) -> JoinHandle<reqwest::Result<reqw
     let client = client.clone();
     let origin = origin.to_owned();
     tokio::spawn(async move {
+        let encoded = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "client_credentials"),
+                ("client_id", REGISTERED_APP_ID),
+                ("client_secret", REGISTERED_APP_SECRET),
+            ])
+            .finish();
         client
-            .post(format!(
-                "{origin}/open-apis/auth/v3/tenant_access_token/internal"
-            ))
-            .json(&serde_json::json!({
-                "app_id": REGISTERED_APP_ID,
-                "app_secret": REGISTERED_APP_SECRET
-            }))
+            .post(format!("{origin}/oauth/v3/token"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(encoded)
             .send()
             .await
     })

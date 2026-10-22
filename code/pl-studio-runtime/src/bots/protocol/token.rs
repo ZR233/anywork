@@ -6,10 +6,10 @@ use tokio::sync::{Mutex, OnceCell};
 #[derive(Clone)]
 pub struct TenantAccessToken {
     pub token: String,
-    pub expire: i64,
+    pub expires_in: i64,
 }
 
-/// 每机器人一份共享租户 token：按服务端 expire 缓存，并发刷新合并。
+/// 每机器人一份共享租户 token：按服务端 expires_in 缓存，并发刷新合并。
 ///
 /// 身份、当前缓存与在途刷新登记共用同一个裁决边界（`state`）。该边界内只做
 /// 内存读写：HTTP 刷新在锁外完成，完成后回到同一临界区一次性完成身份核验、
@@ -130,7 +130,7 @@ impl TokenLease {
         match outcome {
             Ok(cached) => {
                 if owns_cell {
-                    // 同代刷新成功即发布：cache 的新鲜度只由服务端 expire 决定，
+                    // 同代刷新成功即发布：cache 的新鲜度只由服务端 expires_in 决定，
                     // 不由代次或时间戳大小推断 token 新旧。
                     state.current = Some(cached.clone());
                     state.refresh = None;
@@ -151,17 +151,9 @@ impl TokenLease {
             .http
             .tenant_access_token(&identity.app_id, &identity.secret)
             .await?;
-        if refreshed.expire <= 0 {
-            return Err(FeishuError::new(
-                FeishuErrorKind::Auth,
-                "tenant access token expire is missing",
-                true,
-                None,
-            ));
-        }
         Ok(CachedToken {
             token: refreshed.token,
-            expires_at: unix_seconds().saturating_add(refreshed.expire),
+            expires_at: unix_seconds().saturating_add(refreshed.expires_in),
             generation: identity.generation,
         })
     }

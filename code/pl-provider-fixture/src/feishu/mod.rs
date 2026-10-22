@@ -106,10 +106,7 @@ impl FeishuPeer {
         };
         let app = Router::new()
             .route("/oauth/v1/app/registration", post(http::registration))
-            .route(
-                "/open-apis/auth/v3/tenant_access_token/internal",
-                post(http::tenant_token),
-            )
+            .route("/oauth/v3/token", post(http::tenant_token))
             .route("/open-apis/bot/v3/info", get(http::bot_info))
             .route("/callback/ws/endpoint", post(http::ws_endpoint))
             .route("/callback/ws/connect", get(ws::connect))
