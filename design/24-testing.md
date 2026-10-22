@@ -14,24 +14,31 @@
 Rust 常规自动化行为测试验证 `pl-model` 和 `pl-core` 的公开 API，从宿主可调用接口进入，
 断言完成结果、状态、效果与明确错误；不读取私有实现，也不通过测试专用接口扩大生产 API。
 `pl-studio-runtime` 的历史保存专项故障测试使用临时真实 SQLite 与私有、测试条件编译的可控
-故障点，同样不扩大生产公共接口。其他 Rust crate 和发布工作流不新增常规行为测试门禁；
+故障点，同样不扩大生产公共接口。实时 feed、FRB 投送额度与生命周期的确定性契约测试可位于
+其真正 owner 的 runtime／bridge 边界，只验证公开能力或私有同步机制的真实状态转换，不为测试
+扩展生产接口；这些用例与对应 crate 的 test 入口一同验证，不以 Dart fake 替代。其它 Rust crate
+和发布工作流不新增常规行为测试门禁；
 格式、静态分析、构建、生成一致性和发布配置检查独立运行。上游技能自带测例保持原样，不参加
 项目门禁。
 
-前端新增两类正式自动门禁：SDK-only `anywork_client` 的公开 Client 契约测试，以及应用
-`test/client` 中的 Client/FRB adapter/Riverpod 适配契约测试。它们验证资源、命令、草稿与观察
+bridge feed／生命周期契约纳入本地与 CI 的 bridge library 测试入口，包含有序数据额度、
+关闭登记与真实完成证据；不要求 Flutter engine 才能运行的确定性部分不能仅留在手工旅程。
+这些测试依然不能代替实际 StreamSink／Dart port 的 native 验收。
+
+前端两类正式自动门禁是纯 Dart `anywork_client` 的分域 Repository／Session 公共契约，以及应用
+`test/client` 中的 FRB adapter／AsyncNotifier／Smart-Dumb 适配契约。它们验证资源、命令、草稿与观察
 边界，包括注入受控 transport 与宿主通道后的实际应用路由；受控路由测试不能替代真实宿主的
 Driver 旅程、native FRB 或平台 UI 验收。其他 Flutter widget/integration
-测试与 Driver 场景不因本次重构加入自动门禁。Client 所有权与接口见
+测试与 Driver 场景不因本次重构加入自动门禁。Repository／Session 所有权与接口见
 [25](./25-frontend-state.md)，内容传输见 [07](./07-streaming.md)。
 
 Timeline 行派生规则（`view_image` 的图片行、展示工具的图片卡片行、普通工具活动组）属于应用
 适配契约：`test/client` 断言工具条目到行类型的映射、typed 附件与展示字段的传递，不重复验证
 图片解码、布局细节或像素，那些由 Driver 人工证据覆盖。
 
-Client 的纯 reducer 与查询回归放在 SDK-only 测试集，AppGraph 与 Riverpod 的 canonical
-事实收敛放在应用 adapter 测试集；不在 Flutter 应用侧重复维护这些纯 Client 契约，
-也不以仅供旧测例调用的全局状态辅助入口代替当前 Client 与 adapter。
+领域 reducer 与查询回归放在纯 Dart 测试集，应用注入、ViewModel 状态／编辑／操作编排与
+Smart-Dumb 适配放在应用测试集；不在 Flutter 侧重复证明纯领域算法，也不以仅供旧测例调用的
+全局 StudioState、可写 store、旧 facade 或兼容入口代替真实公共能力。
 
 `pl-core` 仅使用测试侧的脚本化模型、工具和按锚点查询的临时历史后端，证明 Thread 的执行、
 并发、取消、恢复、effect、Session 页／尾部／详情及可选持久化契约，不依赖模型账号适配。
@@ -95,20 +102,20 @@ Studio 专项场景应从真实会话 writer 与数据库边界证明：队列�
 Studio 专项场景还通过真实 SQLite 写库拒绝验证两个在途工具结果按序写入、恢复后按身份可读；
 停止统计消费者和注入消费者 panic 后，历史保存独立完成，统计缺口可见，supervisor 恢复消费。
 
-### 24.1.1 Client 五层证明与门禁
+### 24.1.1 Dart 领域与呈现的五层证明
 
 不同层级分别交付证据，不以底层 fake、静态扫描或一次 UI 截图代替其他层：
 
 | 层级 | 被测边界 | 应证明的行为 | 证据与门禁范围 |
 | --- | --- | --- | --- |
-| 纯 Dart Client | 公共 Client API 与可控 transport | 唯一 reducer、attempt 所有权、receipt/观察顺序、草稿冻结、预算、原子观察与幂等 close | `anywork_client` 测试进入正式门禁；不加载 Flutter/native |
-| 应用 adapter | FRB DTO/句柄适配、Riverpod 只读观察、AppGraph 注入 | 内容基线、增量缺口、页／详情、晚到句柄、取消/关闭、双实例隔离、account 只取消自己的观察 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
+| 纯 Dart 领域 | Repository／Session 公共 API 与可控 transport | 唯一 reducer、attempt 所有权、receipt/观察顺序、草稿冻结、预算、原子观察与幂等 close | `anywork_client` 测试进入正式门禁；不加载 Flutter/native |
+| 应用 adapter／VM | FRB DTO/句柄、生成式 AsyncNotifier、Freezed State、Smart-Dumb 与应用注入 | push 基线、增量缺口、页／详情、编辑隔离、晚到句柄、取消/关闭、双实例隔离、observer 不销毁业务资源 | 仅应用 `test/client` 进入正式门禁；使用 Flutter runner，因为应用依赖 `dart:ui`；fake 不能记为真实 native 通过 |
 | 真实宿主 Flutter 路由 | 启动、Settings/标签/返回、Connector/View | 当前内容连接与草稿身份保留、提交期间继续输入、旧 intent 不覆盖新值 | 通过 Driver 与人工旅程取证；受控宿主的自动路由契约测试归应用 adapter 层 |
-| FRB/native | 实际 Rust 动态库、sink、句柄与退出 | 真实 open→initial→next、控制回执、单一内容出口、关闭唤醒、join 与进程回收 | 原生 fixture 与 typed 诊断单独记录；纯 Dart fake 不覆盖此层 |
+| FRB/native | 实际 Rust 动态库、sink、句柄与退出 | open→baseline/events→消费 ACK、分域独立性、在途额度、关闭唤醒、join 与进程回收 | 原生 fixture 与 typed 诊断单独记录；纯 Dart fake 不覆盖此层 |
 | 平台与可见交互 | 实际宿主窗口、滚动/菜单/输入及退出 | Timeline Live/History、键盘/ESC/Tab、流式逐帧观感、原生资源收束 | 人工验收按 Linux/Windows 分开；未运行的平台标记未验证 |
 
 `cargo xtask verify-client` 是 CI 的正式门禁，与 Rust 检查、`verify-gui` 和生成一致性各负其责。
-它锁定解析两份依赖快照，检查 Client SDK-only 依赖、import 与 account 生命周期边界，运行
+它锁定解析两份依赖快照，检查领域包无 Flutter／Riverpod／FRB、分层 import 与资源生命周期，运行
 Client 格式/静态检查和纯 Dart tests，再以 `flutter test --no-pub` 执行应用 `test/client`。
 缺少 package、lockfile 或任一必需测试集必须失败，不能跳过后记为通过；统一入口与工作目录
 约束由 [AGENTS.md](../AGENTS.md) 和仓库工具维护，不从 SDK 安装目录运行项目命令。
@@ -119,14 +126,14 @@ Client 自动用例使用屏障、可控 Future 和 fake clock 组织交错，�
 - 草稿经 Settings/多标签往返保留身份和值；revision 8 提交后继续编辑到 9，旧 ACK 不清新文本、
   route 或附件，只处理该 `DraftStamp + OperationId` 冻结的所有权。
 - A→B→A 选择时旧 open 晚到句柄由原 attempt 关闭；句柄已创建但首 Reset 失败仍须关闭并可
-  retry；在 open、initial、next、control 与 close 的各个 await 交错退出，无死锁或预算提前释放。
+  retry；在 open、首帧、push 消费／ACK、query 与 close 的 await 交错退出，无死锁或预算提前释放。
 - 新内容订阅首基线使用自己的版本域，旧 `lastGood` 只显示；Patch `from` 不匹配仅重同步当前
   连接，`to <= from` 拒收；页查询不推进尾部基线，EOF／错误不形成加载循环。
 - 回执先到、帧先到，以及 Applied 帧已观察且回执版本相等，均按 operation 与 effect point
   结算；版本相等不能推断 `NoChange`。快速 X→Y 中 X 的晚结果不清 Y 的 overlay。
 - `UnknownOutcome`、`AwaitingObservation`、`SyncFailed` 与 `Rejected` 分开；未知非幂等提交
   不自动重放，已受理但未 durable 的附件仍由明确 owner 保留。
-- 两个 Client/AppGraph 不共享业务 Map、句柄或草稿；读取快照与注册观察之间插入更新不漏帧；
+- 两个应用实例不共享业务 Map、句柄或草稿；读取快照与注册观察之间插入更新不漏帧；
   观察者暂停只保留最新显示快照，有序可靠事件不被压成 latest-only。
 - 重复退出共用首次 deadline；opening/active/retiring/unresolved 均计费，关闭失败保留
   unresolved 报告，不能以清空 Map 冒充句柄和任务已回收。
@@ -448,9 +455,9 @@ home 重启后再次读取。取证保存设置页截图、快照、调用库计
 账单、费用或历史，且旧日志不能重新填充旧口径统计。报告记录同输入前后读数及红绿证据，
 改善指测量语义正确，不代表模型生成变快；本地模拟证据不能外推为真实供应商兼容。
 
-Riverpod adapter 还须证明真实 Client 状态事件的细粒度交付：速度变化只通知速度消费者，
+Riverpod／ViewModel adapter 还须证明真实领域状态事件的细粒度交付：速度变化只通知速度消费者，
 不使上下文或稳定状态栏消费者重建；仅 activity、storage 或水位变化不通知速度消费者。
-同 Thread 多个呈现观察共享一个 Client owner 和底层状态订阅，取消观察只释放自身 observer
+同 Thread 多个呈现观察共享同一 Session owner 与各自分域底层订阅，取消观察只释放自身 observer
 与许可，不关闭业务会话或丢失草稿。优先复用既有 adapter／生命周期测试，禁止为速度另建
 绕过 canonical reducer 的事件流。
 
@@ -615,7 +622,7 @@ Dart fake 只证明 Client／组件，纯库原生样板只证明组件路线，
 实时验收必须维护一张覆盖 Thread runtime、turn/activity/storage、timeline、composer、产品
 settings、account usage/model performance/session costs、MCP/LSP/Skills/Profiles、persistence
 queue、updater、recovery 与 lifecycle 的矩阵。每行记录可见字段、生产 owner、事件/快照、Dart
-reducer/read model、资源版本域、selector/projection、Client 逻辑需求与页面观察、隐藏后的资源
+Repository reducer、资源版本域、ViewModel／selector、领域逻辑需求与页面观察、隐藏后的资源
 保留/释放及重进基线、
 lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证据，不能因已有类名推断实时正确。
 
@@ -624,14 +631,14 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 
 | 领域 | 可见字段/页面 | 生产触发与事件 | Dart mirror owner | selector/projection | Client 需求/页面观察 | 验收判据 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Thread runtime | context、total/input/output/cache/reasoning tokens、context window、throughput、model、workflow/run、plan（状态与当前计划文档） | runtime snapshot/update、live usage | Client RuntimeChannel ordered reducer | runtime/status/context/throughput | Client selected Thread owner；Settings 保留 | paced stream 同页多次变化 |
-| Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | turn/activity/storage notifications | 同一 Client RuntimeChannel reducer | turn/activity/storage | Session 逻辑寿命，独立于 account | 阶段变化和保存故障即时可见 |
-| Timeline | 流式正文、旧页、详情、图片/工具预览 | Session tail initial/next、page、detail | Client 有界 tail；展示 lease 的唯一 Message 集合 | Connector/View props | threadId/attempt/展示代次 | History 冻结；显式回实时；迟到回包不污染新代次 |
-| Composer | 文本、attachments、preview、pending/failure | Client DraftStore + admission result | Client canonical draft reducer | composer Connector/View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |
-| Product settings | accounts/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Client SettingsReadModel；catalog 独立版本 | settings/account | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
-| Usage/statistics/costs | quota、model performance、session costs | scoped product topics | Client scoped reducers | usage/statistics/costs | 可见需求由 Client 管理，observer 可取消 | 隐藏取消观察；需求重开取基线 |
-| Resources | MCP/LSP/Skills/Profiles/updater/persistence/recovery | scoped topic/command | Client resource read models | resource projections | Client topic owner/current interest | 连接、失败、恢复即时可见 |
-| Lifecycle | startup/shutdown/subscription diagnostics | startup/exit progress | AppGraph/Client lifecycle | startup/exit views | process owner | cancel/release/no stale frame；unresolved 保留 |
+| Thread runtime | context、tokens、throughput、model、workflow/run、plan | 分域 baseline／typed 变化与独立 live 样本 | 对应领域 Repository reducer | 小型 VM state／值相等 selector | Session owner；Settings 保留 | paced 同页变化；速度不夹带 plan／catalog／正文 |
+| Turn/activity/storage | 阶段、活动摘要、保存水位、失败/取消 | execution feed notifications | execution Repository reducer | turn/activity/storage | Session 逻辑寿命，独立于 observer | 阶段和保存故障即时可见；metrics lag 不重置 execution |
+| Timeline | 流式正文、旧页、详情、图片/工具预览 | Session typed push、page、detail | 内容服务有界 tail；展示 lease 唯一 Message 集合 | AsyncNotifier／Connector／View | threadId/attempt/展示代次 | History 冻结；显式回实时；迟到回包不污染新代次 |
+| Composer | 文本、attachments、preview、pending/failure | Draft／Attachment service + admission result | 草稿领域 reducer；VM 管操作呈现 | Composer VM／Connector／View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |
+| Product settings | accounts/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Configuration／ModelCatalog Repository；独立版本 | Settings VM／Connector／View | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
+| Usage/statistics/costs | quota、model performance、session costs | scoped product topics | 对应 Repository reducers | Usage／Statistics VM 与 selectors | VM 声明可见需求，领域服务拥有在途工作 | 隐藏取消观察；需求重开取基线 |
+| Resources | MCP/LSP/Skills/Profiles/updater/persistence/recovery | scoped topic/command | 对应资源 Repository | 资源 VM／selectors | 资源服务 topic owner/current interest | 连接、失败、恢复即时可见 |
+| Lifecycle | startup/shutdown/subscription diagnostics | startup/exit progress | 应用 lifecycle／资源 owners | 启动／退出呈现 | process owner | cancel/release/no stale frame；unresolved 保留 |
 
 每个领域至少要有一个真实事件到同页 UI 变化的判据，记录变化前后最小脱敏 snapshot、event
 revision、资源 stamp/attempt 与失败恢复结果。不得用延迟等待、切页、重进或前端轮询替代事件证据。
@@ -645,7 +652,7 @@ Driver snapshot 只暴露必要 typed 诊断，不暴露图片 bytes、凭据、
 粘贴回归使用 Driver-only `ClipboardImageReader` override：先断言当前 composer 出现准入 draft
 metadata，再断言同一 draft 的 preview-ready 更新，覆盖删除、失败、提交和并发切换。账号列表
 断言不含 fixture model_id、模型胶囊或 `+N`，同时详情/编辑/选择器仍保留模型数量和能力。
-topic 弹层保持打开时须更新，隐藏后自己的观察释放；最后一个 Client 逻辑需求释放时才关闭该
+topic 弹层保持打开时须更新，隐藏后自己的观察释放；最后一个领域逻辑需求释放时才关闭该
 topic。Settings 隐藏不能关闭当前会话、清草稿或扫描附件。重进原子取得当前值，重开资源再取
 自己的基线并拒绝旧 frame；stream lagged、
 旧 generation、topic closed、应用退出和 provider/preview 失败都必须验证 last-valid、typed
