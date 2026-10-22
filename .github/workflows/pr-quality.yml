@@ -8,6 +8,12 @@ on:
 
 permissions: {}
 
+# A newer commit on the same pull request cancels its superseded run. Branch pushes use
+# their own run id instead, so a queued run is never replaced by a newer one.
+concurrency:
+  group: pr-quality-${{ github.event_name == 'pull_request' && github.ref || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   pr-title:
     name: Conventional PR title
@@ -113,6 +119,34 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
 
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -149,14 +183,46 @@ jobs:
         with:
           toolchain: 1.99.1
 
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build standalone Studio server
         run: cargo build -p pl-studio-server
 
+      # The Studio history tests load the worker from PATH, so install the debug binary
+      # from this checkout into the shared workspace target directory. The install reuses
+      # the debug dependencies built for the server and the tests; release helpers keep
+      # their optimized musl builds.
       - name: Install local execution worker
-        run: cargo install --path code/pl-remote-helper --locked
+        run: cargo install --path code/pl-remote-helper --locked --debug --target-dir "${{ github.workspace }}/target"
 
       - name: Test Studio history persistence
         run: cargo test -p pl-studio-runtime
@@ -183,6 +249,34 @@ jobs:
           flutter-version: 3.47.7
           channel: stable
           cache: true
+
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
