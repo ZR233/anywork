@@ -1,32 +1,20 @@
+//! Physical helper operations; transport/session ownership lives in session.
+use crate::path::{WorkspaceRegistry, io_error, remote_error};
+use crate::transport::Bytes;
+use pl_protocol::remote::*;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-
-use pl_protocol::remote::{
-    REMOTE_OUTPUT_CHUNK_BYTES, REMOTE_OUTPUT_WINDOW, REMOTE_PROTOCOL_VERSION,
-    REMOTE_REQUEST_CAPACITY, RemoteCapability, RemoteCopyRequest, RemoteDirectoryEntry,
-    RemoteDirectoryListing, RemoteError, RemoteErrorCode, RemoteFileStat, RemoteHello,
-    RemoteMessage, RemotePathRequest, RemoteReadRequest, RemoteRemoveRequest, RemoteRenameRequest,
-    RemoteRequest, RemoteResponse, RemoteShellDescriptor, RemoteShellDialect,
-    RemoteWorkspaceOpened,
-};
-use tokio::io::AsyncWrite;
 use tokio::sync::Mutex;
 
-use crate::ServerError;
-use crate::codec::read_frame;
-use crate::path::{WorkspaceRegistry, io_error, remote_error};
-
-mod lease;
-mod outbound;
+mod directories;
 mod process;
-mod read_range;
 mod regular_file;
-mod write;
+mod session;
+mod transfers;
 
-use lease::LeaseReader;
-use outbound::Outbound;
 use process::ProcessRegistry;
+pub use session::{attach_stdio, run_owner, run_stdio};
 
 #[derive(Debug)]
 struct ServerState {
@@ -34,250 +22,19 @@ struct ServerState {
     shell: RemoteShellDescriptor,
 }
 
-pub async fn run_stdio() -> Result<(), ServerError> {
-    let stdin = tokio::io::stdin();
-    let stdout: Box<dyn AsyncWrite + Send + Unpin> = Box::new(tokio::io::stdout());
-    run(stdin, stdout).await
-}
-
-async fn run<R>(reader: R, writer: Box<dyn AsyncWrite + Send + Unpin>) -> Result<(), ServerError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let shell =
-        detect_shell().map_err(|_| io::Error::other("remote helper could not find a shell"))?;
-    run_with_shell(reader, writer, shell).await
-}
-
-async fn run_with_shell<R>(
-    reader: R,
-    writer: Box<dyn AsyncWrite + Send + Unpin>,
-    shell: RemoteShellDescriptor,
-) -> Result<(), ServerError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let (writer, mut writer_task) = Outbound::new(writer);
-    let state = Arc::new(Mutex::new(ServerState {
-        workspaces: WorkspaceRegistry::default(),
-        shell: shell.clone(),
-    }));
-    let (processes, mut registry_task) = ProcessRegistry::new(writer.clone(), shell);
-    let (reader, activity) = LeaseReader::new(reader);
-    let reader = tokio::io::BufReader::with_capacity(
-        REMOTE_OUTPUT_CHUNK_BYTES * REMOTE_OUTPUT_WINDOW,
-        reader,
-    );
-    let outcome = serve_requests(reader, &writer, &state, &processes, activity).await;
-    let registry_outcome = registry_task.wait().await;
-    let write_outcome = writer_task.wait().await.map_err(ServerError::Io);
-    registry_outcome.map_err(ServerError::Cleanup)?;
-    if matches!(outcome, Err(ServerError::Cleanup(_))) {
-        return outcome;
-    }
-    write_outcome.and(outcome)
-}
-
-async fn serve_requests<R>(
-    reader: R,
-    writer: &Outbound,
-    state: &Arc<Mutex<ServerState>>,
-    processes: &ProcessRegistry,
-    activity: tokio::sync::watch::Receiver<tokio::time::Instant>,
-) -> Result<(), ServerError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let mut handlers = tokio::task::JoinSet::new();
-    let outcome = tokio::select! {
-        biased;
-        result = receive_requests(reader, writer, state, processes, &mut handlers) => result,
-        () = lease::wait_expired(activity) => Err(ServerError::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "remote helper heartbeat lease expired",
-        ))),
-    };
-    writer.close();
-    let cleanup = processes.terminate_all().await;
-    let mut handler_failure = None;
-    while let Some(result) = handlers.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            // Once the connection is sealed, ordinary replies have no receiver.
-            // Real writer failures are reported by writer_task below.
-            Ok(Err(ServerError::Io(_))) => {}
-            Ok(Err(error)) => {
-                handler_failure.get_or_insert(error);
-            }
-            Err(error) => {
-                handler_failure.get_or_insert(ServerError::Io(io::Error::other(error)));
-            }
-        }
-    }
-    cleanup.map_err(ServerError::Cleanup)?;
-    outcome?;
-    handler_failure.map_or(Ok(()), Err)
-}
-
-enum RequestEnd {
-    Disconnected,
-    Shutdown,
-}
-
-async fn receive_requests<R>(
-    mut reader: R,
-    writer: &Outbound,
-    state: &Arc<Mutex<ServerState>>,
-    processes: &ProcessRegistry,
-    handlers: &mut tokio::task::JoinSet<Result<(), ServerError>>,
-) -> Result<RequestEnd, ServerError>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let capacity = Arc::new(tokio::sync::Semaphore::new(REMOTE_REQUEST_CAPACITY));
-    loop {
-        while let Some(result) = handlers.try_join_next() {
-            result.map_err(io::Error::other)??;
-        }
-        // read_frame has partial IO state. Keep the same future when a handler completes.
-        let incoming = read_frame(&mut reader);
-        tokio::pin!(incoming);
-        let frame = loop {
-            tokio::select! {
-                frame = &mut incoming => break frame?,
-                error = writer.failed() => return Err(error.into()),
-                result = handlers.join_next(), if !handlers.is_empty() => {
-                    match result {
-                        Some(Ok(result)) => result?,
-                        Some(Err(error)) => return Err(io::Error::other(error).into()),
-                        None => {},
-                    }
-                }
-            }
-        };
-        let Some(frame) = frame else {
-            return Ok(RequestEnd::Disconnected);
-        };
-        let request_id = frame.request_id;
-        let request = match frame.message {
-            RemoteMessage::Request(request) => request,
-            RemoteMessage::Response(_) | RemoteMessage::Event(_) => {
-                write_response(
-                    writer,
-                    request_id,
-                    RemoteResponse::Error(remote_error(
-                        RemoteErrorCode::InvalidRequest,
-                        "helper accepts request messages only",
-                    )),
-                    &[],
-                )
-                .await?;
-                continue;
-            }
-        };
-        if matches!(request, RemoteRequest::Shutdown) {
-            if request_id.is_some() || !frame.body.is_empty() {
-                return Err(
-                    io::Error::new(io::ErrorKind::InvalidData, "invalid shutdown frame").into(),
-                );
-            }
-            return Ok(RequestEnd::Shutdown);
-        }
-        if matches!(request, RemoteRequest::Heartbeat) {
-            if request_id.is_none() || !frame.body.is_empty() {
-                return Err(
-                    io::Error::new(io::ErrorKind::InvalidData, "invalid heartbeat frame").into(),
-                );
-            }
-            write_response(writer, request_id, RemoteResponse::Ack, &[]).await?;
-            continue;
-        }
-        if let RemoteRequest::OutputConsumed { process_id } = request {
-            if request_id.is_some() || !frame.body.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid output acknowledgement",
-                )
-                .into());
-            }
-            processes
-                .output_consumed(process_id)
-                .await
-                .map_err(ServerError::Cleanup)?;
-            continue;
-        }
-        // Control remains reachable even when all ordinary request slots are occupied.
-        if let RemoteRequest::Terminate { process_id } = request {
-            let response = match processes.terminate(&process_id).await {
-                Ok(()) => RemoteResponse::Ack,
-                Err(error) => RemoteResponse::Error(error),
-            };
-            write_response(writer, request_id, response, &[]).await?;
-            continue;
-        }
-        let Ok(admission) = capacity.clone().try_acquire_owned() else {
-            write_response(
-                writer,
-                request_id,
-                RemoteResponse::Error(remote_error(
-                    RemoteErrorCode::InvalidRequest,
-                    "remote request capacity is exhausted",
-                )),
-                &[],
-            )
-            .await?;
-            continue;
-        };
-        let state = state.clone();
-        let processes = processes.clone();
-        let writer = writer.clone();
-        handlers.spawn(async move {
-            let outcome = handle_request(&state, &processes, request, frame.body).await;
-            let (response, body) = match outcome {
-                Ok(outcome) => outcome,
-                Err(error) => (RemoteResponse::Error(error), Vec::new()),
-            };
-            writer
-                .respond(request_id, response, body, admission)
-                .await?;
-            Ok(())
-        });
-    }
-}
-
-async fn write_response(
-    writer: &Outbound,
-    request_id: Option<u64>,
-    response: RemoteResponse,
-    body: &[u8],
-) -> io::Result<()> {
-    writer
-        .write(request_id, RemoteMessage::Response(response), body)
-        .await
-}
-
 async fn handle_request(
     state: &Arc<Mutex<ServerState>>,
     processes: &ProcessRegistry,
     request: RemoteRequest,
-    body: Vec<u8>,
+    body: Bytes,
 ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
     match request {
-        RemoteRequest::Hello { protocol_version } => {
-            let shell = state.lock().await.shell.clone();
-            hello(protocol_version, shell)
-        }
-        RemoteRequest::BrowseDirectories { path } => browse_directories(path).await,
         RemoteRequest::OpenWorkspace { path } => open_workspace(state, &path).await,
         RemoteRequest::CloseWorkspace { workspace_id } => {
             state.lock().await.workspaces.close(&workspace_id)?;
             Ok(ack())
         }
         RemoteRequest::Stat(request) => stat(state, request).await,
-        RemoteRequest::ReadBytes(request) => read_bytes(state, request).await,
-        RemoteRequest::ReadRange(request) => read_range::read(state, request).await,
-        RemoteRequest::WriteFile(request) => write::write(state, request, body).await,
-        RemoteRequest::ListDirectory(request) => list_directory(state, request).await,
         RemoteRequest::CreateDirectory(request) => create_directory(state, request).await,
         RemoteRequest::RemovePath(request) => remove_path(state, request).await,
         RemoteRequest::RenamePath(request) => rename_path(state, request).await,
@@ -302,9 +59,9 @@ async fn handle_request(
             processes.spawn(request, cwd, capture_path).await?;
             Ok((RemoteResponse::ProcessSpawned { process_id }, Vec::new()))
         }
-        RemoteRequest::WriteStdin { process_id } => {
-            processes.write_stdin(&process_id, &body).await?;
-            Ok(ack())
+        RemoteRequest::WriteStdin { process_id, offset } => {
+            let offset = processes.write_stdin(&process_id, offset, &body).await?;
+            Ok((RemoteResponse::InputOffset { offset }, Vec::new()))
         }
         RemoteRequest::CloseStdin { process_id } => {
             processes.close_stdin(&process_id).await?;
@@ -314,42 +71,31 @@ async fn handle_request(
             processes.terminate(&process_id).await?;
             Ok(ack())
         }
-        RemoteRequest::Heartbeat
+        RemoteRequest::Hello { .. }
+        | RemoteRequest::Attach { .. }
+        | RemoteRequest::Configure { .. }
+        | RemoteRequest::Heartbeat
         | RemoteRequest::OutputConsumed { .. }
+        | RemoteRequest::ReleaseProcess { .. }
+        | RemoteRequest::WaitProcess { .. }
+        | RemoteRequest::OperationResult { .. }
+        | RemoteRequest::ReleaseOperation { .. }
+        | RemoteRequest::BrowseDirectories { .. }
+        | RemoteRequest::ListDirectory(_)
+        | RemoteRequest::ContinueDirectory { .. }
+        | RemoteRequest::CloseDirectory { .. }
+        | RemoteRequest::OpenRead(_)
+        | RemoteRequest::ReadFileChunk { .. }
+        | RemoteRequest::BeginWrite(_)
+        | RemoteRequest::WriteChunk { .. }
+        | RemoteRequest::TransferStatus { .. }
+        | RemoteRequest::CommitWrite { .. }
+        | RemoteRequest::CloseTransfer { .. }
         | RemoteRequest::Shutdown => Err(remote_error(
             RemoteErrorCode::InvalidRequest,
-            "connection control must use the control lane",
+            "operation requires its session owner",
         )),
     }
-}
-
-fn hello(
-    protocol_version: u32,
-    shell: RemoteShellDescriptor,
-) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
-    if protocol_version != REMOTE_PROTOCOL_VERSION {
-        return Err(remote_error(
-            RemoteErrorCode::ProtocolMismatch,
-            format!(
-                "protocol version {protocol_version} is incompatible with helper version {REMOTE_PROTOCOL_VERSION}"
-            ),
-        ));
-    }
-    Ok((
-        RemoteResponse::Hello(RemoteHello {
-            protocol_version: REMOTE_PROTOCOL_VERSION,
-            helper_version: env!("CARGO_PKG_VERSION").to_string(),
-            os: std::env::consts::OS.to_string(),
-            architecture: std::env::consts::ARCH.to_string(),
-            capabilities: vec![
-                RemoteCapability::DirectoryBrowse,
-                RemoteCapability::WorkspaceFiles,
-                RemoteCapability::ObservableExec,
-            ],
-            shell,
-        }),
-        Vec::new(),
-    ))
 }
 
 fn detect_shell() -> Result<RemoteShellDescriptor, RemoteError> {
@@ -388,24 +134,16 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-async fn browse_directories(
-    path: Option<String>,
-) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
-    let path = path.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
-    let canonical = tokio::fs::canonicalize(&path)
-        .await
-        .map_err(|error| io_error("failed to browse directory", error))?;
-    let listing = directory_listing(&canonical, None, true).await?;
-    Ok((RemoteResponse::Directories(listing), Vec::new()))
-}
-
 async fn open_workspace(
     state: &Arc<Mutex<ServerState>>,
     path: &str,
 ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
     let canonical_path = WorkspaceRegistry::resolve_workspace_root(path).await?;
-    let (workspace_id, canonical_path) =
-        state.lock().await.workspaces.open_resolved(canonical_path);
+    let (workspace_id, canonical_path) = state
+        .lock()
+        .await
+        .workspaces
+        .open_resolved(canonical_path)?;
     Ok((
         RemoteResponse::WorkspaceOpened(RemoteWorkspaceOpened {
             workspace_id,
@@ -441,66 +179,6 @@ async fn stat(
         }),
         Vec::new(),
     ))
-}
-
-async fn read_bytes(
-    state: &Arc<Mutex<ServerState>>,
-    request: RemoteReadRequest,
-) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
-    if request.max_bytes > pl_protocol::remote::REMOTE_MAX_BODY_BYTES {
-        return Err(remote_error(
-            RemoteErrorCode::InvalidRequest,
-            "read limit exceeds remote body capacity",
-        ));
-    }
-    let workspaces = state.lock().await.workspaces.clone();
-    let path = workspaces
-        .resolve_existing(&request.workspace_id, &request.path)
-        .await?;
-    let file = regular_file::read(path)
-        .await
-        .map_err(|error| io_error("failed to open regular file", error))?;
-    let metadata = file
-        .metadata()
-        .await
-        .map_err(|error| io_error("failed to inspect file", error))?;
-    if !metadata.is_file() {
-        return Err(remote_error(
-            RemoteErrorCode::InvalidRequest,
-            "read path is not a regular file",
-        ));
-    }
-    if metadata.len() > request.max_bytes as u64 {
-        return Err(remote_error(
-            RemoteErrorCode::InvalidRequest,
-            format!("file exceeds {} byte limit", request.max_bytes),
-        ));
-    }
-    let mut bytes = Vec::new();
-    use tokio::io::AsyncReadExt;
-    file.take(request.max_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| io_error("failed to read file", error))?;
-    if bytes.len() > request.max_bytes {
-        return Err(remote_error(
-            RemoteErrorCode::InvalidRequest,
-            "file grew beyond read limit",
-        ));
-    }
-    Ok((RemoteResponse::Bytes, bytes))
-}
-
-async fn list_directory(
-    state: &Arc<Mutex<ServerState>>,
-    request: RemotePathRequest,
-) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
-    let workspaces = state.lock().await.workspaces.clone();
-    let path = workspaces
-        .resolve_existing(&request.workspace_id, &request.path)
-        .await?;
-    let listing = directory_listing(&path, Some(request.path), false).await?;
-    Ok((RemoteResponse::Directory(listing), Vec::new()))
 }
 
 async fn create_directory(
@@ -579,121 +257,15 @@ async fn copy_path(
     let target = workspaces
         .resolve_for_write(&request.workspace_id, &request.target)
         .await?;
-    let metadata = tokio::fs::metadata(&source)
-        .await
-        .map_err(|error| io_error("failed to inspect copy source", error))?;
-    if metadata.is_dir() {
-        if !request.recursive {
-            return Err(remote_error(
-                RemoteErrorCode::InvalidRequest,
-                "directory copy requires recursive=true",
-            ));
-        }
-        copy_directory(&source, &target).await?;
-    } else {
-        if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|error| io_error("failed to create copy directory", error))?;
-        }
-        regular_file::copy(source, target)
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|error| io_error("failed to copy file", error))?;
+            .map_err(|error| io_error("create copy directory", error))?;
     }
+    regular_file::copy(source, target)
+        .await
+        .map_err(|error| io_error("copy file", error))?;
     Ok(ack())
-}
-
-async fn directory_listing(
-    path: &Path,
-    display_path: Option<String>,
-    directories_only: bool,
-) -> Result<RemoteDirectoryListing, RemoteError> {
-    let mut reader = tokio::fs::read_dir(path)
-        .await
-        .map_err(|error| io_error("failed to read directory", error))?;
-    let mut entries = Vec::new();
-    while let Some(entry) = reader
-        .next_entry()
-        .await
-        .map_err(|error| io_error("failed to read directory entry", error))?
-    {
-        let metadata = tokio::fs::symlink_metadata(entry.path())
-            .await
-            .map_err(|error| io_error("failed to inspect directory entry", error))?;
-        let is_symlink = metadata.file_type().is_symlink();
-        let is_directory = if is_symlink {
-            tokio::fs::metadata(entry.path())
-                .await
-                .is_ok_and(|target| target.is_dir())
-        } else {
-            metadata.is_dir()
-        };
-        if directories_only && !is_directory {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let entry_path = display_path
-            .as_deref()
-            .map(|display| {
-                if display.is_empty() || display == "." {
-                    name.clone()
-                } else {
-                    format!("{}/{name}", display.trim_end_matches('/'))
-                }
-            })
-            .unwrap_or_else(|| entry.path().to_string_lossy().into_owned());
-        entries.push(RemoteDirectoryEntry {
-            name,
-            path: entry_path,
-            is_directory,
-            is_symlink,
-        });
-    }
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(RemoteDirectoryListing {
-        path: display_path.unwrap_or_else(|| path.to_string_lossy().into_owned()),
-        parent: path
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned()),
-        entries,
-    })
-}
-
-async fn copy_directory(source: &Path, target: &Path) -> Result<(), RemoteError> {
-    let mut stack = vec![(source.to_path_buf(), target.to_path_buf())];
-    while let Some((source_dir, target_dir)) = stack.pop() {
-        tokio::fs::create_dir_all(&target_dir)
-            .await
-            .map_err(|error| io_error("failed to create copied directory", error))?;
-        let mut reader = tokio::fs::read_dir(&source_dir)
-            .await
-            .map_err(|error| io_error("failed to read copied directory", error))?;
-        while let Some(entry) = reader
-            .next_entry()
-            .await
-            .map_err(|error| io_error("failed to read copied entry", error))?
-        {
-            let source_path = entry.path();
-            let target_path = target_dir.join(entry.file_name());
-            let metadata = tokio::fs::symlink_metadata(&source_path)
-                .await
-                .map_err(|error| io_error("failed to inspect copied entry", error))?;
-            if metadata.file_type().is_symlink() {
-                return Err(remote_error(
-                    RemoteErrorCode::WorkspaceEscape,
-                    "copying symbolic links is not allowed",
-                ));
-            }
-            if metadata.is_dir() {
-                stack.push((source_path, target_path));
-            } else if metadata.is_file() {
-                regular_file::copy(source_path, target_path)
-                    .await
-                    .map_err(|error| io_error("failed to copy entry", error))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn ack() -> (RemoteResponse, Vec<u8>) {

@@ -47,6 +47,11 @@ impl CommandCancellation {
         self.0.cancel();
     }
 
+    /// Whether the owner has already requested cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
     /// Suspends until cancellation is requested; cancelling this wait does not clear it.
     pub async fn cancelled(&self) {
         self.0.cancelled().await;
@@ -249,6 +254,11 @@ pub struct CommandOutputSizes {
 /// 本地、容器或远程 workspace，并在结束时发布完整输出与 artifact 元数据。
 pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
     type Error: std::fmt::Display + Send + 'static;
+
+    /// Current host allocation; None asks the manager to sample platform resources.
+    fn process_capacity(&self) -> Option<usize> {
+        None
+    }
 
     fn resolve_cwd(
         &self,
@@ -501,9 +511,8 @@ impl CommandBackend for LocalCommandBackend {
             CommandCaptureStream::Stdout => target.stdout_capture_file().is_some(),
             CommandCaptureStream::Stderr => target.stderr_capture_file().is_some(),
         };
-        (chunk.len() as u64) * (1 + u64::from(stream_copy))
-            + b"=== STDOUT ===\n".len() as u64
-            + u64::from(!chunk.ends_with(b"\n"))
+        pl_remote_helper::capture::chunk_cost(capture_prefix(stream), chunk, true)
+            + (chunk.len() as u64) * u64::from(stream_copy)
     }
 
     async fn resolve_cwd(
@@ -604,7 +613,7 @@ impl CommandBackend for LocalCommandBackend {
         working_directory: &str,
         capture_limit_bytes: u64,
     ) -> Result<u64> {
-        let header = format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n");
+        let header = capture_plan(command, working_directory, capture_limit_bytes).header;
         if header.len() as u64 > capture_limit_bytes {
             return Err(command_error(
                 "exec",
@@ -639,23 +648,11 @@ impl CommandBackend for LocalCommandBackend {
             .map_err(|error| {
                 command_error("exec", format!("failed to open output file: {error}"))
             })?;
-        let label = match stream {
-            CommandCaptureStream::Stdout => "STDOUT",
-            CommandCaptureStream::Stderr => "STDERR",
-        };
-        file.write_all(format!("=== {label} ===\n").as_bytes())
+        pl_remote_helper::capture::write_chunk(&mut file, capture_prefix(stream), chunk, true)
             .await
             .map_err(|error| {
-                command_error("exec", format!("failed to write output label: {error}"))
+                command_error("exec", format!("failed to append output chunk: {error}"))
             })?;
-        file.write_all(chunk).await.map_err(|error| {
-            command_error("exec", format!("failed to write output chunk: {error}"))
-        })?;
-        if !chunk.ends_with(b"\n") {
-            file.write_all(b"\n").await.map_err(|error| {
-                command_error("exec", format!("failed to finish output chunk: {error}"))
-            })?;
-        }
         if let Some(stream_file) = match stream {
             CommandCaptureStream::Stdout => target.stdout_capture_file(),
             CommandCaptureStream::Stderr => target.stderr_capture_file(),
@@ -722,23 +719,11 @@ impl CommandBackend for LocalCommandBackend {
                     format!("failed to reopen output file for repair: {error}"),
                 )
             })?;
-        let label = match stream {
-            CommandCaptureStream::Stdout => "STDOUT",
-            CommandCaptureStream::Stderr => "STDERR",
-        };
-        file.write_all(format!("=== {label} ===\n").as_bytes())
+        pl_remote_helper::capture::write_chunk(&mut file, capture_prefix(stream), chunk, true)
             .await
             .map_err(|error| {
-                command_error("exec", format!("failed to write output label: {error}"))
+                command_error("exec", format!("failed to repair output chunk: {error}"))
             })?;
-        file.write_all(chunk).await.map_err(|error| {
-            command_error("exec", format!("failed to write output chunk: {error}"))
-        })?;
-        if !chunk.ends_with(b"\n") {
-            file.write_all(b"\n").await.map_err(|error| {
-                command_error("exec", format!("failed to finish output chunk: {error}"))
-            })?;
-        }
         file.flush().await.map_err(|error| {
             command_error("exec", format!("failed to flush command output: {error}"))
         })?;
@@ -786,4 +771,27 @@ async fn prepare_local_capture_layout(
         crate::workspace_file::LocalWorkspaceFileBackend::new(workspace_root.to_path_buf(), false)
             .await?;
     crate::workspace::prepare_command_capture(&backend, model_file).await
+}
+
+/// Host-owned capture policy, used by both local and remote physical writers.
+pub(crate) fn capture_plan(
+    command: &str,
+    working_directory: &str,
+    limit_bytes: u64,
+) -> pl_protocol::remote::RemoteCapturePlan {
+    pl_protocol::remote::RemoteCapturePlan {
+        header: format!("=== COMMAND ===\n{command}\n\n=== CWD ===\n{working_directory}\n\n"),
+        stdout_prefix: String::from_utf8_lossy(capture_prefix(CommandCaptureStream::Stdout))
+            .into_owned(),
+        stderr_prefix: String::from_utf8_lossy(capture_prefix(CommandCaptureStream::Stderr))
+            .into_owned(),
+        terminate_line: true,
+        limit_bytes,
+    }
+}
+fn capture_prefix(stream: CommandCaptureStream) -> &'static [u8] {
+    match stream {
+        CommandCaptureStream::Stdout => b"=== STDOUT ===\n",
+        CommandCaptureStream::Stderr => b"=== STDERR ===\n",
+    }
 }

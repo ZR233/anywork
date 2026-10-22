@@ -42,9 +42,19 @@ Future<SshConnectionSnapshotDto> reconnectSshServer({required String alias}) =>
 Future<RemoteDirectoryListingDto> browseRemoteDirectories({
   required String alias,
   String? path,
+  String? cursor,
 }) => RustLib.instance.api.crateApiStudioHandlersSshBrowseRemoteDirectories(
   alias: alias,
   path: path,
+  cursor: cursor,
+);
+
+Future<void> closeRemoteDirectory({
+  required String alias,
+  required String cursor,
+}) => RustLib.instance.api.crateApiStudioHandlersSshCloseRemoteDirectory(
+  alias: alias,
+  cursor: cursor,
 );
 
 Future<ProjectDto> openRemoteProject({

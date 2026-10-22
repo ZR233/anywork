@@ -1,344 +1,460 @@
-//! Explicit, deterministic transport acceptance; not part of the automatic test gate.
+//! Real HTTP/2 helper acceptance. Explicit opt-in, outside the automated library test gate.
+#[path = "support/remote_receipts.rs"]
+mod receipts;
+#[path = "support/remote.rs"]
+mod support;
 use anyhow::{Context, ensure};
-use pl_protocol::remote::{
-    RemoteCapture, RemoteError, RemoteErrorCode, RemoteEvent, RemoteOutputStream,
-    RemoteProcessExit, RemoteProcessOutput, RemoteSpawnRequest,
+use pl_protocol::remote::*;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
 };
-use pl_protocol::remote::{
-    RemoteFrameHeader, RemoteMessage, RemotePathRequest, RemoteRequest, RemoteResponse,
-};
-use pl_tool::remote::RemoteClient;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-
-async fn send(
-    stream: &mut DuplexStream,
-    request_id: Option<u64>,
-    message: RemoteMessage,
-    body: &[u8],
-) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec(&RemoteFrameHeader {
-        request_id,
-        message,
-        body_len: body.len(),
-    })?;
-    stream.write_u32(bytes.len().try_into()?).await?;
-    stream.write_all(&bytes).await?;
-    stream.write_all(body).await?;
-    stream.flush().await?;
-    Ok(())
-}
-
-fn spawn_request() -> RemoteSpawnRequest {
-    RemoteSpawnRequest {
-        process_id: "controlled".into(),
-        workspace_id: "acceptance".into(),
-        command: "synthetic".into(),
-        cwd: ".".into(),
-        environment: Default::default(),
-        capture: RemoteCapture::None,
-    }
-}
-async fn spawned(peer: &mut DuplexStream, id: Option<u64>) -> anyhow::Result<()> {
-    send(
-        peer,
-        id,
-        RemoteMessage::Response(RemoteResponse::ProcessSpawned {
-            process_id: "controlled".into(),
-        }),
-        &[],
-    )
-    .await
-}
-async fn exited(peer: &mut DuplexStream) -> anyhow::Result<()> {
-    send(
-        peer,
-        None,
-        RemoteMessage::Event(RemoteEvent::ProcessExit(RemoteProcessExit {
-            process_id: "controlled".into(),
-            exit_code: Some(0),
-            signal: None,
-            failure: None,
-            capture: None,
-        })),
-        &[],
-    )
-    .await
-}
-
-async fn process_lifetime() -> anyhow::Result<()> {
-    // Hold startup after actual submission, cancel the caller, and prove Terminate cannot overtake it.
-    let (transport, mut peer) = tokio::io::duplex(256 * 1024);
-    let (reader, writer) = tokio::io::split(transport);
-    let client = RemoteClient::from_streams(reader, writer);
-    let mut opening = Box::pin(client.spawn_process(spawn_request()));
-    ensure!(futures::poll!(&mut opening).is_pending());
-    let start = receive(&mut peer).await?;
-    ensure!(matches!(
-        start.message,
-        RemoteMessage::Request(RemoteRequest::Spawn(_))
-    ));
-    drop(opening);
-    ensure!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), peer.read_u8())
-            .await
-            .is_err(),
-        "termination overtook unacknowledged startup"
-    );
-    spawned(&mut peer, start.request_id).await?;
-    loop {
-        let frame = receive(&mut peer).await?;
-        acknowledge(&mut peer, frame.request_id).await?;
-        if matches!(
-            frame.message,
-            RemoteMessage::Request(RemoteRequest::Terminate { .. })
-        ) {
-            break;
-        }
-    }
-    exited(&mut peer).await?;
-    client.close().await?;
-    println!(
-        "startup: submission -> caller cancellation -> startup result -> terminate -> exit PASS"
-    );
-
-    // Input rejection and exit are delivered together, before the input task can resume.
-    let (transport, mut peer) = tokio::io::duplex(256 * 1024);
-    let (reader, writer) = tokio::io::split(transport);
-    let client = RemoteClient::from_streams(reader, writer);
-    let opening = client.spawn_process(spawn_request());
-    tokio::pin!(opening);
-    let (poll, start) = tokio::join!(
-        async {
-            ensure!(futures::poll!(&mut opening).is_pending());
-            anyhow::Ok(())
-        },
-        receive(&mut peer)
-    );
-    poll?;
-    let start = start?;
-    spawned(&mut peer, start.request_id).await?;
-    let mut command = opening.await?;
-    command.take_stdin().unwrap().write_all(b"input").await?;
-    let input = receive(&mut peer).await?;
-    send(
-        &mut peer,
-        input.request_id,
-        RemoteMessage::Response(RemoteResponse::Error(RemoteError {
-            code: RemoteErrorCode::Io,
-            message: "synthetic input rejected".into(),
-        })),
-        &[],
-    )
-    .await?;
-    exited(&mut peer).await?;
-    let peer_task = tokio::spawn(async move {
-        while let Ok(frame) = receive(&mut peer).await {
-            if frame.request_id.is_some() {
-                acknowledge(&mut peer, frame.request_id).await?;
-            }
-        }
-        anyhow::Ok(())
-    });
-    let error = command
-        .wait()
-        .await
-        .expect_err("stdin error was swallowed by exit cleanup");
-    ensure!(
-        error.contains("synthetic input rejected"),
-        "original stdin failure lost: {error}"
-    );
-    client.close().await?;
-    peer_task.await??;
-    println!("input: rejection survives immediate exit and cleanup PASS");
-
-    // Exit can precede local output drain. Dropping the external command must still release it.
-    let (transport, mut peer) = tokio::io::duplex(256 * 1024);
-    let (reader, writer) = tokio::io::split(transport);
-    let client = RemoteClient::from_streams(reader, writer);
-    let mut opening = Box::pin(client.spawn_process(spawn_request()));
-    ensure!(futures::poll!(&mut opening).is_pending());
-    let start = receive(&mut peer).await?;
-    spawned(&mut peer, start.request_id).await?;
-    let mut command = opening.await?;
-    let _unread = command.take_stdout();
-    for sequence in 1..=8 {
-        send(
-            &mut peer,
-            None,
-            RemoteMessage::Event(RemoteEvent::ProcessOutput(RemoteProcessOutput {
-                process_id: "controlled".into(),
-                sequence,
-                stream: RemoteOutputStream::Stdout,
-            })),
-            &[b'x'; 8192],
-        )
-        .await?;
-    }
-    // Observe credit before supplying more than the consumer's 64 KiB buffer.
-    loop {
-        if matches!(
-            receive(&mut peer).await?.message,
-            RemoteMessage::Request(RemoteRequest::OutputConsumed { .. })
-        ) {
-            break;
-        }
-    }
-    send(
-        &mut peer,
-        None,
-        RemoteMessage::Event(RemoteEvent::ProcessOutput(RemoteProcessOutput {
-            process_id: "controlled".into(),
-            sequence: 9,
-            stream: RemoteOutputStream::Stdout,
-        })),
-        &[b'x'; 8192],
-    )
-    .await?;
-    exited(&mut peer).await?;
-    let peer_task = tokio::spawn(async move {
-        while let Ok(frame) = receive(&mut peer).await {
-            if frame.request_id.is_some() {
-                acknowledge(&mut peer, frame.request_id).await?;
-            }
-        }
-        anyhow::Ok(())
-    });
-    command.cancellation().cancel();
-    command.wait().await.map_err(anyhow::Error::msg)?;
-    drop(command);
-    drop(client);
-    peer_task.await??;
-    println!("output: unread stream after exit, dropped external owners and transport EOF PASS");
-
-    let (transport, mut peer) = tokio::io::duplex(256 * 1024);
-    let (reader, writer) = tokio::io::split(transport);
-    let client = RemoteClient::from_streams(reader, writer);
-    let mut opening = Box::pin(client.spawn_process(spawn_request()));
-    ensure!(futures::poll!(&mut opening).is_pending());
-    let start = receive(&mut peer).await?;
-    spawned(&mut peer, start.request_id).await?;
-    let mut command = opening.await?;
-    drop(command.take_stdin());
-    let input = receive(&mut peer).await?;
-    ensure!(matches!(
-        input.message,
-        RemoteMessage::Request(RemoteRequest::CloseStdin { .. })
-    ));
-    // Deliberately omit the stdin acknowledgement; exit must release its waiter.
-    exited(&mut peer).await?;
-    drop(client);
-    command.wait().await.map_err(anyhow::Error::msg)?;
-    ensure!(
-        peer.read_u8().await.is_err(),
-        "internal process tasks retained the external connection lifetime"
-    );
-    println!("owners: unacknowledged stdin, process exit and final external owner release PASS");
-    Ok(())
-}
-
-async fn receive(stream: &mut DuplexStream) -> anyhow::Result<RemoteFrameHeader> {
-    let length = stream.read_u32().await? as usize;
-    ensure!(length <= pl_protocol::remote::REMOTE_MAX_HEADER_BYTES);
-    let mut bytes = vec![0; length];
-    stream.read_exact(&mut bytes).await?;
-    let header: RemoteFrameHeader = serde_json::from_slice(&bytes)?;
-    ensure!(header.body_len <= pl_protocol::remote::REMOTE_MAX_BODY_BYTES);
-    let mut body = vec![0; header.body_len];
-    stream.read_exact(&mut body).await?;
-    Ok(header)
-}
-
-async fn acknowledge(stream: &mut DuplexStream, request_id: Option<u64>) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec(&RemoteFrameHeader {
-        request_id,
-        message: RemoteMessage::Response(RemoteResponse::Ack),
-        body_len: 0,
-    })?;
-    stream.write_u32(bytes.len().try_into()?).await?;
-    stream.write_all(&bytes).await?;
-    stream.flush().await?;
-    Ok(())
-}
-
-fn ordinary() -> RemoteRequest {
-    RemoteRequest::Stat(RemotePathRequest {
-        workspace_id: "acceptance".into(),
-        path: ".".into(),
-    })
-}
-
-async fn capacity() -> anyhow::Result<()> {
-    let (transport, mut peer) = tokio::io::duplex(64 * 1024);
-    let (reader, writer) = tokio::io::split(transport);
-    let client = RemoteClient::from_streams(reader, writer);
-    let (full, filled) = tokio::sync::oneshot::channel();
-    let (release, released) = tokio::sync::oneshot::channel();
-    let peer_task = tokio::spawn(async move {
-        let mut pending = Vec::new();
-        for _ in 0..32 {
-            pending.push(receive(&mut peer).await?.request_id);
-        }
-        full.send(())
-            .map_err(|_| anyhow::anyhow!("acceptance owner exited"))?;
-        let heartbeat = receive(&mut peer).await?;
-        ensure!(
-            matches!(
-                heartbeat.message,
-                RemoteMessage::Request(RemoteRequest::Heartbeat)
-            ),
-            "ordinary request exceeded capacity"
-        );
-        acknowledge(&mut peer, heartbeat.request_id).await?;
-        released.await?;
-        acknowledge(&mut peer, pending.remove(0)).await?;
-        pending.push(receive(&mut peer).await?.request_id);
-        for request in pending {
-            acknowledge(&mut peer, request).await?;
-        }
-        let mut byte = [0];
-        ensure!(peer.read(&mut byte).await? == 0, "transport did not close");
-        anyhow::Ok(())
-    });
-    let mut requests = tokio::task::JoinSet::new();
-    for _ in 0..32 {
-        let client = client.clone();
-        requests.spawn(async move { client.request(ordinary(), &[]).await });
-    }
-    filled.await?;
-    let mut cancelled = Box::pin(client.request(ordinary(), &[]));
-    ensure!(
-        futures::poll!(&mut cancelled).is_pending(),
-        "full transport rejected a request instead of waiting"
-    );
-    drop(cancelled);
-    let mut next = Box::pin(client.request(ordinary(), &[]));
-    ensure!(
-        futures::poll!(&mut next).is_pending(),
-        "33rd request was not waiting"
-    );
-    client.request(RemoteRequest::Heartbeat, &[]).await?;
-    release
-        .send(())
-        .map_err(|_| anyhow::anyhow!("peer exited"))?;
-    next.await?;
-    while let Some(result) = requests.join_next().await {
-        result??;
-    }
-    client.close().await?;
-    peer_task.await??;
-    println!(
-        "capacity: 32 outstanding, cancellable 33rd, independent heartbeat, response release and close PASS"
-    );
-    Ok(())
-}
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tokio::time::timeout(std::time::Duration::from_secs(15), capacity())
-        .await
-        .context("transport acceptance did not settle")??;
-    tokio::time::timeout(std::time::Duration::from_secs(15), process_lifetime())
-        .await
-        .context("process acceptance did not settle")??;
+    let executable = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .context("usage: remote_resource_validation HELPER [OPERATIONS]")?;
+    let operations = std::env::args()
+        .nth(2)
+        .map(|v| v.parse())
+        .transpose()?
+        .unwrap_or(10_000);
+    ensure!(operations > 0, "operation count must be positive");
+    verify_budget_progress().await?;
+    receipts::verify(&executable).await?;
+    let mut helper = support::Helper::start(&executable).await?;
+    let outcome = exercise(&mut helper, operations).await;
+    let close = helper.close().await;
+    outcome?;
+    close?;
+    support::Helper::start(&executable)
+        .await?
+        .close_during_attachment()
+        .await?;
+    #[cfg(target_os = "linux")]
+    {
+        let expiring = support::Helper::start(&executable).await?;
+        let mut command = expiring
+            .command("lease-owned", "printf 'ready\\n'; sleep 120")
+            .await?;
+        let mut output = BufReader::new(command.take_stdout().context("lease stdout")?);
+        let mut ready = String::new();
+        output.read_line(&mut ready).await?;
+        ensure!(ready == "ready\n");
+        expiring.expire().await?;
+        ensure!(
+            !matches!(command.wait().await, Ok(exit) if exit.exit_code == Some(0)),
+            "expired physical command was reported successful"
+        );
+    }
+    println!("REMOTE_RESOURCE_ACCEPTANCE=PASS");
+    Ok(())
+}
+async fn exercise(helper: &mut support::Helper, operations: usize) -> anyhow::Result<()> {
+    let initial = support::heartbeat(&helper.client).await?;
+    let baseline = support::resources(helper.owner_pid);
+    let host_baseline = support::resources(std::process::id());
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"baseline", "resources":baseline, "host":host_baseline, "helper":initial})
+    );
+    // Reproduce the failed-directory request while an independently owned command remains alive.
+    for index in 0..1000 {
+        std::fs::write(
+            helper
+                .root
+                .path()
+                .join(format!("{index:04}-{}", "x".repeat(180))),
+            b"fixture",
+        )?;
+    }
+    let mut gated = helper
+        .command(
+            "gated",
+            "printf 'ready\\n'; IFS= read -r value; printf 'received:%s\\n' \"$value\"",
+        )
+        .await?;
+    let mut stdin = gated.take_stdin().context("stdin")?;
+    let mut output = BufReader::new(gated.take_stdout().context("stdout")?);
+    let mut ready = String::new();
+    tokio::time::timeout(Duration::from_secs(10), output.read_line(&mut ready)).await??;
+    ensure!(ready == "ready\n");
+    let mut listed = 0;
+    let mut request = RemoteRequest::ListDirectory(helper.target("."));
+    loop {
+        let reply = helper.client.request(request, &[]).await?;
+        let RemoteResponse::Directory(page) = reply.response else {
+            anyhow::bail!("expected directory page");
+        };
+        listed += page.entries.len();
+        match page.next_cursor {
+            Some(cursor) => request = RemoteRequest::ContinueDirectory { cursor },
+            None => break,
+        }
+    }
+    ensure!(listed == 1000);
+    support::heartbeat(&helper.client).await?;
+    helper
+        .client
+        .request(RemoteRequest::Stat(helper.target(".")), &[])
+        .await?;
+    helper.reconnect().await?;
+    stdin.write_all(b"once\n").await?;
+    drop(stdin);
+    let (read, exit) = tokio::join!(
+        async {
+            let mut text = String::new();
+            output.read_to_string(&mut text).await?;
+            anyhow::Ok(text)
+        },
+        gated.wait()
+    );
+    ensure!(read? == "received:once\n");
+    ensure!(exit.map_err(anyhow::Error::msg)?.exit_code == Some(0));
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"directory-and-command-reattach", "entries":listed, "sameHelper":true, "duplicateOutput":false})
+    );
+
+    // Occupy one command's output while unrelated commands and controls continue.
+    let mut slow = helper
+        .command(
+            "slow-output",
+            "printf 'started\\n'; head -c 8000000 /dev/zero",
+        )
+        .await?;
+    drop(slow.take_stdin());
+    let mut blocked_output = slow.take_stdout().context("slow stdout")?;
+    let mut marker = [0; 8];
+    blocked_output.read_exact(&mut marker).await?;
+    ensure!(&marker == b"started\n");
+    let mut silent = helper.command("silent", "sleep 120").await?;
+    let mut input_blocked = helper
+        .command("blocked-input", "printf 'ready\\n'; sleep 120")
+        .await?;
+    let mut input_ready = BufReader::new(
+        input_blocked
+            .take_stdout()
+            .context("blocked stdin stdout")?,
+    );
+    let mut marker = String::new();
+    input_ready.read_line(&mut marker).await?;
+    ensure!(marker == "ready\n");
+    let mut blocked_stdin = input_blocked.take_stdin().context("blocked stdin")?;
+    let input_bytes = vec![0x5a; 4 * 1024 * 1024];
+    let pending_input = blocked_stdin.write_all(&input_bytes);
+    tokio::pin!(pending_input);
+    ensure!(
+        futures::poll!(&mut pending_input).is_pending(),
+        "input fixture did not reach backpressure"
+    );
+    let control_started = Instant::now();
+    support::heartbeat(&helper.client).await?;
+    let heartbeat_ms = control_started.elapsed().as_secs_f64() * 1000.0;
+    let stat_started = Instant::now();
+    helper
+        .client
+        .request(RemoteRequest::Stat(helper.target(".")), &[])
+        .await?;
+    let stat_ms = stat_started.elapsed().as_secs_f64() * 1000.0;
+    let quick_started = Instant::now();
+    let (quick, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        support::drain(helper.command("quick", "printf quick").await?),
+    )
+    .await??;
+    ensure!(quick == b"quick");
+    let quick_ms = quick_started.elapsed().as_secs_f64() * 1000.0;
+    let cancellation_started = Instant::now();
+    input_blocked.cancellation().cancel();
+    silent.cancellation().cancel();
+    let (input_result, blocked_exit, silent_exit) =
+        tokio::join!(pending_input, input_blocked.wait(), silent.wait());
+    ensure!(
+        input_result.is_err(),
+        "cancelled blocked input was reported fully written"
+    );
+    blocked_exit.map_err(anyhow::Error::msg)?;
+    silent_exit.map_err(anyhow::Error::msg)?;
+    slow.cancellation().cancel();
+    let mut discarded_output = tokio::io::sink();
+    let (drained, exit) = tokio::join!(
+        tokio::io::copy(&mut blocked_output, &mut discarded_output),
+        slow.wait()
+    );
+    drained?;
+    exit.map_err(anyhow::Error::msg)?;
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"slow-consumer-isolation", "heartbeatMs":heartbeat_ms,
+        "statMs":stat_ms, "quickCommandMs":quick_ms, "cancellationAndDrainMs":cancellation_started.elapsed().as_secs_f64()*1000.0,
+        "controlAndCancellationMs":control_started.elapsed().as_secs_f64()*1000.0})
+    );
+
+    // One immutable binary source is transferred in ranges, with a real transport replacement.
+    let payload = (0..(32 * 1024 * 1024 + 17))
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    support::write_file(&helper.client, helper.target("transfer.bin"), &payload).await?;
+    let opened = helper
+        .client
+        .request(RemoteRequest::OpenRead(helper.target("transfer.bin")), &[])
+        .await?;
+    let RemoteResponse::Transfer(file) = opened.response else {
+        anyhow::bail!("expected read handle");
+    };
+    let mut offset = 0;
+    let mut digest = sha2::Sha256::new();
+    use sha2::Digest;
+    let transfer_started = Instant::now();
+    let mut reattached = false;
+    let mut recovery_ms = 0.0;
+    while offset < payload.len() {
+        if !reattached && offset >= payload.len() / 2 {
+            let recovery_started = Instant::now();
+            helper.reconnect().await?;
+            recovery_ms = recovery_started.elapsed().as_secs_f64() * 1000.0;
+            reattached = true;
+        }
+        let reply = helper
+            .client
+            .request(
+                RemoteRequest::ReadFileChunk {
+                    transfer_id: file.transfer_id.clone(),
+                    offset: offset as u64,
+                    max_bytes: helper.client.fragment_bytes(),
+                },
+                &[],
+            )
+            .await?;
+        ensure!(!reply.body.is_empty());
+        ensure!(reply.body.as_ref() == &payload[offset..offset + reply.body.len()]);
+        digest.update(&reply.body);
+        offset += reply.body.len();
+    }
+    ensure!(Some(hex::encode(digest.finalize())) == file.sha256);
+    helper
+        .client
+        .request(
+            RemoteRequest::CloseTransfer {
+                transfer_id: file.transfer_id,
+            },
+            &[],
+        )
+        .await?;
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"binary-reattach", "bytes":offset, "seconds":transfer_started.elapsed().as_secs_f64(), "recoveryMs":recovery_ms, "sha256Match":true})
+    );
+    drop(payload);
+
+    // Same binary, different grants; no rebuilding or editing capacities between runs.
+    let before = support::heartbeat(&helper.client).await?.allocation;
+    let mut smaller = before;
+    smaller.resident_bytes /= 2;
+    smaller.ordinary_operations = (smaller.ordinary_operations / 2).max(1);
+    smaller.connection_window /= 2;
+    smaller.stream_window = smaller.stream_window.min(smaller.connection_window / 3);
+    helper
+        .client
+        .request(
+            RemoteRequest::Configure {
+                allocation: smaller,
+            },
+            &[],
+        )
+        .await?;
+    ensure!(
+        support::heartbeat(&helper.client)
+            .await?
+            .allocation
+            .resident_bytes
+            <= smaller.resident_bytes
+    );
+    let (output, _) =
+        support::drain(helper.command("under-pressure", "printf progress").await?).await?;
+    ensure!(output == b"progress");
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"resource-shrink", "before":before,
+        "helper":support::heartbeat(&helper.client).await?, "resources":support::resources(helper.owner_pid),
+        "host":support::resources(std::process::id())})
+    );
+    helper
+        .client
+        .request(RemoteRequest::Configure { allocation: before }, &[])
+        .await?;
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"resource-restore", "helper":support::heartbeat(&helper.client).await?})
+    );
+
+    for parallelism in [1_usize, 32, 128, 512] {
+        use futures::{StreamExt, stream};
+        let mut samples = stream::iter(0..operations)
+            .map(|_| {
+                let target = helper.target("transfer.bin");
+                let client = helper.client.clone();
+                async move {
+                    let start = Instant::now();
+                    let reply = client.request(RemoteRequest::Stat(target), &[]).await?;
+                    Ok::<_, pl_tool::remote::RemoteClientError>((
+                        start.elapsed().as_secs_f64() * 1000.0,
+                        reply.timing,
+                    ))
+                }
+            })
+            .buffer_unordered(parallelism);
+        let start = Instant::now();
+        let mut durations = Vec::new();
+        let mut phases = [
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ];
+        while let Some(result) = samples.next().await {
+            let (elapsed, timing) = result?;
+            durations.push(elapsed);
+            for (phase, value) in phases.iter_mut().zip([
+                timing.admission_wait_micros,
+                timing.remote.admission_wait_micros,
+                timing.remote.execution_micros,
+                timing.remote.filesystem_micros,
+                timing.remote.transfer_backpressure_micros,
+                timing.cleanup_micros,
+            ]) {
+                phase.push(value);
+            }
+        }
+        for phase in &mut phases {
+            phase.sort_unstable();
+        }
+        let phases = ["hostAdmission", "helperAdmission", "execution", "filesystem", "flowControlWait", "receiptRelease"].into_iter()
+            .zip(phases).map(|(name, values)| (name.to_owned(), serde_json::json!({"p50Us":values[(values.len()-1)/2], "p95Us":values[(values.len()-1)*95/100], "p99Us":values[(values.len()-1)*99/100]})))
+            .collect::<serde_json::Map<_, _>>();
+        durations.sort_by(f64::total_cmp);
+        let percentile =
+            |percent: usize| durations[(durations.len().saturating_sub(1) * percent) / 100];
+        println!(
+            "{}",
+            serde_json::json!({"scenario":"concurrent-stat", "parallelism":parallelism, "operations":operations,
+            "seconds":start.elapsed().as_secs_f64(), "p50Ms":percentile(50), "p95Ms":percentile(95), "p99Ms":percentile(99), "phaseDurations":phases,
+            "resources":support::resources(helper.owner_pid), "host":support::resources(std::process::id()), "helper":support::heartbeat(&helper.client).await?})
+        );
+    }
+    for index in 0..1000 {
+        let path = helper.root.path().join(format!("workspace-{index}"));
+        std::fs::create_dir(&path)?;
+        let opened = helper
+            .client
+            .request(
+                RemoteRequest::OpenWorkspace {
+                    path: path.to_string_lossy().into_owned(),
+                },
+                &[],
+            )
+            .await?;
+        let RemoteResponse::WorkspaceOpened(opened) = opened.response else {
+            anyhow::bail!("expected workspace");
+        };
+        helper
+            .client
+            .request(
+                RemoteRequest::CloseWorkspace {
+                    workspace_id: opened.workspace_id,
+                },
+                &[],
+            )
+            .await?;
+    }
+    let idle_before = support::resources(helper.owner_pid);
+    let queries_before = support::heartbeat(&helper.client).await?.operation_queries;
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let final_state = support::heartbeat(&helper.client).await?;
+    ensure!(
+        final_state.operation_queries == queries_before,
+        "normal idle waiting polled operation status"
+    );
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"idle", "seconds":15, "before":idle_before,
+        "after":support::resources(helper.owner_pid), "businessStatusQueries":final_state.operation_queries-queries_before})
+    );
+    ensure!(
+        final_state.workspaces == 1
+            && final_state.processes == 0
+            && final_state.cursors == 0
+            && final_state.transfers == 0
+            && final_state.retained_operations == 0,
+        "resources retained: {final_state:?}"
+    );
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"resource-release", "baseline":baseline, "final":support::resources(helper.owner_pid),
+        "hostBaseline":host_baseline, "hostFinal":support::resources(std::process::id()), "helper":final_state})
+    );
+    Ok(())
+}
+
+async fn verify_budget_progress() -> anyhow::Result<()> {
+    use pl_remote_helper::budget::{FRAME_BYTES, ResourceBudget, ResourcePolicy};
+    use tokio_util::sync::CancellationToken;
+    let allocation = ResourcePolicy {
+        available_memory_divisor: 16,
+        resident_ceiling: Some(FRAME_BYTES * 64),
+    }
+    .allocation()?;
+    let budget = ResourceBudget::new(allocation)?;
+    let stop = CancellationToken::new();
+    let occupied = budget
+        .try_reserve(allocation.resident_bytes / 2)
+        .context("initial reservation")?;
+    let large = budget.reserve(allocation.resident_bytes * 3 / 4, &stop);
+    tokio::pin!(large);
+    ensure!(futures::poll!(&mut large).is_pending());
+    let small =
+        tokio::time::timeout(Duration::from_secs(5), budget.reserve(FRAME_BYTES, &stop)).await??;
+    drop(occupied);
+    let admitted = tokio::time::timeout(Duration::from_secs(5), large).await??;
+    drop(admitted);
+    drop(small);
+    ensure!(budget.usage().0 == 0);
+    // A full exchange pool must still admit a lightweight wait intent in the runtime budget.
+    let controls = ResourceBudget::new(allocation)?;
+    let occupied_controls = controls
+        .try_reserve(allocation.resident_bytes)
+        .context("full control pool")?;
+    let waiting_control = controls.reserve_with_intent(FRAME_BYTES, &stop, &budget);
+    tokio::pin!(waiting_control);
+    ensure!(futures::poll!(&mut waiting_control).is_pending());
+    ensure!(budget.usage().0 > 0 && controls.usage().0 == allocation.resident_bytes);
+    drop(occupied_controls);
+    drop(tokio::time::timeout(Duration::from_secs(5), waiting_control).await??);
+    ensure!(budget.usage().0 == 0 && controls.usage().0 == 0);
+    let occupied = budget
+        .try_reserve(allocation.resident_bytes / 2)
+        .context("shrink reservation")?;
+    let waiting = budget.reserve(allocation.resident_bytes * 3 / 4, &stop);
+    tokio::pin!(waiting);
+    ensure!(futures::poll!(&mut waiting).is_pending());
+    let mut reduced = allocation;
+    reduced.resident_bytes /= 2;
+    budget.resize(reduced)?;
+    ensure!(
+        waiting.await.is_err(),
+        "oversized intent survived an incompatible resource shrink"
+    );
+    drop(occupied);
+    budget.resize(allocation)?;
+    stop.cancel();
+    ensure!(budget.reserve(FRAME_BYTES, &stop).await.is_err());
+    ensure!(budget.usage().0 == 0, "cancelled intents retained bytes");
+    println!("RESOURCE_ADMISSION_PROGRESS=PASS");
     Ok(())
 }

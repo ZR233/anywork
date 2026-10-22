@@ -7199,6 +7199,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom'**
   String get settingsModelAutoCompactCustom;
+
+  /// No description provided for @settingsSshNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next page'**
+  String get settingsSshNextPage;
 }
 
 class _AppLocalizationsDelegate

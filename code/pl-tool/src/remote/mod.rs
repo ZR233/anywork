@@ -1,9 +1,13 @@
 //! SSH remote helper 的本地管理、协议客户端与工具宿主。
 
 use crate::environment::ExecutionEnvironment;
+pub use pl_protocol::remote::{
+    RemoteAllocation, RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, RemoteHello,
+    RemoteRequest, RemoteResponse, RemoteSession, RemoteSpawnRequest,
+};
+pub use pl_remote_helper::transport::Bytes;
 
 mod client;
-mod codec;
 mod command;
 mod execution;
 mod lsp;
@@ -14,7 +18,9 @@ mod ssh_config;
 mod tools;
 mod workspace;
 
-pub use client::{RemoteClient, RemoteClientError, RemoteReply, SshAuthFailure};
+pub use client::{
+    RemoteClient, RemoteClientError, RemoteReply, RemoteRequestTiming, SshAuthFailure,
+};
 pub use command::RemoteCommandBackend;
 pub use execution::RemoteExecutionBackend;
 pub use manager::{
@@ -28,7 +34,8 @@ pub use ssh_config::{
 };
 pub use tools::{RemoteMutationKind, RemoteWorkspaceMutationTool};
 pub use workspace::{
-    RemoteDownloadError, RemoteWorkspaceFileBackend, load_remote_workspace_instructions,
+    RemoteDirectoryReader, RemoteDownloadError, RemoteWorkspaceFileBackend,
+    load_remote_workspace_instructions,
 };
 
 /// 一个远端 workspace 的本地后端集合。
@@ -43,3 +50,6 @@ pub struct RemoteWorkspaceHost {
 }
 
 pub(crate) use lsp::resolve_lsp_query_path;
+
+/// Resource policy configured once by the host for all remote helpers.
+pub use pl_remote_helper::budget::ResourcePolicy;

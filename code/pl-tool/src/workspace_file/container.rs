@@ -19,11 +19,15 @@ use super::container_path::resolve_container_workspace_path;
 #[derive(Debug, Clone)]
 pub struct ContainerWorkspaceFileBackend<B> {
     backend: Arc<B>,
+    listings: super::listing::ListingPager,
 }
 
 impl<B> ContainerWorkspaceFileBackend<B> {
     pub fn new(backend: Arc<B>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            listings: Default::default(),
+        }
     }
 }
 
@@ -227,92 +231,31 @@ where
     }
 
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        let limit = request.max_files.saturating_add(1);
-        let rg_command = format!(
-            "if ! test -e {path}; then exit 0; elif command -v rg >/dev/null 2>&1; then rg --files -g {glob} {path} | sort | head -n {limit}; else exit 127; fi",
-            path = shell_quote_word(&request.path),
-            glob = shell_quote_word(&request.glob),
-            limit = limit
-        );
-        let mut output = self
-            .backend
-            .exec(ContainerExecRequest {
-                call_id: None,
-                command: rg_command,
-                cwd: request.cwd.clone(),
-                timeout_secs: Some(20),
-                output_bytes_cap: None,
-                cancellation_token: None,
-            })
-            .await
-            .map_err(|error| tool_error("list_files", error))?;
-        if output.status == 127 {
-            let type_filter = if request.include_dirs { "" } else { "-type f " };
-            let command = format!(
-                "if test -e {path}; then find {path} {type_filter}-name {glob} | sort | head -n {limit}; fi",
-                path = shell_quote_word(&request.path),
-                type_filter = type_filter,
-                glob = shell_quote_word(&request.glob),
-                limit = limit
-            );
-            output = self
-                .backend
-                .exec(ContainerExecRequest {
-                    call_id: None,
-                    command,
-                    cwd: request.cwd.clone(),
-                    timeout_secs: Some(20),
-                    output_bytes_cap: None,
-                    cancellation_token: None,
-                })
-                .await
-                .map_err(|error| tool_error("list_files", error))?;
-        } else if request.include_dirs {
-            let dir_command = format!(
-                "if test -e {path}; then find {path} -type d -name {glob} | sort | head -n {limit}; fi",
-                path = shell_quote_word(&request.path),
-                glob = shell_quote_word(&request.glob),
-                limit = limit
-            );
-            let dirs = self
-                .backend
-                .exec(ContainerExecRequest {
-                    call_id: None,
-                    command: dir_command,
-                    cwd: request.cwd.clone(),
-                    timeout_secs: Some(20),
-                    output_bytes_cap: None,
-                    cancellation_token: None,
-                })
-                .await
-                .map_err(|error| tool_error("list_files", error))?;
-            if dirs.status == 0 {
-                output.stdout.push_str(&dirs.stdout);
+        let path = request.path.clone();
+        let cwd = request.cwd.clone();
+        let implicit = request.implicit_recovery;
+        self.listings.page(request, async {
+            use futures::StreamExt;
+            let allocation = tokio::task::spawn_blocking(|| pl_remote_helper::budget::ResourcePolicy::default().allocation()).await
+                .map_err(|e| tool_error("list_files", e))?.map_err(|e| tool_error("list_files", e))?;
+            let command = format!("find {path} \\( -name .git -o -name target -o -name node_modules \\) -prune -o -type f -print -o -type d -exec printf '%s/\\n' {{}} +", path = shell_quote_word(&path));
+            let output = self.backend.exec(ContainerExecRequest { call_id: None, command, cwd,
+                timeout_secs: Some(20), output_bytes_cap: Some(allocation.resident_bytes / 2), cancellation_token: None }).await
+                .map_err(|e| tool_error("list_files", e))?;
+            if output.status != 0 || output.stdout_truncated {
+                return Err(tool_error("list_files", "container listing could not complete within its resource grant"));
             }
-        }
-        if output.status != 0 && output.status != 1 {
-            return Err(tool_error(
-                "list_files",
-                format!(
-                    "list_files failed: {}",
-                    preview_error(&output.stderr, &output.stdout)
-                ),
-            ));
-        }
-        let listed_root = request.path.trim_end_matches('/');
-        let mut files = output
-            .stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter(|line| line.trim_end_matches('/') != listed_root)
-            .map(str::to_string)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .take(request.max_files.saturating_add(1))
-            .collect::<Vec<_>>();
-        let truncated = files.len() > request.max_files;
-        files.truncate(request.max_files);
-        Ok(WorkspaceFileListResult { files, truncated })
+            let entries = output.stdout.lines().filter(|line| !line.is_empty() && line.trim_end_matches('/') != path.trim_end_matches('/'))
+                .filter(|line| !super::listing::skip_directory(line, implicit))
+                .map(|line| Ok(super::WorkspaceFileListEntry { path: line.trim_end_matches('/').to_owned(), is_dir: line.ends_with('/') }))
+                .collect::<Vec<_>>();
+            Ok(futures::stream::iter(entries).boxed() as super::listing::Entries)
+        }).await
+    }
+
+    async fn close_listing(&self, cursor: String) -> Result<()> {
+        self.listings.close(&cursor);
+        Ok(())
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {

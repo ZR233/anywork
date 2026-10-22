@@ -195,10 +195,18 @@ impl StudioRuntime {
         &self,
         alias: &str,
         path: Option<String>,
+        cursor: Option<String>,
     ) -> Result<RemoteDirectoryListing> {
         self.ensure_ssh_password_hydrated(alias).await;
         self.ssh_manager
-            .browse_directories(alias, path)
+            .browse_directories(alias, path, cursor)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))
+    }
+
+    pub async fn close_remote_directory(&self, alias: &str, cursor: String) -> Result<()> {
+        self.ssh_manager
+            .close_directory(alias, cursor)
             .await
             .map_err(|error| anyhow::anyhow!(error))
     }

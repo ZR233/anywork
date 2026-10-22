@@ -137,10 +137,12 @@ class RemoteDirectoryListing {
     required this.path,
     required this.entries,
     this.parent,
+    this.nextCursor,
   });
 
   final String path;
   final String? parent;
+  final String? nextCursor;
   final List<RemoteDirectoryEntry> entries;
 }
 

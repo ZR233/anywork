@@ -1570,5 +1570,6 @@
   "statusCompactNow": "立即压缩",
   "statusCompacting": "正在压缩…",
   "statusCompactionFailed": "压缩失败，请重试。",
-  "settingsModelAutoCompactCustom": "自定义"
+  "settingsModelAutoCompactCustom": "自定义",
+  "settingsSshNextPage": "下一页"
 }

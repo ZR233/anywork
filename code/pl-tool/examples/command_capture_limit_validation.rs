@@ -390,6 +390,10 @@ where
         self.inner.list(request).await
     }
 
+    async fn close_listing(&self, cursor: String) -> pl_protocol::Result<()> {
+        self.inner.close_listing(cursor).await
+    }
+
     async fn create_directory(&self, path: String, cwd: Option<String>) -> pl_protocol::Result<()> {
         self.inner.create_directory(path, cwd).await
     }
