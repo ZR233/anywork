@@ -174,6 +174,24 @@ impl StudioThreadFactory {
             .as_ref()
             .map(|host| host.execution_environment.clone())
             .unwrap_or_else(pl_tool::environment::ExecutionEnvironment::detect_local);
+        let child_environment = if self
+            .services
+            .bots
+            .config_for_thread(root_thread_id)
+            .await
+            .map_err(|error| resource_error("resolve Python workspace", error))?
+            .is_some()
+        {
+            let path = root
+                .join(pl_tool::workspace::SessionFiles::new(thread_id).root())
+                .join(".venv");
+            std::collections::BTreeMap::from([(
+                "UV_PROJECT_ENVIRONMENT".into(),
+                path.to_string_lossy().into_owned(),
+            )])
+        } else {
+            Default::default()
+        };
         let binding = match &remote {
             Some(host) => StudioCommandBinding::Remote {
                 host: host.clone(),
@@ -182,6 +200,7 @@ impl StudioThreadFactory {
             None => StudioCommandBinding::Local {
                 workspace: workspace.clone(),
                 environment: environment.clone(),
+                child_environment,
                 access: match config.runtime.permission_mode {
                     crate::approval::PermissionMode::FullAccess
                         if workspace.workspace().boundary().allows_host_paths() =>
@@ -340,6 +359,19 @@ impl StudioThreadFactory {
         }
         if thread_id == root_thread_id {
             tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;
+            if self
+                .services
+                .bots
+                .config_for_thread(thread_id)
+                .await
+                .map_err(|error| resource_error("resolve bot session", error))?
+                .is_some()
+            {
+                tools = tools.with_tools(crate::studio::runtime::session_tools::registrations(
+                    self.services.bots.clone(),
+                    thread_id,
+                )?);
+            }
         }
         let policies = match &preparation {
             CatalogPreparation::Refresh {

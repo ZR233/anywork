@@ -6146,6 +6146,20 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotMessagePage {
     }
 }
 
+impl SseDecode for crate::api::studio::types::bots::BridgeBotModelRoute {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_modelId = <String>::sse_decode(deserializer);
+        let mut var_effort = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::bots::BridgeBotModelRoute {
+            account_id: var_accountId,
+            model_id: var_modelId,
+            effort: var_effort,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::bots::BridgeBotPairingRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6393,6 +6407,7 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSendStatus {
 impl SseDecode for crate::api::studio::types::bots::BridgeBotSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_lastActivityAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_projectId = <String>::sse_decode(deserializer);
@@ -6401,6 +6416,11 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSnapshot {
             <crate::api::studio::types::bots::BridgeBotPlatform>::sse_decode(deserializer);
         let mut var_enabled = <bool>::sse_decode(deserializer);
         let mut var_toolsEnabled = <bool>::sse_decode(deserializer);
+        let mut var_modelRoute =
+            <Option<crate::api::studio::types::bots::BridgeBotModelRoute>>::sse_decode(
+                deserializer,
+            );
+        let mut var_workspacePath = <String>::sse_decode(deserializer);
         let mut var_configRevision = <u64>::sse_decode(deserializer);
         let mut var_trustedOpenIds = <Vec<String>>::sse_decode(deserializer);
         let mut var_trustedChatIds = <Vec<String>>::sse_decode(deserializer);
@@ -6427,6 +6447,7 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSnapshot {
         let mut var_createdAt = <i64>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
         return crate::api::studio::types::bots::BridgeBotSnapshot {
+            last_activity_at: var_lastActivityAt,
             id: var_id,
             name: var_name,
             project_id: var_projectId,
@@ -6434,6 +6455,8 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSnapshot {
             platform: var_platform,
             enabled: var_enabled,
             tools_enabled: var_toolsEnabled,
+            model_route: var_modelRoute,
+            workspace_path: var_workspacePath,
             config_revision: var_configRevision,
             trusted_open_ids: var_trustedOpenIds,
             trusted_chat_ids: var_trustedChatIds,
@@ -9603,6 +9626,10 @@ impl SseDecode for crate::api::studio::types::bots::BridgeSaveBotRequest {
             <crate::api::studio::types::bots::BridgeBotSecretUpdate>::sse_decode(deserializer);
         let mut var_enabled = <bool>::sse_decode(deserializer);
         let mut var_toolsEnabled = <bool>::sse_decode(deserializer);
+        let mut var_modelRoute =
+            <Option<crate::api::studio::types::bots::BridgeBotModelRoute>>::sse_decode(
+                deserializer,
+            );
         return crate::api::studio::types::bots::BridgeSaveBotRequest {
             operation_id: var_operationId,
             bot_id: var_botId,
@@ -9613,6 +9640,7 @@ impl SseDecode for crate::api::studio::types::bots::BridgeSaveBotRequest {
             secret: var_secret,
             enabled: var_enabled,
             tools_enabled: var_toolsEnabled,
+            model_route: var_modelRoute,
         };
     }
 }
@@ -11434,6 +11462,7 @@ impl SseDecode for crate::api::studio::types::command::BridgeThreadModelRouteCom
 impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadModelRouteSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_botId = <Option<String>>::sse_decode(deserializer);
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_modelId = <String>::sse_decode(deserializer);
         let mut var_effort = <Option<String>>::sse_decode(deserializer);
@@ -11441,6 +11470,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadModelRo
         let mut var_available = <bool>::sse_decode(deserializer);
         let mut var_unavailableReason = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::thread_stream::BridgeThreadModelRouteSnapshot {
+            bot_id: var_botId,
             account_id: var_accountId,
             model_id: var_modelId,
             effort: var_effort,
@@ -14969,6 +14999,19 @@ impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotDiagnostic> 
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotModelRoute> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::bots::BridgeBotModelRoute>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotRegistrationAttempt> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -17853,6 +17896,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBo
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBotModelRoute {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.account_id.into_into_dart().into_dart(),
+            self.model_id.into_into_dart().into_dart(),
+            self.effort.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::bots::BridgeBotModelRoute
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBotModelRoute>
+    for crate::api::studio::types::bots::BridgeBotModelRoute
+{
+    fn into_into_dart(self) -> crate::api::studio::types::bots::BridgeBotModelRoute {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBotPairingRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -18151,6 +18216,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBo
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBotSnapshot {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.last_activity_at.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
             self.project_id.into_into_dart().into_dart(),
@@ -18158,6 +18224,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBo
             self.platform.into_into_dart().into_dart(),
             self.enabled.into_into_dart().into_dart(),
             self.tools_enabled.into_into_dart().into_dart(),
+            self.model_route.into_into_dart().into_dart(),
+            self.workspace_path.into_into_dart().into_dart(),
             self.config_revision.into_into_dart().into_dart(),
             self.trusted_open_ids.into_into_dart().into_dart(),
             self.trusted_chat_ids.into_into_dart().into_dart(),
@@ -22008,6 +22076,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeSa
             self.secret.into_into_dart().into_dart(),
             self.enabled.into_into_dart().into_dart(),
             self.tools_enabled.into_into_dart().into_dart(),
+            self.model_route.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -24188,6 +24257,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.bot_id.into_into_dart().into_dart(),
             self.account_id.into_into_dart().into_dart(),
             self.model_id.into_into_dart().into_dart(),
             self.effort.into_into_dart().into_dart(),
@@ -28894,6 +28964,15 @@ impl SseEncode for crate::api::studio::types::bots::BridgeBotMessagePage {
     }
 }
 
+impl SseEncode for crate::api::studio::types::bots::BridgeBotModelRoute {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.account_id, serializer);
+        <String>::sse_encode(self.model_id, serializer);
+        <Option<String>>::sse_encode(self.effort, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::bots::BridgeBotPairingRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -29112,6 +29191,7 @@ impl SseEncode for crate::api::studio::types::bots::BridgeBotSendStatus {
 impl SseEncode for crate::api::studio::types::bots::BridgeBotSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<i64>>::sse_encode(self.last_activity_at, serializer);
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.name, serializer);
         <String>::sse_encode(self.project_id, serializer);
@@ -29119,6 +29199,11 @@ impl SseEncode for crate::api::studio::types::bots::BridgeBotSnapshot {
         <crate::api::studio::types::bots::BridgeBotPlatform>::sse_encode(self.platform, serializer);
         <bool>::sse_encode(self.enabled, serializer);
         <bool>::sse_encode(self.tools_enabled, serializer);
+        <Option<crate::api::studio::types::bots::BridgeBotModelRoute>>::sse_encode(
+            self.model_route,
+            serializer,
+        );
+        <String>::sse_encode(self.workspace_path, serializer);
         <u64>::sse_encode(self.config_revision, serializer);
         <Vec<String>>::sse_encode(self.trusted_open_ids, serializer);
         <Vec<String>>::sse_encode(self.trusted_chat_ids, serializer);
@@ -31690,6 +31775,10 @@ impl SseEncode for crate::api::studio::types::bots::BridgeSaveBotRequest {
         );
         <bool>::sse_encode(self.enabled, serializer);
         <bool>::sse_encode(self.tools_enabled, serializer);
+        <Option<crate::api::studio::types::bots::BridgeBotModelRoute>>::sse_encode(
+            self.model_route,
+            serializer,
+        );
     }
 }
 
@@ -32993,6 +33082,7 @@ impl SseEncode for crate::api::studio::types::command::BridgeThreadModelRouteCom
 impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadModelRouteSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.bot_id, serializer);
         <String>::sse_encode(self.account_id, serializer);
         <String>::sse_encode(self.model_id, serializer);
         <Option<String>>::sse_encode(self.effort, serializer);
@@ -35592,6 +35682,16 @@ impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotDiagnostic> 
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::bots::BridgeBotDiagnostic>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotModelRoute> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::bots::BridgeBotModelRoute>::sse_encode(value, serializer);
         }
     }
 }

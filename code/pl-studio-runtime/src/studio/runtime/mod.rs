@@ -33,6 +33,7 @@ mod product_subscription;
 mod prompt_runner;
 mod rejected_tools;
 mod residency;
+pub(crate) mod session_tools;
 mod settings_api;
 mod shutdown_progress;
 mod skill_catalog;

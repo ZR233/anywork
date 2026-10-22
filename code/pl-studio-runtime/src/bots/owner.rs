@@ -274,6 +274,46 @@ impl BotRuntime {
         self.inner.canonical.lock().await.clone()
     }
 
+    pub(crate) fn default_model_route(
+        &self,
+    ) -> Result<pl_protocol::studio::BotModelRoute, FeishuError> {
+        let settings = self.inner.config.read().map_err(|error| {
+            FeishuError::new(FeishuErrorKind::Unavailable, error.to_string(), false, None)
+        })?;
+        let route = settings
+            .config
+            .mode_model_route(&pl_protocol::ThreadModeId::simple())
+            .map_err(|error| {
+                FeishuError::new(FeishuErrorKind::Rejected, error.to_string(), false, None)
+            })?;
+        Ok(pl_protocol::studio::BotModelRoute {
+            account_id: route.account_id.as_str().into(),
+            model_id: route.model_id.clone(),
+            effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
+        })
+    }
+
+    /// Resolve ownership from durable bindings, never from a user-controlled ID prefix.
+    pub(crate) async fn config_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<BotConfigFile>, FeishuError> {
+        let bots: Vec<_> = self
+            .inner
+            .bots
+            .lock()
+            .await
+            .values()
+            .filter_map(|record| record.published.clone())
+            .collect();
+        for bot in bots {
+            if bot.store.owns_thread(thread_id).await? {
+                return Ok(Some(bot.config.lock().await.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     pub(crate) fn runtime_released(&self) -> bool {
         self.inner.sealed.load(Ordering::SeqCst) == BOTS_RUNTIME_RELEASED
     }
@@ -405,22 +445,38 @@ impl BotRuntime {
             Some(value) => (
                 !value.has_thread_or_inbound,
                 !value.has_app_identity
-                    && config.trusted_open_ids.is_empty()
-                    && config.trusted_chat_ids.is_empty(),
+                    && config.feishu().trusted_open_ids.is_empty()
+                    && config.feishu().trusted_chat_ids.is_empty(),
             ),
             None => (false, false),
         };
+        let last_activity_at = match bot.store.last_activity_at().await {
+            Ok(at) => at,
+            Err(error) => {
+                tracing::warn!(%error, "bot activity is unavailable");
+                None
+            }
+        };
         BotSnapshot {
-            id: config.id,
-            name: config.name,
-            project_id: config.project_id,
-            app_id: config.app_id,
+            last_activity_at,
+            workspace_path: self
+                .inner
+                .paths
+                .bot_dir(&config.id)
+                .join("workspace")
+                .to_string_lossy()
+                .into_owned(),
+            model_route: config.model_route.clone(),
+            id: config.id.clone(),
+            name: config.name.clone(),
+            project_id: config.project_id.clone(),
+            app_id: config.feishu().app_id.clone(),
             platform: BotPlatform::FeishuChina,
             enabled: config.enabled,
             tools_enabled: config.tools_enabled,
             config_revision: config.config_revision,
-            trusted_open_ids: config.trusted_open_ids.into_iter().collect(),
-            trusted_chat_ids: config.trusted_chat_ids.into_iter().collect(),
+            trusted_open_ids: config.feishu().trusted_open_ids.iter().cloned().collect(),
+            trusted_chat_ids: config.feishu().trusted_chat_ids.iter().cloned().collect(),
             connection: bot.connection.snapshot(),
             credential: *bot.credential.lock().await,
             credential_operation: bot.credential_operation.lock().await.clone(),

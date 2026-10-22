@@ -365,6 +365,7 @@ pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
 pub struct LocalCommandBackend {
     workspace_root: PathBuf,
     execution_environment: ExecutionEnvironment,
+    child_environment: std::collections::BTreeMap<String, String>,
     #[cfg(target_os = "linux")]
     worker: std::sync::Arc<dyn LocalWorkerExecutable>,
     #[cfg(target_os = "linux")]
@@ -378,6 +379,7 @@ impl LocalCommandBackend {
         Self {
             workspace_root: workspace_root.into(),
             execution_environment: ExecutionEnvironment::detect_local(),
+            child_environment: Default::default(),
             #[cfg(target_os = "linux")]
             worker: std::sync::Arc::new(PathBuf::from("pl-remote-helper")),
             #[cfg(target_os = "linux")]
@@ -395,6 +397,16 @@ impl LocalCommandBackend {
     {
         self.worker = std::sync::Arc::new(executable);
         self.worker_failure = Default::default();
+        self
+    }
+
+    /// Adds host-owned environment variables to supervised command children only.
+    /// Does not mutate the process or global environment.
+    pub fn with_child_environment(
+        mut self,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.child_environment = environment;
         self
     }
 
@@ -541,16 +553,21 @@ impl CommandBackend for LocalCommandBackend {
         let (program, arguments) = argv
             .split_first()
             .ok_or_else(|| command_error("exec", "shell argv is empty"))?;
-        let specification = ProcessCommand::new(program)
+        let mut specification = ProcessCommand::new(program)
             .args(arguments)
             .current_dir(&request.cwd);
+        for (key, value) in &self.child_environment {
+            specification = specification.env(key, value);
+        }
         self.spawn_supervised(specification).await
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
         let mut command = command_for_environment(&self.execution_environment, &request.command);
-        command.current_dir(&request.cwd);
+        command
+            .current_dir(&request.cwd)
+            .envs(&self.child_environment);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

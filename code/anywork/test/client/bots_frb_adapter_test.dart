@@ -31,6 +31,13 @@ frb_bots.BridgeBotSnapshot _frbBot() {
     platform: frb_bots.BridgeBotPlatform.feishuChina,
     enabled: true,
     toolsEnabled: false,
+    workspacePath: 'C:/Studio/v2/bots/bot-frb-1/workspace',
+    modelRoute: const frb_bots.BridgeBotModelRoute(
+      accountId: 'account-a',
+      modelId: 'model-a',
+      effort: 'high',
+    ),
+    lastActivityAt: 1718000040,
     configRevision: BigInt.from(3),
     trustedOpenIds: ['ou_trusted_1'],
     trustedChatIds: ['oc_trusted_1', 'oc_trusted_2'],
@@ -189,6 +196,16 @@ void main() {
       expect(bot.platform, BotPlatform.feishuChina);
       expect(bot.enabled, isTrue);
       expect(bot.toolsEnabled, isFalse);
+      expect(bot.workspacePath, 'C:/Studio/v2/bots/bot-frb-1/workspace');
+      expect(bot.lastActivityAt, 1718000040);
+      expect(
+        bot.modelRoute,
+        const BotModelRoute(
+          accountId: 'account-a',
+          modelId: 'model-a',
+          effort: 'high',
+        ),
+      );
       expect(bot.configRevision, 3);
       expect(bot.trustedOpenIds, ['ou_trusted_1']);
       expect(bot.trustedChatIds, ['oc_trusted_1', 'oc_trusted_2']);

@@ -31,6 +31,13 @@ pub(crate) fn bridge_bots_state(value: BotsStateSnapshot) -> BridgeBotsStateSnap
 
 fn bridge_bot_snapshot(value: BotSnapshot) -> BridgeBotSnapshot {
     BridgeBotSnapshot {
+        last_activity_at: value.last_activity_at,
+        model_route: value.model_route.map(|route| BridgeBotModelRoute {
+            account_id: route.account_id,
+            model_id: route.model_id,
+            effort: route.effort,
+        }),
+        workspace_path: value.workspace_path,
         id: value.id,
         name: value.name,
         project_id: value.project_id,
@@ -208,6 +215,13 @@ fn bridge_pending_credential(
 
 pub(crate) fn protocol_save_bot(value: BridgeSaveBotRequest) -> SaveBotRequest {
     SaveBotRequest {
+        model_route: value
+            .model_route
+            .map(|route| pl_protocol::studio::BotModelRoute {
+                account_id: route.account_id,
+                model_id: route.model_id,
+                effort: route.effort,
+            }),
         operation_id: value.operation_id,
         bot_id: value.bot_id,
         expected_config_revision: value.expected_config_revision,

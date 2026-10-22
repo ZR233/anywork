@@ -24,6 +24,19 @@ impl StudioRuntime {
     ) -> Result<BotInputRead> {
         let history = self.store.history(thread_id).await?;
         let Some(receipt) = history.input_identity(input_id).await? else {
+            if self.threads.thread(thread_id).is_some_and(|thread| {
+                let state = thread.snapshot();
+                state
+                    .inputs
+                    .iter()
+                    .any(|record| record.input.id == input_id)
+                    || state
+                        .terminal_inputs
+                        .iter()
+                        .any(|record| record.id == input_id)
+            }) {
+                return Ok(BotInputRead::NotReady);
+            }
             return Ok(BotInputRead::Absent);
         };
         Ok(BotInputRead::Ready {

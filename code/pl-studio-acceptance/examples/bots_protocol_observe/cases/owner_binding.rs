@@ -699,6 +699,7 @@ async fn save_disabled_bot(session: &Session, deadline: &Deadline) -> Result<(St
     let reply = session
         .http()?
         .save_bot(&SaveBotRequest {
+            model_route: None,
             operation_id: "op-obo-save-disabled".into(),
             bot_id: None,
             expected_config_revision: 0,
@@ -754,6 +755,7 @@ async fn save_owned(
     session
         .http()?
         .save_bot(&SaveBotRequest {
+            model_route: None,
             operation_id: operation_id.into(),
             bot_id: Some(bot_id.to_owned()),
             expected_config_revision,

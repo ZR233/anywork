@@ -165,6 +165,7 @@ fn inbound_freeze_bytes(bot_id: &str, decision: &InboundDecision) -> Result<usiz
             chat_id,
             open_id,
             text,
+            attachments,
             content_hash,
             chat_kind,
             ..
@@ -191,6 +192,7 @@ fn inbound_freeze_bytes(bot_id: &str, decision: &InboundDecision) -> Result<usiz
                         2,
                     ),
                     (generated_id_bytes("botwork"), 2),
+                    (attachments.iter().map(|item| item.frozen_bytes()).sum(), 4),
                 ],
             )
         }
@@ -227,6 +229,14 @@ fn resume_payload_bytes(payload: &FrozenInbound) -> Result<usize, FeishuError> {
                 2,
             ),
             (generated_id_bytes("botwork"), 2),
+            (
+                payload
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.frozen_bytes())
+                    .sum(),
+                2,
+            ),
         ],
     )
 }
@@ -290,8 +300,20 @@ impl BotRuntime {
     ) -> Result<BotConversationPage, FeishuError> {
         let managed = self.managed(bot_id).await?;
         let config = managed.config.lock().await.clone();
-        let parsed = decode_cursor(cursor, bot_id)?;
+        let mut parsed = decode_cursor(cursor, bot_id)?;
         let page_size = limit.unwrap_or(20).clamp(1, 50);
+        let directs = if parsed.kind == CursorKind::Directs {
+            let rows = managed.store.list_observed_directs().await?;
+            if rows.is_empty() {
+                parsed = ParsedCursor {
+                    kind: CursorKind::Groups,
+                    token: None,
+                };
+            }
+            rows
+        } else {
+            Vec::new()
+        };
         let mut conversations = Vec::new();
         let next = match parsed.kind {
             CursorKind::Groups => {
@@ -314,11 +336,10 @@ impl BotRuntime {
                         page.page_token.as_deref(),
                     ))
                 } else {
-                    Some(encode_cursor(bot_id, CursorKind::Directs, None))
+                    None
                 }
             }
             CursorKind::Directs => {
-                let directs = managed.store.list_observed_directs().await?;
                 let start = parsed
                     .token
                     .as_deref()
@@ -345,12 +366,12 @@ impl BotRuntime {
                     chat_id: row.chat_id,
                     kind: BotConversationKind::Direct,
                     source: BotConversationSource::ObservedDirect,
-                    name: row.name.or(row.open_id),
+                    name: row.name,
                     last_observed_at: Some(row.last_observed_at),
                     thread_binding: None,
                 }));
                 if remaining == 0 {
-                    None
+                    Some(encode_cursor(bot_id, CursorKind::Groups, None))
                 } else {
                     Some(encode_cursor(
                         bot_id,
@@ -495,7 +516,7 @@ impl BotRuntime {
         };
         // 首次发送认领是持久占用写入：交给受管占用任务持有到真实终态并主动重建。
         // 联网/逐段发送仍在统一发送服务中，由调用方持有，不搬入不可取消队列。
-        let app_id = config.app_id;
+        let app_id = config.feishu().app_id.clone();
         let project_id = config.project_id;
         let expected_config_revision = config.config_revision;
         // 首次认领会把分段事实编码成 SQL 参数：按与持久化同一实现的真实长度计权。
@@ -572,7 +593,7 @@ impl BotRuntime {
         // 短锁内核对身份与授权后立即释放，不克隆整份配置、不跨 DB await 持有 guard。
         let config_revision = {
             let current = managed.config.lock().await;
-            if current.app_id != app_id || current.project_id != project_id {
+            if current.feishu().app_id != app_id || current.project_id != project_id {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Conflict,
                     "bot app or project changed before send claim",
@@ -672,7 +693,7 @@ impl BotRuntime {
             let current = managed.config.lock().await;
             (
                 current.name.clone(),
-                current.app_id.clone(),
+                current.feishu().app_id.clone(),
                 current.project_id.clone(),
             )
         } else {
@@ -689,7 +710,11 @@ impl BotRuntime {
                 .prepare_chat_access(&managed, &config, &chat_id)
                 .await?;
             self.authorize_chat(&config, &chat_id, SendAuthority::Owner, &membership)?;
-            (config.name, config.app_id, config.project_id)
+            (
+                config.name.clone(),
+                config.feishu().app_id.clone(),
+                config.project_id.clone(),
+            )
         };
         // 标题与操作字段都在此预生成并计入冻结预算：首次持久写前就能判定是否放得下。
         let title = format!("{name} / {chat_id}");
@@ -756,7 +781,7 @@ impl BotRuntime {
             let (identity_ok, current_revision) = {
                 let current = managed.config.lock().await;
                 (
-                    current.app_id == app_id && current.project_id == project_id,
+                    current.feishu().app_id == app_id && current.project_id == project_id,
                     current.config_revision,
                 )
             };
@@ -948,7 +973,7 @@ impl BotRuntime {
             // 身份变成不可恢复的半状态。短锁内比较，不克隆配置。
             let identity_ok = {
                 let current = managed.config.lock().await;
-                current.app_id == app_id && current.project_id == project_id
+                current.feishu().app_id == app_id && current.project_id == project_id
             };
             if !identity_ok {
                 return Err(FeishuError::new(
@@ -1095,12 +1120,12 @@ impl BotRuntime {
             self.reject_closed_admission(managed)?;
             let current = managed.config.lock().await.clone();
             if current.config_revision != config.config_revision
-                || current.app_id != config.app_id
+                || current.feishu().app_id != config.feishu().app_id
                 || current.project_id != config.project_id
                 || current.enabled != config.enabled
                 || current.tools_enabled != config.tools_enabled
-                || current.trusted_open_ids != config.trusted_open_ids
-                || current.trusted_chat_ids != config.trusted_chat_ids
+                || current.feishu().trusted_open_ids != config.feishu().trusted_open_ids
+                || current.feishu().trusted_chat_ids != config.feishu().trusted_chat_ids
                 || current.name != config.name
             {
                 return Err(FeishuError::new(
@@ -1187,8 +1212,12 @@ impl BotRuntime {
         self.inner
             .http
             .policy()
-            .require_synthetic_app(&config.app_id)?;
-        if managed.token.identity_matches(&config.app_id).await {
+            .require_synthetic_app(&config.feishu().app_id)?;
+        if managed
+            .token
+            .identity_matches(&config.feishu().app_id)
+            .await
+        {
             return managed.token.access_token().await;
         }
         let owner = self.ensure_record(&config.id).await?;
@@ -1420,6 +1449,7 @@ impl BotRuntime {
                 chat_id,
                 open_id,
                 text,
+                attachments,
                 content_hash,
                 chat_kind,
             } => {
@@ -1438,7 +1468,7 @@ impl BotRuntime {
                     // 不克隆整份配置，也不跨 DB await 持有 config guard。
                     let (app_id, project_id) = {
                         let current = managed.config.lock().await;
-                        (current.app_id.clone(), current.project_id.clone())
+                        (current.feishu().app_id.clone(), current.project_id.clone())
                     };
                     // app/project 会与工作行 INSERT 的 SQL 参数同时存活：按 2 份计。
                     budget.reserve_more(super::occupancy::counted_text_bytes([
@@ -1520,6 +1550,7 @@ impl BotRuntime {
                         chat_id,
                         content_hash,
                         text,
+                        attachments,
                         open_id,
                         chat_kind: match chat_kind {
                             ChatKind::Direct => "direct".to_string(),
@@ -1800,7 +1831,7 @@ struct ParsedCursor {
 fn decode_cursor(cursor: Option<&str>, bot_id: &str) -> Result<ParsedCursor, FeishuError> {
     let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
         return Ok(ParsedCursor {
-            kind: CursorKind::Groups,
+            kind: CursorKind::Directs,
             token: None,
         });
     };

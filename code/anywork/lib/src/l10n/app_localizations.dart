@@ -1439,13 +1439,13 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsSourceGroup.
   ///
   /// In en, this message translates to:
-  /// **'Platform group'**
+  /// **'Group chat'**
   String get settingsBotsSourceGroup;
 
   /// No description provided for @settingsBotsSourceDirect.
   ///
   /// In en, this message translates to:
-  /// **'Observed direct chat'**
+  /// **'Direct chat'**
   String get settingsBotsSourceDirect;
 
   /// No description provided for @settingsBotsEdit.
@@ -7907,6 +7907,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom'**
   String get settingsModelAutoCompactCustom;
+
+  /// No description provided for @botsOverviewHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Bring your sessions to Feishu to search, collaborate, and share files.'**
+  String get botsOverviewHint;
+
+  /// No description provided for @botsPlatformFeishu.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu'**
+  String get botsPlatformFeishu;
+
+  /// No description provided for @botsModelTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Model and reasoning'**
+  String get botsModelTitle;
+
+  /// No description provided for @botsModelHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Applies to all chats with this bot from the next turn.'**
+  String get botsModelHint;
+
+  /// No description provided for @botsAccessTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'People and group access'**
+  String get botsAccessTitle;
+
+  /// No description provided for @botsAccessHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Only approved people and groups can use this bot.'**
+  String get botsAccessHint;
+
+  /// No description provided for @botsConnectionSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection and settings'**
+  String get botsConnectionSettings;
+
+  /// No description provided for @botsWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Dedicated workspace'**
+  String get botsWorkspace;
+
+  /// No description provided for @botsPlatformTools.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu messages and test sending'**
+  String get botsPlatformTools;
+
+  /// No description provided for @botsManagedModel.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed by bot settings'**
+  String get botsManagedModel;
 }
 
 class _AppLocalizationsDelegate

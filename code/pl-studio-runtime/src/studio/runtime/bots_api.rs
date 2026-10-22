@@ -13,12 +13,93 @@ fn bot_err(error: crate::bots::FeishuError) -> anyhow::Error {
 }
 
 impl StudioRuntime {
+    pub(crate) async fn prepare_bot_attachment_drafts(
+        &self,
+        thread_id: &str,
+        sources: Vec<pl_protocol::studio::StudioAttachmentDraftSource>,
+    ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
+        let _guard = self.lifecycle_lock.lock().await;
+        let thread = self.ensure_thread_owner(thread_id).await?;
+        self.reconcile_bot_model(thread_id, &thread).await?;
+        self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
+            context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
+                thread_id: thread_id.into(),
+            },
+            sources,
+        })
+        .await
+    }
+
+    /// Called under the existing lifecycle admission lock before a new user input is accepted.
+    pub(super) async fn reconcile_bot_model(
+        &self,
+        id: &str,
+        thread: &pl_core::thread::ThreadHandle,
+    ) -> Result<()> {
+        let Some(bot) = self.bots.config_for_thread(id).await.map_err(bot_err)? else {
+            return Ok(());
+        };
+        let selector = self.bots.model_selector(&bot).map_err(bot_err)?;
+        let state = thread.snapshot();
+        let (previous, saved) = crate::studio::model_route::route_record(&state, false)?
+            .ok_or_else(|| anyhow::anyhow!("bot session has no model route"))?;
+        if saved == selector
+            && state
+                .extensions
+                .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+        {
+            return Ok(());
+        }
+        let settings = self.config_runtime.read()?;
+        let route = settings
+            .config
+            .models
+            .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
+        Self::validate_model_media(&state, &route.model, &[])?;
+        let mut mutations = vec![pl_core::thread::extensions::ExtensionMutation::Put {
+            id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
+            expected_revision: Some(previous.revision),
+            payload: crate::studio::model_route::encode(&selector)?,
+        }];
+        if !state
+            .extensions
+            .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+        {
+            mutations.push(pl_core::thread::extensions::ExtensionMutation::Put {
+                id: crate::studio::model_route::BOT_OWNER_EXTENSION.into(),
+                expected_revision: None,
+                payload: crate::studio::model_route::encode_bot_owner(&bot.id)?,
+            });
+        }
+        thread
+            .queue_deferred_model_update_if_current(
+                self.deferred_model_update(&route, &settings.config)?,
+                pl_core::thread::DeferredModelUpdatePrecondition::extension(
+                    crate::studio::model_route::MODEL_ROUTE_EXTENSION,
+                    Some(previous.revision),
+                ),
+                mutations,
+            )
+            .await?;
+        self.tool_catalog_updates.notify_one();
+        Ok(())
+    }
+
     pub async fn read_bots(&self) -> Result<BotsStateSnapshot> {
         Ok(self.bots.snapshot().await)
     }
 
     pub async fn save_bot(&self, request: SaveBotRequest) -> Result<BotsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
+        if let Some(route) = &request.model_route {
+            super::settings_api::validated_route(
+                &self.config_runtime.read()?.config,
+                "bot",
+                &route.account_id,
+                &route.model_id,
+                route.effort.as_deref(),
+            )?;
+        }
         self.bots
             .save_bot(request, &self.owner_epoch)
             .await

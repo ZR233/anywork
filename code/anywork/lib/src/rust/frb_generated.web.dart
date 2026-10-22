@@ -250,6 +250,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeBotDiagnostic dco_decode_box_autoadd_bridge_bot_diagnostic(dynamic raw);
 
   @protected
+  BridgeBotModelRoute dco_decode_box_autoadd_bridge_bot_model_route(
+    dynamic raw,
+  );
+
+  @protected
   BridgeBotRegistrationAttempt
   dco_decode_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
@@ -1047,6 +1052,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeBotMessagePage dco_decode_bridge_bot_message_page(dynamic raw);
+
+  @protected
+  BridgeBotModelRoute dco_decode_bridge_bot_model_route(dynamic raw);
 
   @protected
   BridgeBotPairingRequest dco_decode_bridge_bot_pairing_request(dynamic raw);
@@ -2589,6 +2597,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeBotModelRoute? dco_decode_opt_box_autoadd_bridge_bot_model_route(
+    dynamic raw,
+  );
+
+  @protected
   BridgeBotRegistrationAttempt?
   dco_decode_opt_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
@@ -3065,6 +3078,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeBotDiagnostic sse_decode_box_autoadd_bridge_bot_diagnostic(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotModelRoute sse_decode_box_autoadd_bridge_bot_model_route(
     SseDeserializer deserializer,
   );
 
@@ -4090,6 +4108,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeBotMessagePage sse_decode_bridge_bot_message_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotModelRoute sse_decode_bridge_bot_model_route(
     SseDeserializer deserializer,
   );
 
@@ -6012,6 +6035,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeBotModelRoute? sse_decode_opt_box_autoadd_bridge_bot_model_route(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeBotRegistrationAttempt?
   sse_decode_opt_box_autoadd_bridge_bot_registration_attempt(
     SseDeserializer deserializer,
@@ -6598,6 +6626,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_bot_diagnostic(
     BridgeBotDiagnostic self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_bot_model_route(
+    BridgeBotModelRoute self,
     SseSerializer serializer,
   );
 
@@ -7768,6 +7802,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_bot_message_page(
     BridgeBotMessagePage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_bot_model_route(
+    BridgeBotModelRoute self,
     SseSerializer serializer,
   );
 
@@ -10087,6 +10127,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_bot_diagnostic(
     BridgeBotDiagnostic? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_bot_model_route(
+    BridgeBotModelRoute? self,
     SseSerializer serializer,
   );
 

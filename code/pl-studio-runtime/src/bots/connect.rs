@@ -274,7 +274,7 @@ async fn connect_once(
     if cancel.is_cancelled() || !host.is_current() {
         return Ok(None);
     }
-    let discovered = discovery.discover(&config.app_id, secret).await?;
+    let discovered = discovery.discover(&config.feishu().app_id, secret).await?;
     if cancel.is_cancelled() || !host.is_current() {
         return Ok(None);
     }

@@ -48,6 +48,19 @@ void main() {
   });
 
   test(
+    'conversation handoff opens its chat rather than the bot default DM',
+    () {
+      const chatId = 'oc_selected&openId=unrelated';
+      for (final browser in [false, true]) {
+        final link = Uri.parse(feishuChatAppLink(chatId, browser: browser));
+        expect(link.scheme, browser ? 'https' : 'feishu');
+        expect(link.path, '/client/chat/open');
+        expect(link.queryParameters, {'openChatId': chatId});
+      }
+    },
+  );
+
+  test(
     'demo adapter maps bot save, registration start and cancel states',
     () async {
       final transport = RecordingDemoTransport();

@@ -28,7 +28,9 @@ impl StudioThreadFactory {
                 "child role is retired: planner".into(),
             ));
         }
-        let project = self.project_record(&thread.project_id).await?;
+        let mut project = self.project_record(&thread.project_id).await?;
+        self.bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .await?;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)

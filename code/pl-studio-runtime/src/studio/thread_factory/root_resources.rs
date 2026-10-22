@@ -14,6 +14,32 @@ use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::collections::BTreeMap;
 
 impl StudioThreadFactory {
+    pub(super) async fn bind_bot_project(
+        &self,
+        thread_id: &str,
+        root_id: &str,
+        project: &mut crate::studio::ProjectRecord,
+    ) -> Result<(), ThreadAssemblyError> {
+        if let Some(bot) = self
+            .services
+            .bots
+            .config_for_thread(root_id)
+            .await
+            .map_err(|error| resource_error("resolve bot workspace", error))?
+        {
+            project.path = self
+                .services
+                .bots
+                .prepare_workspace(&bot, thread_id, &project.path)
+                .await
+                .map_err(|error| resource_error("prepare bot workspace", error))?
+                .to_string_lossy()
+                .into_owned();
+            project.ssh_alias = None;
+        }
+        Ok(())
+    }
+
     pub(in crate::studio) async fn prepare_root_thread(
         &self,
         id: &str,
@@ -23,7 +49,23 @@ impl StudioThreadFactory {
         if thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
-        let project = self.project_record(&thread.project_id).await?;
+        let mut project = self.project_record(&thread.project_id).await?;
+        let bot = self
+            .services
+            .bots
+            .config_for_thread(id)
+            .await
+            .map_err(|error| resource_error("resolve bot ownership", error))?;
+        if let Some(bot) = &bot {
+            let root = self
+                .services
+                .bots
+                .prepare_workspace(bot, id, &project.path)
+                .await
+                .map_err(|error| resource_error("prepare bot workspace", error))?;
+            project.path = root.to_string_lossy().into_owned();
+            project.ssh_alias = None;
+        }
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
         let mut checkpoint =
@@ -65,9 +107,17 @@ impl StudioThreadFactory {
             Some(frozen) => frozen,
             None => config.mode_model_route(&selected_mode)?.clone(),
         };
-        let route_selector = saved_route
-            .map(|saved| saved.route)
-            .unwrap_or_else(|| default_route.clone());
+        // Restore with the saved route. Bot settings are reconciled at the next input
+        // admission, so reopening a Thread cannot change an already frozen request.
+        let route_selector = match (saved_route, &bot) {
+            (Some(saved), _) => saved.route,
+            (None, Some(bot)) => self
+                .services
+                .bots
+                .model_selector(bot)
+                .map_err(|error| resource_error("resolve bot model", error))?,
+            (None, None) => default_route.clone(),
+        };
         let resolved_route = config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector);
@@ -137,6 +187,17 @@ impl StudioThreadFactory {
             .with_tools(crate::workflow_tool::workflow_registrations()?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
+        if let Some(bot) = &bot
+            && !saved
+                .extensions
+                .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+        {
+            initial_extensions.insert(
+                crate::studio::model_route::BOT_OWNER_EXTENSION.into(),
+                crate::studio::model_route::encode_bot_owner(&bot.id)
+                    .map_err(|error| resource_error("freeze bot owner", error))?,
+            );
+        }
         if !saved.extensions.contains_key("studio.mode") {
             initial_extensions.insert(
                 "studio.mode".into(),

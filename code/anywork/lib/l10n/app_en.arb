@@ -356,8 +356,8 @@
       }
     }
   },
-  "settingsBotsSourceGroup": "Platform group",
-  "settingsBotsSourceDirect": "Observed direct chat",
+  "settingsBotsSourceGroup": "Group chat",
+  "settingsBotsSourceDirect": "Direct chat",
   "settingsBotsEdit": "Edit configuration",
   "settingsBotsDismiss": "Cancel",
   "settingsBotsPreserveSecret": "Leave blank to keep the existing secret. It is never displayed.",
@@ -2152,5 +2152,15 @@
   "statusCompactNow": "Compact now",
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
-  "settingsModelAutoCompactCustom": "Custom"
+  "settingsModelAutoCompactCustom": "Custom",
+  "botsOverviewHint": "Bring your sessions to Feishu to search, collaborate, and share files.",
+  "botsPlatformFeishu": "Feishu",
+  "botsModelTitle": "Model and reasoning",
+  "botsModelHint": "Applies to all chats with this bot from the next turn.",
+  "botsAccessTitle": "People and group access",
+  "botsAccessHint": "Only approved people and groups can use this bot.",
+  "botsConnectionSettings": "Connection and settings",
+  "botsWorkspace": "Dedicated workspace",
+  "botsPlatformTools": "Feishu messages and test sending",
+  "botsManagedModel": "Managed by bot settings"
 }

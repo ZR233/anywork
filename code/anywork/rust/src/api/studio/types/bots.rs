@@ -194,6 +194,7 @@ pub struct BridgeBotDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeBotSnapshot {
+    pub last_activity_at: Option<i64>,
     pub id: String,
     pub name: String,
     pub project_id: String,
@@ -201,6 +202,8 @@ pub struct BridgeBotSnapshot {
     pub platform: BridgeBotPlatform,
     pub enabled: bool,
     pub tools_enabled: bool,
+    pub model_route: Option<BridgeBotModelRoute>,
+    pub workspace_path: String,
     pub config_revision: u64,
     pub trusted_open_ids: Vec<String>,
     pub trusted_chat_ids: Vec<String>,
@@ -274,6 +277,15 @@ pub struct BridgeSaveBotRequest {
     pub secret: BridgeBotSecretUpdate,
     pub enabled: bool,
     pub tools_enabled: bool,
+    pub model_route: Option<BridgeBotModelRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeBotModelRoute {
+    pub account_id: String,
+    pub model_id: String,
+    pub effort: Option<String>,
 }
 
 impl std::fmt::Debug for BridgeSaveBotRequest {

@@ -35,6 +35,7 @@ final class _BotsTransport implements StudioTransport {
           platform: BotPlatform.feishuChina,
           enabled: request.enabled,
           toolsEnabled: request.toolsEnabled,
+          modelRoute: request.modelRoute,
           configRevision: request.expectedConfigRevision + 1,
           trustedOpenIds: const [],
           trustedChatIds: const [],
@@ -311,12 +312,27 @@ void main() {
       projectId: 'p1',
       appId: 'cli_1',
       secret: client.botsCommands.consumeSecretUpdate(clear: false),
+      modelRoute: const BotModelRoute(
+        accountId: 'account-a',
+        modelId: 'model-a',
+        effort: 'high',
+      ),
     );
     expect(
       client.bots.state.value?.bots.single.credential,
       BotCredentialAvailability.stored,
     );
     expect(client.botsCommands.setupDraft.appId, 'cli_1');
+    expect(
+      client.bots.state.value?.bots.single.modelRoute,
+      const BotModelRoute(
+        accountId: 'account-a',
+        modelId: 'model-a',
+        effort: 'high',
+      ),
+    );
+    client.bots.apply(const BotsStateSnapshot.empty());
+    expect(client.bots.state.value?.bots.single.modelRoute?.effort, 'high');
     final again = client.botsCommands.consumeSecretUpdate(clear: false);
     expect(again, isA<BotSecretPreserve>());
   });

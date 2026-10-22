@@ -16,9 +16,9 @@ class _BotEdits {
 /// A secret lives only in this open editor and the submitted command. Closing
 /// the dialog never writes it to a normal Client draft or driver projection.
 class _BotEditor extends StatefulWidget {
-  const _BotEditor({required this.bot, required this.projects});
+  const _BotEditor({required this.bot, required this.onSave});
   final BotSnapshot bot;
-  final List<StudioProject> projects;
+  final Future<void> Function(_BotEdits) onSave;
 
   @override
   State<_BotEditor> createState() => _BotEditorState();
@@ -28,8 +28,10 @@ class _BotEditorState extends State<_BotEditor> {
   late final _name = TextEditingController(text: widget.bot.name);
   late final _appId = TextEditingController(text: widget.bot.appId);
   final _secret = TextEditingController();
-  late String _projectId = widget.bot.projectId;
+  late final String _projectId = widget.bot.projectId;
   bool _clearSecret = false;
+  bool _busy = false;
+  String? _error;
 
   @override
   void dispose() {
@@ -49,44 +51,17 @@ class _BotEditorState extends State<_BotEditor> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_error case final error?) ...[
+              SettingsInlineError(message: error),
+              const SizedBox(height: 12),
+            ],
             TextField(
+              key: StudioDriverKeys.botsName,
               controller: _name,
               decoration: InputDecoration(
                 labelText: context.l10n.settingsBotsName,
               ),
             ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _projectId,
-              isExpanded: true,
-              decoration: InputDecoration(
-                labelText: context.l10n.settingsBotsProject,
-              ),
-              items: [
-                if (!widget.projects.any(
-                  (project) => project.id == widget.bot.projectId,
-                ))
-                  DropdownMenuItem(
-                    value: widget.bot.projectId,
-                    child: Text(
-                      widget.bot.projectId,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                for (final project in widget.projects)
-                  DropdownMenuItem(
-                    value: project.id,
-                    child: Text(project.name, overflow: TextOverflow.ellipsis),
-                  ),
-              ],
-              onChanged: widget.bot.canChangeProject
-                  ? (value) {
-                      if (value != null) _projectId = value;
-                    }
-                  : null,
-            ),
-            if (!widget.bot.canChangeProject)
-              Text(context.l10n.settingsBotsProjectLocked),
             const SizedBox(height: 12),
             TextField(
               controller: _appId,
@@ -123,27 +98,46 @@ class _BotEditorState extends State<_BotEditor> {
     ),
     actions: [
       TextButton(
-        onPressed: () => Navigator.pop(context),
+        onPressed: _busy ? null : () => Navigator.pop(context),
         child: Text(context.l10n.settingsBotsDismiss),
       ),
       FilledButton(
-        onPressed: () {
-          final secret = _clearSecret
-              ? const BotSecretClear()
-              : _secret.text.isEmpty
-              ? const BotSecretPreserve()
-              : BotSecretReplace(_secret.text);
-          _secret.clear();
-          Navigator.pop(
-            context,
-            _BotEdits(
-              name: _name.text,
-              projectId: _projectId,
-              appId: _appId.text,
-              secret: secret,
-            ),
-          );
-        },
+        key: StudioDriverKeys.botsSave,
+        onPressed: _busy
+            ? null
+            : () async {
+                setState(() {
+                  _busy = true;
+                  _error = null;
+                });
+                final secret = _clearSecret
+                    ? const BotSecretClear()
+                    : _secret.text.isEmpty
+                    ? const BotSecretPreserve()
+                    : BotSecretReplace(_secret.text);
+                try {
+                  await widget.onSave(
+                    _BotEdits(
+                      name: _name.text,
+                      projectId: _projectId,
+                      appId: _appId.text,
+                      secret: secret,
+                    ),
+                  );
+                  _secret.clear();
+                  if (context.mounted) Navigator.pop(context);
+                } catch (error) {
+                  if (mounted) {
+                    setState(() {
+                      _error = error is StudioFailure
+                          ? error.message
+                          : context.l10n.settingsBotsOperationFailed;
+                    });
+                  }
+                } finally {
+                  if (mounted) setState(() => _busy = false);
+                }
+              },
         child: Text(context.l10n.settingsBotsSave),
       ),
     ],

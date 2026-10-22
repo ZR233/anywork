@@ -16,6 +16,9 @@ use std::path::Path;
 const JOURNAL_FILE: &str = "credential-journal.json";
 const JOURNAL_SCHEMA: u32 = 3;
 const MIGRATION_INTENT_FILE: &str = "credential-migration.json";
+// Credential payload versioning arrived in schema 2; later config upgrades must not
+// reinterpret its protected payload as the original plaintext credential format.
+const VERSIONED_CREDENTIAL_CONFIG_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -159,7 +162,8 @@ pub fn auth_invalidate(previous: Option<&BotConfigFile>, current: &BotConfigFile
     match previous {
         None => current.selected_ref.is_some(),
         Some(previous) => {
-            previous.selected_ref != current.selected_ref || previous.app_id != current.app_id
+            previous.selected_ref != current.selected_ref
+                || previous.feishu().app_id != current.feishu().app_id
         }
     }
 }
@@ -242,11 +246,11 @@ pub fn recover_bot_directory(
     if let Some(journal) = read_journal(dir)? {
         ensure_journal_identity(expected_bot_id, &journal)?;
         // 消费 journal 前保留候选目标应用：回退到旧配置时仍须保留该候选占用。
-        let candidate_app_id = journal.target.app_id.clone();
+        let candidate_app_id = journal.target.feishu().app_id.clone();
         let previous_app_id = journal
             .previous
             .as_ref()
-            .map(|previous| previous.app_id.clone());
+            .map(|previous| previous.feishu().app_id.clone());
         let recovered = recover_operation(dir, credentials, journal)?;
         return Ok(recovery_from_commit(
             recovered,
@@ -255,7 +259,7 @@ pub fn recover_bot_directory(
         ));
     }
     let config = match loaded {
-        Some(config) if config.schema_version < BOT_CONFIG_SCHEMA_VERSION => {
+        Some(config) if config.schema_version < VERSIONED_CREDENTIAL_CONFIG_SCHEMA => {
             migrate_legacy_config(dir, credentials, config)?
         }
         Some(config) => {
@@ -286,8 +290,8 @@ fn retry_completed_migration_cleanup(dir: &Path, config: &BotConfigFile) {
         Ok(bytes) => match serde_json::from_slice::<MigrationIntent>(&bytes) {
             Ok(intent)
                 if intent.bot_id == config.id
-                    && intent.app_id == config.app_id
-                    && config.schema_version == BOT_CONFIG_SCHEMA_VERSION =>
+                    && intent.app_id == config.feishu().app_id
+                    && config.schema_version >= VERSIONED_CREDENTIAL_CONFIG_SCHEMA =>
             {
                 if let Err(error) = remove_path(&path) {
                     tracing::warn!(
@@ -337,7 +341,7 @@ fn recovery_from_commit(
         // 原关联占用另行传递，不能替代候选目标。
         (CredentialDecision::Uncertain, _, _) => candidate_app_id
             .clone()
-            .or_else(|| Some(commit.config.app_id.clone())),
+            .or_else(|| Some(commit.config.feishu().app_id.clone())),
         (
             CredentialDecision::NotApplied | CredentialDecision::Applied,
             BotCredentialOperation::CleanupPending {
@@ -347,12 +351,12 @@ fn recovery_from_commit(
             _,
         ) => candidate_app_id
             .clone()
-            .or_else(|| Some(commit.config.app_id.clone())),
+            .or_else(|| Some(commit.config.feishu().app_id.clone())),
         (
             CredentialDecision::NotApplied | CredentialDecision::Applied,
             BotCredentialOperation::CleanupPending { .. },
             false,
-        ) => Some(commit.config.app_id.clone()),
+        ) => Some(commit.config.feishu().app_id.clone()),
         _ => None,
     };
     CredentialRecovery {
@@ -473,7 +477,7 @@ pub fn prepare_bot_credentials(
         BotSecretUpdate::Preserve => {
             if previous.selected_ref.is_none() {
                 None
-            } else if previous.app_id == candidate.app_id {
+            } else if previous.feishu().app_id == candidate.feishu().app_id {
                 previous_ref.clone()
             } else {
                 let Some(current) = previous_ref.as_ref() else {
@@ -519,7 +523,7 @@ pub fn prepare_bot_credentials(
                 let persist = persist_version(
                     credentials,
                     &candidate.id,
-                    &candidate.app_id,
+                    &candidate.feishu().app_id,
                     &version,
                     &value,
                     current.kind,
@@ -548,7 +552,7 @@ pub fn prepare_bot_credentials(
             let persist = persist_version(
                 credentials,
                 &candidate.id,
-                &candidate.app_id,
+                &candidate.feishu().app_id,
                 &version,
                 &value,
                 BotCredentialRefKind::System,
@@ -928,7 +932,7 @@ fn inspect_decided(
     config: &BotConfigFile,
     selected: Option<&BotCredentialRef>,
 ) -> InspectedCredential {
-    match credentials.inspect_selected(&config.id, &config.app_id, selected) {
+    match credentials.inspect_selected(&config.id, &config.feishu().app_id, selected) {
         Ok(selected) => normalize_selected(selected),
         Err(error) => InspectedCredential {
             availability: BotCredentialAvailability::Unavailable,
@@ -975,7 +979,7 @@ fn migrate_legacy_config(
 ) -> Result<BotConfigFile, FeishuError> {
     let intent_path = dir.join(MIGRATION_INTENT_FILE);
     let intent = load_or_write_intent(&intent_path, &config)?;
-    if intent.bot_id != config.id || intent.app_id != config.app_id {
+    if intent.bot_id != config.id || intent.app_id != config.feishu().app_id {
         return Err(FeishuError::new(
             FeishuErrorKind::Protocol,
             "bot credential migration identity does not match config",
@@ -1084,7 +1088,7 @@ fn wrap_opaque(
         .upsert(BotSecretVersion {
             id: intent.version.clone(),
             bot_id: config.id.clone(),
-            app_id: config.app_id.clone(),
+            app_id: config.feishu().app_id.clone(),
             secret: secret.to_string(),
         })
         .map_err(map_io)?;
@@ -1098,7 +1102,7 @@ fn wrap_opaque(
                     BotSecretVersion {
                         id: intent.version.clone(),
                         bot_id: config.id.clone(),
-                        app_id: config.app_id.clone(),
+                        app_id: config.feishu().app_id.clone(),
                         secret: secret.to_string(),
                     },
                 )?
@@ -1360,7 +1364,7 @@ fn load_or_write_intent(
     let intent = MigrationIntent {
         schema_version: 1,
         bot_id: config.id.clone(),
-        app_id: config.app_id.clone(),
+        app_id: config.feishu().app_id.clone(),
         version: new_id("cred"),
     };
     let encoded = serde_json::to_vec_pretty(&intent).map_err(|_| {
@@ -1548,6 +1552,44 @@ mod tests {
     }
 
     #[test]
+    fn platform_schema_upgrade_preserves_versioned_credentials_without_legacy_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = capability();
+        let mut previous = bot_config("cli_original");
+        previous.schema_version = 2;
+        previous.selected_ref = Some(BotCredentialRef::system("original-version"));
+        credentials
+            .persist_system(
+                &previous.id,
+                &BotProtectedPayload {
+                    schema_version: 1,
+                    versions: vec![BotSecretVersion {
+                        id: "original-version".into(),
+                        bot_id: previous.id.clone(),
+                        app_id: "cli_original".into(),
+                        secret: "synthetic-secret".into(),
+                    }],
+                },
+            )
+            .unwrap();
+        save_config(&directory.path().join("config.toml"), &previous).unwrap();
+        let recovered = recover_bot_directory(
+            directory.path(),
+            &previous.id,
+            &credentials,
+            Some(previous.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.config.as_ref().unwrap().selected_ref,
+            previous.selected_ref
+        );
+        assert_eq!(recovered.availability, BotCredentialAvailability::Stored);
+        assert_eq!(recovered.secret.as_deref(), Some("synthetic-secret"));
+        assert!(!directory.path().join(MIGRATION_INTENT_FILE).exists());
+    }
+
+    #[test]
     fn preserve_empty_ref_does_not_revive_legacy_secret() {
         let directory = tempfile::tempdir().unwrap();
         let credentials = capability();
@@ -1649,7 +1691,11 @@ mod tests {
         let mut config = bot_config("cli_a");
         config.selected_ref = Some(BotCredentialRef::session("lease"));
         let inspected = credentials
-            .inspect_selected(&config.id, &config.app_id, config.selected_ref.as_ref())
+            .inspect_selected(
+                &config.id,
+                &config.feishu().app_id,
+                config.selected_ref.as_ref(),
+            )
             .unwrap();
         assert_eq!(
             inspected.availability,
@@ -1954,7 +2000,7 @@ mod tests {
         )
         .unwrap();
         let mut candidate = stored.config.clone();
-        candidate.app_id = "cli_b".into();
+        candidate.feishu_mut().app_id = "cli_b".into();
         memory_faults::set_system_unavailable(true);
         let error = commit_bot_credentials(
             directory.path(),
@@ -1971,7 +2017,7 @@ mod tests {
         memory_faults::reset();
         let still = load_config(&directory.path().join("config.toml")).unwrap();
         assert_eq!(still.selected_ref, stored.config.selected_ref);
-        assert_eq!(still.app_id, "cli_a");
+        assert_eq!(still.feishu().app_id, "cli_a");
     }
 
     #[test]
@@ -2004,7 +2050,7 @@ mod tests {
             )
             .unwrap();
         let mut target = previous.clone();
-        target.app_id = "cli_b".into();
+        target.feishu_mut().app_id = "cli_b".into();
         target.selected_ref = Some(BotCredentialRef::system("cred-new"));
         let journal = CredentialJournal {
             schema_version: JOURNAL_SCHEMA,
@@ -2071,7 +2117,7 @@ mod tests {
             )
             .unwrap();
         let mut candidate_target = previous.clone();
-        candidate_target.app_id = "cli_b".into();
+        candidate_target.feishu_mut().app_id = "cli_b".into();
         candidate_target.selected_ref = Some(BotCredentialRef::system("cred-new"));
         let journal = CredentialJournal {
             schema_version: JOURNAL_SCHEMA,
@@ -2097,7 +2143,7 @@ mod tests {
             pending_candidate
                 .config
                 .as_ref()
-                .map(|config| config.app_id.as_str()),
+                .map(|config| config.feishu().app_id.as_str()),
             Some("cli_a")
         );
         assert_eq!(
@@ -2409,7 +2455,7 @@ mod tests {
             )
             .unwrap();
         let mut target = previous.clone();
-        target.app_id = "cli_b".into();
+        target.feishu_mut().app_id = "cli_b".into();
         target.selected_ref = Some(BotCredentialRef::system("cred-new"));
         save_config(&directory.path().join("config.toml"), &target).unwrap();
         let journal = CredentialJournal {

@@ -65,6 +65,92 @@ impl FeishuHttp {
         &self.policy
     }
 
+    /// Streams a message-owned resource to an atomically published file. Credentials stay in
+    /// the Authorization header; path segments cannot change the configured API origin.
+    pub async fn download_message_resource(
+        &self,
+        token: &str,
+        message_id: &str,
+        key: &str,
+        kind: &str,
+        destination: &std::path::Path,
+    ) -> Result<(), FeishuError> {
+        use tokio::io::AsyncWriteExt;
+        let mut url = self.open_api().clone();
+        url.path_segments_mut()
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    "invalid resource API base",
+                    false,
+                    None,
+                )
+            })?
+            .pop_if_empty()
+            .extend([
+                "open-apis",
+                "im",
+                "v1",
+                "messages",
+                message_id,
+                "resources",
+                key,
+            ]);
+        url.query_pairs_mut().append_pair("type", kind);
+        let mut response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(transport)?;
+        if !response.status().is_success() {
+            return Err(classify_http_status(response.status()));
+        }
+        let limit = if kind == "image" {
+            20 * 1024 * 1024
+        } else {
+            50 * 1024 * 1024
+        };
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit)
+        {
+            return Err(resource_too_large());
+        }
+        let parent = destination
+            .parent()
+            .ok_or_else(|| resource_io("resource parent missing"))?
+            .to_owned();
+        tokio::fs::create_dir_all(&parent)
+            .await
+            .map_err(resource_io)?;
+        let temporary =
+            tokio::task::spawn_blocking(move || tempfile::NamedTempFile::new_in(parent))
+                .await
+                .map_err(resource_io)?
+                .map_err(resource_io)?;
+        let mut file = tokio::fs::File::from_std(temporary.reopen().map_err(resource_io)?);
+        let mut total = 0u64;
+        while let Some(bytes) = response.chunk().await.map_err(transport)? {
+            total = total
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(resource_too_large)?;
+            if total > limit {
+                return Err(resource_too_large());
+            }
+            file.write_all(&bytes).await.map_err(resource_io)?;
+        }
+        file.sync_all().await.map_err(resource_io)?;
+        drop(file);
+        let destination = destination.to_owned();
+        tokio::task::spawn_blocking(move || temporary.persist(destination))
+            .await
+            .map_err(resource_io)?
+            .map_err(resource_io)?;
+        Ok(())
+    }
+
     pub async fn post_form<T: DeserializeOwned>(
         &self,
         url: Url,
@@ -277,6 +363,24 @@ fn classify_oauth(code: i64, status: reqwest::StatusCode) -> FeishuError {
         _ => return classify_open_api(code, None),
     };
     FeishuError::new(kind, message, retryable, Some(code.to_string()))
+}
+
+fn resource_io(error: impl std::fmt::Display) -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Unavailable,
+        format!("message resource storage: {error}"),
+        true,
+        None,
+    )
+}
+
+fn resource_too_large() -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Rejected,
+        "消息附件超过支持的大小（图片 20 MiB，文件 50 MiB）",
+        false,
+        None,
+    )
 }
 
 fn transport(error: reqwest::Error) -> FeishuError {

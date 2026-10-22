@@ -39,6 +39,7 @@ const TENANT_SCOPES: &[&str] = &[
     "im:message.group_at_msg:readonly",
     "im:chat:readonly",
     "im:message:readonly",
+    "im:resource",
 ];
 const TENANT_EVENTS: &[&str] = &["im.message.receive_v1"];
 

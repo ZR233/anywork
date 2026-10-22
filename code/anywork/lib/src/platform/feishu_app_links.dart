@@ -36,3 +36,11 @@ String feishuBotAppLink(String appId, {bool browser = false}) => Uri(
   path: '/client/bot/open',
   query: 'appId=${Uri.encodeComponent(appId)}',
 ).toString();
+
+/// Chat AppLink accepts the platform chat identity for both groups and DMs.
+String feishuChatAppLink(String chatId, {bool browser = false}) => Uri(
+  scheme: browser ? 'https' : 'feishu',
+  host: browser ? 'applink.feishu.cn' : 'applink',
+  path: '/client/chat/open',
+  queryParameters: {'openChatId': chatId},
+).toString();

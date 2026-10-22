@@ -588,7 +588,7 @@ impl Session {
             self.model_executions() == before_model + 1,
             "@all / other bot / bot sender must not execute"
         );
-        let groups = self
+        let directs = self
             .http()?
             .list_conversations(&ListBotConversationsRequest {
                 bot_id: bot_id.clone(),
@@ -597,15 +597,15 @@ impl Session {
             })
             .await?;
         ensure!(
-            groups
+            directs
                 .conversations
                 .iter()
-                .all(|item| item.kind == BotConversationKind::Group
-                    && item.source == BotConversationSource::RemoteGroup),
-            "first conversation page must stay on the remote group source"
+                .all(|item| item.kind == BotConversationKind::Direct
+                    && item.source == BotConversationSource::ObservedDirect),
+            "first conversation page must show recently observed direct chats"
         );
-        let Some(cursor) = groups.next_cursor.clone() else {
-            bail!("group page with limit=1 must expose a next cursor into the observed DM source");
+        let Some(cursor) = directs.next_cursor.clone() else {
+            bail!("direct page with limit=1 must expose a continuation cursor");
         };
         let next = self
             .http()?
@@ -852,6 +852,7 @@ impl Session {
         let failed = self
             .http()?
             .save_bot_result(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-prepare-empty-secret".into(),
                 bot_id: None,
                 expected_config_revision: 0,
@@ -902,6 +903,7 @@ impl Session {
         let retry = self
             .http()?
             .save_bot_result(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-prepare-retry-valid".into(),
                 bot_id: None,
                 expected_config_revision: 0,
@@ -970,6 +972,7 @@ impl Session {
         let first = self
             .http()?
             .save_bot(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-cas-create".into(),
                 bot_id: None,
                 expected_config_revision: 0,
@@ -999,6 +1002,7 @@ impl Session {
         let renamed = self
             .http()?
             .save_bot(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-cas-rename".into(),
                 bot_id: Some(bot_id.clone()),
                 expected_config_revision: created_revision,
@@ -1029,6 +1033,7 @@ impl Session {
         let stale = self
             .http()?
             .save_bot_result(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-cas-stale".into(),
                 bot_id: Some(bot_id.clone()),
                 expected_config_revision: created_revision,
@@ -1064,6 +1069,7 @@ impl Session {
         );
         let current_revision = after_stale.config_revision;
         let concurrent_a = SaveBotRequest {
+            model_route: None,
             operation_id: "op-cas-concurrent-a".into(),
             bot_id: Some(bot_id.clone()),
             expected_config_revision: current_revision,
@@ -1075,6 +1081,7 @@ impl Session {
             tools_enabled: false,
         };
         let concurrent_b = SaveBotRequest {
+            model_route: None,
             operation_id: "op-cas-concurrent-b".into(),
             bot_id: Some(bot_id.clone()),
             expected_config_revision: current_revision,
@@ -1146,6 +1153,7 @@ impl Session {
         let saved = self
             .http()?
             .save_bot(&SaveBotRequest {
+                model_route: None,
                 operation_id: "op-topic-save".into(),
                 bot_id: None,
                 expected_config_revision: 0,
@@ -1305,6 +1313,7 @@ impl Session {
         let reply = self
             .http()?
             .save_bot(&SaveBotRequest {
+                model_route: None,
                 operation_id,
                 bot_id: None,
                 expected_config_revision: 0,

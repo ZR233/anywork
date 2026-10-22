@@ -16,6 +16,15 @@ pub enum BotPlatform {
     FeishuChina,
 }
 
+/// A bot owns one model selection shared by all of its platform conversations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BotModelRoute {
+    pub account_id: String,
+    pub model_id: String,
+    pub effort: Option<String>,
+}
+
 /// 机器人连接生命周期。保存成功不等于已连接。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
@@ -227,6 +236,7 @@ pub struct BotPairingRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BotSnapshot {
+    pub last_activity_at: Option<i64>,
     pub id: String,
     pub name: String,
     pub project_id: String,
@@ -234,6 +244,8 @@ pub struct BotSnapshot {
     pub platform: BotPlatform,
     pub enabled: bool,
     pub tools_enabled: bool,
+    pub model_route: Option<BotModelRoute>,
+    pub workspace_path: String,
     pub config_revision: u64,
     pub trusted_open_ids: Vec<String>,
     pub trusted_chat_ids: Vec<String>,
@@ -336,6 +348,7 @@ pub struct SaveBotRequest {
     pub enabled: bool,
     #[serde(default)]
     pub tools_enabled: bool,
+    pub model_route: Option<BotModelRoute>,
 }
 
 impl std::fmt::Debug for SaveBotRequest {

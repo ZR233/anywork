@@ -183,7 +183,7 @@ impl BotRuntime {
     ) -> Result<BotsCommandReply, FeishuError> {
         let name = name.trim().to_string();
         let project_id = project_id.trim().to_string();
-        if name.is_empty() || project_id.is_empty() {
+        if name.is_empty() {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
                 "bot name and projectId are required",

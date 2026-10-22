@@ -18,6 +18,7 @@ pub enum StudioCommandBinding {
     Local {
         workspace: pl_tool::workspace::ToolWorkspace,
         environment: pl_tool::environment::ExecutionEnvironment,
+        child_environment: std::collections::BTreeMap<String, String>,
         access: CommandAccess,
     },
     Remote {
@@ -143,6 +144,7 @@ impl StudioThreadTools {
             StudioCommandBinding::Local {
                 workspace,
                 environment,
+                child_environment,
                 access,
             } => {
                 if capabilities.exec {
@@ -157,7 +159,8 @@ impl StudioThreadTools {
                             let backend = pl_tool::command::LocalCommandBackend::new(
                                 workspace.root().to_path_buf(),
                             )
-                            .with_execution_environment(environment);
+                            .with_execution_environment(environment)
+                            .with_child_environment(child_environment);
                             #[cfg(target_os = "linux")]
                             let backend = backend.with_worker_executable(
                                 crate::worker_assets::local_worker(helper_source).await?,

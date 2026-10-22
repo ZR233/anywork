@@ -252,6 +252,7 @@ struct SaveFingerprint {
     secret: SecretFingerprint,
     enabled: bool,
     tools_enabled: bool,
+    model_route: Option<pl_protocol::studio::BotModelRoute>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -434,7 +435,7 @@ impl BotRuntime {
     ) -> Result<BotsCommandReply, FeishuError> {
         self.reject_if_sealed()?;
         validate_app_id(&request.app_id)?;
-        if request.name.trim().is_empty() || request.project_id.trim().is_empty() {
+        if request.name.trim().is_empty() {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
                 "bot name and projectId are required",
@@ -450,6 +451,22 @@ impl BotRuntime {
             None => new_id("bot"),
         };
         let mut request = request;
+        if request.project_id.is_empty() {
+            request.project_id = match &request.bot_id {
+                Some(id) => self
+                    .managed(id)
+                    .await?
+                    .config
+                    .lock()
+                    .await
+                    .project_id
+                    .clone(),
+                None => {
+                    self.ensure_workspace_project(&bot_id, &request.name)
+                        .await?
+                }
+            };
+        }
         request.bot_id = Some(bot_id.clone());
         self.submit(bot_id, BotMutation::Save(request), owner_epoch)
             .await
@@ -535,11 +552,16 @@ impl BotRuntime {
 
     pub(crate) async fn save_registration_bot(
         &self,
-        request: RegistrationSave,
+        mut request: RegistrationSave,
     ) -> Result<CredentialCommit, FeishuError> {
         self.reject_if_sealed()?;
         validate_bot_id(&request.bot_id)?;
         validate_app_id(&request.app_id)?;
+        if request.project_id.is_empty() {
+            request.project_id = self
+                .ensure_workspace_project(&request.bot_id, &request.name)
+                .await?;
+        }
         let owner = self.ensure_record(&request.bot_id).await?;
         owner.submit_registration_save(request).await
     }
@@ -958,9 +980,9 @@ impl BotOperationOwner {
                     owner_epoch,
                     move |config| {
                         if trusted {
-                            config.trusted_open_ids.insert(open_id.clone());
+                            config.feishu_mut().trusted_open_ids.insert(open_id.clone());
                         } else {
-                            config.trusted_open_ids.remove(&open_id);
+                            config.feishu_mut().trusted_open_ids.remove(&open_id);
                         }
                     },
                     Some(pairing),
@@ -979,9 +1001,9 @@ impl BotOperationOwner {
                     owner_epoch,
                     move |config| {
                         if trusted {
-                            config.trusted_chat_ids.insert(chat_id.clone());
+                            config.feishu_mut().trusted_chat_ids.insert(chat_id.clone());
                         } else {
-                            config.trusted_chat_ids.remove(&chat_id);
+                            config.feishu_mut().trusted_chat_ids.remove(&chat_id);
                         }
                     },
                     None,
@@ -1009,6 +1031,7 @@ impl BotOperationOwner {
             secret,
             enabled,
             tools_enabled,
+            model_route,
         } = request;
         let bot_id = bot_id.unwrap_or_else(|| self.bot_id.clone());
         let published = self.published().await;
@@ -1038,10 +1061,10 @@ impl BotOperationOwner {
                     None,
                 ));
             }
-            if previous.app_id != app_id
+            if previous.feishu().app_id != app_id
                 && (occupancy.has_app_identity
-                    || !previous.trusted_open_ids.is_empty()
-                    || !previous.trusted_chat_ids.is_empty())
+                    || !previous.feishu().trusted_open_ids.is_empty()
+                    || !previous.feishu().trusted_chat_ids.is_empty())
             {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Rejected,
@@ -1065,9 +1088,14 @@ impl BotOperationOwner {
             .await?;
         candidate.name = name;
         candidate.project_id = project_id;
-        candidate.app_id = app_id;
+        candidate.feishu_mut().app_id = app_id;
         candidate.enabled = enabled;
         candidate.tools_enabled = tools_enabled;
+        candidate.model_route = Some(match model_route.or(candidate.model_route) {
+            Some(route) => route,
+            None => self.runtime.default_model_route()?,
+        });
+        candidate.schema_version = super::config::BOT_CONFIG_SCHEMA_VERSION;
         if previous.is_some() {
             candidate.bump();
         }
@@ -1148,7 +1176,7 @@ impl BotOperationOwner {
         mutate(&mut candidate);
         candidate.bump();
         self.runtime
-            .claim_app_target_or_error(&self.bot_id, &candidate.app_id)
+            .claim_app_target_or_error(&self.bot_id, &candidate.feishu().app_id)
             .await?;
         self.set_pending(
             BotCredentialOperation::Preparing {
@@ -1271,7 +1299,27 @@ impl BotOperationOwner {
     ) -> Result<Option<SettledCommit>, FeishuError> {
         let _serial = self.serial.lock().await;
         match self.verify_recovered_directory(loaded, None).await {
-            VerifiedDirectory::Determined(settled) => Ok(Some(*settled)),
+            VerifiedDirectory::Determined(mut settled) => {
+                // Recovery has already resolved credential ownership. Persist the model once,
+                // under this same configuration owner, before publishing or opening a socket.
+                if matches!(settled.commit.operation, BotCredentialOperation::Idle)
+                    && settled.commit.config.model_route.is_none()
+                {
+                    settled.commit.config.model_route = Some(self.runtime.default_model_route()?);
+                    settled.commit.config.schema_version = super::config::BOT_CONFIG_SCHEMA_VERSION;
+                    settled.commit.config.bump();
+                    super::config::save_config(
+                        &self
+                            .runtime
+                            .inner
+                            .paths
+                            .bot_dir(&self.bot_id)
+                            .join("config.toml"),
+                        &settled.commit.config,
+                    )?;
+                }
+                Ok(Some(*settled))
+            }
             // 未决与不可核实都已更新投影并保持封口；加载继续，不丢弃现场。
             VerifiedDirectory::Unpublished
             | VerifiedDirectory::Uncertain(_)
@@ -1369,8 +1417,9 @@ impl BotOperationOwner {
             ..
         } = request;
         let mut config = BotConfigFile::new(self.bot_id.clone(), name, project_id, app_id.clone())?;
+        config.model_route = Some(self.runtime.default_model_route()?);
         if let Some(open_id) = trusted_open_id {
-            config.trusted_open_ids.insert(open_id);
+            config.feishu_mut().trusted_open_ids.insert(open_id);
         }
         self.runtime
             .claim_app_target_or_error(&self.bot_id, &app_id)
@@ -1604,10 +1653,10 @@ impl BotOperationOwner {
                     None,
                 ));
             }
-            if current.app_id != target.app_id
+            if current.feishu().app_id != target.feishu().app_id
                 && (occupancy.has_app_identity
-                    || !current.trusted_open_ids.is_empty()
-                    || !current.trusted_chat_ids.is_empty())
+                    || !current.feishu().trusted_open_ids.is_empty()
+                    || !current.feishu().trusted_chat_ids.is_empty())
             {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Rejected,
@@ -1617,7 +1666,7 @@ impl BotOperationOwner {
                 ));
             }
             self.runtime
-                .claim_app_target_or_error(&self.bot_id, &target.app_id)
+                .claim_app_target_or_error(&self.bot_id, &target.feishu().app_id)
                 .await?;
             managed.admission_closed.store(true, Ordering::Release);
             managed.submitting.store(true, Ordering::Release);
@@ -1625,7 +1674,7 @@ impl BotOperationOwner {
             return Ok(());
         }
         self.runtime
-            .claim_app_target_or_error(&self.bot_id, &target.app_id)
+            .claim_app_target_or_error(&self.bot_id, &target.feishu().app_id)
             .await?;
         self.submitting.store(true, Ordering::Release);
         Ok(())
@@ -1672,7 +1721,7 @@ impl BotOperationOwner {
         let commit = &settled.commit;
         if commit.decision == CredentialDecision::Uncertain {
             self.publish_uncertain_state(
-                &commit.config.app_id,
+                &commit.config.feishu().app_id,
                 commit.operation.clone(),
                 commit.diagnostic.clone(),
             )
@@ -1689,7 +1738,7 @@ impl BotOperationOwner {
             });
         }
         let managed = self.ensure_published(&commit.config).await?;
-        let previous_app = managed.config.lock().await.app_id.clone();
+        let previous_app = managed.config.lock().await.feishu().app_id.clone();
         let must_stop =
             commit.decision == CredentialDecision::Applied || options.coordinate_connection;
         let quiesce = if must_stop {
@@ -1712,7 +1761,7 @@ impl BotOperationOwner {
         }
         let claim = self
             .runtime
-            .promote_app_claim(&self.bot_id, &commit.config.app_id)
+            .promote_app_claim(&self.bot_id, &commit.config.feishu().app_id)
             .await;
         let prep = self.runtime.take_prep_claim(&self.bot_id).await;
         // 已提交或未提交候选的清理义务都算未收束：即使应用与已发布配置相同，
@@ -1724,10 +1773,12 @@ impl BotOperationOwner {
         let candidate = settled
             .candidate_app
             .clone()
-            .or_else(|| prep.filter(|app| retain_candidate && app != &commit.config.app_id))
-            .or_else(|| retain_candidate.then(|| commit.config.app_id.clone()));
+            .or_else(|| {
+                prep.filter(|app| retain_candidate && app != &commit.config.feishu().app_id)
+            })
+            .or_else(|| retain_candidate.then(|| commit.config.feishu().app_id.clone()));
         if let Some(candidate) = candidate
-            && (retain_candidate || candidate != commit.config.app_id)
+            && (retain_candidate || candidate != commit.config.feishu().app_id)
         {
             self.runtime
                 .retain_cleanup_app(&self.bot_id, &candidate)
@@ -1941,7 +1992,7 @@ impl BotOperationOwner {
                         recovered
                             .config
                             .as_ref()
-                            .map(|config| config.app_id.clone())
+                            .map(|config| config.feishu().app_id.clone())
                     })
                     .unwrap_or_default();
                 // 已知的原配置应用与被 journal 证明的目标应用都要继续受保护：
@@ -2030,14 +2081,14 @@ impl BotOperationOwner {
             managed
                 .token
                 .replace(
-                    commit.config.app_id.clone(),
+                    commit.config.feishu().app_id.clone(),
                     commit.secret.clone().unwrap_or_default(),
                 )
                 .await;
         } else if let Some(secret) = commit.secret.clone() {
             managed
                 .token
-                .replace(commit.config.app_id.clone(), secret)
+                .replace(commit.config.feishu().app_id.clone(), secret)
                 .await;
         }
     }
@@ -2100,7 +2151,7 @@ impl BotOperationOwner {
             generation: Arc::new(AtomicU64::new(0)),
             token: TokenLease::new(
                 self.runtime.inner.http.clone(),
-                config.app_id.clone(),
+                config.feishu().app_id.clone(),
                 String::new(),
             ),
             bot_open_id: Mutex::new(None),
@@ -2124,7 +2175,7 @@ impl BotOperationOwner {
     ) -> Result<String, FeishuError> {
         let credentials = self.runtime.inner.config.bot_credentials();
         let bot_id = config.id.clone();
-        let app_id = config.app_id.clone();
+        let app_id = config.feishu().app_id.clone();
         let selected = config.selected_ref.clone();
         let inspected = self
             .run_inspect(move || {
@@ -2151,7 +2202,7 @@ impl BotOperationOwner {
         if let Some(managed) = self.published().await {
             let current = managed.config.lock().await.clone();
             if current.id != config.id
-                || current.app_id != config.app_id
+                || current.feishu().app_id != config.feishu().app_id
                 || current.selected_ref != config.selected_ref
                 || current.config_revision != config.config_revision
             {
@@ -2164,7 +2215,7 @@ impl BotOperationOwner {
             }
             managed
                 .token
-                .replace(config.app_id.clone(), secret.clone())
+                .replace(config.feishu().app_id.clone(), secret.clone())
                 .await;
         }
         Ok(secret)
@@ -2541,6 +2592,7 @@ fn fingerprint_of(mutation: &BotMutation, fallback_bot_id: &str) -> CommandFinge
             },
             enabled: request.enabled,
             tools_enabled: request.tools_enabled,
+            model_route: request.model_route.clone(),
         }),
         BotMutation::SetEnabled {
             operation_id,

@@ -469,8 +469,28 @@ class BotDiagnostic {
       'BotDiagnostic(code: $code, retryable: $retryable, platformCode: $platformCode)';
 }
 
+class BotModelRoute {
+  const BotModelRoute({
+    required this.accountId,
+    required this.modelId,
+    this.effort,
+  });
+  final String accountId;
+  final String modelId;
+  final String? effort;
+  @override
+  bool operator ==(Object other) =>
+      other is BotModelRoute &&
+      accountId == other.accountId &&
+      modelId == other.modelId &&
+      effort == other.effort;
+  @override
+  int get hashCode => Object.hash(accountId, modelId, effort);
+}
+
 class BotSnapshot {
   const BotSnapshot({
+    this.lastActivityAt,
     required this.id,
     required this.name,
     required this.projectId,
@@ -478,6 +498,8 @@ class BotSnapshot {
     required this.platform,
     required this.enabled,
     required this.toolsEnabled,
+    this.modelRoute,
+    this.workspacePath = '',
     required this.configRevision,
     required this.trustedOpenIds,
     required this.trustedChatIds,
@@ -499,6 +521,9 @@ class BotSnapshot {
   final BotPlatform platform;
   final bool enabled;
   final bool toolsEnabled;
+  final BotModelRoute? modelRoute;
+  final int? lastActivityAt;
+  final String workspacePath;
   final int configRevision;
   final List<String> trustedOpenIds;
   final List<String> trustedChatIds;
@@ -516,6 +541,7 @@ class BotSnapshot {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BotSnapshot &&
+          lastActivityAt == other.lastActivityAt &&
           id == other.id &&
           name == other.name &&
           projectId == other.projectId &&
@@ -523,6 +549,8 @@ class BotSnapshot {
           platform == other.platform &&
           enabled == other.enabled &&
           toolsEnabled == other.toolsEnabled &&
+          modelRoute == other.modelRoute &&
+          workspacePath == other.workspacePath &&
           configRevision == other.configRevision &&
           listEquals(trustedOpenIds, other.trustedOpenIds) &&
           listEquals(trustedChatIds, other.trustedChatIds) &&
@@ -729,6 +757,7 @@ class SaveBotRequest {
     required this.secret,
     this.enabled = false,
     this.toolsEnabled = false,
+    this.modelRoute,
   });
 
   final String operationId;
@@ -740,6 +769,7 @@ class SaveBotRequest {
   final BotSecretUpdate secret;
   final bool enabled;
   final bool toolsEnabled;
+  final BotModelRoute? modelRoute;
 
   @override
   String toString() =>

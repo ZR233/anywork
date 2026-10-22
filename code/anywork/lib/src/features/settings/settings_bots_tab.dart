@@ -11,6 +11,9 @@ import '../../platform/external_url_launcher.dart';
 import '../../platform/feishu_app_links.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/model_route_selector.dart';
+import '../shell/studio_shell.dart';
+import 'settings_agent_routes.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -26,7 +29,10 @@ part 'settings_bots_registration.dart';
 const _feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app';
 
 class BotsTab extends ConsumerStatefulWidget {
-  const BotsTab({super.key, required this.tabIndex});
+  const BotsTab({super.key, required this.tabIndex, this.botId, this.chatId});
+
+  final String? botId;
+  final String? chatId;
 
   final int tabIndex;
 
@@ -36,6 +42,7 @@ class BotsTab extends ConsumerStatefulWidget {
 
 class _BotsTabState extends ConsumerState<BotsTab> {
   String? _selectedBotId;
+  final _filter = TextEditingController();
   bool _setupOpen = false;
   bool _manualSetup = false;
   bool _busy = false;
@@ -44,8 +51,6 @@ class _BotsTabState extends ConsumerState<BotsTab> {
   late final TextEditingController _appId;
   late final TextEditingController _secret;
   late final TextEditingController _sendText;
-  final _startTime = TextEditingController();
-  final _endTime = TextEditingController();
   String? _selectedChatId;
 
   late final AnyworkClient _client;
@@ -58,35 +63,42 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     _name = TextEditingController(text: draft.name);
     _appId = TextEditingController(text: draft.appId);
     _secret = TextEditingController();
-    final queries = _client.botsQueries.state;
-    _selectedBotId =
-        queries.selectedMessageBotId ?? queries.selectedConversationBotId;
-    _selectedChatId = queries.selectedChatId;
+    _selectedBotId = widget.botId;
+    _selectedChatId = widget.chatId;
+    if (widget.botId case final id?) {
+      Future<void>.microtask(
+        () => _runQuery(id, () => _client.botsQueries.listConversations(id)),
+      );
+    }
     _sendText = TextEditingController(
       text: _client.botsCommands.messageDraft(
         _selectedBotId ?? '',
         _selectedChatId ?? '',
       ),
     );
-    _startTime.text = queries.selectedStartTime?.toString() ?? '';
-    _endTime.text = queries.selectedEndTime?.toString() ?? '';
+    if (widget.chatId != null && widget.botId != null) {
+      Future<void>.microtask(
+        () => _readMessages(widget.botId!, widget.chatId!),
+      );
+    }
   }
 
   @override
   void dispose() {
+    _filter.dispose();
     _name.dispose();
     _appId.dispose();
     _secret.dispose();
     _sendText.dispose();
-    _startTime.dispose();
-    _endTime.dispose();
     _client.botsCommands.clearSecret();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final visible = ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
+    final visible =
+        widget.botId != null ||
+        ref.watch(settingsVisibleTabProvider) == widget.tabIndex;
     watchSettingsScope(
       ref,
       visible: visible,
@@ -106,28 +118,44 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       _ => false,
     };
     return SettingsPane(
+      maxWidth: selected == null ? 1040 : 920,
       header: SettingsHeader(
-        title: context.l10n.settingsBotsTitle,
-        subtitle: context.l10n.settingsBotsSubtitle,
-        trailing: FilledButton.tonalIcon(
-          key: StudioDriverKeys.botsAdd,
-          onPressed: _busy || registering
-              ? null
-              : () => setState(() => _setupOpen = true),
-          icon: const Icon(Icons.add, size: 18),
-          label: Text(context.l10n.settingsBotsAdd),
-        ),
+        title: widget.chatId != null
+            ? context.l10n.botsPlatformTools
+            : selected?.name ?? context.l10n.settingsBotsTitle,
+        subtitle: selected == null
+            ? context.l10n.botsOverviewHint
+            : context.l10n.botsPlatformFeishu,
+        leading: selected == null
+            ? null
+            : IconButton(
+                key: StudioDriverKeys.botsBack,
+                tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.arrow_back),
+              ),
+        trailing: selected != null
+            ? null
+            : FilledButton.tonalIcon(
+                key: StudioDriverKeys.botsAdd,
+                onPressed: _busy || registering
+                    ? null
+                    : () => setState(() => _setupOpen = true),
+                icon: const Icon(Icons.add, size: 18),
+                label: Text(context.l10n.settingsBotsAdd),
+              ),
       ),
       children: [
         if (visible) const SettingsTopicStatus(topic: BotsTopic()),
         const SizedBox(height: 12),
-        _FactsStrip(snapshot: snapshot),
         if (_error case final error?) ...[
           const SizedBox(height: 12),
           SettingsInlineError(message: error),
         ],
         const SizedBox(height: 16),
-        if (registration != null && (registering || !_setupOpen))
+        if (selected == null &&
+            registration != null &&
+            (registering || !_setupOpen))
           SettingsSectionPanel(
             title: registration.name,
             children: [
@@ -148,7 +176,8 @@ class _BotsTabState extends ConsumerState<BotsTab> {
               ),
             ],
           ),
-        if (_setupOpen && !registering) _buildSetup(context, view),
+        if (selected == null && _setupOpen && !registering)
+          _buildSetup(context, view),
         if (snapshot.pendingCredentialOperations.isNotEmpty) ...[
           SettingsSectionPanel(
             title: context.l10n.settingsBotsPendingTitle,
@@ -173,161 +202,140 @@ class _BotsTabState extends ConsumerState<BotsTab> {
             title: context.l10n.settingsBotsEmptyTitle,
             body: context.l10n.settingsBotsEmptyBody,
           )
-        else if (snapshot.bots.isNotEmpty)
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final stacked = constraints.maxWidth < 760;
-              final list = _BotList(
-                bots: snapshot.bots,
-                selectedId: selected?.id,
-                onSelect: (id) => setState(() {
-                  if (selected?.id == id) return;
-                  _selectedBotId = id;
-                  _setupOpen = false;
-                  _selectedChatId = null;
-                  _sendText.clear();
-                  _client.botsQueries.forgetConversations();
-                  _client.botsQueries.forgetMessages();
-                }),
-              );
-              final detail = selected == null
-                  ? SettingsEmptyMessage(
-                      icon: Icons.tune_outlined,
-                      title: context.l10n.settingsBotsSelectTitle,
-                      body: context.l10n.settingsBotsSelectBody,
-                    )
-                  : _BotDetail(
-                      bot: selected,
-                      view: view,
-                      canOpenFeishu: canOpenFeishu,
-                      selectedChatId: _selectedChatId,
-                      sendController: _sendText,
-                      busy: _busy,
-                      startTime: _startTime,
-                      endTime: _endTime,
-                      onEdit: () => _editBot(selected, view),
-                      onDraftChanged: (value) {
-                        try {
-                          _client.botsCommands.updateMessageDraft(
-                            selected.id,
-                            _selectedChatId!,
-                            value,
-                          );
-                        } catch (_) {
-                          setState(
-                            () => _error =
-                                context.l10n.settingsBotsOperationFailed,
-                          );
-                        }
-                      },
-                      onSelectChat: (id) {
-                        setState(() {
-                          _selectedChatId = id;
-                          _sendText.text = _client.botsCommands.messageDraft(
-                            selected.id,
-                            id,
-                          );
-                        });
-                        _readMessages(selected.id, id);
-                      },
-                      onEnabled: (enabled) => _run(
-                        () => _client.botsCommands.setEnabled(
-                          botId: selected.id,
-                          expectedConfigRevision: selected.configRevision,
-                          enabled: enabled,
-                        ),
-                      ),
-                      onRetry: () => _run(
-                        () => _client.botsCommands.retryConnection(
-                          botId: selected.id,
-                        ),
-                      ),
-                      onTools: (enabled) => _run(
-                        () => _client.botsCommands.saveBot(
-                          botId: selected.id,
-                          expectedConfigRevision: selected.configRevision,
-                          name: selected.name,
-                          projectId: selected.projectId,
-                          appId: selected.appId,
-                          secret: const BotSecretPreserve(),
-                          enabled: selected.enabled,
-                          toolsEnabled: enabled,
-                        ),
-                      ),
-                      onTrustUser: (openId, trusted) => _run(
-                        () => _client.botsCommands.setTrustedUser(
-                          botId: selected.id,
-                          expectedConfigRevision: selected.configRevision,
-                          openId: openId,
-                          trusted: trusted,
-                        ),
-                      ),
-                      // 清理配对请求复用同一信任写入命令，只把当前信任值原样
-                      // 写回。信任值与配置 revision 取自同一次构建的同一个
-                      // canonical 快照，不会用旧值搭配新 revision 意外授权。
-                      onClearPairingRequest: (openId) => _run(
-                        () => _client.botsCommands.setTrustedUser(
-                          botId: selected.id,
-                          expectedConfigRevision: selected.configRevision,
-                          openId: openId,
-                          trusted: selected.trustedOpenIds.contains(openId),
-                        ),
-                      ),
-                      onTrustChat: (chatId, trusted) => _run(
-                        () => _client.botsCommands.setTrustedChat(
-                          botId: selected.id,
-                          expectedConfigRevision: selected.configRevision,
-                          chatId: chatId,
-                          trusted: trusted,
-                        ),
-                      ),
-                      onLoadConversations: (cursor) => _runQuery(
-                        selected.id,
-                        () => _client.botsQueries.listConversations(
-                          selected.id,
-                          cursor: cursor,
-                        ),
-                      ),
-                      onLoadMessages: (cursor) => _readMessages(
-                        selected.id,
-                        _selectedChatId!,
-                        cursor: cursor,
-                      ),
-                      onCreateThread: (conversation) =>
-                          _createThread(selected, conversation),
-                      onSend: () => _run(() {
-                        final chatId = _selectedChatId;
-                        if (chatId == null) {
-                          throw StateError('No conversation selected');
-                        }
-                        return _client.botsCommands.sendMessage(
-                          botId: selected.id,
-                          chatId: chatId,
-                          text: _sendText.text,
-                        );
-                      }),
-                      onOpenConsole: _openDeveloperConsole,
-                      onOpenBot: () =>
-                          _openBotLink(feishuBotAppLink(selected.appId)),
-                      onOpenBotBrowser: () => _openBotLink(
-                        feishuBotAppLink(selected.appId, browser: true),
-                      ),
-                    );
-              if (stacked) {
-                return Column(
-                  children: [list, const SizedBox(height: 16), detail],
+        else if (selected != null)
+          _BotDetail(
+            bot: selected,
+            platformOnly: widget.chatId != null,
+            view: view,
+            canOpenFeishu: canOpenFeishu,
+            selectedChatId: _selectedChatId,
+            sendController: _sendText,
+            busy: _busy,
+            model: _buildModel(selected),
+            onOpenConversation: (conversation) =>
+                _openConversation(selected, conversation),
+            onEdit: () => _editBot(selected),
+            onDraftChanged: (value) {
+              try {
+                _client.botsCommands.updateMessageDraft(
+                  selected.id,
+                  _selectedChatId!,
+                  value,
+                );
+              } catch (_) {
+                setState(
+                  () => _error = context.l10n.settingsBotsOperationFailed,
                 );
               }
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(width: 280, child: list),
-                  const SizedBox(width: 16),
-                  Expanded(child: detail),
-                ],
+            },
+            onSelectChat: (id) => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => BotDetailsPage(botId: selected.id, chatId: id),
+              ),
+            ),
+            onEnabled: (enabled) => _run(
+              () => _client.botsCommands.setEnabled(
+                botId: selected.id,
+                expectedConfigRevision: selected.configRevision,
+                enabled: enabled,
+              ),
+            ),
+            onRetry: () => _run(
+              () => _client.botsCommands.retryConnection(botId: selected.id),
+            ),
+            onTools: (enabled) => _run(
+              () => _client.botsCommands.saveBot(
+                botId: selected.id,
+                expectedConfigRevision: selected.configRevision,
+                name: selected.name,
+                projectId: selected.projectId,
+                appId: selected.appId,
+                secret: const BotSecretPreserve(),
+                enabled: selected.enabled,
+                toolsEnabled: enabled,
+              ),
+            ),
+            onTrustUser: (openId, trusted) => _run(
+              () => _client.botsCommands.setTrustedUser(
+                botId: selected.id,
+                expectedConfigRevision: selected.configRevision,
+                openId: openId,
+                trusted: trusted,
+              ),
+            ),
+            // 清理配对请求复用同一信任写入命令，只把当前信任值原样
+            // 写回。信任值与配置 revision 取自同一次构建的同一个
+            // canonical 快照，不会用旧值搭配新 revision 意外授权。
+            onClearPairingRequest: (openId) => _run(
+              () => _client.botsCommands.setTrustedUser(
+                botId: selected.id,
+                expectedConfigRevision: selected.configRevision,
+                openId: openId,
+                trusted: selected.trustedOpenIds.contains(openId),
+              ),
+            ),
+            onTrustChat: (chatId, trusted) => _run(
+              () => _client.botsCommands.setTrustedChat(
+                botId: selected.id,
+                expectedConfigRevision: selected.configRevision,
+                chatId: chatId,
+                trusted: trusted,
+              ),
+            ),
+            onLoadConversations: (cursor) => _runQuery(
+              selected.id,
+              () => _client.botsQueries.listConversations(
+                selected.id,
+                cursor: cursor,
+              ),
+            ),
+            onLoadMessages: (cursor) =>
+                _readMessages(selected.id, _selectedChatId!, cursor: cursor),
+            onCreateThread: (conversation) =>
+                _createThread(selected, conversation),
+            onSend: () => _run(() {
+              final chatId = _selectedChatId;
+              if (chatId == null) {
+                throw StateError('No conversation selected');
+              }
+              return _client.botsCommands.sendMessage(
+                botId: selected.id,
+                chatId: chatId,
+                text: _sendText.text,
+              );
+            }),
+            onOpenConsole: _openDeveloperConsole,
+            onOpenBot: () => _openBotLink(feishuBotAppLink(selected.appId)),
+            onOpenBotBrowser: () =>
+                _openBotLink(feishuBotAppLink(selected.appId, browser: true)),
+          ),
+        if (selected == null && snapshot.bots.isNotEmpty) ...[
+          TextField(
+            key: StudioDriverKeys.botsFilter,
+            controller: _filter,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              hintText: context.l10n.settingsBotsName,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _BotList(
+            bots: snapshot.bots
+                .where(
+                  (bot) => bot.name.toLowerCase().contains(
+                    _filter.text.trim().toLowerCase(),
+                  ),
+                )
+                .toList(),
+            selectedId: null,
+            onSelect: (id) {
+              Navigator.of(context).push<void>(
+                MaterialPageRoute(builder: (_) => BotDetailsPage(botId: id)),
               );
             },
           ),
+        ],
       ],
     );
   }
@@ -368,27 +376,6 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           onChanged: (_) => _syncDraft(view),
         ),
         const SizedBox(height: 10),
-        DropdownButtonFormField<String>(
-          key: StudioDriverKeys.botsProject,
-          initialValue: _selectedProjectId(view),
-          items: [
-            for (final project in view.projects)
-              DropdownMenuItem(
-                value: project.id,
-                child: Text(project.name, overflow: TextOverflow.ellipsis),
-              ),
-          ],
-          onChanged: _busy
-              ? null
-              : (value) {
-                  _syncDraft(view, projectId: value);
-                  setState(() {});
-                },
-          decoration: InputDecoration(
-            labelText: context.l10n.settingsBotsProject,
-          ),
-        ),
-        const SizedBox(height: 12),
         SettingsToggleRow(
           key: StudioDriverKeys.botsRiskAck,
           icon: Icons.warning_amber_outlined,
@@ -483,24 +470,18 @@ class _BotsTabState extends ConsumerState<BotsTab> {
 
   BotSnapshot? _selectedBot(BotsStateSnapshot snapshot) {
     if (snapshot.bots.isEmpty) return null;
-    final id = _selectedBotId ?? snapshot.registration?.completedBotId;
+    final id = _selectedBotId;
     for (final bot in snapshot.bots) {
       if (bot.id == id) return bot;
     }
-    return snapshot.bots.first;
+    return null;
   }
 
-  String? _selectedProjectId(SettingsBotsView view) {
-    final current = _client.botsCommands.setupDraft.projectId;
-    if (view.projects.any((project) => project.id == current)) return current;
-    return view.projects.firstOrNull?.id;
-  }
-
-  void _syncDraft(SettingsBotsView view, {String? projectId}) {
+  void _syncDraft(SettingsBotsView view) {
     _client.botsCommands.updateSetupDraft(
       _client.botsCommands.setupDraft.copyWith(
         name: _name.text,
-        projectId: projectId ?? _selectedProjectId(view) ?? '',
+        projectId: '',
         appId: _appId.text,
       ),
     );
@@ -526,16 +507,26 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     _syncDraft(view);
     final draft = _client.botsCommands.setupDraft;
     final secret = BotSecretReplace(_secret.text);
-    _secret.clear();
-    return _run(
-      () => _client.botsCommands.saveBot(
+    return _run(() async {
+      final saved = await _client.botsCommands.saveBot(
         expectedConfigRevision: 0,
         name: draft.name,
         projectId: draft.projectId,
         appId: draft.appId,
         secret: secret,
-      ),
-    );
+      );
+      _secret.clear();
+      if (!mounted) return;
+      setState(() => _setupOpen = false);
+      final created = saved.bots
+          .where((bot) => bot.appId == draft.appId)
+          .firstOrNull;
+      if (created != null) {
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(builder: (_) => BotDetailsPage(botId: created.id)),
+        );
+      }
+    });
   }
 
   Future<void> _runQuery(String botId, Future<void> Function() action) async {
@@ -559,27 +550,10 @@ class _BotsTabState extends ConsumerState<BotsTab> {
 
   void _readMessages(String botId, String chatId, {String? cursor}) {
     unawaited(
-      _runQuery(botId, () {
-        int? seconds(String value) {
-          if (value.isEmpty) return null;
-          final parsed = int.tryParse(value);
-          if (parsed == null) throw StateError('Invalid Unix seconds');
-          return parsed;
-        }
-
-        final query = _client.botsQueries.state;
-        return _client.botsQueries.readMessages(
-          botId,
-          chatId,
-          startTime: cursor == null
-              ? seconds(_startTime.text)
-              : query.selectedStartTime,
-          endTime: cursor == null
-              ? seconds(_endTime.text)
-              : query.selectedEndTime,
-          cursor: cursor,
-        );
-      }),
+      _runQuery(
+        botId,
+        () => _client.botsQueries.readMessages(botId, chatId, cursor: cursor),
+      ),
     );
   }
 
@@ -616,22 +590,155 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     );
   }
 
-  Future<void> _editBot(BotSnapshot bot, SettingsBotsView view) async {
-    final edits = await showDialog<_BotEdits>(
-      context: context,
-      builder: (_) => _BotEditor(bot: bot, projects: view.projects),
-    );
-    if (edits == null || !mounted) return;
-    await _run(
+  Widget _buildModel(BotSnapshot bot) {
+    final accounts = ref.watch(settingsAgentsViewProvider).accounts;
+    final options = buildModelSelectionOptions(accounts, type: ModelType.text);
+    final route = bot.modelRoute;
+    final selected = options
+        .where(
+          (option) =>
+              option.accountId == route?.accountId &&
+              option.modelId == route?.modelId,
+        )
+        .firstOrNull;
+    Future<void> save(BotModelRoute next) => _run(
       () => _client.botsCommands.saveBot(
         botId: bot.id,
         expectedConfigRevision: bot.configRevision,
-        name: edits.name,
-        projectId: edits.projectId,
-        appId: edits.appId,
-        secret: edits.secret,
+        name: bot.name,
+        projectId: bot.projectId,
+        appId: bot.appId,
+        secret: const BotSecretPreserve(),
         enabled: bot.enabled,
         toolsEnabled: bot.toolsEnabled,
+        modelRoute: next,
+      ),
+    );
+    return SettingsSectionPanel(
+      title: context.l10n.botsModelTitle,
+      children: [
+        AgentRouteView(
+          role: 'bot-${bot.id}',
+          selectedAccountId: route?.accountId ?? '',
+          selectedModel: route?.modelId ?? '',
+          selectedEffort: route?.effort,
+          options: options,
+          efforts: selected?.reasoningEfforts ?? const [],
+          unresolvedLabel: selected == null
+              ? context.l10n.statusModelRouteUnavailable
+              : null,
+          pending: _busy,
+          onModelChanged: (option) => save(
+            BotModelRoute(
+              accountId: option.accountId,
+              modelId: option.modelId,
+              effort: ModelRouteQueries.effortAfterModelSelection(
+                option.descriptor,
+                route?.effort,
+              ),
+            ),
+          ),
+          onEffortChanged: (effort) => save(
+            BotModelRoute(
+              accountId: route!.accountId,
+              modelId: route.modelId,
+              effort: effort,
+            ),
+          ),
+        ),
+        Text(
+          context.l10n.botsModelHint,
+          style: context.text.bodySmall?.copyWith(
+            color: context.colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openConversation(
+    BotSnapshot bot,
+    BotConversation conversation,
+  ) async {
+    final threadId = conversation.threadBinding?.threadId;
+    if (threadId == null) {
+      await _openBotLink(
+        feishuChatAppLink(
+          conversation.chatId,
+          browser:
+              ref.read(feishuClientAvailableProvider).asData?.value != true,
+        ),
+      );
+      return;
+    }
+    await _run(() async {
+      await _client.directoryCommands.selectThread(threadId);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (context) => Scaffold(
+            appBar: AppBar(
+              leading: BackButton(key: StudioDriverKeys.botsChatBack),
+              title: Text(
+                conversation.name ?? bot.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              actions: [
+                IconButton(
+                  tooltip: context.l10n.settingsBotsOpenChat,
+                  icon: const Icon(Icons.open_in_new),
+                  onPressed: () => _openBotLink(
+                    feishuChatAppLink(
+                      conversation.chatId,
+                      browser:
+                          ref
+                              .read(feishuClientAvailableProvider)
+                              .asData
+                              ?.value !=
+                          true,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  key: StudioDriverKeys.botsPlatformTools,
+                  tooltip: context.l10n.botsPlatformTools,
+                  icon: const Icon(Icons.more_horiz),
+                  onPressed: () {
+                    Navigator.of(context).push<void>(
+                      MaterialPageRoute(
+                        builder: (_) => BotDetailsPage(
+                          botId: bot.id,
+                          chatId: conversation.chatId,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            body: const AgentWorkspacePane(),
+          ),
+        ),
+      );
+    });
+  }
+
+  Future<void> _editBot(BotSnapshot bot) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _BotEditor(
+        bot: bot,
+        onSave: (edits) => _client.botsCommands.saveBot(
+          botId: bot.id,
+          expectedConfigRevision: bot.configRevision,
+          name: edits.name,
+          projectId: edits.projectId,
+          appId: edits.appId,
+          secret: edits.secret,
+          enabled: bot.enabled,
+          toolsEnabled: bot.toolsEnabled,
+        ),
       ),
     );
   }
@@ -688,101 +795,6 @@ class _BotsTabState extends ConsumerState<BotsTab> {
   }
 }
 
-class _FactsStrip extends StatelessWidget {
-  const _FactsStrip({required this.snapshot});
-
-  final BotsStateSnapshot snapshot;
-
-  @override
-  Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        _FactChip(
-          key: StudioDriverKeys.botsFactConfig,
-          label: context.l10n.settingsBotsFactConfig,
-          value: snapshot.bots.isEmpty
-              ? context.l10n.settingsBotsFactMissing
-              : '${snapshot.bots.length}',
-        ),
-        _FactChip(
-          key: StudioDriverKeys.botsFactConnection,
-          label: context.l10n.settingsBotsFactConnection,
-          value: _connectionSummary(context, snapshot),
-        ),
-        _FactChip(
-          key: StudioDriverKeys.botsFactAuth,
-          label: context.l10n.settingsBotsFactAuth,
-          value: _authSummary(context, snapshot),
-        ),
-      ],
-    );
-  }
-
-  String _connectionSummary(BuildContext context, BotsStateSnapshot snapshot) {
-    if (snapshot.bots.any((bot) => bot.connection is BotConnectionConnected)) {
-      return context.l10n.settingsBotsConnectionConnected;
-    }
-    if (snapshot.bots.any((bot) => bot.connection is BotConnectionConnecting)) {
-      return context.l10n.settingsBotsConnectionConnecting;
-    }
-    if (snapshot.bots.any((bot) => bot.connection is BotConnectionFailed)) {
-      return context.l10n.settingsBotsConnectionFailed;
-    }
-    return context.l10n.settingsBotsConnectionIdle;
-  }
-
-  String _authSummary(BuildContext context, BotsStateSnapshot snapshot) {
-    if (snapshot.bots.any(
-      (bot) => bot.trustedOpenIds.isNotEmpty || bot.trustedChatIds.isNotEmpty,
-    )) {
-      return context.l10n.settingsBotsAuthGranted;
-    }
-    if (snapshot.bots.any((bot) => bot.pairing.isNotEmpty)) {
-      return context.l10n.settingsBotsAuthPending;
-    }
-    return context.l10n.settingsBotsAuthNone;
-  }
-}
-
-class _FactChip extends StatelessWidget {
-  const _FactChip({super.key, required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: context.colors.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(StudioRadii.sm),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: context.text.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _BotList extends StatelessWidget {
   const _BotList({
     required this.bots,
@@ -801,32 +813,24 @@ class _BotList extends StatelessWidget {
         for (final bot in bots)
           ListTile(
             key: StudioDriverKeys.botsRow(bot.id),
+            leading: CircleAvatar(
+              backgroundColor: context.colors.secondaryContainer,
+              child: Icon(
+                Icons.smart_toy_outlined,
+                color: context.colors.onSecondaryContainer,
+              ),
+            ),
+            trailing: const Icon(Icons.chevron_right),
             selected: bot.id == selectedId,
             title: Text(bot.name, overflow: TextOverflow.ellipsis),
             subtitle: Text(
-              '${bot.appId} · ${_credentialLabel(context, bot.credential)}',
+              '${context.l10n.botsPlatformFeishu} · ${_botConnectionLabel(context, bot.connection)}${bot.lastActivityAt == null ? '' : ' · ${_botActivityLabel(context, bot.lastActivityAt!)}'}',
               overflow: TextOverflow.ellipsis,
             ),
             onTap: () => onSelect(bot.id),
           ),
       ],
     );
-  }
-
-  String _credentialLabel(
-    BuildContext context,
-    BotCredentialAvailability availability,
-  ) {
-    return switch (availability) {
-      BotCredentialAvailability.stored =>
-        context.l10n.settingsBotsCredentialStored,
-      BotCredentialAvailability.sessionOnly =>
-        context.l10n.settingsBotsCredentialSession,
-      BotCredentialAvailability.missing =>
-        context.l10n.settingsBotsCredentialMissing,
-      BotCredentialAvailability.unavailable =>
-        context.l10n.settingsBotsCredentialUnavailable,
-    };
   }
 }
 
@@ -859,4 +863,37 @@ class _PendingCredentialTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A route preserves the overview's scroll/filter state and gives details the entire window.
+class BotDetailsPage extends StatelessWidget {
+  const BotDetailsPage({super.key, required this.botId, this.chatId});
+  final String botId;
+  final String? chatId;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: BotsTab(tabIndex: -1, botId: botId, chatId: chatId),
+    ),
+  );
+}
+
+String _botConnectionLabel(
+  BuildContext context,
+  BotConnectionState connection,
+) => switch (connection) {
+  BotConnectionConnected() => context.l10n.settingsBotsConnectionConnected,
+  BotConnectionConnecting() => context.l10n.settingsBotsConnectionConnecting,
+  BotConnectionReconnecting() =>
+    context.l10n.settingsBotsConnectionReconnecting,
+  BotConnectionFailed() => context.l10n.settingsBotsConnectionFailed,
+  BotConnectionDisabled() => context.l10n.settingsBotsConnectionIdle,
+};
+
+String _botActivityLabel(BuildContext context, int seconds) {
+  final date = DateTime.fromMillisecondsSinceEpoch(seconds * 1000).toLocal();
+  final labels = MaterialLocalizations.of(context);
+  return DateUtils.isSameDay(date, DateTime.now())
+      ? labels.formatTimeOfDay(TimeOfDay.fromDateTime(date))
+      : labels.formatShortDate(date);
 }

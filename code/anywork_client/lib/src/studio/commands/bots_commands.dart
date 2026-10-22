@@ -78,6 +78,7 @@ class BotsCommands {
     required BotSecretUpdate secret,
     bool enabled = false,
     bool toolsEnabled = false,
+    BotModelRoute? modelRoute,
   }) {
     clearSecret();
     return _mutate(
@@ -93,6 +94,7 @@ class BotsCommands {
           secret: secret,
           enabled: enabled,
           toolsEnabled: toolsEnabled,
+          modelRoute: modelRoute,
         ),
       ),
     );

@@ -36,6 +36,7 @@ struct ReplyRun {
     chat_id: String,
     message_id: String,
     text: String,
+    attachments: Vec<super::inbound::InboundAttachment>,
     worker_id: String,
     thread_id: String,
     original_input: String,
@@ -150,6 +151,7 @@ impl BotRuntime {
             chat_id: inbound.chat_id.clone(),
             message_id: inbound.message_id.clone(),
             text: inbound.text.clone(),
+            attachments: inbound.attachments.clone(),
             worker_id: worker_id.to_string(),
             thread_id: String::new(),
             original_input: bot_input_id(&inbound.bot_id, &inbound.chat_id, &inbound.message_id),
@@ -247,10 +249,11 @@ impl BotRuntime {
             }
         };
         let input = match input {
+            BotInputRead::NotReady => return Step::Wait,
             BotInputRead::Ready { delivery, state } => (delivery, state),
             BotInputRead::Absent => {
                 if run.watching_original() {
-                    return self.submit_original(runtime, run).await;
+                    return self.submit_original(runtime, run, cancel).await;
                 }
                 // continuation 输入尚未持久化：事实未定，保持待定等待。
                 return Step::Wait;
@@ -271,19 +274,59 @@ impl BotRuntime {
     }
 
     /// 原输入尚未被 Studio 受理：以稳定输入身份幂等提交；重复提交命中原受理事实。
-    async fn submit_original(&self, runtime: &StudioRuntime, run: &ReplyRun) -> Step {
-        match runtime
+    async fn submit_original(
+        &self,
+        runtime: &StudioRuntime,
+        run: &ReplyRun,
+        cancel: &CancellationToken,
+    ) -> Step {
+        let drafts = match self
+            .prepare_inbound_attachments(
+                runtime,
+                &run.bot_id,
+                &run.thread_id,
+                &run.message_id,
+                &run.attachments,
+                cancel,
+            )
+            .await
+        {
+            Ok(drafts) => drafts,
+            Err(error) => {
+                if cancel.is_cancelled() {
+                    return Step::Done(InboundWorkOutcome::Interrupted);
+                }
+                return Step::Done(binding_failure(
+                    "message attachment admission failed",
+                    error,
+                ));
+            }
+        };
+        if cancel.is_cancelled() {
+            for id in drafts {
+                if let Err(error) = runtime.remove_attachment_draft(id).await {
+                    tracing::warn!(%error, "failed to release cancelled bot attachment draft");
+                }
+            }
+            return Step::Done(InboundWorkOutcome::Interrupted);
+        }
+        let result = runtime
             .submit_prompt(crate::studio::StudioSubmitPromptRequest {
                 thread_id: run.thread_id.clone(),
                 input: pl_protocol::studio::StudioPromptInput {
                     input_id: run.original_input.clone(),
                     text: run.text.clone(),
-                    attachment_draft_ids: Vec::new(),
+                    attachment_draft_ids: drafts.clone(),
                 },
                 options: crate::studio::StudioSubmitPromptOptions::default(),
             })
-            .await
-        {
+            .await;
+        for draft in drafts {
+            if let Err(error) = runtime.remove_attachment_draft(draft).await {
+                tracing::warn!(%error, "failed to release bot attachment draft");
+            }
+        }
+        match result {
             // 受理后首个 effect 落库前身份仍可能 Absent；等待唤醒后重建，不连续重提。
             Ok(_) => Step::Wait,
             Err(error) => Step::Done(recoverable(format!("bot prompt submit failed: {error:#}"))),

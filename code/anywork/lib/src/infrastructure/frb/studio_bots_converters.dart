@@ -19,6 +19,7 @@ BotsStateSnapshot _botsStateFromFrb(
 
 BotSnapshot _botSnapshotFromFrb(frb_bots_types.BridgeBotSnapshot value) {
   return BotSnapshot(
+    lastActivityAt: value.lastActivityAt,
     id: value.id,
     name: value.name,
     projectId: value.projectId,
@@ -26,6 +27,14 @@ BotSnapshot _botSnapshotFromFrb(frb_bots_types.BridgeBotSnapshot value) {
     platform: BotPlatform.feishuChina,
     enabled: value.enabled,
     toolsEnabled: value.toolsEnabled,
+    modelRoute: value.modelRoute == null
+        ? null
+        : BotModelRoute(
+            accountId: value.modelRoute!.accountId,
+            modelId: value.modelRoute!.modelId,
+            effort: value.modelRoute!.effort,
+          ),
+    workspacePath: value.workspacePath,
     configRevision: value.configRevision.toInt(),
     trustedOpenIds: List<String>.unmodifiable(value.trustedOpenIds),
     trustedChatIds: List<String>.unmodifiable(value.trustedChatIds),
@@ -229,6 +238,13 @@ frb_bots_types.BridgeBotSecretUpdate _secretUpdateToFrb(BotSecretUpdate value) {
 
 frb_bots_types.BridgeSaveBotRequest _saveBotToFrb(SaveBotRequest request) {
   return frb_bots_types.BridgeSaveBotRequest(
+    modelRoute: request.modelRoute == null
+        ? null
+        : frb_bots_types.BridgeBotModelRoute(
+            accountId: request.modelRoute!.accountId,
+            modelId: request.modelRoute!.modelId,
+            effort: request.modelRoute!.effort,
+          ),
     operationId: request.operationId,
     botId: request.botId,
     expectedConfigRevision: BigInt.from(request.expectedConfigRevision),

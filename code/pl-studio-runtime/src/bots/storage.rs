@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 4;
+const BOT_STATE_SCHEMA_VERSION: i64 = 5;
 const PAIRING_LIMIT: i64 = 32;
 const PAIRING_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
@@ -97,6 +97,7 @@ pub struct FrozenInbound {
     pub chat_id: String,
     pub content_hash: String,
     pub text: String,
+    pub attachments: Vec<super::inbound::InboundAttachment>,
     pub open_id: String,
     pub chat_kind: String,
     pub app_id: String,
@@ -154,7 +155,6 @@ pub(crate) enum WorkFinish<'a> {
 #[derive(Debug, Clone)]
 pub struct ObservedDirect {
     pub chat_id: String,
-    pub open_id: Option<String>,
     pub name: Option<String>,
     pub last_observed_at: i64,
 }
@@ -242,7 +242,7 @@ impl BotStateStore {
         if let Some(row) = existing {
             let work = tx
                 .query_one_raw(statement(
-                    "SELECT identity, bot_id, chat_id, message_id, content_hash, status, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, watch_input FROM inbound_work WHERE identity=?",
+                    "SELECT identity, bot_id, chat_id, message_id, content_hash, status, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, watch_input FROM inbound_work WHERE identity=?",
                     vec![identity.clone().into()],
                 ))
                 .await
@@ -302,6 +302,8 @@ impl BotStateStore {
                 content_hash: work_hash,
                 // 路由、绑定与 fencing 判据只接受持久值本身；空串是合法业务值。
                 text: strict_text(&work, "text")?,
+                attachments: serde_json::from_str(&strict_text(&work, "attachments")?)
+                    .map_err(|_| work_needs_recovery())?,
                 open_id: strict_text(&work, "open_id")?,
                 chat_kind: strict_text(&work, "chat_kind")?,
                 app_id: strict_text(&work, "app_id")?,
@@ -313,7 +315,7 @@ impl BotStateStore {
         }
         let pending = tx
             .query_one_raw(statement(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(text AS BLOB))),0) AS bytes FROM inbound_work WHERE status IN ('pending','claimed','failed')",
+                "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(text AS BLOB)) + LENGTH(CAST(attachments AS BLOB))),0) AS bytes FROM inbound_work WHERE status IN ('pending','claimed','failed')",
                 vec![],
             ))
             .await
@@ -323,7 +325,10 @@ impl BotStateStore {
             Some(row) => (stored_i64(row, "n")?, stored_i64(row, "bytes")?),
             None => (0, 0),
         };
-        let text_bytes = i64::try_from(inbound.text.len()).map_err(|_| work_needs_recovery())?;
+        let attachments =
+            serde_json::to_string(&inbound.attachments).map_err(|_| work_needs_recovery())?;
+        let text_bytes = i64::try_from(inbound.text.len() + attachments.len())
+            .map_err(|_| work_needs_recovery())?;
         if pending_n >= INBOUND_PENDING_LIMIT
             || pending_bytes.saturating_add(text_bytes) > INBOUND_PENDING_BYTES
         {
@@ -349,8 +354,8 @@ impl BotStateStore {
         .await
         .map_err(storage)?;
         tx.execute_raw(statement(
-            "INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status, diagnostic, claimed_by, claimed_at, updated_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, status, diagnostic, claimed_by, claimed_at, updated_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             vec![
                 identity.into(),
                 inbound.bot_id.clone().into(),
@@ -366,6 +371,7 @@ impl BotStateStore {
                 i64::try_from(inbound.binding_revision)
                     .map_err(|_| work_needs_recovery())?
                     .into(),
+                attachments.into(),
                 "pending".to_string().into(),
                 "".to_string().into(),
                 "".to_string().into(),
@@ -734,7 +740,7 @@ impl BotStateStore {
         let db = self.db().await?;
         let rows = db
             .query_all_raw(statement(
-                "SELECT identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, watch_input
+                "SELECT identity, bot_id, chat_id, message_id, content_hash, text, open_id, chat_kind, app_id, project_id, creation_id, binding_revision, attachments, watch_input
                  FROM inbound_work
                  WHERE bot_id=? AND (
                    (status IN ('pending','failed') AND next_attempt_at<=?)
@@ -767,6 +773,8 @@ impl BotStateStore {
                     message_id: row_message,
                     content_hash: stored_text(&row, "content_hash")?,
                     text: stored_text(&row, "text")?,
+                    attachments: serde_json::from_str(&strict_text(&row, "attachments")?)
+                        .map_err(|_| work_needs_recovery())?,
                     open_id: stored_text(&row, "open_id")?,
                     chat_kind: stored_text(&row, "chat_kind")?,
                     // 绑定/路由/fencing 判据只接受持久值；空串（如尚无续接输入）是合法值。
@@ -778,6 +786,17 @@ impl BotStateStore {
                 })
             })
             .collect()
+    }
+
+    pub async fn owns_thread(&self, thread_id: &str) -> Result<bool, FeishuError> {
+        let db = self.db().await?;
+        db.query_one_raw(statement(
+            "SELECT chat_id FROM thread_bindings WHERE thread_id=? OR (status='creating' AND creation_id=?) LIMIT 1",
+            vec![thread_id.to_owned().into(), thread_id.to_owned().into()],
+        ))
+        .await
+        .map(|row| row.is_some())
+        .map_err(storage)
     }
 
     pub async fn claim_thread_binding(
@@ -1271,11 +1290,19 @@ impl BotStateStore {
         Ok(())
     }
 
+    pub(crate) async fn last_activity_at(&self) -> Result<Option<i64>, FeishuError> {
+        let db = self.db().await?;
+        let row = db.query_one_raw(statement(
+            "SELECT MAX(at) AS at FROM (SELECT MAX(admitted_at) AS at FROM inbound_identities UNION ALL SELECT MAX(updated_at) AS at FROM send_operations)", vec![]
+        )).await.map_err(storage)?.ok_or_else(|| storage("missing bot activity aggregate"))?;
+        row.try_get::<Option<i64>>("", "at").map_err(storage)
+    }
+
     pub async fn list_observed_directs(&self) -> Result<Vec<ObservedDirect>, FeishuError> {
         let db = self.db().await?;
         let rows = db
             .query_all_raw(statement(
-                "SELECT chat_id, open_id, name, last_observed_at FROM observed_directs ORDER BY last_observed_at DESC",
+                "SELECT chat_id, name, last_observed_at FROM observed_directs ORDER BY last_observed_at DESC",
                 vec![],
             ))
             .await
@@ -1284,7 +1311,6 @@ impl BotStateStore {
             .map(|row| {
                 Ok(ObservedDirect {
                     chat_id: stored_text(&row, "chat_id")?,
-                    open_id: empty_to_none(stored_text(&row, "open_id")?),
                     name: empty_to_none(stored_text(&row, "name")?),
                     last_observed_at: stored_i64(&row, "last_observed_at")?,
                 })
@@ -1981,6 +2007,13 @@ async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
     )
     .await?;
     ensure_column(db, "inbound_work", "text", "TEXT NOT NULL DEFAULT ''").await?;
+    ensure_column(
+        db,
+        "inbound_work",
+        "attachments",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
     ensure_column(db, "inbound_work", "open_id", "TEXT NOT NULL DEFAULT ''").await?;
     ensure_column(db, "inbound_work", "chat_kind", "TEXT NOT NULL DEFAULT ''").await?;
     ensure_column(
@@ -2226,21 +2259,23 @@ mod tests {
         )
     }
 
-    /// AGENTS 唯一允许的迁移专项：真实 v3 输入 → v4 迁移 → 配置/映射/work/send 保全，
+    /// 真实 v3 输入迁移到当前 schema，保全映射、收发账本及附件工作。
     /// 并覆盖过期旧 claim 拒绝与后继新 worker 竞争接管的 lease 语义。
     #[tokio::test]
-    async fn v3_ledger_upgrades_to_v4_preserving_work() -> Result<(), Box<dyn std::error::Error>> {
+    async fn legacy_ledger_upgrade_preserves_work_and_reopens_media_without_duplicate_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("bot-state.sqlite");
         let legacy = v3_database(&path).await;
         drop(legacy);
 
-        let store = BotStateStore::new(path);
-        // 迁移保全：旧 claimed 行与绑定、发送事实仍在；schema 升到 4。
+        let store = BotStateStore::new(path.clone());
+        // 旧 claimed 行与绑定、发送事实仍在，schema 升到当前版本。
         let due = store.list_due_inbound("legacy").await?;
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].message_id, "m1");
         assert_eq!(due[0].text, "question");
+        assert!(due[0].attachments.is_empty());
         assert_eq!(due[0].watch_input, "");
         let db = store.db().await?;
         assert!(
@@ -2317,6 +2352,33 @@ mod tests {
         let (status, claimed_by) = work_status(&store, "legacy:chat:m1").await;
         assert_eq!(status, "completed");
         assert_eq!(claimed_by, "");
+
+        // New media work must survive a process boundary alongside the migrated text row.
+        let mut media = due[0].clone();
+        media.message_id = "media-after-migration".into();
+        media.content_hash = "media-content".into();
+        media.attachments = vec![
+            super::super::inbound::InboundAttachment::File {
+                key: "file-key".into(),
+                filename: "中文证据.txt".into(),
+            },
+            super::super::inbound::InboundAttachment::Image {
+                key: "image-key".into(),
+            },
+        ];
+        assert!(matches!(
+            store.admit_inbound(media.clone()).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        drop(store);
+        let reopened = BotStateStore::new(path);
+        let restored = reopened.list_due_inbound("legacy").await?;
+        assert_eq!(restored, vec![media.clone()]);
+        assert_eq!(
+            reopened.admit_inbound(media.clone()).await?,
+            InboundAdmit::DuplicateResume(media)
+        );
+        assert_eq!(reopened.list_due_inbound("legacy").await?.len(), 1);
         Ok(())
     }
 }

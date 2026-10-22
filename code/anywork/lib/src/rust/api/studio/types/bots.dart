@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'bots.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeBotConnectionState with _$BridgeBotConnectionState {
@@ -308,6 +308,30 @@ class BridgeBotMessagePage {
           nextCursor == other.nextCursor;
 }
 
+class BridgeBotModelRoute {
+  final String accountId;
+  final String modelId;
+  final String? effort;
+
+  const BridgeBotModelRoute({
+    required this.accountId,
+    required this.modelId,
+    this.effort,
+  });
+
+  @override
+  int get hashCode => accountId.hashCode ^ modelId.hashCode ^ effort.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeBotModelRoute &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
+          effort == other.effort;
+}
+
 class BridgeBotPairingRequest {
   final String requestId;
   final String botId;
@@ -535,6 +559,7 @@ class BridgeBotSendSegment {
 enum BridgeBotSendStatus { succeeded, partial, rejected, unknown }
 
 class BridgeBotSnapshot {
+  final PlatformInt64? lastActivityAt;
   final String id;
   final String name;
   final String projectId;
@@ -542,6 +567,8 @@ class BridgeBotSnapshot {
   final BridgeBotPlatform platform;
   final bool enabled;
   final bool toolsEnabled;
+  final BridgeBotModelRoute? modelRoute;
+  final String workspacePath;
   final BigInt configRevision;
   final List<String> trustedOpenIds;
   final List<String> trustedChatIds;
@@ -556,6 +583,7 @@ class BridgeBotSnapshot {
   final PlatformInt64 updatedAt;
 
   const BridgeBotSnapshot({
+    this.lastActivityAt,
     required this.id,
     required this.name,
     required this.projectId,
@@ -563,6 +591,8 @@ class BridgeBotSnapshot {
     required this.platform,
     required this.enabled,
     required this.toolsEnabled,
+    this.modelRoute,
+    required this.workspacePath,
     required this.configRevision,
     required this.trustedOpenIds,
     required this.trustedChatIds,
@@ -579,6 +609,7 @@ class BridgeBotSnapshot {
 
   @override
   int get hashCode =>
+      lastActivityAt.hashCode ^
       id.hashCode ^
       name.hashCode ^
       projectId.hashCode ^
@@ -586,6 +617,8 @@ class BridgeBotSnapshot {
       platform.hashCode ^
       enabled.hashCode ^
       toolsEnabled.hashCode ^
+      modelRoute.hashCode ^
+      workspacePath.hashCode ^
       configRevision.hashCode ^
       trustedOpenIds.hashCode ^
       trustedChatIds.hashCode ^
@@ -604,6 +637,7 @@ class BridgeBotSnapshot {
       identical(this, other) ||
       other is BridgeBotSnapshot &&
           runtimeType == other.runtimeType &&
+          lastActivityAt == other.lastActivityAt &&
           id == other.id &&
           name == other.name &&
           projectId == other.projectId &&
@@ -611,6 +645,8 @@ class BridgeBotSnapshot {
           platform == other.platform &&
           enabled == other.enabled &&
           toolsEnabled == other.toolsEnabled &&
+          modelRoute == other.modelRoute &&
+          workspacePath == other.workspacePath &&
           configRevision == other.configRevision &&
           trustedOpenIds == other.trustedOpenIds &&
           trustedChatIds == other.trustedChatIds &&
@@ -834,6 +870,7 @@ class BridgeSaveBotRequest {
   final BridgeBotSecretUpdate secret;
   final bool enabled;
   final bool toolsEnabled;
+  final BridgeBotModelRoute? modelRoute;
 
   const BridgeSaveBotRequest({
     required this.operationId,
@@ -845,6 +882,7 @@ class BridgeSaveBotRequest {
     required this.secret,
     required this.enabled,
     required this.toolsEnabled,
+    this.modelRoute,
   });
 
   @override
@@ -857,7 +895,8 @@ class BridgeSaveBotRequest {
       appId.hashCode ^
       secret.hashCode ^
       enabled.hashCode ^
-      toolsEnabled.hashCode;
+      toolsEnabled.hashCode ^
+      modelRoute.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -872,7 +911,8 @@ class BridgeSaveBotRequest {
           appId == other.appId &&
           secret == other.secret &&
           enabled == other.enabled &&
-          toolsEnabled == other.toolsEnabled;
+          toolsEnabled == other.toolsEnabled &&
+          modelRoute == other.modelRoute;
 }
 
 class BridgeSendBotMessageRequest {

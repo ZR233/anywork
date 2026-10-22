@@ -387,9 +387,9 @@ fn chat_content_for_user(
                     MediaWireFormat::ChatFileUrl => ChatContentPart::FileUrl {
                         file_url: ChatMediaUrl { url },
                     },
-                    MediaWireFormat::ResponsesInputImage => {
+                    MediaWireFormat::ResponsesInputImage | MediaWireFormat::ResponsesInputFile => {
                         return Err(protocol_error(
-                            "Responses input_image wire cannot be serialized by Chat Completions",
+                            "Responses media wire cannot be serialized by Chat Completions",
                         ));
                     }
                 });

@@ -767,10 +767,10 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsBotsSourceGroup => 'Platform group';
+  String get settingsBotsSourceGroup => 'Group chat';
 
   @override
-  String get settingsBotsSourceDirect => 'Observed direct chat';
+  String get settingsBotsSourceDirect => 'Direct chat';
 
   @override
   String get settingsBotsEdit => 'Edit configuration';
@@ -4410,4 +4410,37 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactCustom => 'Custom';
+
+  @override
+  String get botsOverviewHint =>
+      'Bring your sessions to Feishu to search, collaborate, and share files.';
+
+  @override
+  String get botsPlatformFeishu => 'Feishu';
+
+  @override
+  String get botsModelTitle => 'Model and reasoning';
+
+  @override
+  String get botsModelHint =>
+      'Applies to all chats with this bot from the next turn.';
+
+  @override
+  String get botsAccessTitle => 'People and group access';
+
+  @override
+  String get botsAccessHint =>
+      'Only approved people and groups can use this bot.';
+
+  @override
+  String get botsConnectionSettings => 'Connection and settings';
+
+  @override
+  String get botsWorkspace => 'Dedicated workspace';
+
+  @override
+  String get botsPlatformTools => 'Feishu messages and test sending';
+
+  @override
+  String get botsManagedModel => 'Managed by bot settings';
 }

@@ -1,7 +1,7 @@
 use super::config::BotConfigFile;
 use super::protocol::error::FeishuError;
 use super::protocol::im::{content_hash, extract_post_text, extract_text};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -18,9 +18,31 @@ pub enum InboundDecision {
         chat_id: String,
         open_id: String,
         text: String,
+        attachments: Vec<InboundAttachment>,
         content_hash: String,
         chat_kind: ChatKind,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum InboundAttachment {
+    Image { key: String },
+    File { key: String, filename: String },
+}
+
+impl InboundAttachment {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Image { key } | Self::File { key, .. } => key,
+        }
+    }
+    pub fn frozen_bytes(&self) -> usize {
+        match self {
+            Self::Image { key } => key.len() + 64,
+            Self::File { key, filename } => key.len() + filename.len() + 96,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,15 +181,16 @@ pub fn classify_event(
         "post" => extract_post_text(content),
         _ => String::new(),
     };
+    let attachments = message_attachments(message.message_type.as_deref(), content);
     let hash = content_hash(&message_id, &chat_id, content);
     if chat_kind == ChatKind::Group {
-        if !config.trusted_chat_ids.contains(&chat_id) {
+        if !config.feishu().trusted_chat_ids.contains(&chat_id) {
             return InboundDecision::Ignore;
         }
         if !mentions_current_bot(message.mentions.as_deref().unwrap_or(&[]), bot_open_id) {
             return InboundDecision::Ignore;
         }
-        if text.is_empty() {
+        if text.is_empty() && attachments.is_empty() {
             return InboundDecision::Ignore;
         }
         return InboundDecision::Execute {
@@ -175,11 +198,12 @@ pub fn classify_event(
             chat_id,
             open_id,
             text,
+            attachments,
             content_hash: hash,
             chat_kind,
         };
     }
-    if !config.trusted_open_ids.contains(&open_id) {
+    if !config.feishu().trusted_open_ids.contains(&open_id) {
         return InboundDecision::Pairing {
             open_id,
             chat_id,
@@ -187,7 +211,7 @@ pub fn classify_event(
             chat_kind,
         };
     }
-    if text.is_empty() {
+    if text.is_empty() && attachments.is_empty() {
         return InboundDecision::Ignore;
     }
     InboundDecision::Execute {
@@ -195,9 +219,40 @@ pub fn classify_event(
         chat_id,
         open_id,
         text,
+        attachments,
         content_hash: hash,
         chat_kind,
     }
+}
+
+fn message_attachments(kind: Option<&str>, content: &str) -> Vec<InboundAttachment> {
+    #[derive(Deserialize)]
+    struct ImageContent {
+        image_key: String,
+    }
+    #[derive(Deserialize)]
+    struct FileContent {
+        file_key: String,
+        file_name: String,
+    }
+    let attachment = match kind {
+        Some("image") => serde_json::from_str::<ImageContent>(content)
+            .ok()
+            .map(|image| InboundAttachment::Image {
+                key: image.image_key,
+            }),
+        Some("file") => serde_json::from_str::<FileContent>(content)
+            .ok()
+            .map(|file| InboundAttachment::File {
+                key: file.file_key,
+                filename: file.file_name,
+            }),
+        _ => None,
+    };
+    attachment
+        .filter(|item| !item.key().is_empty() && item.frozen_bytes() <= 4096)
+        .into_iter()
+        .collect()
 }
 
 fn mentions_current_bot(mentions: &[EventMention], bot_open_id: Option<&str>) -> bool {

@@ -25,7 +25,7 @@ impl StudioChildResources for StudioThreadFactory {
             .thread_snapshot(&request.caller)
             .map(ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
-        let project = self
+        let mut project = self
             .services
             .product_events
             .project_snapshot()
@@ -34,6 +34,8 @@ impl StudioChildResources for StudioThreadFactory {
             .find(|project| project.id == parent.project_id)
             .ok_or_else(|| ThreadAssemblyError::Identity(parent.project_id.clone()))?;
         let root_thread = self.thread_record(&parent.root_thread_id).await?;
+        self.bind_bot_project(&request.id, &parent.root_thread_id, &mut project)
+            .await?;
         let session_root =
             crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                 &self.services.worktrees,

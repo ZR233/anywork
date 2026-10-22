@@ -275,8 +275,8 @@
       }
     }
   },
-  "settingsBotsSourceGroup": "平台群",
-  "settingsBotsSourceDirect": "已观察单聊",
+  "settingsBotsSourceGroup": "群聊",
+  "settingsBotsSourceDirect": "私聊",
   "settingsBotsEdit": "编辑配置",
   "settingsBotsDismiss": "取消",
   "settingsBotsPreserveSecret": "留空保留原有凭据，不会回显已保存的 Secret。",
@@ -1702,5 +1702,15 @@
   "statusCompactNow": "立即压缩",
   "statusCompacting": "正在压缩…",
   "statusCompactionFailed": "压缩失败，请重试。",
-  "settingsModelAutoCompactCustom": "自定义"
+  "settingsModelAutoCompactCustom": "自定义",
+  "botsOverviewHint": "把会话带到飞书，随时查询、协作与传递文件。",
+  "botsPlatformFeishu": "飞书",
+  "botsModelTitle": "模型与思考",
+  "botsModelHint": "应用于这个机器人的所有聊天，从下一轮开始生效。",
+  "botsAccessTitle": "联系人与群授权",
+  "botsAccessHint": "只有已授权的联系人和群可以使用机器人。",
+  "botsConnectionSettings": "连接与设置",
+  "botsWorkspace": "专用工作目录",
+  "botsPlatformTools": "飞书消息与测试发送",
+  "botsManagedModel": "由机器人统一设置"
 }

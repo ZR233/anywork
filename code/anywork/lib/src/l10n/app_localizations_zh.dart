@@ -727,10 +727,10 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsBotsSourceGroup => '平台群';
+  String get settingsBotsSourceGroup => '群聊';
 
   @override
-  String get settingsBotsSourceDirect => '已观察单聊';
+  String get settingsBotsSourceDirect => '私聊';
 
   @override
   String get settingsBotsEdit => '编辑配置';
@@ -4183,4 +4183,34 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactCustom => '自定义';
+
+  @override
+  String get botsOverviewHint => '把会话带到飞书，随时查询、协作与传递文件。';
+
+  @override
+  String get botsPlatformFeishu => '飞书';
+
+  @override
+  String get botsModelTitle => '模型与思考';
+
+  @override
+  String get botsModelHint => '应用于这个机器人的所有聊天，从下一轮开始生效。';
+
+  @override
+  String get botsAccessTitle => '联系人与群授权';
+
+  @override
+  String get botsAccessHint => '只有已授权的联系人和群可以使用机器人。';
+
+  @override
+  String get botsConnectionSettings => '连接与设置';
+
+  @override
+  String get botsWorkspace => '专用工作目录';
+
+  @override
+  String get botsPlatformTools => '飞书消息与测试发送';
+
+  @override
+  String get botsManagedModel => '由机器人统一设置';
 }

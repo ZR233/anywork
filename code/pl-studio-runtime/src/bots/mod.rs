@@ -9,6 +9,7 @@ mod connect;
 mod credentials;
 mod host;
 mod inbound;
+mod media;
 mod occupancy;
 mod operation;
 mod owner;
@@ -17,6 +18,7 @@ mod registration;
 mod reply;
 mod send;
 mod storage;
+mod workspace;
 
 pub(crate) use host::StudioBotSessionHost;
 pub(crate) use owner::BotRuntime;
@@ -25,6 +27,8 @@ pub(crate) use protocol::error::FeishuError;
 /// 一条已受理输入的持久身份读取：显式区分 Ready/Absent，不把读失败折叠成 None。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInputRead {
+    /// Already accepted by the resident owner; its durable projection is still catching up.
+    NotReady,
     /// 持久索引知道该输入：原始路由与消费状态。
     Ready {
         delivery: pl_core::thread::input::InputDelivery,
