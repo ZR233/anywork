@@ -64,6 +64,17 @@ canonical reducer 不混入页面 pending／表单错误。命令回执中的权
 reducer，旧 operation 仍可结算自身事实，但不能清除较新的呈现意图。不存在成功后聚合回读、
 第二份可写 canonical、第二选择控制器或第二附件账本。
 
+多字段保存如仍由多个native字段命令完成，就保留每一步独立结果、部分成功和未开始项，
+不伪造父事务receipt或回滚。字段意图在受理前完整冻结并归领域owner；页面销毁不丢已
+排队步骤。一次真实成功后的同步失败与不确定是否受理分别呈现，不能根据错误code或文案
+决定自动重放。native提交阶段须提供typed结果证据；adapter不把任意Bridge异常当未受理。
+
+Interaction编辑器以Thread、投影incarnation、interaction ID和revision为完整身份，读取
+进度、问题游标、答案/理由和反馈归同一VM；Plan阅读组件不另持一份回应草稿或操作记录。
+键盘和按钮共用VM提交准入；读取完整不收紧原有空答案语义。Mode图形、JSON原文、校验和
+undo/redo同属一个编辑VM；图形Controller只管理UI坐标/交互并提交typed编辑意图，不拥有
+第二份可保存文档。异步保存仅更新它冻结的编辑基线，不清掉期间产生的新编辑。
+
 ## 25.3 身份与版本域
 
 - ResourceStamp 由 ResourceKey、OwnerEpoch、Revision 组成，只在相同资源与 owner 内比较。
@@ -83,6 +94,15 @@ reducer，旧 operation 仍可结算自身事实，但不能清除较新的呈�
 观察接口只暴露 read／observe，不暴露 publish 或 reducer setter。观察 lease 只拥有自身的
 listener 和预算，取消它不能关闭底层会话。latest-value 只用于可覆盖的状态；可靠事件不能
 套用 pause 后只保留最新一条的语义。
+
+Timeline 的状态观察与正文交接是两种能力。只读状态观察用于连接状态、诊断与可覆盖的领域
+镜像，不承担展示正文的可靠交付。内容服务同步登记唯一的可等待正文消费者，返回只拥有自身
+登记与在途回调的 lease；登记返回前不重入回调，重复登记明确拒绝。消费者重新接入已有需求
+时建立新基线，不重放最后一条 Patch。如果当前 attempt 尚未开始消费首个 baseline，新消费者
+可以承接这个已登记 opening 的首基线，不为同一份未消费基线重复创建句柄；一旦基线已开始
+归并，重新接入必须退役原 attempt 并建立新基线。关闭封闭消费者准入，不返回无工作可收束的
+新 lease。解绑消费者不改变业务 demand，不清草稿或关闭 Session。
+没有展示消费者时可以继续归并领域事实并确认数据，但不积累供未来界面重放的正文队列。
 
 Session 可用性、资源不足与恢复通过同一真实 owner 的 typed 状态发布。ViewModel 登记时立即
 消费返回的当前值，不等待下一帧，不用页面跳转、菜单重开或局部 refresh 补漏。
@@ -111,9 +131,23 @@ Repository 完成 typed 转换与领域归并后确认 delivery prefix；需要�
 或 durable。内容缺口只重同步受影响连接，不重放业务动作；History 保留已有展示，新基线不能
 偷偷替换冻结消息。
 
+同一内容连接至多一个在途正文消费回调；转换、连续性归并或展示写入失败均不 ACK。等待回调
+后仍核对原 attempt 与消费者代次，只能确认原 handle。consumer lease 的 requestClose 同步
+封闭新回调，close 等已经受理的回调结束；回调不能等待自身所属 lease／Session 的 close，
+以免自等待。展示服务的可等待边界只包含消息写入与错误收束，不等待布局、绘制或动画。
+
 retire 先封闭发布与新查询，再广播取消和 requestClose，随后等待 producer、sink、查询、
 open 与 handle 的真实 ACK。失败或超时保留 unresolved owner 和 permit，不清容器伪装完成。
 关闭内容 feed 不关闭 Rust Session、Turn 或 writer。容量不足只在真实释放后恢复准入，不轮询。
+取消 native、等待 stream 结束、查询退出与正文回调收束可以并行推进；不能先等回调结束才发
+native 取消。typed close 报告必须属于原连接；只有 native Clean 且 Dart 已登记工作全部结束后
+才 dispose opaque 和释放 permit。Unresolved 保留完整 typed issues、原 handle 与资源 owner。
+进行中的清理请求共享同一次真实收束；可重试的 Unresolved 不能被已完成 Future 永久封住。
+显式重试只继续原 owner 的未完成清理，不新建连接、不重放业务命令，也不清除尚未解决的
+诊断。已证不可恢复的终态故障保持明确的不可重试分类，不能仅改标签后宣称 Clean。
+原始错误的 retryable 与清理动作能否恢复不是同一事实：关闭报告保留原始 typed 诊断，并
+分别表达继续等待原工作、显式重试原清理调用或不可恢复终态。不能因为原异常标为可重试，
+就假定第三方 stream 的取消操作具有重试能力；也不能因此丢弃原始错误分类。
 
 ## 25.6 ViewModel、Smart 与 Dumb
 
@@ -158,8 +192,11 @@ Accepted、AwaitingObservation、Observed、Effective、Durable 独立。模型�
 future Session 生效，不代表正在执行调用已切换；durable 只由真实保存确认推进。
 
 身份回执按 [18](./18-studio-state.md) 的 Turn／interaction predicate 观察；不能空目标自动满足。
-输入提交的 durable 匹配 input 的 saved，不以 terminal 替代。操作 registry 保存每次真实结果，
-latest intent 单独标识；页面 overlay 不再混放在配置 canonical state。
+输入提交的 durable 匹配原历史输入身份、接受序号与原生请求摘要，不以任一 Turn 的 saved
+或 terminal 替代。原索引仅在输入离开Pending后写入，未取得证据时保持未证明，不伪造
+提交即持久化；其证据只针对输入身份，不承诺该输入未来全部输出已保存。真实storage持久化
+通知只触发有界按需身份读取，不作保存证明或轮询；关闭等待该读取真正结束。
+操作 registry 保存每次真实结果，latest intent 单独标识；页面 overlay 不再混放在配置 canonical state。
 
 Rejected 表示明确未受理；UnknownOutcome 表示可能执行但缺少确定结果；SyncFailed 表示已知
 结果的观察失败。未知结果不自动重放。只有已知冲突／缺口／明确重试才局部 resync；成功不
@@ -260,6 +297,16 @@ Dart CloseReport 在 Rust finalizer 前并入 externalIssues；只有真实 ACK 
 迁移后删除巨型 facade／巨桶导出、公开可写 store、旧观察转发链、第二份选择／附件账本、
 聚合 StudioState、Dart next 泵、旧 API／路径／provider 与兼容别名。领域模型、Freezed、FRB
 和消费者通过统一生成入口同步；不能手改生成代码或保留旧 barrel 掩盖孤儿产物。
+
+统一 `generate-gui` 同时拥有应用与纯 Dart 领域包的生成边界：各自在自己的 package 目录运行
+官方生成器，`.g.dart`／`.freezed.dart` 都纳入 canonical 文件集合与内容比较、行尾规范化、
+格式化和孤儿清理；应用另含 FRB 与 l10n。移走手写输入或删除 part 声明必须同步移除旧产物，
+不能依赖开发机的 build_runner 缓存才能发现孤儿。生成失败与 canonical 变化必须传到最外层。
+
+领域包运行依赖仅精确许可已选定的 `freezed_annotation` 公共入口；生成工具为 dev dependency。
+manifest 及 AST 许可不能因此放开其它第三方运行依赖、Flutter、Riverpod、FRB 或 annotation
+包的私有路径。两包依赖快照均为 canonical；检查与 `build-gui --check-generated` 使用已审
+lockfile，允许同步缺失缓存，不重新选择版本或改写 lockfile，也不从 SDK 安装目录执行命令。
 
 ## 25.11 模型目录一致性
 
