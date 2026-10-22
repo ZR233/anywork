@@ -66,7 +66,9 @@ Flutter 版本由 workflow 固定；Rust toolchain 由仓库统一固定，本�
 commit SHA，并使用最小 token 权限、单实例 concurrency 与 build provenance attestation。
 
 CI 的第三方 Rust 命令行工具通过固定版本的 `cargo-binstall` 安装预编译包，并显式禁止源码
-编译回退；FRB 生成器及其 `cargo-expand` 依赖在生成前一并安装，避免生成过程中隐式安装。
+编译回退；使用 `--force` 重新安装固定版本，避免 Cargo 缓存仅恢复安装元数据、缺少实际
+可执行文件时被误判为已安装。FRB 生成器及其 `cargo-expand` 依赖在生成前一并安装，
+避免生成过程中隐式安装。
 优先使用工具上游 Release；未发布二进制的 `cargo-expand` 使用 cargo-bins 的 quickinstall
 产物。工具版本在工作流中固定，产物缺失或安装失败直接使 job 失败。项目自身的 xtask、bridge
 与 helper 仍从当前提交构建，Cargo 与 Flutter 的依赖快照约束保持不变。

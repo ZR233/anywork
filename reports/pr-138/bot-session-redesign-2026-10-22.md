@@ -54,6 +54,10 @@ PR138-FILE-20261022
 - 模型保存期间禁用选择器，保存结束后按 canonical 配置重建瞬态选中文字；失败不会留下未保存值。
 - 150% 文字大小下思考强度字段被截断；布局阈值和字段宽度现随文字大小调整。
 - 上一版 Linux CI 的存储恢复用例缺少 `pl-remote-helper`；作业增加仓库规定的 worker 安装步骤，保留完整测试。
+- `107e3f94` 的 CI 中 Rust、Linux Studio、标题和发布配置通过，Flutter 因缓存安装元数据
+  误报 FRB 已安装、实际找不到程序而失败。预编译工具安装增加官方
+  [`--force` 选项](https://github.com/cargo-bins/cargo-binstall/blob/v1.26.0/crates/bin/src/args.rs#L345-L347)，
+  PR、RC 和发布工作流使用同一契约，不改变工具版本或恢复源码回退。
 
 ## 自动检查与人工入口
 
@@ -68,6 +72,7 @@ PR138-FILE-20261022
 | `cargo xtask verify-gui` | 首轮通过；收尾复跑受 Windows 文件占用阻断，见下文 |
 | `cargo xtask manual-gui --scenario gui` | 原生空机器人界面与 fixture 消息回复经 Driver 操作、看图；clean/drained，issues=[]，请求 accepted=2、rejected=0 |
 | `git diff --check` | 通过 |
+| `actionlint 1.7.12` | PR、RC、发布工作流静态检查通过 |
 
 manual-gui 原始机器报告的人工判定字段保持 pending，本报告记录本轮人工观察结论。
 真实飞书结果独立于该模拟供应商报告。Linux GUI 与仅支持 Linux 的飞书协议观察入口未在本机运行；
@@ -76,7 +81,12 @@ CI 终态以 PR 对应 head 的检查记录为准，不将排队或运行中状�
 收尾复跑生成检查时，Dart 格式化部分生成文件返回 Windows error 1224
 （文件被用户映射区域占用），因此 canonical 稳定性检查失败。重复执行仍能遇到此问题，
 失败日志保留；没有手工修补生成文件，也没有把这些失败算作通过。最后通过统一生成入口
-恢复输出，再分别检查 Dart 格式和 analyze；最终提交的干净环境生成验证由 PR CI 记录。
+及仓库格式入口恢复输出，再分别检查 Dart 格式（368 文件零改动）和 analyze（无问题）；
+最终提交的干净环境生成验证由 PR CI 记录。
+
+在 `107e3f94` 上另补跑 `manual-gui --scenario gui`：Driver 查看空机器人页、返回主界面、
+建立项目并发送 fixture 消息，实际显示 `fixture ready`；所属进程退出后核对独立退出报告。
+本次证据位于同目录的 `manual-head/`，原有 `manual-final/` 保留。
 
 ## 已确认的外部限制
 
