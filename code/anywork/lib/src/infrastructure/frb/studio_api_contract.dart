@@ -1235,19 +1235,33 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<RemoteDirectoryListing> browseRemoteDirectories(
     String alias, {
     String? path,
+    String? cursor,
   }) async {
     await _ensureReady();
     final listing = await _bridgeCall(
-      () => frb_ssh.browseRemoteDirectories(alias: alias, path: path),
+      () => frb_ssh.browseRemoteDirectories(
+        alias: alias,
+        path: path,
+        cursor: cursor,
+      ),
     );
     return RemoteDirectoryListing(
       path: listing.path,
       parent: listing.parent,
+      nextCursor: listing.nextCursor,
       entries: listing.entries
           .map(
             (entry) => RemoteDirectoryEntry(name: entry.name, path: entry.path),
           )
           .toList(growable: false),
+    );
+  }
+
+  @override
+  Future<void> closeRemoteDirectory(String alias, String cursor) async {
+    await _ensureReady();
+    await _bridgeCall(
+      () => frb_ssh.closeRemoteDirectory(alias: alias, cursor: cursor),
     );
   }
 

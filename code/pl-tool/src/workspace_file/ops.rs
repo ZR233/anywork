@@ -1,8 +1,7 @@
 use crate::tool_error;
-use base64::Engine;
 use pl_protocol::{PureError, Result};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::deserialize_tool_input;
@@ -143,47 +142,41 @@ async fn unresolved_read_path_error<B>(backend: &B, path: &str, error: PureError
 where
     B: WorkspaceFileBackend,
 {
-    let candidates = same_name_candidates(backend, path).await;
-    tool_error(
-        TOOL_READ_FILE,
-        format!(
-            "{error}; recovery={}",
-            json!({ "candidatePaths": candidates })
-        ),
-    )
+    let recovery = match same_name_candidates(backend, path).await {
+        Ok((candidates, incomplete)) => {
+            json!({"candidatePaths":candidates,"incomplete":incomplete})
+        }
+        Err(reason) => json!({"candidatePaths":[],"unavailableReason":reason.to_string()}),
+    };
+    tool_error(TOOL_READ_FILE, format!("{error}; recovery={recovery}"))
 }
 
-async fn same_name_candidates<B>(backend: &B, path: &str) -> Vec<String>
-where
-    B: WorkspaceFileBackend,
-{
+async fn same_name_candidates<B: WorkspaceFileBackend>(
+    backend: &B,
+    path: &str,
+) -> Result<(Vec<String>, bool)> {
     let Some(file_name) = path_file_name(path) else {
-        return Vec::new();
+        return Ok((Vec::new(), false));
     };
-    let Ok(result) = backend
+    let result = backend
         .list(WorkspaceFileListRequest {
-            path: ".".to_string(),
+            path: ".".into(),
             cwd: None,
             glob: format!("**/{file_name}"),
             max_files: MAX_READ_PATH_SUGGESTIONS,
             include_dirs: false,
+            cursor: None,
+            implicit_recovery: true,
         })
-        .await
-    else {
-        return Vec::new();
-    };
-    result
+        .await?;
+    let candidates = result
         .files
         .into_iter()
         .filter(|candidate| path_file_name(candidate).is_some_and(|name| name == file_name))
         .take(MAX_READ_PATH_SUGGESTIONS)
-        .map(|candidate| {
-            candidate
-                .strip_prefix("./")
-                .unwrap_or(&candidate)
-                .replace('\\', "/")
-        })
-        .collect()
+        .map(|path| path.strip_prefix("./").unwrap_or(&path).replace('\\', "/"))
+        .collect();
+    Ok((candidates, result.truncated))
 }
 
 fn path_file_name(path: &str) -> Option<&str> {
@@ -224,31 +217,19 @@ where
             format!("limit must be between 1 and {MAX_LIST_FILES_LIMIT}"),
         ));
     }
-    let cursor_key = cursor_key(&json!({
-        "path": path,
-        "cwd": input.working_directory.cwd,
-        "glob": glob,
-        "includeDirs": include_dirs,
-    }));
-    let cursor = decode_cursor(
-        input.pagination.cursor.as_deref(),
-        CursorKind::List,
-        &cursor_key,
-    )?;
-    let offset = cursor.offset;
     let result = backend
         .list(WorkspaceFileListRequest {
             path: path.clone(),
             cwd: input.working_directory.cwd,
             glob: glob.clone(),
-            max_files: offset.saturating_add(limit).saturating_add(1),
+            max_files: limit,
             include_dirs,
+            cursor: input.pagination.cursor,
+            implicit_recovery: false,
         })
         .await?;
-    let end = offset.saturating_add(limit).min(result.files.len());
-    let files = result.files.get(offset..end).unwrap_or_default().to_vec();
-    let has_more = end < result.files.len() || result.truncated;
-    let next_cursor = has_more.then(|| encode_cursor(CursorKind::List, &cursor_key, end));
+    let files = result.files;
+    let next_cursor = result.next_cursor;
     let result_hash = pl_core::context::content_hash(serde_json::to_string(&files)?.as_bytes());
     Ok(json!({
         "path": path,
@@ -257,78 +238,9 @@ where
         "files": files,
         "count": files.len(),
         "nextCursor": next_cursor,
-        "cursorReset": cursor.reset,
+        "cursorReset": false,
         "resultHash": result_hash,
     }))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CursorKind {
-    List,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkspaceCursor {
-    kind: CursorKind,
-    key: String,
-    offset: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CursorResolution {
-    offset: usize,
-    reset: bool,
-}
-
-fn cursor_key(value: &Value) -> String {
-    pl_core::context::content_hash(value.to_string().as_bytes())
-}
-
-fn encode_cursor(kind: CursorKind, key: &str, offset: usize) -> String {
-    let value = serde_json::to_vec(&WorkspaceCursor {
-        kind,
-        key: key.to_string(),
-        offset,
-    })
-    .expect("workspace cursor serialization must succeed");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
-}
-
-fn decode_cursor(
-    cursor: Option<&str>,
-    expected_kind: CursorKind,
-    expected_key: &str,
-) -> Result<CursorResolution> {
-    let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) else {
-        return Ok(CursorResolution {
-            offset: 0,
-            reset: false,
-        });
-    };
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(cursor) else {
-        return Ok(CursorResolution {
-            offset: 0,
-            reset: true,
-        });
-    };
-    let Ok(cursor) = serde_json::from_slice::<WorkspaceCursor>(&bytes) else {
-        return Ok(CursorResolution {
-            offset: 0,
-            reset: true,
-        });
-    };
-    if cursor.kind != expected_kind || cursor.key != expected_key {
-        return Err(tool_error(
-            "workspace_cursor",
-            "cursor does not belong to this request",
-        ));
-    }
-    Ok(CursorResolution {
-        offset: cursor.offset,
-        reset: false,
-    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

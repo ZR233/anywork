@@ -1,10 +1,11 @@
 //! 系统 OpenSSH 连接、重连与 remote workspace handle 的本地 owner。
 
 mod asset;
+mod connection;
 mod shutdown;
 mod ssh;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -78,6 +79,7 @@ struct SshConnection {
     process: Arc<Mutex<Box<dyn ChildWrapper>>>,
     heartbeat: CancellationToken,
     execution_environment: ExecutionEnvironment,
+    remote_path: String,
 }
 
 impl std::fmt::Debug for SshConnection {
@@ -98,6 +100,29 @@ impl std::fmt::Debug for SshPasswordStore {
     }
 }
 
+#[derive(Debug, Default)]
+struct ConnectionIntent {
+    cancelled: CancellationToken,
+}
+#[derive(Debug, Clone)]
+struct ConnectionAttempt {
+    intent: Arc<ConnectionIntent>,
+    result: watch::Receiver<Option<Result<(), RemoteClientError>>>,
+}
+
+type WorkspaceOpening = Result<
+    (
+        Arc<super::client::workspace::WorkspaceLease>,
+        ExecutionEnvironment,
+    ),
+    RemoteClientError,
+>;
+
+type RetiredConnections = Vec<(String, Arc<SshConnection>)>;
+
+type WorkspaceAttempts =
+    Mutex<HashMap<(String, String), watch::Receiver<Option<WorkspaceOpening>>>>;
+
 /// 系统 OpenSSH、helper bootstrap、远端 workspace 与自动重连的本地 owner。
 #[derive(Debug, Clone)]
 pub struct SshManager {
@@ -109,11 +134,28 @@ pub struct SshManager {
     admission: Arc<Mutex<bool>>,
     closing: CancellationToken,
     operations: TaskTracker,
-    connection_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    connecting: Arc<Mutex<HashMap<String, ConnectionAttempt>>>,
+    opening_workspaces: Arc<WorkspaceAttempts>,
+    resource_policy: pl_remote_helper::budget::ResourcePolicy,
+    budget: Arc<tokio::sync::OnceCell<pl_remote_helper::budget::ResourceBudget>>,
     workspaces: Arc<super::client::workspace::WorkspaceCache>,
     states: Arc<RwLock<HashMap<String, watch::Sender<SshConnectionState>>>>,
     ready_revisions: watch::Sender<BTreeMap<String, u64>>,
-    desired_connections: Arc<RwLock<HashSet<String>>>,
+    desired_connections: Arc<RwLock<HashMap<String, Arc<ConnectionIntent>>>>,
+    retired_connections: Arc<Mutex<RetiredConnections>>,
+}
+
+struct BrowseCursor {
+    client: RemoteClient,
+    cursor: Option<String>,
+}
+impl Drop for BrowseCursor {
+    fn drop(&mut self) {
+        if let Some(cursor) = self.cursor.take() {
+            self.client
+                .release_resource(RemoteRequest::CloseDirectory { cursor });
+        }
+    }
 }
 
 impl SshManager {
@@ -138,6 +180,15 @@ impl SshManager {
         self
     }
 
+    /// Host-wide memory policy shared by every helper; set before opening connections.
+    pub fn with_resource_policy(
+        mut self,
+        policy: pl_remote_helper::budget::ResourcePolicy,
+    ) -> Self {
+        self.resource_policy = policy;
+        self
+    }
+
     fn with_optional_helper_assets(helper_assets: Option<Arc<dyn RemoteHelperAssets>>) -> Self {
         Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
@@ -151,11 +202,15 @@ impl SshManager {
             admission: Arc::new(Mutex::new(true)),
             closing: CancellationToken::new(),
             operations: TaskTracker::new(),
-            connection_locks: Arc::new(Mutex::new(HashMap::new())),
+            resource_policy: Default::default(),
+            connecting: Default::default(),
+            opening_workspaces: Default::default(),
+            budget: Default::default(),
             workspaces: Default::default(),
             states: Arc::new(RwLock::new(HashMap::new())),
             ready_revisions: watch::channel(BTreeMap::new()).0,
-            desired_connections: Arc::new(RwLock::new(HashSet::new())),
+            desired_connections: Default::default(),
+            retired_connections: Default::default(),
         }
     }
 
@@ -249,7 +304,6 @@ impl SshManager {
         self.passwords.0.write().await.remove(server_id);
         self.servers.write().await.remove(server_id);
         self.states.write().await.remove(server_id);
-        self.connection_locks.lock().await.remove(server_id);
         self.workspaces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -293,96 +347,190 @@ impl SshManager {
         self.connection_snapshot(server_id).await
     }
 
-    /// 确保服务器已连接；并发调用按服务器串行化。
+    /// Shares one in-flight connection attempt; ordinary requests never take this gate.
     pub async fn connect_server(&self, server_id: &str) -> Result<(), RemoteClientError> {
         let _operation = self.admit_connection().await?;
-        self.desired_connections
+        let intent = self
+            .desired_connections
             .write()
             .await
-            .insert(server_id.to_string());
-        let connection_lock = self.connection_lock(server_id).await;
-        let _connection_guard = connection_lock.lock().await;
-        let existing = self.connections.lock().await.get(server_id).cloned();
-        if let Some(connection) = existing {
-            if !connection.client.is_disconnected() {
+            .entry(server_id.to_owned())
+            .or_insert_with(|| Arc::new(ConnectionIntent::default()))
+            .clone();
+        self.connect_for_intent(server_id, intent).await
+    }
+
+    async fn connect_for_intent(
+        &self,
+        server_id: &str,
+        intent: Arc<ConnectionIntent>,
+    ) -> Result<(), RemoteClientError> {
+        loop {
+            if self.closing.is_cancelled() {
+                return Err(RemoteClientError::ManagerClosing);
+            }
+            if intent.cancelled.is_cancelled() {
+                return Err(RemoteClientError::Cancelled);
+            }
+            let ready = self
+                .connections
+                .lock()
+                .await
+                .get(server_id)
+                .cloned()
+                .filter(|connection| !connection.client.is_disconnected());
+            if let Some(connection) = ready {
+                if let Some(hello) = connection.client.hello() {
+                    self.set_intent_state(
+                        server_id,
+                        &intent,
+                        SshConnectionState::Ready {
+                            helper_version: hello.helper_version,
+                            architecture: hello.architecture,
+                        },
+                    )
+                    .await;
+                }
                 return Ok(());
             }
-            self.close_connection(server_id).await?;
-        }
-        let profile = self.profile(server_id).await?;
-        self.set_state(server_id, SshConnectionState::Connecting)
-            .await;
-        let result = tokio::select! {
-            () = self.closing.cancelled() => Err(RemoteClientError::ManagerClosing),
-            result = self.connect(&profile) => result,
-        };
-        match result {
-            Ok((connection, hello)) => {
-                let client = connection.client.clone();
-                let heartbeat = connection.heartbeat.clone();
-                self.connections
-                    .lock()
-                    .await
-                    .insert(server_id.to_string(), Arc::new(connection));
-                self.spawn_heartbeat(server_id.to_string(), client.clone(), heartbeat);
-                self.set_state(
-                    server_id,
-                    SshConnectionState::Ready {
-                        helper_version: hello.helper_version,
-                        architecture: hello.architecture,
-                    },
-                )
-                .await;
-                self.spawn_disconnect_monitor(server_id.to_string(), client);
-                Ok(())
+            let (mut result, same_intent) = {
+                let mut connecting = self.connecting.lock().await;
+                if intent.cancelled.is_cancelled() {
+                    return Err(RemoteClientError::Cancelled);
+                }
+                if let Some(attempt) = connecting.get(server_id) {
+                    (
+                        attempt.result.clone(),
+                        Arc::ptr_eq(&attempt.intent, &intent),
+                    )
+                } else {
+                    let (report, result) = watch::channel(None);
+                    connecting.insert(
+                        server_id.to_owned(),
+                        ConnectionAttempt {
+                            intent: intent.clone(),
+                            result: result.clone(),
+                        },
+                    );
+                    let manager = self.clone();
+                    let alias = server_id.to_owned();
+                    let attempt_intent = intent.clone();
+                    self.operations.spawn(async move {
+                        let outcome = manager.connect_once(&alias, attempt_intent).await;
+                        // Remove before waking waiters so a replacement cannot spin on a completed slot.
+                        manager.connecting.lock().await.remove(&alias);
+                        report.send_replace(Some(outcome));
+                    });
+                    (result, true)
+                }
+            };
+            let outcome = tokio::select! {
+                _ = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
+                _ = intent.cancelled.cancelled() => return Err(RemoteClientError::Cancelled),
+                result = result.wait_for(Option::is_some) => result.map_err(|_| RemoteClientError::Disconnected)?
+                    .as_ref().cloned().unwrap_or(Err(RemoteClientError::Disconnected)),
+            };
+            if same_intent {
+                return outcome;
             }
-            Err(error) => {
-                let code = match &error {
-                    RemoteClientError::AuthenticationFailed(_) => "sshAuthFailed",
-                    _ => "sshConnectionFailed",
-                };
-                self.set_state(
-                    server_id,
-                    SshConnectionState::Failed {
-                        code: code.to_string(),
-                        message: error.to_string(),
-                    },
-                )
-                .await;
-                Err(error)
-            }
+            // A superseded owner has now finished cleanup; the new intent may create its attempt.
         }
     }
 
-    /// 关闭连接并取消该服务器的自动重连意图。
-    ///
-    /// # Errors
-    /// Returns closing, transport, or process cleanup errors; failed resources remain owned.
+    async fn set_intent_state(
+        &self,
+        alias: &str,
+        intent: &Arc<ConnectionIntent>,
+        state: SshConnectionState,
+    ) {
+        let sender = self.ensure_state(alias).await;
+        let desired = self.desired_connections.read().await;
+        if !intent.cancelled.is_cancelled()
+            && desired
+                .get(alias)
+                .is_some_and(|current| Arc::ptr_eq(current, intent))
+        {
+            sender.send_if_modified(|current| {
+                if *current == state {
+                    false
+                } else {
+                    *current = state;
+                    true
+                }
+            });
+        }
+    }
+
+    /// Cancels this alias's connection intent and joins its current and in-flight owners.
     pub async fn disconnect_server(&self, server_id: &str) -> Result<(), RemoteClientError> {
         let _operation = self.admit_connection().await?;
-        self.desired_connections.write().await.remove(server_id);
-        let connection_lock = self.connection_lock(server_id).await;
-        let _connection_guard = connection_lock.lock().await;
-        self.close_connection(server_id).await
+        let (connection, attempt) = {
+            let mut desired = self.desired_connections.write().await;
+            if let Some(intent) = desired.remove(server_id) {
+                intent.cancelled.cancel();
+            }
+            let connection = self.connections.lock().await.get(server_id).cloned();
+            if let Some(connection) = &connection {
+                connection.client.begin_close();
+                connection.heartbeat.cancel();
+            }
+            let attempt = self
+                .connecting
+                .lock()
+                .await
+                .get(server_id)
+                .map(|attempt| attempt.result.clone());
+            (connection, attempt)
+        };
+        let close = async {
+            match connection {
+                Some(connection) => self.close_owned_connection(server_id, connection).await,
+                None => Ok(()),
+            }
+        };
+        let joining = async {
+            if let Some(mut attempt) = attempt {
+                let outcome = attempt
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| RemoteClientError::Disconnected)?
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(Err(RemoteClientError::Disconnected));
+                match outcome {
+                    Ok(()) | Err(RemoteClientError::Cancelled) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        };
+        let (close, joining) = tokio::join!(close, joining);
+        close?;
+        joining?;
+        let sender = self.ensure_state(server_id).await;
+        let desired = self.desired_connections.read().await;
+        if !desired.contains_key(server_id) {
+            sender.send_replace(SshConnectionState::Disconnected);
+        }
+        Ok(())
     }
 
-    /// 主动中断当前 SSH transport，并保留自动重连意图。
-    ///
-    /// # Errors
-    ///
-    /// 当服务器不存在、初次连接失败或 SSH 子进程无法终止时返回错误。
+    /// Replaces the transport while retaining this alias's existing connection intent.
     pub async fn reconnect_server(&self, server_id: &str) -> Result<(), RemoteClientError> {
         let _operation = self.admit_connection().await?;
-        self.desired_connections
+        let intent = self
+            .desired_connections
             .write()
             .await
-            .insert(server_id.to_string());
-        {
-            let connection_lock = self.connection_lock(server_id).await;
-            let _connection_guard = connection_lock.lock().await;
-            self.close_connection(server_id).await?;
+            .entry(server_id.to_owned())
+            .or_insert_with(|| Arc::new(ConnectionIntent::default()))
+            .clone();
+        let connection = self.connections.lock().await.get(server_id).cloned();
+        if let Some(connection) = connection {
+            connection.heartbeat.cancel();
+            connection.client.detach().await?;
         }
-        self.connect_server(server_id).await
+        self.connect_for_intent(server_id, intent).await
     }
 
     /// 浏览远端目录；该功能只用于宿主 UI，不注册给模型。
@@ -390,20 +538,66 @@ impl SshManager {
         &self,
         server_id: &str,
         path: Option<String>,
+        cursor: Option<String>,
     ) -> Result<RemoteDirectoryListing, RemoteClientError> {
         let _operation = self.admit_connection().await?;
         let client = self.client(server_id).await?;
-        let reply = tokio::select! {
-            biased;
-            () = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
-            reply = client.request(RemoteRequest::BrowseDirectories { path }, &[]) => reply?,
+        let continuing = cursor.is_some();
+        let mut guard = BrowseCursor {
+            client: client.clone(),
+            cursor,
         };
-        match reply.response {
-            RemoteResponse::Directories(listing) => Ok(listing),
-            response => Err(RemoteClientError::Protocol(format!(
-                "unexpected directory response: {response:?}"
-            ))),
+        loop {
+            let request = match guard.cursor.clone() {
+                Some(cursor) => RemoteRequest::ContinueDirectory { cursor },
+                None => RemoteRequest::BrowseDirectories { path: path.clone() },
+            };
+            let reply = tokio::select! {
+                _ = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
+                reply = client.request(request, &[]) => reply?,
+            };
+            let mut listing = match reply.response {
+                RemoteResponse::Directory(listing) | RemoteResponse::Directories(listing) => {
+                    listing
+                }
+                _ => {
+                    return Err(RemoteClientError::Protocol(
+                        "unexpected directory response".into(),
+                    ));
+                }
+            };
+            guard.cursor = listing.next_cursor.clone();
+            if continuing && path.as_ref().is_some_and(|path| path != &listing.path) {
+                return Err(RemoteClientError::Protocol(
+                    "directory cursor does not match requested path".into(),
+                ));
+            }
+            // Selection and presentation policy belongs to the host. The helper returns a raw
+            // single-level page, also used by file tools, Skill discovery and recursive traversal.
+            listing.entries.retain(|entry| entry.is_directory);
+            listing
+                .entries
+                .sort_by(|left, right| left.name.cmp(&right.name));
+            if listing.entries.is_empty() && listing.next_cursor.is_some() {
+                continue;
+            }
+            guard.cursor = None;
+            return Ok(listing);
         }
+    }
+    pub async fn close_directory(
+        &self,
+        server_id: &str,
+        cursor: String,
+    ) -> Result<(), RemoteClientError> {
+        let connection = self.connections.lock().await.get(server_id).cloned();
+        if let Some(connection) = connection {
+            connection
+                .client
+                .request(RemoteRequest::CloseDirectory { cursor }, &[])
+                .await?;
+        }
+        Ok(())
     }
 
     /// 打开远端 workspace 并返回文件 backend。
@@ -429,8 +623,6 @@ impl SshManager {
             .map_err(|error| RemoteClientError::Protocol(error.to_string()))?;
         let _operation = self.admit_connection().await?;
         let client = self.client(server_id).await?;
-        let connection_lock = self.connection_lock(server_id).await;
-        let _connection_guard = connection_lock.lock().await;
         // Keep transport, workspace and environment from one connection, even if
         // reconnect raced the initial lookup. Never publish a mixed-generation host.
         let connection = self
@@ -456,22 +648,64 @@ impl SshManager {
         let (lease, execution_environment) = match cached {
             Some(cached) => cached,
             None => {
-                let lease = tokio::select! {
-                    biased;
-                    () = self.closing.cancelled() => return Err(RemoteClientError::ManagerClosing),
-                    opened = tokio::time::timeout(std::time::Duration::from_secs(15), client.open_workspace_lease(path, server_id.to_owned(), self.workspaces.clone())) => opened.map_err(|_| RemoteClientError::Protocol("SSH workspace open timed out".into()))??,
+                let key = (server_id.to_owned(), path.clone());
+                let mut opening = {
+                    let mut openings = self.opening_workspaces.lock().await;
+                    if let Some(opening) = openings.get(&key) {
+                        opening.clone()
+                    } else {
+                        let (report, receiver) = watch::channel(None);
+                        openings.insert(key.clone(), receiver.clone());
+                        let manager = self.clone();
+                        let client = client.clone();
+                        let environment = connection.execution_environment.clone();
+                        self.operations.spawn(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(15),
+                                client.open_workspace_lease(
+                                    path,
+                                    key.0.clone(),
+                                    manager.workspaces.clone(),
+                                ),
+                            )
+                            .await
+                            .map_err(|_| {
+                                RemoteClientError::Protocol("SSH workspace open timed out".into())
+                            })
+                            .and_then(|v| v)
+                            .map(|lease| (lease, environment));
+                            if let Ok((lease, environment)) = &result {
+                                manager
+                                    .workspaces
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .insert(
+                                        (key.0.clone(), lease.path.clone()),
+                                        super::client::workspace::CachedWorkspace {
+                                            lease: Arc::downgrade(lease),
+                                            environment: environment.clone(),
+                                        },
+                                    );
+                            }
+                            // Publish the weak cache before releasing single-flight registration.
+                            // A new caller cannot slip between removal and cache publication.
+                            manager.opening_workspaces.lock().await.remove(&key);
+                            report.send_replace(Some(result));
+                        });
+                        receiver
+                    }
                 };
+                let (lease, _) = opening
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| RemoteClientError::Disconnected)?
+                    .as_ref()
+                    .cloned()
+                    .ok_or(RemoteClientError::Disconnected)??;
+                // One result is published, then its producer closes. Join that close so the
+                // completed attempt cannot retain the last strong lease after our caller drops it.
+                while opening.changed().await.is_ok() {}
                 let environment = connection.execution_environment.clone();
-                self.workspaces
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(
-                        (server_id.to_owned(), lease.path.clone()),
-                        super::client::workspace::CachedWorkspace {
-                            lease: Arc::downgrade(&lease),
-                            environment: environment.clone(),
-                        },
-                    );
                 (lease, environment)
             }
         };
@@ -481,132 +715,6 @@ impl SshManager {
             git: RemoteExecutionBackend::new(client, lease),
             execution_environment,
         })
-    }
-
-    async fn connect(
-        &self,
-        profile: &SshServerProfile,
-    ) -> Result<(SshConnection, RemoteHello), RemoteClientError> {
-        let password = self.server_password(&profile.alias).await;
-        let platform = run_ssh_capture(
-            profile,
-            &self.ssh_config,
-            password.as_deref(),
-            "uname -s; uname -m",
-        )
-        .await?;
-        let target = RemoteHelperTarget::from_uname(&platform)?;
-        let assets = self.helper_assets.clone().ok_or_else(|| {
-            RemoteClientError::Protocol(format!(
-                "helper artifact for {} is not available",
-                target.triple()
-            ))
-        })?;
-        let helper = load_helper(assets, target).await?;
-        let remote_path =
-            upload_helper(profile, &self.ssh_config, password.as_deref(), &helper).await?;
-        let mut prepared = ssh_command(profile, &self.ssh_config, password.as_deref()).await?;
-        prepared
-            .command
-            .command_mut()
-            .arg(ssh::posix_remote_command(&format!("exec {remote_path}")))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = prepared.command.spawn().map_err(|error| {
-            RemoteClientError::Protocol(format!("failed to start ssh: {error}"))
-        })?;
-        let stdin = child
-            .stdin()
-            .take()
-            .ok_or_else(|| RemoteClientError::Protocol("ssh process has no stdin".to_string()))?;
-        let stdout = child
-            .stdout()
-            .take()
-            .ok_or_else(|| RemoteClientError::Protocol("ssh process has no stdout".to_string()))?;
-        let client = RemoteClient::from_streams(stdout, stdin);
-        let handshake = tokio::time::timeout(
-            std::time::Duration::from_secs(25),
-            client.request(
-                RemoteRequest::Hello {
-                    protocol_version: REMOTE_PROTOCOL_VERSION,
-                },
-                &[],
-            ),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(RemoteClientError::Protocol(
-                "SSH helper handshake timed out".to_string(),
-            ))
-        });
-        let reply = match handshake {
-            Ok(reply) => reply,
-            Err(reason) => {
-                // A failed bootstrap never becomes a managed connection. Close and reap the
-                // local SSH transport before reporting its bounded initialization diagnostic.
-                ssh::terminate_ssh_child(&mut child, "bootstrap").await?;
-                let diagnostic = ssh::initialization_diagnostic(child.stderr().take()).await?;
-                if ssh::is_ssh_auth_failure(&diagnostic) {
-                    return Err(RemoteClientError::AuthenticationFailed(ssh::auth_failure(
-                        &diagnostic,
-                    )));
-                }
-                return Err(RemoteClientError::Protocol(format!(
-                    "SSH helper initialization failed: {reason}; {diagnostic}"
-                )));
-            }
-        };
-        let hello = match reply.response {
-            RemoteResponse::Hello(hello) => hello,
-            response => {
-                return Err(RemoteClientError::Protocol(format!(
-                    "unexpected helper hello response: {response:?}"
-                )));
-            }
-        };
-        if hello.protocol_version != REMOTE_PROTOCOL_VERSION {
-            return Err(RemoteClientError::Protocol(format!(
-                "helper negotiated protocol version {}, expected {}",
-                hello.protocol_version, REMOTE_PROTOCOL_VERSION
-            )));
-        }
-        if let Some(mut stderr) = child.stderr().take() {
-            let client = client.clone();
-            let closing = self.closing.clone();
-            let server_id = profile.alias.clone();
-            self.operations.spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut retained = Vec::new();
-                let mut buffer = [0; 1024];
-                loop {
-                    tokio::select! {
-                        () = closing.cancelled() => break,
-                        () = client.wait_disconnected() => break,
-                        read = stderr.read(&mut buffer) => match read {
-                            Ok(0) | Err(_) => break,
-                            Ok(count) => {
-                                retained.extend_from_slice(&buffer[..count]);
-                                if retained.len() > 4096 { retained.drain(..retained.len() - 4096); }
-                            }
-                        }
-                    }
-                }
-                if !retained.is_empty() {
-                    let diagnostic = String::from_utf8_lossy(&retained).into_owned();
-                    tracing::warn!(%server_id, %diagnostic, "SSH process diagnostic");
-                }
-            });
-        }
-        Ok((
-            SshConnection {
-                client,
-                process: Arc::new(Mutex::new(child)),
-                heartbeat: CancellationToken::new(),
-                execution_environment: execution_environment_from_hello(&hello)?,
-            },
-            hello,
-        ))
     }
 
     async fn client(&self, server_id: &str) -> Result<RemoteClient, RemoteClientError> {
@@ -640,18 +748,26 @@ impl SshManager {
     }
 
     async fn set_state(&self, server_id: &str, state: SshConnectionState) {
-        let ready = matches!(state, SshConnectionState::Ready { .. });
-        self.ensure_state(server_id).await.send_replace(state);
-        if ready {
-            self.ready_revisions.send_modify(|revisions| {
-                let revision = revisions.entry(server_id.to_owned()).or_default();
-                *revision = revision.saturating_add(1);
+        self.ensure_state(server_id)
+            .await
+            .send_if_modified(|current| {
+                if *current == state {
+                    false
+                } else {
+                    *current = state;
+                    true
+                }
             });
-        }
     }
 
-    fn spawn_disconnect_monitor(&self, server_id: String, client: RemoteClient) {
+    fn spawn_disconnect_monitor(
+        &self,
+        server_id: String,
+        client: RemoteClient,
+        intent: Arc<ConnectionIntent>,
+    ) {
         let manager = self.clone();
+        let generation = client.generation();
         // The admitting connect operation is still tracked while this task is added.
         self.operations.spawn(async move {
             tokio::select! {
@@ -659,41 +775,10 @@ impl SshManager {
                 _ = manager.closing.cancelled() => return,
                 _ = client.wait_disconnected() => {},
             }
+            if client.generation() != generation { return; }
             tracing::warn!(%server_id, reason = ?client.disconnect_reason(), "SSH transport disconnected");
-            if !manager
-                .desired_connections
-                .read()
-                .await
-                .contains(&server_id)
-            {
-                return;
-            }
-            {
-                let connection_lock = manager.connection_lock(&server_id).await;
-                let _connection_guard = connection_lock.lock().await;
-                let current = manager
-                    .connections
-                    .lock()
-                    .await
-                    .get(&server_id)
-                    .is_some_and(|connection| connection.client.is_same_connection(&client));
-                if !current {
-                    return;
-                }
-                if let Err(error) = manager.close_connection(&server_id).await {
-                    manager
-                        .set_state(
-                            &server_id,
-                            SshConnectionState::Failed {
-                                code: "sshCleanupFailed".to_string(),
-                                message: error.to_string(),
-                            },
-                        )
-                        .await;
-                    return;
-                }
-            }
-            manager.reconnect_with_backoff(server_id).await;
+            if manager.closing.is_cancelled() || intent.cancelled.is_cancelled() { return; }
+            manager.reconnect_with_backoff(server_id, intent).await;
         });
     }
 
@@ -724,24 +809,34 @@ impl SshManager {
                 };
                 if result.is_err() {
                     tracing::warn!(%server_id, "SSH heartbeat failed; closing transport");
-                    let _ = client.close().await;
+                    let _ = client.detach().await;
                     break;
                 }
             }
         });
     }
 
-    async fn reconnect_with_backoff(&self, server_id: String) {
+    async fn reconnect_with_backoff(&self, server_id: String, intent: Arc<ConnectionIntent>) {
         const DELAYS: [u64; 6] = [1, 2, 4, 8, 15, 30];
         let mut attempt = 0_u32;
         loop {
-            if !self.desired_connections.read().await.contains(&server_id) {
+            if self
+                .connections
+                .lock()
+                .await
+                .get(&server_id)
+                .is_some_and(|connection| !connection.client.is_disconnected())
+            {
+                return;
+            }
+            if intent.cancelled.is_cancelled() {
                 return;
             }
             attempt = attempt.saturating_add(1);
             let delay_seconds = DELAYS[(attempt as usize - 1).min(DELAYS.len() - 1)];
-            self.set_state(
+            self.set_intent_state(
                 &server_id,
+                &intent,
                 SshConnectionState::Reconnecting {
                     attempt,
                     delay_seconds,
@@ -751,18 +846,19 @@ impl SshManager {
             tokio::select! {
                 biased;
                 _ = self.closing.cancelled() => return,
+                _ = intent.cancelled.cancelled() => return,
                 _ = tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)) => {},
             }
-            match self.connect_server(&server_id).await {
+            match self.connect_for_intent(&server_id, intent.clone()).await {
                 Ok(()) => return,
-                Err(RemoteClientError::ManagerClosing) => return,
+                Err(RemoteClientError::ManagerClosing | RemoteClientError::Cancelled) => return,
                 Err(_) => {}
             }
         }
     }
 }
 
-fn execution_environment_from_hello(
+pub(super) fn execution_environment_from_hello(
     hello: &RemoteHello,
 ) -> Result<ExecutionEnvironment, RemoteClientError> {
     let os = match hello.os.to_ascii_lowercase().as_str() {

@@ -34,7 +34,7 @@ endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |
 | pl-output / pl-patch / pl-skill-core | 输出算法、patch 规则、Skill 元数据与路径规则 |
-| pl-remote-helper | 本地进程监督、SSH 远端文件/进程协议及统一进程创建策略 |
+| pl-remote-helper | 复用的进程监督、流读写、capture 写入和资源计费组件；Linux helper 只拥有物理句柄、偏移回执、未确认输出及实例租约 |
 | pl-studio-runtime | TOML/SQLite 持久化及 core 时间线存储适配、产品条目投影、项目、Profile、Mode/workflow/Plan、子代理协调、资源租约与 root/child/恢复的唯一 Thread 装配 |
 | pl-studio-bridge / pl-studio-server | 同一 Studio 运行时的 FRB / HTTP 适配 |
 | pl-xtask | 轻量工程命令编排；按需通过子进程调用独立验收工具，不链接 Studio 运行时、模型或数据库 |
@@ -50,6 +50,10 @@ xtask 对验收工具只有命令调用关系，不建立 Cargo 依赖；验收�
 core 不提供默认工具安装、account 配置、MCP 目录、产品 working set 或旧引擎门面。工具实例通过
 不透明注册句柄向 Thread 转移所有权（见 [09](./09-tool-runtime.md)）；模型通过核心模型会话契约
 传入。共用物理服务通过明确租约共享，不共享可变 Thread 工具实例。
+
+SSH 的递归扫描、glob、候选搜索、Skill 发现、目录选择过滤与排序均归 `pl-tool` 的 host 编排。
+helper 仅返回单层目录迭代页及文件事实；本地和远程命令复用 `CommandProcessManager` 与
+`ManagedWorker` 的业务和物理边界，HTTP/2 由 `h2` 唯一实现，不维护平行帧 codec。
 
 ## 2.3 存储与投影
 

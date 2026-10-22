@@ -3810,4 +3810,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactCustom => '自定义';
+
+  @override
+  String get settingsSshNextPage => '下一页';
 }

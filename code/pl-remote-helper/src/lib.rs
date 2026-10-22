@@ -1,4 +1,8 @@
-//! Pure SSH remote helper 的最小 stdio 服务。
+//! Physical process and filesystem capabilities over a single resumable HTTP/2 connection.
+
+pub mod budget;
+pub mod capture;
+pub mod transport;
 
 pub use pl_protocol::remote::RemoteError;
 
@@ -10,14 +14,12 @@ pub mod process;
 pub mod client;
 
 #[cfg(target_os = "linux")]
-mod codec;
-#[cfg(target_os = "linux")]
 mod path;
 #[cfg(target_os = "linux")]
 mod server;
 
 #[cfg(target_os = "linux")]
-pub use server::run_stdio;
+pub use server::{attach_stdio, run_owner, run_stdio};
 
 /// Failure of the physical SSH helper service.
 #[derive(Debug, thiserror::Error)]

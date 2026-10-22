@@ -20,6 +20,17 @@ pub(crate) fn argv_for_environment(
 ) -> Vec<String> {
     let path = environment.shell_path.to_string_lossy().into_owned();
     match environment.shell {
+        ShellDialect::Bash
+            if environment.transport == crate::environment::ExecutionTransport::Ssh =>
+        {
+            vec![
+                path,
+                "--noprofile".into(),
+                "--norc".into(),
+                "-c".into(),
+                script.into(),
+            ]
+        }
         ShellDialect::Bash | ShellDialect::Sh => {
             vec![path, "-c".to_string(), script.to_string()]
         }

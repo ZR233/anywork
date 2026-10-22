@@ -4,13 +4,27 @@ use std::path::{Component, Path, PathBuf};
 
 use pl_protocol::remote::{RemoteError, RemoteErrorCode};
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct WorkspaceRegistry {
-    roots: HashMap<String, PathBuf>,
-    next_id: u64,
+#[derive(Debug)]
+struct WorkspaceRoot {
+    path: PathBuf,
+    _memory: crate::budget::ByteLease,
 }
-
+#[derive(Debug)]
+struct Registry {
+    roots: std::sync::RwLock<HashMap<String, WorkspaceRoot>>,
+    next_id: std::sync::atomic::AtomicU64,
+    budget: crate::budget::ResourceBudget,
+}
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceRegistry(std::sync::Arc<Registry>);
 impl WorkspaceRegistry {
+    pub(crate) fn new(budget: crate::budget::ResourceBudget) -> Self {
+        Self(std::sync::Arc::new(Registry {
+            roots: Default::default(),
+            next_id: std::sync::atomic::AtomicU64::new(0),
+            budget,
+        }))
+    }
     pub(crate) async fn resolve_workspace_root(path: &str) -> Result<PathBuf, RemoteError> {
         let canonical = tokio::fs::canonicalize(path)
             .await
@@ -27,20 +41,64 @@ impl WorkspaceRegistry {
         Ok(canonical)
     }
 
-    pub(crate) fn open_resolved(&mut self, canonical: PathBuf) -> (String, PathBuf) {
-        self.next_id = self.next_id.saturating_add(1);
-        let id = format!("workspace-{}", self.next_id);
-        self.roots.insert(id.clone(), canonical.clone());
-        (id, canonical)
+    pub(crate) fn open_resolved(
+        &self,
+        canonical: PathBuf,
+    ) -> Result<(String, PathBuf), RemoteError> {
+        let memory = self
+            .0
+            .budget
+            .try_reserve(std::mem::size_of::<WorkspaceRoot>() + canonical.as_os_str().len())
+            .ok_or_else(|| {
+                remote_error(
+                    RemoteErrorCode::ResourceExhausted,
+                    "workspace handle budget exhausted",
+                )
+            })?;
+        let sequence = self
+            .0
+            .next_id
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .map_err(|_| {
+                remote_error(
+                    RemoteErrorCode::ResourceExhausted,
+                    "workspace identity exhausted",
+                )
+            })?;
+        let id = format!("workspace-{sequence}");
+        self.0
+            .roots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id.clone(),
+                WorkspaceRoot {
+                    path: canonical.clone(),
+                    _memory: memory,
+                },
+            );
+        Ok((id, canonical))
     }
-
-    pub(crate) fn close(&mut self, workspace_id: &str) -> Result<(), RemoteError> {
-        self.roots.remove(workspace_id).map(|_| ()).ok_or_else(|| {
+    pub(crate) fn close(&self, workspace_id: &str) -> Result<(), RemoteError> {
+        let mut roots = self
+            .0
+            .roots
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = roots.remove(workspace_id).map(|_| ()).ok_or_else(|| {
             remote_error(
                 RemoteErrorCode::WorkspaceNotFound,
-                format!("unknown workspace id '{workspace_id}'"),
+                "workspace handle is closed",
             )
-        })
+        });
+        if roots.len().saturating_mul(4) < roots.capacity() {
+            roots.shrink_to_fit();
+        }
+        result
     }
 
     pub(crate) async fn resolve_existing(
@@ -49,11 +107,11 @@ impl WorkspaceRegistry {
         path: &str,
     ) -> Result<PathBuf, RemoteError> {
         let (root, joined) = self.join(workspace_id, path)?;
-        reject_symlink_ancestors(root, &joined, false).await?;
+        reject_symlink_ancestors(&root, &joined, false).await?;
         tokio::fs::canonicalize(&joined)
             .await
             .map_err(|error| io_error("failed to resolve remote path", error))
-            .and_then(|canonical| ensure_within(root, canonical))
+            .and_then(|canonical| ensure_within(&root, canonical))
     }
 
     pub(crate) async fn resolve_for_write(
@@ -62,30 +120,36 @@ impl WorkspaceRegistry {
         path: &str,
     ) -> Result<PathBuf, RemoteError> {
         let (root, joined) = self.join(workspace_id, path)?;
-        reject_symlink_ancestors(root, &joined, true).await?;
-        ensure_within(root, joined)
+        reject_symlink_ancestors(&root, &joined, true).await?;
+        ensure_within(&root, joined)
     }
 
-    pub(crate) fn root(&self, workspace_id: &str) -> Result<&Path, RemoteError> {
-        self.roots
+    pub(crate) fn len(&self) -> usize {
+        self.0
+            .roots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+    pub(crate) fn root(&self, workspace_id: &str) -> Result<PathBuf, RemoteError> {
+        self.0
+            .roots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(workspace_id)
-            .map(PathBuf::as_path)
+            .map(|root| root.path.clone())
             .ok_or_else(|| {
                 remote_error(
                     RemoteErrorCode::WorkspaceNotFound,
-                    format!("unknown workspace id '{workspace_id}'"),
+                    "workspace handle is closed",
                 )
             })
     }
-
-    fn join<'a>(
-        &'a self,
-        workspace_id: &str,
-        path: &str,
-    ) -> Result<(&'a Path, PathBuf), RemoteError> {
+    fn join(&self, workspace_id: &str, path: &str) -> Result<(PathBuf, PathBuf), RemoteError> {
         let root = self.root(workspace_id)?;
         let relative = normalize_relative(path)?;
-        Ok((root, root.join(relative)))
+        let joined = root.join(relative);
+        Ok((root, joined))
     }
 }
 

@@ -12,14 +12,11 @@ use crate::skill::{
     SkillProviderObservation, SkillProviderRequest, SkillResourceBase, SkillSourceKind,
     SkillSummary, support_file_path, validate_skill_document,
 };
-use crate::workspace_file::{
-    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileReadRequest,
-};
+use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 
 use super::RemoteWorkspaceFileBackend;
 
 const REMOTE_SKILL_PROVIDER_ID: &str = "remote-workspace";
-const MAX_REMOTE_SKILLS: usize = 512;
 
 /// 在本地解析和校验远端 workspace Skill 文档的 Provider。
 #[derive(Debug)]
@@ -62,16 +59,6 @@ impl SkillProvider for RemoteSkillProvider {
                     warnings: Vec::new(),
                 });
             }
-            let listing = self
-                .backend
-                .list(WorkspaceFileListRequest {
-                    path: root.clone(),
-                    cwd: None,
-                    glob: format!("**/{SKILL_FILE_NAME}"),
-                    max_files: MAX_REMOTE_SKILLS,
-                    include_dirs: false,
-                })
-                .await?;
             let disabled = request
                 .config
                 .disabled
@@ -80,9 +67,21 @@ impl SkillProvider for RemoteSkillProvider {
                 .collect::<BTreeSet<_>>();
             let mut candidates = Vec::new();
             let mut warnings = Vec::new();
-            for (local_order, path) in listing.files.into_iter().enumerate() {
+            let mut traversal = self.backend.walk(root.clone(), false).await?;
+            use futures::StreamExt;
+            let mut local_order = 0;
+            while let Some(entry) = traversal.next().await {
                 ensure_not_cancelled(&request.cancellation)?;
-                match self.read_candidate(&root, path, local_order).await {
+                let entry = entry?;
+                if entry.is_dir
+                    || Path::new(&entry.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        != Some(SKILL_FILE_NAME)
+                {
+                    continue;
+                }
+                match self.read_candidate(&root, entry.path, local_order).await {
                     Ok(candidate)
                         if !disabled.contains(&candidate.summary.name.to_ascii_lowercase())
                             && remote_platform_matches(&candidate.summary.platforms) =>
@@ -92,10 +91,11 @@ impl SkillProvider for RemoteSkillProvider {
                     Ok(_) => {}
                     Err(error) => warnings.push(error.to_string()),
                 }
+                local_order += 1;
             }
             Ok(SkillProviderObservation {
                 candidates,
-                complete: !listing.truncated,
+                complete: true,
                 warnings,
             })
         }))

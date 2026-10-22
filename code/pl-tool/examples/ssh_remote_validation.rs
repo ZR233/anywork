@@ -1,6 +1,9 @@
+#[path = "support/remote_manager.rs"]
+mod remote_manager;
+#[path = "support/remote_stream.rs"]
+mod remote_stream;
 use pl_tool::command::{
-    CommandProcessFinalResult, CommandProcessLifecycle, CommandProcessManager, CommandStartRequest,
-    CommandWriteRequest,
+    CommandProcessLifecycle, CommandProcessManager, CommandStartRequest, CommandWriteRequest,
 };
 use pl_tool::execution::{ExecutionBackend, ExecutionRequest};
 use std::path::PathBuf;
@@ -52,10 +55,16 @@ async fn main() -> anyhow::Result<()> {
     let profile = SshServerProfile {
         alias: "validation".to_string(),
         host_name: host,
-        port: 22,
+        port: std::env::var("PURE_SSH_TEST_PORT")
+            .ok()
+            .map(|port| port.parse())
+            .transpose()?
+            .unwrap_or(22),
         username: std::env::var("PURE_SSH_TEST_USERNAME").unwrap_or_else(|_| "root".to_string()),
         identity_file,
     };
+    remote_manager::cancellation_joins_connect(profile.clone(), std::path::Path::new(&known_hosts))
+        .await?;
     manager.save_server(profile).await?;
     let snapshot = manager.test_connection("validation").await?;
     println!("connection={:?}", snapshot.state);
@@ -88,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
     }
     files.remove_path("leases".into(), None, true).await?;
     println!("workspace leases: 50 distinct open/drop/reopen cycles PASS");
+    remote_manager::verify_single_business_channel("multiple-workspaces")?;
     files.create_directory("nested".to_string(), None).await?;
     files
         .write_text(WorkspaceFileWriteRequest {
@@ -135,6 +145,8 @@ async fn main() -> anyhow::Result<()> {
             glob: "**/*.txt".to_string(),
             max_files: 20,
             include_dirs: true,
+            cursor: None,
+            implicit_recovery: false,
         })
         .await?;
     assert_eq!(
@@ -276,58 +288,111 @@ async fn main() -> anyhow::Result<()> {
     validate_lsp_backend(host.clone(), files.as_ref()).await?;
 
     let mut connection_state = manager.subscribe_state("validation").await;
-    let tree = processes
-        .start(CommandStartRequest {
-            command: "sleep 60 & echo $! > tree.pid; wait".to_string(),
-            cwd: None,
-            allow_workspace_escape: false,
-            timeout: Duration::from_secs(90),
-            yield_time: Duration::from_millis(300),
-            max_output_chars: 64 * 1024,
-            session_id: "validation".to_string(),
-            tool_id: "disconnect-tree".to_string(),
-            call_id: "call-tree".to_string(),
-            cancellation_token: None,
-            output_observer: None,
-        })
-        .await?;
-    let process_id = tree.process_id.expect("tree process must still be running");
+    use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    let mut tree = host.commands.spawn(CommandSpawnRequest {
+        process_id: "reconnect-tree".into(),
+        command: "sleep 60 & child=$!; echo $child > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"; kill $child; wait $child 2>/dev/null; exit 0".into(),
+        cwd: ".".into(), output_target: CommandOutputTarget::new("reconnect.log", "reconnect.log"),
+        capture_limit_bytes: 1024 * 1024,
+    }).await?;
+    let mut stdout = BufReader::new(tree.take_stdout().expect("command stdout"));
+    let mut stderr = tree.take_stderr().expect("command stderr");
+    let mut stdin = tree.take_stdin().expect("command stdin");
+    let mut line = String::new();
+    stdout.read_line(&mut line).await?;
+    anyhow::ensure!(
+        line == "ready\n",
+        "command must be running before disconnect"
+    );
     manager.reconnect_server("validation").await?;
-    let interrupted = processes
-        .write_stdin(CommandWriteRequest {
-            process_id,
-            chars: String::new(),
-            yield_time: Duration::from_secs(5),
-            max_output_chars: 64 * 1024,
-        })
-        .await?;
-    assert!(matches!(
-        interrupted.state.final_result(),
-        Some(CommandProcessFinalResult::Failed { .. })
-    ));
     wait_until_ready(&mut connection_state).await?;
-
     let reconnected = manager.open_workspace_host("validation", workspace).await?;
     anyhow::ensure!(
-        host.identity() != reconnected.identity(),
-        "reconnect reused a retired LSP workspace identity"
+        host.identity() == reconnected.identity(),
+        "attachment replacement changed physical workspace identity"
     );
+    stdin.write_all(b"once\n").await?;
+    drop(stdin);
+    let (output, errors, exit) = tokio::join!(
+        async {
+            let mut text = String::new();
+            stdout.read_to_string(&mut text).await?;
+            anyhow::Ok(text)
+        },
+        async {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).await?;
+            anyhow::Ok(bytes)
+        },
+        tree.wait()
+    );
+    anyhow::ensure!(output? == "continued:once\n" && errors?.is_empty());
+    anyhow::ensure!(exit.map_err(anyhow::Error::msg)?.exit_code == Some(0));
     println!(
-        "LSP binding generation: PASS (helper workspace id reused: {})",
-        host.files.workspace_id() == reconnected.files.workspace_id()
+        "same-instance reconnect: original process, stdin, output and workspace identity PASS"
     );
     let reconnected_files = Arc::new(reconnected.files);
     let cleanup_check = run_remote(
         &reconnected.git,
         vec![
-            "sh".to_string(),
-            "-c".to_string(),
+            "sh".into(),
+            "-c".into(),
             "if kill -0 \"$(cat tree.pid)\" 2>/dev/null; then echo alive; else echo dead; fi"
-                .to_string(),
+                .into(),
         ],
     )
     .await?;
-    assert_eq!(cleanup_check.stdout.trim(), "dead");
+    anyhow::ensure!(cleanup_check.stdout.trim() == "dead");
+
+    let transfer_bytes = std::env::var("PURE_SSH_TEST_TRANSFER_BYTES")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(1024 * 1024 * 1024);
+    anyhow::ensure!(transfer_bytes >= 2);
+    let (reached, at_gate) = tokio::sync::oneshot::channel();
+    let (resume, continued) = tokio::sync::oneshot::channel();
+    let uploader = reconnected_files.clone();
+    let upload_started = std::time::Instant::now();
+    let mut upload = tokio::spawn(async move {
+        let mut source = remote_stream::GatedPattern::new(transfer_bytes, reached, continued);
+        uploader
+            .copy_file_from(
+                "streamed.bin",
+                pl_tool::workspace::WriteMode::Overwrite,
+                transfer_bytes,
+                &mut source,
+            )
+            .await
+    });
+    tokio::select! {
+        reached = at_gate => reached?,
+        result = &mut upload => { anyhow::bail!("upload completed before the reconnect gate: {result:?}"); }
+    }
+    remote_manager::verify_single_business_channel("file-transfer-active")?;
+    let restoring = std::time::Instant::now();
+    manager.reconnect_server("validation").await?;
+    let recovery_seconds = restoring.elapsed().as_secs_f64();
+    remote_manager::verify_single_business_channel("replacement-attached")?;
+    resume
+        .send(())
+        .map_err(|_| anyhow::anyhow!("upload source retired early"))?;
+    anyhow::ensure!(upload.await?? == transfer_bytes);
+    let upload_seconds = upload_started.elapsed().as_secs_f64();
+    let download_started = std::time::Instant::now();
+    anyhow::ensure!(
+        reconnected_files
+            .copy_file_to("streamed.bin", &mut tokio::io::sink())
+            .await?
+            == transfer_bytes
+    );
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"ssh-streaming-transfer", "bytes":transfer_bytes,
+        "uploadSeconds":upload_seconds, "downloadSeconds":download_started.elapsed().as_secs_f64(),
+        "recoverySeconds":recovery_seconds, "wholeFileResident":false, "sha256Match":true})
+    );
 
     for path in [
         "nested",
@@ -341,6 +406,8 @@ async fn main() -> anyhow::Result<()> {
         "expected-path.json",
         "tracked.txt",
         "tree.pid",
+        "reconnect.log",
+        "streamed.bin",
     ] {
         if reconnected_files
             .stat_optional(path.to_string(), None)
@@ -555,6 +622,10 @@ impl WorkspaceFileBackend for RacingRemoteIgnore {
         request: WorkspaceFileListRequest,
     ) -> pl_protocol::Result<WorkspaceFileListResult> {
         self.inner.list(request).await
+    }
+
+    async fn close_listing(&self, cursor: String) -> pl_protocol::Result<()> {
+        self.inner.close_listing(cursor).await
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> pl_protocol::Result<()> {

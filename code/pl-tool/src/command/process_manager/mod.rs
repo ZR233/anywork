@@ -32,7 +32,6 @@ pub use state::{
 };
 use stream_io::{read_stderr, read_stdout, run_capture_writer};
 
-const DEFAULT_MAX_PROCESSES: usize = 16;
 const INTERNAL_BUFFER_BYTES: usize = 64 * 1024;
 /// PL 默认的单命令落盘捕获上限（字节）。
 ///
@@ -53,7 +52,7 @@ pub struct CommandProcessManager<B>
 where
     B: CommandBackend,
 {
-    state: Arc<Mutex<CommandProcessManagerState>>,
+    state: Arc<std::sync::Mutex<CommandProcessManagerState>>,
     backend: Arc<B>,
     lifetime: Arc<ManagerLifetime>,
 }
@@ -76,7 +75,25 @@ struct CommandProcessManagerState {
     entries: HashMap<String, Arc<CommandProcessEntry>>,
     starting: usize,
     task_reservations: HashSet<String>,
-    max_processes: usize,
+    max_processes: Option<usize>,
+}
+
+struct StartReservation {
+    state: Arc<std::sync::Mutex<CommandProcessManagerState>>,
+    id: String,
+    active: bool,
+}
+impl Drop for StartReservation {
+    fn drop(&mut self) {
+        if self.active {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.starting = state.starting.saturating_sub(1);
+            state.task_reservations.remove(&self.id);
+        }
+    }
 }
 
 struct CommandProcessEntry {
@@ -320,7 +337,7 @@ where
     B: CommandBackend,
 {
     pub fn new(backend: Arc<B>) -> Self {
-        Self::with_max_processes(backend, DEFAULT_MAX_PROCESSES)
+        Self::with_process_policy(backend, None)
     }
 
     /// The host backend this manager drives, shared so a repair can re-materialize accepted bytes.
@@ -333,8 +350,11 @@ where
     }
 
     pub fn with_max_processes(backend: Arc<B>, max_processes: usize) -> Self {
+        Self::with_process_policy(backend, Some(max_processes))
+    }
+    fn with_process_policy(backend: Arc<B>, max_processes: Option<usize>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(CommandProcessManagerState {
+            state: Arc::new(std::sync::Mutex::new(CommandProcessManagerState {
                 entries: HashMap::new(),
                 starting: 0,
                 task_reservations: HashSet::new(),
@@ -385,6 +405,15 @@ where
         request: CommandStartRequest,
         task_id: Option<&str>,
     ) -> Result<Arc<CommandProcessEntry>, PureError> {
+        let admitted_at = tokio::time::Instant::now();
+        if request
+            .cancellation_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+            || self.lifetime.0.is_cancelled()
+        {
+            return Err(tool_error("exec", "Task cancelled before admission"));
+        }
         let working_directory = self
             .backend
             .resolve_cwd(request.cwd.as_deref(), request.allow_workspace_escape)
@@ -400,11 +429,37 @@ where
             )
             .await
             .map_err(|error| tool_error("exec", error))?;
+        let capacity = match self.backend.process_capacity() {
+            Some(capacity) => capacity,
+            None => {
+                tokio::task::spawn_blocking(|| {
+                    pl_remote_helper::budget::ResourcePolicy::default().allocation()
+                })
+                .await
+                .map_err(|e| tool_error("exec", e))?
+                .map_err(|e| tool_error("exec", e))?
+                .ordinary_operations
+            }
+        };
+        let mut reservation = self.reserve_start(task_id, capacity)?;
+        let process_id = reservation.id.clone();
         let capture_limit_bytes = self
             .backend
             .capture_limit_bytes()
             .unwrap_or(MAX_CAPTURE_BYTES);
         let capture_ownership = self.backend.capture_ownership();
+        if request
+            .cancellation_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+            || self.lifetime.0.is_cancelled()
+            || admitted_at.elapsed() >= request.timeout
+        {
+            return Err(tool_error(
+                "exec",
+                "Task cancelled or expired before capture preparation",
+            ));
+        }
         let capture_committed_len = self
             .backend
             .prepare_output(
@@ -431,13 +486,6 @@ where
         {
             return Err(tool_error("exec", "Task cancelled before process creation"));
         }
-        let process_id = match task_id {
-            Some(id) => {
-                self.reserve_task_process(id).await?;
-                id.to_owned()
-            }
-            None => self.reserve_process_id().await?,
-        };
         let child = self
             .backend
             .spawn(CommandSpawnRequest {
@@ -448,18 +496,7 @@ where
                 capture_limit_bytes,
             })
             .await;
-        let mut child = match child {
-            Ok(child) => child,
-            Err(error) => {
-                self.release_start_reservation().await;
-                self.state
-                    .lock()
-                    .await
-                    .task_reservations
-                    .remove(&process_id);
-                return Err(tool_error("exec", error));
-            }
-        };
+        let mut child = child.map_err(|error| tool_error("exec", error))?;
         let stdout = child.take_stdout();
         let stderr = child.take_stderr();
         let stdout_open = stdout.is_some();
@@ -484,16 +521,20 @@ where
             output_failure: output_failure.clone(),
         });
         {
-            let mut state = self.state.lock().await;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.starting = state.starting.saturating_sub(1);
             state.task_reservations.remove(&process_id);
             state.entries.insert(process_id.clone(), entry.clone());
+            reservation.active = false;
         }
         spawn_lifecycle_task(
             entry.clone(),
             child,
             CommandLifecycle {
-                timeout: request.timeout,
+                timeout: request.timeout.saturating_sub(admitted_at.elapsed()),
                 task_cancellation: request.cancellation_token,
                 manager_cancellation: self.lifetime.0.clone(),
                 output_failure,
@@ -565,58 +606,57 @@ where
         .await
     }
 
-    async fn reserve_process_id(&self) -> Result<String, PureError> {
-        let mut state = self.state.lock().await;
-        if state.entries.len().saturating_add(state.starting) >= state.max_processes {
+    fn reserve_start(
+        &self,
+        task_id: Option<&str>,
+        capacity: usize,
+    ) -> Result<StartReservation, PureError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let limit = state
+            .max_processes
+            .map_or(capacity, |limit| limit.min(capacity));
+        if state.entries.len().saturating_add(state.starting) >= limit {
             return Err(tool_error(
                 "exec",
-                format!(
-                    "background process limit reached ({}). Use wait for an existing task to finish before starting another command.",
-                    state.max_processes
-                ),
+                "current process resource grant is exhausted",
             ));
         }
-        let next_id = NEXT_PROCESS_ID
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .map_err(|_| {
-                tool_error(
-                    "exec",
-                    "process id space exhausted; restart Pure before starting another command"
-                        .to_string(),
-                )
-            })?;
-        state.starting = state.starting.saturating_add(1);
-        Ok(format!("proc-{next_id}"))
-    }
-
-    async fn reserve_task_process(&self, id: &str) -> Result<(), PureError> {
-        if !id.starts_with("task-") || id.len() > 256 {
-            return Err(tool_error("exec", "invalid session task ID"));
-        }
-        let mut state = self.state.lock().await;
-        if state.entries.contains_key(id) || state.task_reservations.contains(id) {
-            return Err(tool_error("exec", "session task already owns a process"));
-        }
-        if state.entries.len().saturating_add(state.starting) >= state.max_processes {
-            return Err(tool_error(
-                "exec",
-                "process capacity reached; wait for an existing task",
-            ));
-        }
+        let id = match task_id {
+            Some(id) => {
+                if !id.starts_with("task-") || id.len() > 256 {
+                    return Err(tool_error("exec", "invalid session task ID"));
+                }
+                if state.entries.contains_key(id) || state.task_reservations.contains(id) {
+                    return Err(tool_error("exec", "session task already owns a process"));
+                }
+                state.task_reservations.insert(id.to_owned());
+                id.to_owned()
+            }
+            None => {
+                let id = NEXT_PROCESS_ID
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| tool_error("exec", "process identity exhausted"))?;
+                format!("proc-{id}")
+            }
+        };
         state.starting += 1;
-        state.task_reservations.insert(id.to_owned());
-        Ok(())
-    }
-
-    async fn release_start_reservation(&self) {
-        let mut state = self.state.lock().await;
-        state.starting = state.starting.saturating_sub(1);
+        Ok(StartReservation {
+            state: self.state.clone(),
+            id,
+            active: true,
+        })
     }
 
     async fn entry(&self, process_id: &str) -> Option<Arc<CommandProcessEntry>> {
-        self.state.lock().await.entries.get(process_id).cloned()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .get(process_id)
+            .cloned()
     }
 
     /// Reads a live operation's current snapshot without consuming it.
@@ -665,7 +705,11 @@ where
                 .collect_output_artifacts(&entry.output_target, sizes)
                 .await
                 .map_err(|error| tool_error("exec", error))?;
-            self.state.lock().await.entries.remove(&entry.process_id);
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entries
+                .remove(&entry.process_id);
         }
         Ok(snapshot)
     }

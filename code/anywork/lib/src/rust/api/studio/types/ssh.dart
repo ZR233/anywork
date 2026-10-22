@@ -64,15 +64,18 @@ class RemoteDirectoryListingDto {
   final String path;
   final String? parent;
   final List<RemoteDirectoryEntryDto> entries;
+  final String? nextCursor;
 
   const RemoteDirectoryListingDto({
     required this.path,
     this.parent,
     required this.entries,
+    this.nextCursor,
   });
 
   @override
-  int get hashCode => path.hashCode ^ parent.hashCode ^ entries.hashCode;
+  int get hashCode =>
+      path.hashCode ^ parent.hashCode ^ entries.hashCode ^ nextCursor.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -81,7 +84,8 @@ class RemoteDirectoryListingDto {
           runtimeType == other.runtimeType &&
           path == other.path &&
           parent == other.parent &&
-          entries == other.entries;
+          entries == other.entries &&
+          nextCursor == other.nextCursor;
 }
 
 class SaveSshServerRequest {

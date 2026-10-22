@@ -152,7 +152,9 @@ abstract class StudioTransport
   Future<RemoteDirectoryListing> browseRemoteDirectories(
     String alias, {
     String? path,
+    String? cursor,
   });
+  Future<void> closeRemoteDirectory(String alias, String cursor);
   Future<StudioProject> openRemoteProject(String alias, String path);
 
   /// One creation command, with progress followed by exactly one terminal outcome.

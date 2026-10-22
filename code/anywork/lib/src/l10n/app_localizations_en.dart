@@ -4017,4 +4017,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactCustom => 'Custom';
+
+  @override
+  String get settingsSshNextPage => 'Next page';
 }

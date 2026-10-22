@@ -2015,5 +2015,6 @@
   "statusCompactNow": "Compact now",
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
-  "settingsModelAutoCompactCustom": "Custom"
+  "settingsModelAutoCompactCustom": "Custom",
+  "settingsSshNextPage": "Next page"
 }
