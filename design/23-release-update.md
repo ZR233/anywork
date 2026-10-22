@@ -65,6 +65,12 @@ Flutter 版本由 workflow 固定；Rust toolchain 由仓库统一固定，本�
 发布使用同一版本，Flutter 检查中的 Rust 生成工具也遵循该约束。第三方 Action 固定到完整
 commit SHA，并使用最小 token 权限、单实例 concurrency 与 build provenance attestation。
 
+CI 的第三方 Rust 命令行工具通过固定版本的 `cargo-binstall` 安装预编译包，并显式禁止源码
+编译回退；FRB 生成器及其 `cargo-expand` 依赖在生成前一并安装，避免生成过程中隐式安装。
+优先使用工具上游 Release；未发布二进制的 `cargo-expand` 使用 cargo-bins 的 quickinstall
+产物。工具版本在工作流中固定，产物缺失或安装失败直接使 job 失败。项目自身的 xtask、bridge
+与 helper 仍从当前提交构建，Cargo 与 Flutter 的依赖快照约束保持不变。
+
 固定 channel 声明的工具链组件同时包含 `rustfmt`、`clippy` 与 `rust-analyzer`：编辑器语言服务
 与命令行构建共享同一工具链，不把 LSP 交给另一套 toolchain，也不要求开发者额外安装服务器。
 同一文件声明的目标列表包含 remote helper 交叉构建所需的 `aarch64-unknown-linux-musl` 与

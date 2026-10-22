@@ -115,6 +115,10 @@ Client 格式/静态检查和纯 Dart tests，再以 `flutter test --no-pub` 执
 缺少 package、lockfile 或任一必需测试集必须失败，不能跳过后记为通过；统一入口与工作目录
 约束由 [AGENTS.md](../AGENTS.md) 和仓库工具维护，不从 SDK 安装目录运行项目命令。
 
+Rust、Linux server 与 Flutter 质量 job 独立执行，不通过先后依赖串行化；所有既有检查仍须
+通过。调用 xtask 的 job 同时缓存 workspace 与 xtask 的构建依赖，缓存只减少准备成本，
+不替代当前提交的检查。第三方生成工具安装遵循 [23](./23-release-update.md) 的预编译包约定。
+
 Client 自动用例使用屏障、可控 Future 和 fake clock 组织交错，不延长 sleep 等概率碰撞。
 必须覆盖以下缺陷敏感的行为；交付记录区分用例已存在、已执行与实际通过：
 
