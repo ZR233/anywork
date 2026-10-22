@@ -67,10 +67,11 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                     item.modelMatchState == ModelMatchState.mismatched))
               item,
         ];
-        final hasProjectionIssue =
-            snapshot.statisticsPending ||
-            snapshot.statisticsGap ||
-            snapshot.readFailed;
+        // gap/readFailed 是稳定异常，才在固定页头占一行；pending 是每轮调用落盘期间
+        // 的常规暂态，不再可见展示——状态行随其插拔会把整个页面往下推造成闪烁。
+        final headerIssue = snapshot.statisticsGap || snapshot.readFailed;
+        // pending 仍参与空态抑制：落盘完成前不提前显示「暂无调用历史」。
+        final hasProjectionIssue = snapshot.statisticsPending || headerIssue;
         return SettingsPageLayout(
           maxWidth: 1120,
           header: Column(
@@ -80,8 +81,8 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                 title: context.l10n.settingsStatisticsTitle,
                 subtitle: context.l10n.settingsStatisticsSubtitle,
               ),
-              // pending/gap/readFailed 在固定页头轻量显示，不在正文顶部插拔大块。
-              if (visible && hasProjectionIssue)
+              // gap/readFailed 在固定页头轻量显示，不在正文顶部插拔大块。
+              if (visible && headerIssue)
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: _StatisticsStatusLine(snapshot: snapshot),
@@ -173,8 +174,8 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
   }
 }
 
-/// 统计投影的轻量状态行：pending/gap/readFailed 只在固定页头占一行，避免正文顶部
-/// 反复插拔大块导致布局跳动。
+/// 统计投影的轻量状态行：gap/readFailed 只在固定页头占一行，避免正文顶部反复插拔
+/// 大块导致布局跳动；pending（保存中暂态）不做可见展示。
 class _StatisticsStatusLine extends StatelessWidget {
   const _StatisticsStatusLine({required this.snapshot});
 
@@ -196,13 +197,6 @@ class _StatisticsStatusLine extends StatelessWidget {
           icon: Icons.warning_amber_rounded,
           label: context.l10n.settingsStatisticsGapTitle,
           color: context.statusColors.warning,
-        ),
-      if (snapshot.statisticsPending)
-        _StatisticsStatusItem(
-          key: const ValueKey('statistics-status-pending'),
-          icon: Icons.schedule_rounded,
-          label: context.l10n.settingsStatisticsPendingTitle,
-          color: context.colors.onSurfaceVariant,
         ),
     ];
     if (items.isEmpty) return const SizedBox.shrink();

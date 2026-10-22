@@ -828,12 +828,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsFilteredEmpty => '当前筛选条件下没有调用记录。';
 
   @override
-  String get settingsStatisticsPendingTitle => '统计待写入';
-
-  @override
-  String get settingsStatisticsPendingBody => '近期调用仍在写入统计，当前数据可能尚未包含这些记录。';
-
-  @override
   String get settingsStatisticsGapTitle => '统计存在缺口';
 
   @override

@@ -109,6 +109,9 @@ Future<void> main(List<String> args) async {
       await _openStatistics(driver, progress);
       final locked = await _waitForPending(driver);
       await _captureState(output, 'statistics-locked', locked);
+      // pending=true 的可见性证据：保存中暂态不得渲染任何页头状态行。
+      await File('${output.path}/statistics-locked.png')
+          .writeAsBytes(await driver.screenshot());
       await File('${coord.path}/lock-observed').writeAsString('observed');
       await stage('lock_observed');
       await _waitForTurn(driver, 5, output, 'fast');
