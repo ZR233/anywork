@@ -5,6 +5,13 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.26.0](https://github.com/ZR233/anywork/compare/v6.25.0...v6.26.0) (2026-10-22)
+
+
+### Features
+
+* **studio:** 重构飞书机器人界面并支持跨会话协作 ([#138](https://github.com/ZR233/anywork/issues/138)) ([322b04a](https://github.com/ZR233/anywork/commit/322b04ae669c02dc273029fd42de268aa63dc07f))
+
 ## [6.25.0](https://github.com/ZR233/anywork/compare/v6.24.0...v6.25.0) (2026-10-22)
 
 
