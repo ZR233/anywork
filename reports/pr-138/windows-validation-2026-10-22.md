@@ -97,6 +97,31 @@
 未卸载用户飞书，未把当前结果视为无客户端环境或手机扫码授权完成的实际验证。
 上述扫码分支已实现，授权参数保真与来源边界由 adapter 测试覆盖。
 
+### 已登录开发者后台的进一步核查
+
+用户在 Edge 登录后，于同日继续检查当前应用：
+
+- 后台显示应用已启用、当前修改均已发布，所属身份为“豆包账号”。
+- 安全设置中没有 IP 白名单条目。
+- `im:chat:readonly`、`im:message.group_at_msg:readonly`、
+  `im:message.p2p_msg:readonly`、`im:message:readonly`、
+  `im:message:send_as_bot` 五项应用身份权限均显示已开通。
+- 事件订阅采用长连接，已订阅 `im.message.receive_v1`。
+- 服务端日志确认失败发生于 `POST /open-apis/auth/v3/tenant_access_token/internal`，
+  HTTP 200、业务错误码 `21001`；平台原文为
+  “Access denied due to platform policy. If you have questions, contact customer support for help.”
+  因此该失败尚未进入消息 API 调用；不能将它归因于未发布或未开通上述权限。
+- 再次启动原生程序，安全诊断仍为 `permission` / `21001` / `retryable=false`。
+- 官方 API 调试台的“获取 Token”操作未填入凭证，也未提供可确认的成功结果；
+  不将该界面操作记录为独立的接口验证通过。
+
+[官方旧接口文档](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)
+已在 2026-10-14 将当前 token 接口列为历史版本，并指向
+[新版 OAuth 接口](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)。
+这说明后续需要评估协议升级，但当前没有证据说明接口版本就是平台策略拒绝的原因。
+未以切换端点、身份或放宽安全设置尝试绕过拒绝。具体命中的策略仍需飞书支持确认，
+已在本地准备不含 App Secret、token 或消息正文的支持请求草稿，尚未对外发送。
+
 GUI 验证使用独立 `ANYWORK_HOME` 和验收工作区，沿用已有配置的凭据关联，
 不复制正在使用的历史库。日志、快照及临时 Driver 脚本仅保存在忽略的
 `target/manual-gui/pr138-feishu-live-20261022/`，不提交授权二维码、票据或私有配置。
